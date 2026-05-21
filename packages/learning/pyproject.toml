@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "engram-learning"
+version = "0.1.0"
+description = "engram self-learning — reflection, skill extraction, episodic memory"
+requires-python = ">=3.11"
+dependencies = [
+    "engram-core",
+    "engram-orchestrator",
+    "anthropic>=0.30",
+    "aiosqlite>=0.20",
+    "apscheduler>=3.10",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["engram_learning*"]

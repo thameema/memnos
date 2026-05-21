@@ -1,0 +1,89 @@
+server:
+  host: 0.0.0.0
+  mcp_port: 8765
+  api_port: 8766
+  log_level: INFO
+
+auth:
+  api_keys:
+    - key: ${ENGRAM_API_KEY}
+      user_id: default
+      namespaces: ["*"]
+
+neo4j:
+  uri: bolt://localhost:7687
+  username: neo4j
+  password: ${NEO4J_PASSWORD}
+  database: neo4j
+
+qdrant:
+  host: localhost
+  port: 6333
+  collection: engram_memories
+
+embeddings:
+  provider: openai
+  model: text-embedding-3-small
+  api_key: ${OPENAI_API_KEY}
+  # Local embeddings (no OpenAI needed):
+  # provider: local
+  # model: sentence-transformers/all-MiniLM-L6-v2
+
+runtime:
+  default: api
+  max_concurrent_workers: 5
+  worker_timeout_s: 300
+  api:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    api_key: ${ANTHROPIC_API_KEY}
+  openrouter:
+    model: anthropic/claude-sonnet-4-6
+    api_key: ${OPENROUTER_API_KEY}
+
+namespaces:
+  default: personal:default
+  definitions:
+    personal:default:
+      owners: [default]
+
+gateway:
+  telegram:
+    enabled: false
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    allowed_users: []
+    default_namespace: personal:default
+  whatsapp:
+    enabled: false
+    evolution_api_url: http://localhost:8080
+    evolution_api_key: ${EVOLUTION_API_KEY}
+    default_namespace: personal:default
+
+learning:
+  enabled: true
+  episodic:
+    enabled: true
+    retention_days: 365
+  feedback:
+    correction_detection: true
+    feedback_endpoint: true
+  reflection:
+    enabled: true
+    schedule: "0 2 * * *"
+    trigger_on_correction: true
+    min_episodes_per_run: 5
+    lookback_days: 7
+    model: claude-haiku-4-5-20251001
+  skill_extraction:
+    enabled: true
+    quality_threshold: 0.8
+    similarity_threshold: 0.92
+  heuristic_decay:
+    enabled: true
+    schedule: "0 3 * * 0"
+    inactive_days_before_decay: 30
+    decay_rate: 0.9
+  quality_routing:
+    enabled: true
+    min_samples: 10
+    quality_threshold: 0.6

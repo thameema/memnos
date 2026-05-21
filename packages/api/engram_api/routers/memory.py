@@ -1,0 +1,149 @@
+"""
+engram_api.routers.memory — CRUD and search endpoints for persistent memory.
+
+Endpoints
+---------
+POST   /memory/          — write a memory entry
+GET    /memory/search    — full-text / vector / hybrid search
+GET    /memory/{id}      — fetch a single memory by ID
+DELETE /memory/{id}      — delete a memory entry
+"""
+
+from __future__ import annotations
+
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from engram_api.auth import get_client, require_api_key
+from engram_api.schemas import MemoryResponse, MemoryWriteRequest
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/memory", tags=["memory"])
+
+
+def _to_response(memory, score: float | None = None) -> MemoryResponse:
+    """Convert a MemoryEntry model to a MemoryResponse."""
+    return MemoryResponse(
+        id=str(memory.id),
+        content=memory.content,
+        namespace=memory.namespace,
+        created_at=memory.created_at,
+        tags=list(memory.tags or []),
+        score=score,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Write
+# ---------------------------------------------------------------------------
+
+@router.post("/", response_model=MemoryResponse, status_code=201)
+async def write_memory(
+    req: MemoryWriteRequest,
+    user_id: str = Depends(require_api_key),
+    client=Depends(get_client),
+) -> MemoryResponse:
+    """Persist a new memory entry to both the vector store and knowledge graph."""
+    logger.debug(
+        "write_memory | ns=%s user=%s content=%r",
+        req.namespace,
+        user_id,
+        req.content[:120],
+    )
+    try:
+        memory = await client.add(
+            content=req.content,
+            namespace=req.namespace,
+            tags=req.tags,
+            source=req.source,
+            metadata=req.metadata,
+        )
+    except Exception as exc:
+        logger.exception("Failed to write memory: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return _to_response(memory)
+
+
+# ---------------------------------------------------------------------------
+# Search
+# ---------------------------------------------------------------------------
+
+@router.get("/search", response_model=list[MemoryResponse])
+async def search_memory(
+    q: str = Query(..., description="Natural-language search query"),
+    ns: str = Query(..., description="Namespace to search within"),
+    top_k: int = Query(10, ge=1, le=100),
+    mode: str = Query("hybrid", description="hybrid | vector | graph"),
+    user_id: str = Depends(require_api_key),
+    client=Depends(get_client),
+) -> list[MemoryResponse]:
+    """Search memories using vector similarity, graph traversal, or a hybrid of both."""
+    logger.debug(
+        "search_memory | ns=%s mode=%s top_k=%d user=%s q=%r",
+        ns,
+        mode,
+        top_k,
+        user_id,
+        q[:120],
+    )
+    try:
+        results = await client.search(q, ns, top_k, mode)
+    except Exception as exc:
+        logger.exception("Memory search failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if results is None:
+        return []
+
+    return [_to_response(r.memory, score=r.score) for r in results]
+
+
+# ---------------------------------------------------------------------------
+# Get by ID
+# ---------------------------------------------------------------------------
+
+@router.get("/{memory_id}", response_model=MemoryResponse)
+async def get_memory(
+    memory_id: str,
+    ns: str = Query(..., description="Namespace the memory belongs to"),
+    user_id: str = Depends(require_api_key),
+    client=Depends(get_client),
+) -> MemoryResponse:
+    """Fetch a single memory entry by its UUID."""
+    logger.debug("get_memory | id=%s ns=%s user=%s", memory_id, ns, user_id)
+    try:
+        memory = await client.get(memory_id, ns)
+    except Exception as exc:
+        logger.exception("Failed to fetch memory %s: %s", memory_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if memory is None:
+        raise HTTPException(status_code=404, detail=f"Memory {memory_id!r} not found")
+
+    return _to_response(memory)
+
+
+# ---------------------------------------------------------------------------
+# Delete
+# ---------------------------------------------------------------------------
+
+@router.delete("/{memory_id}", status_code=204)
+async def delete_memory(
+    memory_id: str,
+    ns: str = Query(..., description="Namespace the memory belongs to"),
+    user_id: str = Depends(require_api_key),
+    client=Depends(get_client),
+) -> None:
+    """Permanently delete a memory entry from both vector and graph stores."""
+    logger.debug("delete_memory | id=%s ns=%s user=%s", memory_id, ns, user_id)
+    try:
+        deleted = await client.delete(memory_id, ns)
+    except Exception as exc:
+        logger.exception("Failed to delete memory %s: %s", memory_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Memory {memory_id!r} not found")

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "engram-orchestrator"
+version = "0.1.0"
+description = "engram multi-agent orchestrator"
+requires-python = ">=3.11"
+dependencies = [
+    "engram-core",
+    "anthropic>=0.30",
+    "openai>=1.30",
+    "httpx>=0.27",
+    "aiosqlite>=0.20",
+    "pyyaml>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["engram_orchestrator*"]

@@ -1,0 +1,25 @@
+name: researcher
+version: "1.0"
+description: Researches topics by searching memory and the web, then synthesizes findings into a structured report
+model: claude-sonnet-4-6
+temperature: 0.5
+max_tokens: 8192
+system_prompt: |
+  You are a research agent. When given a research topic or question:
+
+  1. Search memory first for existing knowledge on the topic
+  2. Search the web if memory is insufficient
+  3. Cross-reference multiple sources
+  4. Write key findings to memory with appropriate tags
+  5. Return a structured report with: Summary, Key Findings, Sources, Open Questions
+
+  Always cite where information came from (memory vs web, specific source).
+  Be honest about uncertainty — distinguish confirmed facts from inferences.
+tools:
+  - memory_search
+  - memory_write
+  - web_search
+  - fetch_url
+use_critic: true
+critic_model: claude-haiku-4-5-20251001
+timeout_s: 240

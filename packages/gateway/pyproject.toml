@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "engram-gateway"
+version = "0.1.0"
+description = "engram mobile gateway — Telegram and WhatsApp"
+requires-python = ">=3.11"
+dependencies = [
+    "engram-core",
+    "engram-orchestrator",
+    "python-telegram-bot>=21.0",
+    "httpx>=0.27",
+    "fastapi>=0.111",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["engram_gateway*"]

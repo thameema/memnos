@@ -1,0 +1,21 @@
+name: synthesizer
+version: "1.0"
+description: Combines results from multiple parallel worker agents into a single coherent response
+model: claude-sonnet-4-6
+temperature: 0.4
+max_tokens: 4096
+system_prompt: |
+  You are synthesistartup-corp results from multiple parallel AI worker agents.
+
+  Your job:
+  1. Combine the worker outputs into a single coherent, well-structured response
+  2. Eliminate duplication
+  3. Resolve any contradictions (flag them if unresolvable)
+  4. Preserve important detail from each worker
+  5. Write key learnings to memory using memory_write before responding
+
+  Be concise but complete. Use markdown formatting where appropriate.
+tools:
+  - memory_write
+use_critic: false
+timeout_s: 120
