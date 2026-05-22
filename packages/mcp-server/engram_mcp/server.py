@@ -50,6 +50,13 @@ from engram_mcp.tools.orchestrator_tools import (
     handle_spawn_task,
     handle_trigger_reflection,
 )
+from engram_mcp.tools.vault import (
+    handle_secret_set,
+    handle_secret_get,
+    handle_secret_list,
+    handle_secret_rotate,
+    handle_vault_audit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -325,6 +332,97 @@ TOOLS: list[Tool] = [
             "required": [],
         },
     ),
+    # ---- vault tools ----
+    Tool(
+        name="vault_secret_set",
+        description=(
+            "Store (or replace) an encrypted secret in the engram vault. "
+            "The value is envelope-encrypted with AES-256-GCM and never stored in plaintext. "
+            "Use this for API keys, tokens, passwords, and other credentials."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "key_name": {"type": "string", "description": "Unique name for the secret (e.g. 'openai_api_key')"},
+                "value": {"type": "string", "description": "Secret plaintext value to encrypt and store"},
+                "namespace": {"type": "string", "description": "Vault namespace (same hierarchy as memory namespaces)"},
+                "secret_type": {
+                    "type": "string",
+                    "enum": ["api_key", "token", "password", "certificate", "webhook", "other"],
+                    "default": "api_key",
+                    "description": "Category of secret",
+                },
+                "description": {"type": "string", "default": "", "description": "Human-readable description"},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional classification tags",
+                },
+            },
+            "required": ["key_name", "value", "namespace"],
+        },
+    ),
+    Tool(
+        name="vault_secret_get",
+        description=(
+            "Retrieve and decrypt a secret from the engram vault. "
+            "Returns the plaintext value. Access is audit-logged."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "key_name": {"type": "string", "description": "Name of the secret to retrieve"},
+                "namespace": {"type": "string", "description": "Vault namespace that owns the secret"},
+            },
+            "required": ["key_name", "namespace"],
+        },
+    ),
+    Tool(
+        name="vault_secret_list",
+        description=(
+            "List secrets in a vault namespace. "
+            "Returns metadata only (key_name, type, description, tags) — never plaintext values."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace": {"type": "string", "description": "Vault namespace to list"},
+            },
+            "required": ["namespace"],
+        },
+    ),
+    Tool(
+        name="vault_secret_rotate",
+        description=(
+            "Rotate a secret by replacing its value. "
+            "The old ciphertext is superseded and a new DEK is generated. "
+            "History is preserved in the audit log."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "key_name": {"type": "string", "description": "Name of the secret to rotate"},
+                "new_value": {"type": "string", "description": "New plaintext value"},
+                "namespace": {"type": "string", "description": "Vault namespace that owns the secret"},
+            },
+            "required": ["key_name", "new_value", "namespace"],
+        },
+    ),
+    Tool(
+        name="vault_audit",
+        description=(
+            "Retrieve the immutable audit log for a vault namespace. "
+            "Shows who accessed or modified secrets and when. Requires vault_admin permission."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace": {"type": "string", "description": "Vault namespace to audit"},
+                "limit": {"type": "integer", "default": 100, "description": "Maximum entries to return"},
+            },
+            "required": ["namespace"],
+        },
+    ),
 ]
 
 
@@ -478,6 +576,46 @@ async def _dispatch(
     # ---- agent discovery ----
     if name == "list_agents":
         return await handle_list_agents(filter=args.get("filter"))
+
+    # ---- vault tools ----
+    if name == "vault_secret_set":
+        return await handle_secret_set(
+            client,
+            key_name=args["key_name"],
+            value=args["value"],
+            namespace=args["namespace"],
+            secret_type=str(args.get("secret_type", "api_key")),
+            description=str(args.get("description", "")),
+            tags=args.get("tags"),
+        )
+
+    if name == "vault_secret_get":
+        return await handle_secret_get(
+            client,
+            key_name=args["key_name"],
+            namespace=args["namespace"],
+        )
+
+    if name == "vault_secret_list":
+        return await handle_secret_list(
+            client,
+            namespace=args["namespace"],
+        )
+
+    if name == "vault_secret_rotate":
+        return await handle_secret_rotate(
+            client,
+            key_name=args["key_name"],
+            new_value=args["new_value"],
+            namespace=args["namespace"],
+        )
+
+    if name == "vault_audit":
+        return await handle_vault_audit(
+            client,
+            namespace=args["namespace"],
+            limit=int(args.get("limit", 100)),
+        )
 
     raise ValueError(f"Unknown tool: {name!r}")
 

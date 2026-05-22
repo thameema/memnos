@@ -23,8 +23,10 @@ from typing import Any
 
 from engram.config import EngramConfig
 from engram.extraction.spacy_extractor import get_extractor
-from engram.models import AssetReference, Entity, Fact, Graph, MemoryEntry, SearchResult
+from engram.models import AssetReference, Entity, Fact, Graph, MemoryEntry, SearchResult, Secret, VaultAuditLog
 from engram.storage.arcadedb_client import ArcadeDBClient
+from engram.vault.secret_detector import detect as _detect_secrets, redact as _redact_secrets
+from engram.vault.vault_client import get_vault_client
 from engram.vector.embedder import get_embedder
 
 logger = logging.getLogger(__name__)
@@ -53,6 +55,7 @@ class EngramClient:
             vector_dim=self._embedder.vector_size,
         )
         self._extractor = get_extractor()
+        self._vault = get_vault_client(config.vault) if config.vault.enabled else None
         self._started = False
 
     # ------------------------------------------------------------------
@@ -121,6 +124,17 @@ class EngramClient:
           6. Return the completed ``MemoryEntry``.
         """
         self._assert_started()
+
+        # Scan for and redact credentials before storage
+        if self._config.vault.detect_in_memory:
+            detected = _detect_secrets(content)
+            if detected:
+                names = [d.pattern_name for d in detected]
+                logger.warning(
+                    "Credential pattern(s) detected in memory write — redacting: %s", names
+                )
+                content = _redact_secrets(content, detected)
+
         memory = MemoryEntry(
             content=content,
             namespace=namespace,
@@ -362,3 +376,133 @@ class EngramClient:
         """Return graph data suitable for rendering (nodes + edges)."""
         self._assert_started()
         return await self._arcadedb.visualize(namespace=namespace, limit=limit)
+
+    # ------------------------------------------------------------------
+    # Vault — encrypted secrets
+    # ------------------------------------------------------------------
+
+    def _require_vault(self) -> None:
+        if self._vault is None:
+            raise RuntimeError("Vault is not enabled. Set vault.enabled: true in engram.yaml")
+
+    async def secret_set(
+        self,
+        key_name: str,
+        value: str,
+        namespace: str,
+        secret_type: str = "api_key",
+        description: str = "",
+        created_by: str = "unknown",
+        tags: list[str] | None = None,
+        _audit_action: str = "set",
+    ) -> dict:
+        """Encrypt and store a secret. Supersedes any existing secret with the same name."""
+        self._assert_started()
+        self._require_vault()
+        value_enc, dek_enc = await self._vault.encrypt(value)
+
+        # Supersede existing secret with same name if present
+        existing = await self._arcadedb.get_secret(key_name, namespace)
+        if existing:
+            await self._arcadedb.supersede_secret(existing.id, namespace)
+
+        secret = Secret(
+            key_name=key_name,
+            description=description,
+            secret_type=secret_type,
+            namespace=namespace,
+            value_enc=value_enc,
+            dek_enc=dek_enc,
+            created_by=created_by,
+            tags=tags or [],
+        )
+        secret_id = await self._arcadedb.insert_secret(secret)
+
+        if self._config.vault.audit_log and _audit_action:
+            log = VaultAuditLog(
+                secret_name=key_name,
+                namespace=namespace,
+                action=_audit_action,
+                accessed_by=created_by,
+                success=True,
+            )
+            await self._arcadedb.insert_audit_log(log)
+
+        logger.info("Secret stored: key_name=%s namespace=%s id=%s", key_name, namespace, secret_id)
+        return {"id": secret_id, "key_name": key_name, "namespace": namespace}
+
+    async def secret_get(
+        self,
+        key_name: str,
+        namespace: str,
+        accessed_by: str = "unknown",
+    ) -> str:
+        """Decrypt and return the plaintext value of a secret."""
+        self._assert_started()
+        self._require_vault()
+        secret = await self._arcadedb.get_secret(key_name, namespace)
+
+        if self._config.vault.audit_log:
+            log = VaultAuditLog(
+                secret_name=key_name,
+                namespace=namespace,
+                action="get",
+                accessed_by=accessed_by,
+                success=secret is not None,
+                error=None if secret else "not_found",
+            )
+            await self._arcadedb.insert_audit_log(log)
+
+        if secret is None:
+            raise KeyError(f"Secret '{key_name}' not found in namespace '{namespace}'")
+
+        return await self._vault.decrypt(secret.value_enc, secret.dek_enc)
+
+    async def secret_list(
+        self,
+        namespace: str,
+        accessed_by: str = "unknown",
+    ) -> list[dict]:
+        """Return metadata for all current secrets — never returns plaintext values."""
+        self._assert_started()
+        self._require_vault()
+
+        if self._config.vault.audit_log:
+            log = VaultAuditLog(
+                secret_name="*",
+                namespace=namespace,
+                action="list",
+                accessed_by=accessed_by,
+                success=True,
+            )
+            await self._arcadedb.insert_audit_log(log)
+
+        return await self._arcadedb.list_secrets(namespace)
+
+    async def secret_rotate(
+        self,
+        key_name: str,
+        new_value: str,
+        namespace: str,
+        accessed_by: str = "unknown",
+    ) -> dict:
+        """Re-encrypt a secret with a fresh DEK (effectively replaces it)."""
+        self._assert_started()
+        self._require_vault()
+        return await self.secret_set(
+            key_name=key_name,
+            value=new_value,
+            namespace=namespace,
+            created_by=accessed_by,
+            _audit_action="rotate",
+        )
+
+    async def secret_audit(
+        self,
+        namespace: str,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Return audit log entries for vault access in *namespace*."""
+        self._assert_started()
+        self._require_vault()
+        return await self._arcadedb.get_audit_logs(namespace, limit)

@@ -112,6 +112,12 @@ class NamespaceAccess(BaseModel):
     access: str = "read_write"   # "read_only" | "read_write"
 
 
+class VaultNamespaceAccess(BaseModel):
+    """Per-namespace vault permission for an API key."""
+    namespace: str
+    access: str = "vault_read"   # "vault_read" | "vault_write" | "vault_admin"
+
+
 class ApiKeyEntry(BaseModel):
     key: str
     user_id: str = "default"
@@ -119,10 +125,31 @@ class ApiKeyEntry(BaseModel):
     # compatibility; use namespace_access for fine-grained ACL.
     namespaces: list[str] = Field(default_factory=lambda: ["*"])
     namespace_access: list[NamespaceAccess] = Field(default_factory=list)
+    # Vault-specific ACL — independent of memory namespace access.
+    # Keys with "*" in namespaces automatically get vault_admin everywhere.
+    vault_namespaces: list[VaultNamespaceAccess] = Field(default_factory=list)
 
 
 class AuthConfig(BaseModel):
     api_keys: list[ApiKeyEntry] = Field(default_factory=list)
+
+
+class VaultKMSConfig(BaseModel):
+    """KMS provider for the vault Key Encryption Key (KEK)."""
+    provider: str = "local"      # "local" | "azure_keyvault" | "aws_kms"
+    key_url: str = ""            # Azure Key Vault key URL or AWS KMS key ARN
+
+
+class VaultConfig(BaseModel):
+    """Secrets vault configuration."""
+    enabled: bool = True
+    kms: VaultKMSConfig = Field(default_factory=VaultKMSConfig)
+    # Base64-encoded 32-byte key for local mode (dev).  In production use kms.
+    # Can also be set via ENGRAM_VAULT_KEY env var.
+    fallback_key: str = ""
+    audit_log: bool = True
+    # Scan every memory_write for credential patterns and redact them.
+    detect_in_memory: bool = True
 
 
 class EpisodicConfig(BaseModel):
@@ -179,6 +206,7 @@ class EngramConfig(BaseModel):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     namespaces: NamespaceConfig = Field(default_factory=NamespaceConfig)
     learning: LearningConfig = Field(default_factory=LearningConfig)
+    vault: VaultConfig = Field(default_factory=VaultConfig)
 
     # ---------------------------------------------------------------------------
     # Factory
@@ -212,13 +240,17 @@ class EngramConfig(BaseModel):
             parsed_keys = []
             for k in keys_raw:
                 if isinstance(k, dict):
-                    # Parse nested namespace_access if present
                     k = dict(k)
                     na_raw = k.pop("namespace_access", [])
+                    vna_raw = k.pop("vault_namespaces", [])
                     entry = ApiKeyEntry(**k)
                     entry.namespace_access = [
                         NamespaceAccess(**na) if isinstance(na, dict) else na
                         for na in na_raw
+                    ]
+                    entry.vault_namespaces = [
+                        VaultNamespaceAccess(**vna) if isinstance(vna, dict) else vna
+                        for vna in vna_raw
                     ]
                     parsed_keys.append(entry)
                 else:
@@ -262,6 +294,14 @@ class EngramConfig(BaseModel):
                 skill_extraction=SkillExtractionConfig(**skill_raw) if skill_raw else SkillExtractionConfig(),
                 heuristic_decay=HeuristicDecayConfig(**decay_raw) if decay_raw else HeuristicDecayConfig(),
                 quality_routing=QualityRoutingConfig(**routing_raw) if routing_raw else QualityRoutingConfig(),
+            )
+
+        if "vault" in raw:
+            v = dict(raw["vault"])
+            kms_raw = v.pop("kms", {})
+            kwargs["vault"] = VaultConfig(
+                kms=VaultKMSConfig(**kms_raw) if kms_raw else VaultKMSConfig(),
+                **v,
             )
 
         logger.debug("Loaded engram config from %s", config_path)

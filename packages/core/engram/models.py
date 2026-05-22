@@ -169,3 +169,49 @@ class Namespace(BaseModel):
     owner_ids: list[str] = Field(default_factory=list)
     reader_ids: list[str] = Field(default_factory=list)
     writer_ids: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Vault — encrypted secrets
+# ---------------------------------------------------------------------------
+
+class Secret(BaseModel):
+    """Encrypted secret stored in the vault.
+
+    The plaintext value is NEVER stored.  ``value_enc`` and ``dek_enc`` are
+    base64-encoded AES-256-GCM ciphertexts (envelope encryption).
+    """
+
+    id: str = Field(default_factory=_uuid)
+    key_name: str                            # human-readable identifier, e.g. "openai_api_key"
+    description: str = ""
+    secret_type: str = "api_key"            # "api_key"|"token"|"password"|"certificate"|"webhook"|"other"
+    namespace: str
+    value_enc: str                           # base64 AES-256-GCM encrypted plaintext
+    dek_enc: str                             # base64 AES-256-GCM encrypted DEK (wrapped by KEK)
+    created_at: datetime = Field(default_factory=_now)
+    superseded_at: datetime | None = None
+    created_by: str = "unknown"
+    tags: list[str] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def is_current(self) -> bool:
+        return self.superseded_at is None
+
+    model_config = {"arbitrary_types_allowed": True}
+
+
+class VaultAuditLog(BaseModel):
+    """Immutable audit record written on every vault access."""
+
+    id: str = Field(default_factory=_uuid)
+    secret_name: str
+    namespace: str
+    action: str                              # "get"|"set"|"rotate"|"delete"|"list"
+    accessed_by: str                         # user_id from the API key
+    accessed_at: datetime = Field(default_factory=_now)
+    success: bool = True
+    error: str | None = None
+
+    model_config = {"arbitrary_types_allowed": True}

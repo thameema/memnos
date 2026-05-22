@@ -266,7 +266,7 @@ def create_app() -> FastAPI:
 
     from fastapi.responses import HTMLResponse
 
-    from engram_api.routers import admin, graph, memory, tasks, viz  # noqa: PLC0415
+    from engram_api.routers import admin, graph, memory, tasks, vault, viz  # noqa: PLC0415
 
     application = FastAPI(
         title="engram",
@@ -292,6 +292,7 @@ def create_app() -> FastAPI:
     application.include_router(graph.router, prefix=api_prefix)
     application.include_router(tasks.router, prefix=api_prefix)
     application.include_router(admin.router, prefix=api_prefix)
+    application.include_router(vault.router, prefix=api_prefix)
     application.include_router(viz.router, prefix=api_prefix)
 
     # Interactive knowledge graph dashboard

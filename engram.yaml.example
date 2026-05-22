@@ -15,6 +15,16 @@ auth:
       #     access: read_write
       #   - namespace: org:acme:finance
       #     access: read_only
+      # Vault-specific access (independent of memory namespace access):
+      # Keys with namespaces: ["*"] automatically get vault_admin.
+      # For scoped keys, grant explicit vault permissions:
+      # vault_namespaces:
+      #   - namespace: org:acme:engineering
+      #     access: vault_read      # can retrieve secrets
+      #   - namespace: org:acme:engineering
+      #     access: vault_write     # can store/rotate secrets
+      #   - namespace: org:acme
+      #     access: vault_admin     # can also read audit log
 
 arcadedb:
   host: localhost          # use "arcadedb" inside Docker Compose
@@ -66,6 +76,23 @@ gateway:
     evolution_api_url: http://localhost:8080
     evolution_api_key: ${EVOLUTION_API_KEY}
     default_namespace: personal:default
+
+vault:
+  enabled: true
+  # Scan memory writes for credential patterns and redact them automatically
+  detect_in_memory: true
+  # Write an immutable audit record on every vault access
+  audit_log: true
+  kms:
+    # Local mode (dev / single-server): key derived from ENGRAM_VAULT_KEY env var.
+    # Generate a key: python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+    provider: local
+    # Production — Azure Key Vault (pip install azure-keyvault-keys azure-identity):
+    # provider: azure_keyvault
+    # key_url: https://my-vault.vault.azure.net/keys/engram-kek/version
+    # Production — AWS KMS (pip install boto3):
+    # provider: aws_kms
+    # key_url: arn:aws:kms:us-east-1:123456789012:key/mrk-abc123
 
 learning:
   enabled: true

@@ -165,6 +165,52 @@ async def check_namespace_access(key_entry: ApiKeyEntry, namespace: str) -> None
     )
 
 
+async def check_vault_access(
+    key_entry: ApiKeyEntry,
+    namespace: str,
+    required: str = "vault_read",
+) -> None:
+    """Assert that *key_entry* has vault permission on *namespace*.
+
+    Permission hierarchy: vault_admin > vault_write > vault_read.
+
+    Keys with ``"*"`` in their namespaces list are implicitly vault_admin.
+    Keys must otherwise have an explicit entry in vault_namespaces.
+    """
+    _LEVELS = {"vault_read": 1, "vault_write": 2, "vault_admin": 3}
+    required_level = _LEVELS.get(required, 1)
+
+    # Wildcard keys are implicitly vault_admin everywhere
+    allowed_ns: list[str] = getattr(key_entry, "namespaces", []) or []
+    if "*" in allowed_ns:
+        return
+
+    vault_ns = getattr(key_entry, "vault_namespaces", []) or []
+    for entry in vault_ns:
+        ns = getattr(entry, "namespace", "")
+        access = getattr(entry, "access", "vault_read")
+        entry_level = _LEVELS.get(access, 1)
+
+        # Exact match or prefix match (org:acme:* covers org:acme:eng)
+        ns_matches = (
+            ns == namespace
+            or ns == "*"
+            or (ns.endswith(":*") and namespace.startswith(ns[:-1]))
+        )
+        if ns_matches and entry_level >= required_level:
+            return
+
+    user_id = getattr(key_entry, "user_id", "unknown")
+    logger.warning(
+        "Vault access denied: user=%s namespace=%r required=%s",
+        user_id, namespace, required,
+    )
+    raise HTTPException(
+        status_code=403,
+        detail=f"API key does not have {required} access to vault namespace '{namespace}'",
+    )
+
+
 async def require_admin_access(
     key_entry: ApiKeyEntry = Depends(require_api_key_entry),
 ) -> ApiKeyEntry:

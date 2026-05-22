@@ -45,6 +45,8 @@ from engram.models import (
     MemoryEntry,
     Relation,
     SearchResult,
+    Secret,
+    VaultAuditLog,
 )
 
 logger = logging.getLogger(__name__)
@@ -252,11 +254,37 @@ class ArcadeDBClient:
             "CREATE PROPERTY Asset.superseded_at IF NOT EXISTS DATETIME",
             "CREATE PROPERTY Asset.created_by IF NOT EXISTS STRING",
             f"CREATE PROPERTY Asset.content_embedding IF NOT EXISTS ARRAY OF FLOAT",
+            # Vault vertex types — value_enc and dek_enc hold ciphertexts, never plaintext
+            "CREATE VERTEX TYPE Secret IF NOT EXISTS",
+            "CREATE VERTEX TYPE VaultAuditLog IF NOT EXISTS",
+            # Properties — Secret
+            "CREATE PROPERTY Secret.id IF NOT EXISTS STRING",
+            "CREATE PROPERTY Secret.key_name IF NOT EXISTS STRING",
+            "CREATE PROPERTY Secret.description IF NOT EXISTS STRING",
+            "CREATE PROPERTY Secret.secret_type IF NOT EXISTS STRING",
+            "CREATE PROPERTY Secret.namespace IF NOT EXISTS STRING",
+            "CREATE PROPERTY Secret.value_enc IF NOT EXISTS STRING",
+            "CREATE PROPERTY Secret.dek_enc IF NOT EXISTS STRING",
+            "CREATE PROPERTY Secret.created_at IF NOT EXISTS DATETIME",
+            "CREATE PROPERTY Secret.superseded_at IF NOT EXISTS DATETIME",
+            "CREATE PROPERTY Secret.created_by IF NOT EXISTS STRING",
+            "CREATE PROPERTY Secret.tags IF NOT EXISTS LIST",
+            # Properties — VaultAuditLog
+            "CREATE PROPERTY VaultAuditLog.id IF NOT EXISTS STRING",
+            "CREATE PROPERTY VaultAuditLog.secret_name IF NOT EXISTS STRING",
+            "CREATE PROPERTY VaultAuditLog.namespace IF NOT EXISTS STRING",
+            "CREATE PROPERTY VaultAuditLog.action IF NOT EXISTS STRING",
+            "CREATE PROPERTY VaultAuditLog.accessed_by IF NOT EXISTS STRING",
+            "CREATE PROPERTY VaultAuditLog.accessed_at IF NOT EXISTS DATETIME",
+            "CREATE PROPERTY VaultAuditLog.success IF NOT EXISTS BOOLEAN",
+            "CREATE PROPERTY VaultAuditLog.error IF NOT EXISTS STRING",
             # Indices for namespace filtering (common query pattern)
             "CREATE INDEX ON Memory (namespace) IF NOT EXISTS",
             "CREATE INDEX ON Entity (namespace, name) IF NOT EXISTS",
             "CREATE INDEX ON Fact (namespace) IF NOT EXISTS",
             "CREATE INDEX ON Asset (path, namespace) IF NOT EXISTS",
+            "CREATE INDEX ON Secret (namespace, key_name) IF NOT EXISTS",
+            "CREATE INDEX ON VaultAuditLog (namespace) IF NOT EXISTS",
             "CREATE INDEX ON Memory (id) IF NOT EXISTS",
         ]
         for cmd in schema_cmds:
@@ -739,6 +767,136 @@ class ArcadeDBClient:
         return {"nodes": nodes, "edges": edges, "truncated": len(mem_rows) >= limit}
 
     # ------------------------------------------------------------------
+    # Vault — Secret CRUD
+    # ------------------------------------------------------------------
+
+    async def insert_secret(self, secret: Secret) -> str:
+        """Store an encrypted secret. Never logs the value fields."""
+        await self._command(
+            "INSERT INTO Secret SET "
+            "id = :id, key_name = :key_name, description = :desc, "
+            "secret_type = :stype, namespace = :ns, "
+            "value_enc = :value_enc, dek_enc = :dek_enc, "
+            "created_at = :created_at, superseded_at = :superseded_at, "
+            "created_by = :created_by, tags = :tags",
+            {
+                "id": secret.id,
+                "key_name": secret.key_name,
+                "desc": secret.description,
+                "stype": secret.secret_type,
+                "ns": secret.namespace,
+                "value_enc": secret.value_enc,
+                "dek_enc": secret.dek_enc,
+                "created_at": _dt_str(secret.created_at),
+                "superseded_at": _dt_str(secret.superseded_at),
+                "created_by": secret.created_by,
+                "tags": secret.tags,
+            },
+        )
+        logger.debug("Secret inserted: key_name=%s namespace=%s", secret.key_name, secret.namespace)
+        return secret.id
+
+    async def get_secret(self, key_name: str, namespace: str) -> Secret | None:
+        """Retrieve the current (non-superseded) Secret by name."""
+        rows = await self._query(
+            "SELECT * FROM Secret "
+            "WHERE key_name = :name AND namespace = :ns AND superseded_at IS NULL "
+            "LIMIT 1",
+            {"name": key_name, "ns": namespace},
+        )
+        return _row_to_secret(rows[0]) if rows else None
+
+    async def list_secrets(self, namespace: str) -> list[dict]:
+        """Return metadata for all current secrets — NO ciphertext fields."""
+        ns_filter = namespace if namespace not in ("all", "", "*") else None
+        if ns_filter:
+            rows = await self._query(
+                "SELECT id, key_name, description, secret_type, namespace, "
+                "created_at, superseded_at, created_by, tags "
+                "FROM Secret "
+                "WHERE (namespace = :ns OR namespace LIKE :prefix) "
+                "AND superseded_at IS NULL "
+                "ORDER BY key_name ASC",
+                {"ns": ns_filter, "prefix": f"{ns_filter}:%"},
+            )
+        else:
+            rows = await self._query(
+                "SELECT id, key_name, description, secret_type, namespace, "
+                "created_at, superseded_at, created_by, tags "
+                "FROM Secret WHERE superseded_at IS NULL "
+                "ORDER BY key_name ASC"
+            )
+        # Deliberately strip value_enc / dek_enc even if present
+        return [
+            {
+                "id": r.get("id", ""),
+                "key_name": r.get("key_name", ""),
+                "description": r.get("description", ""),
+                "secret_type": r.get("secret_type", ""),
+                "namespace": r.get("namespace", ""),
+                "created_at": str(r.get("created_at", "")),
+                "created_by": r.get("created_by", ""),
+                "tags": r.get("tags") or [],
+                "is_current": True,
+            }
+            for r in rows
+        ]
+
+    async def supersede_secret(self, secret_id: str, namespace: str) -> bool:
+        rows = await self._command(
+            "UPDATE Secret SET superseded_at = :now WHERE id = :id AND namespace = :ns",
+            {"now": _dt_str(_now()), "id": secret_id, "ns": namespace},
+        )
+        return bool(rows)
+
+    async def delete_secret(self, secret_id: str, namespace: str) -> bool:
+        """Hard-delete a secret vertex (prefer supersede for audit trail)."""
+        rows = await self._command(
+            "DELETE VERTEX Secret WHERE id = :id AND namespace = :ns",
+            {"id": secret_id, "ns": namespace},
+        )
+        return bool(rows)
+
+    # ------------------------------------------------------------------
+    # Vault — Audit Log
+    # ------------------------------------------------------------------
+
+    async def insert_audit_log(self, log: VaultAuditLog) -> str:
+        await self._command(
+            "INSERT INTO VaultAuditLog SET "
+            "id = :id, secret_name = :name, namespace = :ns, "
+            "action = :action, accessed_by = :by, accessed_at = :at, "
+            "success = :ok, error = :err",
+            {
+                "id": log.id,
+                "name": log.secret_name,
+                "ns": log.namespace,
+                "action": log.action,
+                "by": log.accessed_by,
+                "at": _dt_str(log.accessed_at),
+                "ok": log.success,
+                "err": log.error,
+            },
+        )
+        return log.id
+
+    async def get_audit_logs(self, namespace: str, limit: int = 100) -> list[dict]:
+        ns_filter = namespace if namespace not in ("all", "", "*") else None
+        if ns_filter:
+            rows = await self._query(
+                "SELECT * FROM VaultAuditLog "
+                "WHERE namespace = :ns OR namespace LIKE :prefix "
+                "ORDER BY accessed_at DESC LIMIT :lim",
+                {"ns": ns_filter, "prefix": f"{ns_filter}:%", "lim": limit},
+            )
+        else:
+            rows = await self._query(
+                "SELECT * FROM VaultAuditLog ORDER BY accessed_at DESC LIMIT :lim",
+                {"lim": limit},
+            )
+        return rows
+
+    # ------------------------------------------------------------------
     # Raw query (for MCP graph_query tool)
     # ------------------------------------------------------------------
 
@@ -787,4 +945,20 @@ def _row_to_asset(row: dict) -> AssetReference:
         created_at=_parse_dt(row.get("created_at")) or _now(),
         superseded_at=_parse_dt(row.get("superseded_at")),
         created_by=row.get("created_by", "agent"),
+    )
+
+
+def _row_to_secret(row: dict) -> Secret:
+    return Secret(
+        id=row.get("id", row.get("@rid", "")),
+        key_name=row.get("key_name", ""),
+        description=row.get("description", ""),
+        secret_type=row.get("secret_type", "api_key"),
+        namespace=row.get("namespace", ""),
+        value_enc=row.get("value_enc", ""),
+        dek_enc=row.get("dek_enc", ""),
+        created_at=_parse_dt(row.get("created_at")) or _now(),
+        superseded_at=_parse_dt(row.get("superseded_at")),
+        created_by=row.get("created_by", "unknown"),
+        tags=row.get("tags") or [],
     )
