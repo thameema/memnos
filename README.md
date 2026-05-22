@@ -2,16 +2,18 @@
 
 **Persistent memory and multi-agent orchestration for Claude Code and any MCP-compatible LLM client.**
 
-engram gives Claude Code a long-term memory that persists across sessions, the ability to fork parallel background agents, and a self-improving knowledge base that learns from your past interactions — all without replacing Claude Code or changing how you work.
+engram gives Claude Code a long-term memory that persists across sessions, the ability to fork parallel background agents, and a self-improving knowledge base — all backed by a single Docker container (ArcadeDB) with no external vector database or graph database required.
 
 ```
-Claude Code  ──── MCP/SSE ────►  engram server
-                                    ├── Knowledge graph (Neo4j + Graphiti)
-                                    ├── Vector store (Qdrant)
-                                    ├── Multi-agent orchestrator
-                                    ├── Self-learning (reflection + heuristics)
-                                    └── Mobile gateway (Telegram / WhatsApp)
+Claude Code  ──── MCP stdio or SSE ────►  engram server
+                                            ├── Knowledge graph  (ArcadeDB — graph + HNSW vector)
+                                            ├── Encrypted vault  (AES-256-GCM envelope encryption)
+                                            ├── Multi-agent orchestrator
+                                            ├── Self-learning    (reflection + heuristics)
+                                            └── Mobile gateway   (Telegram / WhatsApp)
 ```
+
+> **v0.2** — ArcadeDB replaces Neo4j + Qdrant + Graphiti. One container, no OpenAI key required for embeddings. See [DESIGN.md](DESIGN.md) for the full architecture.
 
 ---
 
@@ -19,84 +21,44 @@ Claude Code  ──── MCP/SSE ────►  engram server
 
 Claude Code forgets everything when a session ends. engram fixes that.
 
-Every project decision, code pattern, error you've debugged, and architectural choice lives in a temporal knowledge graph. Next session, engram surfaces it automatically.
+Every project decision, code pattern, error you debugged, and architectural choice lives in a temporal knowledge graph. Next session, engram surfaces it automatically.
 
-- **Memory across sessions** — facts, decisions, and context persist in a knowledge graph that spans months and years
-- **Team memory** — share knowledge across your org via namespaces (`org:acme`, `project:backend`, `personal:default`)
+- **Memory across sessions** — facts, decisions, and context persist across months and years
+- **Team knowledge graph** — share memory across your org via namespaces (`org:acme`, `project:backend`, `personal:default`)
 - **Multi-agent tasks** — one command forks N parallel background workers, collects results, tears them down
+- **Encrypted vault** — store API keys and credentials with AES-256-GCM envelope encryption; auto-redacts credentials found in memory writes
 - **Self-improving** — nightly reflection rewrites heuristics from failures; successful patterns become reusable skill templates
 - **Mobile access** — send tasks from Telegram or WhatsApp; engram runs them and replies
-- **Bring your own key** — engram never holds your API keys; you configure your own Anthropic or OpenRouter key
+- **No OpenAI key for embeddings** — ships with `all-MiniLM-L6-v2` (sentence-transformers, runs on CPU); OpenAI embeddings are optional
 
 ---
 
 ## How is engram different from Obsidian, Letta, mem0, or Hermes agents?
 
-There are several tools in this space. Here is an honest comparison:
+| | engram | Obsidian vault | Letta (formerly MemGPT) | mem0 |
+|---|---|---|---|---|
+| **What it is** | Memory + orchestration layer | Manual note vault | Stateful agent framework | Cloud memory API |
+| **Works with Claude Code** | Native MCP (stdio + SSE) | Manual CLAUDE.md file | No direct MCP | API wrapper needed |
+| **Memory capture** | CLAUDE.md-instructed; Claude writes automatically | Manual — you write notes | Sophisticated in-agent memory | API call required |
+| **Knowledge graph** | ArcadeDB (graph + HNSW vector, single container) | No — flat Markdown | Structured in-context store | Flat key-value |
+| **Team sharing** | Real-time shared graph | Git/iCloud sync (async) | No | API-based (cloud) |
+| **Encrypted secrets** | Yes — AES-256-GCM vault + audit log | No | No | No |
+| **Self-improving** | Nightly reflection, heuristic decay | No | No | No |
+| **Multi-agent** | Built-in fork/join, critic loop | No | Agent-in-memory only | No |
+| **Runs locally** | Yes — one Docker container | Yes — plain files | Partial | Cloud-only |
+| **No cloud embeddings** | Yes (local sentence-transformers) | N/A | Depends | No |
 
-| | engram | Obsidian vault | Letta (formerly MemGPT) | mem0 | Hermes agents | OpenClaw |
-|---|---|---|---|---|---|---|
-| **What it is** | Memory + orchestration layer | Manual note vault | Stateful agent framework | Cloud memory API | Fine-tuned LLMs for tool use | Node.js agent platform |
-| **Primary audience** | Claude Code / AI engineering teams | Individual engineers, writers | General LLM app developers | App developers (SaaS API) | Developers running local LLMs | Developers, power users |
-| **Works with Claude Code** | Native MCP integration | Manual CLAUDE.md file | No direct MCP | API wrapper needed | Different runtime (local LLM) | No direct MCP |
-| **Memory capture** | Instructed via CLAUDE.md — Claude writes on key decisions | Manual — you write notes | Sophisticated in-agent memory | API call required | No built-in memory layer | Shallow MEMORY files |
-| **Knowledge graph** | Neo4j + Graphiti (temporal) | No — flat Markdown files | Structured in-context store | Flat key-value store | No | No |
-| **Team sharing** | Real-time shared graph | Git/iCloud sync (async) | No | API-based (cloud) | No | No |
-| **Self-improving** | Nightly reflection, heuristic decay | No | No | No | Model weights are static | No |
-| **Multi-agent orchestration** | Built-in (fork/join, critic loop) | No | Agent-in-memory architecture | No | You build it yourself | No |
-| **Mobile gateway** | Telegram + WhatsApp | No | No | No | No | 50+ channels built-in |
-| **Runs locally** | Yes — Docker + Python | Yes — plain files | Partial (some cloud deps) | Cloud-only | Yes — local inference | Yes — Node.js |
-| **Access control** | Namespace ACL per API key | Folder structure only | No | API key only | No | No |
-| **Open source** | MIT, self-hostable | Partial (core OSS) | Apache 2.0 | Partial (SDK only) | Apache 2.0 (NousResearch) | MIT |
+### Where each tool wins
 
-### Where each tool genuinely wins
+**Obsidian** wins when you want human-readable, manually curated notes with zero infrastructure. See [Migrating from Obsidian](#migrating-from-obsidian).
 
-**Obsidian** wins when you want human-readable, manually curated notes with zero infrastructure. Notes are plain Markdown files — you can edit them in any editor, commit them to git, and read them without any running service. If you want direct control over exactly what gets stored and why, Obsidian is hard to beat. See [Migrating from Obsidian](#migrating-from-obsidian) if you want to bring your existing vault into engram.
+**Letta** has the most architecturally sophisticated approach to in-agent memory — the agent itself manages its memory policies. Best for stateful agents with complex self-directed memory needs.
 
-**Letta** (formerly MemGPT) has the most architecturally sophisticated approach to in-agent memory. It treats the LLM itself as a process with working memory, a context manager, and persistent storage — the agent decides what to remember and forget within its own reasoning loop. This is powerful for stateful agents that need to manage their own memory policies.
+**mem0** wins on operational simplicity: one REST call to write, one to search. Best for app developers who need a drop-in memory layer with no infrastructure.
 
-**mem0** wins on operational simplicity. It is a clean REST API — one call to write, one to search — with a reported 91% reduction in p95 latency compared to full RAG pipelines. If you need a drop-in memory layer with minimal setup and no infrastructure to run, mem0 is a solid choice (the open-source version self-hosts; the cloud version is a paid service).
+**engram** wins when you need all three things in one self-hosted system: cross-session memory, a temporal knowledge graph, and multi-agent orchestration — with a single ArcadeDB container and no external API key for embeddings.
 
-**Hermes agents** (NousResearch) — Hermes 2 Pro, Hermes 3, etc. — are LLMs fine-tuned for structured JSON output, tool use, and agentic reasoning. They are excellent at the *reasoning and planning* part of an agent. Hermes does not provide a memory or orchestration layer — you supply those. You can point a Hermes-based agent at engram's REST API for persistent memory.
-
-**OpenClaw** wins on messaging channel breadth. It ships with 50+ pre-built channel adapters (Discord, Telegram, WhatsApp, Slack, X/Twitter, and more) and a large template library, making it fast to deploy an interactive bot across multiple platforms. Its memory system is shallow (flat key-value files); engram can serve as a deeper memory backend for OpenClaw agents.
-
-**engram** wins when you need all three things together in one self-hosted system: cross-session memory that Claude Code writes based on CLAUDE.md instructions (key decisions, session summaries, explicit "remember this" requests), a temporal knowledge graph that connects facts across months of work, and built-in multi-agent task orchestration. The main trade-off: it requires Docker (Neo4j + Qdrant), has a higher operational footprint than Obsidian or mem0, and graph entity extraction requires an LLM API key.
-
-See [docs/enterprise-ai-engineering.md](docs/enterprise-ai-engineering.md) for the full enterprise team model.
-
----
-
-## Why we built this
-
-Claude Code is the most capable coding assistant we have used. But it has a fundamental limitation: every session starts from zero.
-
-You spend the first 10 minutes of every session re-explaining your project structure, your conventions, what you tried last week, and why you made certain decisions. Context is expensive. Repetition is expensive. And when a session hits the context limit, that knowledge evaporates.
-
-We built engram to close three gaps:
-
-1. **No cross-session memory.** Claude Code does not persist anything between sessions. We needed a memory layer that works with MCP — the protocol Claude Code already speaks.
-
-2. **No cross-agent knowledge sharing.** When you run parallel agents, they each start blank. There is no shared state, no way to say "that agent already figured this out." engram provides a shared namespace each agent can read and write.
-
-3. **No learning from experience.** Every failure is forgotten. Every successful pattern disappears. engram runs nightly reflection jobs that distil your interaction history into heuristics: "when debugging async code in this codebase, always check the event loop first." Those heuristics are injected into future sessions automatically.
-
-engram is not a replacement for Claude Code. It is the long-term memory layer that Claude Code does not ship with.
-
----
-
-## Migrating from Obsidian
-
-Already using Obsidian as your external brain for Claude Code? Migrate your entire vault into engram in one command:
-
-```bash
-python3 tools/migrate_obsidian.py \
-  --vault ~/vaults/my-vault \
-  --namespace obsidian:my-vault \
-  --api-key your-engram-api-key
-```
-
-Imports every note as a memory, maps `[[wikilinks]]` to graph edges, and maps folder structure to sub-namespaces. Run `--dry-run` first to preview. See [docs/obsidian-migration.md](docs/obsidian-migration.md) for full guide.
+See [docs/enterprise-ai-engineering.md](docs/enterprise-ai-engineering.md) for the enterprise team model, and [docs/enterprise-team-setup.md](docs/enterprise-team-setup.md) for step-by-step team deployment.
 
 ---
 
@@ -110,129 +72,96 @@ curl -fsSL https://raw.githubusercontent.com/thameema/engram/main/install.sh | b
 
 The installer will:
 - Check Docker, Python 3.11+, and curl are installed
-- Prompt for your LLM API key (Anthropic recommended) and generate secure credentials
-- Pull Neo4j and Qdrant Docker images and start them
-- Install the Python packages and the `engram` CLI
-- Create `~/.engram/` with your config and data directories
-- Optionally add engram to Claude Code's MCP servers automatically
+- Prompt for your Anthropic API key and generate secure credentials
+- Pull the ArcadeDB Docker image and start it
+- Install the Python packages and register `engram-mcp-stdio` in your PATH
+- Create `~/.engram/` with your config and credentials
+- Optionally wire engram into Claude Code's MCP servers automatically
 
-**Or with pip** (if you already have Neo4j and Qdrant running):
+**Or manually** (if you already have ArcadeDB running):
 
 ```bash
-pip install engram-ai
+pip install engram-core engram-mcp-server
 engram start
 ```
 
+See [docs/quickstart.md](docs/quickstart.md) for the full step-by-step guide.
+
 ---
 
-## Starting engram
+## Starting the stack
+
+### Docker Compose (recommended)
 
 ```bash
-engram start      # Start all services (Neo4j, Qdrant, Python server)
-engram stop       # Stop all services
-engram restart    # Restart all services
-engram status     # Show health and running status
-engram logs       # Tail server logs (engram|neo4j|qdrant|all)
-engram config     # Print engram.yaml
+git clone https://github.com/thameema/engram.git && cd engram
+cp engram.yaml.example engram.yaml
+# Edit engram.yaml — set ENGRAM_API_KEY, ARCADEDB_PASSWORD, ENGRAM_VAULT_KEY, ANTHROPIC_API_KEY
+
+docker compose up -d
+
+# Watch until ready
+docker compose logs -f engram
+# Look for: "MCP SSE server ready on :8765" and "engram API ready on :8766"
 ```
 
-### macOS — run engram automatically at login
-
-Create a launchd plist so engram starts when you log in and restarts if it crashes:
+### Manual (dev mode)
 
 ```bash
-# Generate and install the plist
-cat > ~/Library/LaunchAgents/io.engram.server.plist << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>io.engram.server</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/bash</string>
-    <string>-c</string>
-    <string>~/.local/bin/engram start</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>~/.engram/logs/launchd.log</string>
-  <key>StandardErrorPath</key>
-  <string>~/.engram/logs/launchd.err</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>ENGRAM_CONFIG</key>
-    <string>~/.engram/engram.yaml</string>
-  </dict>
-</dict>
-</plist>
-EOF
+git clone https://github.com/thameema/engram.git && cd engram
 
-# Load it
-launchctl load ~/Library/LaunchAgents/io.engram.server.plist
+# Start ArcadeDB only
+docker compose up -d arcadedb
 
-# Check status
-launchctl list | grep engram
+# Install packages
+pip install -e packages/core -e packages/mcp-server -e packages/api
+
+# Start the server
+ENGRAM_CONFIG=engram.yaml \
+ARCADEDB_PASSWORD=your-password \
+ENGRAM_API_KEY=your-api-key \
+ENGRAM_VAULT_KEY=your-vault-key \
+ANTHROPIC_API_KEY=sk-ant-... \
+engram-server --config engram.yaml
 ```
-
-To stop and unload:
-```bash
-launchctl unload ~/Library/LaunchAgents/io.engram.server.plist
-```
-
-### Linux — run engram as a systemd service
-
-```bash
-# Create the service file
-sudo tee /etc/systemd/system/engram.service > /dev/null << EOF
-[Unit]
-Description=engram — persistent memory server
-After=network.target docker.service
-Requires=docker.service
-
-[Service]
-Type=simple
-User=$USER
-ExecStart=$HOME/.local/bin/engram start
-ExecStop=$HOME/.local/bin/engram stop
-Restart=on-failure
-RestartSec=10
-Environment=ENGRAM_CONFIG=$HOME/.engram/engram.yaml
-StandardOutput=append:$HOME/.engram/logs/engram.log
-StandardError=append:$HOME/.engram/logs/engram.err
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Enable and start
-sudo systemctl daemon-reload
-sudo systemctl enable engram
-sudo systemctl start engram
-
-# Check status
-sudo systemctl status engram
-sudo journalctl -u engram -f
-```
-
-To run as a user service (no sudo), place it in `~/.config/systemd/user/engram.service` and use `systemctl --user` commands instead.
 
 ---
 
 ## Connecting to Claude Code
 
-engram is **not a replacement for Claude Code**. It is an MCP server that augments Claude Code with persistent memory and background agent capabilities. You keep using Claude Code exactly as you do today.
+engram connects to Claude Code as an MCP server. Two transports are available:
 
-### Step 1 — Add to `~/.claude.json`
+### Option A — stdio (recommended for local use)
 
-> **Important:** The config file is `~/.claude.json` (not `~/.claude/settings.json`).
+The stdio transport spawns `engram-mcp-stdio` as a subprocess. No HTTP server needed; Claude Code manages the process lifetime.
 
-Add the `engram` entry under `mcpServers`:
+Add to **`~/.claude.json`**:
+
+```json
+{
+  "mcpServers": {
+    "engram": {
+      "type": "stdio",
+      "command": "/path/to/engram-mcp-stdio",
+      "env": {
+        "ENGRAM_CONFIG": "/path/to/engram.yaml",
+        "ARCADEDB_PASSWORD": "your-arcadedb-password",
+        "ENGRAM_API_KEY": "your-engram-api-key",
+        "ENGRAM_VAULT_KEY": "your-vault-key",
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+Find the binary path after installation: `which engram-mcp-stdio`
+
+### Option B — SSE (HTTP, for remote/team servers)
+
+Requires the `engram-server` process to be running separately (see above).
+
+Add to **`~/.claude.json`**:
 
 ```json
 {
@@ -248,44 +177,31 @@ Add the `engram` entry under `mcpServers`:
 }
 ```
 
+For a team server, replace `localhost:8765` with your shared server URL and issue each team member their own API key.
+
 Fully restart Claude Code (quit and reopen), then run `/mcp` to confirm engram is connected.
 
 ### Step 2 — Add CLAUDE.md instructions
 
-Registering the MCP server makes the tools available — but Claude won't use them automatically without instructions. Add memory routing rules to `~/.claude/CLAUDE.md`:
+Registering the MCP server makes the tools available — but Claude won't use them automatically without instructions. Add to **`~/.claude/CLAUDE.md`**:
 
 ```markdown
 ## Memory System — engram MCP
-ALWAYS use memory_search before answering questions about past decisions or context.
-ALWAYS use memory_write when the user asks you to remember something, or when a key decision is made.
+
+ALWAYS call `memory_search` first when the user asks about past decisions, context, or anything previously remembered.
+ALWAYS call `memory_write` when a key decision is made or the user says "remember this".
 Never use Bash grep or file search to recall knowledge — use memory_search instead.
-MCP results are plain text — read them directly, never spawn agents to parse them.
+MCP results come back as plain text — read them directly, never spawn agents to parse them.
+
+### Namespace guide
+| Content type          | Namespace              |
+|-----------------------|------------------------|
+| Personal notes        | personal:me            |
+| Shared team knowledge | org:myteam             |
+| Project-specific      | project:myproject      |
 ```
 
-See the full guide in [`docs/claude-code-setup.md`](docs/claude-code-setup.md) for namespace configuration and troubleshooting.
-
-Restart Claude Code after saving. Run `/mcp` to confirm engram is connected.
-
-### Two modes of use
-
-**Interactive mode** — you are in the session, engram stores and retrieves:
-```
-You:     "What was the auth approach we decided on for the user service?"
-Claude:  [calls memory_search] "In session from 2026-03-12, you decided to use JWT
-          with 24h expiry and refresh tokens stored in Redis. The key constraint
-          was that mobile clients needed offline support."
-```
-
-**Autonomous mode** — engram runs background agents while you do other things:
-```
-You:     "Spawn an agent to audit all API endpoints for missing rate limits"
-Claude:  [calls spawn_task] "Task spawned. I'll notify you when complete."
-# ... minutes later ...
-Claude:  [calls get_task_result] "Audit complete. Found 7 endpoints missing rate
-          limits. Results saved to memory under 'audit:rate-limits-2026-05'."
-```
-
-Both modes use the same MCP tool interface. No special configuration needed to switch between them.
+See the complete guide in [docs/claude-code-setup.md](docs/claude-code-setup.md).
 
 ---
 
@@ -294,18 +210,23 @@ Both modes use the same MCP tool interface. No special configuration needed to s
 | Tool | What it does |
 |------|-------------|
 | `memory_search` | Semantic + graph search across persistent memory |
-| `memory_write` | Persist information to the knowledge graph |
-| `memory_delete` | Remove a memory entry |
+| `memory_write` | Persist a memory to the knowledge graph |
+| `memory_delete` | Remove a memory entry by ID |
 | `memory_get` | Retrieve a specific memory by ID |
-| `graph_query` | Run Cypher queries on the knowledge graph |
-| `get_entity` | Look up an entity and its relationships |
-| `get_related` | Get entities related to a given node |
-| `add_fact` | Add a factual relationship to the graph |
+| `graph_query` | Run ArcadeDB SQL queries on the knowledge graph |
+| `get_entity` | Look up a named entity and its relationships |
+| `get_related` | Get entities related to a given node (graph traversal) |
+| `add_fact` | Add a subject-predicate-object triple to the graph |
 | `spawn_task` | Fork a background worker agent |
 | `get_task_result` | Retrieve a spawned task's output |
 | `list_tasks` | List tasks for a namespace |
-| `get_heuristics` | View learned rules from past failures |
+| `get_heuristics` | View learned rules distilled from past sessions |
 | `list_agents` | List available agent definitions |
+| `secret_set` | Store an encrypted secret in the vault |
+| `secret_get` | Retrieve a secret by name |
+| `secret_list` | List vault secrets (metadata only, never plaintext) |
+| `secret_rotate` | Re-encrypt a secret with a fresh key |
+| `secret_audit` | View the vault access audit log |
 
 ---
 
@@ -313,41 +234,61 @@ Both modes use the same MCP tool interface. No special configuration needed to s
 
 | Component | Purpose | Technology |
 |-----------|---------|------------|
-| `packages/core` | Memory client — graph + vector | Graphiti, Neo4j, Qdrant |
-| `packages/mcp-server` | MCP tools for Claude Code | MCP Python SDK, FastAPI SSE |
+| `packages/core` | Memory client — graph + HNSW vector | ArcadeDB, sentence-transformers |
+| `packages/mcp-server` | MCP tools for Claude Code | MCP Python SDK, FastAPI (SSE + stdio) |
 | `packages/orchestrator` | Multi-agent task forking | asyncio, Anthropic SDK |
-| `packages/api` | REST API | FastAPI |
+| `packages/api` | REST API and dashboard | FastAPI |
 | `packages/gateway` | Mobile messaging | python-telegram-bot, Evolution API |
 | `packages/learning` | Self-improvement | Reflection, skill extraction, APScheduler |
 
+**Infrastructure:** one Docker container (ArcadeDB) — no Neo4j, no Qdrant, no Graphiti.
+
+ArcadeDB provides the full graph + vector stack: native graph traversal (entities, facts, edges), HNSW vector index for semantic search, and transactional storage — all in a single JVM process.
+
 ---
 
-## Agents
+## Encrypted Vault
 
-engram ships built-in agent definitions in `agents/builtin/`. Add your own in `agents/`:
+engram ships a built-in secrets vault using AES-256-GCM envelope encryption:
 
-```yaml
-# agents/my-agent.yaml
-name: my-agent
-description: Does something specific for my workflow
-model: claude-sonnet-4-6
-system_prompt: |
-  You are a specialist in...
-tools:
-  - memory_search
-  - memory_write
-use_critic: true
+- Each secret is encrypted with a unique data-encryption key (DEK)
+- The DEK is encrypted with the key-encryption key (KEK) derived from `ENGRAM_VAULT_KEY`
+- The vault stores only ciphertext — plaintext never touches ArcadeDB
+- Every access (set, get, list, rotate) is written to an immutable audit log
+- **Auto-redaction**: if a write to `memory_write` contains a credential pattern (API key, JWT, AWS key, etc.), engram automatically redacts it before storage and logs a warning
+
+```bash
+# Store a secret
+curl -X POST http://localhost:8766/api/v1/vault/secrets \
+  -H "Authorization: Bearer your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"key_name": "OPENAI_KEY", "value": "sk-...", "namespace": "personal:me", "note": "OpenAI key for embeddings"}'
+
+# Or via Claude Code: "Store my OpenAI key in the vault as OPENAI_KEY"
 ```
 
+For production, switch the KMS provider to Azure Key Vault or AWS KMS in `engram.yaml`.
+
 ---
 
-## Runtime modes
+## Knowledge Graph
 
-| Mode | How it runs | Use when |
-|------|-------------|----------|
-| `api` | Anthropic API tool-calling loop | Server, headless, default |
-| `claude-code` | Claude Code CLI subprocess | Desktop, file editing tasks |
-| `openrouter` | OpenRouter API | Multi-model, cost optimization |
+When you write a memory, engram automatically:
+1. Embeds the content with `all-MiniLM-L6-v2` (or OpenAI if configured)
+2. Stores the vector in ArcadeDB's HNSW index
+3. Extracts named entities with spaCy (no LLM needed)
+4. Creates Entity vertices and MENTIONS edges in the graph
+5. Returns the memory ID
+
+Searches use hybrid scoring: `0.7 × semantic_similarity + 0.3 × recency`.
+
+You can also query the graph directly:
+
+```
+# In Claude Code
+"Show me all memories that mention the auth service and are related to JWT"
+→ Claude calls graph_query with ArcadeDB SQL
+```
 
 ---
 
@@ -355,8 +296,8 @@ use_critic: true
 
 engram improves over time through five mechanisms:
 
-1. **Episodic memory** — every task stored; planner learns from past approaches
-2. **Feedback loop** — thumbs up/down and correction detection
+1. **Episodic memory** — every task is stored; the planner learns from past approaches
+2. **Feedback loop** — correction detection and thumbs-up/down signals
 3. **Reflection** — nightly LLM job distils failures into heuristics
 4. **Skill extraction** — successful approaches become reusable templates
 5. **Critic-worker loop** — optional critique + revision pass for high-stakes tasks
@@ -367,24 +308,40 @@ engram improves over time through five mechanisms:
 
 If your organisation runs AI-assisted engineering at scale — architects, developers, QA, DevOps all using Claude Code — engram is the shared memory layer that connects them.
 
-The short version: Obsidian vaults make one engineer more productive. engram makes the whole team smarter together, with every decision, failure, and discovery automatically available to every team member's Claude Code session without manual curation.
+With engram, the institutional knowledge accumulated by each role becomes immediately available to every team member's Claude Code session, including new hires on day one.
 
-Read the full guide: [docs/enterprise-ai-engineering.md](docs/enterprise-ai-engineering.md)
+Read the guide: [docs/enterprise-ai-engineering.md](docs/enterprise-ai-engineering.md)
+Step-by-step setup: [docs/enterprise-team-setup.md](docs/enterprise-team-setup.md)
 
 ---
 
 ## Mobile gateway (Telegram & WhatsApp)
 
-The gateway lets you query your memory and run agent tasks from your phone. It is fully two-way: send a message, engram processes it with an LLM, and replies — even for tasks that take minutes.
+The gateway lets you query your memory and run agent tasks from your phone:
 
 ```
-Your phone ──► engram server ──► LLM (API mode)
+Your phone ──► engram server ──► LLM (Anthropic API)
               └──► knowledge graph (shared with Claude Code)
 ```
 
-The gateway shares the same namespaces and knowledge graph as your Claude Code sessions. Memories written from Claude Code are searchable from your phone, and tasks spawned from your phone appear in your task list.
+The gateway shares the same namespaces as your Claude Code sessions. Memories written from Claude Code are searchable from your phone and vice versa.
 
-See [docs/gateway.md](docs/gateway.md) for full setup, mode compatibility, and troubleshooting.
+See [docs/gateway.md](docs/gateway.md) for full setup and troubleshooting.
+
+---
+
+## Migrating from Obsidian
+
+Import your entire Obsidian vault into engram in one command:
+
+```bash
+python3 tools/migrate_obsidian.py \
+  --vault ~/vaults/my-vault \
+  --namespace obsidian:my-vault \
+  --api-key your-engram-api-key
+```
+
+Imports every note as a memory, maps `[[wikilinks]]` to graph edges, and maps folder structure to sub-namespaces. Run `--dry-run` first to preview. See [docs/obsidian-migration.md](docs/obsidian-migration.md).
 
 ---
 
@@ -392,10 +349,24 @@ See [docs/gateway.md](docs/gateway.md) for full setup, mode compatibility, and t
 
 ```bash
 git clone https://github.com/thameema/engram.git && cd engram
-make setup          # copies .env.example + engram.yaml.example, installs all packages in dev mode
-# Edit .env with your API keys
-make dev            # starts Neo4j + Qdrant via Docker Compose
-python -m engram_api.main   # starts the Python server
+make setup          # copies engram.yaml.example, installs all packages in dev mode
+docker compose up -d arcadedb
+ENGRAM_CONFIG=engram.yaml ARCADEDB_PASSWORD=... ENGRAM_API_KEY=... ENGRAM_VAULT_KEY=... \
+  python -m engram_api.main
+```
+
+Run the test suite (requires ArcadeDB running):
+
+```bash
+cd /path/to/engram
+ARCADEDB_PASSWORD=engram-dev-password \
+ENGRAM_API_KEY=engram-local-dev-key \
+ENGRAM_VAULT_KEY=dev-key-for-local-testing-only \
+ENGRAM_CONFIG=engram.yaml \
+.venv/bin/python -m pytest tools/test_engram.py -v
+
+# MCP stdio transport tests
+.venv/bin/python -m pytest tools/test_mcp_stdio.py -v
 ```
 
 See [docs/quickstart.md](docs/quickstart.md) for the full guide.
@@ -404,41 +375,30 @@ See [docs/quickstart.md](docs/quickstart.md) for the full guide.
 
 ## Contributing
 
-engram is MIT-licensed and actively welcomes contributions. The project is early — there is a lot of ground to cover.
+engram is MIT-licensed and actively welcomes contributions.
 
 **Where to start:**
-
 - Browse [open issues](https://github.com/thameema/engram/issues) — anything tagged `good first issue` is a solid entry point
-- Check the [design doc](DESIGN.md) to understand what is planned vs what is built
+- Check [DESIGN.md](DESIGN.md) to understand what is planned vs what is built
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR
 
 **What we need most:**
-
-- **Integrations** — new MCP tools, new gateway adapters (Discord, Slack, SMS)
-- **Vector backends** — Pinecone, Weaviate, pgvector alternatives to Qdrant
-- **Graph backends** — alternative to Neo4j for smaller deployments (SQLite-based graph?)
+- **Integrations** — new MCP tools, gateway adapters (Discord, Slack, SMS)
+- **KMS backends** — improve Azure Key Vault and AWS KMS vault providers
+- **Embedding backends** — Cohere, voyage-ai, local Ollama alternatives
 - **Learning algorithms** — better reflection prompts, smarter heuristic decay
-- **Packaging** — Homebrew formula, Docker Hub image, proper PyPI release
-- **Docs** — tutorials, "recipes" for common patterns, video walkthroughs
-- **Tests** — unit and integration test coverage is thin; Robot Framework suites welcome
+- **Tests** — integration test coverage; Robot Framework suites welcome
+- **Docs** — tutorials, recipes for common patterns, video walkthroughs
 
-**Before contributing:**
-
-1. Open an issue or comment on an existing one so we can coordinate
-2. Fork the repo and create a feature branch from `main`
-3. Run `make dev` to start local services, then `make test` before submitting
-4. PRs should include a brief description of what changed and why
-5. We aim to review within 48 hours
-
-**Code style:** black + ruff for Python, standard async/await patterns throughout. No new dependencies without discussion.
+Before contributing: open an issue, fork and branch from `main`, run tests before submitting. We aim to review within 48 hours.
 
 ---
 
 ## Anthropic terms compliance
 
-- Claude Code CLI/SDK headless use requires `ANTHROPIC_API_KEY` (not OAuth) — engram uses API keys only
-- engram does not resell API access — each user provides and pays for their own key
-- engram augments Claude Code; it is not a competing product or a replacement for Claude Code
+- engram uses Anthropic API keys only (not OAuth)
+- Each user provides and pays for their own Anthropic key
+- engram augments Claude Code; it is not a replacement or competing product
 
 ---
 

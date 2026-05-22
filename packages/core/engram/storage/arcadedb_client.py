@@ -70,10 +70,14 @@ def _parse_dt(value: Any) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value
+        # ArcadeDB may return naive datetimes; treat them as UTC
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str):
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
         except ValueError:
             pass
     return None
@@ -261,7 +265,7 @@ class ArcadeDBClient:
             # Properties — Secret
             "CREATE PROPERTY Secret.id IF NOT EXISTS STRING",
             "CREATE PROPERTY Secret.key_name IF NOT EXISTS STRING",
-            "CREATE PROPERTY Secret.description IF NOT EXISTS STRING",
+            "CREATE PROPERTY Secret.note IF NOT EXISTS STRING",
             "CREATE PROPERTY Secret.secret_type IF NOT EXISTS STRING",
             "CREATE PROPERTY Secret.namespace IF NOT EXISTS STRING",
             "CREATE PROPERTY Secret.value_enc IF NOT EXISTS STRING",
@@ -277,8 +281,8 @@ class ArcadeDBClient:
             "CREATE PROPERTY VaultAuditLog.action IF NOT EXISTS STRING",
             "CREATE PROPERTY VaultAuditLog.accessed_by IF NOT EXISTS STRING",
             "CREATE PROPERTY VaultAuditLog.accessed_at IF NOT EXISTS DATETIME",
-            "CREATE PROPERTY VaultAuditLog.success IF NOT EXISTS BOOLEAN",
-            "CREATE PROPERTY VaultAuditLog.error IF NOT EXISTS STRING",
+            "CREATE PROPERTY VaultAuditLog.ok IF NOT EXISTS BOOLEAN",
+            "CREATE PROPERTY VaultAuditLog.err_msg IF NOT EXISTS STRING",
             # Indices for namespace filtering (common query pattern)
             "CREATE INDEX ON Memory (namespace) IF NOT EXISTS",
             "CREATE INDEX ON Entity (namespace, name) IF NOT EXISTS",
@@ -822,7 +826,7 @@ class ArcadeDBClient:
         """Store an encrypted secret. Never logs the value fields."""
         await self._command(
             "INSERT INTO Secret SET "
-            "id = :id, key_name = :key_name, description = :desc, "
+            "id = :id, key_name = :key_name, note = :note, "
             "secret_type = :stype, namespace = :ns, "
             "value_enc = :value_enc, dek_enc = :dek_enc, "
             "created_at = :created_at, superseded_at = :superseded_at, "
@@ -830,7 +834,7 @@ class ArcadeDBClient:
             {
                 "id": secret.id,
                 "key_name": secret.key_name,
-                "desc": secret.description,
+                "note": secret.note,
                 "stype": secret.secret_type,
                 "ns": secret.namespace,
                 "value_enc": secret.value_enc,
@@ -859,7 +863,7 @@ class ArcadeDBClient:
         ns_filter = namespace if namespace not in ("all", "", "*") else None
         if ns_filter:
             rows = await self._query(
-                "SELECT id, key_name, description, secret_type, namespace, "
+                "SELECT id, key_name, note, secret_type, namespace, "
                 "created_at, superseded_at, created_by, tags "
                 "FROM Secret "
                 "WHERE (namespace = :ns OR namespace LIKE :prefix) "
@@ -869,7 +873,7 @@ class ArcadeDBClient:
             )
         else:
             rows = await self._query(
-                "SELECT id, key_name, description, secret_type, namespace, "
+                "SELECT id, key_name, note, secret_type, namespace, "
                 "created_at, superseded_at, created_by, tags "
                 "FROM Secret WHERE superseded_at IS NULL "
                 "ORDER BY key_name ASC"
@@ -879,7 +883,7 @@ class ArcadeDBClient:
             {
                 "id": r.get("id", ""),
                 "key_name": r.get("key_name", ""),
-                "description": r.get("description", ""),
+                "note": r.get("note", ""),
                 "secret_type": r.get("secret_type", ""),
                 "namespace": r.get("namespace", ""),
                 "created_at": str(r.get("created_at", "")),
@@ -912,18 +916,18 @@ class ArcadeDBClient:
     async def insert_audit_log(self, log: VaultAuditLog) -> str:
         await self._command(
             "INSERT INTO VaultAuditLog SET "
-            "id = :id, secret_name = :name, namespace = :ns, "
-            "action = :action, accessed_by = :by, accessed_at = :at, "
-            "success = :ok, error = :err",
+            "id = :log_id, secret_name = :secret_name, namespace = :namespace, "
+            "action = :action, accessed_by = :accessed_by, accessed_at = :accessed_at, "
+            "ok = :ok, err_msg = :err_msg",
             {
-                "id": log.id,
-                "name": log.secret_name,
-                "ns": log.namespace,
+                "log_id": log.id,
+                "secret_name": log.secret_name,
+                "namespace": log.namespace,
                 "action": log.action,
-                "by": log.accessed_by,
-                "at": _dt_str(log.accessed_at),
-                "ok": log.success,
-                "err": log.error,
+                "accessed_by": log.accessed_by,
+                "accessed_at": _dt_str(log.accessed_at),
+                "ok": log.ok,
+                "err_msg": log.err_msg,
             },
         )
         return log.id
@@ -1000,7 +1004,7 @@ def _row_to_secret(row: dict) -> Secret:
     return Secret(
         id=row.get("id", row.get("@rid", "")),
         key_name=row.get("key_name", ""),
-        description=row.get("description", ""),
+        note=row.get("note", ""),
         secret_type=row.get("secret_type", "api_key"),
         namespace=row.get("namespace", ""),
         value_enc=row.get("value_enc", ""),

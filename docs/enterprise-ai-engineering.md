@@ -44,9 +44,11 @@ This works. It is better than nothing. But it has fundamental limitations at tea
 | **Learning from failures** | No | Nightly reflection distils failures into heuristics injected into future sessions |
 | **Access control** | Folder structure only | Namespace ACL per API key — fine-grained per team/project/role |
 | **Multi-agent** | No | Yes — spawn parallel workers, collect results, share context |
+| **Encrypted vault** | No | Yes — AES-256-GCM, credential auto-redaction, audit log |
 | **Search from phone** | No | Yes — Telegram/WhatsApp gateway |
-| **API access** | No | Yes — REST API + MCP tools |
+| **API access** | No | Yes — REST API + MCP tools (stdio and SSE transports) |
 | **Self-improving** | No | Yes — heuristics, skill templates, episodic replay |
+| **Infrastructure** | None | One Docker container (ArcadeDB — graph + vector, no separate Qdrant or Neo4j) |
 
 ### The fundamental difference in mental model
 
@@ -436,20 +438,20 @@ The namespace is stateless between tool calls — you can mix namespaces freely 
 
 ### Step 1 — Shared engram server
 
-Run a single engram server accessible to the whole team. See [remote-deployment.md](remote-deployment.md) for VPS and Tailscale options.
+Run a single engram server accessible to the whole team. See [remote-deployment.md](remote-deployment.md) for VPS and Tailscale options, and [enterprise-team-setup.md](enterprise-team-setup.md) for the step-by-step deployment guide.
 
-For a small team (under 20 engineers), a single VPS with 4 GB RAM is sufficient. Neo4j and Qdrant are the memory-hungry components; the engram Python server itself is lightweight.
+For a small team (under 20 engineers), a single VPS with 4 GB RAM is sufficient. ArcadeDB is the memory-hungry component (it handles graph, vector, and storage in one JVM process); the engram Python server itself is lightweight.
 
 ### Step 2 — Per-engineer API keys
 
-Give each engineer their own API key with appropriate namespace access. They add it to their own `~/.claude/settings.json`:
+Give each engineer their own API key with appropriate namespace access. They add it to their own `~/.claude.json`:
 
 ```json
 {
   "mcpServers": {
     "engram": {
       "type": "sse",
-      "url": "http://your-engram-server:8765/sse",
+      "url": "https://engram.yourcompany.com/sse",
       "headers": {
         "Authorization": "Bearer <their-personal-key>"
       }
@@ -596,3 +598,11 @@ Obsidian makes one engineer more productive. engram makes the whole team smarter
 The knowledge a senior architect accumulated over three years does not walk out the door when they go on holiday. The lesson a developer learned from a 4am production incident surfaces automatically the next time anyone touches that code. The QA engineer's hard-won understanding of edge cases becomes a real-time guardrail for every developer on the team.
 
 That is the enterprise value of engram: **it turns individual AI-assisted work into collective intelligence.**
+
+---
+
+## Next steps
+
+- **Deploy a shared server**: [enterprise-team-setup.md](enterprise-team-setup.md) — step-by-step: server provisioning, namespace hierarchy, per-engineer API keys, onboarding workflow, backup
+- **Connect individual engineers**: [claude-code-setup.md](claude-code-setup.md) — stdio and SSE transport options, CLAUDE.md template, troubleshooting
+- **Quick start from scratch**: [quickstart.md](quickstart.md)

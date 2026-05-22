@@ -39,7 +39,7 @@ class SecretSetRequest(BaseModel):
     value: str
     namespace: str
     secret_type: str = "api_key"
-    description: str = ""
+    note: str = ""
     tags: list[str] = []
 
 
@@ -67,7 +67,7 @@ async def set_secret(
             value=req.value,
             namespace=req.namespace,
             secret_type=req.secret_type,
-            description=req.description,
+            note=req.note,
             created_by=user_id,
             tags=req.tags,
         )

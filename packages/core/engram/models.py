@@ -184,7 +184,7 @@ class Secret(BaseModel):
 
     id: str = Field(default_factory=_uuid)
     key_name: str                            # human-readable identifier, e.g. "openai_api_key"
-    description: str = ""
+    note: str = ""
     secret_type: str = "api_key"            # "api_key"|"token"|"password"|"certificate"|"webhook"|"other"
     namespace: str
     value_enc: str                           # base64 AES-256-GCM encrypted plaintext
@@ -211,7 +211,7 @@ class VaultAuditLog(BaseModel):
     action: str                              # "get"|"set"|"rotate"|"delete"|"list"
     accessed_by: str                         # user_id from the API key
     accessed_at: datetime = Field(default_factory=_now)
-    success: bool = True
-    error: str | None = None
+    ok: bool = True
+    err_msg: str | None = None
 
     model_config = {"arbitrary_types_allowed": True}

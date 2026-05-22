@@ -24,7 +24,7 @@ async def handle_secret_set(
     value: str,
     namespace: str,
     secret_type: str = "api_key",
-    description: str = "",
+    note: str = "",
     tags: list[str] | None = None,
 ) -> str:
     """Store or replace a secret in the vault."""
@@ -33,7 +33,7 @@ async def handle_secret_set(
         value=value,
         namespace=namespace,
         secret_type=secret_type,
-        description=description,
+        note=note,
         created_by="mcp",
         tags=tags or [],
     )

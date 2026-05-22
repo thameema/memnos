@@ -391,7 +391,7 @@ class EngramClient:
         value: str,
         namespace: str,
         secret_type: str = "api_key",
-        description: str = "",
+        note: str = "",
         created_by: str = "unknown",
         tags: list[str] | None = None,
         _audit_action: str = "set",
@@ -408,7 +408,7 @@ class EngramClient:
 
         secret = Secret(
             key_name=key_name,
-            description=description,
+            note=note,
             secret_type=secret_type,
             namespace=namespace,
             value_enc=value_enc,
@@ -424,7 +424,7 @@ class EngramClient:
                 namespace=namespace,
                 action=_audit_action,
                 accessed_by=created_by,
-                success=True,
+                ok=True,
             )
             await self._arcadedb.insert_audit_log(log)
 
@@ -448,8 +448,8 @@ class EngramClient:
                 namespace=namespace,
                 action="get",
                 accessed_by=accessed_by,
-                success=secret is not None,
-                error=None if secret else "not_found",
+                ok=secret is not None,
+                err_msg=None if secret else "not_found",
             )
             await self._arcadedb.insert_audit_log(log)
 
@@ -473,7 +473,7 @@ class EngramClient:
                 namespace=namespace,
                 action="list",
                 accessed_by=accessed_by,
-                success=True,
+                ok=True,
             )
             await self._arcadedb.insert_audit_log(log)
 

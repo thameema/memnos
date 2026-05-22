@@ -352,7 +352,7 @@ TOOLS: list[Tool] = [
                     "default": "api_key",
                     "description": "Category of secret",
                 },
-                "description": {"type": "string", "default": "", "description": "Human-readable description"},
+                "note": {"type": "string", "default": "", "description": "Human-readable note about this secret"},
                 "tags": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -585,7 +585,7 @@ async def _dispatch(
             value=args["value"],
             namespace=args["namespace"],
             secret_type=str(args.get("secret_type", "api_key")),
-            description=str(args.get("description", "")),
+            note=str(args.get("note", "")),
             tags=args.get("tags"),
         )
 
@@ -626,7 +626,7 @@ async def _dispatch(
 
 def _load_config(config_path: str):
     """
-    Load EngramConfig from a YAML file.
+    Load EngramConfig from a YAML file with ${VAR} env-var expansion.
 
     Falls back to a minimal in-process config object if the core package
     is not importable (e.g. during isolated MCP server testing).
@@ -634,9 +634,7 @@ def _load_config(config_path: str):
     try:
         from engram.config import EngramConfig  # type: ignore
 
-        with open(config_path, "r", encoding="utf-8") as fh:
-            raw = yaml.safe_load(fh)
-        return EngramConfig(**raw)
+        return EngramConfig.from_yaml(config_path)
     except ImportError:
         # Minimal stand-in so the server still starts
         logger.warning("engram.config not importable; using raw YAML dict")
@@ -667,7 +665,8 @@ async def _start_services(config):
     client = EngramClient(config)
     await client.start()
 
-    orchestrator = Orchestrator(client=client, config=config)
+    from engram_orchestrator.task_store import TaskStore  # type: ignore
+    orchestrator = Orchestrator(config=config, engram_client=client, task_store=TaskStore())
     await orchestrator.start()
 
     return client, orchestrator
