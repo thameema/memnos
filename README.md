@@ -312,6 +312,21 @@ engram improves over time through five mechanisms:
 
 ---
 
+## Mobile gateway (Telegram & WhatsApp)
+
+The gateway lets you query your memory and run agent tasks from your phone. It is fully two-way: send a message, engram processes it with an LLM, and replies — even for tasks that take minutes.
+
+```
+Your phone ──► engram server ──► LLM (API mode)
+              └──► knowledge graph (shared with Claude Code)
+```
+
+The gateway shares the same namespaces and knowledge graph as your Claude Code sessions. Memories written from Claude Code are searchable from your phone, and tasks spawned from your phone appear in your task list.
+
+See [docs/gateway.md](docs/gateway.md) for full setup, mode compatibility, and troubleshooting.
+
+---
+
 ## Developer Setup
 
 ```bash

@@ -103,6 +103,10 @@ Use get_task_result with task_id: <id> and wait: true
 
 Send a message to your bot — engram will respond.
 
-## 7. Optional: Remote deployment
+## 7. Optional: Telegram / WhatsApp gateway
+
+See [docs/gateway.md](gateway.md) for full setup instructions, mode compatibility (API vs Claude Code), per-user namespaces, and troubleshooting.
+
+## 8. Optional: Remote deployment
 
 See [docs/remote-deployment.md](remote-deployment.md).
