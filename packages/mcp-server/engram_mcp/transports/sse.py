@@ -214,23 +214,34 @@ async def run_sse_server(
     config_path: str | None = None,
     host: str | None = None,
     port: int | None = None,
+    shared_config=None,
+    shared_client=None,
+    shared_orchestrator=None,
 ) -> None:
     """
     Load config, start services, and serve over SSE/HTTP.
 
     Parameters
     ----------
-    config_path : path to engram YAML config
-    host        : bind host (default: config.server.host or 0.0.0.0)
-    port        : bind port (default: config.server.mcp_port or 8765)
+    config_path          : path to engram YAML config (ignored if shared_config given)
+    host                 : bind host (default: config.server.host or 0.0.0.0)
+    port                 : bind port (default: config.server.mcp_port or 8765)
+    shared_config        : pre-loaded EngramConfig (avoids double-init when called from REST API)
+    shared_client        : pre-started EngramClient  (shared with REST API)
+    shared_orchestrator  : pre-started Orchestrator  (shared with REST API)
     """
     from engram_mcp.server import _load_config, _start_services
 
-    resolved_path = config_path or os.environ.get("ENGRAM_CONFIG", "engram.yaml")
-    logger.info("engram MCP (SSE) — loading config from %s", resolved_path)
-
-    config = _load_config(resolved_path)
-    client, orchestrator = await _start_services(config)
+    if shared_config is not None:
+        config = shared_config
+        client = shared_client
+        orchestrator = shared_orchestrator
+        logger.info("engram MCP (SSE) — using shared config from REST API process")
+    else:
+        resolved_path = config_path or os.environ.get("ENGRAM_CONFIG", "engram.yaml")
+        logger.info("engram MCP (SSE) — loading config from %s", resolved_path)
+        config = _load_config(resolved_path)
+        client, orchestrator = await _start_services(config)
 
     bind_host = host or getattr(getattr(config, "server", None), "host", _DEFAULT_HOST) or _DEFAULT_HOST
     bind_port = port or int(getattr(getattr(config, "server", None), "mcp_port", _DEFAULT_PORT) or _DEFAULT_PORT)

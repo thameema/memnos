@@ -111,6 +111,16 @@ class NamespaceConfig(BaseModel):
         return result
 
 
+class ApiKeyEntry(BaseModel):
+    key: str
+    user_id: str = "default"
+    namespaces: list[str] = Field(default_factory=lambda: ["*"])
+
+
+class AuthConfig(BaseModel):
+    api_keys: list[ApiKeyEntry] = Field(default_factory=list)
+
+
 class EpisodicConfig(BaseModel):
     enabled: bool = True
     retention_days: int = 365
@@ -159,6 +169,7 @@ class LearningConfig(BaseModel):
 
 class EngramConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
     neo4j: Neo4jConfig = Field(default_factory=Neo4jConfig)
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
@@ -204,6 +215,13 @@ class EngramConfig(BaseModel):
 
         if "server" in raw:
             kwargs["server"] = ServerConfig(**raw["server"])
+
+        if "auth" in raw:
+            auth_raw = dict(raw["auth"])
+            keys_raw = auth_raw.pop("api_keys", [])
+            kwargs["auth"] = AuthConfig(
+                api_keys=[ApiKeyEntry(**k) if isinstance(k, dict) else ApiKeyEntry(key=k) for k in keys_raw]
+            )
 
         if "neo4j" in raw:
             kwargs["neo4j"] = Neo4jConfig(**raw["neo4j"])

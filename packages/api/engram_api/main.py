@@ -33,12 +33,21 @@ logger = logging.getLogger(__name__)
 # Background helpers
 # ---------------------------------------------------------------------------
 
-async def _start_mcp_server(config) -> None:
-    """Start the MCP SSE server in the current event loop."""
+async def _start_mcp_server(config, client, orchestrator) -> None:
+    """Start the MCP SSE server in the current event loop, sharing the existing client."""
     try:
         from engram_mcp.transports.sse import run_sse_server  # type: ignore
 
-        await run_sse_server(config)
+        host = getattr(config.server, "host", "0.0.0.0")
+        port = getattr(config.server, "mcp_port", 8765)
+        await run_sse_server(
+            config_path=None,
+            host=host,
+            port=port,
+            shared_config=config,
+            shared_client=client,
+            shared_orchestrator=orchestrator,
+        )
     except ImportError:
         logger.warning("engram_mcp not installed; MCP SSE server not started")
     except Exception as exc:
@@ -175,9 +184,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Background tasks (fire-and-forget; errors are logged, not propagated)
     background_tasks: list[asyncio.Task] = []
 
-    # MCP SSE server
+    # MCP SSE server (shares the same EngramClient + Orchestrator as the REST API)
     background_tasks.append(
-        asyncio.create_task(_start_mcp_server(config), name="mcp-sse-server")
+        asyncio.create_task(
+            _start_mcp_server(config, client, orchestrator), name="mcp-sse-server"
+        )
     )
 
     # Telegram gateway
@@ -222,16 +233,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             except (asyncio.CancelledError, Exception):
                 pass
 
-    # Close orchestrator and client
-    try:
-        await orchestrator.stop()
-    except Exception as exc:
-        logger.warning("Orchestrator stop error: %s", exc)
+    # Close orchestrator and client (methods may not exist on all versions)
+    stop_orchestrator = getattr(orchestrator, "stop", None)
+    if stop_orchestrator is not None:
+        try:
+            await stop_orchestrator()
+        except Exception as exc:
+            logger.warning("Orchestrator stop error: %s", exc)
 
-    try:
-        await client.stop()
-    except Exception as exc:
-        logger.warning("EngramClient stop error: %s", exc)
+    stop_client = getattr(client, "stop", None)
+    if stop_client is not None:
+        try:
+            await stop_client()
+        except Exception as exc:
+            logger.warning("EngramClient stop error: %s", exc)
 
     try:
         await task_store.close()

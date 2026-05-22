@@ -95,8 +95,11 @@ class HybridSearch:
         self, query: str, namespace: str, top_k: int
     ) -> list[SearchResult]:
         logger.debug("Graph search: query=%r namespace=%s top_k=%d", query, namespace, top_k)
-        memories = await self._graphiti.search_episodes(query, namespace=namespace, top_k=top_k)
-        # Graphiti doesn't return scores; assign uniform score of 1.0
+        try:
+            memories = await self._graphiti.search_episodes(query, namespace=namespace, top_k=top_k)
+        except Exception as exc:
+            logger.warning("Graphiti search_episodes failed (no LLM?): %s", exc)
+            return []
         return [
             SearchResult(memory=m, score=1.0, source="graph")
             for m in memories
@@ -118,9 +121,13 @@ class HybridSearch:
         vector_raw = await self._qdrant.search(
             query_vec, namespace=namespace, top_k=fetch_k
         )
-        graph_memories = await self._graphiti.search_episodes(
-            query, namespace=namespace, top_k=fetch_k
-        )
+        try:
+            graph_memories = await self._graphiti.search_episodes(
+                query, namespace=namespace, top_k=fetch_k
+            )
+        except Exception as exc:
+            logger.warning("Graphiti hybrid search_episodes failed (no LLM?): %s", exc)
+            graph_memories = []
 
         # Build a score accumulator keyed by memory_id
         # { memory_id: {"scores": [...], "memory": MemoryEntry, "sources": set} }

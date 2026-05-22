@@ -188,13 +188,17 @@ class EngramClient:
         await self._qdrant.upsert(memory_id=memory.id, vector=vector, payload=payload)
         memory.embedding_id = memory.id
 
-        # Step 4 — add episode to Graphiti
-        graph_node_id = await self._graphiti.add_memory(memory)
-        memory.graph_node_id = graph_node_id
-
-        # Step 5 — update the Qdrant payload with the graph node ID
-        updated_payload = self._build_payload(memory)
-        await self._qdrant.upsert(memory_id=memory.id, vector=vector, payload=updated_payload)
+        # Step 4 — add episode to Graphiti (best-effort; falls back gracefully when no LLM)
+        try:
+            graph_node_id = await self._graphiti.add_memory(memory)
+            memory.graph_node_id = graph_node_id
+            # Step 5 — update Qdrant payload with graph node ID
+            updated_payload = self._build_payload(memory)
+            await self._qdrant.upsert(memory_id=memory.id, vector=vector, payload=updated_payload)
+        except Exception as exc:
+            logger.warning(
+                "Graphiti add_memory failed (no LLM configured?), storing vector-only: %s", exc
+            )
 
         logger.info(
             "Memory stored: id=%s namespace=%s embedding_id=%s graph_node_id=%s",
@@ -361,9 +365,11 @@ class EngramClient:
             namespace=namespace,
             valid_until=valid_until,
         )
-        graph_node_id = await self._graphiti.add_fact(fact)
-        # Store the Graphiti node ID back on the fact via source_memory_id
-        fact.source_memory_id = graph_node_id
+        try:
+            graph_node_id = await self._graphiti.add_fact(fact)
+            fact.source_memory_id = graph_node_id
+        except Exception as exc:
+            logger.warning("Graphiti add_fact failed (no LLM configured?): %s", exc)
         logger.info(
             "Fact stored: id=%s %s %s %s namespace=%s",
             fact.id,

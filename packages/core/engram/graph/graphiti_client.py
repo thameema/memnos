@@ -79,15 +79,55 @@ class EngramGraphitiClient:
         logger.info(
             "Connecting to Neo4j at %s (db=%s)", self._config.uri, self._config.database
         )
-        self._graphiti = Graphiti(
-            self._config.uri,
-            self._config.username,
-            self._config.password,
-        )
+        # Graphiti requires an LLM client. Try Anthropic first, fall back to OpenAI.
+        llm_client = self._make_llm_client()
+        if llm_client is not None:
+            self._graphiti = Graphiti(
+                self._config.uri,
+                self._config.username,
+                self._config.password,
+                llm_client=llm_client,
+            )
+        else:
+            # No LLM key available — initialize without LLM for index-only use.
+            # Episode extraction features will be unavailable.
+            import os
+            os.environ.setdefault("OPENAI_API_KEY", "placeholder-no-llm")
+            self._graphiti = Graphiti(
+                self._config.uri,
+                self._config.username,
+                self._config.password,
+            )
         await self._graphiti.build_indices_and_constraints()
         # Expose the driver for raw Cypher queries
         self._driver = getattr(self._graphiti, "driver", None)
         logger.info("Graphiti initialised and indices built")
+
+    def _make_llm_client(self):
+        """Return a Graphiti-compatible LLM client from available credentials."""
+        # Try Anthropic
+        try:
+            from graphiti_core.llm_client.anthropic_client import AnthropicClient  # type: ignore
+            from graphiti_core.llm_client.config import LLMConfig  # type: ignore
+            api_key = getattr(self._config, "anthropic_api_key", None)
+            if not api_key:
+                import os
+                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            if api_key:
+                return AnthropicClient(LLMConfig(api_key=api_key))
+        except (ImportError, Exception):
+            pass
+        # Try OpenAI
+        try:
+            from graphiti_core.llm_client.openai_client import OpenAIClient  # type: ignore
+            from graphiti_core.llm_client.config import LLMConfig  # type: ignore
+            import os
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+            if api_key:
+                return OpenAIClient(LLMConfig(api_key=api_key))
+        except (ImportError, Exception):
+            pass
+        return None
 
     async def close(self) -> None:
         """Close Graphiti and Neo4j connections."""
