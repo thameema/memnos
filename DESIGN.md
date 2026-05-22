@@ -1,8 +1,10 @@
 # engram — Comprehensive Design Document
 
-**Version:** 0.1  
+**Version:** 0.2  
 **Status:** Draft  
-**Date:** 2026-05-21
+**Date:** 2026-05-22
+
+> **v0.2 Changes:** Replaced Neo4j + Qdrant + Graphiti with ArcadeDB (single Apache 2.0 multi-model database). Removed LLM-dependency for entity extraction (replaced with spaCy). Added UTC timestamps as first-class temporal properties. Added binary asset reference model. Clarified namespace/ACL model. Introduced AI Governance positioning. Simplified to single Docker deployment.
 
 ---
 
@@ -16,34 +18,41 @@
 6. [MCP Tool Definitions](#6-mcp-tool-definitions)
 7. [REST API Specification](#7-rest-api-specification)
 8. [Runtime Modes](#8-runtime-modes)
-9. [Namespace Model](#9-namespace-model)
+9. [Namespace and ACL Model](#9-namespace-and-acl-model)
 10. [Orchestrator Design](#10-orchestrator-design)
 11. [Gateway Design (Telegram / WhatsApp)](#11-gateway-design)
 12. [Configuration Reference](#12-configuration-reference)
 13. [Repository Structure](#13-repository-structure)
-14. [Docker Compose — Local Deployment](#14-docker-compose--local-deployment)
+14. [Docker Deployment](#14-docker-deployment)
 15. [Remote Deployment](#15-remote-deployment)
 16. [Security and Terms Compliance](#16-security-and-terms-compliance)
 17. [Developer Quickstart](#17-developer-quickstart)
 18. [Implementation Roadmap](#18-implementation-roadmap)
+19. [Agents and Skills](#19-agents-and-skills)
+20. [Self-Learning Architecture](#20-self-learning-architecture)
+21. [AI Governance Positioning](#21-ai-governance-positioning)
+22. [Binary Asset Handling](#22-binary-asset-handling)
 
 ---
 
 ## 1. Executive Summary
 
-**engram** is an open-source, portable persistent memory and multi-agent orchestration layer for LLM-based developer workflows. It solves the fundamental limitation of LLM context windows: once a conversation ends, all learned context is lost.
+**engram** is an open-source, portable persistent memory and AI governance layer for LLM-based developer and engineering workflows. It solves two fundamental problems: (1) LLM context windows end, losing all learned context; (2) AI agents in engineering teams lack access to organizational decisions, architecture patterns, and domain knowledge — causing hallucinated or off-specification output.
 
 engram provides:
 
-- **Persistent knowledge graph** (temporal, entity-relational) backed by Neo4j via Graphiti
-- **Vector semantic search** backed by Qdrant
+- **Persistent knowledge graph** backed by **ArcadeDB** — a single Apache 2.0 multi-model database providing graph traversal, vector similarity search, and document storage in one unified query layer
+- **Temporal knowledge model** — all facts carry UTC `created_at` and nullable `superseded_at` timestamps; search combines semantic relevance with recency weighting; older superseded facts remain accessible as history
 - **MCP server** that plugs into Claude Code (and any MCP-compatible client) over local stdio or remote SSE
-- **Multi-agent orchestrator** that decomposes tasks, forks worker sessions, collects results, and teardown
+- **Multi-agent orchestrator** that decomposes tasks, forks worker sessions, collects results, and tears down
 - **Mobile gateway** (Telegram, WhatsApp) so the user can interact from any device
 - **Multi-runtime support**: Claude Code CLI (desktop), Anthropic API (headless server), OpenRouter (multi-model)
-- **Namespace isolation**: personal, org, and project scopes — shareable across teams
+- **Namespace isolation with ACL**: hierarchical `org:team:project` scopes with key-based access control; a single API key can span multiple namespaces
+- **Binary asset references**: diagrams, PDFs, and other binaries are indexed by reference (path + SHA-256 hash + extracted content) — never stored in the graph
 
-**Key design principle:** engram is infrastructure. It never holds API keys on behalf of users. Each user/org supplies their own credentials. engram stores memory and orchestrates — it does not serve as an AI proxy or reseller.
+**Key design principle:** engram is infrastructure. It never holds LLM API keys on behalf of users. Each user/org supplies their own credentials. engram stores memory and orchestrates — it does not serve as an AI proxy or reseller.
+
+**AI Governance:** engram can be deployed as the organizational knowledge layer that governs AI agent behavior. Agents query engram before generating code or decisions, ensuring they operate within the bounds of the organization's actual technical decisions, architecture standards, and compliance rules. See [Section 21](#21-ai-governance-positioning).
 
 ---
 
@@ -54,13 +63,16 @@ engram provides:
 | # | Goal |
 |---|------|
 | G1 | Give Claude Code (and any MCP client) persistent memory across sessions |
-| G2 | Support team/org knowledge sharing via shared namespaces |
+| G2 | Support team/org knowledge sharing via shared namespaces with ACL |
 | G3 | Enable multi-agent task forking and collection from a single entry-point session |
-| G4 | Run locally (Docker Compose on laptop) and remotely (VPS, cloud VM) |
+| G4 | Run locally (single Docker on laptop) and remotely (VPS, cloud VM) |
 | G5 | Support headless/server-side autonomous agents via Anthropic API or OpenRouter |
 | G6 | Mobile-first interaction via Telegram (primary) and WhatsApp (optional) |
-| G7 | Be fully open-source, portable, and self-hostable with no vendor lock-in |
+| G7 | Be fully open-source (Apache 2.0), portable, and self-hostable with no vendor lock-in |
 | G8 | Comply with Anthropic's API terms of service |
+| G9 | Provide AI governance: agents must query organizational knowledge before acting |
+| G10 | Temporal knowledge: every fact is timestamped (UTC); superseded facts are preserved as history |
+| G11 | No external API dependency for entity extraction — graph edges built without LLM calls |
 
 ### Non-Goals
 
@@ -105,12 +117,18 @@ engram provides:
 │                             │                                           │
 │  ┌──────────────────────────▼───────────────────────────────────────┐   │
 │  │  Memory Core                                                     │   │
-│  │  ┌──────────────────────┐  ┌──────────────────────────────────┐  │   │
-│  │  │  Graphiti / Neo4j    │  │  Qdrant (vector store)           │  │   │
-│  │  │  Temporal KG         │  │  Semantic search                 │  │   │
-│  │  │  Entities, Relations │  │  Embeddings (OpenAI / local)     │  │   │
-│  │  │  Facts with TTL      │  │                                  │  │   │
-│  │  └──────────────────────┘  └──────────────────────────────────┘  │   │
+│  │  ┌──────────────────────────────────────────────────────────┐   │   │
+│  │  │  ArcadeDB  (Apache 2.0 — graph + vector + document)      │   │   │
+│  │  │  · Property graph: entities, relations, facts            │   │   │
+│  │  │  · Vector index: HNSW on all node content                │   │   │
+│  │  │  · Temporal: created_at + superseded_at on every node    │   │   │
+│  │  │  · Cypher + SQL + GraphQL queries                        │   │   │
+│  │  │  · One DB, one query, no application-side join           │   │   │
+│  │  └──────────────────────────────────────────────────────────┘   │   │
+│  │  ┌──────────────────────────────────────────────────────────┐   │   │
+│  │  │  Entity Extractor (spaCy — no LLM required)              │   │   │
+│  │  │  Extracts named entities on every write → MENTIONS edges │   │   │
+│  │  └──────────────────────────────────────────────────────────┘   │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                         │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
@@ -121,14 +139,25 @@ engram provides:
 │  │  └──────────────────┘  └──────────────────────────────────────┘  │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────┘
-            │                         │
-            ▼                         ▼
-    ┌───────────────┐         ┌────────────────┐
-    │  Neo4j        │         │  Qdrant        │
-    │  (graph DB)   │         │  (vector DB)   │
-    │  port 7687    │         │  port 6333     │
-    └───────────────┘         └────────────────┘
+                              │
+                              ▼
+                   ┌────────────────────┐
+                   │  ArcadeDB          │
+                   │  (multi-model)     │
+                   │  port 2480 (HTTP)  │
+                   │  port 2424 (bin)   │
+                   └────────────────────┘
 ```
+
+**Storage model comparison (v0.1 vs v0.2):**
+
+| | v0.1 | v0.2 |
+|---|---|---|
+| Graph DB | Neo4j (BSL license, JVM, ~1.5GB RAM) | ArcadeDB (Apache 2.0, ~256MB RAM) |
+| Vector DB | Qdrant (separate service) | ArcadeDB built-in HNSW |
+| Entity extraction | Graphiti (LLM call per write, OpenAI required) | spaCy (local NLP, no API key needed) |
+| Hybrid query | Two-system join in application code | Single ArcadeDB query |
+| Docker services | 3 (neo4j + qdrant + engram) | 2 (arcadedb + engram) |
 
 ---
 
@@ -136,14 +165,15 @@ engram provides:
 
 ### 4.1 Memory Core (`packages/core`)
 
-The memory core is a Python library. It wraps Graphiti (temporal knowledge graph on Neo4j) and Qdrant (vector store) behind a single unified API.
+The memory core is a Python library. It wraps ArcadeDB behind a single unified API, providing graph traversal, vector similarity search, and document storage through one query interface.
 
 **Responsibilities:**
-- CRUD for entities, relations, and facts in Neo4j via Graphiti
-- Embed text and upsert/query vectors in Qdrant
-- Namespace routing — all reads/writes are scoped to a namespace
-- TTL management — facts expire; stale memories are automatically pruned
-- Hybrid search — combines graph traversal result and vector similarity result
+- CRUD for memories, entities, relations, facts, and asset references in ArcadeDB
+- Embed text using local embeddings (nomic-embed-text or sentence-transformers — no external API required)
+- Namespace + ACL routing — all reads/writes are scoped to a namespace, enforced by API key
+- Entity extraction via spaCy — extracts named entities from every write to build MENTIONS edges without an LLM call
+- Temporal management — `created_at` (UTC, immutable) and `superseded_at` (nullable) on all nodes; search applies recency weighting
+- Hybrid search — single ArcadeDB query combining vector similarity + graph hops + namespace filter + recency weight
 
 **Key classes:**
 
@@ -153,42 +183,98 @@ class EngramClient:
 
     def __init__(self, config: EngramConfig): ...
 
-    async def add(self, content: str, namespace: str, metadata: dict = None) -> MemoryEntry
-    async def search(self, query: str, namespace: str, top_k: int = 10) -> list[MemoryEntry]
+    async def add(self, content: str, namespace: str,
+                  tags: list[str] = None, metadata: dict = None) -> MemoryEntry
+    async def search(self, query: str, namespace: str,
+                     top_k: int = 10, include_superseded: bool = False) -> list[SearchResult]
     async def delete(self, memory_id: str, namespace: str) -> bool
+    async def supersede(self, memory_id: str, namespace: str) -> bool
     async def get_entity(self, name: str, namespace: str) -> Entity | None
     async def get_related(self, entity_name: str, namespace: str, depth: int = 2) -> Graph
     async def add_fact(self, subject: str, predicate: str, object: str,
-                       namespace: str, valid_until: datetime = None) -> Fact
+                       namespace: str) -> Fact
+    async def add_asset(self, path: str, namespace: str,
+                        related_memory_id: str = None) -> AssetReference
     async def query_graph(self, cypher: str, namespace: str) -> list[dict]
 ```
 
-**Storage layout in Neo4j:**
+**ArcadeDB schema:**
 
 ```
-(:MemoryEntry {id, content, namespace, created_at, embedding_id})
-(:Entity {id, name, type, namespace})
-(:Fact {id, subject, predicate, object, namespace, valid_from, valid_until})
--[:RELATED_TO {type, weight, namespace}]->
--[:MENTIONS {namespace}]->
+// Memory node — every piece of stored knowledge
+Memory {
+  @rid:        string          // ArcadeDB record ID
+  id:          string          // uuid4
+  content:     string          // raw text (also vector-indexed)
+  namespace:   string          // hierarchical: org:acme:engineering
+  created_at:  datetime        // UTC, immutable — set once on write
+  superseded_at: datetime|null // UTC — set when a newer version replaces this
+  tags:        list[string]
+  source:      string          // "agent" | "user" | "file" | "api"
+  metadata:    map
+}
+
+// Entity node — named concept extracted by spaCy
+Entity {
+  id:          string
+  name:        string          // normalized lowercase
+  entity_type: string          // "PERSON" | "ORG" | "TECH" | "DECISION" | "CONCEPT"
+  namespace:   string
+  created_at:  datetime        // UTC
+  superseded_at: datetime|null
+}
+
+// Fact node — explicit subject-predicate-object assertion
+Fact {
+  id:          string
+  subject:     string          // entity name
+  predicate:   string          // e.g. "uses", "decided", "supersedes"
+  object:      string          // entity name or literal
+  namespace:   string
+  created_at:  datetime        // UTC — when this fact became true
+  superseded_at: datetime|null // UTC — when this fact was replaced
+}
+
+// Asset reference — pointer to binary file (never stores the binary)
+Asset {
+  id:          string
+  path:        string          // file system path or git URL
+  format:      string          // "drawio" | "pdf" | "png" | "docx" | ...
+  sha256:      string          // content hash — change detection
+  extracted_content: string    // text extracted from the binary (vector-indexed)
+  namespace:   string
+  created_at:  datetime        // UTC
+  superseded_at: datetime|null // UTC — set when file hash changes and new Asset created
+  created_by:  string          // user/agent that registered this asset
+}
+
+// Edges
+Memory   -[MENTIONS]->    Entity     // spaCy extracted this entity from this memory
+Fact     -[SUBJECT_OF]->  Entity
+Fact     -[OBJECT_OF]->   Entity
+Memory   -[DOCUMENTED_IN]-> Asset    // this memory is illustrated by this asset
+Entity   -[RELATED_TO]->  Entity     // semantic relationship between entities
+Memory   -[SUPERSEDED_BY]-> Memory  // explicit lineage when a decision is updated
 ```
 
-**Storage layout in Qdrant:**
+**Hybrid search query (single ArcadeDB SQL):**
 
+```sql
+SELECT
+  @rid, content, namespace, created_at, superseded_at, tags,
+  vectorSimilarity(content_embedding, :query_embedding) AS vec_score,
+  (1.0 / (1.0 + dateDiff('day', created_at, sysdate()) / 90.0)) AS recency_score
+FROM Memory
+WHERE
+  namespace LIKE :ns_prefix + '%'
+  AND (superseded_at IS NULL OR :include_superseded = true)
+  AND vectorSimilarity(content_embedding, :query_embedding) > 0.70
+ORDER BY
+  (0.7 * vec_score + 0.3 * recency_score) DESC
+LIMIT :top_k
 ```
-Collection: engram_memories
-  Point: {
-    id: uuid,
-    vector: float[1536],    # OpenAI text-embedding-3-small or local model
-    payload: {
-      namespace: str,
-      content: str,
-      memory_id: str,
-      created_at: iso8601,
-      tags: list[str]
-    }
-  }
-```
+
+Results where `superseded_at IS NOT NULL` are returned tagged `[HISTORICAL]`; results where it is null are tagged `[CURRENT]`.
 
 ---
 
@@ -362,6 +448,40 @@ Full spec in Section 7.
 
 ## 5. Data Models
 
+### 5.0 Temporal Properties — First-Class Design
+
+Every node in engram carries two UTC timestamps. This is not optional — it is the foundation of the temporal knowledge model:
+
+```
+created_at:    datetime (UTC, immutable)  — when this fact was recorded
+superseded_at: datetime (UTC) | None      — None = currently valid
+                                            set = replaced by a newer fact
+```
+
+**Why UTC everywhere:** Team members in different timezones (India, US, Philippines, UK) all write to the same knowledge graph. UTC as the single canonical timezone means all temporal comparisons are unambiguous regardless of where the writer is located.
+
+**Supersession pattern:** When a decision changes, the old memory is NOT deleted. Instead:
+1. Write the new memory (`created_at = now(), superseded_at = null`)
+2. Set `superseded_at = now()` on the old memory
+3. Optionally create a `SUPERSEDED_BY` edge from old → new
+
+This preserves full history while making "what do we currently believe?" a simple `WHERE superseded_at IS NULL` filter.
+
+**Recency weighting in search:**
+```
+recency_score = 1 / (1 + days_since_created / 90)
+
+A memory from today:      recency_score = 1.00
+A memory from 90 days ago: recency_score = 0.50
+A memory from 1 year ago:  recency_score = 0.22
+
+combined_score = (0.7 × semantic_similarity) + (0.3 × recency_score)
+```
+
+Search results surface both `[CURRENT]` and `[HISTORICAL]` results to the user, ranked by combined score.
+
+---
+
 ### 5.1 MemoryEntry
 
 ```python
@@ -369,14 +489,13 @@ Full spec in Section 7.
 class MemoryEntry:
     id: str                     # uuid4
     content: str                # raw text
-    namespace: str              # personal:user / org:name / project:name
-    created_at: datetime
-    updated_at: datetime
+    namespace: str              # org:acme:engineering / personal:alice / project:platform
+    created_at: datetime        # UTC, immutable — set once on write
+    superseded_at: datetime | None  # UTC — None = currently valid
     tags: list[str]
-    source: str                 # "user", "agent", "file", "api"
-    embedding_id: str | None    # Qdrant point ID
-    graph_node_id: str | None   # Neo4j node ID
+    source: str                 # "user" | "agent" | "file" | "api"
     metadata: dict              # arbitrary key-value
+    is_current: bool            # computed: superseded_at is None
 ```
 
 ### 5.2 Entity
@@ -385,12 +504,12 @@ class MemoryEntry:
 @dataclass
 class Entity:
     id: str
-    name: str
-    entity_type: str            # "person", "project", "concept", "decision", "fact"
+    name: str                   # normalized lowercase
+    entity_type: str            # "PERSON" | "ORG" | "TECH" | "DECISION" | "CONCEPT"
     namespace: str
     attributes: dict
-    created_at: datetime
-    valid_until: datetime | None  # None = permanent
+    created_at: datetime        # UTC
+    superseded_at: datetime | None
 ```
 
 ### 5.3 Relation
@@ -401,11 +520,11 @@ class Relation:
     id: str
     source_entity_id: str
     target_entity_id: str
-    relation_type: str          # "works_on", "decided", "uses", "depends_on", etc.
+    relation_type: str          # "USES" | "DECIDED" | "DEPENDS_ON" | "SUPERSEDES" | etc.
     namespace: str
     weight: float               # 0.0-1.0 confidence
-    created_at: datetime
-    valid_until: datetime | None
+    created_at: datetime        # UTC
+    superseded_at: datetime | None
     attributes: dict
 ```
 
@@ -416,13 +535,32 @@ class Relation:
 class Fact:
     id: str
     subject: str                # entity name
-    predicate: str              # verb phrase
-    object: str                 # entity name or literal
+    predicate: str              # verb phrase: "uses", "decided", "requires"
+    object: str                 # entity name or literal value
     namespace: str
-    valid_from: datetime
-    valid_until: datetime | None
+    created_at: datetime        # UTC — when this fact became true
+    superseded_at: datetime | None  # UTC — when this fact was replaced
     source_memory_id: str | None
 ```
+
+### 5.5 AssetReference
+
+```python
+@dataclass
+class AssetReference:
+    id: str
+    path: str                   # local path or git URL to the binary file
+    format: str                 # "drawio" | "pdf" | "png" | "docx" | "svg" | ...
+    sha256: str                 # SHA-256 of file bytes — change detection
+    extracted_content: str      # text extracted from binary (spaCy + format parser)
+    namespace: str
+    created_at: datetime        # UTC — when this version was registered
+    superseded_at: datetime | None  # UTC — set when file hash changes (new Asset created)
+    created_by: str             # user or agent that registered this asset
+    related_memory_ids: list[str]  # memories this asset documents
+```
+
+See [Section 22](#22-binary-asset-handling) for the full binary asset model.
 
 ### 5.5 Task
 
@@ -836,52 +974,133 @@ runtime:
 
 ---
 
-## 9. Namespace Model
+## 9. Namespace and ACL Model
 
-All data in engram is scoped to a **namespace**. Namespaces isolate memory between users, teams, and projects. A session always reads and writes within one or more namespaces.
+### 9.1 What a Namespace Is
 
-### 9.1 Namespace Types
+A namespace is an **access boundary and search scope combined into one string**. It answers two questions simultaneously:
 
-| Type | Format | Scope | Example |
-|------|--------|-------|---------|
-| Personal | `personal:{user_id}` | One user only. Private. | `personal:thameema` |
-| Org | `org:{org_name}` | All members of the org. Shared. | `org:acme` |
-| Project | `project:{project_name}` | Opt-in project scope. Shared subset. | `project:platform-infra` |
+- **Who is allowed to see this memory?** (access boundary)
+- **When I search, which pool of memories do I search in?** (search scope)
 
-### 9.2 Namespace Inheritance
+In a pure knowledge graph, everything is connected and visible. In enterprise reality, you need isolation: a PM's pricing strategy must not be visible to an engineer's agent; Customer A's data must be invisible when searching for Customer B. Namespaces enforce this without requiring separate database instances.
 
-When searching, you can specify a list of namespaces. Results are merged and re-ranked.
+### 9.2 Namespace Hierarchy (Left to Right)
+
+The colon is a hierarchy separator. The hierarchy reads left to right — broadest scope on the left, most specific on the right:
+
+```
+org : acme : engineering : backend
+ │      │         │           │
+ │      │         │           └── sub-team (most specific)
+ │      │         └────────────── department
+ │      └──────────────────────── organization name
+ └─────────────────────────────── scope type (broadest)
+```
+
+**Prefix search inheritance:** Searching `org:acme:engineering` returns results from ALL child namespaces — `org:acme:engineering:backend`, `org:acme:engineering:frontend`, `org:acme:engineering:infra` — without naming each one explicitly. This is how an AI agent can say "give me all engineering knowledge" in one query.
+
+### 9.3 Namespace Types
+
+| Type | Format | Who sees it | Purpose |
+|------|--------|-------------|---------|
+| **Personal/local** | `personal:{username}` | One user only, never shared | Developer's local working notes, draft ideas, personal context |
+| **Org-wide** | `org:{orgname}` | All members with org-level key | Shared company knowledge: values, high-level standards |
+| **Team** | `org:{orgname}:{team}` | Members of that team | Engineering patterns, PM specs, QA standards |
+| **Customer** | `org:{orgname}:customers:{name}` | Restricted keys only | Customer context, pricing, account notes |
+| **Project** | `project:{projectname}` | Project team members | Sprint context, decisions for one specific project |
+
+### 9.4 API Key → Namespace Mapping (The ACL Model)
+
+A **single API key can cover multiple namespaces**. This is the enterprise governance primitive: you issue one key per developer and specify exactly which namespaces they can read and write.
+
+```yaml
+# engram.yaml — auth section
+auth:
+  api_keys:
+    # Engineer Alice — can read all engineering, write only to her team + personal
+    - key: "eng-alice-key-xxxx"
+      user_id: "alice"
+      namespaces:
+        - namespace: "personal:alice"
+          access: "read_write"
+        - namespace: "org:acme:engineering:backend"
+          access: "read_write"
+        - namespace: "org:acme:engineering"
+          access: "read_only"          # read ALL engineering, write only to backend
+        - namespace: "org:acme:product"
+          access: "read_only"          # can read PM specs, cannot write
+        # no entry for org:acme:customers:* → no access at all
+
+    # Product Manager Bob — can write to product, read engineering
+    - key: "pm-bob-key-yyyy"
+      user_id: "bob"
+      namespaces:
+        - namespace: "personal:bob"
+          access: "read_write"
+        - namespace: "org:acme:product"
+          access: "read_write"
+        - namespace: "org:acme:engineering"
+          access: "read_only"
+
+    # Admin key — full access
+    - key: "admin-key-zzzz"
+      user_id: "admin"
+      namespaces:
+        - namespace: "org:acme"
+          access: "read_write"         # wildcard: covers all org:acme:* children
+```
+
+Access resolution is prefix-based: a key with `org:acme` `read_write` automatically covers `org:acme:engineering`, `org:acme:product`, `org:acme:customers:*`, etc.
+
+### 9.5 Two Deployment Modes
+
+**Personal / Local mode** — one user, no team:
+```
+personal:alice     ← private notes, working context
+                   ← never shared, never leaves the local machine
+```
+No auth needed beyond a local API key. ArcadeDB runs in local Docker. This is the default for individual developers.
+
+**Enterprise / Team mode** — multi-user, shared knowledge:
+```
+org:acme                        ← company-wide shared knowledge
+org:acme:engineering            ← all engineering teams
+org:acme:engineering:backend    ← backend team
+org:acme:product                ← product management
+org:acme:customers:acmehealth      ← customer-specific (restricted)
+personal:alice                  ← Alice's private notes (not in shared pool)
+```
+Each team member gets their own API key scoped to their allowed namespaces. Personal namespaces are local to each user and never merge with the shared pool.
+
+### 9.6 Cross-Namespace Search
+
+An agent with the right key can search across multiple namespaces in one call:
 
 ```python
+# An engineering agent searching relevant context for a task
 results = await client.search(
-    query="azure service principal design",
-    namespace=["personal:thameema", "org:acme", "project:platform-infra"]
+    query="how do we handle FHIR member-match",
+    namespace="org:acme:engineering",    # searches all engineering/* children
+    include_superseded=False             # only current facts
+)
+
+# A developer searching their own memory + shared engineering knowledge
+results = await client.search(
+    query="auth service JWT decision",
+    namespaces=["personal:alice", "org:acme:engineering"]
 )
 ```
 
-### 9.3 Namespace Access Control
+### 9.7 Namespace Governance in the UI
 
-```yaml
-namespaces:
-  personal:thameema:
-    owners: [thameema]
-    readers: []
-    writers: []
-  org:acme:
-    owners: [thameema, admin]
-    readers: ["*"]          # all authenticated users
-    writers: [thameema, eng-team]
-  project:platform-infra:
-    owners: [thameema]
-    readers: [eng-team]
-    writers: [thameema, sanket]
-```
+The dashboard shows namespace hierarchy visually, with:
+- **Key assignments**: which keys cover which namespaces
+- **Content counts**: memories per namespace
+- **Recent activity**: last write per namespace (helps detect stale namespaces)
+- **Access matrix**: which user/key can read/write which namespace
 
-Access control is enforced at the engram API key level. Each API key is associated with a user ID, and the user ID is checked against the namespace ACL on every operation.
-
-### 9.4 Namespace Storage
-
-Each namespace is a logical partition within the shared Neo4j and Qdrant instances. Data is not physically separated — the `namespace` property is indexed and used in all queries. For true isolation (enterprise), each namespace can be mapped to a separate Neo4j database.
+This gives the operator transparency into who knows what — a core requirement for AI governance.
 
 ---
 
@@ -1231,48 +1450,38 @@ engram/
 
 ---
 
-## 14. Docker Compose — Local Deployment
+## 14. Docker Deployment
 
-### `docker-compose.yml`
+engram ships as a **two-service Docker Compose stack**: ArcadeDB + engram. This replaces the previous three-service setup (Neo4j + Qdrant + engram).
+
+For developers who want the absolute minimum, a **single-container option** bundles both services using supervisord.
+
+### Option A — Docker Compose (recommended)
+
+Two containers, one command:
 
 ```yaml
+# docker-compose.yml
 version: "3.9"
 
 services:
 
-  neo4j:
-    image: neo4j:5.20
-    container_name: engram-neo4j
+  arcadedb:
+    image: arcadedata/arcadedb:latest
+    container_name: engram-arcadedb
     ports:
-      - "7474:7474"   # browser
-      - "7687:7687"   # bolt
+      - "2480:2480"   # HTTP API + dashboard
+      - "2424:2424"   # binary protocol
     environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
-      NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_dbms_memory_heap_initial__size: 512m
-      NEO4J_dbms_memory_heap_max__size: 1G
+      ARCADEDB_SERVER_ROOT_PASSWORD: ${ARCADEDB_PASSWORD}
+      ARCADEDB_SERVER_PLUGINS: "GremlinServer,Cypher,GraphQL"
     volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
+      - arcadedb_data:/home/arcadedb/databases
     healthcheck:
-      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "${NEO4J_PASSWORD}", "RETURN 1"]
+      test: ["CMD", "curl", "-f", "http://localhost:2480/api/v1/ready"]
       interval: 10s
       timeout: 5s
       retries: 10
-
-  qdrant:
-    image: qdrant/qdrant:v1.9.0
-    container_name: engram-qdrant
-    ports:
-      - "6333:6333"   # REST
-      - "6334:6334"   # gRPC
-    volumes:
-      - qdrant_data:/qdrant/storage
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   engram:
     build:
@@ -1281,21 +1490,21 @@ services:
     container_name: engram
     ports:
       - "8765:8765"   # MCP SSE
-      - "8766:8766"   # REST API
+      - "8766:8766"   # REST API + dashboard
     environment:
-      NEO4J_URI: bolt://neo4j:7687
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
-      QDRANT_HOST: qdrant
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ARCADEDB_HOST: arcadedb
+      ARCADEDB_PORT: 2480
+      ARCADEDB_PASSWORD: ${ARCADEDB_PASSWORD}
       ENGRAM_API_KEY: ${ENGRAM_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}   # optional — only for orchestrator
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY:-}
     volumes:
       - ./engram.yaml:/app/engram.yaml:ro
+      - engram_assets:/app/assets              # asset sync staging area
     depends_on:
-      neo4j:    { condition: service_healthy }
-      qdrant:   { condition: service_healthy }
+      arcadedb: { condition: service_healthy }
     restart: unless-stopped
 
   evolution-api:                       # optional WhatsApp bridge
@@ -1313,28 +1522,82 @@ services:
     restart: unless-stopped
 
 volumes:
-  neo4j_data:
-  neo4j_logs:
-  qdrant_data:
+  arcadedb_data:
+  engram_assets:
   evolution_data:
+```
+
+### Option B — Single Container
+
+For developers who want zero Docker networking overhead or a portable single binary:
+
+```dockerfile
+# docker/Dockerfile.single
+FROM ubuntu:24.04
+
+# Install ArcadeDB
+RUN apt-get install -y openjdk-21-jre-headless curl
+RUN curl -fsSL https://github.com/ArcadeData/arcadedb/releases/latest/download/arcadedb-latest.tar.gz \
+    | tar -xz -C /opt/arcadedb
+
+# Install Python + engram
+RUN apt-get install -y python3.12 python3-pip
+COPY . /app
+RUN pip install -e /app/packages/core /app/packages/mcp-server /app/packages/api
+
+# supervisord to run both processes
+RUN apt-get install -y supervisor
+COPY docker/supervisord.conf /etc/supervisor/conf.d/engram.conf
+
+EXPOSE 2480 8765 8766
+CMD ["/usr/bin/supervisord", "-n"]
+```
+
+```ini
+# docker/supervisord.conf
+[program:arcadedb]
+command=/opt/arcadedb/bin/server.sh
+autostart=true
+autorestart=true
+
+[program:engram]
+command=python -m engram_api.main
+directory=/app
+autostart=true
+autorestart=true
+startsecs=15          # wait for ArcadeDB to be ready
+```
+
+```bash
+# Build and run single container
+docker build -f docker/Dockerfile.single -t engram:latest .
+docker run -d \
+  -p 8765:8765 -p 8766:8766 \
+  -e ENGRAM_API_KEY=your-key \
+  -e ARCADEDB_PASSWORD=your-db-password \
+  -v engram_data:/home/arcadedb/databases \
+  engram:latest
 ```
 
 ### `.env.example`
 
 ```bash
 # Copy to .env and fill in your values
-NEO4J_PASSWORD=change-me-strong-password
+ARCADEDB_PASSWORD=change-me-strong-password
 ENGRAM_API_KEY=engram-change-me
 
-# LLM providers — at least one required
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...           # for embeddings (text-embedding-3-small)
-OPENROUTER_API_KEY=sk-or-...    # optional
+# LLM providers — OPTIONAL
+# Only needed for the orchestrator (task spawning). Not needed for memory.
+# Embeddings use local models (nomic-embed-text) — no API key needed.
+ANTHROPIC_API_KEY=sk-ant-...   # optional: for orchestrator workers
+OPENROUTER_API_KEY=sk-or-...   # optional: for multi-model routing
 
 # Gateway — optional
 TELEGRAM_BOT_TOKEN=             # get from @BotFather
 EVOLUTION_API_KEY=              # only needed if WhatsApp profile enabled
 ```
+
+> **Note:** engram no longer requires an OpenAI API key. Embeddings are generated locally using `nomic-embed-text` (via `sentence-transformers`). Entity extraction uses spaCy (local NLP). An LLM API key is only needed if you use the orchestrator to spawn background task workers.
 
 ### Start commands
 
@@ -1342,8 +1605,11 @@ EVOLUTION_API_KEY=              # only needed if WhatsApp profile enabled
 # Full stack (no WhatsApp)
 docker compose up -d
 
-# Full stack + WhatsApp
+# Full stack + WhatsApp gateway
 docker compose --profile whatsapp up -d
+
+# Single container
+docker run -d -p 8765:8765 -p 8766:8766 --env-file .env engram:latest
 
 # View logs
 docker compose logs -f engram
@@ -2690,4 +2956,238 @@ engram/
 
 ---
 
-*End of engram Design Document v0.1*
+---
+
+## 21. AI Governance Positioning
+
+### 21.1 The Problem engram Solves for Enterprise Engineering Teams
+
+Traditional engineering teams manage knowledge through disconnected silos:
+
+```
+PM writes spec in Confluence ────────────────────────────────────┐
+Architect makes decision in Slack ───────────────────────────┐   │
+Developer builds what they remember ─────────────────────┐   │   │
+AI agent generates code from 2024 training data ─────┐   │   │   │
+                                                      ↓   ↓   ↓   ↓
+                                             Four different realities.
+                                             No single source of truth.
+```
+
+When AI agents enter the picture, this problem compounds: the agent has no knowledge of the organization's actual decisions, patterns, constraints, or current state. It either hallucinates or produces code that contradicts established choices.
+
+### 21.2 engram as Governance Infrastructure
+
+engram becomes the **single queryable source of organizational truth** that all AI agents must consult before acting:
+
+```
+All decisions, specs, patterns, standards → engram (timestamped, namespace-scoped)
+                         │
+              ┌──────────┼──────────┐
+              ▼          ▼          ▼
+         PM agent    Dev agent   Arch agent
+              │          │          │
+    "What's the      "What       "What's the
+    current auth    JWT config   approved
+    spec?"          do we use?"  DB pattern?"
+              │          │          │
+              └──────────┴──────────┘
+                         │
+                 engram memory_search
+                         │
+              [CURRENT] JWT with 24h expiry,
+              RS256 signing, refresh token
+              rotation. Decided 2026-04-15.
+              (Supersedes 2025-12 HS256 decision)
+```
+
+The developer's AI agent cannot go off-specification because the specification is available in real time, versioned, and the agent is instructed to query it before generating code.
+
+### 21.3 What AI Governance Requires
+
+| Governance Layer | What it does | How engram provides it |
+|---|---|---|
+| **Knowledge accuracy** | 85%+ correct org facts in the graph | spaCy entity extraction + human writes + quality scoring |
+| **Knowledge freshness** | Agents use current decisions, not stale ones | UTC timestamps + recency weighting + superseded_at |
+| **Decision attribution** | Who decided X, when, why | `created_by` + `created_at` on every memory |
+| **Namespace scoping** | PM knowledge ≠ engineering ≠ compliance | Hierarchical namespaces with ACL keys |
+| **Audit trail** | Every agent query logged: who asked, what retrieved | Query log per API key |
+| **Conflict detection** | Two memories contradict → surface for human | Semantic similarity on new writes; flag near-duplicates with different content |
+| **Knowledge gap flags** | Search returned nothing → human should write it | Empty search result logging → gap report |
+| **Citation enforcement** | Agent must cite which knowledge informed output | memory_search returns IDs; agent cites them in output |
+
+### 21.4 Governance Workflow for a Developer Team
+
+```
+1. PM writes product spec → memory_write(namespace="org:acme:product")
+2. Architect writes decision → memory_write(namespace="org:acme:engineering")
+3. Developer asks AI agent to build feature
+   AI agent calls memory_search before generating code:
+     → finds: "Use HAPI FHIR 7.x, JWT 24h expiry, pagination via cursor"
+     → generates code that follows these constraints
+     → cites: "Based on decisions: [id-abc, id-def, id-ghi]"
+4. If decision changes:
+     → write new memory with updated decision
+     → set superseded_at on old memory
+     → next agent query returns [CURRENT] new decision + [HISTORICAL] old one
+5. Audit: "What knowledge did the AI use when building this feature on 2026-05-20?"
+     → query audit log by date + namespace → full trace
+```
+
+### 21.5 Knowledge Quality Target: 85%+
+
+To be useful for governance, the knowledge graph must be accurate. The path to 85%+ accuracy:
+
+1. **Human-written memories are the ground truth** — agents write what humans tell them; humans correct errors
+2. **Conflict detection** — when a new write is semantically similar to an existing memory but contradicts it, surface both to the human for resolution before writing
+3. **Supersession logging** — every time a fact is superseded, log: what changed, who changed it, why (from the new memory content)
+4. **Staleness warnings** — memories older than a configurable threshold (default: 180 days) without any update or query hit get flagged: "This knowledge has not been confirmed recently"
+5. **Query hit tracking** — memories that are frequently retrieved and acted on are more likely to be accurate; low-hit memories get lower confidence over time
+
+---
+
+## 22. Binary Asset Handling
+
+### 22.1 Design Principle
+
+Binaries (diagrams, PDFs, Word documents, images) are **never stored in the knowledge graph**. The graph stores:
+1. A **reference node** pointing to where the binary lives (path or URL)
+2. The **content hash** (SHA-256) for change detection
+3. **Extracted text content** from the binary — this IS vector-embedded and searchable
+
+The binary itself stays in its natural location: a git repository, a shared drive, a local file system.
+
+### 22.2 The Asset Reference Node
+
+```
+(Decision: "Microservices architecture for auth layer")
+       │
+       └─[DOCUMENTED_IN]──▶ (Asset {
+             id:                "asset-auth-arch-v3"
+             path:              "~/vaults/hc/diagrams/auth-service-v3.drawio"
+             git_url:           "gitlab.com/acme/docs/-/blob/main/arch/auth-v3.drawio"
+             format:            "drawio"
+             sha256:            "a3f9c2d8..."
+             extracted_content: "Auth Service → Token Validator → JWT Store
+                                  Auth Service → Rate Limiter → Redis Cache
+                                  External Client → [HTTPS/443] → Auth Service
+                                  Token Validator → [reads] → Public Key Store"
+             namespace:         "org:acme:engineering"
+             created_at:        2026-05-20T14:32:00Z
+             created_by:        "alice"
+             superseded_at:     null
+         })
+```
+
+The `extracted_content` field is what makes the asset searchable. A developer asking "show me the auth architecture" → vector search on extracted content → returns the Asset node → includes the file path → agent can open or display the file.
+
+### 22.3 Format-Specific Extraction
+
+| Format | Extraction method | What is extracted |
+|---|---|---|
+| `.drawio` | XML parse (draw.io is XML) | All node labels, edge labels, group names |
+| `.pdf` | PyMuPDF text extraction | Full text content, headings |
+| `.png`, `.jpg`, `.svg` | Vision model (optional) or OCR | Alt-text, OCR text, or vision description |
+| `.docx`, `.xlsx` | python-docx / openpyxl | Text content, sheet names, headings |
+| `.md`, `.txt` | Direct read | Full text |
+
+Extraction runs **without an LLM** for all structured formats. Vision-based extraction for images is optional and only needed if you want semantic understanding of diagrams (e.g., "this screenshot shows the login flow").
+
+### 22.4 Change Detection via Hash
+
+When a binary changes, the knowledge graph must stay current:
+
+```python
+async def sync_asset(path: str, namespace: str) -> AssetReference:
+    current_hash = sha256_file(path)
+    existing = await client.get_asset_by_path(path, namespace)
+
+    if existing and existing.sha256 == current_hash:
+        return existing  # no change — nothing to do
+
+    # File changed — create new asset version
+    content = extract_content(path)
+    new_asset = await client.add_asset(
+        path=path,
+        format=detect_format(path),
+        sha256=current_hash,
+        extracted_content=content,
+        namespace=namespace,
+    )
+
+    # Supersede old version (preserves history)
+    if existing:
+        await client.supersede(existing.id, namespace)
+        # Migrate DOCUMENTED_IN edges to new asset
+        await client.migrate_edges(existing.id, new_asset.id)
+
+    return new_asset
+```
+
+The sync job can run:
+- As a **pre-commit git hook** (fast, triggered on every commit)
+- As a **scheduled background job** (periodic, configurable)
+- **On-demand** via the REST API (`POST /api/v1/assets/sync`)
+
+### 22.5 Asset Registration via MCP
+
+AI agents can register assets directly during a session:
+
+```
+# In a Claude Code session after generating a diagram:
+Use memory_write to record:
+  content: "Created auth service architecture diagram showing microservices breakdown.
+            Architect: alice. Decision date: 2026-05-20."
+  namespace: "org:acme:engineering"
+  tags: ["architecture", "auth", "diagram"]
+
+Use asset_register:
+  path: "~/vaults/hc/diagrams/auth-service-v3.drawio"
+  namespace: "org:acme:engineering"
+  related_memory_id: <the id from memory_write above>
+```
+
+The `asset_register` MCP tool extracts content, hashes the file, creates the Asset node, and creates the `DOCUMENTED_IN` edge from the memory to the asset — all in one call.
+
+### 22.6 Asset MCP Tools
+
+Two additional MCP tools for asset management:
+
+**`asset_register`**
+```json
+{
+  "name": "asset_register",
+  "description": "Register a binary file (diagram, PDF, image) in the knowledge graph. Extracts and indexes the content. Creates a reference node — the binary is NOT copied.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "path":              { "type": "string", "description": "File path or git URL" },
+      "namespace":         { "type": "string" },
+      "related_memory_id": { "type": "string", "description": "Optional: memory this asset documents" },
+      "description":       { "type": "string", "description": "Optional: human-readable description" }
+    },
+    "required": ["path", "namespace"]
+  }
+}
+```
+
+**`asset_search`**
+```json
+{
+  "name": "asset_search",
+  "description": "Search registered assets by content. Returns file paths and extracted content summaries.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query":     { "type": "string" },
+      "namespace": { "type": "string" },
+      "format":    { "type": "string", "description": "Optional: filter by format (drawio, pdf, png)" }
+    },
+    "required": ["query", "namespace"]
+  }
+}
+```
+
+---
+
+*End of engram Design Document v0.2*
