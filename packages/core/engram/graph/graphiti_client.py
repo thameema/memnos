@@ -62,6 +62,7 @@ class EngramGraphitiClient:
         self._config = config
         self._graphiti: Any = None  # graphiti_core.Graphiti
         self._driver: Any = None    # neo4j.AsyncDriver (borrowed from graphiti)
+        self._has_llm: bool = False  # set to True in init() if a valid LLM client is found
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -79,8 +80,10 @@ class EngramGraphitiClient:
         logger.info(
             "Connecting to Neo4j at %s (db=%s)", self._config.uri, self._config.database
         )
-        # Graphiti requires an LLM client. Try Anthropic first, fall back to OpenAI.
+        # Try Anthropic first (Claude), then OpenAI. Track whether we have a working LLM.
         llm_client = self._make_llm_client()
+        self._has_llm = llm_client is not None
+
         if llm_client is not None:
             self._graphiti = Graphiti(
                 self._config.uri,
@@ -88,9 +91,11 @@ class EngramGraphitiClient:
                 self._config.password,
                 llm_client=llm_client,
             )
+            logger.info("Graphiti LLM client configured — entity extraction enabled")
         else:
-            # No LLM key available — initialize without LLM for index-only use.
-            # Episode extraction features will be unavailable.
+            # No LLM key — connect to Neo4j for raw Cypher only.
+            # add_episode calls are skipped; memories are stored in Qdrant only.
+            # Set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable entity extraction.
             import os
             os.environ.setdefault("OPENAI_API_KEY", "placeholder-no-llm")
             self._graphiti = Graphiti(
@@ -98,6 +103,12 @@ class EngramGraphitiClient:
                 self._config.username,
                 self._config.password,
             )
+            logger.warning(
+                "No LLM API key found (ANTHROPIC_API_KEY or OPENAI_API_KEY). "
+                "Memories will be stored in Qdrant only — graph entity extraction disabled. "
+                "Set ANTHROPIC_API_KEY in your environment to enable the knowledge graph."
+            )
+
         await self._graphiti.build_indices_and_constraints()
         # Expose the driver for raw Cypher queries
         self._driver = getattr(self._graphiti, "driver", None)
@@ -156,12 +167,15 @@ class EngramGraphitiClient:
 
     @retry(
         retry=retry_if_exception_type(Exception),
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
+        stop=stop_after_attempt(2),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=3),
         reraise=True,
     )
     async def add_memory(self, memory: MemoryEntry) -> str:
         """Add a MemoryEntry as an episodic node in Graphiti.
+
+        Returns ``memory.id`` immediately (no LLM call) when no API key is configured.
+        To enable entity extraction and graph edges, set ANTHROPIC_API_KEY in your environment.
 
         Returns
         -------
@@ -169,6 +183,12 @@ class EngramGraphitiClient:
             The episode/node UUID assigned by Graphiti.
         """
         self._assert_ready()
+
+        # Skip entity extraction when no LLM is available — avoids slow retry
+        # loops from failed API calls.  The caller already logs a one-time warning.
+        if not self._has_llm:
+            return memory.id
+
         tags_str = ",".join(memory.tags) if memory.tags else ""
         source_description = (
             f"namespace={memory.namespace} source={memory.source} tags={tags_str}"
