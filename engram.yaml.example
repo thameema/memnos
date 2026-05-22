@@ -9,25 +9,27 @@ auth:
     - key: ${ENGRAM_API_KEY}
       user_id: default
       namespaces: ["*"]
+      # Fine-grained per-namespace access (optional):
+      # namespace_access:
+      #   - namespace: org:acme:engineering
+      #     access: read_write
+      #   - namespace: org:acme:finance
+      #     access: read_only
 
-neo4j:
-  uri: bolt://localhost:7687
-  username: neo4j
-  password: ${NEO4J_PASSWORD}
-  database: neo4j
-
-qdrant:
-  host: localhost
-  port: 6333
-  collection: engram_memories
+arcadedb:
+  host: localhost          # use "arcadedb" inside Docker Compose
+  port: 2480
+  database: engram
+  username: root
+  password: ${ARCADEDB_PASSWORD}
 
 embeddings:
-  provider: openai
-  model: text-embedding-3-small
-  api_key: ${OPENAI_API_KEY}
-  # Local embeddings (no OpenAI needed):
-  # provider: local
-  # model: sentence-transformers/all-MiniLM-L6-v2
+  provider: local          # "local" (no API key) or "openai"
+  model: all-MiniLM-L6-v2  # 384-dim, fast, runs on CPU
+  # OpenAI alternative (requires pip install 'engram-core[openai-embeddings]'):
+  # provider: openai
+  # model: text-embedding-3-small
+  # api_key: ${OPENAI_API_KEY}
 
 runtime:
   default: api
@@ -44,8 +46,14 @@ runtime:
 namespaces:
   default: personal:default
   definitions:
+    # Personal namespace — local to this instance, never shared
     personal:default:
       owners: [default]
+    # Enterprise namespace example:
+    # org:acme:engineering:
+    #   owners: [alice]
+    #   writers: [bob, carol]
+    #   readers: [*]
 
 gateway:
   telegram:

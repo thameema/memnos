@@ -1,7 +1,8 @@
 """
-engram.models — Core Pydantic v2 data models.
+engram.models — Core Pydantic v2 data models (v0.2 — ArcadeDB backend).
 
-All IDs are uuid4 strings generated at construction time.
+All temporal fields use UTC. created_at is immutable; superseded_at is set
+when a fact is replaced by a newer version (never deleted — history preserved).
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 def _now() -> datetime:
@@ -26,18 +27,21 @@ def _uuid() -> str:
 # ---------------------------------------------------------------------------
 
 class MemoryEntry(BaseModel):
-    """A single recorded memory — stored in both Qdrant and Graphiti."""
+    """A single recorded memory stored in ArcadeDB."""
 
     id: str = Field(default_factory=_uuid)
     content: str
     namespace: str
     created_at: datetime = Field(default_factory=_now)
-    updated_at: datetime = Field(default_factory=_now)
+    superseded_at: datetime | None = None   # None = currently valid
     tags: list[str] = Field(default_factory=list)
-    source: str = "agent"
-    embedding_id: str | None = None
-    graph_node_id: str | None = None
+    source: str = "agent"                   # "user" | "agent" | "file" | "api"
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @computed_field
+    @property
+    def is_current(self) -> bool:
+        return self.superseded_at is None
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -47,15 +51,20 @@ class MemoryEntry(BaseModel):
 # ---------------------------------------------------------------------------
 
 class Entity(BaseModel):
-    """A named entity extracted into the knowledge graph."""
+    """A named entity extracted from memories via spaCy."""
 
     id: str = Field(default_factory=_uuid)
-    name: str
-    entity_type: str
+    name: str                               # normalized lowercase
+    entity_type: str                        # "PERSON"|"ORG"|"TECH"|"DECISION"|"CONCEPT"
     namespace: str
     attributes: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=_now)
-    valid_until: datetime | None = None
+    superseded_at: datetime | None = None
+
+    @computed_field
+    @property
+    def is_current(self) -> bool:
+        return self.superseded_at is None
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -66,27 +75,32 @@ class Relation(BaseModel):
     id: str = Field(default_factory=_uuid)
     source_entity_id: str
     target_entity_id: str
-    relation_type: str
+    relation_type: str                      # "USES"|"DECIDED"|"DEPENDS_ON"|"SUPERSEDES"
     namespace: str
     weight: float = 1.0
     created_at: datetime = Field(default_factory=_now)
-    valid_until: datetime | None = None
+    superseded_at: datetime | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"arbitrary_types_allowed": True}
 
 
 class Fact(BaseModel):
-    """A subject-predicate-object triple with optional temporal validity."""
+    """A subject-predicate-object triple — explicit assertion about the world."""
 
     id: str = Field(default_factory=_uuid)
-    subject: str
-    predicate: str
-    object: str
+    subject: str                            # entity name
+    predicate: str                          # e.g. "uses", "decided", "requires"
+    object: str                             # entity name or literal
     namespace: str
-    valid_from: datetime = Field(default_factory=_now)
-    valid_until: datetime | None = None
+    created_at: datetime = Field(default_factory=_now)   # when this became true
+    superseded_at: datetime | None = None                 # when it was replaced
     source_memory_id: str | None = None
+
+    @computed_field
+    @property
+    def is_current(self) -> bool:
+        return self.superseded_at is None
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -99,6 +113,32 @@ class Graph(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Binary asset reference
+# ---------------------------------------------------------------------------
+
+class AssetReference(BaseModel):
+    """Pointer to a binary file — never stores the file itself."""
+
+    id: str = Field(default_factory=_uuid)
+    path: str                               # local path or git URL
+    format: str                             # "drawio"|"pdf"|"png"|"docx"|"svg"|...
+    sha256: str                             # content hash for change detection
+    extracted_content: str = ""            # text extracted from the binary
+    namespace: str
+    created_at: datetime = Field(default_factory=_now)
+    superseded_at: datetime | None = None   # set when file hash changes
+    created_by: str = "agent"
+    related_memory_ids: list[str] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def is_current(self) -> bool:
+        return self.superseded_at is None
+
+    model_config = {"arbitrary_types_allowed": True}
+
+
+# ---------------------------------------------------------------------------
 # Search output
 # ---------------------------------------------------------------------------
 
@@ -107,12 +147,20 @@ class SearchResult(BaseModel):
 
     memory: MemoryEntry
     score: float
-    source: str  # "vector" | "graph" | "hybrid"
+    source: str                             # "vector" | "graph" | "hybrid"
+    is_current: bool = True                 # False = [HISTORICAL]
+    recency_score: float = 1.0
 
 
 # ---------------------------------------------------------------------------
 # Namespace access control
 # ---------------------------------------------------------------------------
+
+class NamespaceAccess(BaseModel):
+    """Access entry: one namespace + the permission level for a key."""
+    namespace: str
+    access: str = "read_write"              # "read_only" | "read_write"
+
 
 class Namespace(BaseModel):
     """Access-control metadata for a namespace."""

@@ -4,25 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "engram-core"
-version = "0.1.0"
-description = "engram persistent memory core — knowledge graph + vector store"
+version = "0.2.0"
+description = "engram persistent memory core — ArcadeDB knowledge graph + vector store"
 requires-python = ">=3.11"
 dependencies = [
-    "graphiti-core>=0.3",
-    "qdrant-client>=1.9,<1.10",
-    "openai>=1.30",
+    "httpx>=0.27",
+    "sentence-transformers>=2.7",
+    "spacy>=3.7",
     "anthropic>=0.30",
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
-    "neo4j>=5.20",
-    "asyncio-throttle>=1.0",
     "tenacity>=8.0",
 ]
 
 [project.optional-dependencies]
-local-embeddings = ["sentence-transformers>=2.7"]
-all = ["engram-core[local-embeddings]"]
+openai-embeddings = ["openai>=1.30"]
+all = ["engram-core[openai-embeddings]"]
 
 [project.scripts]
 engram-import = "engram.cli.import_cmd:main"

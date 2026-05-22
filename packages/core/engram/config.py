@@ -52,22 +52,17 @@ class ServerConfig(BaseModel):
     log_level: str = "INFO"
 
 
-class Neo4jConfig(BaseModel):
-    uri: str = "bolt://localhost:7687"
-    username: str = "neo4j"
-    password: str = ""
-    database: str = "neo4j"
-
-
-class QdrantConfig(BaseModel):
+class ArcadeDBConfig(BaseModel):
     host: str = "localhost"
-    port: int = 6333
-    collection: str = "engram_memories"
+    port: int = 2480
+    database: str = "engram"
+    username: str = "root"
+    password: str = "engram"
 
 
 class EmbeddingsConfig(BaseModel):
-    provider: str = "openai"  # "openai" | "local"
-    model: str = "text-embedding-3-small"
+    provider: str = "local"                           # "local" | "openai"
+    model: str = "all-MiniLM-L6-v2"                   # 384-dim, no API key needed
     api_key: str = ""
 
 
@@ -111,10 +106,19 @@ class NamespaceConfig(BaseModel):
         return result
 
 
+class NamespaceAccess(BaseModel):
+    """Per-namespace access level for an API key."""
+    namespace: str
+    access: str = "read_write"   # "read_only" | "read_write"
+
+
 class ApiKeyEntry(BaseModel):
     key: str
     user_id: str = "default"
+    # Simple list of namespace patterns ("*" = all) retained for backward
+    # compatibility; use namespace_access for fine-grained ACL.
     namespaces: list[str] = Field(default_factory=lambda: ["*"])
+    namespace_access: list[NamespaceAccess] = Field(default_factory=list)
 
 
 class AuthConfig(BaseModel):
@@ -170,8 +174,7 @@ class LearningConfig(BaseModel):
 class EngramConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
-    neo4j: Neo4jConfig = Field(default_factory=Neo4jConfig)
-    qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
+    arcadedb: ArcadeDBConfig = Field(default_factory=ArcadeDBConfig)
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     namespaces: NamespaceConfig = Field(default_factory=NamespaceConfig)
@@ -183,19 +186,7 @@ class EngramConfig(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path = "engram.yaml") -> "EngramConfig":
-        """Load configuration from a YAML file with ${VAR} env-var expansion.
-
-        Parameters
-        ----------
-        path:
-            Path to the YAML configuration file.  Defaults to ``engram.yaml``
-            in the current working directory.
-
-        Returns
-        -------
-        EngramConfig
-            Fully-populated configuration object.
-        """
+        """Load configuration from a YAML file with ${VAR} env-var expansion."""
         config_path = Path(path)
         if not config_path.exists():
             logger.warning(
@@ -210,7 +201,6 @@ class EngramConfig(BaseModel):
 
         raw = _expand_env(raw)
 
-        # Pull out each section, ignoring unknown top-level keys (e.g. auth, gateway)
         kwargs: dict[str, Any] = {}
 
         if "server" in raw:
@@ -219,15 +209,24 @@ class EngramConfig(BaseModel):
         if "auth" in raw:
             auth_raw = dict(raw["auth"])
             keys_raw = auth_raw.pop("api_keys", [])
-            kwargs["auth"] = AuthConfig(
-                api_keys=[ApiKeyEntry(**k) if isinstance(k, dict) else ApiKeyEntry(key=k) for k in keys_raw]
-            )
+            parsed_keys = []
+            for k in keys_raw:
+                if isinstance(k, dict):
+                    # Parse nested namespace_access if present
+                    k = dict(k)
+                    na_raw = k.pop("namespace_access", [])
+                    entry = ApiKeyEntry(**k)
+                    entry.namespace_access = [
+                        NamespaceAccess(**na) if isinstance(na, dict) else na
+                        for na in na_raw
+                    ]
+                    parsed_keys.append(entry)
+                else:
+                    parsed_keys.append(ApiKeyEntry(key=k))
+            kwargs["auth"] = AuthConfig(api_keys=parsed_keys)
 
-        if "neo4j" in raw:
-            kwargs["neo4j"] = Neo4jConfig(**raw["neo4j"])
-
-        if "qdrant" in raw:
-            kwargs["qdrant"] = QdrantConfig(**raw["qdrant"])
+        if "arcadedb" in raw:
+            kwargs["arcadedb"] = ArcadeDBConfig(**raw["arcadedb"])
 
         if "embeddings" in raw:
             kwargs["embeddings"] = EmbeddingsConfig(**raw["embeddings"])
@@ -255,7 +254,6 @@ class EngramConfig(BaseModel):
             skill_raw = lr.pop("skill_extraction", {})
             decay_raw = lr.pop("heuristic_decay", {})
             routing_raw = lr.pop("quality_routing", {})
-            # Drop feedback key (not modelled in LearningConfig)
             lr.pop("feedback", None)
             kwargs["learning"] = LearningConfig(
                 **lr,

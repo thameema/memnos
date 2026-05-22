@@ -1,10 +1,15 @@
 """
-engram.search — Hybrid search combining Qdrant (vector) and Graphiti (graph).
+engram.search — Search facade delegating to ArcadeDB hybrid search.
 
-Three modes:
-  "vector"  — Qdrant only
-  "graph"   — Graphiti episode search only
-  "hybrid"  — both; scores averaged per memory_id, top_k returned
+ArcadeDB handles both vector similarity (HNSW) and graph traversal in a
+single SQL query, so there is no separate merging step needed. This module
+provides a thin compatibility shim so callers that use HybridSearch directly
+continue to work unchanged.
+
+Search modes supported:
+  "vector"   — HNSW vector similarity only (pure semantic)
+  "graph"    — keyword/entity match via MENTIONS edges
+  "hybrid"   — 0.7 * semantic + 0.3 * recency (default, recommended)
 """
 
 from __future__ import annotations
@@ -12,27 +17,24 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from engram.models import MemoryEntry, SearchResult
+from engram.models import SearchResult
 
 if TYPE_CHECKING:
-    from engram.graph.graphiti_client import EngramGraphitiClient
+    from engram.storage.arcadedb_client import ArcadeDBClient
     from engram.vector.embedder import Embedder
-    from engram.vector.qdrant_client import EngramQdrantClient
 
 logger = logging.getLogger(__name__)
 
 
 class HybridSearch:
-    """Orchestrate vector and/or graph searches and merge results."""
+    """Thin wrapper around ArcadeDBClient search for backward compatibility."""
 
     def __init__(
         self,
-        qdrant: "EngramQdrantClient",
-        graphiti: "EngramGraphitiClient",
+        arcadedb: "ArcadeDBClient",
         embedder: "Embedder",
     ) -> None:
-        self._qdrant = qdrant
-        self._graphiti = graphiti
+        self._arcadedb = arcadedb
         self._embedder = embedder
 
     async def search(
@@ -41,158 +43,37 @@ class HybridSearch:
         namespace: str,
         top_k: int = 10,
         mode: str = "hybrid",
+        include_historical: bool = False,
     ) -> list[SearchResult]:
         """Search for memories matching *query* within *namespace*.
 
-        Parameters
-        ----------
-        query:
-            Natural-language search string.
-        namespace:
-            Restrict results to this namespace.
-        top_k:
-            Maximum number of results to return.
-        mode:
-            ``"vector"``, ``"graph"``, or ``"hybrid"`` (default).
-
-        Returns
-        -------
-        list[SearchResult]
-            Results ordered by descending score.
+        All three modes embed the query and call ArcadeDB.
+        - "vector" / "hybrid": uses HNSW @vectorNeighbors with recency weighting.
+        - "graph": uses entity-based graph traversal via MENTIONS edges.
         """
         mode = mode.lower()
-        if mode == "vector":
-            return await self._vector_search(query, namespace, top_k)
+        if mode not in ("vector", "graph", "hybrid"):
+            raise ValueError(
+                f"Unknown search mode {mode!r}. Supported: 'vector', 'graph', 'hybrid'."
+            )
+
+        logger.debug(
+            "search: mode=%s query=%r namespace=%s top_k=%d", mode, query, namespace, top_k
+        )
+
+        vector = await self._embedder.embed(query)
+
         if mode == "graph":
-            return await self._graph_search(query, namespace, top_k)
-        if mode == "hybrid":
-            return await self._hybrid_search(query, namespace, top_k)
-        raise ValueError(
-            f"Unknown search mode {mode!r}. Supported: 'vector', 'graph', 'hybrid'."
-        )
-
-    # ------------------------------------------------------------------
-    # Vector search
-    # ------------------------------------------------------------------
-
-    async def _vector_search(
-        self, query: str, namespace: str, top_k: int
-    ) -> list[SearchResult]:
-        logger.debug("Vector search: query=%r namespace=%s top_k=%d", query, namespace, top_k)
-        query_vec = await self._embedder.embed(query)
-        raw = await self._qdrant.search(query_vec, namespace=namespace, top_k=top_k)
-        results: list[SearchResult] = []
-        for point_id, score, payload in raw:
-            memory = _payload_to_memory(point_id, payload, namespace)
-            results.append(SearchResult(memory=memory, score=score, source="vector"))
-        return results
-
-    # ------------------------------------------------------------------
-    # Graph search
-    # ------------------------------------------------------------------
-
-    async def _graph_search(
-        self, query: str, namespace: str, top_k: int
-    ) -> list[SearchResult]:
-        logger.debug("Graph search: query=%r namespace=%s top_k=%d", query, namespace, top_k)
-        try:
-            memories = await self._graphiti.search_episodes(query, namespace=namespace, top_k=top_k)
-        except Exception as exc:
-            logger.warning("Graphiti search_episodes failed (no LLM?): %s", exc)
-            return []
-        return [
-            SearchResult(memory=m, score=1.0, source="graph")
-            for m in memories
-        ]
-
-    # ------------------------------------------------------------------
-    # Hybrid search — merge vector + graph results
-    # ------------------------------------------------------------------
-
-    async def _hybrid_search(
-        self, query: str, namespace: str, top_k: int
-    ) -> list[SearchResult]:
-        logger.debug("Hybrid search: query=%r namespace=%s top_k=%d", query, namespace, top_k)
-
-        # Run both searches (fetch more than top_k so merging is meaningful)
-        fetch_k = max(top_k * 2, 20)
-        query_vec = await self._embedder.embed(query)
-
-        vector_raw = await self._qdrant.search(
-            query_vec, namespace=namespace, top_k=fetch_k
-        )
-        try:
-            graph_memories = await self._graphiti.search_episodes(
-                query, namespace=namespace, top_k=fetch_k
-            )
-        except Exception as exc:
-            logger.warning("Graphiti hybrid search_episodes failed (no LLM?): %s", exc)
-            graph_memories = []
-
-        # Build a score accumulator keyed by memory_id
-        # { memory_id: {"scores": [...], "memory": MemoryEntry, "sources": set} }
-        accumulator: dict[str, dict] = {}
-
-        for point_id, score, payload in vector_raw:
-            memory = _payload_to_memory(point_id, payload, namespace)
-            mid = memory.id
-            if mid not in accumulator:
-                accumulator[mid] = {"scores": [], "memory": memory, "sources": set()}
-            accumulator[mid]["scores"].append(score)
-            accumulator[mid]["sources"].add("vector")
-
-        for memory in graph_memories:
-            mid = memory.id
-            if mid not in accumulator:
-                accumulator[mid] = {"scores": [], "memory": memory, "sources": set()}
-            # Assign a baseline graph score of 1.0 (Graphiti doesn't expose numeric scores)
-            accumulator[mid]["scores"].append(1.0)
-            accumulator[mid]["sources"].add("graph")
-
-        # Average the scores and determine the source label
-        merged: list[SearchResult] = []
-        for mid, data in accumulator.items():
-            avg_score = sum(data["scores"]) / len(data["scores"])
-            sources = data["sources"]
-            if len(sources) > 1:
-                source_label = "hybrid"
-            else:
-                source_label = next(iter(sources))
-            merged.append(
-                SearchResult(memory=data["memory"], score=avg_score, source=source_label)
+            return await self._arcadedb.graph_search(
+                query=query, namespace=namespace, top_k=top_k,
+                include_superseded=include_historical,
             )
 
-        merged.sort(key=lambda r: r.score, reverse=True)
-        return merged[:top_k]
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _payload_to_memory(point_id: str, payload: dict, default_namespace: str) -> MemoryEntry:
-    """Reconstruct a MemoryEntry from a Qdrant point payload."""
-    from datetime import datetime, timezone
-
-    def _parse_dt(val) -> datetime:
-        if isinstance(val, datetime):
-            return val
-        if isinstance(val, str):
-            try:
-                return datetime.fromisoformat(val)
-            except ValueError:
-                pass
-        return datetime.now(timezone.utc)
-
-    return MemoryEntry(
-        id=payload.get("memory_id", point_id),
-        content=payload.get("content", ""),
-        namespace=payload.get("namespace", default_namespace),
-        created_at=_parse_dt(payload.get("created_at")),
-        updated_at=_parse_dt(payload.get("updated_at")),
-        tags=payload.get("tags", []),
-        source=payload.get("source", "agent"),
-        embedding_id=point_id,
-        graph_node_id=payload.get("graph_node_id"),
-        metadata=payload.get("metadata", {}),
-    )
+        # Both "vector" and "hybrid" use the same HNSW + recency path;
+        # "hybrid" is the default and preferred mode.
+        return await self._arcadedb.vector_search(
+            embedding=vector,
+            namespace=namespace,
+            top_k=top_k,
+            include_superseded=include_historical,
+        )

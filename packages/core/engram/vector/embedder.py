@@ -144,16 +144,16 @@ class LocalEmbedder(Embedder):
 
 def get_embedder(config: "EmbeddingsConfig") -> Embedder:
     """Return the correct Embedder implementation based on config.provider."""
-    provider = (config.provider or "openai").lower()
+    provider = (config.provider or "local").lower()
+    if provider == "local":
+        return LocalEmbedder(model=config.model or "all-MiniLM-L6-v2")
     if provider == "openai":
         if not config.api_key:
             logger.warning(
                 "OpenAI embeddings selected but api_key is empty — calls will likely fail"
             )
         return OpenAIEmbedder(model=config.model, api_key=config.api_key)
-    if provider == "local":
-        return LocalEmbedder(model=config.model)
     raise ValueError(
         f"Unknown embeddings provider {config.provider!r}. "
-        "Supported values: 'openai', 'local'."
+        "Supported values: 'local', 'openai'."
     )

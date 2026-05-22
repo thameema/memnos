@@ -75,9 +75,8 @@ class FeedbackRequest(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
-    neo4j: str
-    qdrant: str
-    version: str = "0.1.0"
+    arcadedb: str
+    version: str = "0.2.0"
 
 
 class NamespaceCreateRequest(BaseModel):

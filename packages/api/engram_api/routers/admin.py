@@ -3,7 +3,7 @@ engram_api.routers.admin — Health-check, namespace management, and diagnostics
 
 Endpoints
 ---------
-GET    /admin/health              — check Neo4j and Qdrant connectivity
+GET    /admin/health              — check ArcadeDB connectivity
 GET    /admin/namespaces          — list all configured namespaces
 POST   /admin/namespaces          — create a new namespace definition  [admin only]
 DELETE /admin/namespaces/{ns}     — delete a namespace and all its data [admin only]
@@ -46,48 +46,20 @@ async def health_check(
     This endpoint is intentionally *unauthenticated* so load-balancer health
     probes work without credentials.  (Auth middleware must whitelist this path.)
     """
-    neo4j_status = "unknown"
-    qdrant_status = "unknown"
+    arcadedb_status = "unknown"
     overall = "ok"
 
-    # --- Neo4j probe ---
     try:
-        graph_client = getattr(client, "_graph", None) or getattr(client, "graph", None)
-        if graph_client is not None and hasattr(graph_client, "ping"):
-            await graph_client.ping()
-            neo4j_status = "ok"
-        else:
-            # Attempt a trivial Cypher query as a probe
-            result = await client.query_graph("RETURN 1 AS n", "health:probe", {})
-            neo4j_status = "ok" if result is not None else "degraded"
+        result = await client.query_graph("SELECT 1 AS n FROM Memory LIMIT 1", "health:probe")
+        arcadedb_status = "ok" if result is not None else "degraded"
     except Exception as exc:
-        logger.warning("Neo4j health probe failed: %s", exc)
-        neo4j_status = f"error: {exc}"
-        overall = "degraded"
-
-    # --- Qdrant probe ---
-    try:
-        vector_client = (
-            getattr(client, "_vector", None) or getattr(client, "vector", None)
-        )
-        if vector_client is not None and hasattr(vector_client, "ping"):
-            await vector_client.ping()
-            qdrant_status = "ok"
-        else:
-            # Try collections list as a probe
-            qdrant_raw = getattr(vector_client, "_client", None)
-            if qdrant_raw and hasattr(qdrant_raw, "get_collections"):
-                qdrant_raw.get_collections()
-            qdrant_status = "ok"
-    except Exception as exc:
-        logger.warning("Qdrant health probe failed: %s", exc)
-        qdrant_status = f"error: {exc}"
+        logger.warning("ArcadeDB health probe failed: %s", exc)
+        arcadedb_status = f"error: {exc}"
         overall = "degraded"
 
     return HealthResponse(
         status=overall,
-        neo4j=neo4j_status,
-        qdrant=qdrant_status,
+        arcadedb=arcadedb_status,
     )
 
 
@@ -197,25 +169,15 @@ async def delete_namespace(
             detail=f"Namespace {ns!r} not found",
         )
 
-    # Attempt to purge vector store data for the namespace
-    try:
-        vector_client = (
-            getattr(client, "_vector", None) or getattr(client, "vector", None)
-        )
-        if vector_client and hasattr(vector_client, "delete_namespace"):
-            await vector_client.delete_namespace(ns)
-    except Exception as exc:
-        logger.warning("Failed to purge vector data for namespace %s: %s", ns, exc)
-
-    # Attempt to purge graph data for the namespace
-    try:
-        await client.query_graph(
-            "MATCH (n {namespace: $ns}) DETACH DELETE n",
-            ns,
-            {"ns": ns},
-        )
-    except Exception as exc:
-        logger.warning("Failed to purge graph data for namespace %s: %s", ns, exc)
+    # Purge all Memory + Entity + Fact vertices for the namespace
+    for type_name in ("Memory", "Entity", "Fact", "Asset"):
+        try:
+            await client.query_graph(
+                f"DELETE VERTEX {type_name} WHERE namespace = :namespace",
+                ns,
+            )
+        except Exception as exc:
+            logger.warning("Failed to purge %s data for namespace %s: %s", type_name, ns, exc)
 
     # Remove from in-memory config
     del definitions[ns]

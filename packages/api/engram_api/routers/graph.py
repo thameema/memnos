@@ -51,11 +51,11 @@ async def graph_query(
     key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
 ) -> list[dict]:
-    """
-    Execute a read-only Cypher query against the Neo4j knowledge graph.
+    """Execute a read-only ArcadeDB SQL query against the knowledge graph.
 
-    Only MATCH statements are permitted; the client-side should enforce this,
-    but callers are expected to pass safe, read-only queries.
+    Pass ArcadeDB SQL in the ``cypher`` field (the field name is kept for
+    backward API compatibility).  ``$namespace`` is automatically available
+    as a bound parameter.
     """
     await check_namespace_access(key_entry, req.namespace)
     logger.debug(
@@ -176,7 +176,6 @@ async def add_fact(
             predicate=req.predicate,
             object=req.object,
             namespace=req.namespace,
-            valid_until=req.valid_until,
         )
     except Exception as exc:
         logger.exception("add_fact failed: %s", exc)

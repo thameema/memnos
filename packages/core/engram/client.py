@@ -17,24 +17,15 @@ Usage (manual lifecycle):
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
-
 from engram.config import EngramConfig
-from engram.graph.graphiti_client import EngramGraphitiClient
-from engram.models import Entity, Fact, Graph, MemoryEntry, SearchResult
-from engram.search import HybridSearch
+from engram.extraction.spacy_extractor import get_extractor
+from engram.models import AssetReference, Entity, Fact, Graph, MemoryEntry, SearchResult
+from engram.storage.arcadedb_client import ArcadeDBClient
 from engram.vector.embedder import get_embedder
-from engram.vector.qdrant_client import EngramQdrantClient
 
 logger = logging.getLogger(__name__)
 
@@ -53,15 +44,15 @@ class EngramClient:
     def __init__(self, config: EngramConfig) -> None:
         self._config = config
         self._embedder = get_embedder(config.embeddings)
-        self._qdrant = EngramQdrantClient(
-            config.qdrant, vector_size=self._embedder.vector_size
+        self._arcadedb = ArcadeDBClient(
+            host=config.arcadedb.host,
+            port=config.arcadedb.port,
+            username=config.arcadedb.username,
+            password=config.arcadedb.password,
+            database=config.arcadedb.database,
+            vector_dim=self._embedder.vector_size,
         )
-        self._graphiti = EngramGraphitiClient(config.neo4j)
-        self._search = HybridSearch(
-            qdrant=self._qdrant,
-            graphiti=self._graphiti,
-            embedder=self._embedder,
-        )
+        self._extractor = get_extractor()
         self._started = False
 
     # ------------------------------------------------------------------
@@ -69,21 +60,19 @@ class EngramClient:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Initialise all backends.  Must be called before any other method."""
+        """Initialise ArcadeDB schema. Must be called before any other method."""
         if self._started:
             logger.debug("EngramClient.start() called but already started — skipping")
             return
         logger.info("Starting EngramClient")
-        await self._qdrant.init()
-        await self._graphiti.init()
+        await self._arcadedb.init()
         self._started = True
         logger.info("EngramClient ready")
 
     async def stop(self) -> None:
-        """Gracefully close all backend connections."""
+        """Close all backend connections."""
         logger.info("Stopping EngramClient")
-        await self._graphiti.close()
-        await self._qdrant.close()
+        await self._arcadedb.close()
         self._started = False
         logger.info("EngramClient stopped")
 
@@ -109,30 +98,10 @@ class EngramClient:
                 "Call `await client.start()` or use it as `async with EngramClient(...) as client:`."
             )
 
-    def _build_payload(self, memory: MemoryEntry) -> dict:
-        """Serialise a MemoryEntry into a Qdrant-safe payload dict."""
-        return {
-            "memory_id": memory.id,
-            "content": memory.content,
-            "namespace": memory.namespace,
-            "created_at": memory.created_at.isoformat(),
-            "updated_at": memory.updated_at.isoformat(),
-            "tags": memory.tags,
-            "source": memory.source,
-            "graph_node_id": memory.graph_node_id,
-            "metadata": memory.metadata,
-        }
-
     # ------------------------------------------------------------------
     # Core memory operations
     # ------------------------------------------------------------------
 
-    @retry(
-        retry=retry_if_exception_type(Exception),
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
     async def add(
         self,
         content: str,
@@ -141,34 +110,15 @@ class EngramClient:
         source: str = "agent",
         metadata: dict | None = None,
     ) -> MemoryEntry:
-        """Persist a new memory entry across both Qdrant and Graphiti.
+        """Persist a new memory entry and extract knowledge-graph edges.
 
         Steps:
           1. Create a ``MemoryEntry`` with a fresh uuid4 ID.
           2. Embed ``content`` via the configured embedder.
-          3. Upsert the vector to Qdrant.
-          4. Add an episode to Graphiti.
-          5. Update ``embedding_id`` and ``graph_node_id`` on the entry.
+          3. Insert into ArcadeDB (Memory vertex + HNSW vector).
+          4. Extract named entities via spaCy (no LLM needed).
+          5. Upsert Entity vertices and create MENTIONS edges.
           6. Return the completed ``MemoryEntry``.
-
-        Parameters
-        ----------
-        content:
-            The text to remember.
-        namespace:
-            Target namespace (e.g. ``"org:acme"`` or ``"personal:alice"``).
-        tags:
-            Optional list of searchable tags.
-        source:
-            Human-readable label for the recording agent/tool (default ``"agent"``).
-        metadata:
-            Arbitrary key-value pairs stored alongside the memory.
-
-        Returns
-        -------
-        MemoryEntry
-            The persisted memory, with both ``embedding_id`` and
-            ``graph_node_id`` populated.
         """
         self._assert_started()
         memory = MemoryEntry(
@@ -180,33 +130,28 @@ class EngramClient:
         )
         logger.debug("add: memory_id=%s namespace=%s", memory.id, namespace)
 
-        # Step 2 — embed
-        vector = await self._embedder.embed(content)
+        embedding = await self._embedder.embed(content)
+        await self._arcadedb.insert_memory(memory, embedding)
 
-        # Step 3 — upsert to Qdrant (use memory.id as point ID)
-        payload = self._build_payload(memory)
-        await self._qdrant.upsert(memory_id=memory.id, vector=vector, payload=payload)
-        memory.embedding_id = memory.id
-
-        # Step 4 — add episode to Graphiti (best-effort; falls back gracefully when no LLM)
+        # Entity extraction + graph edges (best-effort, never blocks write)
         try:
-            graph_node_id = await self._graphiti.add_memory(memory)
-            memory.graph_node_id = graph_node_id
-            # Step 5 — update Qdrant payload with graph node ID
-            updated_payload = self._build_payload(memory)
-            await self._qdrant.upsert(memory_id=memory.id, vector=vector, payload=updated_payload)
+            extracted = await self._extractor.extract(content)
+            for ent in extracted:
+                entity_model = Entity(
+                    name=ent.name,
+                    entity_type=ent.entity_type,
+                    namespace=namespace,
+                )
+                await self._arcadedb.upsert_entity(entity_model)
+                await self._arcadedb.create_mentions_edge(memory.id, ent.name, namespace)
+            if extracted:
+                logger.debug(
+                    "Extracted %d entities for memory %s", len(extracted), memory.id
+                )
         except Exception as exc:
-            logger.warning(
-                "Graphiti add_memory failed (no LLM configured?), storing vector-only: %s", exc
-            )
+            logger.warning("Entity extraction failed (non-fatal): %s", exc)
 
-        logger.info(
-            "Memory stored: id=%s namespace=%s embedding_id=%s graph_node_id=%s",
-            memory.id,
-            namespace,
-            memory.embedding_id,
-            memory.graph_node_id,
-        )
+        logger.info("Memory stored: id=%s namespace=%s", memory.id, namespace)
         return memory
 
     async def search(
@@ -214,122 +159,90 @@ class EngramClient:
         query: str,
         namespace: str,
         top_k: int = 10,
+        include_historical: bool = False,
         mode: str = "hybrid",
     ) -> list[SearchResult]:
         """Search for memories matching *query* within *namespace*.
+
+        Uses ArcadeDB hybrid search — HNSW vector similarity with recency
+        weighting (0.7 * semantic + 0.3 * recency).
 
         Parameters
         ----------
         query:
             Natural-language query string.
         namespace:
-            Restrict results to this namespace.
+            Restrict results to this namespace (prefix-matched).
         top_k:
             Maximum number of results (default 10).
+        include_historical:
+            When True, also return superseded memories tagged [HISTORICAL].
         mode:
-            ``"vector"``, ``"graph"``, or ``"hybrid"`` (default).
-
-        Returns
-        -------
-        list[SearchResult]
-            Ranked results, highest score first.
+            ``"vector"`` / ``"hybrid"`` → HNSW search.
+            ``"graph"`` → entity-based graph traversal.
         """
         self._assert_started()
-        logger.debug("search: query=%r namespace=%s mode=%s top_k=%d", query, namespace, mode, top_k)
-        return await self._search.search(query, namespace=namespace, top_k=top_k, mode=mode)
+        logger.debug(
+            "search: query=%r namespace=%s top_k=%d historical=%s mode=%s",
+            query, namespace, top_k, include_historical, mode,
+        )
+        if mode == "graph":
+            return await self._arcadedb.graph_search(
+                query=query, namespace=namespace, top_k=top_k,
+                include_superseded=include_historical,
+            )
+        embedding = await self._embedder.embed(query)
+        return await self._arcadedb.vector_search(
+            embedding=embedding,
+            namespace=namespace,
+            top_k=top_k,
+            include_superseded=include_historical,
+        )
+
+    async def supersede(self, memory_id: str, namespace: str) -> bool:
+        """Mark an existing memory as superseded (soft-delete — history preserved).
+
+        Sets ``superseded_at = now(UTC)`` on the Memory vertex. The memory
+        remains in ArcadeDB and is returned in searches only when
+        ``include_historical=True``.
+
+        Returns ``True`` if the memory was found and superseded, ``False`` if
+        not found.
+        """
+        self._assert_started()
+        return await self._arcadedb.supersede_memory(memory_id, namespace)
 
     async def delete(self, memory_id: str, namespace: str) -> bool:
-        """Delete a memory by ID from both Qdrant and (best-effort) Graphiti.
+        """Hard-delete a memory by ID (use supersede() to preserve history).
 
-        Parameters
-        ----------
-        memory_id:
-            The ``MemoryEntry.id`` to delete.
-        namespace:
-            The namespace the memory belongs to (used for safety checks).
-
-        Returns
-        -------
-        bool
-            ``True`` if the point existed in Qdrant and was deleted,
-            ``False`` if it was not found.
+        Returns ``True`` if deleted, ``False`` if not found.
         """
         self._assert_started()
-        logger.debug("delete: memory_id=%s namespace=%s", memory_id, namespace)
-
-        # Check existence first
-        payload = await self._qdrant.get(memory_id)
-        if payload is None:
-            logger.info("delete: memory_id=%s not found in Qdrant", memory_id)
-            return False
-
-        # Safety: verify namespace matches
-        stored_ns = payload.get("namespace", "")
-        if stored_ns and stored_ns != namespace:
-            raise ValueError(
-                f"Memory {memory_id!r} belongs to namespace {stored_ns!r}, "
-                f"not {namespace!r}. Deletion refused."
-            )
-
-        await self._qdrant.delete(memory_id)
-        logger.info("delete: memory_id=%s deleted from Qdrant", memory_id)
-        return True
+        return await self._arcadedb.delete_memory(memory_id, namespace)
 
     async def get_memory(self, memory_id: str, namespace: str) -> MemoryEntry | None:
-        """Retrieve a single memory by ID.
-
-        Parameters
-        ----------
-        memory_id:
-            The ``MemoryEntry.id`` to look up.
-        namespace:
-            Expected namespace (used to verify ownership).
-
-        Returns
-        -------
-        MemoryEntry | None
-            The memory, or ``None`` if not found.
-        """
+        """Retrieve a single memory by ID."""
         self._assert_started()
-        payload = await self._qdrant.get(memory_id)
-        if payload is None:
-            return None
-        from engram.search import _payload_to_memory
-        return _payload_to_memory(memory_id, payload, namespace)
+        return await self._arcadedb.get_memory(memory_id, namespace)
 
     # ------------------------------------------------------------------
-    # Graph operations
+    # Knowledge graph operations
     # ------------------------------------------------------------------
 
     async def get_entity(self, name: str, namespace: str) -> Entity | None:
-        """Look up a named entity in the knowledge graph.
-
-        Returns ``None`` if not found.
-        """
+        """Look up a named entity by (normalized) name."""
         self._assert_started()
-        return await self._graphiti.get_entity(name=name, namespace=namespace)
+        return await self._arcadedb.get_entity(name=name, namespace=namespace)
 
     async def get_related(
         self, entity_name: str, namespace: str, depth: int = 2
     ) -> Graph:
-        """Return a sub-graph of entities and relations near *entity_name*.
+        """Return a sub-graph of entities near *entity_name*.
 
-        Parameters
-        ----------
-        entity_name:
-            Starting entity name.
-        namespace:
-            Restrict traversal to this namespace.
-        depth:
-            Maximum number of hops (default 2).
-
-        Returns
-        -------
-        Graph
-            A ``Graph`` containing discovered entities and their relations.
+        Traverses RELATED_TO edges up to *depth* hops.
         """
         self._assert_started()
-        return await self._graphiti.get_related(
+        return await self._arcadedb.get_related(
             entity_name=entity_name, namespace=namespace, depth=depth
         )
 
@@ -339,74 +252,113 @@ class EngramClient:
         predicate: str,
         object: str,
         namespace: str,
-        valid_until: datetime | None = None,
+        source_memory_id: str | None = None,
     ) -> Fact:
-        """Record a subject-predicate-object fact in the knowledge graph.
-
-        Parameters
-        ----------
-        subject, predicate, object:
-            The three parts of the triple (e.g. ``"Alice"`` ``"works at"`` ``"Acme"``).
-        namespace:
-            Target namespace.
-        valid_until:
-            Optional expiry datetime after which the fact is no longer valid.
-
-        Returns
-        -------
-        Fact
-            The persisted fact with a populated ``id``.
-        """
+        """Record a subject-predicate-object triple in the knowledge graph."""
         self._assert_started()
         fact = Fact(
             subject=subject,
             predicate=predicate,
             object=object,
             namespace=namespace,
-            valid_until=valid_until,
+            source_memory_id=source_memory_id,
         )
-        try:
-            graph_node_id = await self._graphiti.add_fact(fact)
-            fact.source_memory_id = graph_node_id
-        except Exception as exc:
-            logger.warning("Graphiti add_fact failed (no LLM configured?): %s", exc)
+        await self._arcadedb.insert_fact(fact)
         logger.info(
             "Fact stored: id=%s %s %s %s namespace=%s",
-            fact.id,
-            subject,
-            predicate,
-            object,
-            namespace,
+            fact.id, subject, predicate, object, namespace,
         )
         return fact
 
+    async def supersede_fact(self, fact_id: str, namespace: str) -> bool:
+        """Supersede a fact, recording when it stopped being true."""
+        self._assert_started()
+        return await self._arcadedb.supersede_fact(fact_id, namespace)
+
     async def query_graph(
         self,
-        cypher: str,
+        sql: str,
         namespace: str,
         params: dict | None = None,
     ) -> list[dict]:
-        """Execute a read-only Cypher query against Neo4j.
+        """Execute a read-only ArcadeDB SQL query.
 
-        The ``$namespace`` parameter is automatically injected so callers
-        can reference it in their Cypher without passing it explicitly.
-
-        Parameters
-        ----------
-        cypher:
-            A read-only Cypher statement (must start with MATCH, CALL, WITH,
-            or RETURN).
-        namespace:
-            Injected as ``$namespace`` in the query parameters.
-        params:
-            Additional Cypher parameters.
-
-        Returns
-        -------
-        list[dict]
-            Raw records returned by Neo4j.
+        ``$namespace`` is automatically injected into params.
         """
         self._assert_started()
-        return await self._graphiti.raw_query(
-            cypher=cypher, params=params or {}, namespace=namespace
+        return await self._arcadedb.raw_query(sql, namespace, params)
+
+    # ------------------------------------------------------------------
+    # Binary asset operations
+    # ------------------------------------------------------------------
+
+    async def add_asset(
+        self,
+        path: str,
+        format: str,
+        sha256: str,
+        extracted_content: str,
+        namespace: str,
+        created_by: str = "agent",
+        related_memory_ids: list[str] | None = None,
+    ) -> AssetReference:
+        """Register a binary asset reference (draw.io, PDF, PNG, etc.).
+
+        The binary file is never stored in ArcadeDB — only metadata and
+        extracted text. If an asset with the same path already exists and its
+        SHA-256 has changed, the old reference is superseded and a new one is
+        created.
+        """
+        self._assert_started()
+        existing = await self._arcadedb.get_asset_by_path(path, namespace)
+        if existing and existing.sha256 == sha256:
+            logger.debug("Asset %r unchanged (same SHA-256), skipping", path)
+            return existing
+
+        if existing:
+            await self._arcadedb.supersede_asset(existing.id, namespace)
+            logger.debug("Asset %r changed — superseded old record", path)
+
+        asset = AssetReference(
+            path=path,
+            format=format,
+            sha256=sha256,
+            extracted_content=extracted_content,
+            namespace=namespace,
+            created_by=created_by,
+            related_memory_ids=related_memory_ids or [],
         )
+
+        embedding: list[float] | None = None
+        if extracted_content:
+            embedding = await self._embedder.embed(extracted_content[:4000])
+
+        await self._arcadedb.insert_asset(asset, embedding)
+
+        # Link asset to related memories
+        for mem_id in asset.related_memory_ids:
+            try:
+                await self._arcadedb.create_documented_in_edge(mem_id, asset.id, namespace)
+            except Exception as exc:
+                logger.debug("create_documented_in_edge failed (non-fatal): %s", exc)
+
+        logger.info("Asset registered: id=%s path=%r format=%s", asset.id, path, format)
+        return asset
+
+    # ------------------------------------------------------------------
+    # Statistics
+    # ------------------------------------------------------------------
+
+    async def stats(self, namespace: str = "all") -> dict[str, Any]:
+        """Return counts and distribution info for observability."""
+        self._assert_started()
+        return {
+            "memories": await self._arcadedb.count_memories(namespace),
+            "edges": await self._arcadedb.count_edges(namespace),
+            "namespace_distribution": await self._arcadedb.namespace_distribution(namespace),
+        }
+
+    async def visualize(self, namespace: str, limit: int = 100) -> dict:
+        """Return graph data suitable for rendering (nodes + edges)."""
+        self._assert_started()
+        return await self._arcadedb.visualize(namespace=namespace, limit=limit)
