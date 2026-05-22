@@ -331,6 +331,107 @@ This gives you fine-grained control: a contractor working on one project sees on
 
 ---
 
+## How namespace routing actually works
+
+This is the question that trips up most teams: **how does something get to the right namespace?** There is no automatic classifier. Every `memory_write` call includes an explicit `namespace` parameter. The routing is controlled by two things: (1) what you tell Claude Code at the start of a session, and (2) routing rules you write into your `CLAUDE.md` files.
+
+### Option 1 — Tell Claude at session start
+
+```
+"We're working on the Acme integration today.
+ Store everything in myvault:acme unless I say otherwise."
+```
+
+Claude will use that namespace for all writes in the session. You can override mid-session:
+
+```
+"Actually save that FHIR pattern to hc — it's reusable across all customers."
+```
+
+One explicit instruction re-routes that single write to `hc` while the session default stays `myvault:acme`.
+
+### Option 2 — Routing rules in CLAUDE.md (automatic)
+
+Add a routing table to your vault's `CLAUDE.md` so Claude decides automatically:
+
+```markdown
+## engram Namespace Routing
+
+When calling memory_write, choose the namespace as follows:
+
+→ myvault  if content mentions: a customer name, dollar amount, pricing,
+              RFP/RFI, meeting notes with a client, competitive intel
+
+→ hc         if content is: a FHIR pattern, code architecture decision,
+              test standard, CI/CD template, infrastructure pattern,
+              internal tooling knowledge
+
+→ hc:engineering:pa    for PA-specific technical decisions
+→ hc:engineering:p2p   for P2P-specific technical decisions
+
+When in doubt: does it contain a customer name or a dollar sign? → myvault
+Otherwise → hc
+```
+
+Claude reads this at session start and routes automatically without you having to specify.
+
+### Option 3 — Namespace per project type (real example)
+
+Here is how a company like Acme Health would map its actual work:
+
+```
+Your work                          Namespace
+─────────────────────────────────────────────────────────
+PA platform FHIR design            hc:engineering:pa
+P2P integration patterns           hc:engineering:p2p
+CMS-0057f compliance notes         hc:compliance
+Acme RFP response               myvault:acme
+Acme pricing estimate           myvault:acme
+Globex discovery call notes        myvault:globex
+Azure pricing model                myvault:pricing
+Competitive landscape (Redox)      myvault:strategy
+Internal QA automation framework   hc:engineering:qa
+Kubernetes deployment gotchas      hc:infra
+Your personal session notes        personal:default
+```
+
+Notice that the same broad topic (e.g. "Acme") maps to a single namespace. You don't need a namespace per document — you need a namespace per **audience**. Who should be able to search this? Whole engineering team → `hc`. Only people with customer context → `myvault`.
+
+### How the `STARTS WITH` rule changes search scope
+
+When you search `hc`, engram returns results from `hc`, `hc:engineering`, `hc:engineering:pa`, `hc:compliance`, and every other sub-namespace. When you search `hc:engineering:pa`, you get only PA-specific content. This lets you start broad and narrow down:
+
+```
+Broad search (everything technical):
+  memory_search(query="rate limiting", namespace="hc")
+
+Narrow search (just PA):
+  memory_search(query="rate limiting", namespace="hc:engineering:pa")
+
+Private search (customer-specific):
+  memory_search(query="Acme rate limit", namespace="myvault")
+```
+
+### Switching namespaces for different tasks in the same session
+
+You do not need to restart a session to switch namespaces. Each `memory_write` and `memory_search` call takes its own namespace parameter independently. In practice:
+
+```
+Morning: "Working on Acme demo today, use myvault:acme"
+  → All writes go to myvault:acme
+
+After lunch: "Switching to PA platform work, use hc:engineering:pa"
+  → All writes go to hc:engineering:pa
+
+End of day: "That Redis caching pattern I found today should be shared
+             with the whole team — save it to hc"
+  → That one write goes to hc, doesn't affect anything else
+```
+
+The namespace is stateless between tool calls — you can mix namespaces freely within a session by telling Claude which to use each time.
+
+---
+
 ## Practical setup for an AI engineering team
 
 ### Step 1 — Shared engram server
