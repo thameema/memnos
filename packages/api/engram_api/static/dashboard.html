@@ -47,6 +47,14 @@
 
   .ns-wrap { display: flex; align-items: center; gap: 8px; }
   .ns-wrap label { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .ns-wrap select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 28px 6px 10px; font-size: 13px; min-width: 220px;
+    cursor: pointer; appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23718096' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 8px center;
+  }
+  .ns-wrap select:focus { outline: none; border-color: var(--accent); }
   .ns-wrap input {
     background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
     color: var(--text); padding: 6px 10px; font-size: 13px; width: 200px;
@@ -271,8 +279,10 @@
     </div>
     <div class="spacer"></div>
     <div class="ns-wrap">
-      <label for="ns-input">Namespace</label>
-      <input id="ns-input" type="text" value="personal:default" placeholder="personal:default or all" />
+      <label for="ns-select">Namespace</label>
+      <select id="ns-select">
+        <option value="all">All Namespaces</option>
+      </select>
     </div>
     <span id="countdown" title="Next auto-refresh">60s</span>
     <button class="btn btn-primary" id="refresh-btn">
@@ -315,8 +325,9 @@
         <div class="es-title">Your knowledge graph is empty</div>
         <div class="es-sub">
           Start by writing memories from Claude Code using <code>memory_write</code>,
-          or run the Obsidian migration tool.<br><br>
-          Make sure Neo4j is running and the namespace is correct.
+          or import a vault with <code>engram-import</code>.<br><br>
+          With a namespace selected, only memories in that namespace are shown.
+          Switch to <strong>All Namespaces</strong> to see everything.
         </div>
       </div>
       <div id="zoom-controls">
@@ -397,7 +408,48 @@ function getApiKey() {
   return sessionStorage.getItem('engram_key') || '';
 }
 function getNamespace() {
-  return document.getElementById('ns-input').value.trim() || 'personal:default';
+  return document.getElementById('ns-select').value || 'all';
+}
+
+async function populateNamespaceDropdown() {
+  try {
+    const stats = await apiFetch('/api/v1/graph/stats?namespace=all');
+    const dist = stats.namespace_distribution || [];
+    const select = document.getElementById('ns-select');
+    const current = select.value;
+
+    // Remove all options except "All Namespaces"
+    while (select.options.length > 1) select.remove(1);
+
+    // Add separator optgroup then each namespace sorted by count
+    const grp = document.createElement('optgroup');
+    grp.label = `─── ${dist.length} namespaces ───`;
+    select.appendChild(grp);
+
+    // Group by top-level prefix (e.g. org:myorg:private vs org:myorg:engineering)
+    const groups = {};
+    for (const { namespace: ns, count } of dist) {
+      const parts = ns.split(':');
+      const prefix = parts.slice(0, 3).join(':');
+      if (!groups[prefix]) groups[prefix] = [];
+      groups[prefix].push({ ns, count });
+    }
+
+    for (const prefix of Object.keys(groups).sort()) {
+      const og = document.createElement('optgroup');
+      og.label = prefix;
+      for (const { ns, count } of groups[prefix]) {
+        const opt = document.createElement('option');
+        opt.value = ns;
+        opt.textContent = `${ns}  (${count})`;
+        if (ns === current) opt.selected = true;
+        og.appendChild(opt);
+      }
+      select.appendChild(og);
+    }
+  } catch (e) {
+    console.warn('Could not populate namespace dropdown:', e);
+  }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -417,7 +469,7 @@ function saveSettings() {
   sessionStorage.setItem('engram_url', url);
   sessionStorage.setItem('engram_key', key);
   closeSettings();
-  loadAll();
+  populateNamespaceDropdown().then(() => loadAll());
 }
 
 document.getElementById('settings-btn').addEventListener('click', openSettings);
@@ -986,23 +1038,18 @@ function resetCountdown() {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 document.getElementById('refresh-btn').addEventListener('click', loadAll);
 
-document.getElementById('ns-input').addEventListener('input', () => {
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(loadAll, 300);
-});
+document.getElementById('ns-select').addEventListener('change', loadAll);
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  Boot
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 (function init() {
-  // The engram server pre-populates sessionStorage with its own API key via a
-  // server-injected <script> block in </head>.  If for some reason the key is
-  // still missing (e.g. accessing a remote engram without the injection), show
-  // the settings modal so the user can enter it manually.
-  loadAll();
   if (!getApiKey()) {
     openSettings();
+    return;
   }
+  // First populate the dropdown (fetches stats for "all"), then load the view.
+  populateNamespaceDropdown().then(() => loadAll());
 })();
 </script>
 </body>
