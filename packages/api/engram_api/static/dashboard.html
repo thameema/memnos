@@ -463,10 +463,9 @@ async function loadAll() {
   resetCountdown();
 
   try {
-    const [stats, viz, mems] = await Promise.allSettled([
+    const [stats, viz] = await Promise.allSettled([
       apiFetch(`/api/v1/graph/stats?namespace=${encodeURIComponent(ns)}`),
       apiFetch(`/api/v1/graph/visualize?namespace=${encodeURIComponent(ns)}&limit=150`),
-      apiFetch(`/api/v1/memory/search?q=&ns=${encodeURIComponent(ns)}&top_k=20&mode=vector`),
     ]);
 
     // stats
@@ -478,11 +477,29 @@ async function loadAll() {
       console.warn('Stats failed:', stats.reason);
     }
 
-    // graph viz
+    // graph viz + derive recent memories from nodes (avoids empty-query vector search issue)
     if (viz.status === 'fulfilled') {
       graphData = viz.value;
+      // Build a "recent memories" list from graph nodes sorted newest-first.
+      // This is shown in the right panel when no node is selected.
+      memoriesData = (graphData.nodes || [])
+        .filter(n => n.label && n.label.trim())
+        .sort((a, b) => {
+          const da = a.created_at ? new Date(a.created_at).getTime() : 0;
+          const db = b.created_at ? new Date(b.created_at).getTime() : 0;
+          return db - da;
+        })
+        .slice(0, 20)
+        .map(n => ({
+          id: n.id,
+          content: n.label,
+          namespace: n.namespace || '',
+          tags: [],
+          created_at: n.created_at || null,
+        }));
     } else {
       graphData = { nodes: [], edges: [] };
+      memoriesData = [];
       if (stats.status === 'rejected' && viz.status === 'rejected') {
         showError('Cannot reach the engram API at ' + getBaseUrl() + '. Check your settings and ensure the server is running.');
       } else {
@@ -490,13 +507,6 @@ async function loadAll() {
       }
     }
     renderGraph(graphData);
-
-    // memories
-    if (mems.status === 'fulfilled') {
-      memoriesData = Array.isArray(mems.value) ? mems.value : [];
-    } else {
-      memoriesData = [];
-    }
     if (!selectedNode) renderRecentMemories();
 
     // bottom panels

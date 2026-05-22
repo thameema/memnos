@@ -30,25 +30,34 @@ Every project decision, code pattern, error you've debugged, and architectural c
 
 ---
 
-## How is engram different from Obsidian, Letta, mem0, or OpenHermes?
+## How is engram different from Obsidian, Letta, mem0, or Hermes agents?
 
-There are several tools people use for AI memory. Here is how engram is different:
+There are several tools people use for AI memory and local agents. Here is how engram is different:
 
-| | engram | Obsidian vault | Letta (formerly MemGPT) | mem0 | OpenHermes |
+| | engram | Obsidian vault | Letta (formerly MemGPT) | mem0 | Hermes agents |
 |---|---|---|---|---|---|
-| **Primary audience** | Claude Code / AI engineering teams | Individual engineers (manual notes) | General LLM apps | App developers (SaaS API) | Chat / assistant |
-| **Works with Claude Code** | Native MCP integration | Manual CLAUDE.md file | No direct MCP | API wrapper needed | No |
-| **Memory capture** | Automatic — agents write directly | Manual — engineer writes notes | Agent-in-memory | API call required | No |
+| **What it is** | Memory + orchestration layer | Manual note vault | Stateful agent framework | Cloud memory API | Fine-tuned LLM for agents |
+| **Primary audience** | Claude Code / AI engineering teams | Individual engineers (manual notes) | General LLM app developers | App developers (SaaS API) | Developers running local LLMs |
+| **Works with Claude Code** | Native MCP integration | Manual CLAUDE.md file | No direct MCP | API wrapper needed | Different runtime (local LLM) |
+| **Memory capture** | Automatic — agents write directly | Manual — engineer writes notes | Agent-in-memory only | API call required | No memory layer |
 | **Knowledge graph** | Neo4j + Graphiti (temporal) | No — flat Markdown files | Custom in-context | Flat key-value | No |
 | **Team sharing** | Real-time shared graph | Async Git/iCloud sync | No | API-based | No |
-| **Self-improving** | Nightly reflection, heuristic decay | No | No | No | No |
-| **Multi-agent orchestration** | Built-in (fork/join, critic loop) | No | Agent-in-memory architecture | No | No |
+| **Self-improving** | Nightly reflection, heuristic decay | No | No | No | Model is static |
+| **Multi-agent orchestration** | Built-in (fork/join, critic loop) | No | Agent-in-memory architecture | No | You build it yourself |
 | **Mobile gateway** | Telegram + WhatsApp | No | No | No | No |
-| **Runs locally** | Yes — Docker + Python, no cloud | Yes — local files | Partial | Cloud-only | No |
+| **Runs locally** | Yes — Docker + Python, no cloud | Yes — local files | Partial | Cloud-only | Yes — local inference |
 | **Access control** | Namespace ACL per API key | Folder structure only | No | API key only | No |
-| **Open source** | MIT, self-hostable | Partial (core OSS) | Apache 2.0 | Partial | MIT |
+| **Open source** | MIT, self-hostable | Partial (core OSS) | Apache 2.0 | Partial | Apache 2.0 (NousResearch) |
 
-**The short version:** Obsidian makes one engineer's manual notes available to Claude Code — you are still the bottleneck for what gets captured. engram captures knowledge automatically, shares it across your whole team in real time, and learns from experience without anyone curating it. See [docs/enterprise-ai-engineering.md](docs/enterprise-ai-engineering.md) for the full comparison and the enterprise team model.
+### Hermes and engram are complementary, not competing
+
+**Hermes** (by NousResearch) is a family of fine-tuned open-source LLMs — Hermes 2 Pro, Hermes 3, etc. — built on Mistral and LLaMA, specifically tuned for structured JSON output, tool use, and agentic reasoning. People use Hermes as the *brain* of a local AI agent: it decides what to do and calls tools.
+
+engram is the *memory* of an agent: it stores what the agent learned, surfaces relevant context, and coordinates work across agents.
+
+They work well together. You can run a Hermes-based agent locally and point it at engram's REST API for persistent memory storage, or use engram's `openrouter` runtime mode to call Hermes-compatible endpoints as the LLM backend.
+
+**The short version:** Obsidian is a notebook you curate manually. Hermes is an LLM you run locally. Both are useful but neither gives you automatic cross-session memory, team knowledge sharing, or self-improvement. engram is the layer that does those things — and it works alongside both. See [docs/enterprise-ai-engineering.md](docs/enterprise-ai-engineering.md) for the full enterprise team model.
 
 ---
 
