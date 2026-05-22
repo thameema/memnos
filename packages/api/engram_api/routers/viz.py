@@ -127,27 +127,44 @@ async def graph_stats(
     top_tags_rows = await _cypher_rows(client, top_tags_cypher, ns)
 
     # ------------------------------------------------------------------
-    # Memory count + recent activity from vector search
+    # Memory count + recent activity + namespace distribution from vector search
     # ------------------------------------------------------------------
     memory_count = 0
     recent_activity: list[dict] = []
+    vector_results: list = []
 
     try:
-        results = await client.search("", ns, top_k=100, mode="vector")
-        if results:
-            memory_count = len(results)
-            recent_activity = _build_date_histogram(results)
+        vector_results = await client.search("", ns, top_k=100, mode="vector") or []
+        if vector_results:
+            memory_count = len(vector_results)
+            recent_activity = _build_date_histogram(vector_results)
     except Exception as exc:
         logger.warning("Vector search for stats failed: %s", exc)
 
     # ------------------------------------------------------------------
-    # Shape the response
+    # Shape the response — prefer Neo4j namespace distribution; fall back
+    # to one derived from the vector results when the graph is empty.
     # ------------------------------------------------------------------
-    namespace_distribution = [
-        {"namespace": str(row.get("namespace", "")), "count": int(row.get("count", 0))}
-        for row in ns_dist_rows
-        if row.get("namespace")
-    ]
+    namespace_distribution: list[dict] = []
+
+    if ns_dist_rows:
+        namespace_distribution = [
+            {"namespace": str(row.get("namespace", "")), "count": int(row.get("count", 0))}
+            for row in ns_dist_rows
+            if row.get("namespace")
+        ]
+    elif vector_results:
+        from collections import Counter
+        ns_counts: Counter = Counter()
+        for r in vector_results:
+            mem = getattr(r, "memory", r)
+            mem_ns = getattr(mem, "namespace", None) or ""
+            if mem_ns:
+                ns_counts[mem_ns] += 1
+        namespace_distribution = [
+            {"namespace": k, "count": v}
+            for k, v in ns_counts.most_common(20)
+        ]
 
     top_tags = [
         {"tag": str(row.get("tag", "")), "count": int(row.get("count", 0))}
@@ -203,6 +220,51 @@ def _build_date_histogram(results: list) -> list[dict]:
 # GET /graph/visualize
 # ---------------------------------------------------------------------------
 
+async def _visualize_from_vector(client, namespace: str, limit: int) -> dict:
+    """
+    Return memories from the vector store as graph nodes when Neo4j has no data.
+
+    Each memory becomes a single isolated node; there are no edges because the
+    relationship-extraction pipeline (Graphiti) hasn't run yet.  The caller
+    can trigger extraction by writing memories with an LLM API key configured.
+    """
+    try:
+        results = await client.search("", namespace, top_k=min(limit, 100), mode="vector") or []
+        # If namespace-specific search is empty, broaden to all namespaces
+        if not results and namespace not in ("all", "", "*"):
+            results = await client.search("", "all", top_k=min(limit, 100), mode="vector") or []
+    except Exception as exc:
+        logger.warning("Vector fallback for visualize failed: %s", exc)
+        return {"nodes": [], "edges": [], "truncated": False}
+
+    if not results:
+        return {"nodes": [], "edges": [], "truncated": False}
+
+    nodes: list[dict] = []
+    for r in results[:limit]:
+        mem = getattr(r, "memory", r)
+        mem_id = str(getattr(mem, "id", "") or "")
+        content = str(getattr(mem, "content", "") or "")
+        label = content[:80] + ("…" if len(content) > 80 else "")
+        ns = str(getattr(mem, "namespace", "") or "")
+        created_at = getattr(mem, "created_at", None)
+        created_str = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at or "")
+        nodes.append({
+            "id": mem_id or f"mem-{len(nodes)}",
+            "label": label,
+            "namespace": ns,
+            "type": "Memory",
+            "created_at": created_str,
+        })
+
+    return {
+        "nodes": nodes,
+        "edges": [],
+        "truncated": len(results) >= limit,
+        "source": "vector",
+    }
+
+
 _VISUALIZE_CYPHER = """\
 MATCH (n)
 WHERE $ns = 'all' OR n.namespace STARTS WITH $ns
@@ -249,10 +311,13 @@ async def graph_visualize(
         rows = await client.query_graph(_VISUALIZE_CYPHER, namespace, params)
     except Exception as exc:
         logger.warning("Visualize Cypher query failed: %s", exc)
-        return {"nodes": [], "edges": [], "truncated": False}
+        rows = []
 
     if not rows:
-        return {"nodes": [], "edges": [], "truncated": False}
+        # Neo4j graph is empty (e.g. Graphiti entity extraction hasn't run yet).
+        # Fall back to returning vector-store memories as nodes so the dashboard
+        # shows something useful immediately after writing the first memories.
+        return await _visualize_from_vector(client, namespace, limit)
 
     # ------------------------------------------------------------------
     # Assemble nodes and edges; deduplicate by id

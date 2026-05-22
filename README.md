@@ -32,32 +32,38 @@ Every project decision, code pattern, error you've debugged, and architectural c
 
 ## How is engram different from Obsidian, Letta, mem0, or Hermes agents?
 
-There are several tools people use for AI memory and local agents. Here is how engram is different:
+There are several tools in this space. Here is an honest comparison:
 
-| | engram | Obsidian vault | Letta (formerly MemGPT) | mem0 | Hermes agents |
-|---|---|---|---|---|---|
-| **What it is** | Memory + orchestration layer | Manual note vault | Stateful agent framework | Cloud memory API | Fine-tuned LLM for agents |
-| **Primary audience** | Claude Code / AI engineering teams | Individual engineers (manual notes) | General LLM app developers | App developers (SaaS API) | Developers running local LLMs |
-| **Works with Claude Code** | Native MCP integration | Manual CLAUDE.md file | No direct MCP | API wrapper needed | Different runtime (local LLM) |
-| **Memory capture** | Automatic — agents write directly | Manual — engineer writes notes | Agent-in-memory only | API call required | No memory layer |
-| **Knowledge graph** | Neo4j + Graphiti (temporal) | No — flat Markdown files | Custom in-context | Flat key-value | No |
-| **Team sharing** | Real-time shared graph | Async Git/iCloud sync | No | API-based | No |
-| **Self-improving** | Nightly reflection, heuristic decay | No | No | No | Model is static |
-| **Multi-agent orchestration** | Built-in (fork/join, critic loop) | No | Agent-in-memory architecture | No | You build it yourself |
-| **Mobile gateway** | Telegram + WhatsApp | No | No | No | No |
-| **Runs locally** | Yes — Docker + Python, no cloud | Yes — local files | Partial | Cloud-only | Yes — local inference |
-| **Access control** | Namespace ACL per API key | Folder structure only | No | API key only | No |
-| **Open source** | MIT, self-hostable | Partial (core OSS) | Apache 2.0 | Partial | Apache 2.0 (NousResearch) |
+| | engram | Obsidian vault | Letta (formerly MemGPT) | mem0 | Hermes agents | OpenClaw |
+|---|---|---|---|---|---|---|
+| **What it is** | Memory + orchestration layer | Manual note vault | Stateful agent framework | Cloud memory API | Fine-tuned LLMs for tool use | Node.js agent platform |
+| **Primary audience** | Claude Code / AI engineering teams | Individual engineers, writers | General LLM app developers | App developers (SaaS API) | Developers running local LLMs | Developers, power users |
+| **Works with Claude Code** | Native MCP integration | Manual CLAUDE.md file | No direct MCP | API wrapper needed | Different runtime (local LLM) | No direct MCP |
+| **Memory capture** | Automatic — agents write directly | Manual — you write notes | Sophisticated in-agent memory | API call required | No built-in memory layer | Shallow MEMORY files |
+| **Knowledge graph** | Neo4j + Graphiti (temporal) | No — flat Markdown files | Structured in-context store | Flat key-value store | No | No |
+| **Team sharing** | Real-time shared graph | Git/iCloud sync (async) | No | API-based (cloud) | No | No |
+| **Self-improving** | Nightly reflection, heuristic decay | No | No | No | Model weights are static | No |
+| **Multi-agent orchestration** | Built-in (fork/join, critic loop) | No | Agent-in-memory architecture | No | You build it yourself | No |
+| **Mobile gateway** | Telegram + WhatsApp | No | No | No | No | 50+ channels built-in |
+| **Runs locally** | Yes — Docker + Python | Yes — plain files | Partial (some cloud deps) | Cloud-only | Yes — local inference | Yes — Node.js |
+| **Access control** | Namespace ACL per API key | Folder structure only | No | API key only | No | No |
+| **Open source** | MIT, self-hostable | Partial (core OSS) | Apache 2.0 | Partial (SDK only) | Apache 2.0 (NousResearch) | MIT |
 
-### Hermes and engram are complementary, not competing
+### Where each tool genuinely wins
 
-**Hermes** (by NousResearch) is a family of fine-tuned open-source LLMs — Hermes 2 Pro, Hermes 3, etc. — built on Mistral and LLaMA, specifically tuned for structured JSON output, tool use, and agentic reasoning. People use Hermes as the *brain* of a local AI agent: it decides what to do and calls tools.
+**Obsidian** wins when you want human-readable, manually curated notes with zero infrastructure. Notes are plain Markdown files — you can edit them in any editor, commit them to git, and read them without any running service. If you want direct control over exactly what gets stored and why, Obsidian is hard to beat. See [Migrating from Obsidian](#migrating-from-obsidian) if you want to bring your existing vault into engram.
 
-engram is the *memory* of an agent: it stores what the agent learned, surfaces relevant context, and coordinates work across agents.
+**Letta** (formerly MemGPT) has the most architecturally sophisticated approach to in-agent memory. It treats the LLM itself as a process with working memory, a context manager, and persistent storage — the agent decides what to remember and forget within its own reasoning loop. This is powerful for stateful agents that need to manage their own memory policies.
 
-They work well together. You can run a Hermes-based agent locally and point it at engram's REST API for persistent memory storage, or use engram's `openrouter` runtime mode to call Hermes-compatible endpoints as the LLM backend.
+**mem0** wins on operational simplicity. It is a clean REST API — one call to write, one to search — with a reported 91% reduction in p95 latency compared to full RAG pipelines. If you need a drop-in memory layer with minimal setup and no infrastructure to run, mem0 is a solid choice (the open-source version self-hosts; the cloud version is a paid service).
 
-**The short version:** Obsidian is a notebook you curate manually. Hermes is an LLM you run locally. Both are useful but neither gives you automatic cross-session memory, team knowledge sharing, or self-improvement. engram is the layer that does those things — and it works alongside both. See [docs/enterprise-ai-engineering.md](docs/enterprise-ai-engineering.md) for the full enterprise team model.
+**Hermes agents** (NousResearch) — Hermes 2 Pro, Hermes 3, etc. — are LLMs fine-tuned for structured JSON output, tool use, and agentic reasoning. They are excellent at the *reasoning and planning* part of an agent. Hermes does not provide a memory or orchestration layer — you supply those. You can point a Hermes-based agent at engram's REST API for persistent memory.
+
+**OpenClaw** wins on messaging channel breadth. It ships with 50+ pre-built channel adapters (Discord, Telegram, WhatsApp, Slack, X/Twitter, and more) and a large template library, making it fast to deploy an interactive bot across multiple platforms. Its memory system is shallow (flat key-value files); engram can serve as a deeper memory backend for OpenClaw agents.
+
+**engram** wins when you need all three things together in one self-hosted system: automatic cross-session memory that Claude Code writes without manual action, a temporal knowledge graph that connects facts across months of work, and built-in multi-agent task orchestration. The main trade-off: it requires Docker (Neo4j + Qdrant), has a higher operational footprint than Obsidian or mem0, and graph entity extraction requires an LLM API key.
+
+See [docs/enterprise-ai-engineering.md](docs/enterprise-ai-engineering.md) for the full enterprise team model.
 
 ---
 
