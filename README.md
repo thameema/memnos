@@ -70,6 +70,21 @@ engram is not a replacement for Claude Code. It is the long-term memory layer th
 
 ---
 
+## Migrating from Obsidian
+
+Already using Obsidian as your external brain for Claude Code? Migrate your entire vault into engram in one command:
+
+```bash
+python3 tools/migrate_obsidian.py \
+  --vault ~/vaults/my-vault \
+  --namespace obsidian:my-vault \
+  --api-key your-engram-api-key
+```
+
+Imports every note as a memory, maps `[[wikilinks]]` to graph edges, and maps folder structure to sub-namespaces. Run `--dry-run` first to preview. See [docs/obsidian-migration.md](docs/obsidian-migration.md) for full guide.
+
+---
+
 ## Quick Install
 
 **One command (macOS or Linux):**

@@ -103,10 +103,30 @@ Use get_task_result with task_id: <id> and wait: true
 
 Send a message to your bot — engram will respond.
 
-## 7. Optional: Telegram / WhatsApp gateway
+## 7. View the knowledge graph dashboard
+
+Open `http://localhost:8766/dashboard` in your browser. Enter your API key when prompted. You will see:
+- Live stats: memory count, graph nodes, edges, namespaces
+- Interactive force-directed graph — click any node to inspect it
+- Namespace distribution and 30-day activity timeline
+
+## 8. Optional: Migrate your Obsidian vault
+
+If you have existing notes in Obsidian, import them:
+
+```bash
+python3 tools/migrate_obsidian.py \
+  --vault ~/path/to/your/vault \
+  --namespace obsidian:my-vault \
+  --api-key your-engram-api-key
+```
+
+See [docs/obsidian-migration.md](obsidian-migration.md) for the full guide.
+
+## 9. Optional: Telegram / WhatsApp gateway
 
 See [docs/gateway.md](gateway.md) for full setup instructions, mode compatibility (API vs Claude Code), per-user namespaces, and troubleshooting.
 
-## 8. Optional: Remote deployment
+## 10. Optional: Remote deployment
 
 See [docs/remote-deployment.md](remote-deployment.md).

@@ -262,7 +262,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
-    from engram_api.routers import admin, graph, memory, tasks  # noqa: PLC0415
+    import pathlib
+
+    from fastapi.responses import HTMLResponse
+
+    from engram_api.routers import admin, graph, memory, tasks, viz  # noqa: PLC0415
 
     application = FastAPI(
         title="engram",
@@ -288,10 +292,22 @@ def create_app() -> FastAPI:
     application.include_router(graph.router, prefix=api_prefix)
     application.include_router(tasks.router, prefix=api_prefix)
     application.include_router(admin.router, prefix=api_prefix)
+    application.include_router(viz.router, prefix=api_prefix)
+
+    # Interactive knowledge graph dashboard
+    _dashboard_path = pathlib.Path(__file__).parent / "static" / "dashboard.html"
+
+    @application.get("/dashboard", include_in_schema=False, response_class=HTMLResponse)
+    async def dashboard():
+        """Serve the interactive knowledge graph dashboard."""
+        try:
+            return HTMLResponse(content=_dashboard_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return HTMLResponse(content="<h1>Dashboard not found</h1>", status_code=404)
 
     @application.get("/", include_in_schema=False)
     async def root():
-        return {"service": "engram", "version": "0.1.0", "docs": "/docs"}
+        return {"service": "engram", "version": "0.1.0", "docs": "/docs", "dashboard": "/dashboard"}
 
     return application
 
