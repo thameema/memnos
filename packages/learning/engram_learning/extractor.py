@@ -37,10 +37,11 @@ Respond in JSON only, no markdown:
 
 
 class SkillExtractor:
-    def __init__(self, api_key: str, model: str, skill_store: SkillStore):
+    def __init__(self, api_key: str, model: str, skill_store: SkillStore, engram_client=None):
         self._client = anthropic.AsyncAnthropic(api_key=api_key)
         self.model = model
         self.store = skill_store
+        self._engram_client = engram_client
 
     async def maybe_extract(self, episode: EpisodicRecord):
         if not episode.quality_score or episode.quality_score < 0.8:
@@ -84,3 +85,21 @@ class SkillExtractor:
             )
             await self.store.add(template)
             logger.info("Skill template extracted: %s", template.name)
+            # Sync to ArcadeDB so the planner can find it via vector search
+            if self._engram_client:
+                try:
+                    steps_text = "\n".join(template.steps)
+                    patterns_text = ", ".join(template.trigger_patterns)
+                    content = (
+                        f"Skill template: {template.description}\n"
+                        f"Triggers: {patterns_text}\n"
+                        f"Steps:\n{steps_text}"
+                    )
+                    await self._engram_client.add(
+                        content=content,
+                        namespace=episode.namespace,
+                        tags=["skill_template", "learning"],
+                        source="skill_extractor",
+                    )
+                except Exception as sync_exc:
+                    logger.debug("ArcadeDB skill template sync failed: %s", sync_exc)

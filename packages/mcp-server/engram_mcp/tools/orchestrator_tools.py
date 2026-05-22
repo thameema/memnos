@@ -182,10 +182,14 @@ async def handle_get_heuristics(
     try:
         from engram_learning.heuristic_store import HeuristicStore  # type: ignore
 
-        store = HeuristicStore(namespace=namespace)
-        heuristics = await store.get(query=query, limit=limit)
-        if heuristics is None:
-            heuristics = []
+        store = HeuristicStore()
+        await store.init()
+        if query:
+            tags = [t.strip() for t in query.replace(",", " ").split() if t.strip()]
+            heuristics = await store.search(namespace, query_tags=tags, limit=limit)
+        else:
+            heuristics = await store.get_all(namespace)
+            heuristics = heuristics[:limit]
     except ImportError:
         logger.warning("engram_learning not installed; returning empty heuristics")
         heuristics = []
@@ -229,14 +233,17 @@ async def handle_add_heuristic(
 
     try:
         from engram_learning.heuristic_store import HeuristicStore  # type: ignore
+        from engram_learning.models import Heuristic  # type: ignore
 
-        store = HeuristicStore(namespace=namespace)
-        heuristic = await store.add(
-            rule=rule,
+        store = HeuristicStore()
+        await store.init()
+        heuristic = Heuristic(
             namespace=namespace,
+            rule=rule,
             rationale=rationale,
             applies_to_tags=applies_to_tags or [],
         )
+        await store.add(heuristic)
     except ImportError:
         logger.warning("engram_learning not installed; heuristic not persisted")
         from datetime import timezone
@@ -281,19 +288,36 @@ async def handle_trigger_reflection(
     logger.debug("trigger_reflection | ns=%s lookback_days=%d", namespace, lookback_days)
 
     try:
-        from engram_learning.reflection import ReflectionAgent  # type: ignore
+        import os
+        from engram_learning.episode_store import EpisodeStore  # type: ignore
+        from engram_learning.heuristic_store import HeuristicStore  # type: ignore
+        from engram_learning.reflection import ReflectionService  # type: ignore
 
-        agent = ReflectionAgent(namespace=namespace)
-        result = await agent.run(lookback_days=lookback_days)
-        message = str(result) if result is not None else "Reflection completed"
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        model = os.environ.get("ENGRAM_REFLECTION_MODEL", "claude-haiku-4-5-20251001")
+
+        ep_store = EpisodeStore()
+        await ep_store.init()
+        h_store = HeuristicStore()
+        await h_store.init()
+
+        service = ReflectionService(
+            api_key=api_key,
+            model=model,
+            episode_store=ep_store,
+            heuristic_store=h_store,
+            namespace=namespace,
+        )
+        await service.run(lookback_days=lookback_days)
+        message = f"Reflection completed for namespace {namespace}"
         triggered = True
     except ImportError:
         logger.warning("engram_learning not installed; reflection not available")
         message = "engram_learning package not installed"
         triggered = False
     except Exception as exc:
-        logger.exception("Reflection agent raised an error: %s", exc)
-        message = f"Reflection agent error: {exc}"
+        logger.exception("Reflection service raised an error: %s", exc)
+        message = f"Reflection error: {exc}"
         triggered = False
 
     return {

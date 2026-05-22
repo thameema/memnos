@@ -98,6 +98,8 @@ class TelegramGateway:
         self.app: Application | None = None
         # Per-user active namespace (overrideable with /ns)
         self._user_namespace: dict[int, str] = {}
+        # Track the most recent completed task per user for correction feedback
+        self._last_task_id: dict[int, str] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -339,10 +341,11 @@ class TelegramGateway:
             "Telegram message from user_id=%d ns=%s text=%r", user_id, namespace, text[:120]
         )
 
-        # Detect corrections and log them (learning hook)
-        from engram_gateway.telegram.formatter import format_result as _fmt  # already imported
+        # Detect corrections and record them for self-learning
         try:
-            from engram_learning.feedback import detect_correction  # type: ignore
+            from engram_learning.feedback import detect_correction, FeedbackService  # type: ignore
+            from engram_learning.episode_store import EpisodeStore  # type: ignore
+            from engram_learning.quality_store import QualityStore  # type: ignore
             is_correction = detect_correction(text)
         except ImportError:
             is_correction = False
@@ -351,6 +354,24 @@ class TelegramGateway:
             logger.info(
                 "Correction detected from user_id=%d in ns=%s: %r", user_id, namespace, text[:120]
             )
+            last_tid = self._last_task_id.get(user_id)
+            if last_tid:
+                async def _record_correction(task_id: str, correction: str) -> None:
+                    try:
+                        ep_store = EpisodeStore()
+                        await ep_store.init()
+                        q_store = QualityStore()
+                        await q_store.init()
+                        svc = FeedbackService(
+                            episode_store=ep_store,
+                            quality_store=q_store,
+                        )
+                        await svc.record_correction(task_id, correction)
+                    except Exception as fb_exc:
+                        logger.debug("Feedback recording failed: %s", fb_exc)
+
+                import asyncio as _asyncio
+                _asyncio.create_task(_record_correction(last_tid, text))
 
         # Send "Working…" message so user gets immediate feedback
         working_msg = await update.message.reply_text(
@@ -367,6 +388,9 @@ class TelegramGateway:
             task = await self.orchestrator.run(text, namespace)
             result_text: str = ""
             if task is not None:
+                task_id_str = str(getattr(task, "id", getattr(task, "task_id", "")))
+                if task_id_str:
+                    self._last_task_id[user_id] = task_id_str
                 result_text = str(getattr(task, "result", "") or "")
                 if not result_text:
                     error = getattr(task, "error", None)

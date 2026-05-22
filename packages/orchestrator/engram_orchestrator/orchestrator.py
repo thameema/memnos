@@ -174,11 +174,30 @@ class Orchestrator:
                     prompt=st_dict["prompt"],
                     agent=st_dict.get("agent") or agent,
                 )
-                # If no explicit agent, try router match
+                # If no explicit agent, try router match first, then quality routing
                 if not st.agent and self._router:
                     matched = await self._router.match(st.prompt, namespace)
                     if matched:
                         st.agent = matched.get("name")
+
+                # Quality routing: prefer historically best-performing agent when data exists
+                if task.tags:
+                    try:
+                        from engram_learning.quality_store import QualityStore  # type: ignore
+
+                        qstore = QualityStore()
+                        await qstore.init()
+                        for tag in task.tags:
+                            best_agent = await qstore.get_best_agent(tag, namespace, min_samples=5)
+                            if best_agent:
+                                st.agent = best_agent
+                                logger.debug(
+                                    "Quality routing: selected agent %s for tag %s",
+                                    best_agent, tag,
+                                )
+                                break
+                    except (ImportError, Exception) as q_exc:
+                        logger.debug("Quality routing unavailable: %s", q_exc)
 
                 subtasks.append(st)
                 await self._task_store.save_subtask(st)
@@ -331,7 +350,9 @@ class Orchestrator:
             # Best-effort episodic record — requires engram_learning
             try:
                 from engram_learning.episode_store import EpisodeStore  # type: ignore
+                from engram_learning.extractor import SkillExtractor  # type: ignore
                 from engram_learning.models import EpisodicRecord, Outcome  # type: ignore
+                from engram_learning.skill_store import SkillStore  # type: ignore
 
                 ep_store = EpisodeStore()
                 await ep_store.init()
@@ -354,6 +375,21 @@ class Orchestrator:
                 logger.debug(
                     "Orchestrator: episode %s saved tags=%s", ep.id[:8], ep.tags
                 )
+
+                # Background skill extraction — fires-and-forgets, never blocks task completion
+                api_key = self._config.runtime.api.api_key
+                model = self._config.runtime.api.model
+                skill_store = SkillStore()
+                await skill_store.init()
+                extractor = SkillExtractor(
+                    api_key=api_key,
+                    model=model,
+                    skill_store=skill_store,
+                    engram_client=self._engram_client,
+                )
+                bg = asyncio.create_task(extractor.maybe_extract(ep))
+                self._background_tasks.add(bg)
+                bg.add_done_callback(self._background_tasks.discard)
             except (ImportError, Exception) as ep_exc:
                 logger.debug("Orchestrator: episode not recorded — %s", ep_exc)
 

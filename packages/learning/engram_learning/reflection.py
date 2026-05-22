@@ -69,12 +69,14 @@ class ReflectionService:
         episode_store: EpisodeStore,
         heuristic_store: HeuristicStore,
         namespace: str,
+        engram_client=None,
     ):
         self._client = anthropic.AsyncAnthropic(api_key=api_key)
         self.model = model
         self.episodes = episode_store
         self.heuristics = heuristic_store
         self.namespace = namespace
+        self._engram_client = engram_client
 
     async def run(self, lookback_days: int = 7):
         episodes = await self.episodes.get_recent(self.namespace, lookback_days)
@@ -119,6 +121,20 @@ class ReflectionService:
                 )
                 await self.heuristics.add(h)
                 logger.info("New heuristic added: %s", h.rule[:80])
+                # Sync to ArcadeDB so the planner can find it via vector search
+                if self._engram_client:
+                    try:
+                        content = f"Heuristic: {h.rule}"
+                        if h.rationale:
+                            content += f"\nRationale: {h.rationale}"
+                        await self._engram_client.add(
+                            content=content,
+                            namespace=self.namespace,
+                            tags=["heuristic", "learning"] + list(h.applies_to_tags),
+                            source="reflection",
+                        )
+                    except Exception as sync_exc:
+                        logger.debug("ArcadeDB heuristic sync failed: %s", sync_exc)
             except Exception as exc:
                 logger.warning("Failed to add heuristic: %s", exc)
 

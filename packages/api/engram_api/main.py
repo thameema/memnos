@@ -120,6 +120,7 @@ async def _start_learning_scheduler(config, client) -> None:
             episode_store=episode_store,
             heuristic_store=heuristic_store,
             namespace=namespace,
+            engram_client=client,
         )
 
         decay_service = HeuristicDecayService(
@@ -128,11 +129,24 @@ async def _start_learning_scheduler(config, client) -> None:
             decay_rate=getattr(learning_cfg.heuristic_decay, "decay_rate", 0.9),
         )
 
+        def _make_reflection_service(ns: str) -> ReflectionService:
+            """Factory for per-namespace ReflectionService instances."""
+            return ReflectionService(
+                api_key=api_key,
+                model=model,
+                episode_store=episode_store,
+                heuristic_store=heuristic_store,
+                namespace=ns,
+                engram_client=client,
+            )
+
         scheduler = LearningScheduler(
             config=config,
             reflection_service=reflection_service,
             decay_service=decay_service,
             namespace=namespace,
+            episode_store=episode_store,
+            reflection_factory=_make_reflection_service,
         )
         scheduler.start()
         logger.info("Learning scheduler started")

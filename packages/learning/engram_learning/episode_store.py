@@ -90,6 +90,17 @@ class EpisodeStore:
                 rows = await cur.fetchall()
                 return [self._row_to_episode(r) for r in rows]
 
+    async def get_active_namespaces(self, days: int = 7) -> list[str]:
+        """Return distinct namespaces that have had episodes in the last *days* days."""
+        since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT DISTINCT namespace FROM episodes WHERE created_at >= ?",
+                (since,),
+            ) as cur:
+                rows = await cur.fetchall()
+                return [r[0] for r in rows if r[0]]
+
     async def update_outcome(
         self,
         episode_id: str,
