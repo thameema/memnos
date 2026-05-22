@@ -30,22 +30,25 @@ Every project decision, code pattern, error you've debugged, and architectural c
 
 ---
 
-## How is engram different from Letta, mem0, or OpenHermes?
+## How is engram different from Obsidian, Letta, mem0, or OpenHermes?
 
-There are several excellent memory tools for LLMs. Here is how engram is different:
+There are several tools people use for AI memory. Here is how engram is different:
 
-| | engram | Letta (formerly MemGPT) | mem0 | OpenHermes |
-|---|---|---|---|---|
-| **Primary audience** | Claude Code users | General LLM apps | App developers (SaaS API) | Chat / assistant |
-| **Works with Claude Code** | Native MCP integration | No direct MCP | API wrapper needed | No |
-| **Knowledge graph** | Neo4j + Graphiti (temporal) | Custom in-context | Flat key-value | No |
-| **Multi-agent orchestration** | Built-in (fork/join, critic loop) | Agent-in-memory architecture | No | No |
-| **Self-improving** | Nightly reflection, heuristic decay | No | No | No |
-| **Mobile gateway** | Telegram + WhatsApp | No | No | No |
-| **Runs locally** | Yes — Docker + Python, no cloud required | Partial | Cloud-only | No |
-| **Open source** | MIT, self-hostable | Apache 2.0 | Partial | MIT |
+| | engram | Obsidian vault | Letta (formerly MemGPT) | mem0 | OpenHermes |
+|---|---|---|---|---|---|
+| **Primary audience** | Claude Code / AI engineering teams | Individual engineers (manual notes) | General LLM apps | App developers (SaaS API) | Chat / assistant |
+| **Works with Claude Code** | Native MCP integration | Manual CLAUDE.md file | No direct MCP | API wrapper needed | No |
+| **Memory capture** | Automatic — agents write directly | Manual — engineer writes notes | Agent-in-memory | API call required | No |
+| **Knowledge graph** | Neo4j + Graphiti (temporal) | No — flat Markdown files | Custom in-context | Flat key-value | No |
+| **Team sharing** | Real-time shared graph | Async Git/iCloud sync | No | API-based | No |
+| **Self-improving** | Nightly reflection, heuristic decay | No | No | No | No |
+| **Multi-agent orchestration** | Built-in (fork/join, critic loop) | No | Agent-in-memory architecture | No | No |
+| **Mobile gateway** | Telegram + WhatsApp | No | No | No | No |
+| **Runs locally** | Yes — Docker + Python, no cloud | Yes — local files | Partial | Cloud-only | No |
+| **Access control** | Namespace ACL per API key | Folder structure only | No | API key only | No |
+| **Open source** | MIT, self-hostable | Partial (core OSS) | Apache 2.0 | Partial | MIT |
 
-**The short version:** Letta is a research-oriented framework for building stateful agents. mem0 is a cloud API. OpenHermes is a fine-tuned chat model. engram is purpose-built to give Claude Code a persistent, team-shareable brain that runs on your own machine — with no cloud dependency.
+**The short version:** Obsidian makes one engineer's manual notes available to Claude Code — you are still the bottleneck for what gets captured. engram captures knowledge automatically, shares it across your whole team in real time, and learns from experience without anyone curating it. See [docs/enterprise-ai-engineering.md](docs/enterprise-ai-engineering.md) for the full comparison and the enterprise team model.
 
 ---
 
@@ -309,6 +312,16 @@ engram improves over time through five mechanisms:
 3. **Reflection** — nightly LLM job distils failures into heuristics
 4. **Skill extraction** — successful approaches become reusable templates
 5. **Critic-worker loop** — optional critique + revision pass for high-stakes tasks
+
+---
+
+## For enterprise AI engineering teams
+
+If your organisation runs AI-assisted engineering at scale — architects, developers, QA, DevOps all using Claude Code — engram is the shared memory layer that connects them.
+
+The short version: Obsidian vaults make one engineer more productive. engram makes the whole team smarter together, with every decision, failure, and discovery automatically available to every team member's Claude Code session without manual curation.
+
+Read the full guide: [docs/enterprise-ai-engineering.md](docs/enterprise-ai-engineering.md)
 
 ---
 
