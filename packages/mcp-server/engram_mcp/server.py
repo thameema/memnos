@@ -361,7 +361,7 @@ def create_mcp_server(client, orchestrator, config) -> Server:
         result = await _dispatch(name, arguments, client, orchestrator)
 
         import json
-        text = json.dumps(result, default=str, ensure_ascii=False)
+        text = result if isinstance(result, str) else json.dumps(result, default=str, ensure_ascii=False)
         return [TextContent(type="text", text=text)]
 
     return server

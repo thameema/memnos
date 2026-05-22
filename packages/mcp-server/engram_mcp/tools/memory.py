@@ -66,24 +66,25 @@ async def handle_memory_search(
 
     raw_results = await client.search(query, namespace, top_k, mode)
 
-    if raw_results is None:
-        raw_results = []
+    if not raw_results:
+        return f"No memories found for query: {query!r} in namespace {namespace!r}"
 
-    serialised = []
-    for r in raw_results:
+    _MAX_CONTENT = 400  # chars per result — keeps total response under ~6KB for top_k=10
+
+    lines: list[str] = [f"Found {len(raw_results)} memories for {query!r}:\n"]
+    for i, r in enumerate(raw_results, 1):
         memory = r.memory if hasattr(r, "memory") else r
-        serialised.append(
-            {
-                "id": str(memory.id),
-                "content": memory.content,
-                "score": float(getattr(r, "score", 0.0)),
-                "source": str(getattr(r, "source", getattr(memory, "source", "unknown"))),
-                "created_at": memory.created_at.isoformat() if isinstance(memory.created_at, datetime) else str(memory.created_at),
-                "tags": list(memory.tags) if memory.tags else [],
-            }
-        )
+        score = float(getattr(r, "score", 0.0))
+        tags = list(memory.tags) if memory.tags else []
+        tag_str = f"  tags: {', '.join(tags)}" if tags else ""
+        created = memory.created_at.isoformat() if isinstance(memory.created_at, datetime) else str(memory.created_at)
+        content = str(memory.content or "")
+        snippet = content[:_MAX_CONTENT] + ("…" if len(content) > _MAX_CONTENT else "")
+        lines.append(f"{i}. [score: {score:.2f}]{tag_str}")
+        lines.append(f"   {snippet}")
+        lines.append(f"   id: {memory.id}  created: {created}\n")
 
-    return {"results": serialised, "total": len(serialised)}
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
