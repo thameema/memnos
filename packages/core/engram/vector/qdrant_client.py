@@ -204,6 +204,71 @@ class EngramQdrantClient:
         )
         logger.debug("Qdrant delete: point_id=%s", point_id)
 
+    async def count(self, namespace: str) -> int:
+        """Return the exact number of points matching a namespace prefix."""
+        self._assert_ready()
+        try:
+            from qdrant_client.models import FieldCondition, Filter, MatchValue  # type: ignore
+        except ImportError:
+            return 0
+
+        if namespace in ("all", "", "*"):
+            result = await self._client.count(
+                collection_name=self._config.collection,
+                exact=True,
+            )
+        else:
+            result = await self._client.count(
+                collection_name=self._config.collection,
+                count_filter=Filter(must=[
+                    FieldCondition(key="namespace", match=MatchValue(value=namespace))
+                ]),
+                exact=True,
+            )
+        return result.count
+
+    async def namespace_distribution(self, base_ns: str, limit: int = 30) -> dict[str, int]:
+        """Return a {namespace: count} map by scrolling all payloads.
+
+        Filters to points whose namespace starts with ``base_ns`` (or all
+        points when ``base_ns`` is 'all' / empty).
+        """
+        self._assert_ready()
+        from collections import Counter
+        counts: Counter = Counter()
+        offset = None
+
+        try:
+            from qdrant_client.models import FieldCondition, Filter, MatchValue  # type: ignore
+            scroll_filter = None
+            if base_ns and base_ns not in ("all", "*"):
+                # Qdrant doesn't support STARTS WITH natively — scroll all and filter in Python
+                pass  # handled below
+
+            while True:
+                result, offset = await self._client.scroll(
+                    collection_name=self._config.collection,
+                    scroll_filter=scroll_filter,
+                    limit=250,
+                    offset=offset,
+                    with_payload=["namespace"],
+                    with_vectors=False,
+                )
+                for point in result:
+                    ns = (point.payload or {}).get("namespace", "")
+                    if not ns:
+                        continue
+                    if base_ns and base_ns not in ("all", "*"):
+                        if not ns.startswith(base_ns):
+                            continue
+                    counts[ns] += 1
+                if offset is None:
+                    break
+        except Exception as exc:
+            logger.warning("namespace_distribution scroll failed: %s", exc)
+
+        return dict(counts.most_common(limit))
+
     @retry(
         retry=retry_if_exception_type(Exception),
         stop=stop_after_attempt(3),

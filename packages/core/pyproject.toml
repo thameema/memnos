@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "engram-core"
@@ -9,7 +9,7 @@ description = "engram persistent memory core — knowledge graph + vector store"
 requires-python = ">=3.11"
 dependencies = [
     "graphiti-core>=0.3",
-    "qdrant-client>=1.9",
+    "qdrant-client>=1.9,<1.10",
     "openai>=1.30",
     "anthropic>=0.30",
     "pydantic>=2.0",
@@ -23,6 +23,9 @@ dependencies = [
 [project.optional-dependencies]
 local-embeddings = ["sentence-transformers>=2.7"]
 all = ["engram-core[local-embeddings]"]
+
+[project.scripts]
+engram-import = "engram.cli.import_cmd:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

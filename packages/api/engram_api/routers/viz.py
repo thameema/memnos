@@ -126,24 +126,38 @@ async def graph_stats(
     ns_dist_rows = await _cypher_rows(client, ns_dist_cypher, ns)
     top_tags_rows = await _cypher_rows(client, top_tags_cypher, ns)
 
+    # When Neo4j is empty the graph hasn't run entity extraction yet;
+    # use memory count as node count so the stat card isn't misleadingly 0.
+    _neo4j_empty = node_count == 0
+
     # ------------------------------------------------------------------
-    # Memory count + recent activity + namespace distribution from vector search
+    # Memory count + namespace distribution — query Qdrant directly for
+    # accurate counts across all points (not capped at top_k).
+    # Recent activity uses a sample search (capped) for date histogram only.
     # ------------------------------------------------------------------
     memory_count = 0
     recent_activity: list[dict] = []
-    vector_results: list = []
+    qdrant_ns_counts: dict[str, int] = {}
 
     try:
-        vector_results = await client.search("", ns, top_k=100, mode="vector") or []
-        if vector_results:
-            memory_count = len(vector_results)
-            recent_activity = _build_date_histogram(vector_results)
+        qdrant = getattr(client, "_qdrant", None)
+        if qdrant is not None:
+            memory_count = await qdrant.count(ns)
+            qdrant_ns_counts = await qdrant.namespace_distribution(ns)
     except Exception as exc:
-        logger.warning("Vector search for stats failed: %s", exc)
+        logger.warning("Qdrant count/distribution failed: %s", exc)
+
+    # Recent activity still uses a search sample (date data lives in payloads)
+    try:
+        sample = await client.search("", ns, top_k=200, mode="vector") or []
+        if sample:
+            recent_activity = _build_date_histogram(sample)
+    except Exception as exc:
+        logger.warning("Vector search for recent_activity failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Shape the response — prefer Neo4j namespace distribution; fall back
-    # to one derived from the vector results when the graph is empty.
+    # to Qdrant counts when the graph is empty.
     # ------------------------------------------------------------------
     namespace_distribution: list[dict] = []
 
@@ -153,17 +167,10 @@ async def graph_stats(
             for row in ns_dist_rows
             if row.get("namespace")
         ]
-    elif vector_results:
-        from collections import Counter
-        ns_counts: Counter = Counter()
-        for r in vector_results:
-            mem = getattr(r, "memory", r)
-            mem_ns = getattr(mem, "namespace", None) or ""
-            if mem_ns:
-                ns_counts[mem_ns] += 1
+    elif qdrant_ns_counts:
         namespace_distribution = [
             {"namespace": k, "count": v}
-            for k, v in ns_counts.most_common(20)
+            for k, v in sorted(qdrant_ns_counts.items(), key=lambda x: -x[1])
         ]
 
     top_tags = [
@@ -173,7 +180,7 @@ async def graph_stats(
     ]
 
     return {
-        "node_count": node_count,
+        "node_count": memory_count if _neo4j_empty and memory_count else node_count,
         "edge_count": edge_count,
         "memory_count": memory_count,
         "namespace_distribution": namespace_distribution,

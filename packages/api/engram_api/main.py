@@ -355,6 +355,11 @@ app = create_app()
 def main() -> None:
     """Start the engram REST API server via uvicorn."""
     import uvicorn
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
 
     config_path = os.environ.get("ENGRAM_CONFIG", "engram.yaml")
 
