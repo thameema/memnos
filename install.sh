@@ -427,7 +427,7 @@ runtime:
   api:
     provider: ${RUNTIME_PROVIDER}
     model: ${RUNTIME_MODEL}
-    api_key: \${${RUNTIME_PROVIDER^^}_API_KEY}
+    api_key: \${$(echo "$RUNTIME_PROVIDER" | tr '[:lower:]' '[:upper:]')_API_KEY}
 
 namespaces:
   default: personal:default
@@ -567,30 +567,45 @@ pull_docker_images() {
 install_python_packages() {
   step "Installing Python packages"
 
-  local packages=(
-    "engram-core"
-    "engram-mcp-server"
-    "engram-orchestrator"
-    "engram-api"
-    "engram-learning"
-  )
-
-  # Add local-embeddings extra if requested
-  if [ "$EMBEDDINGS_PROVIDER" = "local" ]; then
-    packages=("engram-core[local-embeddings]" "${packages[@]:1}")
+  # Determine install source: local git clone or PyPI
+  local SCRIPT_DIR
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local INSTALL_FROM_SOURCE=no
+  if [ -f "${SCRIPT_DIR}/packages/core/pyproject.toml" ]; then
+    INSTALL_FROM_SOURCE=yes
+    info "Installing from local source clone at ${SCRIPT_DIR}"
   fi
 
-  info "Installing: ${packages[*]}"
-  info "Using installer: ${PIP_CMD}"
-
-  if [[ "$PIP_CMD" == "uv pip" ]]; then
-    # uv doesn't need --upgrade flag phrasing for basic install
-    uv pip install --quiet "${packages[@]}" || {
-      warn "uv install failed, retrying with pip..."
-      "$PY_CMD" -m pip install --quiet --upgrade "${packages[@]}"
-    }
+  if [ "$INSTALL_FROM_SOURCE" = "yes" ]; then
+    # Install all packages from source in dependency order
+    local src_packages=(
+      "${SCRIPT_DIR}/packages/core"
+      "${SCRIPT_DIR}/packages/mcp-server"
+      "${SCRIPT_DIR}/packages/orchestrator"
+      "${SCRIPT_DIR}/packages/api"
+      "${SCRIPT_DIR}/packages/learning"
+    )
+    if [ "$EMBEDDINGS_PROVIDER" = "local" ]; then
+      src_packages[0]="${SCRIPT_DIR}/packages/core[local-embeddings]"
+    fi
+    info "Installing source packages: ${src_packages[*]}"
+    "$PY_CMD" -m pip install --quiet --upgrade "${src_packages[@]}" --break-system-packages 2>/dev/null || \
+    "$PY_CMD" -m pip install --quiet --upgrade "${src_packages[@]}"
   else
-    $PIP_CMD install --quiet --upgrade "${packages[@]}"
+    # Install from PyPI
+    local packages=(
+      "engram-core"
+      "engram-mcp-server"
+      "engram-orchestrator"
+      "engram-api"
+      "engram-learning"
+    )
+    if [ "$EMBEDDINGS_PROVIDER" = "local" ]; then
+      packages=("engram-core[local-embeddings]" "${packages[@]:1}")
+    fi
+    info "Installing PyPI packages: ${packages[*]}"
+    "$PY_CMD" -m pip install --quiet --upgrade "${packages[@]}" --break-system-packages 2>/dev/null || \
+    "$PY_CMD" -m pip install --quiet --upgrade "${packages[@]}"
   fi
 
   success "Python packages installed."
@@ -662,10 +677,10 @@ _start_server() {
   fi
   echo -e "\${CYAN}  -->\${NC} Starting engram server..."
   set -a; source "\${ENGRAM_DIR}/.env"; set +a
-  nohup engram-server \\
-    --config "\${ENGRAM_CONFIG}" \\
-    --mcp-port \${MCP_PORT} \\
-    --api-port \${API_PORT} \\
+  # Find python — prefer the one engram was installed into
+  local PY
+  PY="\$(command -v python3.12 || command -v python3.11 || command -v python3)"
+  nohup "\$PY" -m engram_api.main \\
     >> "\${ENGRAM_LOG}" 2>&1 &
   echo \$! > "\${ENGRAM_PID}"
   sleep 2
@@ -697,9 +712,9 @@ _stop_server() {
 }
 
 _health_check() {
-  local url="http://localhost:\${API_PORT}/api/v1/health"
-  if curl -sf "\${url}" &>/dev/null; then
-    echo -e "\${GREEN}  [ok]\${NC} API health: \$(curl -sf "\${url}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','ok'))" 2>/dev/null || echo "ok")"
+  local url="http://localhost:\${API_PORT}/api/v1/admin/health"
+  if curl -sf "\${url}" -H "Authorization: Bearer \$(grep ENGRAM_API_KEY "\${ENGRAM_DIR}/.env" | cut -d= -f2)" &>/dev/null; then
+    echo -e "\${GREEN}  [ok]\${NC} API health: ok"
     return 0
   else
     return 1
@@ -773,7 +788,7 @@ JSON
     ;;
 
   logs)
-    local target="\${2:-engram}"
+    target="\${2:-engram}"
     case "\$target" in
       neo4j)   ${DOCKER_COMPOSE} logs -f neo4j ;;
       qdrant)  ${DOCKER_COMPOSE} logs -f qdrant ;;
