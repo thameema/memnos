@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from engram_api.auth import (
     get_client,
@@ -24,7 +24,7 @@ from engram_api.auth import (
     require_admin_access,
     require_api_key,
 )
-from engram_api.schemas import HealthResponse, NamespaceCreateRequest
+from engram_api.schemas import HealthResponse, KeyCreateRequest, KeyResponse, NamespaceCreateRequest
 
 logger = logging.getLogger(__name__)
 
@@ -182,3 +182,83 @@ async def delete_namespace(
     # Remove from in-memory config
     del definitions[ns]
     logger.info("Namespace deleted: %s by user %s", ns, user_id)
+
+
+# ---------------------------------------------------------------------------
+# Runtime key management  [admin only — requires wildcard ("*") key]
+# ---------------------------------------------------------------------------
+
+@router.get("/keys", response_model=list[KeyResponse])
+async def list_keys(
+    request: Request,
+    key_entry=Depends(require_admin_access),
+) -> list[KeyResponse]:
+    """
+    List all runtime API keys (active and revoked).
+
+    The ``key_hash`` column is never included in the response.  The
+    ``key`` field is always ``None`` here — it is only returned once at
+    creation time.
+
+    Requires admin access (wildcard ``"*"`` namespace permission).
+    """
+    key_store = getattr(request.app.state, "key_store", None)
+    if key_store is None:
+        raise HTTPException(status_code=503, detail="Runtime key store not available")
+
+    rows = await key_store.list_keys()
+    return [KeyResponse(**row) for row in rows]
+
+
+@router.post("/keys", response_model=KeyResponse, status_code=201)
+async def create_key(
+    req: KeyCreateRequest,
+    request: Request,
+    key_entry=Depends(require_admin_access),
+) -> KeyResponse:
+    """
+    Create a new runtime API key.
+
+    The plaintext ``key`` value is included **once** in the response and is
+    never retrievable again.  Store it securely immediately.
+
+    Requires admin access (wildcard ``"*"`` namespace permission).
+    """
+    key_store = getattr(request.app.state, "key_store", None)
+    if key_store is None:
+        raise HTTPException(status_code=503, detail="Runtime key store not available")
+
+    result = await key_store.create(
+        user_id=req.user_id,
+        namespaces=req.namespaces,
+        read_only=req.read_only,
+        description=req.description,
+    )
+    return KeyResponse(**result)
+
+
+@router.delete("/keys/{key_id}", status_code=204)
+async def revoke_key(
+    key_id: str,
+    request: Request,
+    key_entry=Depends(require_admin_access),
+) -> None:
+    """
+    Revoke (soft-delete) a runtime API key by ID.
+
+    The key row is retained in the database with ``revoked_at`` set so that
+    audit history is preserved.  Revoked keys are immediately rejected by the
+    authentication layer.
+
+    Requires admin access (wildcard ``"*"`` namespace permission).
+    """
+    key_store = getattr(request.app.state, "key_store", None)
+    if key_store is None:
+        raise HTTPException(status_code=503, detail="Runtime key store not available")
+
+    revoked = await key_store.revoke(key_id)
+    if not revoked:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Key {key_id!r} not found or already revoked",
+        )

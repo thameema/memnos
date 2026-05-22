@@ -52,7 +52,7 @@ async def write_memory(
     client=Depends(get_client),
 ) -> MemoryResponse:
     """Persist a new memory entry to both the vector store and knowledge graph."""
-    await check_namespace_access(key_entry, req.namespace)
+    await check_namespace_access(key_entry, req.namespace, operation="write")
     logger.debug(
         "write_memory | ns=%s user=%s content=%r",
         req.namespace,
@@ -156,7 +156,7 @@ async def delete_memory(
     client=Depends(get_client),
 ) -> None:
     """Permanently delete a memory entry from both vector and graph stores."""
-    await check_namespace_access(key_entry, ns)
+    await check_namespace_access(key_entry, ns, operation="write")
     logger.debug("delete_memory | id=%s ns=%s user=%s", memory_id, ns, user_id)
     try:
         deleted = await client.delete(memory_id, ns)

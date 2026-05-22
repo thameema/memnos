@@ -103,4 +103,13 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 
         request.state.user_id = user_id
         request.state.allowed_namespaces = get_allowed_namespaces(raw_key, self._config)
+
+        # Store the full ApiKeyEntry on request.state so downstream handlers
+        # can inspect read_only and other per-key properties.
+        api_keys = getattr(getattr(self._config, "auth", None), "api_keys", [])
+        for entry in api_keys:
+            if getattr(entry, "key", None) == raw_key:
+                request.state.key_entry = entry
+                break
+
         return await call_next(request)

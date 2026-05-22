@@ -48,9 +48,13 @@ def get_orchestrator(request: Request):
 async def _validate_key(
     authorization: str | None,
     config,
+    key_store=None,
 ) -> ApiKeyEntry:
     """
     Validate a raw ``Authorization: Bearer <key>`` header value.
+
+    Checks YAML-configured keys first, then falls back to the runtime key
+    store (SQLite) when ``key_store`` is provided.
 
     Returns the matching ``ApiKeyEntry`` on success.
     Raises ``HTTPException(401)`` on missing or invalid key.
@@ -66,6 +70,7 @@ async def _validate_key(
 
     raw_key = authorization[len("Bearer "):]
 
+    # 1. Check YAML-configured keys
     api_keys = getattr(getattr(config, "auth", None), "api_keys", [])
     for entry in api_keys:
         stored_key = getattr(entry, "key", None)
@@ -74,6 +79,19 @@ async def _validate_key(
                 "API key authenticated: user_id=%s", getattr(entry, "user_id", "unknown")
             )
             return entry
+
+    # 2. Fall back to runtime key store (if available)
+    if key_store is not None:
+        try:
+            entry = await key_store.verify(raw_key)
+            if entry is not None:
+                logger.debug(
+                    "Runtime API key authenticated: user_id=%s",
+                    getattr(entry, "user_id", "unknown"),
+                )
+                return entry
+        except Exception as exc:
+            logger.warning("Runtime key store lookup failed: %s", exc)
 
     logger.warning(
         "API key authentication failed (key prefix=%s…)",
@@ -87,6 +105,7 @@ async def _validate_key(
 # ---------------------------------------------------------------------------
 
 async def require_api_key(
+    request: Request,
     authorization: str | None = Header(default=None),
     config=Depends(get_config),
 ) -> str:
@@ -96,11 +115,13 @@ async def require_api_key(
     Returns the associated ``user_id`` on success.
     Raises ``HTTPException(401)`` on missing / invalid key.
     """
-    entry = await _validate_key(authorization, config)
+    key_store = getattr(request.app.state, "key_store", None)
+    entry = await _validate_key(authorization, config, key_store=key_store)
     return str(getattr(entry, "user_id", "unknown"))
 
 
 async def require_api_key_entry(
+    request: Request,
     authorization: str | None = Header(default=None),
     config=Depends(get_config),
 ) -> ApiKeyEntry:
@@ -110,25 +131,31 @@ async def require_api_key_entry(
     Returns the full ``ApiKeyEntry`` on success (key, user_id, namespaces).
     Raises ``HTTPException(401)`` on missing / invalid key.
     """
-    return await _validate_key(authorization, config)
+    key_store = getattr(request.app.state, "key_store", None)
+    return await _validate_key(authorization, config, key_store=key_store)
 
 
 # ---------------------------------------------------------------------------
 # Namespace access control
 # ---------------------------------------------------------------------------
 
-async def check_namespace_access(key_entry: ApiKeyEntry, namespace: str) -> None:
+async def check_namespace_access(
+    key_entry: ApiKeyEntry,
+    namespace: str,
+    operation: str = "read",
+) -> None:
     """
     Assert that *key_entry* is permitted to operate on *namespace*.
 
     Access rules (evaluated in order — first match wins):
 
-    1. ``"*"`` in the key's namespaces list  →  allow everything.
-    2. Exact match: ``namespace`` is listed verbatim  →  allow.
-    3. Prefix wildcard: the key lists ``"prefix:*"`` and *namespace* starts
+    1. ``operation="write"`` and ``key_entry.read_only is True``  →  deny (403).
+    2. ``"*"`` in the key's namespaces list  →  allow everything.
+    3. Exact match: ``namespace`` is listed verbatim  →  allow.
+    4. Prefix wildcard: the key lists ``"prefix:*"`` and *namespace* starts
        with ``"prefix:"``  →  allow (e.g. key has ``"personal:*"`` and the
        requested namespace is ``"personal:thameema"``).
-    4. No match  →  raise ``HTTPException(403)``.
+    5. No match  →  raise ``HTTPException(403)``.
 
     Parameters
     ----------
@@ -136,18 +163,27 @@ async def check_namespace_access(key_entry: ApiKeyEntry, namespace: str) -> None
         The ``ApiKeyEntry`` returned by ``require_api_key_entry()``.
     namespace:
         The namespace value extracted from the incoming request.
+    operation:
+        Either ``"read"`` (default) or ``"write"``.  Write operations are
+        rejected when the key's ``read_only`` flag is ``True``.
     """
+    # Rule 1 — read-only key cannot perform write/delete operations
+    if operation == "write" and getattr(key_entry, "read_only", False):
+        user_id = getattr(key_entry, "user_id", "unknown")
+        logger.warning("Write denied for read-only key: user=%s namespace=%r", user_id, namespace)
+        raise HTTPException(status_code=403, detail="API key is read-only")
+
     allowed: list[str] = getattr(key_entry, "namespaces", []) or []
 
-    # Rule 1 — wildcard: key can access everything
+    # Rule 2 — wildcard: key can access everything
     if "*" in allowed:
         return
 
-    # Rule 2 — exact match
+    # Rule 3 — exact match
     if namespace in allowed:
         return
 
-    # Rule 3 — prefix wildcard  e.g. "personal:*" matches "personal:thameema"
+    # Rule 4 — prefix wildcard  e.g. "personal:*" matches "personal:thameema"
     for pattern in allowed:
         if pattern.endswith(":*") and namespace.startswith(pattern[:-1]):
             return

@@ -6,9 +6,24 @@ server:
 
 auth:
   api_keys:
+    # Admin key — full read/write access to all namespaces
     - key: ${ENGRAM_API_KEY}
       user_id: default
       namespaces: ["*"]
+      read_only: false        # default; omit or set false for read-write
+      # Fine-grained per-namespace access (optional):
+
+    # Read-only key example — safe to share with web apps or external integrations
+    # - key: ${ENGRAM_READONLY_KEY}
+    #   user_id: webapp
+    #   namespaces: ["personal:default"]
+    #   read_only: true       # prevents writes, deletes, and vault mutations
+
+    # Scoped team key example
+    # - key: ${ENGRAM_TEAM_KEY}
+    #   user_id: team-alice
+    #   namespaces: ["org:myteam:*"]
+    #   read_only: false
       # Fine-grained per-namespace access (optional):
       # namespace_access:
       #   - namespace: org:acme:engineering

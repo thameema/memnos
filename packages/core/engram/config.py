@@ -128,6 +128,9 @@ class ApiKeyEntry(BaseModel):
     # Vault-specific ACL — independent of memory namespace access.
     # Keys with "*" in namespaces automatically get vault_admin everywhere.
     vault_namespaces: list[VaultNamespaceAccess] = Field(default_factory=list)
+    # Top-level shorthand: when True the key may only perform read operations.
+    # Takes precedence over namespace_access for write/delete operations.
+    read_only: bool = False
 
 
 class AuthConfig(BaseModel):

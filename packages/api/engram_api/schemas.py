@@ -84,3 +84,46 @@ class NamespaceCreateRequest(BaseModel):
     owners: list[str] = []
     readers: list[str] = []
     writers: list[str] = []
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Q&A schemas
+# ---------------------------------------------------------------------------
+
+class KnowledgeAskRequest(BaseModel):
+    question: str
+    namespace: str
+    top_k: int = 5
+    model: str = "claude-haiku-4-5-20251001"
+
+
+class KnowledgeAnswerResponse(BaseModel):
+    answer: str
+    sources: list[MemoryResponse]
+    namespace: str
+    model_used: str
+    tokens_used: int
+
+
+# ---------------------------------------------------------------------------
+# Runtime key management schemas
+# ---------------------------------------------------------------------------
+
+class KeyCreateRequest(BaseModel):
+    user_id: str
+    namespaces: list[str] = ["*"]
+    read_only: bool = False
+    description: str = ""
+
+
+class KeyResponse(BaseModel):
+    id: str
+    key_prefix: str
+    user_id: str
+    namespaces: list[str]
+    read_only: bool
+    description: str
+    created_at: str
+    revoked_at: str | None = None
+    # Only populated on initial creation — never returned again after that.
+    key: str | None = None

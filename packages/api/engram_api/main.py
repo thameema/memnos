@@ -190,10 +190,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await orchestrator.start()
     logger.info("Orchestrator started")
 
+    # Initialise the runtime key store (SQLite-backed)
+    from engram_api.key_store import RuntimeKeyStore  # noqa: PLC0415
+
+    key_store = RuntimeKeyStore()
+    await key_store.init()
+    logger.info("RuntimeKeyStore initialised")
+
     # Store singletons on app.state for dependency injection
     app.state.config = config
     app.state.client = client
     app.state.orchestrator = orchestrator
+    app.state.key_store = key_store
 
     # Background tasks (fire-and-forget; errors are logged, not propagated)
     background_tasks: list[asyncio.Task] = []
@@ -280,7 +288,7 @@ def create_app() -> FastAPI:
 
     from fastapi.responses import HTMLResponse
 
-    from engram_api.routers import admin, graph, memory, tasks, vault, viz  # noqa: PLC0415
+    from engram_api.routers import admin, graph, knowledge, memory, tasks, vault, viz  # noqa: PLC0415
 
     application = FastAPI(
         title="engram",
@@ -308,6 +316,7 @@ def create_app() -> FastAPI:
     application.include_router(admin.router, prefix=api_prefix)
     application.include_router(vault.router, prefix=api_prefix)
     application.include_router(viz.router, prefix=api_prefix)
+    application.include_router(knowledge.router, prefix=api_prefix)
 
     # Interactive knowledge graph dashboard
     _dashboard_path = pathlib.Path(__file__).parent / "static" / "dashboard.html"

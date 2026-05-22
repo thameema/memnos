@@ -266,6 +266,104 @@
   .graph-node circle { stroke-width: 1.5px; cursor: pointer; transition: stroke .15s, stroke-width .15s; }
   .graph-node circle:hover { stroke-width: 3px; }
   .graph-node.selected circle { stroke: #fff !important; stroke-width: 3px; }
+
+  /* ── tab nav ── */
+  #tab-nav {
+    display: flex; gap: 4px; padding: 12px 24px 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--card);
+  }
+  .tab-btn {
+    padding: 8px 18px; border-radius: 7px 7px 0 0; border: none; cursor: pointer;
+    font-size: 13px; font-weight: 500; background: transparent; color: var(--muted);
+    transition: all .15s; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--accent2); border-bottom-color: var(--accent2); background: rgba(124,58,237,.08); }
+
+  /* ── view sections ── */
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* ── keys view ── */
+  #view-keys { padding: 20px 24px; }
+  .keys-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+  .keys-header h2 { font-size: 16px; font-weight: 700; }
+  .keys-header p { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .keys-table-wrap { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  table.keys-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.keys-table th {
+    text-align: left; padding: 10px 14px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .5px; color: var(--muted); border-bottom: 1px solid var(--border);
+    background: rgba(255,255,255,.02);
+  }
+  table.keys-table td { padding: 11px 14px; border-bottom: 1px solid rgba(255,255,255,.04); vertical-align: middle; }
+  table.keys-table tr:last-child td { border-bottom: none; }
+  table.keys-table tr:hover td { background: rgba(255,255,255,.02); }
+  .key-prefix { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; color: var(--accent2); }
+  .tag-ro { background: rgba(239,68,68,.15); color: #fca5a5; border: 1px solid rgba(239,68,68,.3); border-radius: 4px; padding: 1px 7px; font-size: 10px; font-weight: 600; }
+  .tag-rw { background: rgba(16,185,129,.12); color: #6ee7b7; border: 1px solid rgba(16,185,129,.25); border-radius: 4px; padding: 1px 7px; font-size: 10px; font-weight: 600; }
+  .btn-danger { background: rgba(239,68,68,.15); color: #fca5a5; border: 1px solid rgba(239,68,68,.3); padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 500; transition: all .15s; }
+  .btn-danger:hover { background: rgba(239,68,68,.3); }
+  .no-keys { padding: 40px; text-align: center; color: var(--muted); font-size: 13px; }
+
+  /* ── knowledge view ── */
+  #view-knowledge { padding: 20px 24px; }
+  .knowledge-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 900px) { .knowledge-layout { grid-template-columns: 1fr; } }
+  .knowledge-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+  .knowledge-card h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin-bottom: 14px; }
+  .ask-form { display: flex; flex-direction: column; gap: 10px; }
+  .ask-form textarea {
+    width: 100%; min-height: 100px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 7px; color: var(--text); padding: 10px 12px; font-size: 13px; line-height: 1.5;
+    resize: vertical; outline: none; font-family: inherit; transition: border-color .2s;
+  }
+  .ask-form textarea:focus { border-color: var(--accent); }
+  .ask-form .ask-controls { display: flex; align-items: center; gap: 8px; }
+  .ask-form select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 13px; flex: 1;
+    appearance: none; outline: none;
+  }
+  .answer-box { min-height: 120px; }
+  .answer-text { font-size: 13px; line-height: 1.7; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+  .answer-empty { color: var(--muted); font-size: 13px; font-style: italic; }
+  .sources-list { margin-top: 14px; }
+  .sources-list h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: 8px; }
+  .source-item { background: rgba(255,255,255,.03); border: 1px solid var(--border); border-radius: 7px; padding: 8px 12px; margin-bottom: 6px; font-size: 12px; }
+  .source-item .src-score { float: right; color: var(--muted); font-size: 11px; }
+  .source-item .src-ns { color: var(--green); font-size: 11px; margin-top: 3px; }
+  .source-item .src-text { color: var(--text); margin-top: 2px; }
+  .knowledge-stats { font-size: 11px; color: var(--muted); margin-top: 10px; }
+
+  /* ── key reveal modal ── */
+  #key-reveal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 500;
+    display: none; align-items: center; justify-content: center;
+  }
+  #key-reveal-overlay.open { display: flex; }
+  #key-reveal-modal {
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 28px; width: 500px; max-width: 95vw; box-shadow: var(--shadow);
+  }
+  #key-reveal-modal h2 { font-size: 17px; font-weight: 700; margin-bottom: 6px; }
+  #key-reveal-modal .warn { font-size: 12px; color: #fbbf24; margin-bottom: 18px; background: rgba(251,191,36,.1); border: 1px solid rgba(251,191,36,.25); border-radius: 6px; padding: 8px 12px; }
+  .key-reveal-box {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 12px 14px;
+    font-family: 'SF Mono','Fira Code',monospace; font-size: 12px; color: var(--accent2);
+    word-break: break-all; margin-bottom: 14px;
+  }
+  #create-key-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 500;
+    display: none; align-items: center; justify-content: center;
+  }
+  #create-key-overlay.open { display: flex; }
+  #create-key-modal {
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 28px; width: 440px; max-width: 95vw; box-shadow: var(--shadow);
+  }
+  #create-key-modal h2 { font-size: 17px; font-weight: 700; margin-bottom: 18px; }
 </style>
 </head>
 <body>
@@ -296,6 +394,13 @@
     </button>
   </header>
 
+  <!-- tab nav -->
+  <nav id="tab-nav">
+    <button class="tab-btn active" data-tab="graph">Knowledge Graph</button>
+    <button class="tab-btn" data-tab="knowledge">Ask Knowledge Base</button>
+    <button class="tab-btn" data-tab="keys">API Keys</button>
+  </nav>
+
   <!-- error banner -->
   <div id="error-banner">
     <span class="err-icon">&#9888;</span>
@@ -305,6 +410,9 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
     </button>
   </div>
+
+  <!-- ── graph view ── -->
+  <div id="view-graph" class="view active">
 
   <!-- stats row -->
   <div id="stats-row">
@@ -354,6 +462,68 @@
       <svg id="timeline-svg"></svg>
     </div>
   </div>
+  </div><!-- #view-graph -->
+
+  <!-- ── knowledge view ── -->
+  <div id="view-knowledge" class="view">
+    <div class="knowledge-layout">
+      <!-- ask form -->
+      <div class="knowledge-card">
+        <h3>Ask the Knowledge Base</h3>
+        <div class="ask-form">
+          <div class="field-group" style="margin-bottom:0">
+            <label>Namespace</label>
+            <select id="ask-ns-select">
+              <option value="all">All Namespaces</option>
+            </select>
+          </div>
+          <textarea id="ask-question" placeholder="Ask a question about your stored knowledge…"></textarea>
+          <div class="ask-controls">
+            <div style="flex:1;font-size:11px;color:var(--muted)" id="ask-status"></div>
+            <button class="btn btn-primary" id="ask-btn" onclick="askQuestion()">Ask</button>
+          </div>
+        </div>
+        <div class="knowledge-stats" id="ask-meta"></div>
+      </div>
+      <!-- answer + sources -->
+      <div class="knowledge-card answer-box">
+        <h3>Answer</h3>
+        <div id="ask-answer"><div class="answer-empty">Your answer will appear here.</div></div>
+        <div id="ask-sources" class="sources-list" style="display:none">
+          <h4>Sources</h4>
+          <div id="ask-sources-list"></div>
+        </div>
+      </div>
+    </div>
+  </div><!-- #view-knowledge -->
+
+  <!-- ── keys view ── -->
+  <div id="view-keys" class="view">
+    <div class="keys-header">
+      <div>
+        <h2>API Key Management</h2>
+        <p>Keys created here are stored in the runtime key store. YAML-configured keys are visible but not editable here.</p>
+      </div>
+      <button class="btn btn-primary" onclick="openCreateKey()">+ Create Key</button>
+    </div>
+    <div class="keys-table-wrap">
+      <table class="keys-table">
+        <thead>
+          <tr>
+            <th>Key Prefix</th>
+            <th>User / Label</th>
+            <th>Namespaces</th>
+            <th>Access</th>
+            <th>Created</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="keys-tbody">
+          <tr><td colspan="6" class="no-keys">Loading keys…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div><!-- #view-keys -->
 
 </div><!-- #app -->
 
@@ -362,6 +532,42 @@
 
 <!-- node tooltip -->
 <div id="node-tooltip"></div>
+
+<!-- create key modal -->
+<div id="create-key-overlay">
+  <div id="create-key-modal">
+    <h2>Create API Key</h2>
+    <div class="field-group">
+      <label>User / Label</label>
+      <input id="new-key-user" type="text" placeholder="e.g. webapp-readonly" autocomplete="off" />
+    </div>
+    <div class="field-group">
+      <label>Namespaces (comma-separated, * for all)</label>
+      <input id="new-key-ns" type="text" placeholder="personal:default, org:myteam:*" autocomplete="off" />
+    </div>
+    <div class="field-group" style="display:flex;align-items:center;gap:10px;">
+      <input id="new-key-ro" type="checkbox" style="width:auto;margin:0" />
+      <label for="new-key-ro" style="margin:0;cursor:pointer">Read-only key (cannot write or delete memories)</label>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeCreateKey()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitCreateKey()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- key reveal modal -->
+<div id="key-reveal-overlay">
+  <div id="key-reveal-modal">
+    <h2>Key Created</h2>
+    <div class="warn">&#9888; Copy this key now — it will not be shown again.</div>
+    <div class="key-reveal-box" id="key-reveal-value"></div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="key-copy-btn" onclick="copyRevealedKey()">Copy</button>
+      <button class="btn btn-primary" onclick="closeKeyReveal()">Done</button>
+    </div>
+  </div>
+</div>
 
 <!-- settings modal -->
 <div id="modal-overlay">
@@ -1012,6 +1218,207 @@ function relTime(iso) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Tab navigation
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+let activeTab = 'graph';
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+});
+
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById('view-' + tab).classList.add('active');
+
+  if (tab === 'keys') loadKeys();
+  if (tab === 'knowledge') syncAskNamespaces();
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Knowledge Q&A
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function syncAskNamespaces() {
+  const src = document.getElementById('ns-select');
+  const dst = document.getElementById('ask-ns-select');
+  const cur = dst.value;
+  while (dst.options.length > 0) dst.remove(0);
+  for (const opt of src.options) {
+    const o = document.createElement('option');
+    o.value = opt.value; o.textContent = opt.textContent;
+    if (opt.value === cur) o.selected = true;
+    dst.appendChild(o);
+  }
+}
+
+async function askQuestion() {
+  const question = document.getElementById('ask-question').value.trim();
+  if (!question) return;
+
+  const ns = document.getElementById('ask-ns-select').value || 'all';
+  const statusEl = document.getElementById('ask-status');
+  const answerEl = document.getElementById('ask-answer');
+  const sourcesEl = document.getElementById('ask-sources');
+  const metaEl   = document.getElementById('ask-meta');
+  const askBtn   = document.getElementById('ask-btn');
+
+  askBtn.disabled = true;
+  statusEl.textContent = 'Thinking…';
+  answerEl.innerHTML = '<div class="answer-empty">Searching knowledge base…</div>';
+  sourcesEl.style.display = 'none';
+  metaEl.textContent = '';
+
+  try {
+    const body = { question, namespace: ns, top_k: 6 };
+    const url = getBaseUrl() + '/api/v1/knowledge/ask';
+    const key = getApiKey();
+    const headers = { 'Content-Type': 'application/json' };
+    if (key) headers['Authorization'] = 'Bearer ' + key;
+
+    const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+
+    answerEl.innerHTML = `<div class="answer-text">${esc(data.answer || '')}</div>`;
+
+    if (data.sources && data.sources.length) {
+      document.getElementById('ask-sources-list').innerHTML = data.sources.map(s => `
+        <div class="source-item">
+          <span class="src-score">${s.score != null ? (s.score * 100).toFixed(0) + '%' : ''}</span>
+          <div class="src-ns">${esc(s.namespace || '')}</div>
+          <div class="src-text">${esc((s.content || '').slice(0, 180))}</div>
+        </div>`).join('');
+      sourcesEl.style.display = 'block';
+    } else {
+      sourcesEl.style.display = 'none';
+    }
+
+    const tokens = data.tokens_used;
+    metaEl.textContent = tokens ? `Model: ${data.model_used || ''}  ·  Tokens used: ${tokens}` : '';
+    statusEl.textContent = '';
+  } catch (err) {
+    answerEl.innerHTML = `<div style="color:var(--red);font-size:13px;">Error: ${esc(err.message)}</div>`;
+    statusEl.textContent = '';
+  } finally {
+    askBtn.disabled = false;
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && activeTab === 'knowledge') {
+    askQuestion();
+  }
+});
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  API Key Management
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+async function loadKeys() {
+  const tbody = document.getElementById('keys-tbody');
+  tbody.innerHTML = '<tr><td colspan="6" class="no-keys">Loading…</td></tr>';
+  try {
+    const data = await apiFetch('/api/v1/admin/keys');
+    const keys = data.keys || [];
+    if (!keys.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="no-keys">No runtime keys yet. YAML-configured keys are not shown here.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = keys.map(k => {
+      const ns = (k.namespaces || []).join(', ') || '<span style="color:var(--muted)">—</span>';
+      const ro = k.read_only
+        ? '<span class="tag-ro">read-only</span>'
+        : '<span class="tag-rw">read-write</span>';
+      const created = k.created_at ? relTime(k.created_at) : '—';
+      return `<tr>
+        <td><span class="key-prefix">${esc(k.key_prefix || '')}…</span></td>
+        <td>${esc(k.user_id || '')}</td>
+        <td style="font-size:12px;color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc((k.namespaces||[]).join(', '))}">${ns}</td>
+        <td>${ro}</td>
+        <td style="color:var(--muted);font-size:12px;">${esc(created)}</td>
+        <td><button class="btn-danger" onclick="revokeKey('${esc(k.id)}','${esc(k.key_prefix||'')}')">Revoke</button></td>
+      </tr>`;
+    }).join('');
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="6" class="no-keys" style="color:var(--red)">${esc(err.message)}</td></tr>`;
+  }
+}
+
+function openCreateKey() {
+  document.getElementById('new-key-user').value = '';
+  document.getElementById('new-key-ns').value = '';
+  document.getElementById('new-key-ro').checked = false;
+  document.getElementById('create-key-overlay').classList.add('open');
+}
+function closeCreateKey() {
+  document.getElementById('create-key-overlay').classList.remove('open');
+}
+
+async function submitCreateKey() {
+  const user_id   = document.getElementById('new-key-user').value.trim();
+  const nsRaw     = document.getElementById('new-key-ns').value.trim();
+  const read_only = document.getElementById('new-key-ro').checked;
+  const namespaces = nsRaw ? nsRaw.split(',').map(s => s.trim()).filter(Boolean) : ['*'];
+
+  try {
+    const url = getBaseUrl() + '/api/v1/admin/keys';
+    const key = getApiKey();
+    const headers = { 'Content-Type': 'application/json' };
+    if (key) headers['Authorization'] = 'Bearer ' + key;
+    const res = await fetch(url, {
+      method: 'POST', headers,
+      body: JSON.stringify({ user_id: user_id || 'user', namespaces, read_only }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    closeCreateKey();
+    showKeyReveal(data.key);
+    loadKeys();
+  } catch (err) {
+    alert('Failed to create key: ' + err.message);
+  }
+}
+
+function showKeyReveal(rawKey) {
+  document.getElementById('key-reveal-value').textContent = rawKey || '';
+  document.getElementById('key-copy-btn').textContent = 'Copy';
+  document.getElementById('key-reveal-overlay').classList.add('open');
+}
+function closeKeyReveal() {
+  document.getElementById('key-reveal-overlay').classList.remove('open');
+}
+function copyRevealedKey() {
+  const val = document.getElementById('key-reveal-value').textContent;
+  navigator.clipboard.writeText(val).then(() => {
+    document.getElementById('key-copy-btn').textContent = 'Copied!';
+  });
+}
+
+async function revokeKey(id, prefix) {
+  if (!confirm(`Revoke key ${prefix}…? This cannot be undone.`)) return;
+  try {
+    const url = getBaseUrl() + '/api/v1/admin/keys/' + encodeURIComponent(id);
+    const key = getApiKey();
+    const headers = {};
+    if (key) headers['Authorization'] = 'Bearer ' + key;
+    const res = await fetch(url, { method: 'DELETE', headers });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    loadKeys();
+  } catch (err) {
+    alert('Failed to revoke key: ' + err.message);
+  }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  Auto-refresh + countdown
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function resetCountdown() {
@@ -1038,7 +1445,10 @@ function resetCountdown() {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 document.getElementById('refresh-btn').addEventListener('click', loadAll);
 
-document.getElementById('ns-select').addEventListener('change', loadAll);
+document.getElementById('ns-select').addEventListener('change', () => {
+  loadAll();
+  if (activeTab === 'knowledge') syncAskNamespaces();
+});
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  Boot
@@ -1049,7 +1459,7 @@ document.getElementById('ns-select').addEventListener('change', loadAll);
     return;
   }
   // First populate the dropdown (fetches stats for "all"), then load the view.
-  populateNamespaceDropdown().then(() => loadAll());
+  populateNamespaceDropdown().then(() => { syncAskNamespaces(); loadAll(); });
 })();
 </script>
 </body>
