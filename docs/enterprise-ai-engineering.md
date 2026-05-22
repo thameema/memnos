@@ -338,17 +338,17 @@ This is the question that trips up most teams: **how does something get to the r
 ### Option 1 — Tell Claude at session start
 
 ```
-"We're working on the Acme integration today.
- Store everything in myvault:acme unless I say otherwise."
+"We're working on the Acme payer integration today.
+ Store everything in org:acme:private unless I say otherwise."
 ```
 
 Claude will use that namespace for all writes in the session. You can override mid-session:
 
 ```
-"Actually save that FHIR pattern to hc — it's reusable across all customers."
+"Actually save that FHIR pattern to org:acme:engineering — it's reusable across all customers."
 ```
 
-One explicit instruction re-routes that single write to `hc` while the session default stays `myvault:acme`.
+One explicit instruction re-routes that single write while the session default stays on the customer namespace.
 
 ### Option 2 — Routing rules in CLAUDE.md (automatic)
 
@@ -359,57 +359,57 @@ Add a routing table to your vault's `CLAUDE.md` so Claude decides automatically:
 
 When calling memory_write, choose the namespace as follows:
 
-→ myvault  if content mentions: a customer name, dollar amount, pricing,
-              RFP/RFI, meeting notes with a client, competitive intel
+→ org:acme:private    if content mentions: a customer name, dollar amount,
+                       pricing, RFP/RFI, meeting notes with a client, competitive intel
 
-→ hc         if content is: a FHIR pattern, code architecture decision,
-              test standard, CI/CD template, infrastructure pattern,
-              internal tooling knowledge
+→ org:acme:engineering  if content is: a FHIR pattern, architecture decision,
+                         test standard, CI/CD template, infrastructure pattern,
+                         internal tooling knowledge
 
-→ hc:engineering:pa    for PA-specific technical decisions
-→ hc:engineering:p2p   for P2P-specific technical decisions
+→ org:acme:engineering:pa   for PA-specific technical decisions
+→ org:acme:engineering:p2p  for P2P-specific technical decisions
 
-When in doubt: does it contain a customer name or a dollar sign? → myvault
-Otherwise → hc
+When in doubt: does it contain a customer name or a dollar sign? → org:acme:private
+Otherwise → org:acme:engineering
 ```
 
 Claude reads this at session start and routes automatically without you having to specify.
 
-### Option 3 — Namespace per project type (real example)
+### Option 3 — Namespace per project type (example mapping)
 
-Here is how a company like Acme Health would map its actual work:
+Here is how a healthcare payer software company would map its work:
 
 ```
-Your work                          Namespace
-─────────────────────────────────────────────────────────
-PA platform FHIR design            hc:engineering:pa
-P2P integration patterns           hc:engineering:p2p
-CMS-0057f compliance notes         hc:compliance
-Acme RFP response               myvault:acme
-Acme pricing estimate           myvault:acme
-Globex discovery call notes        myvault:globex
-Azure pricing model                myvault:pricing
-Competitive landscape (Redox)      myvault:strategy
-Internal QA automation framework   hc:engineering:qa
-Kubernetes deployment gotchas      hc:infra
-Your personal session notes        personal:default
+Your work                              Namespace
+────────────────────────────────────────────────────────────────
+PA platform FHIR design                org:acme:engineering:pa
+P2P integration patterns               org:acme:engineering:p2p
+CMS-0057f compliance notes             org:acme:compliance
+Customer A RFP response                org:acme:private:customers:customer-a
+Customer A pricing estimate            org:acme:private:pricing
+Customer B discovery call notes        org:acme:private:customers:customer-b
+Azure pricing model                    org:acme:private:pricing
+Competitive landscape analysis         org:acme:private:strategy
+Internal QA automation framework       org:acme:engineering:qa
+Kubernetes deployment gotchas          org:acme:engineering:infra
+Personal session notes                 personal:default
 ```
 
-Notice that the same broad topic (e.g. "Acme") maps to a single namespace. You don't need a namespace per document — you need a namespace per **audience**. Who should be able to search this? Whole engineering team → `hc`. Only people with customer context → `myvault`.
+The key insight: you do not need a namespace per document — you need a namespace per **audience**. Who should be able to search this? Whole engineering team → `org:acme:engineering`. Only people with customer context → `org:acme:private`.
 
 ### How the `STARTS WITH` rule changes search scope
 
-When you search `hc`, engram returns results from `hc`, `hc:engineering`, `hc:engineering:pa`, `hc:compliance`, and every other sub-namespace. When you search `hc:engineering:pa`, you get only PA-specific content. This lets you start broad and narrow down:
+When you search `org:acme`, engram returns results from every sub-namespace. When you search `org:acme:engineering:pa`, you get only PA-specific content. This lets you start broad and narrow down:
 
 ```
-Broad search (everything technical):
-  memory_search(query="rate limiting", namespace="hc")
+Broad search (everything in your org):
+  memory_search(query="rate limiting", namespace="org:acme")
 
-Narrow search (just PA):
-  memory_search(query="rate limiting", namespace="hc:engineering:pa")
+Narrow search (just PA platform):
+  memory_search(query="rate limiting", namespace="org:acme:engineering:pa")
 
 Private search (customer-specific):
-  memory_search(query="Acme rate limit", namespace="myvault")
+  memory_search(query="customer rate limit requirement", namespace="org:acme:private")
 ```
 
 ### Switching namespaces for different tasks in the same session
@@ -417,15 +417,15 @@ Private search (customer-specific):
 You do not need to restart a session to switch namespaces. Each `memory_write` and `memory_search` call takes its own namespace parameter independently. In practice:
 
 ```
-Morning: "Working on Acme demo today, use myvault:acme"
-  → All writes go to myvault:acme
+Morning: "Working on customer integration today, use org:acme:private"
+  → All writes go to org:acme:private
 
-After lunch: "Switching to PA platform work, use hc:engineering:pa"
-  → All writes go to hc:engineering:pa
+After lunch: "Switching to PA platform work, use org:acme:engineering:pa"
+  → All writes go to org:acme:engineering:pa
 
 End of day: "That Redis caching pattern I found today should be shared
-             with the whole team — save it to hc"
-  → That one write goes to hc, doesn't affect anything else
+             with the whole team — save it to org:acme:engineering"
+  → That one write goes to org:acme:engineering, nothing else changes
 ```
 
 The namespace is stateless between tool calls — you can mix namespaces freely within a session by telling Claude which to use each time.
