@@ -9,7 +9,7 @@ services:
       - "2480:2480"   # HTTP REST + Studio UI
       - "2424:2424"   # binary protocol
     environment:
-      ARCADEDB_SERVER_ROOTPASSWORD: ${ARCADEDB_PASSWORD:-engram}
+      JAVA_OPTS: "-Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:-engram}"
       ARCADEDB_SERVER_PLUGINS: ""
     volumes:
       - arcadedb_data:/home/arcadedb/databases

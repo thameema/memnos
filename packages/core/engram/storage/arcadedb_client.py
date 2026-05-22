@@ -200,7 +200,8 @@ class ArcadeDBClient:
         if not exists:
             logger.info("Creating ArcadeDB database %r", self._db)
             resp = await self._client.post(  # type: ignore[union-attr]
-                f"{self._base_url}/api/v1/create/{self._db}"
+                f"{self._base_url}/api/v1/server",
+                content=json.dumps({"command": f"create database {self._db}"}),
             )
             resp.raise_for_status()
 
@@ -366,7 +367,6 @@ class ArcadeDBClient:
 
     async def upsert_entity(self, entity: Entity) -> str:
         """Insert or update an Entity vertex."""
-        # Try update first, then insert
         updated = await self._command(
             "UPDATE Entity SET entity_type = :etype, created_at = :created_at "
             "WHERE name = :name AND namespace = :ns",
@@ -377,7 +377,9 @@ class ArcadeDBClient:
                 "ns": entity.namespace,
             },
         )
-        if not updated:
+        # ArcadeDB returns [{"count": 0}] when nothing matched — check the count
+        matched = int(updated[0].get("count", 0)) if updated else 0
+        if matched == 0:
             await self._command(
                 "INSERT INTO Entity SET "
                 "id = :id, name = :name, entity_type = :etype, "
@@ -683,15 +685,18 @@ class ArcadeDBClient:
 
     async def count_edges(self, namespace: str) -> int:
         ns_filter = namespace if namespace not in ("all", "", "*") else None
-        if ns_filter:
-            rows = await self._query(
-                "SELECT count(*) AS cnt FROM MENTIONS "
-                "WHERE out.namespace = :ns OR out.namespace LIKE :prefix",
-                {"ns": ns_filter, "prefix": f"{ns_filter}:%"},
-            )
-        else:
-            rows = await self._query("SELECT count(*) AS cnt FROM MENTIONS")
-        return int(rows[0].get("cnt", 0)) if rows else 0
+        try:
+            if ns_filter:
+                rows = await self._query(
+                    "SELECT count(*) AS cnt FROM MENTIONS "
+                    "WHERE @out.namespace = :ns OR @out.namespace LIKE :prefix",
+                    {"ns": ns_filter, "prefix": f"{ns_filter}:%"},
+                )
+            else:
+                rows = await self._query("SELECT count(*) AS cnt FROM MENTIONS")
+            return int(rows[0].get("cnt", 0)) if rows else 0
+        except Exception:
+            return 0
 
     async def namespace_distribution(self, base_ns: str, limit: int = 30) -> dict[str, int]:
         """Return {namespace: count} map."""
@@ -722,30 +727,41 @@ class ArcadeDBClient:
                 "AND superseded_at IS NULL LIMIT :lim",
                 {"ns": ns_filter, "prefix": f"{ns_filter}:%", "lim": limit},
             )
-            edge_rows = await self._query(
-                "SELECT out().id AS src_id, in().id AS tgt_id, @class AS rel_type "
-                "FROM MENTIONS WHERE out().namespace = :ns OR out().namespace LIKE :prefix "
-                "LIMIT :lim",
-                {"ns": ns_filter, "prefix": f"{ns_filter}:%", "lim": limit * 3},
-            )
         else:
             mem_rows = await self._query(
                 "SELECT id, content, namespace, created_at, superseded_at, tags "
                 "FROM Memory WHERE superseded_at IS NULL LIMIT :lim",
                 {"lim": limit},
             )
-            edge_rows = await self._query(
-                "SELECT out().id AS src_id, in().id AS tgt_id, @class AS rel_type "
-                "FROM MENTIONS LIMIT :lim",
-                {"lim": limit * 3},
-            )
 
+        # Edge query — ArcadeDB uses @out.id / @in.id for edge endpoint properties
+        edge_rows: list[dict] = []
+        try:
+            if ns_filter:
+                edge_rows = await self._query(
+                    "SELECT @out.id AS src_id, @in.id AS tgt_id, @type AS rel_type "
+                    "FROM MENTIONS WHERE @out.namespace = :ns OR @out.namespace LIKE :prefix "
+                    "LIMIT :lim",
+                    {"ns": ns_filter, "prefix": f"{ns_filter}:%", "lim": limit * 3},
+                )
+            else:
+                edge_rows = await self._query(
+                    "SELECT @out.id AS src_id, @in.id AS tgt_id, @type AS rel_type "
+                    "FROM MENTIONS LIMIT :lim",
+                    {"lim": limit * 3},
+                )
+        except Exception:
+            pass
+
+        mem_node_ids: set[str] = set()
         nodes = []
         for row in mem_rows:
             content = str(row.get("content", ""))
             label = content[:80] + ("…" if len(content) > 80 else "")
+            node_id = row.get("id", "")
+            mem_node_ids.add(node_id)
             nodes.append({
-                "id": row.get("id", ""),
+                "id": node_id,
                 "label": label,
                 "namespace": row.get("namespace", ""),
                 "type": "Memory",
@@ -753,16 +769,48 @@ class ArcadeDBClient:
                 "is_current": row.get("superseded_at") is None,
             })
 
-        edges = [
-            {
-                "source": r.get("src_id", ""),
-                "target": r.get("tgt_id", ""),
-                "type": r.get("rel_type", "MENTIONS"),
-                "weight": 1.0,
-            }
-            for r in edge_rows
-            if r.get("src_id") and r.get("tgt_id")
-        ]
+        # Build edges and collect entity node IDs that are actually referenced
+        edges = []
+        entity_ids_needed: set[str] = set()
+        for r in edge_rows:
+            src, tgt = r.get("src_id", ""), r.get("tgt_id", "")
+            if src and tgt and src in mem_node_ids:
+                edges.append({
+                    "source": src,
+                    "target": tgt,
+                    "type": r.get("rel_type", "MENTIONS"),
+                    "weight": 1.0,
+                })
+                entity_ids_needed.add(tgt)
+
+        # Fetch ALL Entity nodes referenced by the edges so D3 can render them
+        fetched_entity_ids: set[str] = set()
+        if entity_ids_needed:
+            try:
+                id_list = list(entity_ids_needed)
+                placeholders = ", ".join(f":eid{i}" for i in range(len(id_list)))
+                params = {f"eid{i}": v for i, v in enumerate(id_list)}
+                ent_rows = await self._query(
+                    f"SELECT id, name, namespace FROM Entity WHERE id IN [{placeholders}]",
+                    params,
+                )
+                for row in ent_rows:
+                    eid = row.get("id", "")
+                    fetched_entity_ids.add(eid)
+                    nodes.append({
+                        "id": eid,
+                        "label": row.get("name", ""),
+                        "namespace": row.get("namespace", ""),
+                        "type": "Entity",
+                        "created_at": "",
+                        "is_current": True,
+                    })
+            except Exception:
+                pass
+
+        # Only include edges where both endpoints are in the node set
+        all_node_ids = mem_node_ids | fetched_entity_ids
+        edges = [e for e in edges if e["source"] in all_node_ids and e["target"] in all_node_ids]
 
         return {"nodes": nodes, "edges": edges, "truncated": len(mem_rows) >= limit}
 

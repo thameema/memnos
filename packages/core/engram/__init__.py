@@ -11,15 +11,15 @@ Models        — MemoryEntry, Entity, Relation, Fact, Graph, SearchResult, Name
 from engram.client import EngramClient
 from engram.config import (
     ApiRuntimeConfig,
+    ArcadeDBConfig,
     EmbeddingsConfig,
     EngramConfig,
     LearningConfig,
     NamespaceConfig,
-    Neo4jConfig,
     OpenRouterConfig,
-    QdrantConfig,
     RuntimeConfig,
     ServerConfig,
+    VaultConfig,
 )
 from engram.models import (
     Entity,
@@ -37,14 +37,14 @@ __all__ = [
     # Config
     "EngramConfig",
     "ServerConfig",
-    "Neo4jConfig",
-    "QdrantConfig",
+    "ArcadeDBConfig",
     "EmbeddingsConfig",
     "RuntimeConfig",
     "ApiRuntimeConfig",
     "OpenRouterConfig",
     "NamespaceConfig",
     "LearningConfig",
+    "VaultConfig",
     # Models
     "MemoryEntry",
     "Entity",
@@ -55,4 +55,4 @@ __all__ = [
     "Namespace",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
