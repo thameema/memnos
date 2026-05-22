@@ -39,7 +39,7 @@ There are several tools in this space. Here is an honest comparison:
 | **What it is** | Memory + orchestration layer | Manual note vault | Stateful agent framework | Cloud memory API | Fine-tuned LLMs for tool use | Node.js agent platform |
 | **Primary audience** | Claude Code / AI engineering teams | Individual engineers, writers | General LLM app developers | App developers (SaaS API) | Developers running local LLMs | Developers, power users |
 | **Works with Claude Code** | Native MCP integration | Manual CLAUDE.md file | No direct MCP | API wrapper needed | Different runtime (local LLM) | No direct MCP |
-| **Memory capture** | Automatic — agents write directly | Manual — you write notes | Sophisticated in-agent memory | API call required | No built-in memory layer | Shallow MEMORY files |
+| **Memory capture** | Instructed via CLAUDE.md — Claude writes on key decisions | Manual — you write notes | Sophisticated in-agent memory | API call required | No built-in memory layer | Shallow MEMORY files |
 | **Knowledge graph** | Neo4j + Graphiti (temporal) | No — flat Markdown files | Structured in-context store | Flat key-value store | No | No |
 | **Team sharing** | Real-time shared graph | Git/iCloud sync (async) | No | API-based (cloud) | No | No |
 | **Self-improving** | Nightly reflection, heuristic decay | No | No | No | Model weights are static | No |
@@ -61,7 +61,7 @@ There are several tools in this space. Here is an honest comparison:
 
 **OpenClaw** wins on messaging channel breadth. It ships with 50+ pre-built channel adapters (Discord, Telegram, WhatsApp, Slack, X/Twitter, and more) and a large template library, making it fast to deploy an interactive bot across multiple platforms. Its memory system is shallow (flat key-value files); engram can serve as a deeper memory backend for OpenClaw agents.
 
-**engram** wins when you need all three things together in one self-hosted system: automatic cross-session memory that Claude Code writes without manual action, a temporal knowledge graph that connects facts across months of work, and built-in multi-agent task orchestration. The main trade-off: it requires Docker (Neo4j + Qdrant), has a higher operational footprint than Obsidian or mem0, and graph entity extraction requires an LLM API key.
+**engram** wins when you need all three things together in one self-hosted system: cross-session memory that Claude Code writes based on CLAUDE.md instructions (key decisions, session summaries, explicit "remember this" requests), a temporal knowledge graph that connects facts across months of work, and built-in multi-agent task orchestration. The main trade-off: it requires Docker (Neo4j + Qdrant), has a higher operational footprint than Obsidian or mem0, and graph entity extraction requires an LLM API key.
 
 See [docs/enterprise-ai-engineering.md](docs/enterprise-ai-engineering.md) for the full enterprise team model.
 
@@ -228,9 +228,11 @@ To run as a user service (no sudo), place it in `~/.config/systemd/user/engram.s
 
 engram is **not a replacement for Claude Code**. It is an MCP server that augments Claude Code with persistent memory and background agent capabilities. You keep using Claude Code exactly as you do today.
 
-### Add to `~/.claude/settings.json`
+### Step 1 — Add to `~/.claude.json`
 
-The installer can do this automatically, or add it manually:
+> **Important:** The config file is `~/.claude.json` (not `~/.claude/settings.json`).
+
+Add the `engram` entry under `mcpServers`:
 
 ```json
 {
@@ -245,6 +247,22 @@ The installer can do this automatically, or add it manually:
   }
 }
 ```
+
+Fully restart Claude Code (quit and reopen), then run `/mcp` to confirm engram is connected.
+
+### Step 2 — Add CLAUDE.md instructions
+
+Registering the MCP server makes the tools available — but Claude won't use them automatically without instructions. Add memory routing rules to `~/.claude/CLAUDE.md`:
+
+```markdown
+## Memory System — engram MCP
+ALWAYS use memory_search before answering questions about past decisions or context.
+ALWAYS use memory_write when the user asks you to remember something, or when a key decision is made.
+Never use Bash grep or file search to recall knowledge — use memory_search instead.
+MCP results are plain text — read them directly, never spawn agents to parse them.
+```
+
+See the full guide in [`docs/claude-code-setup.md`](docs/claude-code-setup.md) for namespace configuration and troubleshooting.
 
 Restart Claude Code after saving. Run `/mcp` to confirm engram is connected.
 
