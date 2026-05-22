@@ -985,10 +985,13 @@ document.getElementById('ns-input').addEventListener('input', () => {
 //  Boot
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 (function init() {
+  // The engram server pre-populates sessionStorage with its own API key via a
+  // server-injected <script> block in </head>.  If for some reason the key is
+  // still missing (e.g. accessing a remote engram without the injection), show
+  // the settings modal so the user can enter it manually.
+  loadAll();
   if (!getApiKey()) {
     openSettings();
-  } else {
-    loadAll();
   }
 })();
 </script>

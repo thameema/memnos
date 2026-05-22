@@ -23,7 +23,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 logger = logging.getLogger(__name__)
@@ -298,12 +298,45 @@ def create_app() -> FastAPI:
     _dashboard_path = pathlib.Path(__file__).parent / "static" / "dashboard.html"
 
     @application.get("/dashboard", include_in_schema=False, response_class=HTMLResponse)
-    async def dashboard():
-        """Serve the interactive knowledge graph dashboard."""
+    async def dashboard(request: Request):
+        """
+        Serve the interactive knowledge graph dashboard.
+
+        The server injects its own API key and base URL directly into the page
+        so the user never needs to enter credentials manually.  The settings
+        modal is still available for overriding when engram is accessed remotely
+        with a different key.
+        """
         try:
-            return HTMLResponse(content=_dashboard_path.read_text(encoding="utf-8"))
+            html = _dashboard_path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return HTMLResponse(content="<h1>Dashboard not found</h1>", status_code=404)
+
+        # Resolve the first configured API key from the running server config.
+        api_key = ""
+        config = getattr(request.app.state, "config", None)
+        if config is not None:
+            auth_cfg = getattr(config, "auth", None)
+            keys = getattr(auth_cfg, "api_keys", []) if auth_cfg else []
+            if keys:
+                first = keys[0]
+                api_key = getattr(first, "key", "") if hasattr(first, "key") else str(first)
+
+        # Build the base URL as the browser sees it (scheme + host).
+        base_url = str(request.base_url).rstrip("/")
+
+        # Inject an auto-config block that pre-populates sessionStorage so the
+        # settings modal never appears when opening the dashboard locally.
+        # The user can still override via the gear icon.
+        inject = (
+            "<script>\n"
+            "/* Auto-injected by engram server — no manual API key needed */\n"
+            f"sessionStorage.setItem('engram_key', {repr(api_key)});\n"
+            f"sessionStorage.setItem('engram_url', {repr(base_url)});\n"
+            "</script>\n"
+        )
+        html = html.replace("</head>", inject + "</head>", 1)
+        return HTMLResponse(content=html)
 
     @application.get("/", include_in_schema=False)
     async def root():
