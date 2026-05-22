@@ -20,6 +20,7 @@ from .planner import Planner
 from .pool import WorkerPool
 from .router import AgentRouter
 from .synthesizer import Synthesizer
+from .tag_extractor import extract_tags
 from .task_store import TaskStore
 from .workers.api_worker import ApiWorker
 from .workers.base import BaseWorker
@@ -130,10 +131,12 @@ class Orchestrator:
             namespace=namespace,
             runtime=effective_runtime,
             agent=agent,
+            tags=extract_tags(prompt),
         )
         await self._task_store.save(task)
         logger.info(
-            "Orchestrator: task %s created prompt=%r", task.id[:8], prompt[:80]
+            "Orchestrator: task %s created prompt=%r tags=%s",
+            task.id[:8], prompt[:80], task.tags,
         )
 
         try:
@@ -307,7 +310,7 @@ class Orchestrator:
                         await revision_worker.teardown()
 
             # ----------------------------------------------------------
-            # 10. Store task summary in memory
+            # 10. Store task summary in memory + record episode
             # ----------------------------------------------------------
             summary = (
                 f"Task completed: {prompt[:200]}\n"
@@ -324,6 +327,35 @@ class Orchestrator:
                 logger.warning(
                     "Orchestrator: failed to store task summary — %s", mem_exc
                 )
+
+            # Best-effort episodic record — requires engram_learning
+            try:
+                from engram_learning.episode_store import EpisodeStore  # type: ignore
+                from engram_learning.models import EpisodicRecord, Outcome  # type: ignore
+
+                ep_store = EpisodeStore()
+                await ep_store.init()
+                elapsed = (
+                    (datetime.utcnow() - task.created_at).total_seconds()
+                )
+                ep = EpisodicRecord(
+                    task_id=task.id,
+                    namespace=namespace,
+                    original_prompt=prompt,
+                    decomposition=[st.prompt for st in completed_subtasks],
+                    agent_used=agent,
+                    runtime=effective_runtime,
+                    outcome=Outcome.SUCCESS,
+                    duration_s=elapsed,
+                    token_cost=task.token_cost,
+                    tags=task.tags,
+                )
+                await ep_store.save(ep)
+                logger.debug(
+                    "Orchestrator: episode %s saved tags=%s", ep.id[:8], ep.tags
+                )
+            except (ImportError, Exception) as ep_exc:
+                logger.debug("Orchestrator: episode not recorded — %s", ep_exc)
 
             # ----------------------------------------------------------
             # 11. Mark COMPLETE

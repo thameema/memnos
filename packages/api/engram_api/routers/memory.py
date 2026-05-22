@@ -15,7 +15,12 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from engram_api.auth import get_client, require_api_key
+from engram_api.auth import (
+    check_namespace_access,
+    get_client,
+    require_api_key,
+    require_api_key_entry,
+)
 from engram_api.schemas import MemoryResponse, MemoryWriteRequest
 
 logger = logging.getLogger(__name__)
@@ -43,9 +48,11 @@ def _to_response(memory, score: float | None = None) -> MemoryResponse:
 async def write_memory(
     req: MemoryWriteRequest,
     user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
 ) -> MemoryResponse:
     """Persist a new memory entry to both the vector store and knowledge graph."""
+    await check_namespace_access(key_entry, req.namespace)
     logger.debug(
         "write_memory | ns=%s user=%s content=%r",
         req.namespace,
@@ -78,9 +85,11 @@ async def search_memory(
     top_k: int = Query(10, ge=1, le=100),
     mode: str = Query("hybrid", description="hybrid | vector | graph"),
     user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
 ) -> list[MemoryResponse]:
     """Search memories using vector similarity, graph traversal, or a hybrid of both."""
+    await check_namespace_access(key_entry, ns)
     logger.debug(
         "search_memory | ns=%s mode=%s top_k=%d user=%s q=%r",
         ns,
@@ -110,12 +119,20 @@ async def get_memory(
     memory_id: str,
     ns: str = Query(..., description="Namespace the memory belongs to"),
     user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
 ) -> MemoryResponse:
     """Fetch a single memory entry by its UUID."""
+    await check_namespace_access(key_entry, ns)
     logger.debug("get_memory | id=%s ns=%s user=%s", memory_id, ns, user_id)
     try:
-        memory = await client.get(memory_id, ns)
+        # EngramClient exposes get_memory(); fall back to get() for compatibility
+        get_fn = getattr(client, "get_memory", None) or getattr(client, "get", None)
+        if get_fn is None:
+            raise HTTPException(status_code=501, detail="Memory get not supported by this client")
+        memory = await get_fn(memory_id, ns)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Failed to fetch memory %s: %s", memory_id, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -135,9 +152,11 @@ async def delete_memory(
     memory_id: str,
     ns: str = Query(..., description="Namespace the memory belongs to"),
     user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
 ) -> None:
     """Permanently delete a memory entry from both vector and graph stores."""
+    await check_namespace_access(key_entry, ns)
     logger.debug("delete_memory | id=%s ns=%s user=%s", memory_id, ns, user_id)
     try:
         deleted = await client.delete(memory_id, ns)

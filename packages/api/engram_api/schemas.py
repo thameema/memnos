@@ -70,6 +70,7 @@ class FeedbackRequest(BaseModel):
     task_id: str
     signal: str  # "positive" | "negative"
     comment: str = ""
+    namespace: str = "personal:default"
 
 
 class HealthResponse(BaseModel):

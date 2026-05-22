@@ -1,0 +1,192 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# ─── Root meta-package: engram-ai ─────────────────────────────────────────────
+# Installs all engram components in one shot:
+#   pip install engram-ai
+[project]
+name = "engram-ai"
+version = "0.1.0"
+description = "engram — persistent memory and multi-agent orchestration for LLM workflows"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+
+authors = [
+  { name = "engram contributors" },
+]
+
+keywords = [
+  "mcp",
+  "memory",
+  "knowledge-graph",
+  "claude",
+  "llm",
+  "multi-agent",
+  "rag",
+  "neo4j",
+  "qdrant",
+]
+
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+# Pull in all sub-packages
+dependencies = [
+  "engram-core>=0.1.0",
+  "engram-mcp-server>=0.1.0",
+  "engram-orchestrator>=0.1.0",
+  "engram-api>=0.1.0",
+  "engram-learning>=0.1.0",
+  "engram-gateway>=0.1.0",
+]
+
+[project.optional-dependencies]
+# All extras rolled up
+all = [
+  "engram-ai[local-embeddings,dev]",
+]
+
+# Free local embeddings (no OpenAI key needed)
+local-embeddings = [
+  "sentence-transformers>=2.7",
+]
+
+# Developer tooling
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=5.0",
+  "pytest-watch>=4.2",
+  "ruff>=0.4",
+  "mypy>=1.10",
+  "build>=1.2",
+  "twine>=5.0",
+  "pip-audit>=2.7",
+  "httpx>=0.27",         # for test client
+]
+
+[project.urls]
+Homepage    = "https://github.com/yourusername/engram"
+Repository  = "https://github.com/yourusername/engram"
+Issues      = "https://github.com/yourusername/engram/issues"
+Changelog   = "https://github.com/yourusername/engram/blob/main/CHANGELOG.md"
+
+[project.scripts]
+# The main CLI entry point — delegates to the engram bash script
+# Real start/stop/status is handled by the installed shell script
+# This shim allows `python -m engram` usage
+engram-ai = "engram_api.main:main"
+
+# ─── Tool configuration ───────────────────────────────────────────────────────
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = [
+  "packages*",
+  "tests*",
+  "docs*",
+  "agents*",
+  "skills*",
+]
+
+# ─── Ruff ─────────────────────────────────────────────────────────────────────
+
+[tool.ruff]
+target-version = "py311"
+line-length    = 100
+exclude = [
+  ".git",
+  "__pycache__",
+  "*.egg-info",
+  "dist",
+  "build",
+]
+
+[tool.ruff.lint]
+select = [
+  "E",    # pycodestyle errors
+  "W",    # pycodestyle warnings
+  "F",    # pyflakes
+  "I",    # isort
+  "B",    # flake8-bugbear
+  "C4",   # flake8-comprehensions
+  "UP",   # pyupgrade
+  "N",    # pep8-naming
+  "ANN",  # flake8-annotations (type hint enforcement)
+  "S",    # bandit security
+  "RUF",  # ruff-specific rules
+]
+ignore = [
+  "ANN101",  # Missing type annotation for self
+  "ANN102",  # Missing type annotation for cls
+  "S101",    # Use of assert (needed in tests)
+  "B008",    # Do not perform function calls in default arguments (FastAPI pattern)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["ANN", "S"]
+"**/migrations/**" = ["ALL"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["engram", "engram_mcp", "engram_orchestrator", "engram_api", "engram_learning", "engram_gateway"]
+
+# ─── Mypy ─────────────────────────────────────────────────────────────────────
+
+[tool.mypy]
+python_version        = "3.11"
+strict                = false
+warn_return_any       = true
+warn_unused_configs   = true
+ignore_missing_imports = true
+exclude               = ["dist/", "build/", "*.egg-info"]
+
+# ─── Pytest ───────────────────────────────────────────────────────────────────
+
+[tool.pytest.ini_options]
+asyncio_mode   = "auto"
+testpaths      = [
+  "packages/core/tests",
+  "packages/mcp-server/tests",
+  "packages/orchestrator/tests",
+  "packages/api/tests",
+  "packages/learning/tests",
+]
+filterwarnings = [
+  "ignore::DeprecationWarning",
+  "ignore::PendingDeprecationWarning",
+]
+markers = [
+  "integration: marks tests that require running Docker services",
+  "slow: marks tests that are slow",
+  "unit: marks unit tests",
+]
+addopts = "--tb=short -q"
+
+# ─── Coverage ─────────────────────────────────────────────────────────────────
+
+[tool.coverage.run]
+source   = ["engram", "engram_mcp", "engram_orchestrator", "engram_api", "engram_learning", "engram_gateway"]
+omit     = ["*/tests/*", "*/migrations/*", "*/conftest.py"]
+branch   = true
+
+[tool.coverage.report]
+show_missing   = true
+skip_covered   = false
+fail_under     = 60
+exclude_lines  = [
+  "pragma: no cover",
+  "def __repr__",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "@(abc\\.)?abstractmethod",
+]

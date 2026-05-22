@@ -13,6 +13,59 @@ Claude Code  ──── MCP/SSE ────►  engram server
                                     └── Mobile gateway (Telegram / WhatsApp)
 ```
 
+## Quick Install
+
+**One command (macOS or Linux):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yourusername/engram/main/install.sh | bash
+```
+
+The installer will:
+- Check Docker, Python 3.11+, and curl are installed
+- Prompt for your LLM API key (Anthropic recommended) and generate secure credentials
+- Pull Neo4j and Qdrant Docker images
+- Install the Python packages
+- Create `~/.engram/` with your config and data directories
+- Add engram to Claude Code's MCP servers (optional)
+
+**Or with pip** (if you already have Neo4j and Qdrant running):
+
+```bash
+pip install engram-ai
+engram start
+```
+
+**After install, start engram:**
+
+```bash
+engram start
+```
+
+Connect Claude Code — add to `~/.claude/settings.json` (the installer can do this automatically):
+
+```json
+{
+  "mcpServers": {
+    "engram": {
+      "url": "http://localhost:8765/sse",
+      "apiKey": "your-engram-api-key"
+    }
+  }
+}
+```
+
+**engram CLI:**
+
+```
+engram start      Start all services (Neo4j, Qdrant, Python server)
+engram stop       Stop all services
+engram restart    Restart all services
+engram status     Show health and running status
+engram logs       Tail server logs  (engram|neo4j|qdrant|all)
+engram config     Print engram.yaml
+```
+
 ## Why engram?
 
 Claude Code forgets everything when a session ends. engram fixes that.
@@ -24,25 +77,14 @@ Claude Code forgets everything when a session ends. engram fixes that.
 - **Mobile access** — send tasks from Telegram or WhatsApp; engram runs them and replies
 - **Bring your own key** — engram never holds your API keys. You configure your own Anthropic/OpenRouter key.
 
-## Quickstart
+## Developer Setup
 
 ```bash
-git clone https://github.com/yourorg/engram.git && cd engram
-cp .env.example .env && cp engram.yaml.example engram.yaml
+git clone https://github.com/yourusername/engram.git && cd engram
+make setup          # copies .env.example + engram.yaml.example, installs all packages in dev mode
 # Edit .env with your API keys
-docker compose up -d
-```
-
-Connect Claude Code — add to `~/.claude/settings.json`:
-```json
-{
-  "mcpServers": {
-    "engram": {
-      "url": "http://localhost:8765/sse",
-      "apiKey": "your-engram-api-key"
-    }
-  }
-}
+make dev            # starts Neo4j + Qdrant
+engram-server --config engram.yaml   # starts the Python server
 ```
 
 See [docs/quickstart.md](docs/quickstart.md) for the full guide.

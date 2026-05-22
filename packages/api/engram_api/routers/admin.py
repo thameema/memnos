@@ -5,8 +5,11 @@ Endpoints
 ---------
 GET    /admin/health              — check Neo4j and Qdrant connectivity
 GET    /admin/namespaces          — list all configured namespaces
-POST   /admin/namespaces          — create a new namespace definition
-DELETE /admin/namespaces/{ns}     — delete a namespace and all its data
+POST   /admin/namespaces          — create a new namespace definition  [admin only]
+DELETE /admin/namespaces/{ns}     — delete a namespace and all its data [admin only]
+
+Admin operations (create/delete namespace) require an API key with wildcard ("*")
+namespace access.  Keys scoped to specific namespaces will receive HTTP 403.
 """
 
 from __future__ import annotations
@@ -15,7 +18,12 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from engram_api.auth import get_client, get_config, require_api_key
+from engram_api.auth import (
+    get_client,
+    get_config,
+    require_admin_access,
+    require_api_key,
+)
 from engram_api.schemas import HealthResponse, NamespaceCreateRequest
 
 logger = logging.getLogger(__name__)
@@ -111,21 +119,24 @@ async def list_namespaces(
 
 
 # ---------------------------------------------------------------------------
-# Namespace creation
+# Namespace creation  [admin only — requires wildcard ("*") key]
 # ---------------------------------------------------------------------------
 
 @router.post("/namespaces", status_code=201)
 async def create_namespace(
     req: NamespaceCreateRequest,
-    user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_admin_access),
     config=Depends(get_config),
 ) -> dict:
     """
     Register a new namespace definition in the running configuration.
 
+    Requires an API key with wildcard (``"*"``) namespace access.
+
     Note: this updates the in-memory configuration only.  Persist by editing
     ``engram.yaml`` for durability across restarts.
     """
+    user_id = getattr(key_entry, "user_id", "unknown")
     ns_config = getattr(config, "namespaces", None)
     if ns_config is None:
         raise HTTPException(status_code=500, detail="Namespace config not available")
@@ -158,22 +169,25 @@ async def create_namespace(
 
 
 # ---------------------------------------------------------------------------
-# Namespace deletion
+# Namespace deletion  [admin only — requires wildcard ("*") key]
 # ---------------------------------------------------------------------------
 
 @router.delete("/namespaces/{ns}", status_code=204)
 async def delete_namespace(
     ns: str,
-    user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_admin_access),
     config=Depends(get_config),
     client=Depends(get_client),
 ) -> None:
     """
     Delete a namespace definition and optionally purge all its data.
 
+    Requires an API key with wildcard (``"*"``) namespace access.
+
     **Warning:** this is a destructive operation.  All memories, entities,
     facts, and relations stored under ``ns`` will be permanently removed.
     """
+    user_id = getattr(key_entry, "user_id", "unknown")
     ns_config = getattr(config, "namespaces", None)
     definitions = getattr(ns_config, "definitions", {}) if ns_config else {}
 

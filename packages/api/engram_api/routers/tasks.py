@@ -14,9 +14,14 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from engram_api.auth import get_orchestrator, require_api_key
+from engram_api.auth import (
+    check_namespace_access,
+    get_orchestrator,
+    require_api_key,
+    require_api_key_entry,
+)
 from engram_api.schemas import FeedbackRequest, SpawnTaskRequest, TaskResponse
 
 logger = logging.getLogger(__name__)
@@ -49,6 +54,7 @@ def _task_to_response(task) -> TaskResponse:
 async def spawn_task(
     req: SpawnTaskRequest,
     user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
     orchestrator=Depends(get_orchestrator),
 ) -> TaskResponse:
     """
@@ -56,6 +62,7 @@ async def spawn_task(
 
     The task runs asynchronously. Poll ``GET /tasks/{task_id}`` to check status.
     """
+    await check_namespace_access(key_entry, req.namespace)
     logger.debug(
         "spawn_task | ns=%s runtime=%s agent=%s user=%s prompt=%r",
         req.namespace,
@@ -101,9 +108,11 @@ async def list_tasks(
     status: str = Query("ALL", description="PENDING | RUNNING | COMPLETE | FAILED | ALL"),
     limit: int = Query(20, ge=1, le=200),
     user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
     orchestrator=Depends(get_orchestrator),
 ) -> list[TaskResponse]:
     """List tasks for a namespace, optionally filtered by status."""
+    await check_namespace_access(key_entry, ns)
     logger.debug(
         "list_tasks | ns=%s status=%s limit=%d user=%s", ns, status, limit, user_id
     )
@@ -151,14 +160,29 @@ async def cancel_task(
 ) -> None:
     """Cancel a running or pending task."""
     logger.debug("cancel_task | task_id=%s user=%s", task_id, user_id)
-    try:
-        cancelled = await orchestrator.cancel(task_id)
-    except Exception as exc:
-        logger.exception("cancel_task failed for %s: %s", task_id, exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    if not cancelled:
-        raise HTTPException(status_code=404, detail=f"Task {task_id!r} not found or already complete")
+    # Use orchestrator.cancel() if available, otherwise fall back to task_store update
+    cancel_fn = getattr(orchestrator, "cancel", None)
+    if cancel_fn is not None:
+        try:
+            cancelled = await cancel_fn(task_id)
+        except Exception as exc:
+            logger.exception("cancel_task failed for %s: %s", task_id, exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if not cancelled:
+            raise HTTPException(status_code=404, detail=f"Task {task_id!r} not found or already complete")
+    else:
+        # Fallback: mark as FAILED in the task store
+        task_store = getattr(orchestrator, "_task_store", None)
+        if task_store is None:
+            raise HTTPException(status_code=501, detail="Task cancellation not supported")
+        from engram_orchestrator.models import TaskStatus  # type: ignore
+        task = await task_store.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"Task {task_id!r} not found")
+        if task.status in (TaskStatus.COMPLETE, TaskStatus.FAILED):
+            raise HTTPException(status_code=409, detail=f"Task {task_id!r} is already {task.status.value}")
+        await task_store.update_status(task_id, TaskStatus.FAILED, error="Cancelled by user")
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +192,7 @@ async def cancel_task(
 @router.post("/feedback", status_code=204)
 async def submit_feedback(
     req: FeedbackRequest,
+    request: Request,
     user_id: str = Depends(require_api_key),
 ) -> None:
     """
@@ -191,12 +216,23 @@ async def submit_feedback(
 
     try:
         from engram_learning.feedback import FeedbackService  # type: ignore
+        from engram_learning.episode_store import EpisodeStore  # type: ignore
+        from engram_learning.quality_store import QualityStore  # type: ignore
 
-        # FeedbackService requires stores; attempt to use the app-state version
-        # if available, otherwise do a lightweight standalone record.
-        fs = FeedbackService.__new__(FeedbackService)  # dependency-injected elsewhere
-        # Best-effort call — if no stores are wired this will fail silently
-        if hasattr(fs, "record_explicit"):
-            await fs.record_explicit(req.task_id, req.signal, req.comment)
+        # Prefer stores already initialised on app state; fall back to fresh instances.
+        episode_store = getattr(request.app.state, "episode_store", None)
+        quality_store = getattr(request.app.state, "quality_store", None)
+
+        if episode_store is None:
+            episode_store = EpisodeStore()
+            await episode_store.init()
+        if quality_store is None:
+            quality_store = QualityStore()
+            await quality_store.init()
+
+        fs = FeedbackService(episode_store=episode_store, quality_store=quality_store)
+        namespace = req.namespace
+        await fs.record_explicit(req.task_id, req.signal, req.comment)
+        logger.debug("Feedback recorded for task_id=%s namespace=%s", req.task_id, namespace)
     except (ImportError, Exception) as exc:
         logger.debug("Feedback not persisted (%s); continuing", exc)

@@ -79,18 +79,29 @@ class SkillStore:
                 return [self._row(r) for r in await cur.fetchall()]
 
     async def find_match(self, task: str, namespace: str, threshold: float = 0.7) -> SkillTemplate | None:
-        """Simple keyword matching against trigger_patterns."""
+        """Find the best matching skill template for a task using trigger pattern scoring.
+
+        Each template's score is the fraction of its ``trigger_patterns`` that
+        appear (case-insensitive substring match) in *task*.  The template with
+        the highest score is returned when that score meets *threshold*.
+        """
+        templates = await self.get_all(namespace)
         task_lower = task.lower()
-        all_t = await self.get_all(namespace)
-        for t in all_t:
-            for pattern in t.trigger_patterns:
-                if pattern.lower() in task_lower or task_lower in pattern.lower():
-                    return t
-            # Word overlap fallback
-            desc_words = set(t.description.lower().split())
-            task_words = set(task_lower.split())
-            if desc_words and len(desc_words & task_words) / len(desc_words) >= threshold:
-                return t
+
+        best: SkillTemplate | None = None
+        best_score = 0.0
+
+        for template in templates:
+            if not template.trigger_patterns:
+                continue
+            matched = sum(1 for p in template.trigger_patterns if p.lower() in task_lower)
+            score = matched / len(template.trigger_patterns)
+            if score > best_score:
+                best_score = score
+                best = template
+
+        if best_score >= threshold:
+            return best
         return None
 
     async def increment_use(self, template_id: str, success: bool):

@@ -16,7 +16,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from engram_api.auth import get_client, require_api_key
+from engram_api.auth import (
+    check_namespace_access,
+    get_client,
+    require_api_key,
+    require_api_key_entry,
+)
 from engram_api.schemas import FactRequest, GraphQueryRequest
 
 logger = logging.getLogger(__name__)
@@ -43,6 +48,7 @@ def _dt_to_iso(value: Any) -> Any:
 async def graph_query(
     req: GraphQueryRequest,
     user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
 ) -> list[dict]:
     """
@@ -51,6 +57,7 @@ async def graph_query(
     Only MATCH statements are permitted; the client-side should enforce this,
     but callers are expected to pass safe, read-only queries.
     """
+    await check_namespace_access(key_entry, req.namespace)
     logger.debug(
         "graph_query | ns=%s user=%s cypher=%r params=%s",
         req.namespace,
@@ -80,9 +87,11 @@ async def get_entity(
     ns: str = Query(..., description="Namespace to search in"),
     depth: int = Query(2, ge=1, le=5, description="Relation traversal depth"),
     user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
 ) -> dict:
     """Fetch a named entity and its relationships up to *depth* hops."""
+    await check_namespace_access(key_entry, ns)
     logger.debug(
         "get_entity | name=%r ns=%s depth=%d user=%s", name, ns, depth, user_id
     )
@@ -147,9 +156,11 @@ async def get_entity(
 async def add_fact(
     req: FactRequest,
     user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
 ) -> dict:
     """Store a temporal subject-predicate-object triple in the knowledge graph."""
+    await check_namespace_access(key_entry, req.namespace)
     logger.debug(
         "add_fact | ns=%s user=%s %r -[%r]-> %r valid_until=%s",
         req.namespace,
