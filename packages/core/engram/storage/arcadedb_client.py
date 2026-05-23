@@ -26,8 +26,48 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
+
+# ---------------------------------------------------------------------------
+# Temporal query helpers
+# ---------------------------------------------------------------------------
+
+_TEMPORAL_TERMS = frozenset({"last", "latest", "recent", "newest", "recently", "current", "new"})
+
+# Match ISO dates (2024-01-23) or verbose dates in content
+_DATE_PAT = re.compile(r"\b(202[0-9])[-/](\d{2})[-/](\d{2})\b")
+
+
+def _is_temporal_query(query: str) -> bool:
+    """Return True if the query is asking for the most recent content."""
+    words = set(query.lower().split())
+    return bool(words & _TEMPORAL_TERMS)
+
+
+def _extract_doc_date(content: str) -> float:
+    """Extract the most recent ISO date from content as a 0-1 recency score.
+
+    Scans up to the first 4000 chars. A score of 1.0 means very recent
+    (2027-01-01), 0.0 means 2024-01-01 or earlier. Returns 0.0 if no
+    date found.
+    """
+    matches = _DATE_PAT.findall(content[:4000])
+    if not matches:
+        return 0.0
+    dates = []
+    for year, month, day in matches:
+        try:
+            dates.append(datetime(int(year), int(month), int(day)))
+        except ValueError:
+            pass
+    if not dates:
+        return 0.0
+    latest = max(dates)
+    base = datetime(2024, 1, 1)
+    horizon = datetime(2027, 6, 1)
+    return max(0.0, min(1.0, (latest - base).days / (horizon - base).days))
 
 import httpx
 from tenacity import (
@@ -553,16 +593,22 @@ class ArcadeDBClient:
         except Exception as exc:
             logger.warning("Vector search failed, falling back to keyword scan: %s", exc)
             rows = await self._fallback_scan(namespace, top_k, include_superseded, query=query)
-            # Score keyword results by hit density so ranking is meaningful
+            # _fallback_scan already sorted rows by temporal- or keyword-relevance.
+            # Preserve that order but attach meaningful scores.
+            temporal = _is_temporal_query(query)
             keywords = [
                 w.lower() for w in query.split() if len(w) >= 3
             ] if query else []
             scored: list[SearchResult] = []
             for i, row in enumerate(rows):
                 memory = _row_to_memory(row)
-                recency = _recency_score(memory.created_at)
+                text = (memory.content or "").lower()
+                # Document-date recency (extracted from content, not import time)
+                doc_recency = _extract_doc_date(memory.content or "")
+                # Import-time recency as fallback when no date found in content
+                import_recency = _recency_score(memory.created_at)
+                recency = doc_recency if doc_recency > 0 else import_recency
                 if keywords:
-                    text = (memory.content or "").lower()
                     hits = sum(1 for kw in keywords if kw in text)
                     kw_score = min(0.95, 0.5 + hits * 0.1)
                 else:
@@ -575,7 +621,13 @@ class ArcadeDBClient:
                     is_current=memory.is_current,
                     recency_score=recency,
                 ))
-            scored.sort(key=lambda r: r.score, reverse=True)
+            if temporal:
+                # For temporal queries ("last", "latest", "recent"), sort purely by
+                # doc date extracted from content — keyword density is irrelevant
+                # when the user explicitly asks for the most recent information.
+                scored.sort(key=lambda r: r.recency_score, reverse=True)
+            else:
+                scored.sort(key=lambda r: r.score, reverse=True)
             return scored[:top_k]
 
         results: list[SearchResult] = []
@@ -691,8 +743,12 @@ class ArcadeDBClient:
         """
         ns_filter = namespace if namespace not in ("all", "", "*") else None
 
+        # Detect if the query asks for most-recent content
+        temporal = _is_temporal_query(query)
+
         # Extract meaningful keywords (skip stop words, require len >= 3)
-        _stop = {"the", "was", "what", "about", "last", "did", "are", "for",
+        # Keep "last", "latest", etc. OUT of stop words — they carry temporal intent
+        _stop = {"the", "was", "what", "about", "did", "are", "for",
                  "and", "that", "with", "this", "from", "have", "has", "had"}
         keywords = [
             w.lower() for w in query.split()
@@ -722,15 +778,27 @@ class ArcadeDBClient:
         params["topK"] = candidate_limit
         rows = await self._query(sql, params)
 
-        if not keywords or not rows:
+        if not rows:
             return rows[:top_k]
 
-        # Re-rank by number of keyword hits in content
+        # Re-rank: keyword hit count + document date extracted from content
         def _hits(row: dict) -> int:
             text = (row.get("content") or "").lower()
             return sum(1 for kw in keywords if kw in text)
 
-        rows.sort(key=_hits, reverse=True)
+        max_hits = max((_hits(r) for r in rows), default=1) or 1
+
+        def _rank_key(row: dict) -> float:
+            h = _hits(row) / max_hits          # 0–1 normalised hits
+            d = _extract_doc_date(row.get("content", ""))  # 0–1 recency from content
+            if temporal:
+                # Temporal queries: document date drives ranking (70 %), hits secondary
+                return 0.7 * d + 0.3 * h
+            else:
+                # Regular queries: keyword relevance drives (70 %), date secondary
+                return 0.3 * d + 0.7 * h
+
+        rows.sort(key=_rank_key, reverse=True)
         return rows[:top_k]
 
     # ------------------------------------------------------------------
