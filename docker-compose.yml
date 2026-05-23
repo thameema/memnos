@@ -35,6 +35,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       ENGRAM_API_KEY: ${ENGRAM_API_KEY}
+      ENGRAM_VAULT_KEY: ${ENGRAM_VAULT_KEY}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS:-}
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY:-}
@@ -48,7 +49,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8766/api/v1/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8766/api/v1/admin/health"]
       interval: 15s
       timeout: 5s
       retries: 5
