@@ -24,8 +24,9 @@ _MAX_ITERATIONS = 20
 _MEMORY_SEARCH_TOOL: dict[str, Any] = {
     "name": "memory_search",
     "description": (
-        "Search persistent memory for relevant information. "
-        "Use this to recall past task outcomes, heuristics, patterns, or facts."
+        "Search the user's private knowledge base (imported notes, documents, past sessions). "
+        "This is the ONLY source of truth — always call this before answering any question. "
+        "Results are the user's own content, not general knowledge."
     ),
     "input_schema": {
         "type": "object",
@@ -92,10 +93,13 @@ _WEB_SEARCH_TOOL: dict[str, Any] = {
 _DEFAULT_TOOLS = [_MEMORY_SEARCH_TOOL, _MEMORY_WRITE_TOOL, _WEB_SEARCH_TOOL]
 
 _DEFAULT_SYSTEM = (
-    "You are a capable AI assistant with access to persistent memory. "
-    "Use memory_search to recall relevant context before answering. "
-    "Use memory_write to persist important findings or outcomes. "
-    "Complete the user's task thoroughly and return a clear, complete response."
+    "You are a personal AI assistant backed by a private knowledge base. "
+    "CRITICAL RULE: You MUST call memory_search FIRST on every request, before writing any response. "
+    "Your answers MUST be grounded in what memory_search returns — do NOT answer from your training data. "
+    "If memory_search returns no relevant results, say exactly: "
+    "'I don't have anything about that in your knowledge base.' "
+    "Never substitute general knowledge for missing memory results. "
+    "Use memory_write to persist important new information the user tells you."
 )
 
 

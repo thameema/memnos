@@ -66,7 +66,7 @@ async def graph_stats(
     # Recent activity — sample search for date histogram
     recent_activity: list[dict] = []
     try:
-        sample = await client.search("", namespace, top_k=200) or []
+        sample = await client.search("recent activity", namespace, top_k=200) or []
         if sample:
             recent_activity = _build_date_histogram(sample)
     except Exception as exc:
