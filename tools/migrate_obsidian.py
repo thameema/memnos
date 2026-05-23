@@ -206,14 +206,29 @@ class EngramClient:
 # ---------------------------------------------------------------------------
 
 
+# Directories that are never Obsidian notes — skip them during vault walk.
+_SKIP_DIRS = {
+    ".obsidian",    # Obsidian app config
+    ".git",         # git internals
+    ".github",      # GitHub workflows/templates
+    ".claude",      # Claude Code settings
+    ".history",     # local edit history
+    ".venv", "venv", "env",          # Python virtualenvs
+    "node_modules",                   # JS dependencies
+    "__pycache__",                    # Python bytecode
+    "target",                         # Maven / Gradle build output
+    "dist", "build", "out",           # generic build output
+    "site-packages",                  # installed Python packages
+}
+
+
 def collect_notes(vault: Path, folder_filter: Optional[str]) -> list[Path]:
-    """Walk vault directory and collect .md files, skipping .obsidian/."""
+    """Walk vault directory and collect .md files, skipping non-note directories."""
     notes: list[Path] = []
     base = vault / folder_filter if folder_filter else vault
 
     for md_path in sorted(base.rglob("*.md")):
-        # Skip hidden Obsidian config directory
-        if ".obsidian" in md_path.parts:
+        if _SKIP_DIRS.intersection(md_path.parts):
             continue
         notes.append(md_path)
 
