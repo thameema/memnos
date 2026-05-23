@@ -34,6 +34,7 @@ services:
       ARCADEDB_HOST: arcadedb
       ARCADEDB_PORT: 2480
       ARCADEDB_PASSWORD: ${ARCADEDB_PASSWORD:-engram}
+      ENGRAM_EMBED_MODE: ${ENGRAM_EMBED_MODE:-online}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}       # used by the default openai embeddings provider
       VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}       # optional — only needed if provider: voyage

@@ -3,11 +3,16 @@ engram.vector.embedder — Embedding abstraction with multiple backends.
 
 Providers
 ---------
-openai   (default) — OpenAI text-embedding-3-small; reads OPENAI_API_KEY from env.
-                     Also works with any OpenAI-compatible endpoint via base_url
-                     (Mistral, Together AI, Ollama, etc.).
+auto     (default) — picks the best available provider automatically:
+                     OPENAI_API_KEY set → openai
+                     OPENROUTER_API_KEY set → openrouter (OpenAI-compatible)
+                     VOYAGE_API_KEY set → voyage
+                     otherwise → local (sentence-transformers)
+openai             — OpenAI text-embedding-3-small; reads OPENAI_API_KEY from env.
+                     Also works with any OpenAI-compatible endpoint via base_url.
+openrouter         — OpenRouter embeddings via OpenAI-compatible API.
+                     Reads OPENROUTER_API_KEY; same key used for LLM workers.
 voyage             — Voyage AI embeddings; reads VOYAGE_API_KEY from env.
-                     Recommended when the rest of the stack uses Anthropic.
 local              — sentence-transformers (CPU/GPU, fully offline).
                      Opt-in: pip install 'engram-core[local-embeddings]'
                      Pulls in ~2 GB of torch + CUDA packages.
@@ -232,22 +237,54 @@ class LocalEmbedder(Embedder):
 # Factory
 # ---------------------------------------------------------------------------
 
+def _auto_detect_provider() -> str:
+    """Pick the best embedding provider based on available environment variables."""
+    import os
+    if os.environ.get("OPENAI_API_KEY", "").strip():
+        logger.info("Embedder auto-detect: OPENAI_API_KEY found → using openai")
+        return "openai"
+    if os.environ.get("OPENROUTER_API_KEY", "").strip():
+        logger.info("Embedder auto-detect: OPENROUTER_API_KEY found → using openrouter")
+        return "openrouter"
+    if os.environ.get("VOYAGE_API_KEY", "").strip():
+        logger.info("Embedder auto-detect: VOYAGE_API_KEY found → using voyage")
+        return "voyage"
+    logger.info("Embedder auto-detect: no remote API key found → using local sentence-transformers")
+    return "local"
+
+
 def get_embedder(config: "EmbeddingsConfig") -> Embedder:
     """
     Return the correct Embedder for the configured provider.
 
-    ENGRAM_EMBED_MODE aliases:
-      online  → openai  (default; lightweight, no local ML packages)
-      local   → local   (sentence-transformers; requires local-embeddings extra)
+    Provider aliases:
+      auto        — auto-detect from available API keys (recommended default)
+      online      — alias for openai
+      openai      — OpenAI text-embedding-3-small
+      openrouter  — OpenRouter via OpenAI-compatible endpoint (same key as LLM)
+      voyage      — Voyage AI
+      local       — sentence-transformers (offline, ~2 GB)
     """
-    provider = (config.provider or "online").lower()
+    provider = (config.provider or "auto").lower()
 
-    # "online" is the user-facing alias for the default remote provider
+    if provider == "auto":
+        provider = _auto_detect_provider()
+
+    # "online" is a legacy alias for openai
     if provider in ("online", "openai"):
         return OpenAIEmbedder(
             model=config.model or "text-embedding-3-small",
             api_key=config.api_key,
             base_url=config.base_url,
+            dimensions=config.dimensions,
+        )
+
+    if provider == "openrouter":
+        import os
+        return OpenAIEmbedder(
+            model=config.model or "openai/text-embedding-3-small",
+            api_key=config.api_key or os.environ.get("OPENROUTER_API_KEY", ""),
+            base_url="https://openrouter.ai/api/v1",
             dimensions=config.dimensions,
         )
 
@@ -262,5 +299,5 @@ def get_embedder(config: "EmbeddingsConfig") -> Embedder:
 
     raise ValueError(
         f"Unknown embeddings provider {config.provider!r}. "
-        "Supported: 'online' (OpenAI), 'voyage', 'local' (sentence-transformers)."
+        "Supported: 'auto', 'openai', 'openrouter', 'voyage', 'local'."
     )
