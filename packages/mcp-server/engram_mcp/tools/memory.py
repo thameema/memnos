@@ -17,6 +17,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _CONTENT_PREVIEW_LEN = 120
+_MAX_CONTENT = 4000  # chars per result — full document for small vaults; truncates very large ones
 
 
 def _dt_to_iso(value: Any) -> Any:
@@ -74,8 +75,6 @@ async def handle_memory_search(
 
     if not raw_results:
         return f"No memories found for query: {query!r} in namespace {namespace!r}"
-
-    _MAX_CONTENT = 400  # chars per result — keeps total response under ~6KB for top_k=10
 
     lines: list[str] = [f"Found {len(raw_results)} memories for {query!r}:\n"]
     for i, r in enumerate(raw_results, 1):
