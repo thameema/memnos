@@ -23,7 +23,10 @@ from typing import Any
 
 from engram.config import EngramConfig
 from engram.extraction.spacy_extractor import get_extractor
-from engram.models import AssetReference, Entity, Fact, Graph, MemoryEntry, SearchResult, Secret, VaultAuditLog
+from engram.models import (
+    AssetReference, Entity, Fact, Graph, MemoryEntry, MemoryStatus, MemoryType,
+    SearchResult, Secret, VaultAuditLog,
+)
 from engram.storage.arcadedb_client import ArcadeDBClient
 from engram.vault.secret_detector import detect as _detect_secrets, redact as _redact_secrets
 from engram.vault.vault_client import get_vault_client
@@ -112,6 +115,13 @@ class EngramClient:
         tags: list[str] | None = None,
         source: str = "agent",
         metadata: dict | None = None,
+        memory_type: MemoryType = MemoryType.fact,
+        status: MemoryStatus = MemoryStatus.active,
+        author: str = "",
+        affects: list[str] | None = None,
+        rationale: str = "",
+        expires_at=None,
+        review_by=None,
     ) -> MemoryEntry:
         """Persist a new memory entry and extract knowledge-graph edges.
 
@@ -120,7 +130,7 @@ class EngramClient:
           2. Embed ``content`` via the configured embedder.
           3. Insert into ArcadeDB (Memory vertex + HNSW vector).
           4. Extract named entities via spaCy (no LLM needed).
-          5. Upsert Entity vertices and create MENTIONS edges.
+          5. Upsert Entity vertices and create MENTIONS + AFFECTS edges.
           6. Return the completed ``MemoryEntry``.
         """
         self._assert_started()
@@ -141,8 +151,15 @@ class EngramClient:
             tags=tags or [],
             source=source,
             metadata=metadata or {},
+            memory_type=memory_type,
+            status=status,
+            author=author,
+            affects=affects or [],
+            rationale=rationale,
+            expires_at=expires_at,
+            review_by=review_by,
         )
-        logger.debug("add: memory_id=%s namespace=%s", memory.id, namespace)
+        logger.debug("add: memory_id=%s namespace=%s type=%s", memory.id, namespace, memory_type)
 
         embedding = await self._embedder.embed(content)
         await self._arcadedb.insert_memory(memory, embedding)
@@ -158,6 +175,17 @@ class EngramClient:
                 )
                 await self._arcadedb.upsert_entity(entity_model)
                 await self._arcadedb.create_mentions_edge(memory.id, ent.name, namespace)
+
+            # AFFECTS edges — connect decision/constraint memories to the entities they govern
+            for entity_name in (affects or []):
+                entity_model = Entity(
+                    name=entity_name.lower(),
+                    entity_type="DECISION",
+                    namespace=namespace,
+                )
+                await self._arcadedb.upsert_entity(entity_model)
+                await self._arcadedb.create_affects_edge(memory.id, entity_name, namespace)
+
             if extracted:
                 logger.debug(
                     "Extracted %d entities for memory %s", len(extracted), memory.id
@@ -165,8 +193,115 @@ class EngramClient:
         except Exception as exc:
             logger.warning("Entity extraction failed (non-fatal): %s", exc)
 
-        logger.info("Memory stored: id=%s namespace=%s", memory.id, namespace)
+        logger.info("Memory stored: id=%s namespace=%s type=%s", memory.id, namespace, memory_type.value)
         return memory
+
+    # ------------------------------------------------------------------
+    # Typed write convenience methods (Tier 1)
+    # ------------------------------------------------------------------
+
+    async def write_decision(
+        self,
+        content: str,
+        namespace: str,
+        rationale: str,
+        affects: list[str] | None = None,
+        author: str = "",
+        tags: list[str] | None = None,
+        status: MemoryStatus = MemoryStatus.active,
+        review_by=None,
+    ) -> MemoryEntry:
+        """Record an architectural or technical decision with rationale.
+
+        The decision memory is linked via AFFECTS edges to the entities it
+        governs (service names, file patterns, tech choices). When an agent
+        later touches those entities, this decision surfaces automatically.
+        """
+        return await self.add(
+            content=content,
+            namespace=namespace,
+            tags=(tags or []) + ["decision"],
+            source="decision",
+            memory_type=MemoryType.decision,
+            status=status,
+            author=author,
+            affects=affects,
+            rationale=rationale,
+            review_by=review_by,
+        )
+
+    async def write_constraint(
+        self,
+        content: str,
+        namespace: str,
+        rationale: str,
+        affects: list[str] | None = None,
+        author: str = "",
+        tags: list[str] | None = None,
+        expires_at=None,
+    ) -> MemoryEntry:
+        """Record a constraint that AI agents must always respect.
+
+        CONSTRAINT memories bypass score thresholds and are injected at the
+        top of every search result for matching namespaces — they are never
+        silently filtered out by top_k competition.
+
+        Use for: approved library lists, banned patterns, security rules,
+        compliance requirements, architecture invariants.
+        """
+        return await self.add(
+            content=content,
+            namespace=namespace,
+            tags=(tags or []) + ["constraint"],
+            source="constraint",
+            memory_type=MemoryType.constraint,
+            status=MemoryStatus.active,
+            author=author,
+            affects=affects,
+            rationale=rationale,
+            expires_at=expires_at,
+        )
+
+    async def write_incident(
+        self,
+        content: str,
+        namespace: str,
+        rationale: str = "",
+        affects: list[str] | None = None,
+        author: str = "",
+        tags: list[str] | None = None,
+    ) -> MemoryEntry:
+        """Record a production incident for future oncall retrieval.
+
+        Incident memories are searchable by symptom description. When a
+        similar incident occurs, past incidents with their resolution steps
+        surface automatically.
+        """
+        return await self.add(
+            content=content,
+            namespace=namespace,
+            tags=(tags or []) + ["incident"],
+            source="incident",
+            memory_type=MemoryType.incident,
+            status=MemoryStatus.active,
+            author=author,
+            affects=affects,
+            rationale=rationale,
+        )
+
+    # ------------------------------------------------------------------
+    # Constraint retrieval (Tier 1 — AI governance)
+    # ------------------------------------------------------------------
+
+    async def get_constraints(self, namespace: str) -> list[MemoryEntry]:
+        """Return all active CONSTRAINT memories for *namespace* and its parents.
+
+        These should be injected at the top of every agent context for the
+        namespace — they represent non-negotiable rules that must never be
+        filtered out by score competition.
+        """
+        self._assert_started()
+        return await self._arcadedb.get_constraints(namespace)
 
     async def search(
         self,

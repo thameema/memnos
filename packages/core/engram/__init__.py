@@ -26,6 +26,8 @@ from engram.models import (
     Fact,
     Graph,
     MemoryEntry,
+    MemoryStatus,
+    MemoryType,
     Namespace,
     Relation,
     SearchResult,
@@ -47,6 +49,8 @@ __all__ = [
     "VaultConfig",
     # Models
     "MemoryEntry",
+    "MemoryType",
+    "MemoryStatus",
     "Entity",
     "Relation",
     "Fact",

@@ -19,6 +19,7 @@ Schema (edge types):
   RELATED_TO     — Entity → Entity  (semantic relationship)
   DOCUMENTED_IN  — Memory → Asset   (memory illustrated by asset)
   SUPERSEDED_BY  — Memory → Memory  (explicit supersession lineage)
+  AFFECTS        — Memory → Entity  (this decision/constraint governs this entity)
 """
 
 from __future__ import annotations
@@ -262,6 +263,7 @@ class ArcadeDBClient:
             "CREATE EDGE TYPE RELATED_TO IF NOT EXISTS",
             "CREATE EDGE TYPE DOCUMENTED_IN IF NOT EXISTS",
             "CREATE EDGE TYPE SUPERSEDED_BY IF NOT EXISTS",
+            "CREATE EDGE TYPE AFFECTS IF NOT EXISTS",
             # Properties — Memory
             "CREATE PROPERTY Memory.id IF NOT EXISTS STRING",
             "CREATE PROPERTY Memory.content IF NOT EXISTS STRING",
@@ -272,6 +274,14 @@ class ArcadeDBClient:
             "CREATE PROPERTY Memory.source IF NOT EXISTS STRING",
             "CREATE PROPERTY Memory.metadata IF NOT EXISTS MAP",
             f"CREATE PROPERTY Memory.content_embedding IF NOT EXISTS ARRAY OF FLOAT",
+            # Tier 1 — typed memory fields
+            "CREATE PROPERTY Memory.memory_type IF NOT EXISTS STRING",
+            "CREATE PROPERTY Memory.status IF NOT EXISTS STRING",
+            "CREATE PROPERTY Memory.author IF NOT EXISTS STRING",
+            "CREATE PROPERTY Memory.affects IF NOT EXISTS LIST",
+            "CREATE PROPERTY Memory.rationale IF NOT EXISTS STRING",
+            "CREATE PROPERTY Memory.expires_at IF NOT EXISTS DATETIME",
+            "CREATE PROPERTY Memory.review_by IF NOT EXISTS DATETIME",
             # Properties — Entity
             "CREATE PROPERTY Entity.id IF NOT EXISTS STRING",
             "CREATE PROPERTY Entity.name IF NOT EXISTS STRING",
@@ -363,6 +373,9 @@ class ArcadeDBClient:
             "id = :id, content = :content, namespace = :namespace, "
             "created_at = :created_at, superseded_at = :superseded_at, "
             "tags = :tags, source = :source, metadata = :metadata, "
+            "memory_type = :memory_type, status = :status, "
+            "author = :author, affects = :affects, rationale = :rationale, "
+            "expires_at = :expires_at, review_by = :review_by, "
             "content_embedding = :embedding"
         )
         params = {
@@ -374,6 +387,13 @@ class ArcadeDBClient:
             "tags": memory.tags,
             "source": memory.source,
             "metadata": memory.metadata,
+            "memory_type": memory.memory_type.value if hasattr(memory.memory_type, 'value') else str(memory.memory_type),
+            "status": memory.status.value if hasattr(memory.status, 'value') else str(memory.status),
+            "author": memory.author,
+            "affects": memory.affects,
+            "rationale": memory.rationale,
+            "expires_at": _dt_str(memory.expires_at),
+            "review_by": _dt_str(memory.review_by),
             "embedding": embedding,
         }
         await self._command(sql, params)
@@ -450,6 +470,39 @@ class ArcadeDBClient:
             )
         except Exception as exc:
             logger.debug("MENTIONS edge skipped: %s", exc)
+
+    async def create_affects_edge(self, memory_id: str, entity_name: str, namespace: str) -> None:
+        """Create an AFFECTS edge from a decision/constraint Memory to an Entity."""
+        try:
+            await self._command(
+                "CREATE EDGE AFFECTS "
+                "FROM (SELECT FROM Memory WHERE id = :mid AND namespace = :ns) "
+                "TO (SELECT FROM Entity WHERE name = :ename AND namespace = :ns)",
+                {"mid": memory_id, "ename": entity_name.lower(), "ns": namespace},
+            )
+        except Exception as exc:
+            logger.debug("AFFECTS edge skipped: %s", exc)
+
+    async def get_constraints(self, namespace: str) -> list["MemoryEntry"]:
+        """Return all active CONSTRAINT memories for *namespace* and its parents.
+
+        These are injected at the top of every search result — they bypass the
+        score threshold entirely and are always present in agent context.
+        """
+        parts = namespace.split(":")
+        ns_list = [":".join(parts[:i+1]) for i in range(len(parts))]
+        placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
+        params = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
+        rows = await self._query(
+            f"SELECT * FROM Memory WHERE memory_type = 'constraint' "
+            f"AND status = 'active' "
+            f"AND superseded_at IS NULL "
+            f"AND expires_at IS NULL "
+            f"AND namespace IN [{placeholders}] "
+            f"ORDER BY created_at DESC LIMIT 20",
+            params,
+        )
+        return [_row_to_memory(r) for r in rows]
 
     async def get_entity(self, name: str, namespace: str) -> Entity | None:
         rows = await self._query(
@@ -570,6 +623,7 @@ class ArcadeDBClient:
         """Search Memory by vector similarity with recency weighting."""
         ns_filter = "all" if namespace in ("all", "", "*") else namespace
         superseded_clause = "" if include_superseded else "AND superseded_at IS NULL"
+        expires_clause = "AND (expires_at IS NULL OR expires_at > :now_dt)"
 
         # ArcadeDB HNSW vector search — embed vector literal directly;
         # parameter binding for array args is broken in ArcadeDB 26.x.
@@ -579,6 +633,7 @@ class ArcadeDBClient:
             f"WHERE @vectorNeighbors('content_embedding', {vec_literal}, :topK, 'COSINE') "
             f"AND (namespace = :ns OR :ns = 'all' OR namespace LIKE :ns_prefix) "
             f"{superseded_clause} "
+            f"{expires_clause} "
             f"ORDER BY $score DESC LIMIT :topK"
         )
         try:
@@ -588,6 +643,7 @@ class ArcadeDBClient:
                     "topK": top_k,
                     "ns": ns_filter,
                     "ns_prefix": f"{ns_filter}:%",
+                    "now_dt": _dt_str(_now()),
                 },
             )
         except Exception as exc:
@@ -1105,6 +1161,17 @@ class ArcadeDBClient:
 # ---------------------------------------------------------------------------
 
 def _row_to_memory(row: dict) -> MemoryEntry:
+    from engram.models import MemoryType, MemoryStatus
+    raw_type = row.get("memory_type", "fact")
+    raw_status = row.get("status", "active")
+    try:
+        mem_type = MemoryType(raw_type)
+    except ValueError:
+        mem_type = MemoryType.fact
+    try:
+        mem_status = MemoryStatus(raw_status)
+    except ValueError:
+        mem_status = MemoryStatus.active
     return MemoryEntry(
         id=row.get("id", row.get("@rid", "")),
         content=row.get("content", ""),
@@ -1114,6 +1181,13 @@ def _row_to_memory(row: dict) -> MemoryEntry:
         tags=row.get("tags") or [],
         source=row.get("source", "agent"),
         metadata=row.get("metadata") or {},
+        memory_type=mem_type,
+        status=mem_status,
+        author=row.get("author", ""),
+        affects=row.get("affects") or [],
+        rationale=row.get("rationale", ""),
+        expires_at=_parse_dt(row.get("expires_at")),
+        review_by=_parse_dt(row.get("review_by")),
     )
 
 

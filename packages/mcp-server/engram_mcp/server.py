@@ -37,6 +37,7 @@ from engram_mcp.tools.graph import (
     handle_graph_query,
 )
 from engram_mcp.tools.memory import (
+    _dt_to_iso,
     handle_memory_delete,
     handle_memory_search,
     handle_memory_write,
@@ -89,7 +90,12 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="memory_write",
-        description="Write a new entry to engram persistent memory.",
+        description=(
+            "Write a new entry to engram persistent memory. "
+            "Use memory_type='decision' for architectural decisions with rationale, "
+            "'constraint' for rules AI agents must always follow (injected into every search), "
+            "'incident' for production issues and RCAs, 'skill' for technique tips."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -108,6 +114,33 @@ TOOLS: list[Tool] = [
                 "metadata": {
                     "type": "object",
                     "description": "Arbitrary metadata key-value pairs",
+                },
+                "memory_type": {
+                    "type": "string",
+                    "enum": ["fact", "decision", "constraint", "incident", "adr", "skill"],
+                    "default": "fact",
+                    "description": "Semantic type: 'constraint' memories are always injected into search results",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "proposed", "superseded", "deprecated"],
+                    "default": "active",
+                    "description": "Lifecycle status of this memory",
+                },
+                "author": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Who recorded this (user_id, team name, or tool identifier)",
+                },
+                "affects": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Entity names this decision/constraint governs (creates AFFECTS graph edges)",
+                },
+                "rationale": {
+                    "type": "string",
+                    "default": "",
+                    "description": "WHY — the reasoning behind a decision or constraint",
                 },
             },
             "required": ["content", "namespace"],
@@ -423,6 +456,44 @@ TOOLS: list[Tool] = [
             "required": ["namespace"],
         },
     ),
+    # Skill Coach tools (Tier 1)
+    Tool(
+        name="skill_suggest",
+        description=(
+            "Find relevant Claude Code capabilities for what you are trying to do. "
+            "Surfaces techniques, commands, and patterns you may not know about — "
+            "based on your task description, not on knowing what to ask for. "
+            "Call this when starting a task to discover better workflows."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "What you are trying to accomplish (natural language)",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "default": 3,
+                    "description": "Number of skill suggestions to return",
+                },
+            },
+            "required": ["task"],
+        },
+    ),
+    Tool(
+        name="skill_discover",
+        description=(
+            "Seed or refresh the Claude Code capability catalog in engram. "
+            "Run once after installing engram, and again after Claude Code updates. "
+            "Populates the tool:claude-code:capabilities namespace with searchable skill memories."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
 ]
 
 
@@ -484,14 +555,21 @@ async def _dispatch(
         )
 
     if name == "memory_write":
-        return await handle_memory_write(
+        result = await handle_memory_write(
             client,
             content=args["content"],
             namespace=args["namespace"],
             tags=args.get("tags"),
             source=str(args.get("source", "agent")),
             metadata=args.get("metadata"),
+            memory_type=str(args.get("memory_type", "fact")),
+            status=str(args.get("status", "active")),
+            author=str(args.get("author", "")),
+            affects=args.get("affects"),
+            rationale=str(args.get("rationale", "")),
         )
+        import json as _json
+        return [TextContent(type="text", text=_json.dumps(_dt_to_iso(result), indent=2))]
 
     if name == "memory_delete":
         return await handle_memory_delete(
@@ -616,6 +694,41 @@ async def _dispatch(
             namespace=args["namespace"],
             limit=int(args.get("limit", 100)),
         )
+
+    # ---- skill coach tools ----
+    if name == "skill_suggest":
+        from engram.skill_coach.suggester import suggest_skills
+        suggestions = await suggest_skills(
+            client,
+            task_description=args["task"],
+            top_k=int(args.get("top_k", 3)),
+        )
+        if not suggestions:
+            text = (
+                "No skills found. Run skill_discover first to seed the capability catalog.\n"
+                "Tip: use skill_discover with no arguments to populate Claude Code features."
+            )
+        else:
+            lines = [f"Found {len(suggestions)} relevant Claude Code technique(s) for your task:\n"]
+            for i, s in enumerate(suggestions, 1):
+                lines.append(f"{i}. {s['title']} [{s['category']}]  (relevance: {s['relevance_score']})")
+                if s.get("example"):
+                    lines.append(f"   Example: {s['example']}")
+                if s.get("tip"):
+                    lines.append(f"   {s['tip']}")
+                lines.append("")
+            text = "\n".join(lines)
+        return [TextContent(type="text", text=text)]
+
+    if name == "skill_discover":
+        from engram.skill_coach.seeder import seed_claude_code_capabilities
+        result = await seed_claude_code_capabilities(client)
+        text = (
+            f"Skill catalog seeded: {result['added']} added, "
+            f"{result['updated']} updated, {result['skipped']} unchanged.\n"
+            f"Use skill_suggest to surface relevant techniques for your tasks."
+        )
+        return [TextContent(type="text", text=text)]
 
     raise ValueError(f"Unknown tool: {name!r}")
 

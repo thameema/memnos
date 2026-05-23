@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field, computed_field
@@ -20,6 +21,42 @@ def _now() -> datetime:
 
 def _uuid() -> str:
     return str(uuid.uuid4())
+
+
+# ---------------------------------------------------------------------------
+# Typed memory enumerations (Tier 1 — enterprise team features)
+# ---------------------------------------------------------------------------
+
+class MemoryType(str, Enum):
+    """Semantic classification of a memory entry.
+
+    fact       — default; unstructured observation or note
+    decision   — an architectural or technical decision with rationale
+    constraint — a rule that AI agents must always respect (injected before search results)
+    incident   — a production incident record with RCA
+    adr        — Architecture Decision Record (structured: context/decision/consequences)
+    skill      — a technique or capability tip, used by the Skill Coach
+    """
+    fact = "fact"
+    decision = "decision"
+    constraint = "constraint"
+    incident = "incident"
+    adr = "adr"
+    skill = "skill"
+
+
+class MemoryStatus(str, Enum):
+    """Lifecycle status of a typed memory.
+
+    active     — currently valid and enforced
+    proposed   — under discussion, not yet enforced
+    superseded — replaced by a newer decision (preserved for history)
+    deprecated — intentionally retired
+    """
+    active = "active"
+    proposed = "proposed"
+    superseded = "superseded"
+    deprecated = "deprecated"
 
 
 # ---------------------------------------------------------------------------
@@ -38,10 +75,26 @@ class MemoryEntry(BaseModel):
     source: str = "agent"                   # "user" | "agent" | "file" | "api"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    # Tier 1 — typed memory fields
+    memory_type: MemoryType = MemoryType.fact
+    status: MemoryStatus = MemoryStatus.active
+    author: str = ""                        # who recorded this (user_id or team name)
+    affects: list[str] = Field(default_factory=list)  # entity names this memory governs
+    rationale: str = ""                     # WHY — the reasoning behind a decision/constraint
+    expires_at: datetime | None = None      # hard expiry; expired memories excluded from search
+    review_by: datetime | None = None       # soft flag: surface for human review after this date
+
     @computed_field
     @property
     def is_current(self) -> bool:
         return self.superseded_at is None
+
+    @computed_field
+    @property
+    def is_expired(self) -> bool:
+        if self.expires_at is None:
+            return False
+        return datetime.now(timezone.utc) > self.expires_at
 
     model_config = {"arbitrary_types_allowed": True}
 
