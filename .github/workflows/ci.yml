@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  lint-and-test:
+    name: Lint & unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install packages (editable)
+        run: |
+          pip install --upgrade pip
+          pip install -e packages/core
+          pip install -e packages/mcp-server
+          pip install -e packages/orchestrator
+          pip install -e packages/api
+          pip install -e packages/learning
+          pip install -e "packages/gateway[telegram]"
+          pip install pytest pytest-asyncio httpx
+
+      - name: Syntax check — all packages
+        run: |
+          python - <<'EOF'
+          import ast
+          from pathlib import Path
+          errors = []
+          for f in Path('packages').rglob('*.py'):
+              if '__pycache__' in str(f):
+                  continue
+              try:
+                  ast.parse(f.read_text())
+              except SyntaxError as e:
+                  errors.append(f'{f}: {e}')
+          if errors:
+              for e in errors:
+                  print(e)
+              raise SystemExit(1)
+          print(f'All {sum(1 for _ in Path("packages").rglob("*.py"))} Python files parse cleanly')
+          EOF
+
+      - name: Tests — self-learning subsystem
+        run: python -m pytest tools/test_learning.py -v --tb=short
+
+      - name: Tests — Phase 2 API features
+        run: python -m pytest tools/test_api_features.py -v --tb=short
