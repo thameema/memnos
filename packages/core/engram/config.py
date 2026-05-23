@@ -135,6 +135,9 @@ class ApiKeyEntry(BaseModel):
 
 class AuthConfig(BaseModel):
     api_keys: list[ApiKeyEntry] = Field(default_factory=list)
+    # open_mode: bypass all auth — safe for local single-user installs only.
+    # Never enable this when the API is exposed to a network.
+    open_mode: bool = False
 
 
 class VaultKMSConfig(BaseModel):
@@ -258,7 +261,10 @@ class EngramConfig(BaseModel):
                     parsed_keys.append(entry)
                 else:
                     parsed_keys.append(ApiKeyEntry(key=k))
-            kwargs["auth"] = AuthConfig(api_keys=parsed_keys)
+            kwargs["auth"] = AuthConfig(
+                api_keys=parsed_keys,
+                open_mode=bool(auth_raw.get("open_mode", False)),
+            )
 
         if "arcadedb" in raw:
             kwargs["arcadedb"] = ArcadeDBConfig(**raw["arcadedb"])

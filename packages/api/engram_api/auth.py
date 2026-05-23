@@ -59,6 +59,11 @@ async def _validate_key(
     Returns the matching ``ApiKeyEntry`` on success.
     Raises ``HTTPException(401)`` on missing or invalid key.
     """
+    # open_mode: local single-user install with no network exposure
+    auth_config = getattr(config, "auth", None)
+    if getattr(auth_config, "open_mode", False):
+        return ApiKeyEntry(key="", user_id="local", namespaces=["*"])
+
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing Authorization header")
 

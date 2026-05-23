@@ -530,10 +530,12 @@ class ArcadeDBClient:
         ns_filter = "all" if namespace in ("all", "", "*") else namespace
         superseded_clause = "" if include_superseded else "AND superseded_at IS NULL"
 
-        # ArcadeDB HNSW vector search using @vectorNeighbors
+        # ArcadeDB HNSW vector search — embed vector literal directly;
+        # parameter binding for array args is broken in ArcadeDB 26.x.
+        vec_literal = "[" + ",".join(str(v) for v in embedding) + "]"
         sql = (
             f"SELECT *, $score AS vec_score FROM Memory "
-            f"WHERE @vectorNeighbors('content_embedding', :vec, :topK, 'COSINE') "
+            f"WHERE @vectorNeighbors('content_embedding', {vec_literal}, :topK, 'COSINE') "
             f"AND (namespace = :ns OR :ns = 'all' OR namespace LIKE :ns_prefix) "
             f"{superseded_clause} "
             f"ORDER BY $score DESC LIMIT :topK"
@@ -542,7 +544,6 @@ class ArcadeDBClient:
             rows = await self._query(
                 sql,
                 {
-                    "vec": embedding,
                     "topK": top_k,
                     "ns": ns_filter,
                     "ns_prefix": f"{ns_filter}:%",
