@@ -60,9 +60,15 @@ async def _start_telegram(config, client, orchestrator) -> None:
         from engram_gateway.telegram.bot import TelegramGateway  # type: ignore
 
         tg_cfg = config.gateway.telegram  # type: ignore[attr-defined]
+        # Merge allowed_users from YAML with TELEGRAM_ALLOWED_USERS env var (comma-separated)
+        allowed_from_env = [
+            int(u.strip()) for u in os.environ.get("TELEGRAM_ALLOWED_USERS", "").split(",")
+            if u.strip().isdigit()
+        ]
+        allowed_users = list({*(tg_cfg.allowed_users or []), *allowed_from_env})
         gateway = TelegramGateway(
             token=tg_cfg.bot_token,
-            allowed_users=list(tg_cfg.allowed_users or []),
+            allowed_users=allowed_users,
             orchestrator=orchestrator,
             client=client,
             default_namespace=tg_cfg.default_namespace,

@@ -207,6 +207,30 @@ class LearningConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Gateway config
+# ---------------------------------------------------------------------------
+
+class TelegramConfig(BaseModel):
+    enabled: bool = False
+    bot_token: str = ""
+    allowed_users: list[int] = Field(default_factory=list)
+    default_namespace: str = "personal:default"
+
+
+class WhatsAppConfig(BaseModel):
+    enabled: bool = False
+    evolution_api_url: str = "http://localhost:8080"
+    evolution_api_key: str = ""
+    default_namespace: str = "personal:default"
+    allowed_phones: list[str] = Field(default_factory=list)
+
+
+class GatewayConfig(BaseModel):
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
+
+
+# ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
 
@@ -219,6 +243,7 @@ class EngramConfig(BaseModel):
     namespaces: NamespaceConfig = Field(default_factory=NamespaceConfig)
     learning: LearningConfig = Field(default_factory=LearningConfig)
     vault: VaultConfig = Field(default_factory=VaultConfig)
+    gateway: GatewayConfig = Field(default_factory=GatewayConfig)
 
     # ---------------------------------------------------------------------------
     # Factory
@@ -317,6 +342,20 @@ class EngramConfig(BaseModel):
             kwargs["vault"] = VaultConfig(
                 kms=VaultKMSConfig(**kms_raw) if kms_raw else VaultKMSConfig(),
                 **v,
+            )
+
+        if "gateway" in raw:
+            gw = dict(raw["gateway"])
+            tg_raw = gw.pop("telegram", {})
+            wa_raw = gw.pop("whatsapp", {})
+            # allowed_users may come as list of strings from YAML env-expansion
+            if tg_raw and "allowed_users" in tg_raw:
+                tg_raw["allowed_users"] = [
+                    int(u) for u in (tg_raw["allowed_users"] or []) if str(u).strip()
+                ]
+            kwargs["gateway"] = GatewayConfig(
+                telegram=TelegramConfig(**tg_raw) if tg_raw else TelegramConfig(),
+                whatsapp=WhatsAppConfig(**wa_raw) if wa_raw else WhatsAppConfig(),
             )
 
         logger.debug("Loaded engram config from %s", config_path)
