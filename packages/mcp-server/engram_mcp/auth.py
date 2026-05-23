@@ -86,6 +86,13 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if path in self._skip_paths:
             return await call_next(request)
 
+        # open_mode: bypass all auth — suitable for local single-user installs
+        auth_config = getattr(self._config, "auth", None)
+        if getattr(auth_config, "open_mode", False):
+            request.state.user_id = "local"
+            request.state.allowed_namespaces = ["*"]
+            return await call_next(request)
+
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
             return JSONResponse(
