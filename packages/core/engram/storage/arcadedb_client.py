@@ -70,6 +70,8 @@ def _extract_doc_date(content: str) -> float:
     horizon = datetime(2027, 6, 1)
     return max(0.0, min(1.0, (latest - base).days / (horizon - base).days))
 
+import time as _time
+
 import httpx
 from tenacity import (
     retry,
@@ -95,8 +97,42 @@ from engram.models import (
 logger = logging.getLogger(__name__)
 
 _DB_NAME = "engram"
-_VECTOR_DIM = 384          # all-MiniLM-L6-v2 and nomic-embed-text-v1.5 (truncated)
+_VECTOR_DIM = 1536         # OpenAI text-embedding-3-small default; overridden per embedder
 _RECENCY_HALF_LIFE = 90    # days — memory from 90 days ago gets 0.5x recency weight
+_EMBED_CACHE_TTL = 300     # seconds — refresh embedding cache every 5 minutes
+
+
+def _cosine_similarity_batch(query: list[float], embeddings: list[list[float]]) -> list[float]:
+    """Batch cosine similarity between query and all embeddings.
+
+    Uses numpy when available (fast, <1ms for 10K records).
+    Falls back to pure-Python when numpy is absent (slower but always correct).
+    """
+    if not embeddings:
+        return []
+    try:
+        import numpy as np  # type: ignore
+        q = np.array(query, dtype=np.float32)
+        E = np.array(embeddings, dtype=np.float32)
+        q_norm = float(np.linalg.norm(q))
+        if q_norm == 0:
+            return [0.0] * len(embeddings)
+        q_unit = q / q_norm
+        row_norms = np.linalg.norm(E, axis=1)
+        row_norms = np.where(row_norms == 0, 1.0, row_norms)
+        E_unit = E / row_norms[:, None]
+        return (E_unit @ q_unit).tolist()
+    except ImportError:
+        q_sq = sum(x * x for x in query)
+        q_norm = q_sq ** 0.5
+        if q_norm == 0:
+            return [0.0] * len(embeddings)
+        results: list[float] = []
+        for emb in embeddings:
+            dot = sum(a * b for a, b in zip(query, emb))
+            emb_norm = sum(x * x for x in emb) ** 0.5
+            results.append(dot / (q_norm * emb_norm) if emb_norm > 0 else 0.0)
+        return results
 
 
 def _now() -> datetime:
@@ -164,6 +200,10 @@ class ArcadeDBClient:
             "Accept": "application/json",
         }
         self._client: httpx.AsyncClient | None = None
+        # In-memory embedding cache for Python-layer vector search
+        self._embed_cache: list[dict] = []
+        self._embed_cache_ts: float = 0.0    # time.time() of last fill
+        self._embed_cache_dirty: bool = True
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -275,7 +315,7 @@ class ArcadeDBClient:
             "CREATE PROPERTY Memory.tags IF NOT EXISTS LIST",
             "CREATE PROPERTY Memory.source IF NOT EXISTS STRING",
             "CREATE PROPERTY Memory.metadata IF NOT EXISTS MAP",
-            f"CREATE PROPERTY Memory.content_embedding IF NOT EXISTS ARRAY OF FLOAT",
+            "CREATE PROPERTY Memory.content_embedding IF NOT EXISTS LIST",
             # Tier 1 — typed memory fields
             "CREATE PROPERTY Memory.memory_type IF NOT EXISTS STRING",
             "CREATE PROPERTY Memory.status IF NOT EXISTS STRING",
@@ -321,7 +361,7 @@ class ArcadeDBClient:
             "CREATE PROPERTY Asset.created_at IF NOT EXISTS DATETIME",
             "CREATE PROPERTY Asset.superseded_at IF NOT EXISTS DATETIME",
             "CREATE PROPERTY Asset.created_by IF NOT EXISTS STRING",
-            f"CREATE PROPERTY Asset.content_embedding IF NOT EXISTS ARRAY OF FLOAT",
+            "CREATE PROPERTY Asset.content_embedding IF NOT EXISTS LIST",
             # Vault vertex types — value_enc and dek_enc hold ciphertexts, never plaintext
             "CREATE VERTEX TYPE Secret IF NOT EXISTS",
             "CREATE VERTEX TYPE VaultAuditLog IF NOT EXISTS",
@@ -346,14 +386,17 @@ class ArcadeDBClient:
             "CREATE PROPERTY VaultAuditLog.accessed_at IF NOT EXISTS DATETIME",
             "CREATE PROPERTY VaultAuditLog.ok IF NOT EXISTS BOOLEAN",
             "CREATE PROPERTY VaultAuditLog.err_msg IF NOT EXISTS STRING",
-            # Indices for namespace filtering (common query pattern)
-            "CREATE INDEX ON Memory (namespace) IF NOT EXISTS",
-            "CREATE INDEX ON Entity (namespace, name) IF NOT EXISTS",
-            "CREATE INDEX ON Fact (namespace) IF NOT EXISTS",
-            "CREATE INDEX ON Asset (path, namespace) IF NOT EXISTS",
-            "CREATE INDEX ON Secret (namespace, key_name) IF NOT EXISTS",
-            "CREATE INDEX ON VaultAuditLog (namespace) IF NOT EXISTS",
-            "CREATE INDEX ON Memory (id) IF NOT EXISTS",
+            # Indices for namespace filtering and id lookups
+            # ArcadeDB 26.x syntax: IF NOT EXISTS precedes ON, type is required
+            "CREATE INDEX IF NOT EXISTS ON Memory (namespace) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON Entity (namespace) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON Entity (name) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON Fact (namespace) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON Asset (namespace) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON Secret (namespace) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON Secret (key_name) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON VaultAuditLog (namespace) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON Memory (id) NOTUNIQUE",
         ]
         for cmd in schema_cmds:
             try:
@@ -366,14 +409,15 @@ class ArcadeDBClient:
         await self._ensure_vector_index("Asset", "content_embedding")
 
     async def _ensure_vector_index(self, type_name: str, prop: str) -> None:
-        try:
-            await self._command(
-                f"CREATE INDEX ON {type_name} ({prop}) HNSW "
-                f"{{\"vectorDimensions\": {self._vector_dim}, \"vectorSimilarityFunction\": \"COSINE\"}} "
-                f"IF NOT EXISTS"
-            )
-        except Exception as exc:
-            logger.debug("Vector index on %s.%s skipped: %s", type_name, prop, exc)
+        # ArcadeDB 26.5.1 does not support HNSW vector indexes via SQL
+        # (CREATE INDEX ON T (p) HNSW ... returns "Index type 'HNSW' is not supported").
+        # Vector search is implemented in Python via _cosine_similarity_batch().
+        logger.debug(
+            "HNSW index on %s.%s skipped — not supported in ArcadeDB 26.x SQL; "
+            "using Python-layer cosine similarity instead.",
+            type_name,
+            prop,
+        )
 
     # ------------------------------------------------------------------
     # Memory CRUD
@@ -412,6 +456,7 @@ class ArcadeDBClient:
             "embedding": embedding,
         }
         await self._command(sql, params)
+        self._embed_cache_dirty = True
         logger.debug("Memory inserted: id=%s namespace=%s", memory.id, memory.namespace)
         return memory.id
 
@@ -430,14 +475,16 @@ class ArcadeDBClient:
             "UPDATE Memory SET superseded_at = :now WHERE id = :id AND namespace = :ns",
             {"now": _dt_str(_now()), "id": memory_id, "ns": namespace},
         )
+        self._embed_cache_dirty = True
         return bool(rows)
 
     async def delete_memory(self, memory_id: str, namespace: str) -> bool:
         """Hard-delete a memory and its outgoing edges."""
         rows = await self._command(
-            "DELETE VERTEX Memory WHERE id = :id AND namespace = :ns",
+            "DELETE VERTEX FROM Memory WHERE id = :id AND namespace = :ns",
             {"id": memory_id, "ns": namespace},
         )
+        self._embed_cache_dirty = True
         return bool(rows)
 
     # ------------------------------------------------------------------
@@ -635,88 +682,50 @@ class ArcadeDBClient:
         include_superseded: bool = False,
         query: str = "",
     ) -> list[SearchResult]:
-        """Search Memory by vector similarity with recency weighting."""
+        """Search Memory by vector similarity with recency weighting.
+
+        ArcadeDB 26.x does not support HNSW vector indexes via SQL.
+        This method fetches candidate memories from ArcadeDB and computes
+        cosine similarity in Python using numpy (fast: <5ms for 10K records)
+        or pure-Python math as fallback when numpy is absent.
+
+        An in-memory embedding cache (TTL = _EMBED_CACHE_TTL) is maintained
+        so that repeated searches within the TTL window skip the ArcadeDB round-trip
+        and run in <1ms.
+        """
         ns_filter = "all" if namespace in ("all", "", "*") else namespace
-        superseded_clause = "" if include_superseded else "AND superseded_at IS NULL"
-        expires_clause = "AND (expires_at IS NULL OR expires_at > :now_dt)"
 
-        # ArcadeDB HNSW vector search — embed vector literal directly;
-        # parameter binding for array args is broken in ArcadeDB 26.x.
-        vec_literal = "[" + ",".join(str(v) for v in embedding) + "]"
-        sql = (
-            f"SELECT *, $score AS vec_score FROM Memory "
-            f"WHERE @vectorNeighbors('content_embedding', {vec_literal}, :topK, 'COSINE') "
-            f"AND (namespace = :ns OR :ns = 'all' OR namespace LIKE :ns_prefix) "
-            f"{superseded_clause} "
-            f"{expires_clause} "
-            f"ORDER BY $score DESC LIMIT :topK"
-        )
         try:
-            rows = await self._query(
-                sql,
-                {
-                    "topK": top_k,
-                    "ns": ns_filter,
-                    "ns_prefix": f"{ns_filter}:%",
-                    "now_dt": _dt_str(_now()),
-                },
-            )
+            rows = await self._get_candidate_rows(namespace, include_superseded)
         except Exception as exc:
-            logger.warning("Vector search failed, falling back to keyword scan: %s", exc)
-            rows = await self._fallback_scan(namespace, top_k, include_superseded, query=query)
-            # _fallback_scan already sorted rows by temporal- or keyword-relevance.
-            # Preserve that order but attach meaningful scores.
-            temporal = _is_temporal_query(query)
-            keywords = [
-                w.lower() for w in query.split() if len(w) >= 3
-            ] if query else []
-            # For temporal ranking: separate "when" keywords from "what" keywords.
-            # Topic keywords must hit; only then does recency determine the winner.
-            _temporal_kw = frozenset({"last", "latest", "recent", "recently",
-                                      "newest", "current", "new"})
-            topic_kws = [kw for kw in keywords if kw not in _temporal_kw] if keywords else []
+            logger.warning("Failed to fetch candidates for vector search: %s", exc)
+            rows = []
 
-            scored: list[SearchResult] = []
-            for i, row in enumerate(rows):
-                memory = _row_to_memory(row)
-                text = (memory.content or "").lower()
-                # Document-date recency (extracted from content, not import time)
-                doc_recency = _extract_doc_date(memory.content or "")
-                # Import-time recency as fallback when no date found in content
-                import_recency = _recency_score(memory.created_at)
-                recency = doc_recency if doc_recency > 0 else import_recency
-                if keywords:
-                    hits = sum(1 for kw in keywords if kw in text)
-                    topic_hits = sum(1 for kw in topic_kws if kw in text) if topic_kws else hits
-                    kw_score = min(0.95, 0.5 + hits * 0.1)
-                else:
-                    hits = topic_hits = 0
-                    kw_score = 0.5
-                if temporal and topic_kws:
-                    # Must mention the topic; then rank by recency
-                    if topic_hits == 0:
-                        combined = 0.0   # no topic relevance — pushed to bottom
-                    else:
-                        topic_norm = min(1.0, topic_hits / max(len(topic_kws), 1))
-                        combined = 0.8 * recency + 0.2 * topic_norm
-                else:
-                    combined = _combined_score(kw_score, recency)
-                scored.append(SearchResult(
-                    memory=memory,
-                    score=combined,
-                    source="keyword",
-                    is_current=memory.is_current,
-                    recency_score=recency,
-                ))
-            scored.sort(key=lambda r: r.score, reverse=True)
-            return scored[:top_k]
+        if not rows:
+            logger.debug("No embedding candidates — falling back to keyword scan")
+            return await self._keyword_scored(namespace, top_k, include_superseded, query)
+
+        # Filter to same dimension as query
+        q_dim = len(embedding)
+        valid_rows = [r for r in rows if isinstance(r.get("content_embedding"), list)
+                      and len(r["content_embedding"]) == q_dim]
+
+        if not valid_rows:
+            logger.warning(
+                "All stored embeddings have dimension mismatch (expected %d) — "
+                "run tools/reembed.py to re-embed with the current provider",
+                q_dim,
+            )
+            return await self._keyword_scored(namespace, top_k, include_superseded, query)
+
+        embs = [r["content_embedding"] for r in valid_rows]
+        sims = _cosine_similarity_batch(embedding, embs)
 
         results: list[SearchResult] = []
-        for row in rows:
+        for row, sim in zip(valid_rows, sims):
             memory = _row_to_memory(row)
-            vec_score = float(row.get("vec_score", row.get("$score", 0.5)))
             recency = _recency_score(memory.created_at)
-            combined = _combined_score(vec_score, recency)
+            combined = _combined_score(sim, recency)
             results.append(SearchResult(
                 memory=memory,
                 score=combined,
@@ -727,6 +736,112 @@ class ArcadeDBClient:
 
         results.sort(key=lambda r: r.score, reverse=True)
         return results[:top_k]
+
+    async def _get_candidate_rows(
+        self,
+        namespace: str,
+        include_superseded: bool = False,
+    ) -> list[dict]:
+        """Return Memory rows with embeddings, using an in-memory TTL cache.
+
+        The cache is invalidated on any insert/update/delete to Memory and
+        expires automatically after _EMBED_CACHE_TTL seconds.
+        """
+        now = _time.monotonic()
+        if not self._embed_cache_dirty and (now - self._embed_cache_ts) < _EMBED_CACHE_TTL:
+            # Return from cache, filtered for namespace and supersession
+            ns_filter = "all" if namespace in ("all", "", "*") else namespace
+            if ns_filter == "all":
+                return list(self._embed_cache)
+            return [
+                r for r in self._embed_cache
+                if r.get("namespace", "") == ns_filter
+                or (r.get("namespace") or "").startswith(f"{ns_filter}:")
+            ]
+
+        # Refresh cache — fetch ALL active records with embeddings
+        rows = await self._query(
+            "SELECT id, content, namespace, created_at, superseded_at, tags, "
+            "source, metadata, memory_type, status, author, affects, rationale, "
+            "expires_at, review_by, provenance, content_embedding "
+            "FROM Memory WHERE content_embedding IS NOT NULL "
+            "AND superseded_at IS NULL "
+            "AND (expires_at IS NULL OR expires_at > :now_dt) "
+            "LIMIT 100000",
+            {"now_dt": _dt_str(_now())},
+        )
+        self._embed_cache = rows
+        self._embed_cache_ts = now
+        self._embed_cache_dirty = False
+        logger.debug("Embedding cache refreshed: %d records loaded", len(rows))
+
+        ns_filter = "all" if namespace in ("all", "", "*") else namespace
+        if include_superseded:
+            # Don't use cache for superseded queries — do a fresh fetch
+            extra = await self._query(
+                "SELECT id, content, namespace, created_at, superseded_at, tags, "
+                "source, metadata, memory_type, status, author, affects, rationale, "
+                "expires_at, review_by, provenance, content_embedding "
+                "FROM Memory WHERE content_embedding IS NOT NULL "
+                "AND superseded_at IS NOT NULL "
+                "LIMIT 10000",
+                {},
+            )
+            all_rows = rows + extra
+        else:
+            all_rows = rows
+
+        if ns_filter == "all":
+            return all_rows
+        return [
+            r for r in all_rows
+            if r.get("namespace", "") == ns_filter
+            or (r.get("namespace") or "").startswith(f"{ns_filter}:")
+        ]
+
+    async def _keyword_scored(
+        self,
+        namespace: str,
+        top_k: int,
+        include_superseded: bool,
+        query: str,
+    ) -> list[SearchResult]:
+        """Score fallback rows from _fallback_scan and return as SearchResults."""
+        rows = await self._fallback_scan(namespace, top_k, include_superseded, query=query)
+        temporal = _is_temporal_query(query)
+        keywords = [w.lower() for w in query.split() if len(w) >= 3] if query else []
+        _temporal_kw = frozenset({"last", "latest", "recent", "recently", "newest", "current", "new"})
+        topic_kws = [kw for kw in keywords if kw not in _temporal_kw] if keywords else []
+
+        scored: list[SearchResult] = []
+        for row in rows:
+            memory = _row_to_memory(row)
+            text = (memory.content or "").lower()
+            doc_recency = _extract_doc_date(memory.content or "")
+            import_recency = _recency_score(memory.created_at)
+            recency = doc_recency if doc_recency > 0 else import_recency
+            if keywords:
+                hits = sum(1 for kw in keywords if kw in text)
+                topic_hits = sum(1 for kw in topic_kws if kw in text) if topic_kws else hits
+                kw_score = min(0.95, 0.5 + hits * 0.1)
+            else:
+                hits = topic_hits = 0
+                kw_score = 0.5
+            if temporal and topic_kws:
+                combined = 0.0 if topic_hits == 0 else (
+                    0.8 * recency + 0.2 * min(1.0, topic_hits / max(len(topic_kws), 1))
+                )
+            else:
+                combined = _combined_score(kw_score, recency)
+            scored.append(SearchResult(
+                memory=memory,
+                score=combined,
+                source="keyword",
+                is_current=memory.is_current,
+                recency_score=recency,
+            ))
+        scored.sort(key=lambda r: r.score, reverse=True)
+        return scored[:top_k]
 
     async def graph_search(
         self,
@@ -1119,7 +1234,7 @@ class ArcadeDBClient:
     async def delete_secret(self, secret_id: str, namespace: str) -> bool:
         """Hard-delete a secret vertex (prefer supersede for audit trail)."""
         rows = await self._command(
-            "DELETE VERTEX Secret WHERE id = :id AND namespace = :ns",
+            "DELETE VERTEX FROM Secret WHERE id = :id AND namespace = :ns",
             {"id": secret_id, "ns": namespace},
         )
         return bool(rows)

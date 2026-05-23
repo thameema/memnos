@@ -42,7 +42,8 @@ RUN pip install --no-cache-dir \
     "sse-starlette>=2.0" \
     "aiosqlite>=0.20" \
     "apscheduler>=3.10" \
-    "python-telegram-bot>=21.0"
+    "python-telegram-bot>=21.0" \
+    "numpy>=1.26"
 
 # Local embedding stack — only installed when EMBED_MODE=local
 # Adds sentence-transformers, torch, CUDA libraries, spaCy (~2 GB)
