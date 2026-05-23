@@ -103,6 +103,7 @@ class Orchestrator:
         runtime: str | None = None,
         agent: str | None = None,
         timeout_s: int = 300,
+        _task_id: str | None = None,
     ) -> Task:
         """
         Full synchronous orchestration pipeline.
@@ -126,13 +127,21 @@ class Orchestrator:
 
         effective_runtime = runtime or self._config.runtime.default
 
-        task = Task(
-            prompt=prompt,
-            namespace=namespace,
-            runtime=effective_runtime,
-            agent=agent,
-            tags=extract_tags(prompt),
-        )
+        if _task_id:
+            existing = await self._task_store.get(_task_id)
+            task = existing or Task(id=_task_id, prompt=prompt, namespace=namespace,
+                                    runtime=effective_runtime, agent=agent,
+                                    tags=extract_tags(prompt))
+            task.runtime = effective_runtime
+            task.tags = task.tags or extract_tags(prompt)
+        else:
+            task = Task(
+                prompt=prompt,
+                namespace=namespace,
+                runtime=effective_runtime,
+                agent=agent,
+                tags=extract_tags(prompt),
+            )
         await self._task_store.save(task)
         logger.info(
             "Orchestrator: task %s created prompt=%r tags=%s",
@@ -461,6 +470,7 @@ class Orchestrator:
                 runtime=runtime,
                 agent=agent,
                 timeout_s=timeout_s,
+                _task_id=task.id,
             )
 
         bg_task = asyncio.create_task(_bg())

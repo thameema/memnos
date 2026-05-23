@@ -32,9 +32,8 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 def _task_to_response(task) -> TaskResponse:
     """Convert an orchestrator Task object to a TaskResponse."""
     task_id = str(getattr(task, "id", getattr(task, "task_id", "")))
-    status = str(getattr(task, "status", "UNKNOWN"))
-    if hasattr(status, "value"):
-        status = status.value
+    raw_status = getattr(task, "status", "UNKNOWN")
+    status = raw_status.value if hasattr(raw_status, "value") else str(raw_status)
     return TaskResponse(
         task_id=task_id,
         status=status,
