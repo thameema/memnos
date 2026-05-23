@@ -7,7 +7,16 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class ProvenanceInput(BaseModel):
+    agent_id: str = ""
+    user_id: str = ""
+    tool: str = ""
+    git_commit: str = ""
+    jira_ticket: str = ""
+    team: str = ""
 
 
 class MemoryWriteRequest(BaseModel):
@@ -16,6 +25,12 @@ class MemoryWriteRequest(BaseModel):
     tags: list[str] = []
     source: str = "user"
     metadata: dict[str, Any] = {}
+    memory_type: str = "fact"
+    status: str = "active"
+    author: str = ""
+    affects: list[str] = []
+    rationale: str = ""
+    provenance: ProvenanceInput = Field(default_factory=ProvenanceInput)
 
 
 class MemorySearchRequest(BaseModel):
@@ -32,6 +47,21 @@ class MemoryResponse(BaseModel):
     created_at: datetime
     tags: list[str]
     score: float | None = None
+    memory_type: str = "fact"
+    author: str = ""
+    provenance: dict = Field(default_factory=dict)
+
+
+class ReviewDueItem(BaseModel):
+    id: str
+    content: str
+    namespace: str
+    memory_type: str
+    author: str
+    review_by: datetime
+    created_at: datetime
+    tags: list[str] = []
+    rationale: str = ""
 
 
 class GraphQueryRequest(BaseModel):

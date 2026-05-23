@@ -25,7 +25,7 @@ from engram.config import EngramConfig
 from engram.extraction.spacy_extractor import get_extractor
 from engram.models import (
     AssetReference, Entity, Fact, Graph, MemoryEntry, MemoryStatus, MemoryType,
-    SearchResult, Secret, VaultAuditLog,
+    Provenance, SearchResult, Secret, VaultAuditLog,
 )
 from engram.storage.arcadedb_client import ArcadeDBClient
 from engram.vault.secret_detector import detect as _detect_secrets, redact as _redact_secrets
@@ -122,6 +122,7 @@ class EngramClient:
         rationale: str = "",
         expires_at=None,
         review_by=None,
+        provenance: "Provenance | None" = None,
     ) -> MemoryEntry:
         """Persist a new memory entry and extract knowledge-graph edges.
 
@@ -158,6 +159,7 @@ class EngramClient:
             rationale=rationale,
             expires_at=expires_at,
             review_by=review_by,
+            provenance=provenance or Provenance(),
         )
         logger.debug("add: memory_id=%s namespace=%s type=%s", memory.id, namespace, memory_type)
 
@@ -512,6 +514,43 @@ class EngramClient:
 
         logger.info("Asset registered: id=%s path=%r format=%s", asset.id, path, format)
         return asset
+
+    # ------------------------------------------------------------------
+    # Review due (Feature 2.4)
+    # ------------------------------------------------------------------
+
+    async def get_review_due(self, namespace: str, limit: int = 50) -> list[MemoryEntry]:
+        """Return memories past their review_by date — need human confirmation or deprecation."""
+        self._assert_started()
+        return await self._arcadedb.get_review_due(namespace, limit)
+
+    # ------------------------------------------------------------------
+    # Namespace subscriptions (Feature 2.1)
+    # ------------------------------------------------------------------
+
+    async def subscribe(
+        self, subscriber_id: str, namespace: str, filter_types: list[str] | None = None
+    ) -> str:
+        """Subscribe subscriber_id to new memories in namespace."""
+        from engram.models import Subscription
+        self._assert_started()
+        sub = Subscription(
+            subscriber_id=subscriber_id,
+            namespace=namespace,
+            filter_types=filter_types or [],
+        )
+        return await self._arcadedb.upsert_subscription(sub)
+
+    async def get_feed(
+        self, subscriber_id: str, namespace: str, limit: int = 50
+    ) -> tuple[list[MemoryEntry], str]:
+        """Poll for new memories since last seen. Returns (memories, cursor)."""
+        self._assert_started()
+        return await self._arcadedb.get_feed(subscriber_id, namespace, limit)
+
+    async def unsubscribe(self, subscriber_id: str, namespace: str) -> bool:
+        self._assert_started()
+        return await self._arcadedb.delete_subscription(subscriber_id, namespace)
 
     # ------------------------------------------------------------------
     # Statistics

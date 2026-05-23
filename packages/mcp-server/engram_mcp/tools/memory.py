@@ -132,6 +132,7 @@ async def handle_memory_write(
     author: str = "",
     affects: list[str] | None = None,
     rationale: str = "",
+    provenance: dict | None = None,
 ) -> dict:
     """
     Store a new memory entry.
@@ -143,12 +144,13 @@ async def handle_memory_write(
     author      : who is recording this (user_id, team name, or tool)
     affects     : list of entity names this decision/constraint governs
     rationale   : WHY — the reasoning behind a decision or constraint
+    provenance  : optional chain-of-custody dict with fields agent_id, user_id, tool, etc.
 
     Returns
     -------
     {"id": str, "namespace": str, "created_at": str, "memory_type": str}
     """
-    from engram.models import MemoryType, MemoryStatus
+    from engram.models import MemoryType, MemoryStatus, Provenance
     logger.debug(
         "memory_write | ns=%s type=%s source=%s tags=%s content=%r",
         namespace,
@@ -167,6 +169,9 @@ async def handle_memory_write(
     except ValueError:
         mem_status = MemoryStatus.active
 
+    prov_dict = provenance or {}
+    prov_obj = Provenance(**prov_dict) if prov_dict else Provenance()
+
     memory = await client.add(
         content=content,
         namespace=namespace,
@@ -178,9 +183,10 @@ async def handle_memory_write(
         author=author,
         affects=affects or [],
         rationale=rationale,
+        provenance=prov_obj,
     )
 
-    return {
+    result = {
         "id": str(memory.id),
         "namespace": namespace,
         "memory_type": mem_type.value,
@@ -188,6 +194,55 @@ async def handle_memory_write(
         if isinstance(memory.created_at, datetime)
         else str(memory.created_at),
     }
+
+    # After successful write, check for contradictions (non-blocking)
+    from engram.contradiction.detector import check_contradictions
+    try:
+        warnings = await check_contradictions(client, content, namespace)
+        if warnings:
+            result["contradiction_warnings"] = [
+                {
+                    "existing_id": w.existing_id,
+                    "existing_content": w.existing_content[:200],
+                    "similarity": round(w.similarity, 3),
+                    "reason": w.reason,
+                }
+                for w in warnings
+            ]
+    except Exception as exc:
+        logger.debug("Contradiction check skipped: %s", exc)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Review due (Feature 2.4)
+# ---------------------------------------------------------------------------
+
+async def handle_memory_review_due(
+    client,
+    namespace: str,
+    limit: int = 20,
+) -> str:
+    """Surface memories past their review_by date for human review."""
+    logger.debug("memory_review_due | ns=%s limit=%d", namespace, limit)
+    try:
+        memories = await client.get_review_due(namespace, limit)
+    except Exception as exc:
+        return f"Could not fetch review-due memories: {exc}"
+    if not memories:
+        return f"No memories are due for review in namespace {namespace!r}."
+    lines = [f"⏰ {len(memories)} memories due for review in {namespace!r}:\n"]
+    for m in memories:
+        mem_type = m.memory_type.value if hasattr(m.memory_type, "value") else str(m.memory_type)
+        author_str = f"  author: {m.author}" if m.author else ""
+        review_str = m.review_by.strftime("%Y-%m-%d") if m.review_by else "?"
+        content = str(m.content or "")[:300]
+        lines.append(f"  [{mem_type}] due: {review_str}{author_str}")
+        lines.append(f"  {content}")
+        lines.append(f"  id: {m.id}\n")
+    lines.append("Action: call memory_write with status='deprecated' or update review_by to snooze.")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

@@ -15,13 +15,14 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from engram.models import MemoryStatus, MemoryType, Provenance
 from engram_api.auth import (
     check_namespace_access,
     get_client,
     require_api_key,
     require_api_key_entry,
 )
-from engram_api.schemas import MemoryResponse, MemoryWriteRequest
+from engram_api.schemas import MemoryResponse, MemoryWriteRequest, ReviewDueItem
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,9 @@ router = APIRouter(prefix="/memory", tags=["memory"])
 
 def _to_response(memory, score: float | None = None) -> MemoryResponse:
     """Convert a MemoryEntry model to a MemoryResponse."""
+    prov_dict = {}
+    if memory.provenance:
+        prov_dict = memory.provenance.model_dump() if hasattr(memory.provenance, "model_dump") else {}
     return MemoryResponse(
         id=str(memory.id),
         content=memory.content,
@@ -37,6 +41,9 @@ def _to_response(memory, score: float | None = None) -> MemoryResponse:
         created_at=memory.created_at,
         tags=list(memory.tags or []),
         score=score,
+        memory_type=memory.memory_type.value if hasattr(memory.memory_type, "value") else str(memory.memory_type),
+        author=getattr(memory, "author", ""),
+        provenance=prov_dict,
     )
 
 
@@ -60,18 +67,63 @@ async def write_memory(
         req.content[:120],
     )
     try:
+        try:
+            mem_type = MemoryType(req.memory_type)
+        except ValueError:
+            mem_type = MemoryType.fact
+        try:
+            mem_status = MemoryStatus(req.status)
+        except ValueError:
+            mem_status = MemoryStatus.active
         memory = await client.add(
             content=req.content,
             namespace=req.namespace,
             tags=req.tags,
             source=req.source,
             metadata=req.metadata,
+            memory_type=mem_type,
+            status=mem_status,
+            author=req.author,
+            affects=req.affects,
+            rationale=req.rationale,
+            provenance=Provenance(**req.provenance.model_dump()),
         )
     except Exception as exc:
         logger.exception("Failed to write memory: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return _to_response(memory)
+
+
+# ---------------------------------------------------------------------------
+# Review due (Feature 2.4)
+# ---------------------------------------------------------------------------
+
+@router.get("/review-due", response_model=list[ReviewDueItem])
+async def review_due(
+    ns: str = Query(..., description="Namespace to check"),
+    limit: int = Query(50, ge=1, le=200),
+    user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
+    client=Depends(get_client),
+) -> list[ReviewDueItem]:
+    """Return memories whose review_by date has passed — needs human review."""
+    await check_namespace_access(key_entry, ns)
+    memories = await client.get_review_due(ns, limit)
+    return [
+        ReviewDueItem(
+            id=str(m.id),
+            content=m.content,
+            namespace=m.namespace,
+            memory_type=m.memory_type.value if hasattr(m.memory_type, "value") else str(m.memory_type),
+            author=m.author,
+            review_by=m.review_by,
+            created_at=m.created_at,
+            tags=list(m.tags or []),
+            rationale=m.rationale,
+        )
+        for m in memories
+    ]
 
 
 # ---------------------------------------------------------------------------

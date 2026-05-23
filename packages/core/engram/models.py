@@ -60,6 +60,20 @@ class MemoryStatus(str, Enum):
 
 
 # ---------------------------------------------------------------------------
+# Provenance (Feature 2.2)
+# ---------------------------------------------------------------------------
+
+class Provenance(BaseModel):
+    """Chain of custody for a memory — who, what tool, which commit, which ticket."""
+    agent_id: str = ""        # e.g. "claude-code-session-abc123"
+    user_id: str = ""         # person who triggered this write
+    tool: str = ""            # "claude-code" | "engram-git" | "api" | "mcp"
+    git_commit: str = ""      # short SHA if written from a git hook
+    jira_ticket: str = ""     # e.g. "PROJ-242"
+    team: str = ""            # team name or department
+
+
+# ---------------------------------------------------------------------------
 # Primary memory unit
 # ---------------------------------------------------------------------------
 
@@ -84,6 +98,8 @@ class MemoryEntry(BaseModel):
     expires_at: datetime | None = None      # hard expiry; expired memories excluded from search
     review_by: datetime | None = None       # soft flag: surface for human review after this date
 
+    provenance: "Provenance" = Field(default_factory=lambda: Provenance())
+
     @computed_field
     @property
     def is_current(self) -> bool:
@@ -97,6 +113,21 @@ class MemoryEntry(BaseModel):
         return datetime.now(timezone.utc) > self.expires_at
 
     model_config = {"arbitrary_types_allowed": True}
+
+
+# ---------------------------------------------------------------------------
+# Namespace Subscriptions (Feature 2.1)
+# ---------------------------------------------------------------------------
+
+class Subscription(BaseModel):
+    """A subscription: subscriber polls namespace for new memories since last_seen."""
+    id: str = Field(default_factory=_uuid)
+    subscriber_id: str            # user_id or agent_id of the subscriber
+    namespace: str                # namespace being watched
+    filter_types: list[str] = Field(default_factory=list)  # [] = all types
+    last_seen_at: datetime = Field(default_factory=_now)   # high-water mark
+    created_at: datetime = Field(default_factory=_now)
+    active: bool = True
 
 
 # ---------------------------------------------------------------------------

@@ -39,6 +39,7 @@ from engram_mcp.tools.graph import (
 from engram_mcp.tools.memory import (
     _dt_to_iso,
     handle_memory_delete,
+    handle_memory_review_due,
     handle_memory_search,
     handle_memory_write,
 )
@@ -141,6 +142,18 @@ TOOLS: list[Tool] = [
                     "type": "string",
                     "default": "",
                     "description": "WHY — the reasoning behind a decision or constraint",
+                },
+                "provenance": {
+                    "type": "object",
+                    "description": "Chain of custody: who/what/where this memory originated",
+                    "properties": {
+                        "agent_id": {"type": "string", "default": ""},
+                        "user_id": {"type": "string", "default": ""},
+                        "tool": {"type": "string", "default": ""},
+                        "git_commit": {"type": "string", "default": ""},
+                        "jira_ticket": {"type": "string", "default": ""},
+                        "team": {"type": "string", "default": ""},
+                    },
                 },
             },
             "required": ["content", "namespace"],
@@ -494,6 +507,46 @@ TOOLS: list[Tool] = [
             "required": [],
         },
     ),
+    # ---- Feature 2.4: memory review due ----
+    Tool(
+        name="memory_review_due",
+        description="List memories past their review_by date that need human confirmation or deprecation. Use this at session start to surface stale decisions.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace": {"type": "string", "description": "Namespace to check"},
+                "limit": {"type": "integer", "default": 20},
+            },
+            "required": ["namespace"],
+        },
+    ),
+    # ---- Feature 2.1: namespace subscriptions ----
+    Tool(
+        name="namespace_subscribe",
+        description="Subscribe to receive new memories from a namespace. After subscribing, use namespace_feed to poll for updates. Useful for staying informed when teammates write to a shared namespace.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace": {"type": "string"},
+                "subscriber_id": {"type": "string", "description": "Your user or agent ID"},
+                "filter_types": {"type": "array", "items": {"type": "string"}, "description": "Memory types to filter to (empty = all)"},
+            },
+            "required": ["namespace", "subscriber_id"],
+        },
+    ),
+    Tool(
+        name="namespace_feed",
+        description="Poll for new memories in a subscribed namespace since your last check. Returns new memories and advances your read cursor automatically.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace": {"type": "string"},
+                "subscriber_id": {"type": "string"},
+                "limit": {"type": "integer", "default": 20},
+            },
+            "required": ["namespace", "subscriber_id"],
+        },
+    ),
 ]
 
 
@@ -555,6 +608,8 @@ async def _dispatch(
         )
 
     if name == "memory_write":
+        prov_raw = args.get("provenance")
+        prov_dict = prov_raw if isinstance(prov_raw, dict) else {}
         result = await handle_memory_write(
             client,
             content=args["content"],
@@ -567,6 +622,7 @@ async def _dispatch(
             author=str(args.get("author", "")),
             affects=args.get("affects"),
             rationale=str(args.get("rationale", "")),
+            provenance=prov_dict,
         )
         import json as _json
         return [TextContent(type="text", text=_json.dumps(_dt_to_iso(result), indent=2))]
@@ -729,6 +785,54 @@ async def _dispatch(
             f"Use skill_suggest to surface relevant techniques for your tasks."
         )
         return [TextContent(type="text", text=text)]
+
+    # ---- Feature 2.4: memory review due ----
+    if name == "memory_review_due":
+        text = await handle_memory_review_due(
+            client,
+            namespace=args["namespace"],
+            limit=int(args.get("limit", 20)),
+        )
+        return [TextContent(type="text", text=text)]
+
+    # ---- Feature 2.1: namespace subscriptions ----
+    if name == "namespace_subscribe":
+        sub_id = await client.subscribe(
+            subscriber_id=args["subscriber_id"],
+            namespace=args["namespace"],
+            filter_types=args.get("filter_types") or [],
+        )
+        import json as _json
+        return [TextContent(type="text", text=_json.dumps({
+            "subscribed": True,
+            "namespace": args["namespace"],
+            "subscriber_id": args["subscriber_id"],
+        }))]
+
+    if name == "namespace_feed":
+        memories, cursor = await client.get_feed(
+            subscriber_id=args["subscriber_id"],
+            namespace=args["namespace"],
+            limit=int(args.get("limit", 20)),
+        )
+        import json as _json
+        items = [
+            {
+                "id": str(m.id),
+                "content": m.content,
+                "namespace": m.namespace,
+                "memory_type": m.memory_type.value if hasattr(m.memory_type, "value") else str(m.memory_type),
+                "author": m.author,
+                "created_at": m.created_at.isoformat() if hasattr(m.created_at, "isoformat") else str(m.created_at),
+                "tags": list(m.tags or []),
+            }
+            for m in memories
+        ]
+        return [TextContent(type="text", text=_json.dumps({
+            "items": items,
+            "cursor": cursor,
+            "count": len(items),
+        }, indent=2))]
 
     raise ValueError(f"Unknown tool: {name!r}")
 

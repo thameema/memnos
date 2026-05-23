@@ -84,9 +84,11 @@ from engram.models import (
     Fact,
     Graph,
     MemoryEntry,
+    Provenance,
     Relation,
     SearchResult,
     Secret,
+    Subscription,
     VaultAuditLog,
 )
 
@@ -282,6 +284,17 @@ class ArcadeDBClient:
             "CREATE PROPERTY Memory.rationale IF NOT EXISTS STRING",
             "CREATE PROPERTY Memory.expires_at IF NOT EXISTS DATETIME",
             "CREATE PROPERTY Memory.review_by IF NOT EXISTS DATETIME",
+            "CREATE PROPERTY Memory.provenance IF NOT EXISTS MAP",
+            # Subscription vertex type (Feature 2.1)
+            "CREATE VERTEX TYPE Subscription IF NOT EXISTS",
+            "CREATE PROPERTY Subscription.id IF NOT EXISTS STRING",
+            "CREATE PROPERTY Subscription.subscriber_id IF NOT EXISTS STRING",
+            "CREATE PROPERTY Subscription.namespace IF NOT EXISTS STRING",
+            "CREATE PROPERTY Subscription.filter_types IF NOT EXISTS LIST",
+            "CREATE PROPERTY Subscription.last_seen_at IF NOT EXISTS DATETIME",
+            "CREATE PROPERTY Subscription.created_at IF NOT EXISTS DATETIME",
+            "CREATE PROPERTY Subscription.active IF NOT EXISTS BOOLEAN",
+            "CREATE INDEX ON Subscription (subscriber_id, namespace) IF NOT EXISTS",
             # Properties — Entity
             "CREATE PROPERTY Entity.id IF NOT EXISTS STRING",
             "CREATE PROPERTY Entity.name IF NOT EXISTS STRING",
@@ -376,6 +389,7 @@ class ArcadeDBClient:
             "memory_type = :memory_type, status = :status, "
             "author = :author, affects = :affects, rationale = :rationale, "
             "expires_at = :expires_at, review_by = :review_by, "
+            "provenance = :provenance, "
             "content_embedding = :embedding"
         )
         params = {
@@ -394,6 +408,7 @@ class ArcadeDBClient:
             "rationale": memory.rationale,
             "expires_at": _dt_str(memory.expires_at),
             "review_by": _dt_str(memory.review_by),
+            "provenance": memory.provenance.model_dump() if memory.provenance else {},
             "embedding": embedding,
         }
         await self._command(sql, params)
@@ -831,6 +846,8 @@ class ArcadeDBClient:
             params["ns_prefix"] = f"{ns_filter}:%"
         if not include_superseded:
             where_parts.append("superseded_at IS NULL")
+        where_parts.append("(expires_at IS NULL OR expires_at > :now_dt)")
+        params["now_dt"] = _dt_str(_now())
         if keywords:
             # Match any memory containing at least one keyword
             kw_clauses = " OR ".join(
@@ -1147,6 +1164,114 @@ class ArcadeDBClient:
         return rows
 
     # ------------------------------------------------------------------
+    # Review due (Feature 2.4)
+    # ------------------------------------------------------------------
+
+    async def get_review_due(
+        self, namespace: str, limit: int = 50
+    ) -> list["MemoryEntry"]:
+        """Return memories whose review_by date has passed and are still active."""
+        parts = namespace.split(":")
+        ns_list = [":".join(parts[:i+1]) for i in range(len(parts))]
+        placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
+        params = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
+        params["now_dt"] = _dt_str(_now())
+        params["limit"] = limit
+        rows = await self._query(
+            f"SELECT * FROM Memory "
+            f"WHERE review_by IS NOT NULL "
+            f"AND review_by < :now_dt "
+            f"AND superseded_at IS NULL "
+            f"AND status = 'active' "
+            f"AND namespace IN [{placeholders}] "
+            f"ORDER BY review_by ASC LIMIT :limit",
+            params,
+        )
+        return [_row_to_memory(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Namespace subscriptions (Feature 2.1)
+    # ------------------------------------------------------------------
+
+    async def upsert_subscription(self, sub: "Subscription") -> str:
+        """Create or activate a subscription. One per (subscriber_id, namespace)."""
+        updated = await self._command(
+            "UPDATE Subscription SET last_seen_at = :last_seen, active = true "
+            "WHERE subscriber_id = :sid AND namespace = :ns",
+            {"last_seen": _dt_str(sub.last_seen_at), "sid": sub.subscriber_id, "ns": sub.namespace},
+        )
+        if not (updated and int(updated[0].get("count", 0)) > 0):
+            await self._command(
+                "INSERT INTO Subscription SET "
+                "id = :id, subscriber_id = :sid, namespace = :ns, "
+                "filter_types = :types, last_seen_at = :last_seen, "
+                "created_at = :created_at, active = true",
+                {
+                    "id": sub.id, "sid": sub.subscriber_id, "ns": sub.namespace,
+                    "types": sub.filter_types,
+                    "last_seen": _dt_str(sub.last_seen_at),
+                    "created_at": _dt_str(sub.created_at),
+                },
+            )
+        return sub.id
+
+    async def get_feed(
+        self, subscriber_id: str, namespace: str, limit: int = 50
+    ) -> tuple[list["MemoryEntry"], str]:
+        """Return new memories since last_seen for subscriber. Updates high-water mark.
+
+        Returns (memories, new_cursor_iso) where new_cursor_iso is the ISO timestamp
+        to use as the next poll cursor.
+        """
+        # Get current high-water mark
+        sub_rows = await self._query(
+            "SELECT last_seen_at FROM Subscription "
+            "WHERE subscriber_id = :sid AND namespace = :ns AND active = true LIMIT 1",
+            {"sid": subscriber_id, "ns": namespace},
+        )
+        if not sub_rows:
+            return [], _dt_str(_now())
+
+        last_seen = _parse_dt(sub_rows[0].get("last_seen_at")) or _now()
+        now = _now()
+
+        parts = namespace.split(":")
+        ns_list = [":".join(parts[:i+1]) for i in range(len(parts))]
+        placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
+        params = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
+        params.update({"last_seen": _dt_str(last_seen), "limit": limit})
+        rows = await self._query(
+            f"SELECT * FROM Memory "
+            f"WHERE created_at > :last_seen "
+            f"AND superseded_at IS NULL "
+            f"AND namespace IN [{placeholders}] "
+            f"ORDER BY created_at ASC LIMIT :limit",
+            params,
+        )
+        memories = [_row_to_memory(r) for r in rows]
+
+        # Advance high-water mark
+        if memories:
+            new_cursor = max(m.created_at for m in memories)
+            await self._command(
+                "UPDATE Subscription SET last_seen_at = :cursor "
+                "WHERE subscriber_id = :sid AND namespace = :ns",
+                {"cursor": _dt_str(new_cursor), "sid": subscriber_id, "ns": namespace},
+            )
+        else:
+            new_cursor = now
+
+        return memories, _dt_str(new_cursor)
+
+    async def delete_subscription(self, subscriber_id: str, namespace: str) -> bool:
+        rows = await self._command(
+            "UPDATE Subscription SET active = false "
+            "WHERE subscriber_id = :sid AND namespace = :ns",
+            {"sid": subscriber_id, "ns": namespace},
+        )
+        return bool(rows and int(rows[0].get("count", 0)) > 0)
+
+    # ------------------------------------------------------------------
     # Raw query (for MCP graph_query tool)
     # ------------------------------------------------------------------
 
@@ -1188,6 +1313,7 @@ def _row_to_memory(row: dict) -> MemoryEntry:
         rationale=row.get("rationale", ""),
         expires_at=_parse_dt(row.get("expires_at")),
         review_by=_parse_dt(row.get("review_by")),
+        provenance=Provenance(**(row.get("provenance") or {})) if row.get("provenance") else Provenance(),
     )
 
 
