@@ -525,6 +525,7 @@ class ArcadeDBClient:
         namespace: str,
         top_k: int = 10,
         include_superseded: bool = False,
+        query: str = "",
     ) -> list[SearchResult]:
         """Search Memory by vector similarity with recency weighting."""
         ns_filter = "all" if namespace in ("all", "", "*") else namespace
@@ -550,8 +551,32 @@ class ArcadeDBClient:
                 },
             )
         except Exception as exc:
-            logger.warning("Vector search failed, falling back to scan: %s", exc)
-            rows = await self._fallback_scan(namespace, top_k, include_superseded)
+            logger.warning("Vector search failed, falling back to keyword scan: %s", exc)
+            rows = await self._fallback_scan(namespace, top_k, include_superseded, query=query)
+            # Score keyword results by hit density so ranking is meaningful
+            keywords = [
+                w.lower() for w in query.split() if len(w) >= 3
+            ] if query else []
+            scored: list[SearchResult] = []
+            for i, row in enumerate(rows):
+                memory = _row_to_memory(row)
+                recency = _recency_score(memory.created_at)
+                if keywords:
+                    text = (memory.content or "").lower()
+                    hits = sum(1 for kw in keywords if kw in text)
+                    kw_score = min(0.95, 0.5 + hits * 0.1)
+                else:
+                    kw_score = 0.5
+                combined = _combined_score(kw_score, recency)
+                scored.append(SearchResult(
+                    memory=memory,
+                    score=combined,
+                    source="keyword",
+                    is_current=memory.is_current,
+                    recency_score=recency,
+                ))
+            scored.sort(key=lambda r: r.score, reverse=True)
+            return scored[:top_k]
 
         results: list[SearchResult] = []
         for row in rows:
@@ -655,10 +680,27 @@ class ArcadeDBClient:
         return results[:top_k]
 
     async def _fallback_scan(
-        self, namespace: str, top_k: int, include_superseded: bool
+        self, namespace: str, top_k: int, include_superseded: bool,
+        query: str = "",
     ) -> list[dict]:
-        """Fallback: return recent memories without vector scoring."""
+        """Keyword-based fallback when vector search is unavailable.
+
+        Searches for significant terms from the query using LIKE, fetches a
+        broad candidate set, then re-ranks by keyword hit count so that the
+        most relevant memories surface first.
+        """
         ns_filter = namespace if namespace not in ("all", "", "*") else None
+
+        # Extract meaningful keywords (skip stop words, require len >= 3)
+        _stop = {"the", "was", "what", "about", "last", "did", "are", "for",
+                 "and", "that", "with", "this", "from", "have", "has", "had"}
+        keywords = [
+            w.lower() for w in query.split()
+            if len(w) >= 3 and w.lower() not in _stop
+        ] if query else []
+
+        # Fetch a broad candidate set — 5× top_k so we can re-rank
+        candidate_limit = max(top_k * 5, 50)
         where_parts = []
         params: dict = {}
         if ns_filter:
@@ -667,10 +709,29 @@ class ArcadeDBClient:
             params["ns_prefix"] = f"{ns_filter}:%"
         if not include_superseded:
             where_parts.append("superseded_at IS NULL")
+        if keywords:
+            # Match any memory containing at least one keyword
+            kw_clauses = " OR ".join(
+                f"content.toLowerCase() LIKE :kw{i}" for i in range(len(keywords))
+            )
+            where_parts.append(f"({kw_clauses})")
+            for i, kw in enumerate(keywords):
+                params[f"kw{i}"] = f"%{kw}%"
         where = "WHERE " + " AND ".join(where_parts) if where_parts else ""
         sql = f"SELECT * FROM Memory {where} ORDER BY created_at DESC LIMIT :topK"
-        params["topK"] = top_k
-        return await self._query(sql, params)
+        params["topK"] = candidate_limit
+        rows = await self._query(sql, params)
+
+        if not keywords or not rows:
+            return rows[:top_k]
+
+        # Re-rank by number of keyword hits in content
+        def _hits(row: dict) -> int:
+            text = (row.get("content") or "").lower()
+            return sum(1 for kw in keywords if kw in text)
+
+        rows.sort(key=_hits, reverse=True)
+        return rows[:top_k]
 
     # ------------------------------------------------------------------
     # Graph stats (for dashboard)

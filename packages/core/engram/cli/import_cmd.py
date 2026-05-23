@@ -73,20 +73,15 @@ SEMANTIC_FOLDER_MAP: dict[str, str] = {
     "sessions": "private:sessions",
     # Engineering / technical
     "security": "engineering:security",
-    "drata": "engineering:security",
-    "accorian": "engineering:security",
     "hitrust": "engineering:security",
     "compliance": "engineering:security",
     "tools": "engineering:tools",
-    "autoclaude": "engineering:tools",
-    "exec-asst": "engineering:tools",
     "engineering": "engineering",
     "k8s": "engineering:k8s",
     "kubernetes": "engineering:k8s",
     "infra": "engineering:k8s",
     "aws": "engineering:k8s",
-    "pa": "engineering:pa",
-    "p2p": "engineering:p2p",
+    "azure": "engineering:k8s",
     "sdlc": "engineering:sdlc",
 }
 
@@ -94,7 +89,7 @@ SEMANTIC_FOLDER_MAP: dict[str, str] = {
 CONTENT_SIGNALS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\$[\d,]+|\bpricin|\bcost\b|\bestimate\b|\bbudget\b", re.I), "private:pricing"),
     (re.compile(r"\bRFI\b|\bRFP\b|\bproposal\b|\bresponse\b", re.I), "private:rfi"),
-    (re.compile(r"\bHITRUST\b|\bSOC 2\b|\bDrata\b|\bHIPAA\b|\baudit\b", re.I), "engineering:security"),
+    (re.compile(r"\bHITRUST\b|\bSOC 2\b|\bHIPAA\b|\baudit\b|\bcompliance\b", re.I), "engineering:security"),
     (re.compile(r"\bKubernetes\b|\bAKS\b|\bdocker\b|\bHelm\b|\bpipeline\b", re.I), "engineering:k8s"),
     (re.compile(r"\bmeeting\b|\bcall notes\b|\bdiscovery\b|\bstakeholder\b", re.I), "private:sessions"),
 ]
@@ -140,6 +135,14 @@ def _folder_namespace(rel_parts: list[str], base_ns: str) -> str:
         if meaningful:
             return f"{base_ns}:{':'.join(_slug(p) for p in meaningful)}"
 
+    # Single unknown folder directly under root → treat as customer subdirectory.
+    # Vault structure is typically learnings/{customer}/files.md — any single-level
+    # folder not matched by SEMANTIC_FOLDER_MAP is a customer or product name.
+    if len(rel_parts) == 1:
+        part = rel_parts[0].lower()
+        if part not in SEMANTIC_FOLDER_MAP:
+            return f"{base_ns}:private:customers:{_slug(part)}"
+
     return base_ns
 
 
@@ -152,19 +155,26 @@ def _content_namespace(content: str, base_ns: str) -> str | None:
     return None
 
 
-def _filename_namespace(filename: str, folder_ns: str, base_ns: str) -> str:
-    """Check filename prefix against known customer/topic patterns."""
+def _filename_namespace(
+    filename: str, folder_ns: str, base_ns: str,
+    customer_names: frozenset[str] = frozenset(),
+) -> str:
+    """Check filename prefix against known customer/topic patterns.
+
+    ``customer_names`` is discovered at runtime from the directory structure —
+    any subfolder name not in SEMANTIC_FOLDER_MAP is assumed to be a customer.
+    """
     stem = Path(filename).stem.lower()
-    # Known customer prefixes
-    known_customers = ["acme", "globex", "initech", "startup-corp", "kp", "champion",
-                       "clientcorp", "clientcorp", "accorian", "drata", "redox"]
-    for customer in known_customers:
-        if stem.startswith(customer) or f"-{customer}" in stem:
-            if customer in ("accorian", "drata"):
-                return f"{base_ns}:engineering:security"
-            if customer == "redox":
-                return f"{base_ns}:private:strategy"
+
+    # Customer prefix detection using runtime-discovered customer folder names.
+    # Longest match first to avoid "ac" matching "acme-extra" before "acme-something-long".
+    for customer in sorted(customer_names, key=len, reverse=True):
+        if stem == customer or stem.startswith(customer + "-"):
+            mapped = SEMANTIC_FOLDER_MAP.get(customer)
+            if mapped:
+                return f"{base_ns}:{mapped}"
             return f"{base_ns}:private:customers:{customer}"
+
     # RFI/pricing filename signals
     if any(k in stem for k in ("rfi", "rfp", "proposal", "response")):
         return f"{base_ns}:private:rfi"
@@ -257,7 +267,7 @@ def _should_skip(path: Path) -> bool:
 def _iter_files(root: Path) -> Iterator[Path]:
     for path in sorted(root.rglob("*")):
         if path.is_file() and not _should_skip(path):
-            # Skip deeply nested project files (e.g. autoclaude source code)
+            # Skip deeply nested project files (e.g. embedded source code repos)
             rel = path.relative_to(root)
             if len(rel.parts) > 6:
                 continue
@@ -280,6 +290,14 @@ def build_mapping(
     skip_set = set(skip_dirs or [])
     files = [f for f in _iter_files(root) if not any(s in str(f) for s in skip_set)]
 
+    # Discover customer subfolders at depth 1: any folder whose name is not in
+    # SEMANTIC_FOLDER_MAP is assumed to be a customer/product name.
+    customer_names: frozenset[str] = frozenset(
+        d.name.lower()
+        for d in root.iterdir()
+        if d.is_dir() and not d.name.startswith(".")
+    )
+
     mapping: dict[Path, str] = {}
     ambiguous: list[dict] = []
 
@@ -290,8 +308,8 @@ def build_mapping(
         # Step 1: folder-based namespace
         ns = _folder_namespace(folder_parts, base_ns) if folder_parts else base_ns
 
-        # Step 2: filename refinement
-        ns = _filename_namespace(filepath.name, ns, base_ns)
+        # Step 2: filename refinement — pass discovered customer names for prefix matching
+        ns = _filename_namespace(filepath.name, ns, base_ns, customer_names=customer_names)
 
         # Step 3: content signals (for files that are still at base_ns)
         if ns == base_ns:
@@ -343,9 +361,10 @@ async def _write_memory(
     tags: list[str],
 ) -> tuple[bool, str]:
     try:
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         resp = await client.post(
             f"{server}/api/v1/memory/",
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers=headers,
             json={
                 "content": content,
                 "namespace": namespace,
@@ -454,7 +473,7 @@ Examples:
   engram-import ~/vaults/myvault --namespace org:me:notes
   engram-import ~/vaults/myvault --namespace org:myorg --discover
   engram-import ~/vaults/myvault --namespace org:myorg --discover --dry-run
-  engram-import ~/notes --namespace org:me --skip autoclaude --skip .git
+  engram-import ~/notes --namespace org:me --skip projects --skip .git
         """,
     )
     parser.add_argument("path", help="Folder to import")
@@ -489,8 +508,8 @@ Examples:
         sys.exit(1)
 
     if not args.api_key and not args.dry_run:
-        print("Error: --api-key or ENGRAM_API_KEY env var required (unless --dry-run)", file=sys.stderr)
-        sys.exit(1)
+        print("  Note: no --api-key set. Proceeding without auth (works if server runs in open_mode).")
+        print("        Set ENGRAM_API_KEY or pass --api-key if the server requires authentication.\n")
 
     tags = [t.strip() for t in args.tags.split(",") if t.strip()]
 

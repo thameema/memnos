@@ -64,7 +64,13 @@ async def handle_memory_search(
         query[:_CONTENT_PREVIEW_LEN],
     )
 
-    raw_results = await client.search(query, namespace, top_k, mode)
+    try:
+        raw_results = await client.search(
+            query=query, namespace=namespace, top_k=top_k, mode=mode
+        )
+    except Exception as exc:
+        logger.warning("memory_search failed: %s", exc)
+        return f"No memories found for query: {query!r} in namespace {namespace!r} (search error: {exc})"
 
     if not raw_results:
         return f"No memories found for query: {query!r} in namespace {namespace!r}"

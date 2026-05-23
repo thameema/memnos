@@ -206,12 +206,31 @@ class EngramClient:
                 include_superseded=include_historical,
             )
         embedding = await self._embedder.embed(query)
-        return await self._arcadedb.vector_search(
+        results = await self._arcadedb.vector_search(
             embedding=embedding,
             namespace=namespace,
             top_k=top_k,
             include_superseded=include_historical,
+            query=query,
         )
+
+        # Namespace expansion: if specific namespace returned nothing, widen to parent.
+        # e.g. "org:acme:private:customers:client-a" → "org:acme:private:customers" → "org:acme"
+        if not results and namespace not in ("all", "*", ""):
+            parts = namespace.split(":")
+            while len(parts) > 1 and not results:
+                parts = parts[:-1]
+                parent_ns = ":".join(parts)
+                logger.debug("search: no results in %r, expanding to %r", namespace, parent_ns)
+                results = await self._arcadedb.vector_search(
+                    embedding=embedding,
+                    namespace=parent_ns,
+                    top_k=top_k,
+                    include_superseded=include_historical,
+                    query=query,
+                )
+
+        return results
 
     async def supersede(self, memory_id: str, namespace: str) -> bool:
         """Mark an existing memory as superseded (soft-delete — history preserved).
