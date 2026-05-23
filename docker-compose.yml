@@ -13,6 +13,8 @@ services:
       ARCADEDB_SERVER_PLUGINS: ""
     volumes:
       - ${ENGRAM_DATA_DIR:-~/.engram}/arcadedb:/home/arcadedb/databases
+      - ${ENGRAM_DATA_DIR:-~/.engram}/arcadedb-logs:/home/arcadedb/log
+      - ${ENGRAM_DATA_DIR:-~/.engram}/arcadedb-backups:/home/arcadedb/backups
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:2480/api/v1/ready"]
       interval: 10s
