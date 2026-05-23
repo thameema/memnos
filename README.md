@@ -228,6 +228,8 @@ See the complete guide in [docs/claude-code-setup.md](docs/claude-code-setup.md)
 | `secret_rotate` | Re-encrypt a secret with a fresh key |
 | `secret_audit` | View the vault access audit log |
 
+> **REST-only tools** (not MCP, call via HTTP): `POST /api/v1/knowledge/ask` — ask a natural-language question against the memory store using an LLM; `GET /admin/keys`, `POST /admin/keys`, `DELETE /admin/keys/{id}` — runtime API key management.
+
 ---
 
 ## Architecture
@@ -268,6 +270,109 @@ curl -X POST http://localhost:8766/api/v1/vault/secrets \
 ```
 
 For production, switch the KMS provider to Azure Key Vault or AWS KMS in `engram.yaml`.
+
+---
+
+## Knowledge Base API
+
+engram exposes a high-level Q&A endpoint that any web application can call to ask natural-language questions against the stored memory:
+
+```bash
+curl -X POST http://localhost:8766/api/v1/knowledge/ask \
+  -H "Authorization: Bearer your-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What are our API authentication conventions?",
+    "namespace": "team:architecture",
+    "top_k": 6
+  }'
+```
+
+Response:
+```json
+{
+  "answer": "Your team uses JWT with 24-hour expiry for all internal APIs...",
+  "sources": [
+    { "content": "JWT with 24h expiry for auth service", "namespace": "team:architecture", "score": 0.94 }
+  ],
+  "model_used": "claude-haiku-4-5-20251001",
+  "tokens_used": 820
+}
+```
+
+**How it works:** engram performs a semantic search for the top-k most relevant memories, assembles them as context, and calls the configured LLM to synthesize a grounded answer. The raw sources are returned alongside the answer so callers can cite them.
+
+**Use cases:**
+- An internal Slack bot that answers "how do we do X?" from team knowledge
+- A customer-facing docs assistant grounded in your own documentation
+- A new-hire onboarding app that answers questions from the team's accumulated context
+- Any web app where you want Claude-quality answers over private knowledge without exposing every memory to the LLM
+
+**Access control:** give the web app a **read-only** API key scoped to the relevant namespaces. It can query but never write or delete.
+
+```yaml
+auth:
+  api_keys:
+    - key: "${WEBAPP_API_KEY}"
+      user_id: webapp
+      namespaces: ["team:architecture", "team:onboarding"]
+      read_only: true
+```
+
+The dashboard (`/dashboard`) also includes a **Knowledge Base** tab where you can ask questions interactively without writing any code.
+
+---
+
+## API Key Management
+
+### YAML keys (static, in `engram.yaml`)
+
+Keys in `engram.yaml` are loaded at startup. Use these for permanent integrations and team members.
+
+```yaml
+auth:
+  api_keys:
+    - key: "${ENGRAM_API_KEY}"
+      user_id: admin
+      namespaces: ["*"]           # admin: access everything
+      read_only: false
+
+    - key: "${WEBAPP_KEY}"
+      user_id: webapp
+      namespaces: ["team:docs"]
+      read_only: true             # web app: query-only, cannot write or delete
+```
+
+### Runtime keys (via dashboard or REST API)
+
+Create, list, and revoke keys without restarting the server. Runtime keys are stored in `~/.engram/keys.db` (SHA-256 hashed; plaintext shown exactly once on creation).
+
+**Via the dashboard** — open `/dashboard` and click the **API Keys** tab.
+
+**Via REST** (admin key required):
+
+```bash
+# List runtime keys
+curl http://localhost:8766/api/v1/admin/keys \
+  -H "Authorization: Bearer your-admin-key"
+
+# Create a read-only key scoped to one namespace
+curl -X POST http://localhost:8766/api/v1/admin/keys \
+  -H "Authorization: Bearer your-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": "webapp", "namespaces": ["team:docs"], "read_only": true}'
+
+# Response includes the plaintext key — copy it now, it is not stored
+# { "key": "eng_abc123...", "id": "uuid", "user_id": "webapp", ... }
+
+# Revoke a key
+curl -X DELETE http://localhost:8766/api/v1/admin/keys/{id} \
+  -H "Authorization: Bearer your-admin-key"
+```
+
+### Read-only enforcement
+
+A key with `read_only: true` will receive HTTP 403 on any `memory_write`, `memory_delete`, or vault mutation. It can call `memory_search`, `memory_get`, `graph_query`, `get_entity`, `get_related`, `secret_get`, `secret_list`, and `knowledge/ask` freely.
 
 ---
 
@@ -364,6 +469,12 @@ ENGRAM_API_KEY=engram-local-dev-key \
 ENGRAM_VAULT_KEY=dev-key-for-local-testing-only \
 ENGRAM_CONFIG=engram.yaml \
 .venv/bin/python -m pytest tools/test_engram.py -v
+
+# Self-learning subsystem tests (no ArcadeDB needed — fully mocked)
+.venv/bin/python -m pytest tools/test_learning.py -v
+
+# Phase 2 tests: knowledge API, read-only keys, runtime key store
+.venv/bin/python -m pytest tools/test_api_features.py -v
 
 # MCP stdio transport tests
 .venv/bin/python -m pytest tools/test_mcp_stdio.py -v
