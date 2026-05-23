@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/graph", tags=["visualization"])
 
-_NS_PARAM = Query("personal:default", description="Namespace prefix, or 'all' for every namespace")
+_NS_PARAM = Query("all", description="Namespace prefix, or 'all' for every namespace")
 _LIMIT_PARAM = Query(150, ge=1, le=500, description="Maximum graph rows to return (max 500)")
 
 
