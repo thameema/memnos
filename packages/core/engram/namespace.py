@@ -34,12 +34,38 @@ class NamespaceManager:
         self._definitions = config.namespaces.definitions  # dict[str, NamespaceDefinition]
 
     # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _resolve(self, namespace: str) -> "NamespaceDefinition | None":
+        """
+        Resolve a namespace definition with prefix inheritance.
+
+        Exact match is checked first. If not found, walk up the colon-separated
+        hierarchy looking for the longest matching prefix. This lets a single
+        definition for ``obsidian:hc`` cover all sub-namespaces like
+        ``obsidian:hc:projects:p2p`` without enumerating every folder.
+        """
+        if namespace in self._definitions:
+            return self._definitions[namespace]
+
+        # Walk up: "a:b:c" → try "a:b", then "a"
+        parts = namespace.split(":")
+        for depth in range(len(parts) - 1, 0, -1):
+            parent = ":".join(parts[:depth])
+            if parent in self._definitions:
+                logger.debug("Namespace %r resolved via parent prefix %r", namespace, parent)
+                return self._definitions[parent]
+
+        return None
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def can_read(self, user_id: str, namespace: str) -> bool:
         """Return ``True`` if *user_id* may read from *namespace*."""
-        defn = self._definitions.get(namespace)
+        defn = self._resolve(namespace)
         if defn is None:
             logger.debug(
                 "Namespace %r not defined — denying read for user %r", namespace, user_id
@@ -60,7 +86,7 @@ class NamespaceManager:
 
     def can_write(self, user_id: str, namespace: str) -> bool:
         """Return ``True`` if *user_id* may write to *namespace*."""
-        defn = self._definitions.get(namespace)
+        defn = self._resolve(namespace)
         if defn is None:
             logger.debug(
                 "Namespace %r not defined — denying write for user %r", namespace, user_id
@@ -92,5 +118,5 @@ class NamespaceManager:
         return [ns for ns in self._definitions if self.can_write(user_id, ns)]
 
     def is_defined(self, namespace: str) -> bool:
-        """Return ``True`` if *namespace* has an explicit definition."""
-        return namespace in self._definitions
+        """Return ``True`` if *namespace* or any of its parents is defined."""
+        return self._resolve(namespace) is not None

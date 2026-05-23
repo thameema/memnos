@@ -47,6 +47,8 @@ CONTENT_LIMIT = 8000
 INLINE_TAG_RE = re.compile(r"(?<!\w)#([A-Za-z][A-Za-z0-9_\-/]*)")
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:\|[^\]]+)?\]\]")
 FRONTMATTER_RE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n?", re.DOTALL)
+# Hex color codes (3 or 6 hex digits) mistakenly picked up as inline tags
+_HEX_COLOR_RE = re.compile(r"^[0-9a-f]{3}(?:[0-9a-f]{3})?$", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -90,8 +92,11 @@ def parse_file(path: Path) -> dict:
     # Inline tags from body
     inline_tags = [t.lower() for t in INLINE_TAG_RE.findall(body)]
 
-    # Combined, deduplicated, lowercase tags
-    tags = list(dict.fromkeys([t.lower() for t in fm_tags] + inline_tags))
+    # Combined, deduplicated, lowercase tags — strip hex color codes
+    tags = list(dict.fromkeys(
+        t for t in ([t.lower() for t in fm_tags] + inline_tags)
+        if not _HEX_COLOR_RE.match(t)
+    ))
 
     # Wikilinks
     wikilinks = list(dict.fromkeys(
