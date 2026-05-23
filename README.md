@@ -2,7 +2,7 @@
 
 **Persistent memory and multi-agent orchestration for Claude Code and any MCP-compatible LLM client.**
 
-engram gives Claude Code a long-term memory that persists across sessions, the ability to fork parallel background agents, and a self-improving knowledge base — all backed by a single Docker container (ArcadeDB) with no external vector database or graph database required.
+engram gives Claude Code a long-term memory that persists across sessions and the ability to fork parallel background agents — all backed by a single Docker container (ArcadeDB) with no external vector database or graph database required.
 
 ```
 Claude Code  ──── MCP stdio or SSE ────►  engram server
@@ -228,7 +228,7 @@ See the complete guide in [docs/claude-code-setup.md](docs/claude-code-setup.md)
 | `secret_rotate` | Re-encrypt a secret with a fresh key |
 | `secret_audit` | View the vault access audit log |
 
-> **REST-only tools** (not MCP, call via HTTP): `POST /api/v1/knowledge/ask` — ask a natural-language question against the memory store using an LLM; `GET /admin/keys`, `POST /admin/keys`, `DELETE /admin/keys/{id}` — runtime API key management.
+> **REST-only tools** (not MCP, call via HTTP): `GET /admin/keys`, `POST /admin/keys`, `DELETE /admin/keys/{id}` — runtime API key management.
 
 ---
 
@@ -270,56 +270,6 @@ curl -X POST http://localhost:8766/api/v1/vault/secrets \
 ```
 
 For production, switch the KMS provider to Azure Key Vault or AWS KMS in `engram.yaml`.
-
----
-
-## Knowledge Base API
-
-engram exposes a high-level Q&A endpoint that any web application can call to ask natural-language questions against the stored memory:
-
-```bash
-curl -X POST http://localhost:8766/api/v1/knowledge/ask \
-  -H "Authorization: Bearer your-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "What are our API authentication conventions?",
-    "namespace": "team:architecture",
-    "top_k": 6
-  }'
-```
-
-Response:
-```json
-{
-  "answer": "Your team uses JWT with 24-hour expiry for all internal APIs...",
-  "sources": [
-    { "content": "JWT with 24h expiry for auth service", "namespace": "team:architecture", "score": 0.94 }
-  ],
-  "model_used": "claude-haiku-4-5-20251001",
-  "tokens_used": 820
-}
-```
-
-**How it works:** engram performs a semantic search for the top-k most relevant memories, assembles them as context, and calls the configured LLM to synthesize a grounded answer. The raw sources are returned alongside the answer so callers can cite them.
-
-**Use cases:**
-- An internal Slack bot that answers "how do we do X?" from team knowledge
-- A customer-facing docs assistant grounded in your own documentation
-- A new-hire onboarding app that answers questions from the team's accumulated context
-- Any web app where you want Claude-quality answers over private knowledge without exposing every memory to the LLM
-
-**Access control:** give the web app a **read-only** API key scoped to the relevant namespaces. It can query but never write or delete.
-
-```yaml
-auth:
-  api_keys:
-    - key: "${WEBAPP_API_KEY}"
-      user_id: webapp
-      namespaces: ["team:architecture", "team:onboarding"]
-      read_only: true
-```
-
-The dashboard (`/dashboard`) also includes a **Knowledge Base** tab where you can ask questions interactively without writing any code.
 
 ---
 
@@ -372,7 +322,7 @@ curl -X DELETE http://localhost:8766/api/v1/admin/keys/{id} \
 
 ### Read-only enforcement
 
-A key with `read_only: true` will receive HTTP 403 on any `memory_write`, `memory_delete`, or vault mutation. It can call `memory_search`, `memory_get`, `graph_query`, `get_entity`, `get_related`, `secret_get`, `secret_list`, and `knowledge/ask` freely.
+A key with `read_only: true` will receive HTTP 403 on any `memory_write`, `memory_delete`, or vault mutation. It can call `memory_search`, `memory_get`, `graph_query`, `get_entity`, `get_related`, `secret_get`, and `secret_list` freely.
 
 ---
 

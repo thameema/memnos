@@ -142,9 +142,8 @@ Remember that we use JWT with 24h expiry for the auth service
 
 Claude should call `memory_write`. Verify at `http://localhost:8766/dashboard`.
 
-The dashboard has three tabs:
-- **Knowledge Graph** — interactive force-directed graph of all memories and their relationships
-- **Ask Knowledge Base** — ask natural-language questions against your memories directly in the browser
+The dashboard has two main tabs:
+- **Memory Graph** — interactive force-directed graph of all memories and their relationships
 - **API Keys** — create, list, and revoke runtime API keys without restarting the server
 
 ---

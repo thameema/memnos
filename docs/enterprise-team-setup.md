@@ -148,10 +148,8 @@ auth:
         - project:*:ci
       read_only: false
 
-    # ── Web app / knowledge base consumer (query-only) ──
-    # This key is safe to embed in a server-side web application.
-    # It can call /api/v1/knowledge/ask and memory_search but cannot
-    # write, delete, or access the vault.
+    # ── Read-only consumer (query-only) ──
+    # Safe to use in CI, scripts, or any tool that should read but not write.
     - key: "webapp-key-change-me"
       user_id: webapp
       namespaces:
@@ -308,87 +306,7 @@ Namespace access uses **prefix matching**: a search against `project:payments` r
 
 ---
 
-## Step 6 — Build web apps on top of the knowledge base
-
-The shared engram instance doubles as a **knowledge base API** for internal tooling — Slack bots, onboarding apps, internal docs search, or any web application that needs to answer questions from your team's accumulated knowledge.
-
-### The pattern
-
-```
-Web app / Slack bot
-    │
-    ▼ POST /api/v1/knowledge/ask
-engram REST API (read-only key)
-    │
-    ├─► semantic search over team namespaces
-    └─► LLM synthesises answer from top-k memories
-         └─► returns answer + sources (for citations)
-```
-
-### Example: internal Slack bot
-
-```python
-import httpx
-
-ENGRAM_URL = "https://engram.yourcompany.com"
-ENGRAM_KEY = "webapp-key-change-me"   # read-only key from Step 2
-
-async def ask_knowledge_base(question: str, namespace: str = "team:architecture") -> dict:
-    async with httpx.AsyncClient() as client:
-        r = await client.post(
-            f"{ENGRAM_URL}/api/v1/knowledge/ask",
-            headers={"Authorization": f"Bearer {ENGRAM_KEY}"},
-            json={"question": question, "namespace": namespace, "top_k": 6},
-            timeout=30,
-        )
-        r.raise_for_status()
-        return r.json()
-
-# usage
-result = await ask_knowledge_base("How do we handle database migrations?")
-print(result["answer"])
-# Sources: result["sources"] — list of {content, namespace, score}
-```
-
-### What it can and cannot do
-
-| Capability | Read-only web app key |
-|------------|----------------------|
-| Ask questions (`knowledge/ask`) | ✅ Yes |
-| Search memories (`memory_search`) | ✅ Yes |
-| Read graph / entities | ✅ Yes |
-| Write memories | ❌ No (403) |
-| Delete memories | ❌ No (403) |
-| Access vault secrets | ❌ No (403) |
-
-### Runtime key management
-
-You can create, list, and revoke API keys without restarting the server — useful for giving time-limited access to contractors or rotating keys after someone leaves.
-
-**Via the dashboard** — open `https://engram.yourcompany.com/dashboard` and click **API Keys**.
-
-**Via REST:**
-
-```bash
-# Create a read-only contractor key
-curl -X POST https://engram.yourcompany.com/api/v1/admin/keys \
-  -H "Authorization: Bearer ${ENGRAM_API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{"user_id": "contractor-jane", "namespaces": ["project:payments"], "read_only": true}'
-
-# The response shows the plaintext key ONCE — copy it immediately
-# { "key": "eng_abc123...", "id": "uuid-...", "created_at": "..." }
-
-# Revoke when contract ends
-curl -X DELETE https://engram.yourcompany.com/api/v1/admin/keys/{id} \
-  -H "Authorization: Bearer ${ENGRAM_API_KEY}"
-```
-
-Runtime keys live in `~/.engram/keys.db` on the server (SHA-256 hashed). They are checked after YAML-configured keys on every request.
-
----
-
-## Step 7 — Onboarding new engineers
+## Step 6 — Onboarding new engineers
 
 When a new engineer joins:
 
@@ -414,7 +332,7 @@ Have new engineers write their fresh observations into `team:onboarding`. New hi
 
 ---
 
-## Step 8 — Team rituals
+## Step 7 — Team rituals
 
 Make engram part of your regular engineering workflow:
 
