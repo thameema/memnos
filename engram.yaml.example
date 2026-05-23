@@ -5,6 +5,10 @@ server:
   log_level: INFO
 
 auth:
+  # open_mode: skip all authentication — suitable for local single-user installs only.
+  # Set to false (or remove) when exposing engram to a network or team.
+  open_mode: false
+
   api_keys:
     # Admin key — full read/write access to all namespaces
     - key: ${ENGRAM_API_KEY}
