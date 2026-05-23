@@ -599,6 +599,12 @@ class ArcadeDBClient:
             keywords = [
                 w.lower() for w in query.split() if len(w) >= 3
             ] if query else []
+            # For temporal ranking: separate "when" keywords from "what" keywords.
+            # Topic keywords must hit; only then does recency determine the winner.
+            _temporal_kw = frozenset({"last", "latest", "recent", "recently",
+                                      "newest", "current", "new"})
+            topic_kws = [kw for kw in keywords if kw not in _temporal_kw] if keywords else []
+
             scored: list[SearchResult] = []
             for i, row in enumerate(rows):
                 memory = _row_to_memory(row)
@@ -610,10 +616,20 @@ class ArcadeDBClient:
                 recency = doc_recency if doc_recency > 0 else import_recency
                 if keywords:
                     hits = sum(1 for kw in keywords if kw in text)
+                    topic_hits = sum(1 for kw in topic_kws if kw in text) if topic_kws else hits
                     kw_score = min(0.95, 0.5 + hits * 0.1)
                 else:
+                    hits = topic_hits = 0
                     kw_score = 0.5
-                combined = _combined_score(kw_score, recency)
+                if temporal and topic_kws:
+                    # Must mention the topic; then rank by recency
+                    if topic_hits == 0:
+                        combined = 0.0   # no topic relevance — pushed to bottom
+                    else:
+                        topic_norm = min(1.0, topic_hits / max(len(topic_kws), 1))
+                        combined = 0.8 * recency + 0.2 * topic_norm
+                else:
+                    combined = _combined_score(kw_score, recency)
                 scored.append(SearchResult(
                     memory=memory,
                     score=combined,
@@ -621,13 +637,7 @@ class ArcadeDBClient:
                     is_current=memory.is_current,
                     recency_score=recency,
                 ))
-            if temporal:
-                # For temporal queries ("last", "latest", "recent"), sort purely by
-                # doc date extracted from content — keyword density is irrelevant
-                # when the user explicitly asks for the most recent information.
-                scored.sort(key=lambda r: r.recency_score, reverse=True)
-            else:
-                scored.sort(key=lambda r: r.score, reverse=True)
+            scored.sort(key=lambda r: r.score, reverse=True)
             return scored[:top_k]
 
         results: list[SearchResult] = []
@@ -799,7 +809,9 @@ class ArcadeDBClient:
                 return 0.3 * d + 0.7 * h
 
         rows.sort(key=_rank_key, reverse=True)
-        return rows[:top_k]
+        # Return more than top_k so the caller can re-score and pick the best;
+        # the final slice to top_k happens in vector_search after rescoring.
+        return rows[:max(top_k * 3, top_k)]
 
     # ------------------------------------------------------------------
     # Graph stats (for dashboard)
