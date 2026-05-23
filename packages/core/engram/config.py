@@ -3,7 +3,7 @@ engram.config — Configuration loading via YAML + env-var expansion.
 
 Load order:
   1. Read engram.yaml (or the path passed to EngramConfig.from_yaml)
-  2. Expand ${VAR} references against os.environ
+  2. Expand ${VAR} and ${VAR:-default} references against os.environ
   3. Construct Pydantic models — extra env overrides via ENGRAM__ prefix are NOT
      applied here (keep it simple; use ${VAR} in the YAML instead).
 """
@@ -25,13 +25,17 @@ _ENV_RE = re.compile(r"\$\{([^}]+)\}")
 
 
 def _expand_env(value: Any) -> Any:
-    """Recursively expand ${VAR} references in strings inside dicts/lists."""
+    """Recursively expand ${VAR} and ${VAR:-default} references in strings."""
     if isinstance(value, str):
         def _replace(m: re.Match) -> str:
-            var = m.group(1)
-            result = os.environ.get(var, "")
-            if not result:
-                logger.warning("Environment variable %r referenced in config but not set", var)
+            expr = m.group(1)
+            if ":-" in expr:
+                var, default = expr.split(":-", 1)
+            else:
+                var, default = expr, ""
+            result = os.environ.get(var.strip(), default)
+            if not result and not default:
+                logger.warning("Environment variable %r referenced in config but not set", var.strip())
             return result
         return _ENV_RE.sub(_replace, value)
     if isinstance(value, dict):

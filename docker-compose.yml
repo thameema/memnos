@@ -14,7 +14,7 @@ services:
     volumes:
       - arcadedb_data:/home/arcadedb/databases
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:2480/api/v1/ready"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:2480/api/v1/ready"]
       interval: 10s
       timeout: 5s
       retries: 10
