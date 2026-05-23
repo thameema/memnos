@@ -1,0 +1,25 @@
+# Code owners are automatically requested for review on every PR.
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything
+* @thameema
+
+# Core memory + graph
+/packages/core/ @thameema
+
+# MCP server
+/packages/mcp-server/ @thameema
+
+# REST API + dashboard
+/packages/api/ @thameema
+
+# Self-learning subsystem
+/packages/learning/ @thameema
+
+# Orchestrator
+/packages/orchestrator/ @thameema
+
+# Infrastructure
+/docker-compose.yml @thameema
+/docker/ @thameema
+/.github/ @thameema
