@@ -24,6 +24,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+      args:
+        EMBED_MODE: ${ENGRAM_EMBED_MODE:-online}   # online = OpenAI API | local = sentence-transformers
     container_name: engram
     ports:
       - "8765:8765"   # MCP server
@@ -33,6 +35,8 @@ services:
       ARCADEDB_PORT: 2480
       ARCADEDB_PASSWORD: ${ARCADEDB_PASSWORD:-engram}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}       # used by the default openai embeddings provider
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}       # optional — only needed if provider: voyage
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       ENGRAM_API_KEY: ${ENGRAM_API_KEY}
       ENGRAM_VAULT_KEY: ${ENGRAM_VAULT_KEY}

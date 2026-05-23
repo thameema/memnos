@@ -9,8 +9,7 @@ description = "engram persistent memory core — ArcadeDB knowledge graph + vect
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27",
-    "sentence-transformers>=2.7",
-    "spacy>=3.7",
+    "openai>=1.30",
     "anthropic>=0.30",
     "pydantic>=2.0",
     "pyyaml>=6.0",
@@ -20,8 +19,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-openai-embeddings = ["openai>=1.30"]
-all = ["engram-core[openai-embeddings]"]
+# pip install 'engram-core[local-embeddings]'
+# Adds sentence-transformers + torch (~2 GB). Use provider: local in engram.yaml.
+local-embeddings = [
+    "sentence-transformers>=2.7",
+    "spacy>=3.7",
+]
+# pip install 'engram-core[voyage]'
+# Lightweight Voyage AI client. Use provider: voyage in engram.yaml.
+voyage = ["voyageai>=0.2"]
+all = ["engram-core[local-embeddings,voyage]"]
 
 [project.scripts]
 engram-import = "engram.cli.import_cmd:main"

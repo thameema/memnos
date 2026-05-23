@@ -65,9 +65,11 @@ class ArcadeDBConfig(BaseModel):
 
 
 class EmbeddingsConfig(BaseModel):
-    provider: str = "local"                           # "local" | "openai"
-    model: str = "all-MiniLM-L6-v2"                   # 384-dim, no API key needed
-    api_key: str = ""
+    provider: str = "openai"                          # "openai" | "voyage" | "local"
+    model: str = "text-embedding-3-small"             # 1536-dim; no local packages needed
+    api_key: str = ""                                 # optional — SDK reads *_API_KEY from env
+    base_url: str = ""                                # override for OpenAI-compatible endpoints
+    dimensions: int = 0                               # 0 = model default (text-embedding-3-* only)
 
 
 class ApiRuntimeConfig(BaseModel):
