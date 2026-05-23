@@ -70,10 +70,13 @@ async def knowledge_ask(
     await check_namespace_access(key_entry, req.namespace)
 
     anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not anthropic_api_key:
+    if not anthropic_api_key or anthropic_api_key.startswith("sk-ant-placeholder"):
         raise HTTPException(
             status_code=503,
-            detail="Anthropic API key not configured",
+            detail=(
+                "Knowledge Q&A is not available: ANTHROPIC_API_KEY is not configured. "
+                "Core memory operations (write, search, graph) work without it."
+            ),
         )
 
     # 1. Search memories
@@ -118,9 +121,18 @@ async def knowledge_ask(
     except ImportError:
         raise HTTPException(
             status_code=503,
-            detail="anthropic package is not installed",
+            detail="anthropic package is not installed. Run: pip install anthropic",
         )
     except Exception as exc:
+        exc_str = str(exc).lower()
+        if any(word in exc_str for word in ("authentication", "invalid x-api-key", "unauthorized", "401")):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Knowledge Q&A is not available: the configured ANTHROPIC_API_KEY "
+                    "is invalid. Core memory operations are unaffected."
+                ),
+            ) from exc
         logger.exception("Anthropic API call failed: %s", exc)
         raise HTTPException(
             status_code=502,

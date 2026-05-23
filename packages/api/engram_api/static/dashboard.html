@@ -396,9 +396,9 @@
 
   <!-- tab nav -->
   <nav id="tab-nav">
-    <button class="tab-btn active" data-tab="graph">Knowledge Graph</button>
-    <button class="tab-btn" data-tab="knowledge">Ask Knowledge Base</button>
+    <button class="tab-btn active" data-tab="graph">Memory Graph</button>
     <button class="tab-btn" data-tab="keys">API Keys</button>
+    <button class="tab-btn" data-tab="knowledge" title="Requires ANTHROPIC_API_KEY">Knowledge Q&amp;A</button>
   </nav>
 
   <!-- error banner -->
@@ -466,6 +466,19 @@
 
   <!-- ── knowledge view ── -->
   <div id="view-knowledge" class="view">
+    <div style="padding:16px 24px 8px;font-size:12px;color:var(--muted);background:rgba(124,58,237,.06);border-bottom:1px solid var(--border)">
+      <strong style="color:var(--text)">Optional feature</strong> — Knowledge Q&amp;A synthesises answers from your stored memories using an LLM.
+      It requires <code>ANTHROPIC_API_KEY</code> to be set. Core memory operations work without it.
+    </div>
+    <div id="knowledge-unavailable" style="display:none;padding:40px 24px;text-align:center;color:var(--muted)">
+      <div style="font-size:32px;margin-bottom:12px">&#128274;</div>
+      <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:6px">Knowledge Q&amp;A is not available</div>
+      <div style="font-size:13px;max-width:420px;margin:0 auto">
+        Set <code>ANTHROPIC_API_KEY</code> in your environment and restart engram-server to enable this feature.
+        Your memories are fully accessible via <code>memory_search</code> in Claude Code without it.
+      </div>
+    </div>
+    <div id="knowledge-form-wrap">
     <div class="knowledge-layout">
       <!-- ask form -->
       <div class="knowledge-card">
@@ -495,6 +508,7 @@
         </div>
       </div>
     </div>
+    </div><!-- #knowledge-form-wrap -->
   </div><!-- #view-knowledge -->
 
   <!-- ── keys view ── -->
@@ -1233,7 +1247,7 @@ function switchTab(tab) {
   document.getElementById('view-' + tab).classList.add('active');
 
   if (tab === 'keys') loadKeys();
-  if (tab === 'knowledge') syncAskNamespaces();
+  if (tab === 'knowledge') { syncAskNamespaces(); probeKnowledgeAvailability(); }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1250,6 +1264,29 @@ function syncAskNamespaces() {
     if (opt.value === cur) o.selected = true;
     dst.appendChild(o);
   }
+}
+
+async function probeKnowledgeAvailability() {
+  // Send a minimal request to detect 503 before the user tries to ask
+  try {
+    const url = getBaseUrl() + '/api/v1/knowledge/ask';
+    const key = getApiKey();
+    const headers = { 'Content-Type': 'application/json' };
+    if (key) headers['Authorization'] = 'Bearer ' + key;
+    const res = await fetch(url, {
+      method: 'POST', headers,
+      body: JSON.stringify({ question: '__probe__', namespace: 'probe', top_k: 1 })
+    });
+    const unavail = document.getElementById('knowledge-unavailable');
+    const formWrap = document.getElementById('knowledge-form-wrap');
+    if (res.status === 503) {
+      unavail.style.display = 'block';
+      formWrap.style.display = 'none';
+    } else {
+      unavail.style.display = 'none';
+      formWrap.style.display = 'block';
+    }
+  } catch (_) { /* network error — leave form visible */ }
 }
 
 async function askQuestion() {
@@ -1301,7 +1338,11 @@ async function askQuestion() {
     metaEl.textContent = tokens ? `Model: ${data.model_used || ''}  ·  Tokens used: ${tokens}` : '';
     statusEl.textContent = '';
   } catch (err) {
-    answerEl.innerHTML = `<div style="color:var(--red);font-size:13px;">Error: ${esc(err.message)}</div>`;
+    const msg = err.message || '';
+    const friendly = msg.includes('not available') || msg.includes('ANTHROPIC_API_KEY')
+      ? 'Knowledge Q&A requires ANTHROPIC_API_KEY. Core memory tools (memory_write, memory_search) work without it.'
+      : `Error: ${msg}`;
+    answerEl.innerHTML = `<div style="color:var(--muted);font-size:13px;">${esc(friendly)}</div>`;
     statusEl.textContent = '';
   } finally {
     askBtn.disabled = false;
