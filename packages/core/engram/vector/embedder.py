@@ -295,7 +295,11 @@ def get_embedder(config: "EmbeddingsConfig") -> Embedder:
         )
 
     if provider == "local":
-        return LocalEmbedder(model=config.model or "all-MiniLM-L6-v2")
+        # config.model may contain an API model name (e.g. "text-embedding-3-small") when
+        # auto-detection fell back to local — always default to a sentence-transformers model.
+        _api_models = {"text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"}
+        local_model = config.model if config.model and config.model not in _api_models else "all-MiniLM-L6-v2"
+        return LocalEmbedder(model=local_model)
 
     raise ValueError(
         f"Unknown embeddings provider {config.provider!r}. "

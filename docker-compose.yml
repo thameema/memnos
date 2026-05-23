@@ -25,7 +25,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       args:
-        EMBED_MODE: ${ENGRAM_EMBED_MODE:-online}   # online = OpenAI API | local = sentence-transformers
+        EMBED_MODE: ${ENGRAM_EMBED_MODE:-auto}     # auto | openai | openrouter | voyage | local
     container_name: engram
     ports:
       - "8765:8765"   # MCP server
