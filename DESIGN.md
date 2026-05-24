@@ -2956,6 +2956,123 @@ engram/
 
 ---
 
+## 22. Architectural Improvements — Build Status
+
+> Sourced from architecture review 2026-05-23. These are additions to the core design that make
+> engram genuinely useful for the "new engineer touches PaymentService on week one" scenario.
+
+### 22.1 Tier 1 — Foundation (Highest Leverage)
+
+#### 22.1.1 Decision Record Memory Type ✅ COMPLETE
+
+`MemoryEntry` carries `memory_type` (fact/decision/constraint/incident/adr/skill), `status`
+(active/superseded/deprecated/proposed), `author`, `affects: list[str]`, and `rationale`.
+
+On every write with `affects`, AFFECTS edges are created from the Memory vertex to Entity vertices.
+`write_decision()`, `write_constraint()`, `write_incident()` are convenience methods on `EngramClient`.
+
+#### 22.1.2 Constraint Memory Injection ✅ COMPLETE
+
+All active `memory_type=constraint` records for a namespace (and its ancestors) are fetched via
+`get_constraints()` and prepended to every `memory_search` result under the `⚠ ACTIVE CONSTRAINTS`
+header — before the scored vector results, never subject to top_k competition.
+
+#### 22.1.3 Decision Pinning ✅ COMPLETE (2026-05-23, commit c901015)
+
+When `search()` is called, entity names are extracted from the query via:
+- CamelCase pattern (`PaymentService`)
+- ALLCAPS (`JWT`, `API`)
+- snake_case (`payment_service`)
+- kebab-case (`payment-service`)
+- spaCy NER
+
+`get_decisions_for_entities(entity_names, namespace)` in `arcadedb_client.py` fetches all active
+decision/constraint/ADR memories whose `affects` list overlaps, checking the full namespace ancestry.
+These are prepended as `SearchResult(source="pinned", score=2.0)` — above all scored results.
+
+The MCP formatter renders them under `📌 PINNED` with type, affects, author, rationale, and ID.
+
+#### 22.1.4 Git Integration ✅ COMPLETE
+
+`engram-git` CLI (entry point: `engram.cli.git_hooks:main`):
+- `engram-git install` — installs a `post-commit` hook into `.git/hooks/`
+- `engram-git post-commit` — writes commit SHA, author, message, files to engram
+- `engram-git pre-review` — given a PR diff, retrieves relevant memories as context
+
+**Pending:** `post-incident-merge` — parse RCA from incident branch merge commit message.
+
+---
+
+### 22.2 Tier 2 — Team Collaboration
+
+#### 22.2.1 Namespace Subscriptions — Partial ⚠️
+
+Subscription CRUD and cursor-based feed polling are built and tested.
+
+**Pending:**
+- `filter_types` stored on Subscription but NOT applied in the feed query (always returns all memories since cursor)
+- Cross-namespace fan-out (source_ns → subscriber_ns delivery)
+- Delivery modes (`on_next_session`, `webhook`, `immediate`) — only polling exists
+
+#### 22.2.2 Memory Provenance ✅ COMPLETE
+
+`Provenance(agent_id, user_id, tool, session_id, git_commit, jira_ticket)` on every `MemoryEntry`.
+Stored as MAP in ArcadeDB, reconstructed on read. Wired through MCP write tools.
+
+#### 22.2.3 Contradiction Detection — Partial ⚠️
+
+Fires after every write via `check_contradictions()` (cosine similarity ≥ 0.88 against top-5 similar
+memories). Returns `contradiction_warnings` in MCP response. Non-blocking.
+
+**Pending:** Directional/negation logic — currently detects semantic similarity, not opposite claims
+(e.g., "use gRPC" vs. "avoid gRPC for this service" would not be flagged).
+
+---
+
+### 22.3 Tier 3 — Intelligence Layer
+
+#### 22.3.1 Incident Intelligence — Partial ⚠️
+
+`memory_type=incident` and `write_incident()` exist. Incidents are searchable via standard vector search.
+
+**Pending:**
+- Webhook receiver (PagerDuty / AlertManager → engram)
+- Automatic past-incident retrieval on alert trigger
+- `SIMILAR_TO` edge type connecting related incidents
+- `RESOLVED_BY` edge connecting incident → config change → file
+
+#### 22.3.2 Knowledge Health Metrics ❌ NOT BUILT
+
+Endpoint and dashboard showing:
+- Namespaces with no writes in 90+ days (stale knowledge)
+- Entities referenced often but with no decision memory (undocumented decisions)
+- Constraint memories never retrieved (possibly irrelevant)
+- Contradiction count per namespace
+- Knowledge coverage per service/team
+
+#### 22.3.3 Memory Expiry and Decay Contracts — Partial ⚠️
+
+`expires_at` (hard expiry, excluded from search) and `review_by` + `memory_review_due` MCP tool are built.
+
+**Pending:** `decay_policy` field (`none` / `time_weighted` / `access_weighted`) and a decay scheduler
+job for memories (heuristic decay exists, but memory-level decay does not).
+
+---
+
+### 22.4 Build Order (Ranked by Impact)
+
+| Priority | Item | Effort |
+|---|---|---|
+| 1 | `filter_types` applied in subscription feed | S |
+| 2 | `decay_policy` on MemoryEntry + decay job | M |
+| 3 | Cross-namespace subscription fan-out | M |
+| 4 | post-incident-merge hook + SIMILAR_TO/RESOLVED_BY edges | M |
+| 5 | Contradiction direction detection (negation logic) | M |
+| 6 | Knowledge health metrics API | L |
+| 7 | Incident webhook receiver | M |
+
+---
+
 ---
 
 ## 21. AI Governance Positioning
