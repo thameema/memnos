@@ -1423,6 +1423,34 @@ class ArcadeDBClient:
         )
         return bool(rows)
 
+    async def list_secrets_with_ciphertext(self, namespace: str) -> list["Secret"]:
+        """Return all current Secret objects including value_enc and dek_enc.
+
+        Used exclusively by KEK rotation — callers must not log or expose the
+        ciphertext fields.
+        """
+        ns_filter = namespace if namespace not in ("all", "", "*") else None
+        if ns_filter:
+            rows = await self._query(
+                "SELECT * FROM Secret "
+                "WHERE (namespace = :ns OR namespace LIKE :prefix) "
+                "AND superseded_at IS NULL",
+                {"ns": ns_filter, "prefix": f"{ns_filter}:%"},
+            )
+        else:
+            rows = await self._query(
+                "SELECT * FROM Secret WHERE superseded_at IS NULL"
+            )
+        return [_row_to_secret(r) for r in rows]
+
+    async def update_dek_enc(self, secret_id: str, new_dek_enc: str, namespace: str) -> bool:
+        """Update only the dek_enc field of an existing secret (KEK rotation)."""
+        rows = await self._command(
+            "UPDATE Secret SET dek_enc = :dek_enc WHERE id = :id AND namespace = :ns",
+            {"dek_enc": new_dek_enc, "id": secret_id, "ns": namespace},
+        )
+        return bool(rows)
+
     # ------------------------------------------------------------------
     # Vault — Audit Log
     # ------------------------------------------------------------------

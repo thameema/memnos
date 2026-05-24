@@ -261,6 +261,100 @@ class VaultClient:
 
 
 # ---------------------------------------------------------------------------
+# KEK rotation (local mode only)
+# ---------------------------------------------------------------------------
+
+class RotationResult:
+    """Summary returned by rotate_kek_local."""
+
+    def __init__(self) -> None:
+        self.rotated: int = 0
+        self.skipped: int = 0
+        self.failed: list[tuple[str, str]] = []  # [(secret_id, error_message)]
+
+    @property
+    def total(self) -> int:
+        return self.rotated + self.skipped + len(self.failed)
+
+
+async def rotate_kek_local(
+    old_kek_str: str,
+    new_kek_str: str,
+    arcadedb_client: "Any",
+    namespace: str,
+    dry_run: bool = False,
+) -> RotationResult:
+    """Re-encrypt every secret's DEK under a new KEK (local mode only).
+
+    Re-encrypts ``dek_enc`` for each secret in *namespace* using *new_kek_str*
+    without touching ``value_enc``.  The plaintext value is never re-derived.
+
+    Parameters
+    ----------
+    old_kek_str:
+        Current ENGRAM_VAULT_KEY (raw key or passphrase).
+    new_kek_str:
+        Replacement ENGRAM_VAULT_KEY.
+    arcadedb_client:
+        An open ArcadeDBClient (caller must have called ``start()``).
+    namespace:
+        The namespace scope.  Pass ``"*"`` or ``""`` for all namespaces.
+    dry_run:
+        If True, validate decryption with old KEK but skip DB writes.
+    """
+    from typing import Any  # noqa: F401 — imported for type hint resolution
+
+    result = RotationResult()
+
+    # Derive both KEKs
+    def _derive(key_str: str) -> bytes:
+        try:
+            raw = _b64dec(key_str)
+            if len(raw) == 32:
+                return raw
+        except Exception:
+            pass
+        from cryptography.hazmat.primitives.kdf.hkdf import HKDF  # type: ignore
+        from cryptography.hazmat.primitives import hashes  # type: ignore
+        return HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=b"engram-vault-v1",
+            info=b"kek",
+        ).derive(key_str.encode())
+
+    old_kek = _derive(old_kek_str)
+    new_kek = _derive(new_kek_str)
+
+    secrets = await arcadedb_client.list_secrets_with_ciphertext(namespace)
+
+    for secret in secrets:
+        try:
+            # Decrypt DEK with old KEK
+            raw_dek = _aes_gcm_decrypt(old_kek, _b64dec(secret.dek_enc))
+        except Exception as exc:
+            result.failed.append((secret.id, f"decrypt dek_enc: {exc}"))
+            continue
+
+        # Re-encrypt DEK with new KEK
+        new_dek_blob = _aes_gcm_encrypt(new_kek, raw_dek)
+        new_dek_enc = _b64enc(new_dek_blob)
+
+        if dry_run:
+            result.skipped += 1
+            continue
+
+        try:
+            await arcadedb_client.update_dek_enc(secret.id, new_dek_enc, secret.namespace)
+            result.rotated += 1
+            logger.debug("rotate-kek: rotated %s / %s", secret.id, secret.namespace)
+        except Exception as exc:
+            result.failed.append((secret.id, f"update dek_enc: {exc}"))
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Module-level singleton factory
 # ---------------------------------------------------------------------------
 
