@@ -5,6 +5,7 @@ Endpoints
 ---------
 POST   /subscriptions/              — subscribe to a namespace
 GET    /subscriptions/{ns}/feed     — poll for new memories since last seen
+GET    /subscriptions/{ns}/stream   — SSE push stream (delivery_mode=immediate)
 DELETE /subscriptions/{ns}          — unsubscribe
 """
 
@@ -92,6 +93,67 @@ async def get_feed(
         for m in memories
     ]
     return FeedResponse(items=items, cursor=cursor, count=len(items))
+
+
+@router.get("/{ns}/stream")
+async def stream_namespace(
+    ns: str,
+    subscriber_id: str = Query(..., description="Your subscriber ID"),
+    user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
+    client=Depends(get_client),
+):
+    """SSE push stream for delivery_mode=immediate subscribers.
+
+    Keeps a persistent HTTP connection open. Each new memory written to *ns*
+    (or a child namespace) is pushed as a ``data:`` event with JSON payload.
+
+    Only subscribers registered with ``delivery_mode=immediate`` should use
+    this endpoint. The stream is in-process only — for multi-process deployments
+    use ``delivery_mode=webhook`` instead.
+    """
+    import asyncio
+    import json
+
+    await check_namespace_access(key_entry, ns)
+
+    try:
+        from sse_starlette.sse import EventSourceResponse  # type: ignore
+    except ImportError:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=501,
+            content={"detail": "sse_starlette not installed — immediate delivery unavailable"},
+        )
+
+    from engram.subscription_bus import register as _register, unregister as _unregister
+
+    # Fetch filter_types from the stored subscription record (best-effort)
+    filter_types: list[str] = []
+    try:
+        sub = await client._arcadedb.get_subscription(subscriber_id, ns)
+        if sub is not None:
+            filter_types = list(getattr(sub, "filter_types", []) or [])
+    except Exception:
+        pass
+
+    queue = _register(subscriber_id, ns, filter_types)
+    logger.debug("SSE stream opened: subscriber=%s namespace=%s", subscriber_id, ns)
+
+    async def _gen():
+        try:
+            yield {"event": "connected", "data": json.dumps({"subscriber_id": subscriber_id, "namespace": ns})}
+            while True:
+                try:
+                    event = queue.get_nowait()
+                    yield {"event": "memory.created", "data": json.dumps(event)}
+                except asyncio.QueueEmpty:
+                    await asyncio.sleep(0.1)
+        finally:
+            _unregister(subscriber_id, ns)
+            logger.debug("SSE stream closed: subscriber=%s namespace=%s", subscriber_id, ns)
+
+    return EventSourceResponse(_gen())
 
 
 @router.delete("/{ns}", status_code=204, response_model=None)

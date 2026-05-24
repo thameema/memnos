@@ -280,6 +280,12 @@ class EngramClient:
         except Exception as exc:
             logger.debug("webhook dispatch skipped (non-fatal): %s", exc)
 
+        # Immediate delivery: push to in-process SSE subscriber queues
+        try:
+            await self._dispatch_immediate(memory, namespace)
+        except Exception as exc:
+            logger.debug("immediate dispatch skipped (non-fatal): %s", exc)
+
         return memory
 
     async def _vector_search(
@@ -318,6 +324,33 @@ class EngramClient:
             include_superseded=include_historical,
             query=query,
         )
+
+    async def _dispatch_immediate(self, memory: MemoryEntry, namespace: str) -> None:
+        """Push memory to in-process immediate subscribers (SSE push, fire-and-forget)."""
+        try:
+            from engram.subscription_bus import publish as _publish
+        except ImportError:
+            return
+
+        payload = {
+            "event": "memory.created",
+            "namespace": namespace,
+            "memory": {
+                "id": str(memory.id),
+                "content": memory.content,
+                "namespace": memory.namespace,
+                "memory_type": memory.memory_type.value if hasattr(memory.memory_type, "value") else str(memory.memory_type),
+                "author": memory.author,
+                "tags": list(memory.tags or []),
+                "created_at": memory.created_at.isoformat() if hasattr(memory.created_at, "isoformat") else str(memory.created_at),
+            },
+        }
+        try:
+            count = _publish(namespace, payload)
+            if count:
+                logger.debug("immediate: delivered to %d subscriber(s) for %s", count, namespace)
+        except Exception as exc:
+            logger.warning("immediate dispatch failed (non-fatal): %s", exc)
 
     async def _dispatch_webhooks(self, memory: MemoryEntry, namespace: str) -> None:
         """POST memory to all webhook subscribers for namespace (fire-and-forget per subscriber)."""
