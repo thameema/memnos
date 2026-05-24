@@ -151,7 +151,7 @@ async def get_task(
 # Cancel task
 # ---------------------------------------------------------------------------
 
-@router.delete("/{task_id}", status_code=204)
+@router.delete("/{task_id}", status_code=204, response_model=None)
 async def cancel_task(
     task_id: str,
     user_id: str = Depends(require_api_key),
@@ -188,7 +188,7 @@ async def cancel_task(
 # Feedback
 # ---------------------------------------------------------------------------
 
-@router.post("/feedback", status_code=204)
+@router.post("/feedback", status_code=204, response_model=None)
 async def submit_feedback(
     req: FeedbackRequest,
     request: Request,

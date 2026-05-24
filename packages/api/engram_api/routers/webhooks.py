@@ -121,11 +121,21 @@ def _verify_webhook_secret(secret_header: str | None) -> None:
 # Models
 # ---------------------------------------------------------------------------
 
+class PastIncidentSummary(BaseModel):
+    memory_id: str
+    content: str
+    severity: str
+    similarity: float
+    created_at: str
+    resolution: str = ""   # content of RESOLVED_BY memory if one exists
+
+
 class IncidentWebhookResponse(BaseModel):
     memory_id: str
     namespace: str
     severity: str
-    similar_incidents: list[str]  # memory IDs of similar past incidents linked via SIMILAR_TO
+    similar_incidents: list[str]          # backward-compat IDs
+    past_incidents: list[PastIncidentSummary] = []   # enriched with full content
 
 
 class ResolveRequest(BaseModel):
@@ -197,6 +207,7 @@ async def receive_incident(
 
     # Link to similar past incidents via SIMILAR_TO edges (best-effort)
     similar_ids: list[str] = []
+    past_incidents: list[PastIncidentSummary] = []
     try:
         embedding = await client._embedder.embed(content)
         pairs = await client._arcadedb.find_similar_incidents(
@@ -209,6 +220,17 @@ async def receive_incident(
             )
             similar_ids.append(sim_id)
             logger.debug("SIMILAR_TO edge: %s → %s (%.2f)", memory.id, sim_id, sim_score)
+
+            # Fetch full content for the enriched response
+            past_mem = await client._arcadedb.get_memory(sim_id, namespace)
+            if past_mem is not None:
+                past_incidents.append(PastIncidentSummary(
+                    memory_id=sim_id,
+                    content=past_mem.content,
+                    severity=past_mem.metadata.get("severity", "UNKNOWN") if past_mem.metadata else "UNKNOWN",
+                    similarity=round(sim_score, 3),
+                    created_at=past_mem.created_at.isoformat() if past_mem.created_at else "",
+                ))
     except Exception as exc:
         logger.warning("SIMILAR_TO edge creation failed (non-fatal): %s", exc)
 
@@ -217,6 +239,7 @@ async def receive_incident(
         namespace=namespace,
         severity=severity,
         similar_incidents=similar_ids,
+        past_incidents=past_incidents,
     )
 
 

@@ -481,6 +481,34 @@ class EngramClient:
             expires_at=expires_at,
         )
 
+    async def get_past_incidents(
+        self,
+        content: str,
+        namespace: str,
+        top_k: int = 5,
+        threshold: float = 0.75,
+    ) -> list[tuple["MemoryEntry", float]]:
+        """Return past incidents similar to *content*, sorted by similarity descending.
+
+        Each element is (incident_memory, similarity_score). Useful for oncall triage —
+        call this when a new alert fires to surface "have we seen this before?".
+        """
+        self._assert_started()
+        embedding = await self._embedder.embed(content)
+        pairs = await self._arcadedb.find_similar_incidents(
+            namespace=namespace,
+            embedding=embedding,
+            exclude_id="",
+            top_k=top_k,
+            threshold=threshold,
+        )
+        results: list[tuple[MemoryEntry, float]] = []
+        for mem_id, score in pairs:
+            mem = await self._arcadedb.get_memory(mem_id, namespace)
+            if mem is not None:
+                results.append((mem, score))
+        return results
+
     async def write_incident(
         self,
         content: str,

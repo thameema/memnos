@@ -558,6 +558,33 @@ TOOLS: list[Tool] = [
             "required": ["namespace", "subscriber_id"],
         },
     ),
+    # ---- Feature: automatic past-incident retrieval ----
+    Tool(
+        name="incident_context",
+        description=(
+            "Retrieve past incidents similar to a given alert description. "
+            "Use this when a new alert fires to answer 'have we seen this before?' — "
+            "returns the most similar past incidents with content and metadata, "
+            "ranked by semantic similarity. Ideal for oncall triage context injection."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "Alert description or symptom text to match against past incidents",
+                },
+                "namespace": {"type": "string", "description": "Namespace to search"},
+                "top_k": {"type": "integer", "default": 5, "description": "Max incidents to return"},
+                "threshold": {
+                    "type": "number",
+                    "default": 0.75,
+                    "description": "Minimum similarity score (0.0–1.0)",
+                },
+            },
+            "required": ["content", "namespace"],
+        },
+    ),
 ]
 
 
@@ -871,6 +898,26 @@ async def _dispatch(
             "cursor": cursor,
             "count": len(items),
         }, indent=2))]
+
+    # ---- past-incident retrieval ----
+    if name == "incident_context":
+        import json as _json
+        pairs = await client.get_past_incidents(
+            content=args["content"],
+            namespace=args["namespace"],
+            top_k=int(args.get("top_k", 5)),
+            threshold=float(args.get("threshold", 0.75)),
+        )
+        if not pairs:
+            return [TextContent(type="text", text="No similar past incidents found.")]
+        lines = [f"Found {len(pairs)} similar past incident(s):\n"]
+        for i, (mem, score) in enumerate(pairs, 1):
+            created = mem.created_at.isoformat() if hasattr(mem.created_at, "isoformat") else str(mem.created_at)
+            severity = (mem.metadata or {}).get("severity", "UNKNOWN")
+            lines.append(f"--- {i}. Similarity: {score:.2f}  Severity: {severity}  Created: {created} ---")
+            lines.append(mem.content)
+            lines.append("")
+        return [TextContent(type="text", text="\n".join(lines))]
 
     # ---- external skill pack tools ----
     if name in _SKILL_PACK_HANDLERS:

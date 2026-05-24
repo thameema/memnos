@@ -144,7 +144,7 @@ async def create_namespace(
 # Namespace deletion  [admin only — requires wildcard ("*") key]
 # ---------------------------------------------------------------------------
 
-@router.delete("/namespaces/{ns}", status_code=204)
+@router.delete("/namespaces/{ns}", status_code=204, response_model=None)
 async def delete_namespace(
     ns: str,
     key_entry=Depends(require_admin_access),
@@ -237,7 +237,7 @@ async def create_key(
     return KeyResponse(**result)
 
 
-@router.delete("/keys/{key_id}", status_code=204)
+@router.delete("/keys/{key_id}", status_code=204, response_model=None)
 async def revoke_key(
     key_id: str,
     request: Request,

@@ -199,7 +199,7 @@ async def get_memory(
 # Delete
 # ---------------------------------------------------------------------------
 
-@router.delete("/{memory_id}", status_code=204)
+@router.delete("/{memory_id}", status_code=204, response_model=None)
 async def delete_memory(
     memory_id: str,
     ns: str = Query(..., description="Namespace the memory belongs to"),
