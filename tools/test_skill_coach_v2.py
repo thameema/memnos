@@ -137,7 +137,7 @@ class TestToolCapabilityCatalogs:
 
 class TestSeedToolCapabilities:
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def test_seeds_known_tool(self):
         from engram.skill_coach.seeder import seed_tool_capabilities
@@ -245,7 +245,7 @@ class TestSeedToolCapabilities:
     def test_seed_claude_code_delegates(self):
         from engram.skill_coach.seeder import seed_claude_code_capabilities
         client = make_client()
-        result = asyncio.get_event_loop().run_until_complete(seed_claude_code_capabilities(client))
+        result = asyncio.run(seed_claude_code_capabilities(client))
         assert "added" in result
 
 
@@ -255,7 +255,7 @@ class TestSeedToolCapabilities:
 
 class TestSuggestSkillsV2:
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def _make_result(self, skill_id, title, tool="claude-code", score=0.8):
         mem = FakeMemory(
@@ -451,7 +451,7 @@ class TestMCPSkillToolDefinitions:
 
 class TestMCPSkillHandlers:
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def test_skill_suggest_with_tool_filter(self):
         from engram_mcp.server import _dispatch

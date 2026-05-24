@@ -160,7 +160,9 @@ e2e: e2e-up e2e-run e2e-down ## Full E2E cycle: start stack → run tests → st
 test: ## Run all unit/mock tests (no Docker required)
 	$(call section,Running unit tests)
 	PYTHONPATH=packages/core:packages/mcp-server:packages/api:packages/orchestrator:packages/learning \
-	  $(PYTHON) -m pytest tools/ --ignore=tools/e2e -v --tb=short -p no:flask -q
+	  $(PYTHON) -m pytest tools/ --ignore=tools/e2e \
+	    --ignore=tools/smoke_test.py --ignore=tools/test_arcadedb.py \
+	    -v --tb=short -p no:flask -q
 
 .PHONY: test-packages
 test-packages: ## Run tests inside package test/ directories
