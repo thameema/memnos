@@ -228,6 +228,7 @@ async def handle_memory_write(
                     "existing_content": w.existing_content[:200],
                     "similarity": round(w.similarity, 3),
                     "reason": w.reason,
+                    "direction": getattr(w, "direction", ""),
                 }
                 for w in warnings
             ]
