@@ -1,0 +1,76 @@
+# docker-compose.e2e.yml — Standalone E2E test stack
+#
+# Self-contained: does NOT inherit from docker-compose.yml.
+# Uses separate ports and container names so it never conflicts
+# with a running production stack.
+#
+# Ports:
+#   ArcadeDB HTTP:  12480  (prod uses 2480)
+#   engram MCP:     18765  (prod uses 8765)
+#   engram REST:    18766  (prod uses 8766)
+#
+# Data:
+#   ENGRAM_DATA_DIR must be an absolute path — set by Makefile as $(HOME)/.engram-test
+#
+# Usage (via Makefile):
+#   make e2e-up    →  ENGRAM_DATA_DIR=~/.engram-test docker compose -f docker-compose.e2e.yml ...
+#   make e2e       →  full cycle: up → test → down
+
+services:
+
+  arcadedb:
+    image: arcadedata/arcadedb:26.5.1
+    container_name: engram-test-arcadedb
+    ports:
+      - "12480:2480"
+    environment:
+      JAVA_OPTS: "-Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:-engram-test}"
+    volumes:
+      - ${ENGRAM_DATA_DIR}/arcadedb:/home/arcadedb/databases
+      - ${ENGRAM_DATA_DIR}/arcadedb-logs:/home/arcadedb/log
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:2480/api/v1/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  engram:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        EMBED_MODE: ${ENGRAM_EMBED_MODE:-auto}
+    image: engram-test-image
+    container_name: engram-test
+    ports:
+      - "18765:8765"
+      - "18766:8766"
+    environment:
+      ARCADEDB_HOST: arcadedb
+      ARCADEDB_PORT: 2480
+      ARCADEDB_PASSWORD: ${ARCADEDB_PASSWORD:-engram-test}
+      ENGRAM_EMBED_MODE: ${ENGRAM_EMBED_MODE:-auto}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ENGRAM_API_KEY: ${ENGRAM_API_KEY:-test-api-key-e2e}
+      ENGRAM_VAULT_KEY: ${ENGRAM_VAULT_KEY:-}
+      TELEGRAM_ENABLED: "false"
+      ENGRAM_CONFIG: /app/engram.yaml
+    volumes:
+      - ./engram.yaml:/app/engram.yaml:ro
+      - ./agents:/app/agents:ro
+      - ./skills:/app/skills:ro
+      - ${ENGRAM_DATA_DIR}:/root/.engram
+    depends_on:
+      arcadedb:
+        condition: service_healthy
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8766/api/v1/admin/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s

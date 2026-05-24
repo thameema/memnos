@@ -87,14 +87,11 @@ def ns(e2e_client):
 
 @pytest.fixture(scope="session", autouse=True)
 def _cleanup_namespaces(e2e_client):
-    """Delete all test memories after the full session."""
+    """Delete all test namespaces after the full session."""
     yield
     for test_ns in _created_namespaces:
         try:
-            e2e_client.delete(
-                "/api/v1/memories/namespace",
-                params={"namespace": test_ns},
-            )
+            e2e_client.delete(f"/api/v1/admin/namespaces/{test_ns}")
         except Exception:
             pass  # best-effort cleanup
 
@@ -102,16 +99,16 @@ def _cleanup_namespaces(e2e_client):
 # ── Convenience helpers ───────────────────────────────────────────────────────
 
 def write_memory(client: httpx.Client, content: str, namespace: str, **kwargs) -> dict:
-    """POST /api/v1/memories and return the created memory dict."""
+    """POST /api/v1/memory/ and return the created memory dict."""
     payload = {"content": content, "namespace": namespace, **kwargs}
-    r = client.post("/api/v1/memories", json=payload)
+    r = client.post("/api/v1/memory/", json=payload)
     assert r.status_code in (200, 201), f"write_memory failed: {r.status_code} {r.text}"
     return r.json()
 
 
 def search_memories(client: httpx.Client, query: str, namespace: str, top_k: int = 5) -> list[dict]:
-    """POST /api/v1/search and return results list."""
-    r = client.post("/api/v1/search", json={"query": query, "namespace": namespace, "top_k": top_k})
+    """GET /api/v1/memory/search and return results list."""
+    r = client.get("/api/v1/memory/search", params={"q": query, "ns": namespace, "top_k": top_k})
     assert r.status_code == 200, f"search failed: {r.status_code} {r.text}"
     data = r.json()
     return data if isinstance(data, list) else data.get("results", [])

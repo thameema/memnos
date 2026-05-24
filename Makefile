@@ -5,7 +5,7 @@ SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-PYTHON        ?= python3
+PYTHON        ?= python3.10
 PIP           ?= $(PYTHON) -m pip
 UV            := $(shell command -v uv 2>/dev/null)
 DOCKER_COMPOSE := $(shell docker compose version &>/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
@@ -97,8 +97,12 @@ dev-reset: ## Stop dev stack and wipe all volumes (CAUTION: deletes data)
 
 # ── E2E test stack config ──────────────────────────────────────────────────
 E2E_PROJECT     := engram-test
-E2E_COMPOSE     := $(DOCKER_COMPOSE) -f docker-compose.yml -f docker-compose.test.yml \
-                   --env-file .env.test -p $(E2E_PROJECT)
+E2E_DATA_DIR    := $(HOME)/.engram-test
+# Standalone compose file — does NOT inherit from docker-compose.yml, avoids port merging
+# Load .env first (API keys), then .env.test (test overrides). ENGRAM_DATA_DIR via shell env.
+E2E_COMPOSE     := ENGRAM_DATA_DIR=$(E2E_DATA_DIR) \
+                   $(DOCKER_COMPOSE) -f docker-compose.e2e.yml \
+                   --env-file .env --env-file .env.test -p $(E2E_PROJECT)
 E2E_API_URL     := http://localhost:18766
 E2E_PYTHONPATH  := packages/core:packages/mcp-server:packages/api:packages/orchestrator:packages/learning
 
