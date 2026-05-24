@@ -6,7 +6,7 @@ engram gives Claude Code a long-term memory that persists across sessions and th
 
 ```
 Claude Code  ──── MCP stdio or SSE ────►  engram server
-                                            ├── Knowledge graph  (ArcadeDB — graph + HNSW vector)
+                                            ├── Knowledge graph  (ArcadeDB — graph + vector search)
                                             ├── Encrypted vault  (AES-256-GCM envelope encryption)
                                             ├── Multi-agent orchestrator
                                             ├── Self-learning    (reflection + heuristics)
@@ -236,7 +236,7 @@ See the complete guide in [docs/claude-code-setup.md](docs/claude-code-setup.md)
 
 | Component | Purpose | Technology |
 |-----------|---------|------------|
-| `packages/core` | Memory client — graph + HNSW vector | ArcadeDB, sentence-transformers |
+| `packages/core` | Memory client — graph + vector search | ArcadeDB, numpy, sentence-transformers |
 | `packages/mcp-server` | MCP tools for Claude Code | MCP Python SDK, FastAPI (SSE + stdio) |
 | `packages/orchestrator` | Multi-agent task forking | asyncio, Anthropic SDK |
 | `packages/api` | REST API and dashboard | FastAPI |
@@ -245,7 +245,7 @@ See the complete guide in [docs/claude-code-setup.md](docs/claude-code-setup.md)
 
 **Infrastructure:** one Docker container (ArcadeDB) — no Neo4j, no Qdrant, no Graphiti.
 
-ArcadeDB provides the full graph + vector stack: native graph traversal (entities, facts, edges), HNSW vector index for semantic search, and transactional storage — all in a single JVM process.
+ArcadeDB provides the graph + document stack: native graph traversal (entities, facts, edges), transactional storage — all in a single JVM process. Vector search uses numpy-accelerated cosine similarity in the Python layer, with a 5-minute TTL cache for fast repeated queries.
 
 ---
 
@@ -330,7 +330,7 @@ A key with `read_only: true` will receive HTTP 403 on any `memory_write`, `memor
 
 When you write a memory, engram automatically:
 1. Embeds the content with `all-MiniLM-L6-v2` (or OpenAI if configured)
-2. Stores the vector in ArcadeDB's HNSW index
+2. Stores the vector in ArcadeDB alongside the memory record
 3. Extracts named entities with spaCy (no LLM needed)
 4. Creates Entity vertices and MENTIONS edges in the graph
 5. Returns the memory ID
@@ -382,6 +382,56 @@ Your phone ──► engram server ──► LLM (Anthropic API)
 The gateway shares the same namespaces as your Claude Code sessions. Memories written from Claude Code are searchable from your phone and vice versa.
 
 See [docs/gateway.md](docs/gateway.md) for full setup and troubleshooting.
+
+---
+
+## Backup & Restore
+
+### Run a backup
+
+```bash
+bash tools/backup.sh
+```
+
+Stops both containers for ~15 seconds, rsyncs `~/.engram/arcadedb/` plus the SQLite sidecars to a timestamped directory, then restarts everything. Keeps the last 7 backups automatically.
+
+```bash
+# Backup with record-count verification
+bash tools/backup.sh --verify
+
+# Backup to a custom location (e.g. external drive)
+bash tools/backup.sh /Volumes/External/engram-backups
+```
+
+### Schedule daily backups
+
+Add to your crontab (`crontab -e`):
+
+```
+0 2 * * * cd ~/git/engram && bash tools/backup.sh >> ~/.engram/backup.log 2>&1
+```
+
+### Restore from a backup
+
+```bash
+# 1. Stop containers
+docker compose stop engram arcadedb
+
+# 2. Replace data directory with the backup
+rsync -a --delete \
+  ~/.engram/backups/20260523_203208/arcadedb/ \
+  ~/.engram/arcadedb/
+
+# 3. Optionally restore SQLite sidecars
+cp ~/.engram/backups/20260523_203208/keys.db ~/.engram/
+cp ~/.engram/backups/20260523_203208/learning.db ~/.engram/
+cp ~/.engram/backups/20260523_203208/tasks.db ~/.engram/
+
+# 4. Restart
+docker compose start arcadedb engram
+```
+
+Backups are stored at `~/.engram/backups/<timestamp>/` and include the full ArcadeDB database plus the encrypted vault key store, learning database, and task database.
 
 ---
 
