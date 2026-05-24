@@ -63,6 +63,14 @@ from engram_mcp.tools.vault import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Skill pack registry (populated by create_mcp_server at startup)
+# ---------------------------------------------------------------------------
+
+_SKILL_PACK_HANDLERS: dict[str, Any] = {}  # tool name → WebhookHandler
+_EXTERNAL_TOOLS: list[Tool] = []           # Tool objects from loaded packs
+
+
+# ---------------------------------------------------------------------------
 # Tool catalogue
 # ---------------------------------------------------------------------------
 
@@ -565,6 +573,21 @@ def create_mcp_server(client, orchestrator, config) -> Server:
     orchestrator : Orchestrator (already started)
     config       : EngramConfig (for metadata / future auth)
     """
+    global _EXTERNAL_TOOLS
+
+    # Load external skill packs (non-fatal; bad packs are logged and skipped)
+    try:
+        from engram_mcp.skill_packs import load_skill_packs  # noqa: PLC0415
+
+        known = {t.name for t in TOOLS}
+        entries = load_skill_packs(known_names=known)
+        _EXTERNAL_TOOLS = []
+        for entry in entries:
+            _SKILL_PACK_HANDLERS[entry.tool.name] = entry.handler
+            _EXTERNAL_TOOLS.append(entry.tool)
+    except Exception as exc:
+        logger.warning("Skill pack loading failed (non-fatal): %s", exc)
+
     server = Server("engram")
 
     # ------------------------------------------------------------------ #
@@ -572,7 +595,7 @@ def create_mcp_server(client, orchestrator, config) -> Server:
     # ------------------------------------------------------------------ #
     @server.list_tools()
     async def list_tools() -> list[Tool]:
-        return TOOLS
+        return TOOLS + _EXTERNAL_TOOLS
 
     # ------------------------------------------------------------------ #
     # call_tool                                                            #
@@ -839,6 +862,13 @@ async def _dispatch(
             "cursor": cursor,
             "count": len(items),
         }, indent=2))]
+
+    # ---- external skill pack tools ----
+    if name in _SKILL_PACK_HANDLERS:
+        from engram_mcp.skill_packs import call_webhook_handler  # noqa: PLC0415
+
+        result_text = await call_webhook_handler(_SKILL_PACK_HANDLERS[name], name, args)
+        return [TextContent(type="text", text=result_text)]
 
     raise ValueError(f"Unknown tool: {name!r}")
 
