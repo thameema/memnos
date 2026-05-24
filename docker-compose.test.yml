@@ -1,0 +1,44 @@
+# docker-compose.test.yml — E2E test stack override
+#
+# Run alongside the base compose file:
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml \
+#     --env-file .env.test -p engram-test up -d
+#
+# Differences from prod:
+#   - Isolated data dir: ~/.engram-test  (set via ENGRAM_DATA_DIR in .env.test)
+#   - Different host ports:  ArcadeDB 12480/12424, MCP 18765, API 18766
+#   - Different container names: engram-test-arcadedb, engram-test
+#   - open_mode: true (no auth needed for tests)
+#
+# These ports never conflict with the production stack (2480/2424/8765/8766).
+
+services:
+  arcadedb:
+    container_name: engram-test-arcadedb
+    ports:
+      - "12480:2480"
+      - "12424:2424"
+    volumes:
+      - ${ENGRAM_DATA_DIR:-~/.engram-test}/arcadedb:/home/arcadedb/databases
+      - ${ENGRAM_DATA_DIR:-~/.engram-test}/arcadedb-logs:/home/arcadedb/log
+      - ${ENGRAM_DATA_DIR:-~/.engram-test}/arcadedb-backups:/home/arcadedb/backups
+
+  engram:
+    container_name: engram-test
+    ports:
+      - "18765:8765"
+      - "18766:8766"
+    environment:
+      ARCADEDB_HOST: arcadedb
+      ARCADEDB_PORT: 2480
+    volumes:
+      - ./engram.yaml:/app/engram.yaml:ro
+      - ./agents:/app/agents:ro
+      - ./skills:/app/skills:ro
+      - ${ENGRAM_DATA_DIR:-~/.engram-test}:/root/.engram
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8766/api/v1/admin/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s

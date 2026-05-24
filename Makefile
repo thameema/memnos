@@ -40,7 +40,7 @@ help:  ## Show this help message
 	@echo -e "  $(BOLD)engram developer commands$(NC)"
 	@echo ""
 	@awk 'BEGIN {FS = ":.*##"; printf ""} \
-	  /^[a-zA-Z_-]+:.*?##/ { printf "  $(CYAN)%-20s$(NC) %s\n", $$1, $$2 } \
+	  /^[a-zA-Z0-9_-]+:.*##/ { printf "  $(CYAN)%-20s$(NC) %s\n", $$1, $$2 } \
 	  /^##@/ { printf "\n  $(BOLD)%s$(NC)\n", substr($$0, 5) }' $(MAKEFILE_LIST)
 	@echo ""
 
@@ -93,11 +93,74 @@ dev-reset: ## Stop dev stack and wipe all volumes (CAUTION: deletes data)
 	@echo -e "  $(GREEN)[ok]$(NC) Volumes removed."
 
 # ─── Testing ──────────────────────────────────────────────────────────────────
+##@ E2E Testing
+
+# ── E2E test stack config ──────────────────────────────────────────────────
+E2E_PROJECT     := engram-test
+E2E_COMPOSE     := $(DOCKER_COMPOSE) -f docker-compose.yml -f docker-compose.test.yml \
+                   --env-file .env.test -p $(E2E_PROJECT)
+E2E_API_URL     := http://localhost:18766
+E2E_PYTHONPATH  := packages/core:packages/mcp-server:packages/api:packages/orchestrator:packages/learning
+
+.PHONY: e2e-up
+e2e-up: ## Start E2E stack (data ~/.engram-test, ports 12480/18766) — never touches ~/.engram
+	$(call section,Starting E2E test stack)
+	$(E2E_COMPOSE) up -d --build
+	@echo ""
+	@echo -e "  $(GREEN)[ok]$(NC) E2E stack starting..."
+	@echo "  ArcadeDB:  http://localhost:12480  (Studio UI)"
+	@echo "  REST API:  http://localhost:18766"
+	@echo "  MCP:       http://localhost:18765/sse"
+	@echo "  Data dir:  ~/.engram-test"
+	@echo ""
+	@echo "  Waiting for health..."
+	@for i in $$(seq 1 30); do \
+	  if curl -sf $(E2E_API_URL)/api/v1/admin/health > /dev/null 2>&1; then \
+	    echo -e "  $(GREEN)[ok]$(NC) Stack is healthy."; exit 0; \
+	  fi; \
+	  sleep 2; \
+	done; \
+	echo "  Stack did not become healthy in 60s — check logs: make e2e-logs"; exit 1
+
+.PHONY: e2e-down
+e2e-down: ## Stop and remove the E2E test stack (data in ~/.engram-test is preserved)
+	$(call section,Stopping E2E test stack)
+	$(E2E_COMPOSE) down
+	@echo -e "  $(GREEN)[ok]$(NC) E2E stack stopped. Data preserved in ~/.engram-test."
+
+.PHONY: e2e-clean
+e2e-clean: ## Stop E2E stack and wipe ~/.engram-test data (full reset)
+	$(call section,Wiping E2E test data)
+	$(E2E_COMPOSE) down -v
+	rm -rf $(HOME)/.engram-test
+	@echo -e "  $(GREEN)[ok]$(NC) E2E stack stopped and ~/.engram-test wiped."
+
+.PHONY: e2e-logs
+e2e-logs: ## Tail E2E test stack logs
+	$(E2E_COMPOSE) logs -f
+
+.PHONY: e2e-run
+e2e-run: ## Run E2E tests against an already-running test stack
+	$(call section,Running E2E tests)
+	PYTHONPATH=$(E2E_PYTHONPATH) ENGRAM_E2E_URL=$(E2E_API_URL) \
+	  $(PYTHON) -m pytest tools/e2e/ -v --tb=short -p no:flask 2>&1
+
+.PHONY: e2e
+e2e: e2e-up e2e-run e2e-down ## Full E2E cycle: start stack → run tests → stop stack
+	@echo ""
+	@echo -e "  $(GREEN)[ok]$(NC) E2E complete."
+
 ##@ Testing
 
 .PHONY: test
-test: ## Run all tests across all packages
-	$(call section,Running tests)
+test: ## Run all unit/mock tests (no Docker required)
+	$(call section,Running unit tests)
+	PYTHONPATH=packages/core:packages/mcp-server:packages/api:packages/orchestrator:packages/learning \
+	  $(PYTHON) -m pytest tools/ --ignore=tools/e2e -v --tb=short -p no:flask -q
+
+.PHONY: test-packages
+test-packages: ## Run tests inside package test/ directories
+	$(call section,Running package tests)
 	@for pkg in $(PACKAGES); do \
 	  if [ -d "$$pkg/tests" ]; then \
 	    echo -e "  $(CYAN)--$(NC) Testing $$pkg..."; \
