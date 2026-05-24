@@ -23,8 +23,11 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+import asyncio
+
 from engram.config import EngramConfig
 from engram.extraction.spacy_extractor import get_extractor
+from engram.extraction.llm_extractor import get_llm_extractor, LLMExtractor
 from engram.models import (
     AssetReference, DecayPolicy, Entity, Fact, Graph, MemoryEntry, MemoryStatus, MemoryType,
     Provenance, SearchResult, Secret, VaultAuditLog,
@@ -111,6 +114,11 @@ class EngramClient:
             vector_dim=self._embedder.vector_size,
         )
         self._extractor = get_extractor()
+        self._llm_extractor: LLMExtractor | None = (
+            get_llm_extractor(config.llm_extraction)
+            if config.llm_extraction.enabled
+            else None
+        )
         self._vault = get_vault_client(config.vault) if config.vault.enabled else None
         self._vector_backend: VectorBackend | None = None
         self._started = False
@@ -286,6 +294,12 @@ class EngramClient:
         except Exception as exc:
             logger.debug("immediate dispatch skipped (non-fatal): %s", exc)
 
+        # LLM-enriched relationship extraction (fire-and-forget, opt-in)
+        if self._llm_extractor is not None:
+            asyncio.ensure_future(
+                self._dispatch_llm_extraction(memory, namespace)
+            )
+
         return memory
 
     async def _vector_search(
@@ -324,6 +338,33 @@ class EngramClient:
             include_superseded=include_historical,
             query=query,
         )
+
+    async def _dispatch_llm_extraction(self, memory: MemoryEntry, namespace: str) -> None:
+        """Run LLM relationship extraction and write typed edges (background, non-fatal)."""
+        if self._llm_extractor is None:
+            return
+        try:
+            relationships = await self._llm_extractor.extract(memory.content)
+            for rel in relationships:
+                from engram.models import Entity
+                for name in (rel.source, rel.target):
+                    await self._arcadedb.upsert_entity(
+                        Entity(name=name, entity_type="CONCEPT", namespace=namespace)
+                    )
+                await self._arcadedb.create_entity_edge(
+                    from_entity=rel.source,
+                    to_entity=rel.target,
+                    edge_type=rel.edge_type,
+                    namespace=namespace,
+                    confidence=rel.confidence,
+                )
+            if relationships:
+                logger.debug(
+                    "llm-extraction: %d typed edges written for memory %s",
+                    len(relationships), memory.id,
+                )
+        except Exception as exc:
+            logger.debug("llm-extraction failed (non-fatal): %s", exc)
 
     async def _dispatch_immediate(self, memory: MemoryEntry, namespace: str) -> None:
         """Push memory to in-process immediate subscribers (SSE push, fire-and-forget)."""

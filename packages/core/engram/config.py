@@ -164,6 +164,17 @@ class VaultConfig(BaseModel):
     detect_in_memory: bool = True
 
 
+class LLMExtractionConfig(BaseModel):
+    """Config for the async LLM-enriched relationship extraction job (3.3)."""
+    enabled: bool = False              # opt-in — each write triggers one LLM call
+    provider: str = "anthropic"        # "anthropic" | "openai"
+    model: str = ""                    # "" = auto (haiku for anthropic, gpt-4o-mini for openai)
+    api_key: str = ""                  # overrides env var when set
+    base_url: str = ""                 # OpenAI-compatible endpoint override
+    max_tokens: int = 512
+    confidence_threshold: float = 0.6  # discard edges below this score
+
+
 class EpisodicConfig(BaseModel):
     enabled: bool = True
     retention_days: int = 365
@@ -244,6 +255,7 @@ class EngramConfig(BaseModel):
     learning: LearningConfig = Field(default_factory=LearningConfig)
     vault: VaultConfig = Field(default_factory=VaultConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    llm_extraction: LLMExtractionConfig = Field(default_factory=LLMExtractionConfig)
 
     # ---------------------------------------------------------------------------
     # Factory
@@ -357,6 +369,9 @@ class EngramConfig(BaseModel):
                 telegram=TelegramConfig(**tg_raw) if tg_raw else TelegramConfig(),
                 whatsapp=WhatsAppConfig(**wa_raw) if wa_raw else WhatsAppConfig(),
             )
+
+        if "llm_extraction" in raw:
+            kwargs["llm_extraction"] = LLMExtractionConfig(**raw["llm_extraction"])
 
         logger.debug("Loaded engram config from %s", config_path)
         return cls(**kwargs)

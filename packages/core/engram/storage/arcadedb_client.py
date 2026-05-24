@@ -308,6 +308,17 @@ class ArcadeDBClient:
             "CREATE EDGE TYPE AFFECTS IF NOT EXISTS",
             "CREATE EDGE TYPE SIMILAR_TO IF NOT EXISTS",
             "CREATE EDGE TYPE RESOLVED_BY IF NOT EXISTS",
+            # LLM-enriched typed edges (Feature 3.3)
+            "CREATE EDGE TYPE CHOSE IF NOT EXISTS",
+            "CREATE EDGE TYPE PROHIBITS IF NOT EXISTS",
+            "CREATE EDGE TYPE WANTS IF NOT EXISTS",
+            "CREATE EDGE TYPE DEADLINE IF NOT EXISTS",
+            "CREATE EDGE TYPE CAUSES IF NOT EXISTS",
+            "CREATE EDGE TYPE DEPENDS_ON IF NOT EXISTS",
+            "CREATE EDGE TYPE REPLACES IF NOT EXISTS",
+            "CREATE EDGE TYPE GOVERNS IF NOT EXISTS",
+            "CREATE EDGE TYPE RATIONALE_FOR IF NOT EXISTS",
+            "CREATE EDGE TYPE RELATES_TO IF NOT EXISTS",
             # Properties — Memory
             "CREATE PROPERTY Memory.id IF NOT EXISTS STRING",
             "CREATE PROPERTY Memory.content IF NOT EXISTS STRING",
@@ -554,6 +565,60 @@ class ArcadeDBClient:
             )
         except Exception as exc:
             logger.debug("AFFECTS edge skipped: %s", exc)
+
+    async def create_entity_edge(
+        self,
+        from_entity: str,
+        to_entity: str,
+        edge_type: str,
+        namespace: str,
+        confidence: float = 1.0,
+    ) -> None:
+        """Create a typed edge between two Entity vertices (LLM extraction).
+
+        Both entities are upserted before edge creation so callers need not
+        pre-create them.  ``edge_type`` must be one of the LLM edge vocabulary
+        types registered in _init_schema.
+        """
+        from engram.extraction.llm_extractor import EDGE_VOCABULARY
+        if edge_type not in EDGE_VOCABULARY:
+            logger.debug("create_entity_edge: unknown edge type %r — skipping", edge_type)
+            return
+        try:
+            await self._command(
+                f"CREATE EDGE {edge_type} "
+                "FROM (SELECT FROM Entity WHERE name = :from_e AND namespace = :ns) "
+                "TO (SELECT FROM Entity WHERE name = :to_e AND namespace = :ns) "
+                "SET confidence = :conf "
+                "IF NOT EXISTS",
+                {"from_e": from_entity, "to_e": to_entity, "ns": namespace, "conf": confidence},
+            )
+        except Exception as exc:
+            logger.debug("create_entity_edge %s skipped: %s", edge_type, exc)
+
+    async def create_memory_typed_edge(
+        self,
+        memory_id: str,
+        entity_name: str,
+        edge_type: str,
+        namespace: str,
+        confidence: float = 1.0,
+    ) -> None:
+        """Create a typed edge from a Memory vertex to an Entity vertex."""
+        from engram.extraction.llm_extractor import EDGE_VOCABULARY
+        if edge_type not in EDGE_VOCABULARY:
+            logger.debug("create_memory_typed_edge: unknown edge type %r — skipping", edge_type)
+            return
+        try:
+            await self._command(
+                f"CREATE EDGE {edge_type} "
+                "FROM (SELECT FROM Memory WHERE id = :mid AND namespace = :ns) "
+                "TO (SELECT FROM Entity WHERE name = :ename AND namespace = :ns) "
+                "SET confidence = :conf",
+                {"mid": memory_id, "ename": entity_name, "ns": namespace, "conf": confidence},
+            )
+        except Exception as exc:
+            logger.debug("create_memory_typed_edge %s skipped: %s", edge_type, exc)
 
     async def get_constraints(self, namespace: str) -> list["MemoryEntry"]:
         """Return all active CONSTRAINT memories for *namespace* and its parents.
