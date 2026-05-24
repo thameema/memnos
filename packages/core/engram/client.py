@@ -30,6 +30,7 @@ from engram.models import (
     Provenance, SearchResult, Secret, VaultAuditLog,
 )
 from engram.storage.arcadedb_client import ArcadeDBClient
+from engram.storage.vector_backend import VectorBackend, create_vector_backend
 from engram.vault.secret_detector import detect as _detect_secrets, redact as _redact_secrets
 from engram.vault.vault_client import get_vault_client
 from engram.vector.embedder import get_embedder
@@ -111,6 +112,7 @@ class EngramClient:
         )
         self._extractor = get_extractor()
         self._vault = get_vault_client(config.vault) if config.vault.enabled else None
+        self._vector_backend: VectorBackend | None = None
         self._started = False
 
     # ------------------------------------------------------------------
@@ -124,12 +126,19 @@ class EngramClient:
             return
         logger.info("Starting EngramClient")
         await self._arcadedb.init()
+        self._vector_backend = create_vector_backend(self._embedder.vector_size)
         self._started = True
         logger.info("EngramClient ready")
 
     async def stop(self) -> None:
         """Close all backend connections."""
         logger.info("Stopping EngramClient")
+        if self._vector_backend is not None:
+            try:
+                await self._vector_backend.close()
+            except Exception as exc:
+                logger.debug("Vector backend close error (ignored): %s", exc)
+            self._vector_backend = None
         await self._arcadedb.close()
         self._started = False
         logger.info("EngramClient stopped")
@@ -218,6 +227,16 @@ class EngramClient:
         embedding = await self._embedder.embed(content)
         await self._arcadedb.insert_memory(memory, embedding)
 
+        # Qdrant upsert (best-effort — failure never blocks write)
+        if self._vector_backend is not None:
+            try:
+                await self._vector_backend.upsert(
+                    str(memory.id), embedding, namespace,
+                    memory_type=memory_type.value if hasattr(memory_type, "value") else str(memory_type),
+                )
+            except Exception as exc:
+                logger.warning("Qdrant upsert failed (non-fatal): %s", exc)
+
         # Entity extraction + graph edges (best-effort, never blocks write)
         try:
             extracted = await self._extractor.extract(content)
@@ -256,6 +275,43 @@ class EngramClient:
             logger.debug("fan-out skipped (non-fatal): %s", exc)
 
         return memory
+
+    async def _vector_search(
+        self,
+        embedding: list[float],
+        namespace: str,
+        top_k: int,
+        include_historical: bool,
+        query: str,
+    ) -> "list[SearchResult]":
+        """Route vector search to Qdrant (if active) or ArcadeDB built-in."""
+        if self._vector_backend is not None:
+            id_score_pairs = await self._vector_backend.search(
+                embedding=embedding,
+                namespace=namespace,
+                top_k=top_k,
+                include_superseded=include_historical,
+            )
+            results: list[SearchResult] = []
+            for mem_id, score in id_score_pairs:
+                mem = await self._arcadedb.get_memory(mem_id, namespace)
+                if mem is not None:
+                    results.append(SearchResult(
+                        memory=mem,
+                        score=score,
+                        source="qdrant",
+                        is_current=mem.is_current,
+                        recency_score=1.0,
+                    ))
+            return results
+
+        return await self._arcadedb.vector_search(
+            embedding=embedding,
+            namespace=namespace,
+            top_k=top_k,
+            include_superseded=include_historical,
+            query=query,
+        )
 
     async def _fanout_memory(
         self, original: MemoryEntry, source_ns: str, embedding: list[float]
@@ -448,12 +504,9 @@ class EngramClient:
                 include_superseded=include_historical,
             )
         embedding = await self._embedder.embed(query)
-        results = await self._arcadedb.vector_search(
-            embedding=embedding,
-            namespace=namespace,
-            top_k=top_k,
-            include_superseded=include_historical,
-            query=query,
+        results = await self._vector_search(
+            embedding=embedding, namespace=namespace, top_k=top_k,
+            include_historical=include_historical, query=query,
         )
 
         # Namespace expansion: if specific namespace returned nothing, widen to parent.
@@ -464,12 +517,9 @@ class EngramClient:
                 parts = parts[:-1]
                 parent_ns = ":".join(parts)
                 logger.debug("search: no results in %r, expanding to %r", namespace, parent_ns)
-                results = await self._arcadedb.vector_search(
-                    embedding=embedding,
-                    namespace=parent_ns,
-                    top_k=top_k,
-                    include_superseded=include_historical,
-                    query=query,
+                results = await self._vector_search(
+                    embedding=embedding, namespace=parent_ns, top_k=top_k,
+                    include_historical=include_historical, query=query,
                 )
 
         # Decision pinning — find decision/constraint/ADR memories that explicitly
