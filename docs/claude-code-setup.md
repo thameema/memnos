@@ -161,6 +161,301 @@ The dashboard has two main tabs:
 
 ---
 
+## Zero-touch automation (optional but recommended)
+
+The MCP approach above requires Claude to actively call `memory_write`. If Claude skips it, forgets, or a session ends abruptly, memories are lost.
+
+**Zero-touch automation** wires engram directly into Claude Code's lifecycle via shell hooks, so memories are written and injected automatically — no agent action required.
+
+Three hooks work together:
+
+| Hook | When it fires | What it does |
+|------|--------------|--------------|
+| **UserPromptSubmit** | Every Claude Code prompt | Queries engram and injects relevant past context |
+| **Stop** | Every turn end | Writes a session-state memory (branch, recent commits, CWD) |
+| **git post-commit** | Every `git commit` | Writes the commit to engram (conventional prefix → memory type) |
+
+### Install the hooks
+
+**Step 1 — Create the hook scripts**
+
+```bash
+mkdir -p ~/.claude/hooks
+```
+
+Create `~/.claude/hooks/engram-inject.sh`:
+
+```bash
+#!/usr/bin/env bash
+# UserPromptSubmit hook — injects engram context on every Claude Code prompt
+
+set -euo pipefail
+
+ENGRAM_API="http://localhost:8766"    # or your remote server
+ENGRAM_KEY="your-engram-api-key"
+ENGRAM_NS="project:myproject"         # adjust to your namespace
+ENGRAM_TOP_K=5
+
+INPUT=$(cat)
+CWD=$(echo "$INPUT"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd',''))" 2>/dev/null || echo "")
+PROMPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('prompt',''))" 2>/dev/null || echo "")
+
+if ! curl -sf --max-time 2 "$ENGRAM_API/api/v1/admin/health" -o /dev/null 2>/dev/null; then
+  exit 0  # engram not running — fail silently
+fi
+
+QUERY=$(echo "$PROMPT" | head -c 200 | python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.stdin.read().strip()))" 2>/dev/null || echo "")
+[[ -z "$QUERY" ]] && exit 0
+
+RESPONSE=$(curl -sf --max-time 5 \
+  "$ENGRAM_API/api/v1/memory/search?q=$QUERY&ns=$ENGRAM_NS&top_k=$ENGRAM_TOP_K" \
+  -H "X-API-Key: $ENGRAM_KEY" 2>/dev/null || echo "[]")
+
+CONTEXT=$(echo "$RESPONSE" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+results = data if isinstance(data, list) else data.get('results', [])
+if not results:
+    sys.exit(0)
+lines = ['[engram: relevant past context]']
+for r in results:
+    mem = r.get('memory', r)
+    mtype = mem.get('memory_type', 'fact')
+    content = mem.get('content', '').strip()
+    score = r.get('score', '')
+    score_str = f'  (similarity: {score:.2f})' if isinstance(score, float) else ''
+    if content:
+        lines.append(f'[{mtype}]{score_str} {content[:280]}')
+if len(lines) <= 1:
+    sys.exit(0)
+print('\n'.join(lines))
+" 2>/dev/null || echo "")
+
+[[ -z "$CONTEXT" ]] && exit 0
+
+python3 -c "
+import json, sys
+print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': sys.argv[1]}}))
+" "$CONTEXT"
+```
+
+Create `~/.claude/hooks/engram-session-write.sh`:
+
+```bash
+#!/usr/bin/env bash
+# Stop hook — writes session state to engram after every Claude Code turn
+
+set -euo pipefail
+
+ENGRAM_API="http://localhost:8766"
+ENGRAM_KEY="your-engram-api-key"
+ENGRAM_NS="project:myproject"
+
+INPUT=$(cat)
+CWD=$(echo "$INPUT"        | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd',''))" 2>/dev/null || echo "")
+SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))" 2>/dev/null || echo "")
+
+[[ -z "$CWD" ]] && exit 0
+
+if ! curl -sf --max-time 2 "$ENGRAM_API/api/v1/admin/health" -o /dev/null 2>/dev/null; then
+  exit 0
+fi
+
+PROJECT=$(basename "$CWD")
+BRANCH="" RECENT_COMMITS="" UNCOMMITTED=0
+
+if git -C "$CWD" rev-parse --git-dir >/dev/null 2>&1; then
+  BRANCH=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  RECENT_COMMITS=$(git -C "$CWD" log --oneline -5 --no-decorate 2>/dev/null || echo "")
+  UNCOMMITTED=$(git -C "$CWD" status --short 2>/dev/null | wc -l | tr -d ' ')
+fi
+
+if [[ -n "$RECENT_COMMITS" ]]; then
+  CONTENT="session ended | project: $PROJECT | dir: $CWD${BRANCH:+ | branch: $BRANCH} | uncommitted: $UNCOMMITTED
+Recent commits:
+$RECENT_COMMITS"
+else
+  CONTENT="session ended | project: $PROJECT | dir: $CWD"
+fi
+
+PAYLOAD=$(python3 -c "
+import json, sys
+print(json.dumps({
+    'content': sys.argv[1], 'namespace': sys.argv[2], 'memory_type': 'fact',
+    'tags': ['session-log', 'auto', sys.argv[3]],
+    'metadata': {'session_id': sys.argv[4], 'project': sys.argv[3], 'source': 'claude-code-stop-hook'}
+}))
+" "$CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION_ID" 2>/dev/null)
+
+curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" \
+  -H "Content-Type: application/json" -H "X-API-Key: $ENGRAM_KEY" \
+  -d "$PAYLOAD" -o /dev/null 2>/dev/null || true
+
+exit 0
+```
+
+Make them executable:
+
+```bash
+chmod +x ~/.claude/hooks/engram-inject.sh
+chmod +x ~/.claude/hooks/engram-session-write.sh
+```
+
+**Step 2 — Register in `~/.claude/settings.json`**
+
+Add the `hooks` block (merge with any existing entries):
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/yourname/.claude/hooks/engram-inject.sh",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/yourname/.claude/hooks/engram-session-write.sh",
+            "timeout": 8,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+> Use **absolute paths** for `command`. Relative paths fail silently.  
+> `async: true` on the Stop hook means it runs after Claude responds — the user never waits for it.
+
+**Step 3 — Global git post-commit hook**
+
+This writes every commit in every repo to engram automatically.
+
+```bash
+mkdir -p ~/.git-hooks
+```
+
+Create `~/.git-hooks/post-commit`:
+
+```bash
+#!/usr/bin/env bash
+# Global post-commit — writes every git commit to engram
+# Memory type: feat/refactor → decision | fix → incident | others → fact
+
+set -euo pipefail
+
+ENGRAM_API="http://localhost:8766"
+ENGRAM_KEY="your-engram-api-key"
+ENGRAM_NS="project:myproject"
+
+if ! curl -sf --max-time 2 "$ENGRAM_API/api/v1/admin/health" -o /dev/null 2>/dev/null; then
+  exit 0
+fi
+
+REPO_NAME=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || echo "unknown")")
+COMMIT_HASH=$(git rev-parse --short HEAD)
+COMMIT_FULL=$(git rev-parse HEAD)
+COMMIT_MSG=$(git log -1 --pretty=%B | head -5)
+COMMIT_AUTHOR=$(git log -1 --pretty=%an)
+CHANGED_FILES=$(git diff-tree --no-commit-id -r --name-only HEAD | head -20 | tr '\n' ' ')
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+MEMORY_TYPE="fact"
+if echo "$COMMIT_MSG" | grep -qiE '^(feat|feature|refactor|arch):'; then
+  MEMORY_TYPE="decision"
+elif echo "$COMMIT_MSG" | grep -qiE '^(fix|hotfix|bug):'; then
+  MEMORY_TYPE="incident"
+fi
+
+CONTENT="[engram-commit] $COMMIT_MSG
+repo: $REPO_NAME | commit: $COMMIT_HASH | branch: $BRANCH | author: $COMMIT_AUTHOR
+files: $CHANGED_FILES"
+
+PAYLOAD=$(python3 -c "
+import json, sys
+msg, ns, mtype, commit, branch, author, files, repo = sys.argv[1:9]
+print(json.dumps({
+    'content': msg, 'namespace': ns, 'memory_type': mtype, 'author': author,
+    'tags': ['git-commit', 'auto', repo, mtype],
+    'metadata': {'commit_hash': commit, 'repo': repo, 'branch': branch, 'source': 'post-commit-hook'}
+}))
+" "$CONTENT" "$ENGRAM_NS" "$MEMORY_TYPE" "$COMMIT_FULL" "$BRANCH" "$COMMIT_AUTHOR" "$CHANGED_FILES" "$REPO_NAME" 2>/dev/null)
+
+curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" \
+  -H "Content-Type: application/json" -H "X-API-Key: $ENGRAM_KEY" \
+  -d "$PAYLOAD" -o /dev/null 2>/dev/null || true
+
+# Delegate to per-repo override if present
+LOCAL_HOOK="$(git rev-parse --git-dir 2>/dev/null)/hooks/post-commit.local"
+if [[ -x "$LOCAL_HOOK" ]]; then
+  exec "$LOCAL_HOOK" "$@"
+fi
+
+exit 0
+```
+
+```bash
+chmod +x ~/.git-hooks/post-commit
+git config --global core.hooksPath ~/.git-hooks
+```
+
+> **Per-repo overrides:** name your repo-specific post-commit script `post-commit.local` (not `post-commit`) and the global hook will call it after writing to engram.
+
+### Namespace routing across projects
+
+If you work in multiple contexts (e.g. separate namespaces for different teams or security levels), add a routing function to both hooks:
+
+```bash
+get_namespace() {
+    local cwd="$1"
+    case "$cwd" in
+        *"/work/projectA"*)  echo "project:projectA" ;;
+        *"/work/projectB"*)  echo "project:projectB" ;;
+        *)                   echo "personal:me" ;;
+    esac
+}
+
+ENGRAM_NS=$(get_namespace "$CWD")
+```
+
+### What each hook writes
+
+**inject hook** (reads): surfaces the 5 most semantically similar past memories as context before every Claude response. Claude sees them as `[engram: relevant past context]` at the top of its input — no extra tool calls needed.
+
+**session hook** (writes): after every turn, records the current branch, recent commits, and CWD so the next session can orient itself without reading git history.
+
+**commit hook** (writes): every `git commit` produces an engram memory tagged `git-commit`. `feat:`/`refactor:` commits become `decision` type; `fix:` commits become `incident` type. These surface automatically when you later ask "why did we change X?" or "what was the fix for Y?".
+
+### Updated automation table
+
+| Behaviour | Automatic? | How |
+|---|---|---|
+| Recall when asked about past context | ✅ Yes (with CLAUDE.md) | Claude calls `memory_search` |
+| Context injected before every prompt | ✅ Yes (with inject hook) | UserPromptSubmit hook |
+| Session state written after every turn | ✅ Yes (with stop hook) | Stop hook (async) |
+| Every git commit recorded | ✅ Yes (with git hook) | `core.hooksPath` global hook |
+| Saving key decisions | ✅ Yes (with CLAUDE.md) | Claude calls `memory_write` |
+| Full conversation transcript | ❌ No | Claude summarises — it doesn't record every message |
+| Knowledge graph entity extraction | ✅ Yes (spaCy, no LLM needed) | Runs on every `memory_write` |
+| Cross-session persistence | ✅ Yes | Stored in ArcadeDB on disk |
+| Credential auto-redaction | ✅ Yes | Detected and redacted before any write reaches ArcadeDB |
+
+---
+
 ## Team setup — shared server with per-engineer API keys
 
 If engram runs on a shared server:
