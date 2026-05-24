@@ -243,9 +243,9 @@ See the complete guide in [docs/claude-code-setup.md](docs/claude-code-setup.md)
 | `packages/gateway` | Mobile messaging | python-telegram-bot, Evolution API |
 | `packages/learning` | Self-improvement | Reflection, skill extraction, APScheduler |
 
-**Infrastructure:** one Docker container (ArcadeDB) — no Neo4j, no Qdrant, no Graphiti.
+**Infrastructure (default):** one Docker container (ArcadeDB) — no Neo4j, no Graphiti. Vector search uses numpy-accelerated cosine similarity in the Python layer with a 5-minute TTL cache, scaling comfortably to ~100K memories.
 
-ArcadeDB provides the graph + document stack: native graph traversal (entities, facts, edges), transactional storage — all in a single JVM process. Vector search uses numpy-accelerated cosine similarity in the Python layer, with a 5-minute TTL cache for fast repeated queries.
+**Optional Qdrant backend:** set `ENGRAM_VECTOR_BACKEND=qdrant` and install `pip install 'engram-core[qdrant]'` to switch to HNSW ANN search via Qdrant. Add a `qdrant` service to your `docker-compose.yml` (see the commented block in the repo) or point `QDRANT_URL` at an existing instance. Recommended when your namespace exceeds ~100K memories.
 
 ---
 

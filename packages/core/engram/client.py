@@ -593,7 +593,13 @@ class EngramClient:
         not found.
         """
         self._assert_started()
-        return await self._arcadedb.supersede_memory(memory_id, namespace)
+        result = await self._arcadedb.supersede_memory(memory_id, namespace)
+        if result and self._vector_backend is not None:
+            try:
+                await self._vector_backend.mark_superseded(memory_id)
+            except Exception as exc:
+                logger.warning("Qdrant mark_superseded failed (non-fatal): %s", exc)
+        return result
 
     async def delete(self, memory_id: str, namespace: str) -> bool:
         """Hard-delete a memory by ID (use supersede() to preserve history).
@@ -601,7 +607,13 @@ class EngramClient:
         Returns ``True`` if deleted, ``False`` if not found.
         """
         self._assert_started()
-        return await self._arcadedb.delete_memory(memory_id, namespace)
+        result = await self._arcadedb.delete_memory(memory_id, namespace)
+        if result and self._vector_backend is not None:
+            try:
+                await self._vector_backend.delete(memory_id)
+            except Exception as exc:
+                logger.warning("Qdrant delete failed (non-fatal): %s", exc)
+        return result
 
     async def get_memory(self, memory_id: str, namespace: str) -> MemoryEntry | None:
         """Retrieve a single memory by ID."""

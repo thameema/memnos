@@ -427,6 +427,86 @@ class TestEngramClientVectorSearchRouting(unittest.IsolatedAsyncioTestCase):
         mock_backend.close.assert_awaited_once()
         self.assertIsNone(client._vector_backend)
 
+    async def test_supersede_calls_mark_superseded_on_backend(self):
+        client, _ = self._make_client()
+        mock_backend = MagicMock()
+        mock_backend.mark_superseded = AsyncMock()
+        client._vector_backend = mock_backend
+        client._arcadedb.supersede_memory = AsyncMock(return_value=True)
+
+        result = await client.supersede("mem-to-supersede", "test:ns")
+        self.assertTrue(result)
+        mock_backend.mark_superseded.assert_awaited_once_with("mem-to-supersede")
+
+    async def test_supersede_skips_backend_when_not_found(self):
+        client, _ = self._make_client()
+        mock_backend = MagicMock()
+        mock_backend.mark_superseded = AsyncMock()
+        client._vector_backend = mock_backend
+        client._arcadedb.supersede_memory = AsyncMock(return_value=False)
+
+        result = await client.supersede("nonexistent", "test:ns")
+        self.assertFalse(result)
+        mock_backend.mark_superseded.assert_not_awaited()
+
+    async def test_supersede_backend_failure_is_non_fatal(self):
+        client, _ = self._make_client()
+        mock_backend = MagicMock()
+        mock_backend.mark_superseded = AsyncMock(side_effect=RuntimeError("qdrant down"))
+        client._vector_backend = mock_backend
+        client._arcadedb.supersede_memory = AsyncMock(return_value=True)
+
+        result = await client.supersede("mem-001", "test:ns")
+        self.assertTrue(result)
+
+    async def test_supersede_no_backend_works(self):
+        client, _ = self._make_client()
+        client._vector_backend = None
+        client._arcadedb.supersede_memory = AsyncMock(return_value=True)
+
+        result = await client.supersede("mem-001", "test:ns")
+        self.assertTrue(result)
+
+    async def test_delete_calls_backend_delete(self):
+        client, _ = self._make_client()
+        mock_backend = MagicMock()
+        mock_backend.delete = AsyncMock()
+        client._vector_backend = mock_backend
+        client._arcadedb.delete_memory = AsyncMock(return_value=True)
+
+        result = await client.delete("mem-to-delete", "test:ns")
+        self.assertTrue(result)
+        mock_backend.delete.assert_awaited_once_with("mem-to-delete")
+
+    async def test_delete_skips_backend_when_not_found(self):
+        client, _ = self._make_client()
+        mock_backend = MagicMock()
+        mock_backend.delete = AsyncMock()
+        client._vector_backend = mock_backend
+        client._arcadedb.delete_memory = AsyncMock(return_value=False)
+
+        result = await client.delete("nonexistent", "test:ns")
+        self.assertFalse(result)
+        mock_backend.delete.assert_not_awaited()
+
+    async def test_delete_backend_failure_is_non_fatal(self):
+        client, _ = self._make_client()
+        mock_backend = MagicMock()
+        mock_backend.delete = AsyncMock(side_effect=RuntimeError("qdrant down"))
+        client._vector_backend = mock_backend
+        client._arcadedb.delete_memory = AsyncMock(return_value=True)
+
+        result = await client.delete("mem-001", "test:ns")
+        self.assertTrue(result)
+
+    async def test_delete_no_backend_works(self):
+        client, _ = self._make_client()
+        client._vector_backend = None
+        client._arcadedb.delete_memory = AsyncMock(return_value=True)
+
+        result = await client.delete("mem-001", "test:ns")
+        self.assertTrue(result)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

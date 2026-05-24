@@ -28,7 +28,10 @@ local-embeddings = [
 # pip install 'engram-core[voyage]'
 # Lightweight Voyage AI client. Use provider: voyage in engram.yaml.
 voyage = ["voyageai>=0.2"]
-all = ["engram-core[local-embeddings,voyage]"]
+# pip install 'engram-core[qdrant]'
+# Enables ENGRAM_VECTOR_BACKEND=qdrant — HNSW ANN search via Qdrant.
+qdrant = ["qdrant-client>=1.9"]
+all = ["engram-core[local-embeddings,voyage,qdrant]"]
 
 [project.scripts]
 engram-import = "engram.cli.import_cmd:main"
