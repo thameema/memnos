@@ -878,6 +878,264 @@ print(f"  [ok] Backup saved to {backup_file}")
 PYEOF
 }
 
+# ─── Claude Code automation hooks ─────────────────────────────────────────────
+install_claude_code_hooks() {
+  # Skip silently if Claude Code is not installed
+  [ -d "$HOME/.claude" ] || return 0
+
+  step "Claude Code automation hooks"
+  echo "  Zero-touch hooks inject engram context before every prompt and"
+  echo "  write session/commit memories automatically — no agent action needed."
+  echo ""
+  ask_yn INSTALL_HOOKS "Install zero-touch automation hooks?" "Y"
+  [ "$INSTALL_HOOKS" = "no" ] && return 0
+
+  ask HOOKS_NS "Default namespace for hooks" "personal:me"
+
+  local hooks_dir="$HOME/.claude/hooks"
+  local git_hooks_dir="$HOME/.git-hooks"
+  local commands_dir="$HOME/.claude/commands"
+  local settings_file="$HOME/.claude/settings.json"
+
+  mkdir -p "$hooks_dir" "$git_hooks_dir" "$commands_dir"
+
+  # ── Write engram.env config file ────────────────────────────────────────────
+  cat > "$hooks_dir/engram.env" <<ENV
+# engram Claude Code hooks config — edit to change API connection or namespace.
+ENGRAM_API=http://localhost:8766
+ENGRAM_KEY=${ENGRAM_API_KEY}
+ENGRAM_DEFAULT_NS=${HOOKS_NS}
+ENGRAM_TOP_K=5
+ENV
+  success "Hook config: $hooks_dir/engram.env"
+
+  # ── Write inject hook ────────────────────────────────────────────────────────
+  cat > "$hooks_dir/engram-inject.sh" <<'INJECT_EOF'
+#!/usr/bin/env bash
+# UserPromptSubmit hook — injects engram context before every Claude Code prompt.
+# Namespace: .engram file in project > ENGRAM_NS_OVERRIDE env > ENGRAM_DEFAULT_NS
+set -euo pipefail
+HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$HOOKS_DIR/engram.env" ] && source "$HOOKS_DIR/engram.env"
+ENGRAM_API="${ENGRAM_API:-http://localhost:8766}"
+ENGRAM_KEY="${ENGRAM_KEY:-}"
+ENGRAM_TOP_K="${ENGRAM_TOP_K:-5}"
+INPUT=$(cat)
+CWD=$(echo "$INPUT"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd',''))" 2>/dev/null || echo "")
+PROMPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('prompt',''))" 2>/dev/null || echo "")
+if ! curl -sf --max-time 2 "$ENGRAM_API/api/v1/admin/health" -o /dev/null 2>/dev/null; then exit 0; fi
+ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:me}"
+ENGRAM_NS="${ENGRAM_NS_OVERRIDE:-$ENGRAM_NS}"
+REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || echo "")
+if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]]; then
+  FILE_NS=$(grep '^namespace=' "$REPO_ROOT/.engram" 2>/dev/null | cut -d= -f2 | tr -d ' ')
+  [[ -n "$FILE_NS" ]] && ENGRAM_NS="$FILE_NS"
+fi
+QUERY=$(echo "$PROMPT" | head -c 200 | python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.stdin.read().strip()))" 2>/dev/null || echo "")
+[[ -z "$QUERY" ]] && exit 0
+RESPONSE=$(curl -sf --max-time 5 "$ENGRAM_API/api/v1/memory/search?q=$QUERY&ns=$ENGRAM_NS&top_k=$ENGRAM_TOP_K" -H "X-API-Key: $ENGRAM_KEY" 2>/dev/null || echo "[]")
+CONTEXT=$(echo "$RESPONSE" | python3 -c "
+import sys, json
+try: data = json.load(sys.stdin)
+except: sys.exit(0)
+results = data if isinstance(data, list) else data.get('results', [])
+if not results: sys.exit(0)
+lines = ['[engram: relevant past context]']
+for r in results:
+    mem = r.get('memory', r)
+    mtype = mem.get('memory_type', 'fact')
+    content = mem.get('content', '').strip()
+    score = r.get('score', '')
+    score_str = f'  (similarity: {score:.2f})' if isinstance(score, float) else ''
+    if content: lines.append(f'[{mtype}]{score_str} {content[:280]}')
+if len(lines) <= 1: sys.exit(0)
+print('\n'.join(lines))
+" 2>/dev/null || echo "")
+[[ -z "$CONTEXT" ]] && exit 0
+python3 -c "import json,sys; print(json.dumps({'hookSpecificOutput':{'hookEventName':'UserPromptSubmit','additionalContext':sys.argv[1]}}))" "$CONTEXT"
+INJECT_EOF
+  chmod +x "$hooks_dir/engram-inject.sh"
+  success "Inject hook: $hooks_dir/engram-inject.sh"
+
+  # ── Write session-write hook ─────────────────────────────────────────────────
+  cat > "$hooks_dir/engram-session-write.sh" <<'SESSION_EOF'
+#!/usr/bin/env bash
+# Stop hook — writes session state to engram after every Claude Code turn.
+set -euo pipefail
+HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$HOOKS_DIR/engram.env" ] && source "$HOOKS_DIR/engram.env"
+ENGRAM_API="${ENGRAM_API:-http://localhost:8766}"
+ENGRAM_KEY="${ENGRAM_KEY:-}"
+INPUT=$(cat)
+CWD=$(echo "$INPUT"        | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd',''))" 2>/dev/null || echo "")
+SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))" 2>/dev/null || echo "")
+[[ -z "$CWD" ]] && exit 0
+if ! curl -sf --max-time 2 "$ENGRAM_API/api/v1/admin/health" -o /dev/null 2>/dev/null; then exit 0; fi
+ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:me}"
+ENGRAM_NS="${ENGRAM_NS_OVERRIDE:-$ENGRAM_NS}"
+REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || echo "")
+if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]]; then
+  FILE_NS=$(grep '^namespace=' "$REPO_ROOT/.engram" 2>/dev/null | cut -d= -f2 | tr -d ' ')
+  [[ -n "$FILE_NS" ]] && ENGRAM_NS="$FILE_NS"
+fi
+PROJECT=$(basename "$CWD")
+BRANCH="" RECENT_COMMITS="" UNCOMMITTED=0
+if git -C "$CWD" rev-parse --git-dir >/dev/null 2>&1; then
+  BRANCH=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  RECENT_COMMITS=$(git -C "$CWD" log --oneline -5 --no-decorate 2>/dev/null || echo "")
+  UNCOMMITTED=$(git -C "$CWD" status --short 2>/dev/null | wc -l | tr -d ' ')
+fi
+if [[ -n "$RECENT_COMMITS" ]]; then
+  CONTENT="session ended | project: $PROJECT | dir: $CWD${BRANCH:+ | branch: $BRANCH} | uncommitted: $UNCOMMITTED
+Recent commits:
+$RECENT_COMMITS"
+else
+  CONTENT="session ended | project: $PROJECT | dir: $CWD"
+fi
+PAYLOAD=$(python3 -c "
+import json, sys
+print(json.dumps({'content':sys.argv[1],'namespace':sys.argv[2],'memory_type':'fact','tags':['session-log','auto',sys.argv[3]],'metadata':{'session_id':sys.argv[4],'project':sys.argv[3],'source':'claude-code-stop-hook'}}))
+" "$CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION_ID" 2>/dev/null)
+curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" -H "Content-Type: application/json" -H "X-API-Key: $ENGRAM_KEY" -d "$PAYLOAD" -o /dev/null 2>/dev/null || true
+exit 0
+SESSION_EOF
+  chmod +x "$hooks_dir/engram-session-write.sh"
+  success "Session hook: $hooks_dir/engram-session-write.sh"
+
+  # ── Write global git post-commit hook ────────────────────────────────────────
+  cat > "$git_hooks_dir/post-commit" <<'GIT_EOF'
+#!/usr/bin/env bash
+# Global git post-commit hook — writes every commit to engram memory.
+# Never blocks a commit. Namespace: .engram file > ENGRAM_NS_OVERRIDE > ENGRAM_DEFAULT_NS
+# Per-repo override: create .git/hooks/post-commit.local (called automatically).
+set -euo pipefail
+HOOKS_CONFIG="$HOME/.claude/hooks/engram.env"
+[ -f "$HOOKS_CONFIG" ] && source "$HOOKS_CONFIG"
+ENGRAM_API="${ENGRAM_API:-http://localhost:8766}"
+ENGRAM_KEY="${ENGRAM_KEY:-}"
+if ! curl -sf --max-time 2 "$ENGRAM_API/api/v1/admin/health" -o /dev/null 2>/dev/null; then exit 0; fi
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+REPO_NAME=$(basename "$REPO_ROOT")
+ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:me}"
+ENGRAM_NS="${ENGRAM_NS_OVERRIDE:-$ENGRAM_NS}"
+if [[ -f "$REPO_ROOT/.engram" ]]; then
+  FILE_NS=$(grep '^namespace=' "$REPO_ROOT/.engram" 2>/dev/null | cut -d= -f2 | tr -d ' ')
+  [[ -n "$FILE_NS" ]] && ENGRAM_NS="$FILE_NS"
+fi
+COMMIT_HASH=$(git rev-parse --short HEAD)
+COMMIT_FULL=$(git rev-parse HEAD)
+COMMIT_MSG=$(git log -1 --pretty=%B | head -5)
+COMMIT_AUTHOR=$(git log -1 --pretty=%an)
+CHANGED_FILES=$(git diff-tree --no-commit-id -r --name-only HEAD | head -20 | tr '\n' ' ')
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+MEMORY_TYPE="fact"
+if echo "$COMMIT_MSG" | grep -qiE '^(feat|feature|refactor|arch):'; then MEMORY_TYPE="decision"
+elif echo "$COMMIT_MSG" | grep -qiE '^(fix|hotfix|bug):'; then MEMORY_TYPE="incident"; fi
+CONTENT="[engram-commit] $COMMIT_MSG
+repo: $REPO_NAME | commit: $COMMIT_HASH | branch: $BRANCH | author: $COMMIT_AUTHOR
+files: $CHANGED_FILES"
+PAYLOAD=$(python3 -c "
+import json, sys
+msg,ns,mtype,commit,branch,author,files,repo = sys.argv[1:9]
+print(json.dumps({'content':msg,'namespace':ns,'memory_type':mtype,'author':author,'tags':['git-commit','auto',repo,mtype],'metadata':{'commit_hash':commit,'repo':repo,'branch':branch,'source':'post-commit-hook'}}))
+" "$CONTENT" "$ENGRAM_NS" "$MEMORY_TYPE" "$COMMIT_FULL" "$BRANCH" "$COMMIT_AUTHOR" "$CHANGED_FILES" "$REPO_NAME" 2>/dev/null)
+curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" -H "Content-Type: application/json" -H "X-API-Key: $ENGRAM_KEY" -d "$PAYLOAD" -o /dev/null 2>/dev/null || true
+LOCAL_HOOK="$(git rev-parse --git-dir 2>/dev/null)/hooks/post-commit.local"
+if [[ -x "$LOCAL_HOOK" ]]; then exec "$LOCAL_HOOK" "$@"; fi
+exit 0
+GIT_EOF
+  chmod +x "$git_hooks_dir/post-commit"
+  success "Git hook: $git_hooks_dir/post-commit"
+
+  # ── Set global git hooks path ────────────────────────────────────────────────
+  git config --global core.hooksPath "$git_hooks_dir"
+  success "git config --global core.hooksPath $git_hooks_dir"
+
+  # ── Write /engram slash command ──────────────────────────────────────────────
+  cat > "$commands_dir/engram.md" <<'CMD_EOF'
+Run the following bash commands to show engram status, then format the results clearly.
+
+```bash
+curl -sf http://localhost:8766/api/v1/admin/namespaces \
+  -H "X-API-Key: $(grep ENGRAM_KEY ~/.claude/hooks/engram.env | cut -d= -f2 | tr -d ' ')" \
+  2>/dev/null || echo "[]"
+
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]]; then
+  echo "project-ns:$(grep '^namespace=' "$REPO_ROOT/.engram" | cut -d= -f2)"
+else
+  echo "project-ns:$(grep ENGRAM_DEFAULT_NS ~/.claude/hooks/engram.env | cut -d= -f2 | tr -d ' ')"
+fi
+
+NS=$(grep ENGRAM_DEFAULT_NS ~/.claude/hooks/engram.env | cut -d= -f2 | tr -d ' ')
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]]; then
+  NS=$(grep '^namespace=' "$REPO_ROOT/.engram" | cut -d= -f2 | tr -d ' ')
+fi
+curl -sf "http://localhost:8766/api/v1/memory/search?q=session+commit+work&ns=$NS&top_k=5" \
+  -H "X-API-Key: $(grep ENGRAM_KEY ~/.claude/hooks/engram.env | cut -d= -f2 | tr -d ' ')" \
+  2>/dev/null || echo "[]"
+```
+
+Show:
+1. **Namespaces** — bullet list of all namespace names
+2. **Active namespace** — current namespace for this project, and how it was set (.engram file, env override, or default). If $ARGUMENTS contains a namespace like `ns:project:myproject`, show how to set it: create `.engram` with `namespace=project:myproject`
+3. **Recent memories** — up to 5 as: `[type] score — first 120 chars`
+CMD_EOF
+  success "Slash command: $commands_dir/engram.md  (use /engram in Claude Code)"
+
+  # ── Patch settings.json with hooks block ─────────────────────────────────────
+  if [ -f "$settings_file" ]; then
+    "$PY_CMD" - <<PYEOF
+import json, os
+
+settings_file = os.path.expanduser("$settings_file")
+hooks_dir = os.path.expanduser("$hooks_dir")
+
+try:
+    with open(settings_file) as f:
+        settings = json.load(f)
+except Exception as e:
+    print(f"  [warn] Could not patch {settings_file}: {e}")
+    import sys; sys.exit(0)
+
+inject_cmd = os.path.join(hooks_dir, "engram-inject.sh")
+session_cmd = os.path.join(hooks_dir, "engram-session-write.sh")
+
+# Build hooks block, preserving any existing hooks
+settings.setdefault("hooks", {})
+
+# UserPromptSubmit — prepend engram inject if not already there
+ups = settings["hooks"].setdefault("UserPromptSubmit", [{"hooks": []}])
+if not any(h.get("command", "") == inject_cmd
+           for entry in ups for h in entry.get("hooks", [])):
+    ups[0]["hooks"].insert(0, {"type": "command", "command": inject_cmd, "timeout": 8})
+
+# Stop — append engram session-write if not already there
+stops = settings["hooks"].setdefault("Stop", [{"hooks": []}])
+if not any(h.get("command", "") == session_cmd
+           for entry in stops for h in entry.get("hooks", [])):
+    stops[0]["hooks"].append({"type": "command", "command": session_cmd, "timeout": 8, "async": True})
+
+with open(settings_file, "w") as f:
+    json.dump(settings, f, indent=2)
+    f.write("\n")
+
+print(f"  [ok] Hooks registered in {settings_file}")
+PYEOF
+  fi
+
+  echo ""
+  success "Zero-touch automation installed."
+  dim "  Context inject : every Claude Code prompt"
+  dim "  Session write  : every turn end (async)"
+  dim "  Commit write   : every git commit (all repos)"
+  dim "  Slash command  : /engram — show namespace status"
+  echo ""
+  info "To set a namespace for a specific project, add a .engram file:"
+  dim "    echo 'namespace=project:myproject' > /path/to/repo/.engram"
+}
+
 # ─── Final success message ────────────────────────────────────────────────────
 print_success() {
   echo ""
@@ -950,6 +1208,7 @@ main() {
   install_python_packages
   install_cli
   inject_mcp_config
+  install_claude_code_hooks
   print_success
 }
 
