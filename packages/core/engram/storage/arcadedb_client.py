@@ -1160,6 +1160,60 @@ class ArcadeDBClient:
         except Exception:
             return 0
 
+    async def get_unused_constraints(self, namespace: str) -> list["MemoryEntry"]:
+        """Return active constraint memories whose affects list is empty (no governance coverage)."""
+        parts = namespace.split(":")
+        ns_list = [":".join(parts[:i+1]) for i in range(len(parts))]
+        placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
+        params = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
+        rows = await self._query(
+            f"SELECT * FROM Memory "
+            f"WHERE memory_type = 'constraint' AND status = 'active' "
+            f"AND superseded_at IS NULL "
+            f"AND namespace IN [{placeholders}] LIMIT 200",
+            params,
+        )
+        return [_row_to_memory(r) for r in rows if not (r.get("affects") or [])]
+
+    async def get_namespace_last_writes(self, base_ns: str) -> dict[str, str]:
+        """Return {child_namespace: latest_created_at ISO} for all child namespaces."""
+        rows = await self._query(
+            "SELECT namespace, max(created_at) AS last_write FROM Memory "
+            "WHERE namespace LIKE :prefix "
+            "GROUP BY namespace LIMIT 100",
+            {"prefix": f"{base_ns}:%"},
+        )
+        result = {}
+        for r in rows:
+            ns = r.get("namespace")
+            lw = r.get("last_write")
+            if ns and lw:
+                result[str(ns)] = _dt_str(_parse_dt(lw)) if _parse_dt(lw) else str(lw)
+        return result
+
+    async def count_approaching_expiry(self, namespace: str, days: int = 7) -> int:
+        """Count memories whose expires_at is within the next N days."""
+        from datetime import timedelta
+        now = _now()
+        cutoff = now + timedelta(days=days)
+        parts = namespace.split(":")
+        ns_list = [":".join(parts[:i+1]) for i in range(len(parts))]
+        placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
+        params = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
+        params["now_dt"] = _dt_str(now)
+        params["cutoff_dt"] = _dt_str(cutoff)
+        try:
+            rows = await self._query(
+                f"SELECT count(*) AS cnt FROM Memory "
+                f"WHERE expires_at > :now_dt AND expires_at <= :cutoff_dt "
+                f"AND superseded_at IS NULL AND status = 'active' "
+                f"AND namespace IN [{placeholders}]",
+                params,
+            )
+            return int(rows[0].get("cnt", 0)) if rows else 0
+        except Exception:
+            return 0
+
     async def namespace_distribution(self, base_ns: str, limit: int = 30) -> dict[str, int]:
         """Return {namespace: count} map."""
         ns_filter = base_ns if base_ns not in ("all", "", "*") else None

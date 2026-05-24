@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from engram_api.auth import (
     check_namespace_access,
@@ -31,6 +34,39 @@ from engram_api.schemas import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
+
+
+# ---------------------------------------------------------------------------
+# Knowledge health models
+# ---------------------------------------------------------------------------
+
+class HealthIssue(BaseModel):
+    level: str         # "warning" | "info" | "critical"
+    message: str
+    affected_ids: list[str] = []
+
+
+class KnowledgeHealthReport(BaseModel):
+    namespace: str
+    generated_at: datetime
+    health_score: int              # 0-100 (100 = healthy)
+    total_memories: int
+    metrics: dict[str, Any]
+    issues: list[HealthIssue]
+
+
+def _compute_health_score(
+    unused_constraints: int,
+    stale_child_namespaces: int,
+    overdue_reviews: int,
+    approaching_expiry: int,
+) -> int:
+    score = 100
+    score -= min(unused_constraints * 3, 15)
+    score -= min(stale_child_namespaces * 5, 20)
+    score -= min(overdue_reviews * 2, 20)
+    score -= min(approaching_expiry * 1, 10)
+    return max(0, score)
 
 
 def _to_response(memory, score: float | None = None) -> MemoryResponse:
@@ -196,3 +232,128 @@ async def knowledge_search(
         return []
 
     return [_to_response(r.memory, score=r.score) for r in results]
+
+
+# ---------------------------------------------------------------------------
+# GET /knowledge/health
+# ---------------------------------------------------------------------------
+
+@router.get("/health", response_model=KnowledgeHealthReport)
+async def knowledge_health(
+    ns: str = Query(..., description="Namespace to audit"),
+    stale_days: int = Query(30, ge=1, description="Days without writes before a namespace is considered stale"),
+    key_entry=Depends(require_api_key_entry),
+    client=Depends(get_client),
+) -> KnowledgeHealthReport:
+    """
+    Return a knowledge health report for *ns*.
+
+    Metrics
+    -------
+    - unused_constraints      : active constraints with no affects targets
+    - stale_child_namespaces  : child namespaces with no writes in stale_days
+    - overdue_reviews         : memories past their review_by date
+    - approaching_expiry      : memories expiring within 7 days
+    - health_score            : composite 0-100 (100 = healthy)
+    """
+    await check_namespace_access(key_entry, ns)
+    now = datetime.now(timezone.utc)
+    stale_cutoff = now - timedelta(days=stale_days)
+
+    issues: list[HealthIssue] = []
+    metrics: dict = {}
+
+    # Total memory count
+    try:
+        total = await client._arcadedb.count_memories(ns)
+    except Exception:
+        total = -1
+    metrics["total_memories"] = total
+
+    # Unused constraints
+    unused_constraints: list = []
+    try:
+        constraints = await client._arcadedb.get_unused_constraints(ns)
+        unused_constraints = constraints
+        metrics["unused_constraints"] = [str(c.id) for c in constraints]
+        if constraints:
+            issues.append(HealthIssue(
+                level="warning",
+                message=f"{len(constraints)} constraint(s) have no AFFECTS targets — may not be enforced",
+                affected_ids=[str(c.id) for c in constraints],
+            ))
+    except Exception as exc:
+        logger.debug("unused_constraints check failed: %s", exc)
+        metrics["unused_constraints"] = []
+
+    # Stale child namespaces
+    stale_namespaces: list[str] = []
+    try:
+        last_writes = await client._arcadedb.get_namespace_last_writes(ns)
+        for child_ns, last_write_iso in last_writes.items():
+            try:
+                lw = datetime.fromisoformat(last_write_iso.replace("Z", "+00:00"))
+                if lw.tzinfo is None:
+                    lw = lw.replace(tzinfo=timezone.utc)
+                if lw < stale_cutoff:
+                    stale_namespaces.append(child_ns)
+            except Exception:
+                pass
+        metrics["stale_child_namespaces"] = stale_namespaces
+        if stale_namespaces:
+            issues.append(HealthIssue(
+                level="info",
+                message=f"{len(stale_namespaces)} child namespace(s) have no writes in {stale_days} days",
+                affected_ids=stale_namespaces,
+            ))
+    except Exception as exc:
+        logger.debug("stale namespaces check failed: %s", exc)
+        metrics["stale_child_namespaces"] = []
+
+    # Overdue reviews
+    overdue_count = 0
+    try:
+        overdue = await client._arcadedb.get_review_due(ns, limit=100)
+        overdue_count = len(overdue)
+        metrics["overdue_reviews"] = overdue_count
+        if overdue_count > 0:
+            issues.append(HealthIssue(
+                level="warning",
+                message=f"{overdue_count} memory/memories overdue for review",
+                affected_ids=[str(m.id) for m in overdue],
+            ))
+    except Exception as exc:
+        logger.debug("overdue reviews check failed: %s", exc)
+        metrics["overdue_reviews"] = 0
+
+    # Approaching expiry
+    expiry_count = 0
+    try:
+        expiry_count = await client._arcadedb.count_approaching_expiry(ns, days=7)
+        metrics["approaching_expiry_7d"] = expiry_count
+        if expiry_count > 0:
+            issues.append(HealthIssue(
+                level="warning",
+                message=f"{expiry_count} memory/memories expiring within 7 days",
+            ))
+    except Exception as exc:
+        logger.debug("approaching expiry check failed: %s", exc)
+        metrics["approaching_expiry_7d"] = 0
+
+    health_score = _compute_health_score(
+        unused_constraints=len(unused_constraints),
+        stale_child_namespaces=len(stale_namespaces),
+        overdue_reviews=overdue_count,
+        approaching_expiry=expiry_count,
+    )
+    if health_score == 100:
+        issues.append(HealthIssue(level="info", message="Namespace is healthy — no issues found"))
+
+    return KnowledgeHealthReport(
+        namespace=ns,
+        generated_at=now,
+        health_score=health_score,
+        total_memories=total,
+        metrics=metrics,
+        issues=issues,
+    )
