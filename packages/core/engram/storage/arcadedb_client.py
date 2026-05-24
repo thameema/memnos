@@ -306,6 +306,8 @@ class ArcadeDBClient:
             "CREATE EDGE TYPE DOCUMENTED_IN IF NOT EXISTS",
             "CREATE EDGE TYPE SUPERSEDED_BY IF NOT EXISTS",
             "CREATE EDGE TYPE AFFECTS IF NOT EXISTS",
+            "CREATE EDGE TYPE SIMILAR_TO IF NOT EXISTS",
+            "CREATE EDGE TYPE RESOLVED_BY IF NOT EXISTS",
             # Properties — Memory
             "CREATE PROPERTY Memory.id IF NOT EXISTS STRING",
             "CREATE PROPERTY Memory.content IF NOT EXISTS STRING",
@@ -718,6 +720,83 @@ class ArcadeDBClient:
             )
         except Exception as exc:
             logger.debug("DOCUMENTED_IN edge skipped: %s", exc)
+
+    async def create_similar_to_edge(
+        self,
+        incident_id: str,
+        similar_id: str,
+        namespace: str,
+        similarity: float = 1.0,
+    ) -> None:
+        """Create a SIMILAR_TO edge between two incident Memory nodes."""
+        try:
+            await self._command(
+                "CREATE EDGE SIMILAR_TO "
+                "FROM (SELECT FROM Memory WHERE id = :from_id AND namespace = :ns) "
+                "TO (SELECT FROM Memory WHERE id = :to_id AND namespace = :ns) "
+                "SET similarity = :sim",
+                {"from_id": incident_id, "to_id": similar_id, "ns": namespace, "sim": similarity},
+            )
+        except Exception as exc:
+            logger.debug("SIMILAR_TO edge skipped: %s", exc)
+
+    async def create_resolved_by_edge(
+        self,
+        incident_id: str,
+        resolution_id: str,
+        namespace: str,
+    ) -> None:
+        """Create a RESOLVED_BY edge from an incident to its resolution memory."""
+        try:
+            await self._command(
+                "CREATE EDGE RESOLVED_BY "
+                "FROM (SELECT FROM Memory WHERE id = :from_id AND namespace = :ns) "
+                "TO (SELECT FROM Memory WHERE id = :to_id AND namespace = :ns) "
+                "IF NOT EXISTS",
+                {"from_id": incident_id, "to_id": resolution_id, "ns": namespace},
+            )
+        except Exception as exc:
+            logger.debug("RESOLVED_BY edge skipped: %s", exc)
+
+    async def find_similar_incidents(
+        self,
+        namespace: str,
+        embedding: list[float],
+        exclude_id: str,
+        top_k: int = 5,
+        threshold: float = 0.75,
+    ) -> list[tuple[str, float]]:
+        """Return (memory_id, similarity) pairs of similar past incidents.
+
+        Uses Python cosine similarity (same as vector_search) restricted to
+        memory_type=incident records only.
+        """
+        parts = namespace.split(":")
+        ns_list = [":".join(parts[:i+1]) for i in range(len(parts))]
+        placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
+        params = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
+        params["excl"] = exclude_id
+        rows = await self._query(
+            f"SELECT id, content_embedding FROM Memory "
+            f"WHERE memory_type = 'incident' "
+            f"AND superseded_at IS NULL "
+            f"AND status IN ['active', 'deprecated'] "
+            f"AND id != :excl "
+            f"AND namespace IN [{placeholders}] "
+            f"LIMIT 500",
+            params,
+        )
+        if not rows:
+            return []
+        ids = [r.get("id", "") for r in rows]
+        embs = [r.get("content_embedding") or [] for r in rows]
+        valid = [(iid, emb) for iid, emb in zip(ids, embs) if emb and len(emb) == len(embedding)]
+        if not valid:
+            return []
+        valid_ids, valid_embs = zip(*valid)
+        sims = _cosine_similarity_batch(embedding, list(valid_embs))
+        pairs = sorted(zip(valid_ids, sims), key=lambda x: x[1], reverse=True)
+        return [(iid, float(sim)) for iid, sim in pairs if sim >= threshold][:top_k]
 
     # ------------------------------------------------------------------
     # Vector + hybrid search
