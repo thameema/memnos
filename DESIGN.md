@@ -854,7 +854,7 @@ All endpoints require `Authorization: Bearer <ENGRAM_API_KEY>` header.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Health check — returns status of Neo4j, Qdrant, gateway |
+| `GET` | `/health` | Health check — returns status of ArcadeDB, gateway, version |
 | `GET` | `/namespaces` | List all namespaces |
 | `POST` | `/namespaces` | Create a namespace |
 | `DELETE` | `/namespaces/{ns}` | Delete namespace and all its data |
@@ -1318,11 +1318,16 @@ All secrets should be in environment variables, not in `engram.yaml`. The config
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | For `api` runtime | Anthropic API key |
+| `ANTHROPIC_API_KEY` | For `api` runtime + reflection | Anthropic API key |
 | `OPENROUTER_API_KEY` | For `openrouter` runtime | OpenRouter API key |
 | `OPENAI_API_KEY` | For OpenAI embeddings | OpenAI API key |
+| `VOYAGE_API_KEY` | For Voyage AI embeddings | Voyage AI API key |
 | `ENGRAM_API_KEY` | Yes | Master API key for MCP/REST auth |
-| `NEO4J_PASSWORD` | Yes | Neo4j database password |
+| `ARCADEDB_PASSWORD` | Yes | ArcadeDB root password |
+| `ENGRAM_VAULT_KEY` | Yes | 32-byte base64 key for vault AES-256-GCM encryption |
+| `ENGRAM_VECTOR_BACKEND` | No | Set to `qdrant` to enable Qdrant HNSW backend |
+| `QDRANT_URL` | When qdrant backend | URL of Qdrant instance (default: `http://localhost:6333`) |
+| `QDRANT_API_KEY` | When qdrant cloud | Qdrant Cloud API key |
 | `TELEGRAM_BOT_TOKEN` | For Telegram gateway | Telegram bot token |
 | `EVOLUTION_API_KEY` | For WhatsApp gateway | Evolution API auth key |
 
@@ -1335,117 +1340,112 @@ engram/
 ├── README.md
 ├── DESIGN.md                          ← this document
 ├── LICENSE                            (Apache 2.0)
-├── pyproject.toml                     (workspace root, Python 3.11+)
-├── docker-compose.yml                 (full stack: neo4j + qdrant + engram)
-├── docker-compose.dev.yml             (dev overrides: hot reload, exposed ports)
+├── pyproject.toml                     (workspace root — installs all sub-packages)
+├── docker-compose.yml                 (two services: arcadedb + engram; qdrant optional)
 ├── engram.yaml.example                (copy to engram.yaml, fill secrets)
 ├── .env.example
 │
 ├── packages/
 │   │
-│   ├── core/                          # Memory core library
+│   ├── core/                          # Memory core library (engram-core)
 │   │   ├── pyproject.toml
 │   │   ├── engram/
-│   │   │   ├── __init__.py
-│   │   │   ├── client.py              # EngramClient (main entry point)
-│   │   │   ├── config.py              # EngramConfig dataclass
-│   │   │   ├── models.py              # MemoryEntry, Entity, Relation, Fact
-│   │   │   ├── graph/
-│   │   │   │   ├── graphiti_client.py # Graphiti wrapper
-│   │   │   │   └── cypher_builder.py  # Safe Cypher query builder
-│   │   │   ├── vector/
-│   │   │   │   ├── qdrant_client.py   # Qdrant wrapper
-│   │   │   │   └── embedder.py        # Embedding provider (OpenAI / local)
+│   │   │   ├── client.py              # EngramClient — main entry point
+│   │   │   ├── config.py              # EngramConfig + all sub-configs
+│   │   │   ├── models.py              # MemoryEntry, Entity, Fact, Provenance, enums
 │   │   │   ├── namespace.py           # Namespace routing and ACL
-│   │   │   └── search.py              # Hybrid search (graph + vector merge)
-│   │   └── tests/
-│   │       ├── test_client.py
-│   │       ├── test_namespace.py
-│   │       └── test_search.py
+│   │   │   ├── search.py              # SearchResult model
+│   │   │   ├── contradiction/
+│   │   │   │   └── detector.py        # check_contradictions(), direction detection
+│   │   │   ├── decay/
+│   │   │   │   └── job.py             # post-search decay (time/access weighted)
+│   │   │   ├── extraction/
+│   │   │   │   └── spacy_extractor.py # Entity extraction (spaCy NER + patterns)
+│   │   │   ├── storage/
+│   │   │   │   ├── arcadedb_client.py # All ArcadeDB operations
+│   │   │   │   ├── vector_backend.py  # VectorBackend ABC + create_vector_backend()
+│   │   │   │   └── qdrant_backend.py  # QdrantVectorBackend (optional)
+│   │   │   ├── vector/
+│   │   │   │   └── embedder.py        # Embedder factory (OpenAI / Voyage / local)
+│   │   │   └── cli/
+│   │   │       ├── git_hooks.py       # engram-git CLI
+│   │   │       ├── decay_cli.py       # engram-decay CLI
+│   │   │       └── import_cmd.py      # engram-import CLI
 │   │
-│   ├── mcp-server/                    # MCP server (stdio + SSE)
-│   │   ├── pyproject.toml
+│   ├── mcp-server/                    # MCP server — engram-mcp-server
 │   │   ├── engram_mcp/
-│   │   │   ├── __init__.py
-│   │   │   ├── server.py              # MCP app, tool registration
+│   │   │   ├── server.py              # MCP tool registration, dispatch
+│   │   │   ├── skill_packs.py         # External skill pack loader
 │   │   │   ├── tools/
-│   │   │   │   ├── memory.py          # memory_search, memory_write, memory_delete
-│   │   │   │   ├── graph.py           # graph_query, get_entity, get_related
-│   │   │   │   └── orchestrator.py    # spawn_task, get_task_result, list_tasks
-│   │   │   ├── transports/
-│   │   │   │   ├── stdio.py
-│   │   │   │   └── sse.py             # FastAPI SSE transport
-│   │   │   └── auth.py                # API key middleware
-│   │   └── tests/
-│   │       └── test_tools.py
+│   │   │   │   ├── memory.py          # memory_write, memory_search, review_due
+│   │   │   │   ├── graph.py           # graph_query, get_entity
+│   │   │   │   ├── vault.py           # secret_write, secret_read
+│   │   │   │   └── orchestrator_tools.py  # spawn_task, get_task_result
+│   │   │   └── transports/
+│   │   │       ├── stdio.py
+│   │   │       └── sse.py             # FastAPI SSE transport
 │   │
 │   ├── orchestrator/                  # Multi-agent orchestrator
-│   │   ├── pyproject.toml
 │   │   ├── engram_orchestrator/
-│   │   │   ├── __init__.py
-│   │   │   ├── orchestrator.py        # Main orchestrator (run, decompose, synthesize)
-│   │   │   ├── planner.py             # Task decomposition LLM call
-│   │   │   ├── synthesizer.py         # Result synthesis LLM call
-│   │   │   ├── workers/
-│   │   │   │   ├── base.py            # BaseWorker ABC
-│   │   │   │   ├── claude_code.py     # ClaudeCodeWorker
-│   │   │   │   ├── api_worker.py      # ApiWorker (Anthropic)
-│   │   │   │   └── openrouter.py      # OpenRouterWorker
+│   │   │   ├── orchestrator.py        # Orchestrator (plan → run → synthesize)
+│   │   │   ├── planner.py             # LLM-backed task decomposition
+│   │   │   ├── synthesizer.py         # LLM-backed result merge
+│   │   │   ├── workers/               # api / openrouter / claude-code workers
 │   │   │   ├── pool.py                # WorkerPool (asyncio semaphore)
-│   │   │   └── task_store.py          # Task persistence (SQLite or Redis)
-│   │   └── tests/
-│   │       ├── test_orchestrator.py
-│   │       └── test_workers.py
+│   │   │   ├── router.py              # AgentRouter (semantic YAML matching)
+│   │   │   └── task_store.py          # SQLite-backed task state
+│   │
+│   ├── api/                           # REST API — engram-api
+│   │   ├── engram_api/
+│   │   │   ├── main.py                # FastAPI app, lifespan, router registration
+│   │   │   ├── schemas.py             # Request/response Pydantic models
+│   │   │   ├── key_store.py           # RuntimeKeyStore (SQLite)
+│   │   │   └── routers/
+│   │   │       ├── memory.py          # /memory/*
+│   │   │       ├── graph.py           # /graph/*
+│   │   │       ├── tasks.py           # /tasks/*
+│   │   │       ├── admin.py           # /admin/*
+│   │   │       ├── vault.py           # /vault/*
+│   │   │       ├── knowledge.py       # /knowledge/health
+│   │   │       ├── subscriptions.py   # /subscriptions/*
+│   │   │       ├── webhooks.py        # /webhooks/incident
+│   │   │       ├── learning_admin.py  # /learning/*
+│   │   │       └── viz.py             # /viz/*
 │   │
 │   ├── gateway/                       # Telegram + WhatsApp gateway
-│   │   ├── pyproject.toml
 │   │   ├── engram_gateway/
-│   │   │   ├── __init__.py
-│   │   │   ├── gateway.py             # Gateway router
 │   │   │   ├── telegram/
-│   │   │   │   ├── bot.py             # python-telegram-bot setup
-│   │   │   │   ├── handlers.py        # message, command handlers
-│   │   │   │   └── formatter.py       # Markdown formatting for Telegram
+│   │   │   │   └── bot.py             # TelegramGateway (polling, inline feedback)
 │   │   │   └── whatsapp/
-│   │   │       ├── webhook.py         # FastAPI webhook receiver
-│   │   │       ├── evolution_client.py # Evolution API HTTP client
-│   │   │       └── formatter.py
-│   │   └── tests/
-│   │       └── test_gateway.py
+│   │   │       └── webhook.py         # FastAPI webhook receiver
 │   │
-│   └── api/                           # REST API server
-│       ├── pyproject.toml
-│       ├── engram_api/
-│       │   ├── __init__.py
-│       │   ├── main.py                # FastAPI app, router registration
-│       │   ├── routers/
-│       │   │   ├── memory.py
-│       │   │   ├── graph.py
-│       │   │   ├── tasks.py
-│       │   │   └── admin.py
-│       │   ├── schemas.py             # Pydantic request/response models
-│       │   └── auth.py                # API key dependency
-│       └── tests/
-│           └── test_api.py
+│   └── learning/                      # Self-improvement — engram-learning
+│       ├── engram_learning/
+│       │   ├── episode_store.py       # Task episode persistence
+│       │   ├── heuristic_store.py     # Heuristic (rule) persistence
+│       │   ├── quality_store.py       # Per-agent quality scores
+│       │   ├── reflection.py          # ReflectionService (LLM → heuristics)
+│       │   ├── decay.py               # HeuristicDecayService
+│       │   └── scheduler.py           # APScheduler-based learning scheduler
 │
 ├── docker/
-│   ├── Dockerfile                     # engram server image
-│   ├── entrypoint.sh
-│   └── neo4j/
-│       └── neo4j.conf                 # Neo4j config for engram
+│   └── Dockerfile                     # engram server image (EMBED_MODE build arg)
 │
 ├── docs/
 │   ├── quickstart.md
-│   ├── claude-code-setup.md           # How to configure Claude Code to use engram
+│   ├── claude-code-setup.md
 │   ├── remote-deployment.md
-│   ├── namespace-guide.md
-│   └── api-reference.md
+│   ├── gateway.md
+│   └── obsidian-migration.md
 │
-└── examples/
-    ├── claude-code-settings.json      # Drop into ~/.claude/settings.json
-    ├── basic-memory.py                # Python script using EngramClient directly
-    ├── spawn-tasks.py                 # Orchestrator example
-    └── telegram-bot.py               # Minimal Telegram integration
+└── tools/                             # Integration tests and CLI utilities
+    ├── test_arcadedb.py               # 30-test ArcadeDB integration suite
+    ├── test_qdrant_backend.py         # Qdrant VectorBackend + client sync tests
+    ├── test_knowledge_health.py       # Knowledge health scoring tests
+    ├── test_skill_packs.py            # Skill pack loader tests
+    ├── test_learning_admin.py         # Learning admin API tests
+    ├── backup.sh                      # stop/rsync/restart backup (keeps last 7)
+    └── reembed.py                     # Re-embed all Memory records (dim migration)
 ```
 
 ---
@@ -2998,78 +2998,111 @@ The MCP formatter renders them under `📌 PINNED` with type, affects, author, r
 - `engram-git install` — installs a `post-commit` hook into `.git/hooks/`
 - `engram-git post-commit` — writes commit SHA, author, message, files to engram
 - `engram-git pre-review` — given a PR diff, retrieves relevant memories as context
-
-**Pending:** `post-incident-merge` — parse RCA from incident branch merge commit message.
+- `engram-git post-incident-merge` — parses `INCIDENT_ID:`, `ROOT_CAUSE:`, `RESOLUTION:`, `AFFECTED_SERVICES:` fields from incident branch merge commits and writes a typed `memory_type=incident` memory
 
 ---
 
 ### 22.2 Tier 2 — Team Collaboration
 
-#### 22.2.1 Namespace Subscriptions — Partial ⚠️
+#### 22.2.1 Namespace Subscriptions ✅ COMPLETE
 
-Subscription CRUD and cursor-based feed polling are built and tested.
+Subscription CRUD, cursor-based feed polling, `filter_types` in feed query, and cross-namespace fan-out are all built and tested.
 
-**Pending:**
-- `filter_types` stored on Subscription but NOT applied in the feed query (always returns all memories since cursor)
-- Cross-namespace fan-out (source_ns → subscriber_ns delivery)
-- Delivery modes (`on_next_session`, `webhook`, `immediate`) — only polling exists
+- `Subscription` vertex with composite index in ArcadeDB
+- `POST /subscriptions/` — subscribe; `GET /subscriptions/{ns}/feed` — cursor poll; `DELETE /subscriptions/{ns}` — unsubscribe
+- `filter_types` list applied in `get_feed()` SQL query (not just stored)
+- Fan-out: `delivery_namespace` on `Subscription` → fire-and-forget copy on `insert_memory()`
+- MCP tools: `namespace_subscribe`, `namespace_feed`, `unsubscribe`
+
+**Remaining gap:** delivery modes `webhook` and `immediate` — currently only polling exists.
 
 #### 22.2.2 Memory Provenance ✅ COMPLETE
 
 `Provenance(agent_id, user_id, tool, session_id, git_commit, jira_ticket)` on every `MemoryEntry`.
 Stored as MAP in ArcadeDB, reconstructed on read. Wired through MCP write tools.
 
-#### 22.2.3 Contradiction Detection — Partial ⚠️
+#### 22.2.3 Contradiction Detection ✅ COMPLETE
 
 Fires after every write via `check_contradictions()` (cosine similarity ≥ 0.88 against top-5 similar
 memories). Returns `contradiction_warnings` in MCP response. Non-blocking.
 
-**Pending:** Directional/negation logic — currently detects semantic similarity, not opposite claims
-(e.g., "use gRPC" vs. "avoid gRPC for this service" would not be flagged).
+Directional/negation logic added: `_negated_phrases()` and `_affirmed_phrases()` extract stance polarity from both the new memory and candidates. When stances conflict (`affirmed` vs. `negated` for the same concept), the warning is tagged with `direction="contradiction"` rather than `direction="similar"`.
 
 ---
 
 ### 22.3 Tier 3 — Intelligence Layer
 
-#### 22.3.1 Incident Intelligence — Partial ⚠️
+#### 22.3.1 Incident Intelligence ✅ COMPLETE
 
 `memory_type=incident` and `write_incident()` exist. Incidents are searchable via standard vector search.
 
-**Pending:**
-- Webhook receiver (PagerDuty / AlertManager → engram)
-- Automatic past-incident retrieval on alert trigger
-- `SIMILAR_TO` edge type connecting related incidents
-- `RESOLVED_BY` edge connecting incident → config change → file
+- **Webhook receiver** (`POST /api/v1/webhooks/incident`) accepts PagerDuty and AlertManager payloads, normalises them, and writes a typed incident memory
+- **`SIMILAR_TO` edges** connecting incidents with cosine similarity ≥ 0.75 (written at webhook receipt time)
+- **`RESOLVED_BY` edges** linking an incident memory to the config-change or file memory that resolved it (written when a `resolution_memory_id` is supplied in the webhook payload or via MCP)
 
-#### 22.3.2 Knowledge Health Metrics ❌ NOT BUILT
+**Remaining gap:** automatic past-incident retrieval on alert trigger (proactive context injection when a new alert matches a known incident pattern).
 
-Endpoint and dashboard showing:
-- Namespaces with no writes in 90+ days (stale knowledge)
-- Entities referenced often but with no decision memory (undocumented decisions)
-- Constraint memories never retrieved (possibly irrelevant)
-- Contradiction count per namespace
-- Knowledge coverage per service/team
+#### 22.3.2 Knowledge Health Metrics ✅ COMPLETE
 
-#### 22.3.3 Memory Expiry and Decay Contracts — Partial ⚠️
+`GET /api/v1/knowledge/health?namespace=<ns>` returns a composite 0–100 health score:
 
-`expires_at` (hard expiry, excluded from search) and `review_by` + `memory_review_due` MCP tool are built.
+| Metric | Deduction | Cap |
+|--------|-----------|-----|
+| Unused active constraints (never retrieved) | 3 pts each | 15 |
+| Namespaces with no writes in 90+ days | 5 pts each | 20 |
+| Overdue review memories (`review_by < now`) | 2 pts each | 20 |
+| Memories approaching expiry (< 7 days) | 1 pt each | 10 |
 
-**Pending:** `decay_policy` field (`none` / `time_weighted` / `access_weighted`) and a decay scheduler
-job for memories (heuristic decay exists, but memory-level decay does not).
+Also returns raw counts for dashboard display. Tests: `tools/test_knowledge_health.py`.
+
+#### 22.3.3 Memory Expiry and Decay Contracts ✅ COMPLETE
+
+- `expires_at` — hard expiry, excluded from search
+- `review_by` + `memory_review_due` MCP tool — returns stale decisions past their review date
+- `decay_policy` field (`none` / `time_weighted` / `access_weighted`) on `MemoryEntry`
+- Post-search decay: scores multiplied by time/access decay factor before ranking; memories with `decay_policy=none` are unaffected
+- Weekly CLI job: `engram-decay run` (`engram.cli.decay_cli:main`) — processes all active memories with non-none decay policy
 
 ---
 
-### 22.4 Build Order (Ranked by Impact)
+### 22.4 Infrastructure Additions ✅ COMPLETE
 
-| Priority | Item | Effort |
-|---|---|---|
-| 1 | `filter_types` applied in subscription feed | S |
-| 2 | `decay_policy` on MemoryEntry + decay job | M |
-| 3 | Cross-namespace subscription fan-out | M |
-| 4 | post-incident-merge hook + SIMILAR_TO/RESOLVED_BY edges | M |
-| 5 | Contradiction direction detection (negation logic) | M |
-| 6 | Knowledge health metrics API | L |
-| 7 | Incident webhook receiver | M |
+#### 22.4.1 External MCP Skill Pack Loader
+
+`packages/mcp-server/engram_mcp/skill_packs.py`:
+- Drop a `.yaml` or `.json` file in `ENGRAM_SKILL_PACKS_DIR`
+- Server loads all packs at startup and registers their tools alongside built-in MCP tools
+- Only `webhook` handler type supported: incoming MCP calls are forwarded as `POST {"tool": name, "arguments": args}` to the configured URL
+- Name collisions with built-ins are skipped with a warning
+
+#### 22.4.2 Qdrant Vector Backend
+
+`packages/core/engram/storage/qdrant_backend.py` implements the `VectorBackend` ABC:
+- Activated via `ENGRAM_VECTOR_BACKEND=qdrant` in `.env`
+- `create_vector_backend()` factory in `vector_backend.py` returns `None` (ArcadeDB default) or `QdrantVectorBackend`
+- Install: `pip install 'engram-core[qdrant]'`
+- Docker: uncomment the `qdrant` profile service in `docker-compose.yml`
+- Recommended when namespace exceeds ~100K memories; below that the numpy cosine similarity path (<15ms) is sufficient
+
+#### 22.4.3 Learning Admin Dashboard
+
+`packages/api/engram_api/routers/learning_admin.py`:
+- `GET /api/v1/learning/dashboard` — inline HTML dashboard
+- `GET /api/v1/learning/stats?ns=<ns>` — heuristic count, episode count (7d), avg quality, success rate, top agents
+- `GET /api/v1/learning/heuristics?ns=<ns>` — sorted by confidence descending
+- `DELETE /api/v1/learning/heuristics/{id}` — delete a heuristic
+- `GET /api/v1/learning/episodes/recent?ns=<ns>` — newest-first, long prompts truncated to 300 chars
+- `POST /api/v1/learning/reflect` — trigger reflection run
+- Graceful 503 degradation if `engram_learning` is not installed
+
+---
+
+### 22.5 Remaining Gaps
+
+| Item | Notes |
+|------|-------|
+| Subscription delivery modes `webhook` / `immediate` | Currently only cursor polling exists |
+| Automatic past-incident retrieval on alert | Proactive context injection on new alert matching known pattern |
 
 ---
 

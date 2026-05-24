@@ -11,11 +11,10 @@ Your laptop (Claude Code)
     ▼
 Remote server (engram)
     ├── engram Python server  (port 8766 REST, 8765 MCP/SSE)
-    ├── Neo4j                 (port 7687, internal only)
-    └── Qdrant                (port 6333, internal only)
+    └── ArcadeDB              (port 2480, internal only)
 ```
 
-Neo4j and Qdrant should **not** be exposed externally — only the engram API ports need to be reachable.
+ArcadeDB should **not** be exposed externally — only the engram API ports (8765 and 8766) need to be reachable.
 
 ---
 
@@ -26,7 +25,7 @@ Tested on Ubuntu 22.04 and Debian 12. Any Linux with Docker and Python 3.11+ wil
 ### 1. Provision a server
 
 Minimum specs:
-- 2 vCPU, 4 GB RAM (Neo4j needs at least 1 GB)
+- 1 vCPU, 2 GB RAM
 - 20 GB SSD
 - Ubuntu 22.04 LTS
 
@@ -34,7 +33,7 @@ Providers that work well: DigitalOcean, Hetzner, Vultr, AWS EC2 t3.small, Azure 
 
 ### 2. Open firewall ports
 
-Open ports 8765 and 8766 (or 443 if you put engram behind nginx/TLS). Keep 7474, 7687, and 6333 **closed** to the public.
+Open ports 8765 and 8766 (or 443 if you put engram behind nginx/TLS). Keep port 2480 **closed** to the public.
 
 ```bash
 # Ubuntu UFW example
@@ -232,39 +231,26 @@ This is the simplest setup for personal use or small teams.
 
 ## Backup and persistence
 
-Data lives in two places:
-
-| Data | Location | Backup strategy |
-|------|----------|----------------|
-| Neo4j graph | Docker volume `neo4j_data` | `neo4j-admin database dump` |
-| Qdrant vectors | Docker volume `qdrant_data` | Copy the volume directory |
-| SQLite stores | `~/.engram/*.db` | Copy `~/.engram/` |
-| Config | `~/.engram/engram.yaml` | Keep in version control (without secrets) |
-
-**Automated backup script:**
+All data lives in ArcadeDB. The recommended approach is the included backup script:
 
 ```bash
-#!/bin/bash
-BACKUP_DIR="$HOME/engram-backups/$(date +%Y-%m-%d)"
-mkdir -p "$BACKUP_DIR"
-
-# SQLite stores
-cp ~/.engram/*.db "$BACKUP_DIR/"
-
-# Neo4j dump (requires Neo4j to be running)
-docker exec neo4j neo4j-admin database dump neo4j --to-path=/tmp/neo4j-dump
-docker cp neo4j:/tmp/neo4j-dump "$BACKUP_DIR/neo4j.dump"
-
-# Qdrant snapshot
-curl -s -X POST "http://localhost:6333/collections/engram_vectors/snapshots" | \
-  jq -r '.result.name' | xargs -I{} \
-  curl -s "http://localhost:6333/collections/engram_vectors/snapshots/{}" \
-  -o "$BACKUP_DIR/qdrant-snapshot.tar"
-
-echo "Backup complete: $BACKUP_DIR"
+# Uses tools/backup.sh — stops, rsyncs, restarts; keeps last 7 backups
+bash tools/backup.sh --verify
 ```
 
-Run it daily with cron: `0 3 * * * /home/user/backup-engram.sh`
+Manual backup locations:
+
+| Data | Location | Notes |
+|------|----------|-------|
+| ArcadeDB graph + vectors | `ENGRAM_DATA_DIR/arcadedb/` (Docker volume) | Stop ArcadeDB before copying |
+| SQLite stores (learning, tasks) | `~/.engram/*.db` | Can copy while running |
+| Config | `~/.engram/engram.yaml` | Keep in version control (without secrets) |
+
+**Automated daily backup with cron:**
+
+```bash
+0 3 * * * cd ~/engram && bash tools/backup.sh >> ~/.engram/logs/backup.log 2>&1
+```
 
 ---
 
@@ -294,13 +280,13 @@ Each person adds their own key to their `~/.claude/settings.json`. Memories writ
 
 ```bash
 # Basic liveness
-curl -s http://YOUR_SERVER:8765/health
+curl -s http://YOUR_SERVER:8766/api/v1/admin/health
 
 # API health with auth
 curl -s -H "Authorization: Bearer your-key" \
   http://YOUR_SERVER:8766/api/v1/admin/health | jq
 
-# MCP tools list (should return 13 tools)
+# MCP tools list
 curl -s -H "Authorization: Bearer your-key" \
   http://YOUR_SERVER:8765/health | jq
 ```
@@ -314,21 +300,16 @@ Increase the proxy read timeout (see nginx config above). Some load balancers ki
 
 **Claude Code shows "engram: disconnected" in /mcp**
 1. Check `engram status` on the server
-2. Confirm the port is reachable: `curl http://YOUR_SERVER:8765/health`
+2. Confirm the port is reachable: `curl http://YOUR_SERVER:8766/api/v1/admin/health`
 3. Verify the API key in `~/.claude/settings.json` matches `engram.yaml`
 4. Check logs: `engram logs`
 
-**Neo4j out of memory**
-Add JVM heap limits to `docker-compose.yml`:
+**ArcadeDB out of memory**
+Add JVM heap limits to `docker-compose.yml` under the `arcadedb` service:
 ```yaml
 environment:
-  - NEO4J_server_memory_heap_initial__size=512m
-  - NEO4J_server_memory_heap_max__size=1G
+  JAVA_OPTS: "-Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:-engram} -Xmx1g"
 ```
 
-**Qdrant collection dimension mismatch**
-If you switch embedding models, delete and recreate the collection:
-```bash
-curl -X DELETE http://localhost:6333/collections/engram_vectors
-engram restart
-```
+**Embeddings slow on first search after restart**
+The numpy cosine similarity layer caches all embeddings in memory with a 5-minute TTL. The first search after a restart loads all Memory records from ArcadeDB (~1s for 648 records). Subsequent searches within the TTL window are ~1ms. This is expected behaviour — no action needed.
