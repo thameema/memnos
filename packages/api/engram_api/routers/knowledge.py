@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from engram_api.auth import (
     check_namespace_access,
     get_client,
+    require_api_key,
     require_api_key_entry,
 )
 from engram_api.schemas import (
@@ -357,3 +358,20 @@ async def knowledge_health(
         metrics=metrics,
         issues=issues,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /knowledge/communities  (Feature 3.4)
+# ---------------------------------------------------------------------------
+
+@router.get("/communities")
+async def get_communities(
+    ns: str = Query(...),
+    user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
+    client=Depends(get_client),
+) -> dict:
+    """Return all detected communities for a namespace."""
+    await check_namespace_access(key_entry, ns)
+    communities = await client._arcadedb.list_communities(ns)
+    return {"communities": communities, "count": len(communities), "namespace": ns}

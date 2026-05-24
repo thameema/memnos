@@ -372,3 +372,298 @@ CLAUDE_CODE_CAPABILITIES: list[dict] = [
         "tags": ["worktree", "isolation", "git", "branch", "safe", "sandbox", "agent"],
     },
 ]
+
+# ---------------------------------------------------------------------------
+# GitHub CLI capabilities
+# ---------------------------------------------------------------------------
+
+GH_CAPABILITIES: list[dict] = [
+    {
+        "id": "gh-pr-create",
+        "title": "gh pr create — Open a pull request from the CLI",
+        "category": "pull-requests",
+        "when_to_use": "create pull request open PR submit code for review push branch propose changes merge request",
+        "example": "gh pr create --title 'Fix auth bug' --body 'Resolves #42' --assignee @me",
+        "content": (
+            "SKILL: gh pr create\n"
+            "Create a pull request without leaving the terminal:\n"
+            "  gh pr create                            # interactive prompts\n"
+            "  gh pr create --title '...' --body '...' # non-interactive\n"
+            "  gh pr create --draft                    # draft PR\n"
+            "  gh pr create --reviewer alice,bob       # assign reviewers\n"
+            "  gh pr create --label bug --assignee @me\n"
+            "Tip: run from the feature branch — gh auto-detects base."
+        ),
+        "tags": ["gh", "pr", "pull-request", "review", "github", "submit"],
+    },
+    {
+        "id": "gh-pr-checkout",
+        "title": "gh pr checkout — Check out a PR branch locally",
+        "category": "pull-requests",
+        "when_to_use": "checkout PR branch review someone else code test pull request locally switch to PR",
+        "example": "gh pr checkout 123",
+        "content": (
+            "SKILL: gh pr checkout\n"
+            "Switch to any open PR's branch in one command:\n"
+            "  gh pr checkout 123          # by PR number\n"
+            "  gh pr checkout my-feature   # by branch name\n"
+            "Creates a local tracking branch automatically. "
+            "Combine with: gh pr diff, gh pr review, gh pr merge."
+        ),
+        "tags": ["gh", "pr", "checkout", "review", "branch", "github"],
+    },
+    {
+        "id": "gh-issue-create",
+        "title": "gh issue create — File a GitHub issue from the CLI",
+        "category": "issues",
+        "when_to_use": "create issue file bug report open ticket report problem track work GitHub issue",
+        "example": "gh issue create --title 'Login fails on Safari' --label bug",
+        "content": (
+            "SKILL: gh issue create\n"
+            "File GitHub issues without a browser:\n"
+            "  gh issue create                          # interactive\n"
+            "  gh issue create --title '...' --body '...' --label bug\n"
+            "  gh issue create --assignee @me --project 'Sprint 4'\n"
+            "Use --web to finish in the browser if you need the full editor."
+        ),
+        "tags": ["gh", "issue", "bug", "ticket", "github", "create"],
+    },
+    {
+        "id": "gh-run-watch",
+        "title": "gh run watch — Stream CI output to your terminal",
+        "category": "ci-cd",
+        "when_to_use": "watch CI run stream workflow output monitor GitHub Actions check pipeline status wait for tests",
+        "example": "gh run watch && gh run view --log",
+        "content": (
+            "SKILL: gh run watch\n"
+            "Stream GitHub Actions output without opening a browser:\n"
+            "  gh run watch                  # latest run on current branch\n"
+            "  gh run watch 12345678         # specific run ID\n"
+            "  gh run list                   # list recent runs\n"
+            "  gh run view --log             # dump full logs after completion\n"
+            "  gh run rerun --failed         # retry only failed jobs\n"
+            "Combine with /loop: /loop every 60s gh run watch"
+        ),
+        "tags": ["gh", "ci", "actions", "workflow", "run", "watch", "github", "pipeline"],
+    },
+    {
+        "id": "gh-search-code",
+        "title": "gh search code — Search GitHub code from the CLI",
+        "category": "search",
+        "when_to_use": "search GitHub code find usage across repos look for examples pattern search codebase",
+        "example": "gh search code 'MemberMatch' --repo myorg/myrepo --language java",
+        "content": (
+            "SKILL: gh search code\n"
+            "Search code across GitHub without leaving the terminal:\n"
+            "  gh search code 'pattern' --repo owner/repo\n"
+            "  gh search code 'interface' --language typescript --limit 20\n"
+            "  gh search repos 'fhir member-match' --language java\n"
+            "  gh search issues 'auth timeout' --repo owner/repo --state open\n"
+            "Returns file paths + snippets. Pipe to jq or claude for analysis."
+        ),
+        "tags": ["gh", "search", "code", "github", "find", "repos", "issues"],
+    },
+]
+
+# ---------------------------------------------------------------------------
+# Docker capabilities
+# ---------------------------------------------------------------------------
+
+DOCKER_CAPABILITIES: list[dict] = [
+    {
+        "id": "docker-compose-up",
+        "title": "docker compose up — Start services with logs",
+        "category": "compose",
+        "when_to_use": "start services run docker compose bring up containers spin up local environment start all dependencies",
+        "example": "docker compose up --build --watch",
+        "content": (
+            "SKILL: docker compose up\n"
+            "Start your local stack:\n"
+            "  docker compose up               # attach (logs in terminal)\n"
+            "  docker compose up -d            # detached (background)\n"
+            "  docker compose up --build       # rebuild images first\n"
+            "  docker compose up --watch       # auto-rebuild on file change (Compose 2.22+)\n"
+            "  docker compose up db redis      # start only specific services\n"
+            "  docker compose logs -f api      # follow logs for one service"
+        ),
+        "tags": ["docker", "compose", "up", "services", "local", "dev", "containers"],
+    },
+    {
+        "id": "docker-exec",
+        "title": "docker exec — Run commands inside a running container",
+        "category": "debugging",
+        "when_to_use": "debug container shell into container inspect running container execute command inside container",
+        "example": "docker exec -it my-api bash",
+        "content": (
+            "SKILL: docker exec\n"
+            "Get a shell or run a one-off command in a running container:\n"
+            "  docker exec -it <name> bash           # interactive shell\n"
+            "  docker exec -it <name> sh             # when bash unavailable\n"
+            "  docker exec <name> env                # dump environment\n"
+            "  docker exec <name> cat /etc/hosts     # inspect files\n"
+            "  docker exec <name> psql -U user db    # run DB commands\n"
+            "Use 'docker ps' to find container names."
+        ),
+        "tags": ["docker", "exec", "shell", "debug", "container", "bash", "inspect"],
+    },
+    {
+        "id": "docker-build-cache",
+        "title": "docker build --cache-from — Speed up CI image builds",
+        "category": "build",
+        "when_to_use": "speed up docker build CI image build cache layers slow build registry cache",
+        "example": "docker build --cache-from myrepo/api:latest -t myrepo/api:new .",
+        "content": (
+            "SKILL: docker build cache strategies\n"
+            "Avoid rebuilding unchanged layers:\n"
+            "  docker build --cache-from myrepo/api:latest -t myrepo/api:new .\n"
+            "  DOCKER_BUILDKIT=1 docker build --build-arg BUILDKIT_INLINE_CACHE=1 .\n"
+            "  docker build --target test-stage .\n"
+            "Order Dockerfile instructions from least to most frequently changed."
+        ),
+        "tags": ["docker", "build", "cache", "ci", "layers", "speed", "buildkit"],
+    },
+    {
+        "id": "docker-prune",
+        "title": "docker system prune — Reclaim disk space",
+        "category": "maintenance",
+        "when_to_use": "free disk space clean up docker images volumes dangling layers out of space",
+        "example": "docker system prune -af --volumes",
+        "content": (
+            "SKILL: docker system prune\n"
+            "Reclaim disk space from stopped containers, dangling images, unused volumes:\n"
+            "  docker system prune          # safe: stopped containers + dangling images\n"
+            "  docker system prune -a       # also removes all unused images\n"
+            "  docker system prune --volumes # also removes unused volumes (DATA LOSS)\n"
+            "  docker image prune -a        # images only\n"
+            "  docker volume prune          # volumes only\n"
+            "  docker system df             # see how much space is used"
+        ),
+        "tags": ["docker", "prune", "cleanup", "disk", "space", "images", "volumes"],
+    },
+    {
+        "id": "docker-inspect",
+        "title": "docker inspect — Extract container or image metadata",
+        "category": "debugging",
+        "when_to_use": "inspect container metadata network IP port mapping environment variables image layers",
+        "example": "docker inspect my-api | jq '.[0].NetworkSettings.IPAddress'",
+        "content": (
+            "SKILL: docker inspect + jq\n"
+            "Pull structured metadata from containers or images:\n"
+            "  docker inspect <container>                         # full JSON\n"
+            "  docker inspect <container> | jq '.[0].State'\n"
+            "  docker inspect <container> | jq '.[0].NetworkSettings.Ports'\n"
+            "  docker inspect <image> | jq '.[0].Config.Env'\n"
+            "  docker inspect --format '{{.State.Status}}' <c>   # Go template\n"
+            "Combine with: docker stats, docker logs --tail 50"
+        ),
+        "tags": ["docker", "inspect", "metadata", "jq", "network", "ports", "debug"],
+    },
+]
+
+# ---------------------------------------------------------------------------
+# kubectl capabilities
+# ---------------------------------------------------------------------------
+
+KUBECTL_CAPABILITIES: list[dict] = [
+    {
+        "id": "kubectl-logs",
+        "title": "kubectl logs — Stream pod logs with filtering",
+        "category": "debugging",
+        "when_to_use": "view pod logs stream kubernetes logs debug crash check errors follow logs container output",
+        "example": "kubectl logs -f deploy/api --all-containers --since=5m | grep ERROR",
+        "content": (
+            "SKILL: kubectl logs\n"
+            "Stream or dump logs from pods and deployments:\n"
+            "  kubectl logs <pod>                      # dump logs\n"
+            "  kubectl logs -f <pod>                   # follow (stream)\n"
+            "  kubectl logs -f deploy/api              # by deployment\n"
+            "  kubectl logs -f deploy/api --all-containers  # all containers in pod\n"
+            "  kubectl logs -f <pod> --since=10m       # last 10 minutes\n"
+            "  kubectl logs -f <pod> --previous        # crashed previous container\n"
+            "Pipe to grep, jq, or claude for analysis."
+        ),
+        "tags": ["kubectl", "logs", "pod", "debug", "stream", "kubernetes", "k8s"],
+    },
+    {
+        "id": "kubectl-exec",
+        "title": "kubectl exec — Shell into a running pod",
+        "category": "debugging",
+        "when_to_use": "shell into pod debug kubernetes exec command inside container inspect k8s pod",
+        "example": "kubectl exec -it deploy/api -- bash",
+        "content": (
+            "SKILL: kubectl exec\n"
+            "Run commands inside a running Kubernetes pod:\n"
+            "  kubectl exec -it <pod> -- bash\n"
+            "  kubectl exec -it deploy/api -- bash           # by deployment\n"
+            "  kubectl exec <pod> -- env | grep DB           # check env vars\n"
+            "  kubectl exec <pod> -- curl -s localhost:8080/health\n"
+            "  kubectl exec -it <pod> -c sidecar -- sh       # specific container\n"
+            "Use kubectl get pods to find pod names."
+        ),
+        "tags": ["kubectl", "exec", "shell", "pod", "debug", "kubernetes", "k8s"],
+    },
+    {
+        "id": "kubectl-rollout",
+        "title": "kubectl rollout — Manage and roll back deployments",
+        "category": "deployments",
+        "when_to_use": "rollback deployment undo bad deploy restart pods rolling update deployment history kubernetes",
+        "example": "kubectl rollout undo deploy/api",
+        "content": (
+            "SKILL: kubectl rollout\n"
+            "Manage deployment rollouts and rollbacks:\n"
+            "  kubectl rollout status deploy/api       # watch rollout progress\n"
+            "  kubectl rollout history deploy/api      # show revision history\n"
+            "  kubectl rollout undo deploy/api         # rollback to previous\n"
+            "  kubectl rollout undo deploy/api --to-revision=3\n"
+            "  kubectl rollout restart deploy/api      # rolling restart\n"
+            "  kubectl set image deploy/api api=myrepo/api:v2  # deploy new image"
+        ),
+        "tags": ["kubectl", "rollout", "rollback", "deploy", "kubernetes", "k8s", "restart"],
+    },
+    {
+        "id": "kubectl-port-forward",
+        "title": "kubectl port-forward — Access cluster services locally",
+        "category": "networking",
+        "when_to_use": "access kubernetes service locally port forward debug service without ingress connect to database redis cluster",
+        "example": "kubectl port-forward svc/postgres 5432:5432",
+        "content": (
+            "SKILL: kubectl port-forward\n"
+            "Tunnel cluster services to your local machine:\n"
+            "  kubectl port-forward svc/postgres 5432:5432    # service\n"
+            "  kubectl port-forward pod/api-xyz 8080:8080     # specific pod\n"
+            "  kubectl port-forward deploy/redis 6379:6379    # deployment\n"
+            "Runs in foreground — use & to background or tmux.\n"
+            "Combine with local tooling: psql, redis-cli, curl, Postman."
+        ),
+        "tags": ["kubectl", "port-forward", "tunnel", "debug", "local", "kubernetes", "k8s"],
+    },
+    {
+        "id": "kubectl-context",
+        "title": "kubectl config use-context — Switch clusters quickly",
+        "category": "configuration",
+        "when_to_use": "switch kubernetes cluster change context prod staging dev multiple clusters kubeconfig",
+        "example": "kubectl config use-context prod-aks",
+        "content": (
+            "SKILL: kubectl context switching\n"
+            "Manage multiple clusters without editing kubeconfig:\n"
+            "  kubectl config get-contexts           # list all contexts\n"
+            "  kubectl config current-context        # show active context\n"
+            "  kubectl config use-context prod-aks   # switch to prod\n"
+            "  kubectl config use-context staging    # switch to staging\n"
+            "  kubectl config set-context --current --namespace=myteam  # set default ns\n"
+            "Always verify context before kubectl apply in prod."
+        ),
+        "tags": ["kubectl", "context", "cluster", "kubeconfig", "switch", "kubernetes", "k8s"],
+    },
+]
+
+# ---------------------------------------------------------------------------
+# Pre-built catalog registry — maps tool name → capabilities list
+# ---------------------------------------------------------------------------
+
+TOOL_CAPABILITY_CATALOGS: dict[str, list[dict]] = {
+    "claude-code": CLAUDE_CODE_CAPABILITIES,
+    "gh": GH_CAPABILITIES,
+    "docker": DOCKER_CAPABILITIES,
+    "kubectl": KUBECTL_CAPABILITIES,
+}

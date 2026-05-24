@@ -82,6 +82,7 @@ from tenacity import (
 
 from engram.models import (
     AssetReference,
+    Community,
     Entity,
     Fact,
     Graph,
@@ -415,6 +416,16 @@ class ArcadeDBClient:
             "CREATE INDEX IF NOT EXISTS ON Secret (key_name) NOTUNIQUE",
             "CREATE INDEX IF NOT EXISTS ON VaultAuditLog (namespace) NOTUNIQUE",
             "CREATE INDEX IF NOT EXISTS ON Memory (id) NOTUNIQUE",
+            # Community detection (Feature 3.4)
+            "CREATE VERTEX TYPE Community IF NOT EXISTS",
+            "CREATE PROPERTY Community.id IF NOT EXISTS STRING",
+            "CREATE PROPERTY Community.label IF NOT EXISTS STRING",
+            "CREATE PROPERTY Community.namespace IF NOT EXISTS STRING",
+            "CREATE PROPERTY Community.member_names IF NOT EXISTS LIST",
+            "CREATE PROPERTY Community.member_count IF NOT EXISTS INTEGER",
+            "CREATE PROPERTY Community.detected_at IF NOT EXISTS DATETIME",
+            "CREATE EDGE TYPE BELONGS_TO IF NOT EXISTS",
+            "CREATE INDEX IF NOT EXISTS ON Community (namespace) NOTUNIQUE",
         ]
         for cmd in schema_cmds:
             try:
@@ -1806,6 +1817,131 @@ class ArcadeDBClient:
         """Execute a read-only SQL query. Namespace is injected as :namespace param."""
         full_params = {"namespace": namespace, **(params or {})}
         return await self._query(sql, full_params)
+
+    # ------------------------------------------------------------------
+    # Community detection (Feature 3.4)
+    # ------------------------------------------------------------------
+
+    async def get_entity_cooccurrences(self, namespace: str) -> list[tuple[str, str]]:
+        """Return entity name pairs that co-occur in the same memory.
+
+        Used by community detection to build the co-occurrence graph.
+        Query: get all (memory_id, entity_name) from MENTIONS edges, then
+        in Python emit a pair for every two entities that share a memory_id.
+        """
+        ns_filter = namespace if namespace not in ("all", "", "*") else None
+        if ns_filter:
+            rows = await self._query(
+                "SELECT out.id as memory_id, in.name as entity_name "
+                "FROM MENTIONS WHERE out.namespace = :ns AND in.namespace = :ns",
+                {"ns": ns_filter},
+            )
+        else:
+            rows = await self._query(
+                "SELECT out.id as memory_id, in.name as entity_name FROM MENTIONS"
+            )
+        # Group by memory_id, then emit all pairs
+        from collections import defaultdict
+        mem_to_entities: dict[str, list[str]] = defaultdict(list)
+        for row in rows:
+            mid = row.get("memory_id", "")
+            ename = row.get("entity_name", "")
+            if mid and ename:
+                mem_to_entities[mid].append(ename)
+        pairs: list[tuple[str, str]] = []
+        for entities in mem_to_entities.values():
+            entities = list(set(entities))
+            for i in range(len(entities)):
+                for j in range(i + 1, len(entities)):
+                    pairs.append((entities[i], entities[j]))
+        return pairs
+
+    async def upsert_community(self, community: "Community") -> str:
+        """Insert or update a Community vertex (upsert by id)."""
+        updated = await self._command(
+            "UPDATE Community SET label = :label, member_names = :members, "
+            "member_count = :count, detected_at = :detected_at "
+            "WHERE id = :id AND namespace = :ns",
+            {
+                "id": community.id,
+                "label": community.label,
+                "members": community.member_names,
+                "count": community.member_count,
+                "detected_at": _dt_str(community.detected_at),
+                "ns": community.namespace,
+            },
+        )
+        matched = int(updated[0].get("count", 0)) if updated else 0
+        if matched == 0:
+            await self._command(
+                "INSERT INTO Community SET id = :id, label = :label, namespace = :ns, "
+                "member_names = :members, member_count = :count, detected_at = :detected_at",
+                {
+                    "id": community.id,
+                    "label": community.label,
+                    "ns": community.namespace,
+                    "members": community.member_names,
+                    "count": community.member_count,
+                    "detected_at": _dt_str(community.detected_at),
+                },
+            )
+        return community.id
+
+    async def create_belongs_to_edge(
+        self, entity_name: str, community_id: str, namespace: str
+    ) -> None:
+        """Create a BELONGS_TO edge from Entity to Community."""
+        try:
+            await self._command(
+                "CREATE EDGE BELONGS_TO "
+                "FROM (SELECT FROM Entity WHERE name = :ename AND namespace = :ns) "
+                "TO (SELECT FROM Community WHERE id = :cid AND namespace = :ns) "
+                "IF NOT EXISTS",
+                {"ename": entity_name, "cid": community_id, "ns": namespace},
+            )
+        except Exception as exc:
+            logger.debug("BELONGS_TO edge skipped: %s", exc)
+
+    async def list_communities(self, namespace: str) -> list[dict]:
+        """Return all Community vertices for a namespace."""
+        ns_filter = namespace if namespace not in ("all", "", "*") else None
+        if ns_filter:
+            rows = await self._query(
+                "SELECT * FROM Community WHERE namespace = :ns ORDER BY member_count DESC",
+                {"ns": ns_filter},
+            )
+        else:
+            rows = await self._query(
+                "SELECT * FROM Community ORDER BY member_count DESC LIMIT 100"
+            )
+        return [
+            {
+                "id": r.get("id", ""),
+                "label": r.get("label", ""),
+                "namespace": r.get("namespace", ""),
+                "member_names": r.get("member_names") or [],
+                "member_count": r.get("member_count", 0),
+                "detected_at": str(r.get("detected_at", "")),
+            }
+            for r in rows
+        ]
+
+    async def get_entity_community(self, entity_name: str, namespace: str) -> dict | None:
+        """Return the community an entity belongs to (if any)."""
+        rows = await self._query(
+            "SELECT expand(out('BELONGS_TO')) FROM Entity "
+            "WHERE name = :ename AND namespace = :ns LIMIT 1",
+            {"ename": entity_name.lower(), "ns": namespace},
+        )
+        if not rows:
+            return None
+        r = rows[0]
+        return {
+            "id": r.get("id", ""),
+            "label": r.get("label", ""),
+            "member_names": r.get("member_names") or [],
+            "member_count": r.get("member_count", 0),
+        }
 
 
 # ---------------------------------------------------------------------------

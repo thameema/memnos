@@ -170,6 +170,18 @@ class Entity(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
 
+class Community(BaseModel):
+    """A detected cluster of entities produced by community detection."""
+
+    id: str = Field(default_factory=_uuid)    # overridden with hash on creation
+    label: str
+    namespace: str
+    member_names: list[str] = Field(default_factory=list)
+    member_count: int = 0
+    detected_at: datetime = Field(default_factory=_now)
+    model_config = {"arbitrary_types_allowed": True}
+
+
 class Relation(BaseModel):
     """A directed relation between two entities."""
 

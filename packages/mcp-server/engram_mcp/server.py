@@ -477,14 +477,14 @@ TOOLS: list[Tool] = [
             "required": ["namespace"],
         },
     ),
-    # Skill Coach tools (Tier 1)
+    # Skill Coach tools (Tier 1 + 3.5 v2)
     Tool(
         name="skill_suggest",
         description=(
-            "Find relevant Claude Code capabilities for what you are trying to do. "
-            "Surfaces techniques, commands, and patterns you may not know about — "
-            "based on your task description, not on knowing what to ask for. "
-            "Call this when starting a task to discover better workflows."
+            "Find relevant tool capabilities for what you are trying to do. "
+            "Searches across all seeded tool catalogs (claude-code, gh, docker, kubectl) "
+            "or a specific tool via tool_filter. Surfaces techniques you may not know about — "
+            "based on your task description. Call this when starting a task."
         ),
         inputSchema={
             "type": "object",
@@ -498,6 +498,19 @@ TOOLS: list[Tool] = [
                     "default": 3,
                     "description": "Number of skill suggestions to return",
                 },
+                "tool_filter": {
+                    "type": "string",
+                    "description": "Restrict to a specific tool: claude-code, gh, docker, kubectl",
+                },
+                "include_team_skills": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Also search org_namespace for team-authored skills",
+                },
+                "org_namespace": {
+                    "type": "string",
+                    "description": "Namespace for team-authored skills (required when include_team_skills=true)",
+                },
             },
             "required": ["task"],
         },
@@ -505,14 +518,45 @@ TOOLS: list[Tool] = [
     Tool(
         name="skill_discover",
         description=(
-            "Seed or refresh the Claude Code capability catalog in engram. "
-            "Run once after installing engram, and again after Claude Code updates. "
-            "Populates the tool:claude-code:capabilities namespace with searchable skill memories."
+            "Seed or refresh tool capability catalogs in engram. "
+            "Pass tool= to seed a specific tool (claude-code, gh, docker, kubectl), "
+            "or omit to seed all available catalogs at once. "
+            "Populates tool:{name}:capabilities namespaces with searchable skill memories."
         ),
         inputSchema={
             "type": "object",
-            "properties": {},
+            "properties": {
+                "tool": {
+                    "type": "string",
+                    "description": "Tool to seed (claude-code, gh, docker, kubectl). Omit to seed all.",
+                },
+            },
             "required": [],
+        },
+    ),
+    Tool(
+        name="skill_author",
+        description=(
+            "Author and publish a custom team skill into a shared namespace. "
+            "Team skills are searchable by skill_suggest (set include_team_skills=true). "
+            "Use this to capture org-specific workflows, conventions, or runbooks."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Short skill title"},
+                "content": {"type": "string", "description": "Full skill content / runbook"},
+                "when_to_use": {"type": "string", "description": "Natural language description of when this skill applies (used for semantic search)"},
+                "example": {"type": "string", "description": "Concrete usage example"},
+                "category": {"type": "string", "description": "Category label, e.g. 'workflow', 'deployment', 'debugging'"},
+                "namespace": {"type": "string", "description": "Namespace to publish into (e.g. org:myteam:skills)"},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional tags for filtering",
+                },
+            },
+            "required": ["title", "content", "when_to_use", "namespace"],
         },
     ),
     # ---- Feature 2.4: memory review due ----
@@ -556,6 +600,23 @@ TOOLS: list[Tool] = [
                 "limit": {"type": "integer", "default": 20},
             },
             "required": ["namespace", "subscriber_id"],
+        },
+    ),
+    # ---- Feature 3.4: community search ----
+    Tool(
+        name="community_search",
+        description=(
+            "Find the entity cluster (community) that a concept belongs to, and see what other "
+            "entities are in the same community. Useful for broad 'what else is related to X?' "
+            "questions without knowing the exact relationship."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "description": "Entity name to look up"},
+                "namespace": {"type": "string"},
+            },
+            "required": ["entity", "namespace"],
         },
     ),
     # ---- Feature: automatic past-incident retrieval ----
@@ -811,16 +872,21 @@ async def _dispatch(
             client,
             task_description=args["task"],
             top_k=int(args.get("top_k", 3)),
+            tool_filter=args.get("tool_filter") or None,
+            include_team_skills=bool(args.get("include_team_skills", False)),
+            org_namespace=args.get("org_namespace") or None,
         )
         if not suggestions:
             text = (
                 "No skills found. Run skill_discover first to seed the capability catalog.\n"
-                "Tip: use skill_discover with no arguments to populate Claude Code features."
+                "Tip: use skill_discover with no arguments to populate all tool catalogs."
             )
         else:
-            lines = [f"Found {len(suggestions)} relevant Claude Code technique(s) for your task:\n"]
+            tool_label = args.get("tool_filter") or "all tools"
+            lines = [f"Found {len(suggestions)} relevant skill(s) for your task [{tool_label}]:\n"]
             for i, s in enumerate(suggestions, 1):
-                lines.append(f"{i}. {s['title']} [{s['category']}]  (relevance: {s['relevance_score']})")
+                tool_tag = f" ({s['tool']})" if s.get("tool") else ""
+                lines.append(f"{i}. {s['title']} [{s['category']}]{tool_tag}  (relevance: {s['relevance_score']})")
                 if s.get("example"):
                     lines.append(f"   Example: {s['example']}")
                 if s.get("tip"):
@@ -830,12 +896,71 @@ async def _dispatch(
         return [TextContent(type="text", text=text)]
 
     if name == "skill_discover":
-        from engram.skill_coach.seeder import seed_claude_code_capabilities
-        result = await seed_claude_code_capabilities(client)
+        from engram.skill_coach.seeder import seed_tool_capabilities, seed_claude_code_capabilities
+        from engram.skill_coach.capabilities import TOOL_CAPABILITY_CATALOGS
+        tool_arg = args.get("tool") or None
+        if tool_arg:
+            result = await seed_tool_capabilities(client, tool_arg)
+            text = (
+                f"Tool '{tool_arg}' catalog seeded: {result['added']} added, "
+                f"{result['updated']} updated, {result['skipped']} unchanged.\n"
+                f"Use skill_suggest with tool_filter='{tool_arg}' to find relevant techniques."
+            )
+        else:
+            totals = {"added": 0, "updated": 0, "skipped": 0}
+            for t in TOOL_CAPABILITY_CATALOGS:
+                r = await seed_tool_capabilities(client, t)
+                for k in totals:
+                    totals[k] += r[k]
+            text = (
+                f"All tool catalogs seeded ({', '.join(TOOL_CAPABILITY_CATALOGS)}): "
+                f"{totals['added']} added, {totals['updated']} updated, {totals['skipped']} unchanged.\n"
+                f"Use skill_suggest to surface relevant techniques for your tasks."
+            )
+        return [TextContent(type="text", text=text)]
+
+    if name == "skill_author":
+        import hashlib as _hashlib
+        from engram.models import MemoryType, MemoryStatus
+        title = args["title"]
+        content = args["content"]
+        when_to_use = args["when_to_use"]
+        example = args.get("example", "")
+        category = args.get("category", "workflow")
+        namespace = args["namespace"]
+        tags = args.get("tags") or []
+        skill_id = f"team-{_hashlib.sha256(title.encode()).hexdigest()[:12]}"
+        full_content = (
+            f"SKILL_ID:{skill_id}\n"
+            f"TITLE: {title}\n"
+            f"CATEGORY: {category}\n"
+            f"WHEN TO USE: {when_to_use}\n"
+            f"EXAMPLE: {example}\n\n"
+            f"{content}"
+        )
+        content_h = _hashlib.sha256(content.encode()).hexdigest()[:16]
+        memory = await client.add(
+            content=full_content,
+            namespace=namespace,
+            tags=["skill-coach", "team-skill"] + tags,
+            source="skill-author",
+            metadata={
+                "skill_id": skill_id,
+                "title": title,
+                "category": category,
+                "content_hash": content_h,
+                "tool": "team",
+            },
+            memory_type=MemoryType.skill,
+            status=MemoryStatus.active,
+            author="skill-author",
+            rationale=when_to_use,
+        )
         text = (
-            f"Skill catalog seeded: {result['added']} added, "
-            f"{result['updated']} updated, {result['skipped']} unchanged.\n"
-            f"Use skill_suggest to surface relevant techniques for your tasks."
+            f"Team skill authored: '{title}' (id: {skill_id})\n"
+            f"Namespace: {namespace}\n"
+            f"Memory id: {memory.id}\n"
+            f"Searchable via skill_suggest with include_team_skills=true, org_namespace='{namespace}'"
         )
         return [TextContent(type="text", text=text)]
 
@@ -917,6 +1042,25 @@ async def _dispatch(
             lines.append(f"--- {i}. Similarity: {score:.2f}  Severity: {severity}  Created: {created} ---")
             lines.append(mem.content)
             lines.append("")
+        return [TextContent(type="text", text="\n".join(lines))]
+
+    # ---- Feature 3.4: community search ----
+    if name == "community_search":
+        community = await client._arcadedb.get_entity_community(
+            args["entity"].lower(), args["namespace"]
+        )
+        if not community:
+            return [TextContent(
+                type="text",
+                text=(
+                    f"No community found for '{args['entity']}'. "
+                    "Run engram-community detect to build communities."
+                ),
+            )]
+        lines = [
+            f"Community: {community['label']}",
+            f"Members ({community['member_count']}): {', '.join(community['member_names'][:10])}",
+        ]
         return [TextContent(type="text", text="\n".join(lines))]
 
     # ---- external skill pack tools ----

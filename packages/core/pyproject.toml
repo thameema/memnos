@@ -31,13 +31,17 @@ voyage = ["voyageai>=0.2"]
 # pip install 'engram-core[qdrant]'
 # Enables ENGRAM_VECTOR_BACKEND=qdrant — HNSW ANN search via Qdrant.
 qdrant = ["qdrant-client>=1.9"]
-all = ["engram-core[local-embeddings,voyage,qdrant]"]
+# pip install 'engram-core[community]'
+# Adds networkx for Louvain/greedy community detection (Feature 3.4).
+community = ["networkx>=3.0"]
+all = ["engram-core[local-embeddings,voyage,qdrant,community]"]
 
 [project.scripts]
 engram-import = "engram.cli.import_cmd:main"
 engram-git = "engram.cli.git_hooks:main"
 engram-decay = "engram.cli.decay_cli:main"
 engram-vault = "engram.cli.vault_cli:main"
+engram-community = "engram.cli.community_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
