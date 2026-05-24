@@ -336,6 +336,8 @@ class ArcadeDBClient:
             "CREATE PROPERTY Subscription.namespace IF NOT EXISTS STRING",
             "CREATE PROPERTY Subscription.filter_types IF NOT EXISTS LIST",
             "CREATE PROPERTY Subscription.delivery_namespace IF NOT EXISTS STRING",
+            "CREATE PROPERTY Subscription.delivery_mode IF NOT EXISTS STRING",
+            "CREATE PROPERTY Subscription.webhook_url IF NOT EXISTS STRING",
             "CREATE PROPERTY Subscription.last_seen_at IF NOT EXISTS DATETIME",
             "CREATE PROPERTY Subscription.created_at IF NOT EXISTS DATETIME",
             "CREATE PROPERTY Subscription.active IF NOT EXISTS BOOLEAN",
@@ -1550,21 +1552,31 @@ class ArcadeDBClient:
     async def upsert_subscription(self, sub: "Subscription") -> str:
         """Create or activate a subscription. One per (subscriber_id, namespace)."""
         updated = await self._command(
-            "UPDATE Subscription SET last_seen_at = :last_seen, active = true "
+            "UPDATE Subscription SET last_seen_at = :last_seen, active = true, "
+            "delivery_mode = :mode, webhook_url = :webhook "
             "WHERE subscriber_id = :sid AND namespace = :ns",
-            {"last_seen": _dt_str(sub.last_seen_at), "sid": sub.subscriber_id, "ns": sub.namespace},
+            {
+                "last_seen": _dt_str(sub.last_seen_at),
+                "sid": sub.subscriber_id,
+                "ns": sub.namespace,
+                "mode": sub.delivery_mode,
+                "webhook": sub.webhook_url,
+            },
         )
         if not (updated and int(updated[0].get("count", 0)) > 0):
             await self._command(
                 "INSERT INTO Subscription SET "
                 "id = :id, subscriber_id = :sid, namespace = :ns, "
                 "filter_types = :types, delivery_namespace = :delivery_ns, "
+                "delivery_mode = :mode, webhook_url = :webhook, "
                 "last_seen_at = :last_seen, "
                 "created_at = :created_at, active = true",
                 {
                     "id": sub.id, "sid": sub.subscriber_id, "ns": sub.namespace,
                     "types": sub.filter_types,
                     "delivery_ns": sub.delivery_namespace,
+                    "mode": sub.delivery_mode,
+                    "webhook": sub.webhook_url,
                     "last_seen": _dt_str(sub.last_seen_at),
                     "created_at": _dt_str(sub.created_at),
                 },
@@ -1664,6 +1676,31 @@ class ArcadeDBClient:
                 results.append({
                     "subscriber_id": row.get("subscriber_id", ""),
                     "delivery_namespace": dn,
+                    "filter_types": [ft.lower().strip() for ft in (row.get("filter_types") or []) if ft],
+                })
+        return results
+
+    async def get_webhook_subscriptions(
+        self, source_namespace: str
+    ) -> list[dict]:
+        """Return active webhook subscriptions watching source_namespace.
+
+        Each item has: subscriber_id, webhook_url, filter_types.
+        Only returns entries where delivery_mode='webhook' and webhook_url is non-empty.
+        """
+        rows = await self._query(
+            "SELECT subscriber_id, webhook_url, filter_types FROM Subscription "
+            "WHERE namespace = :ns AND active = true AND delivery_mode = 'webhook' "
+            "AND webhook_url IS NOT NULL",
+            {"ns": source_namespace},
+        )
+        results = []
+        for row in rows:
+            url = row.get("webhook_url") or ""
+            if url.strip():
+                results.append({
+                    "subscriber_id": row.get("subscriber_id", ""),
+                    "webhook_url": url,
                     "filter_types": [ft.lower().strip() for ft in (row.get("filter_types") or []) if ft],
                 })
         return results

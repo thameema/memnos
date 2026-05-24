@@ -26,6 +26,8 @@ class SubscribeRequest(BaseModel):
     namespace: str
     filter_types: list[str] = []          # [] = all memory types
     delivery_namespace: str = ""          # if set, new memories are pushed here (fan-out)
+    delivery_mode: str = "cursor"         # "cursor" | "webhook" | "immediate"
+    webhook_url: str = ""                 # HTTPS endpoint for webhook delivery
 
 
 class SubscribeFeedItem(BaseModel):
@@ -55,11 +57,15 @@ async def subscribe(
     sub_id = await client.subscribe(
         user_id, req.namespace, req.filter_types,
         delivery_namespace=req.delivery_namespace,
+        delivery_mode=req.delivery_mode,
+        webhook_url=req.webhook_url,
     )
-    result = {"subscribed": True, "namespace": req.namespace, "subscriber_id": user_id}
+    result = {"subscribed": True, "namespace": req.namespace, "subscriber_id": user_id, "delivery_mode": req.delivery_mode}
     if req.delivery_namespace:
         result["delivery_namespace"] = req.delivery_namespace
         result["fan_out"] = True
+    if req.webhook_url:
+        result["webhook_url"] = req.webhook_url
     return result
 
 
@@ -88,7 +94,7 @@ async def get_feed(
     return FeedResponse(items=items, cursor=cursor, count=len(items))
 
 
-@router.delete("/{ns}", status_code=204)
+@router.delete("/{ns}", status_code=204, response_model=None)
 async def unsubscribe(
     ns: str,
     user_id: str = Depends(require_api_key),

@@ -274,6 +274,12 @@ class EngramClient:
         except Exception as exc:
             logger.debug("fan-out skipped (non-fatal): %s", exc)
 
+        # Webhook delivery: fire-and-forget POST to webhook subscribers
+        try:
+            await self._dispatch_webhooks(memory, namespace)
+        except Exception as exc:
+            logger.debug("webhook dispatch skipped (non-fatal): %s", exc)
+
         return memory
 
     async def _vector_search(
@@ -312,6 +318,56 @@ class EngramClient:
             include_superseded=include_historical,
             query=query,
         )
+
+    async def _dispatch_webhooks(self, memory: MemoryEntry, namespace: str) -> None:
+        """POST memory to all webhook subscribers for namespace (fire-and-forget per subscriber)."""
+        subs = await self._arcadedb.get_webhook_subscriptions(namespace)
+        if not subs:
+            return
+
+        import asyncio as _asyncio
+        import json as _json
+
+        try:
+            import httpx as _httpx
+        except ImportError:
+            logger.warning("httpx not installed — webhook delivery unavailable")
+            return
+
+        payload = {
+            "event": "memory.created",
+            "namespace": namespace,
+            "memory": {
+                "id": str(memory.id),
+                "content": memory.content,
+                "namespace": memory.namespace,
+                "memory_type": memory.memory_type.value if hasattr(memory.memory_type, "value") else str(memory.memory_type),
+                "author": memory.author,
+                "tags": list(memory.tags or []),
+                "created_at": memory.created_at.isoformat() if hasattr(memory.created_at, "isoformat") else str(memory.created_at),
+            },
+        }
+
+        async def _post(sub: dict) -> None:
+            filter_types = sub["filter_types"]
+            if filter_types:
+                mtype = payload["memory"]["memory_type"].lower()
+                tags_lower = [t.lower() for t in payload["memory"]["tags"]]
+                if mtype not in filter_types and not any(t in filter_types for t in tags_lower):
+                    return
+            try:
+                async with _httpx.AsyncClient(timeout=10.0) as http:
+                    resp = await http.post(
+                        sub["webhook_url"],
+                        json=payload,
+                        headers={"Content-Type": "application/json", "X-Engram-Event": "memory.created"},
+                    )
+                    resp.raise_for_status()
+                logger.debug("Webhook delivered to %s (subscriber: %s)", sub["webhook_url"], sub["subscriber_id"])
+            except Exception as exc:
+                logger.warning("Webhook delivery failed for %s: %s", sub["webhook_url"], exc)
+
+        _asyncio.gather(*[_post(sub) for sub in subs], return_exceptions=True)
 
     async def _fanout_memory(
         self, original: MemoryEntry, source_ns: str, embedding: list[float]
@@ -759,11 +815,15 @@ class EngramClient:
         namespace: str,
         filter_types: list[str] | None = None,
         delivery_namespace: str = "",
+        delivery_mode: str = "cursor",
+        webhook_url: str = "",
     ) -> str:
         """Subscribe subscriber_id to new memories in namespace.
 
-        If delivery_namespace is set, new memories written to namespace are
-        automatically copied (fanned out) to delivery_namespace.
+        delivery_mode options:
+          "cursor"    — subscriber polls via get_feed (default)
+          "webhook"   — memories are POSTed to webhook_url on write
+          "immediate" — reserved for future SSE push; stored but not yet dispatched
         """
         from engram.models import Subscription
         self._assert_started()
@@ -772,6 +832,8 @@ class EngramClient:
             namespace=namespace,
             filter_types=filter_types or [],
             delivery_namespace=delivery_namespace,
+            delivery_mode=delivery_mode,
+            webhook_url=webhook_url,
         )
         return await self._arcadedb.upsert_subscription(sub)
 

@@ -140,6 +140,8 @@ class Subscription(BaseModel):
     namespace: str                # source namespace being watched
     filter_types: list[str] = Field(default_factory=list)  # [] = all types
     delivery_namespace: str = ""  # if set, new memories are auto-copied here (fan-out push)
+    delivery_mode: str = "cursor"  # "cursor" | "webhook" | "immediate"
+    webhook_url: str = ""          # HTTPS endpoint for webhook delivery (delivery_mode=webhook)
     last_seen_at: datetime = Field(default_factory=_now)   # high-water mark
     created_at: datetime = Field(default_factory=_now)
     active: bool = True

@@ -531,7 +531,7 @@ TOOLS: list[Tool] = [
     # ---- Feature 2.1: namespace subscriptions ----
     Tool(
         name="namespace_subscribe",
-        description="Subscribe to receive new memories from a namespace. After subscribing, use namespace_feed to poll for updates. Set delivery_namespace to have new memories automatically pushed (copied) into your own namespace.",
+        description="Subscribe to receive new memories from a namespace. After subscribing, use namespace_feed to poll for updates. Set delivery_namespace for push fan-out, or delivery_mode=webhook with webhook_url to receive HTTP POST notifications on every new memory.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -539,6 +539,8 @@ TOOLS: list[Tool] = [
                 "subscriber_id": {"type": "string", "description": "Your user or agent ID"},
                 "filter_types": {"type": "array", "items": {"type": "string"}, "description": "Memory types to filter to (empty = all)"},
                 "delivery_namespace": {"type": "string", "description": "If set, new memories are auto-copied here (push fan-out)"},
+                "delivery_mode": {"type": "string", "description": "Delivery mode: 'cursor' (poll via namespace_feed), 'webhook' (HTTP POST to webhook_url), or 'immediate' (reserved). Default: cursor."},
+                "webhook_url": {"type": "string", "description": "HTTPS endpoint to POST new memories to (required when delivery_mode=webhook)"},
             },
             "required": ["namespace", "subscriber_id"],
         },
@@ -821,21 +823,28 @@ async def _dispatch(
 
     # ---- Feature 2.1: namespace subscriptions ----
     if name == "namespace_subscribe":
+        delivery_mode = args.get("delivery_mode") or "cursor"
+        webhook_url = args.get("webhook_url") or ""
         sub_id = await client.subscribe(
             subscriber_id=args["subscriber_id"],
             namespace=args["namespace"],
             filter_types=args.get("filter_types") or [],
             delivery_namespace=args.get("delivery_namespace") or "",
+            delivery_mode=delivery_mode,
+            webhook_url=webhook_url,
         )
         import json as _json
         result_obj = {
             "subscribed": True,
             "namespace": args["namespace"],
             "subscriber_id": args["subscriber_id"],
+            "delivery_mode": delivery_mode,
         }
         if args.get("delivery_namespace"):
             result_obj["delivery_namespace"] = args["delivery_namespace"]
             result_obj["fan_out"] = True
+        if webhook_url:
+            result_obj["webhook_url"] = webhook_url
         return [TextContent(type="text", text=_json.dumps(result_obj))]
 
     if name == "namespace_feed":
