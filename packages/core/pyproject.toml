@@ -33,6 +33,7 @@ all = ["engram-core[local-embeddings,voyage]"]
 [project.scripts]
 engram-import = "engram.cli.import_cmd:main"
 engram-git = "engram.cli.git_hooks:main"
+engram-decay = "engram.cli.decay_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

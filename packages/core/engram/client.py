@@ -18,6 +18,7 @@ Usage (manual lifecycle):
 from __future__ import annotations
 
 import logging
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -25,7 +26,7 @@ from typing import Any
 from engram.config import EngramConfig
 from engram.extraction.spacy_extractor import get_extractor
 from engram.models import (
-    AssetReference, Entity, Fact, Graph, MemoryEntry, MemoryStatus, MemoryType,
+    AssetReference, DecayPolicy, Entity, Fact, Graph, MemoryEntry, MemoryStatus, MemoryType,
     Provenance, SearchResult, Secret, VaultAuditLog,
 )
 from engram.storage.arcadedb_client import ArcadeDBClient
@@ -34,6 +35,29 @@ from engram.vault.vault_client import get_vault_client
 from engram.vector.embedder import get_embedder
 
 logger = logging.getLogger(__name__)
+
+# Decay half-lives: time_weighted = 90 days, access_weighted = 30 days
+_DECAY_K_TIME   = math.log(2) / 90
+_DECAY_K_ACCESS = math.log(2) / 30
+
+
+def _apply_decay_score(result: SearchResult, now: datetime) -> SearchResult:
+    """Multiply search score by a time-decay factor if the memory has a decay policy."""
+    mem = result.memory
+    policy = mem.decay_policy.value if hasattr(mem.decay_policy, "value") else str(mem.decay_policy or "none")
+    if policy in ("none", "DecayPolicy.none", ""):
+        return result
+    if policy == "time_weighted":
+        age_sec = (now - mem.created_at.replace(tzinfo=timezone.utc) if mem.created_at.tzinfo is None else now - mem.created_at).total_seconds()
+        factor = math.exp(-_DECAY_K_TIME * max(age_sec / 86400, 0))
+    elif policy == "access_weighted":
+        ref = mem.last_accessed_at or mem.created_at
+        ref = ref.replace(tzinfo=timezone.utc) if ref.tzinfo is None else ref
+        idle_sec = (now - ref).total_seconds()
+        factor = math.exp(-_DECAY_K_ACCESS * max(idle_sec / 86400, 0))
+    else:
+        return result
+    return result.model_copy(update={"score": result.score * factor})
 
 
 def _now() -> datetime:
@@ -434,6 +458,24 @@ class EngramClient:
                 results = pinned_results + deduped_results
         except Exception as exc:
             logger.debug("Decision pinning skipped (non-fatal): %s", exc)
+
+        # Apply decay score modifiers (non-pinned results only)
+        now_utc = datetime.now(timezone.utc)
+        results = [
+            _apply_decay_score(r, now_utc) if getattr(r, "source", "") != "pinned" else r
+            for r in results
+        ]
+
+        # Update last_accessed_at for access_weighted memories (fire-and-forget)
+        access_ids = [
+            r.memory.id for r in results
+            if getattr(r.memory.decay_policy, "value", str(r.memory.decay_policy)) == "access_weighted"
+        ]
+        if access_ids:
+            try:
+                await self._arcadedb.update_last_accessed(access_ids, namespace)
+            except Exception as exc:
+                logger.debug("update_last_accessed skipped: %s", exc)
 
         return results
 

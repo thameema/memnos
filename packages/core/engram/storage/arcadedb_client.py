@@ -325,6 +325,8 @@ class ArcadeDBClient:
             "CREATE PROPERTY Memory.expires_at IF NOT EXISTS DATETIME",
             "CREATE PROPERTY Memory.review_by IF NOT EXISTS DATETIME",
             "CREATE PROPERTY Memory.provenance IF NOT EXISTS MAP",
+            "CREATE PROPERTY Memory.decay_policy IF NOT EXISTS STRING",
+            "CREATE PROPERTY Memory.last_accessed_at IF NOT EXISTS DATETIME",
             # Subscription vertex type (Feature 2.1)
             "CREATE VERTEX TYPE Subscription IF NOT EXISTS",
             "CREATE PROPERTY Subscription.id IF NOT EXISTS STRING",
@@ -434,6 +436,7 @@ class ArcadeDBClient:
             "author = :author, affects = :affects, rationale = :rationale, "
             "expires_at = :expires_at, review_by = :review_by, "
             "provenance = :provenance, "
+            "decay_policy = :decay_policy, last_accessed_at = :last_accessed_at, "
             "content_embedding = :embedding"
         )
         params = {
@@ -453,6 +456,8 @@ class ArcadeDBClient:
             "expires_at": _dt_str(memory.expires_at),
             "review_by": _dt_str(memory.review_by),
             "provenance": memory.provenance.model_dump() if memory.provenance else {},
+            "decay_policy": memory.decay_policy.value if hasattr(memory.decay_policy, 'value') else str(memory.decay_policy or "none"),
+            "last_accessed_at": _dt_str(memory.last_accessed_at),
             "embedding": embedding,
         }
         await self._command(sql, params)
@@ -1348,6 +1353,63 @@ class ArcadeDBClient:
         return [_row_to_memory(r) for r in rows]
 
     # ------------------------------------------------------------------
+    # Decay policy (Feature 3.2)
+    # ------------------------------------------------------------------
+
+    async def get_decay_candidates(
+        self, namespace: str, policy: str, limit: int = 1000
+    ) -> list["MemoryEntry"]:
+        """Return active memories with the given decay_policy value."""
+        parts = namespace.split(":")
+        ns_list = [":".join(parts[:i+1]) for i in range(len(parts))]
+        placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
+        params: dict = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
+        params["policy"] = policy
+        params["limit"] = limit
+        rows = await self._query(
+            f"SELECT * FROM Memory "
+            f"WHERE decay_policy = :policy "
+            f"AND status = 'active' "
+            f"AND superseded_at IS NULL "
+            f"AND namespace IN [{placeholders}] "
+            f"LIMIT :limit",
+            params,
+        )
+        return [_row_to_memory(r) for r in rows]
+
+    async def mark_deprecated_bulk(self, memory_ids: list[str], namespace: str) -> int:
+        """Set status='deprecated' on a list of memory ids. Returns count updated."""
+        if not memory_ids:
+            return 0
+        total = 0
+        for mid in memory_ids:
+            rows = await self._command(
+                "UPDATE Memory SET status = 'deprecated' "
+                "WHERE id = :id AND namespace = :ns AND status = 'active'",
+                {"id": mid, "ns": namespace},
+            )
+            if rows and int(rows[0].get("count", 0)) > 0:
+                total += 1
+        if total:
+            self._embed_cache_dirty = True
+        return total
+
+    async def update_last_accessed(self, memory_ids: list[str], namespace: str) -> None:
+        """Fire-and-forget: stamp last_accessed_at = now on memories returned in search."""
+        if not memory_ids:
+            return
+        now_str = _dt_str(_now())
+        for mid in memory_ids:
+            try:
+                await self._command(
+                    "UPDATE Memory SET last_accessed_at = :now "
+                    "WHERE id = :id AND namespace = :ns",
+                    {"now": now_str, "id": mid, "ns": namespace},
+                )
+            except Exception as exc:
+                logger.debug("update_last_accessed failed for %s: %s", mid, exc)
+
+    # ------------------------------------------------------------------
     # Namespace subscriptions (Feature 2.1)
     # ------------------------------------------------------------------
 
@@ -1461,9 +1523,10 @@ class ArcadeDBClient:
 # ---------------------------------------------------------------------------
 
 def _row_to_memory(row: dict) -> MemoryEntry:
-    from engram.models import MemoryType, MemoryStatus
+    from engram.models import MemoryType, MemoryStatus, DecayPolicy
     raw_type = row.get("memory_type", "fact")
     raw_status = row.get("status", "active")
+    raw_decay = row.get("decay_policy", "none") or "none"
     try:
         mem_type = MemoryType(raw_type)
     except ValueError:
@@ -1472,6 +1535,10 @@ def _row_to_memory(row: dict) -> MemoryEntry:
         mem_status = MemoryStatus(raw_status)
     except ValueError:
         mem_status = MemoryStatus.active
+    try:
+        decay_policy = DecayPolicy(raw_decay)
+    except ValueError:
+        decay_policy = DecayPolicy.none
     return MemoryEntry(
         id=row.get("id", row.get("@rid", "")),
         content=row.get("content", ""),
@@ -1489,6 +1556,8 @@ def _row_to_memory(row: dict) -> MemoryEntry:
         expires_at=_parse_dt(row.get("expires_at")),
         review_by=_parse_dt(row.get("review_by")),
         provenance=Provenance(**(row.get("provenance") or {})) if row.get("provenance") else Provenance(),
+        decay_policy=decay_policy,
+        last_accessed_at=_parse_dt(row.get("last_accessed_at")),
     )
 
 

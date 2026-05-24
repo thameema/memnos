@@ -27,6 +27,18 @@ def _uuid() -> str:
 # Typed memory enumerations (Tier 1 — enterprise team features)
 # ---------------------------------------------------------------------------
 
+class DecayPolicy(str, Enum):
+    """Controls how memory relevance scores decay over time.
+
+    none            — no decay (default); score stays constant
+    time_weighted   — score decays with age; half-life 90 days
+    access_weighted — score decays with time since last access; half-life 30 days
+    """
+    none = "none"
+    time_weighted = "time_weighted"
+    access_weighted = "access_weighted"
+
+
 class MemoryType(str, Enum):
     """Semantic classification of a memory entry.
 
@@ -99,6 +111,8 @@ class MemoryEntry(BaseModel):
     review_by: datetime | None = None       # soft flag: surface for human review after this date
 
     provenance: "Provenance" = Field(default_factory=lambda: Provenance())
+    decay_policy: "DecayPolicy" = DecayPolicy.none
+    last_accessed_at: datetime | None = None   # updated on every search hit
 
     @computed_field
     @property

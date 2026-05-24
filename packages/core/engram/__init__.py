@@ -22,6 +22,7 @@ from engram.config import (
     VaultConfig,
 )
 from engram.models import (
+    DecayPolicy,
     Entity,
     Fact,
     Graph,
@@ -51,6 +52,7 @@ __all__ = [
     "MemoryEntry",
     "MemoryType",
     "MemoryStatus",
+    "DecayPolicy",
     "Entity",
     "Relation",
     "Fact",
