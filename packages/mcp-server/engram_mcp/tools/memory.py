@@ -97,21 +97,43 @@ async def handle_memory_search(
         lines.append("")
 
     if raw_results:
-        lines.append(f"Found {len(raw_results)} memories for {query!r}:\n")
-        for i, r in enumerate(raw_results, 1):
-            memory = r.memory if hasattr(r, "memory") else r
-            score = float(getattr(r, "score", 0.0))
-            tags = list(memory.tags) if memory.tags else []
-            tag_str = f"  tags: {', '.join(tags)}" if tags else ""
-            mem_type = getattr(memory.memory_type, "value", str(memory.memory_type)) if hasattr(memory, "memory_type") else "fact"
-            type_str = f"  type: {mem_type}" if mem_type != "fact" else ""
-            author_str = f"  author: {memory.author}" if getattr(memory, "author", "") else ""
-            created = memory.created_at.isoformat() if isinstance(memory.created_at, datetime) else str(memory.created_at)
-            content = str(memory.content or "")
-            snippet = content[:_MAX_CONTENT] + ("…" if len(content) > _MAX_CONTENT else "")
-            lines.append(f"{i}. [score: {score:.2f}]{type_str}{tag_str}{author_str}")
-            lines.append(f"   {snippet}")
-            lines.append(f"   id: {memory.id}  created: {created}\n")
+        # Split into pinned (decision/constraint/ADR surfaced by entity match) vs. ranked
+        pinned = [r for r in raw_results if getattr(r, "source", "") == "pinned"]
+        ranked = [r for r in raw_results if getattr(r, "source", "") != "pinned"]
+
+        if pinned:
+            lines.append(f"📌 PINNED — {len(pinned)} governance record(s) directly affecting entities in this query:\n")
+            for r in pinned:
+                memory = r.memory if hasattr(r, "memory") else r
+                mem_type = getattr(memory.memory_type, "value", str(memory.memory_type)) if hasattr(memory, "memory_type") else "decision"
+                affects_list = list(getattr(memory, "affects", []) or [])
+                affects_str = f"  governs: {', '.join(affects_list)}" if affects_list else ""
+                author_str = f"  author: {memory.author}" if getattr(memory, "author", "") else ""
+                rationale = str(getattr(memory, "rationale", "") or "")
+                rationale_str = f"\n   rationale: {rationale[:200]}" if rationale else ""
+                content = str(memory.content or "")
+                snippet = content[:_MAX_CONTENT] + ("…" if len(content) > _MAX_CONTENT else "")
+                lines.append(f"  [{mem_type.upper()}]{affects_str}{author_str}")
+                lines.append(f"  {snippet}{rationale_str}")
+                lines.append(f"  id: {memory.id}\n")
+            lines.append("")
+
+        if ranked:
+            lines.append(f"Found {len(ranked)} memories for {query!r}:\n")
+            for i, r in enumerate(ranked, 1):
+                memory = r.memory if hasattr(r, "memory") else r
+                score = float(getattr(r, "score", 0.0))
+                tags = list(memory.tags) if memory.tags else []
+                tag_str = f"  tags: {', '.join(tags)}" if tags else ""
+                mem_type = getattr(memory.memory_type, "value", str(memory.memory_type)) if hasattr(memory, "memory_type") else "fact"
+                type_str = f"  type: {mem_type}" if mem_type != "fact" else ""
+                author_str = f"  author: {memory.author}" if getattr(memory, "author", "") else ""
+                created = memory.created_at.isoformat() if isinstance(memory.created_at, datetime) else str(memory.created_at)
+                content = str(memory.content or "")
+                snippet = content[:_MAX_CONTENT] + ("…" if len(content) > _MAX_CONTENT else "")
+                lines.append(f"{i}. [score: {score:.2f}]{type_str}{tag_str}{author_str}")
+                lines.append(f"   {snippet}")
+                lines.append(f"   id: {memory.id}  created: {created}\n")
 
     return "\n".join(lines)
 

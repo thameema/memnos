@@ -943,6 +943,83 @@ def test_count_and_namespace_distribution(runner: TestRunner):
     assert dist[ns] == expected_count
 
 
+def test_decision_pinning(runner: TestRunner):
+    """get_decisions_for_entities() returns decision/ADR memories whose affects
+    list overlaps with the given entity names, regardless of vector score."""
+    ns = TEST_NS + ":pinning"
+
+    dec_id = uid()
+    arcade_command(
+        "INSERT INTO Memory SET "
+        "id = :id, content = :content, namespace = :ns, "
+        "created_at = :ts, superseded_at = null, "
+        "tags = ['decision'], source = 'decision', metadata = {}, "
+        "memory_type = 'decision', status = 'active', "
+        "author = 'architect', "
+        "affects = ['paymentservice', 'ordersvc'], "
+        "rationale = 'PCI-DSS requires no direct DB writes from request path', "
+        "expires_at = null, review_by = null, "
+        "provenance = {}, content_embedding = []",
+        {"id": dec_id, "content": "PaymentService must never write directly to the database — use the event queue.", "ns": ns, "ts": now_str()},
+    )
+
+    adr_id = uid()
+    arcade_command(
+        "INSERT INTO Memory SET "
+        "id = :id, content = :content, namespace = :ns, "
+        "created_at = :ts, superseded_at = null, "
+        "tags = ['adr'], source = 'adr', metadata = {}, "
+        "memory_type = 'adr', status = 'active', "
+        "author = 'tech-lead', "
+        "affects = ['ordersvc'], "
+        "rationale = 'Reduce coupling between order creation and inventory check', "
+        "expires_at = null, review_by = null, "
+        "provenance = {}, content_embedding = []",
+        {"id": adr_id, "content": "OrderSvc uses async messaging for inventory checks — no sync HTTP calls.", "ns": ns, "ts": now_str()},
+    )
+
+    # Plain fact — must NOT be returned by decision pinning
+    fact_id = uid()
+    arcade_command(
+        "INSERT INTO Memory SET "
+        "id = :id, content = :content, namespace = :ns, "
+        "created_at = :ts, superseded_at = null, "
+        "tags = [], source = 'agent', metadata = {}, "
+        "memory_type = 'fact', status = 'active', "
+        "author = '', affects = ['paymentservice'], rationale = '', "
+        "expires_at = null, review_by = null, "
+        "provenance = {}, content_embedding = []",
+        {"id": fact_id, "content": "PaymentService processes ~50k transactions per day.", "ns": ns, "ts": now_str()},
+    )
+
+    rows = arcade_query(
+        "SELECT id, memory_type, affects FROM Memory "
+        "WHERE memory_type IN ['decision', 'constraint', 'adr'] "
+        "AND status = 'active' AND superseded_at IS NULL AND namespace = :ns LIMIT 500",
+        {"ns": ns},
+    )
+
+    # paymentservice → dec_id only (adr governs ordersvc only)
+    norm1 = {"paymentservice"}
+    m1 = {r["id"] for r in rows if any(a.lower().strip() in norm1 for a in (r.get("affects") or []))}
+    assert dec_id in m1, "Decision governing PaymentService not returned"
+    assert fact_id not in m1, "Plain fact must not be returned by decision pinning"
+
+    # ordersvc → both dec_id and adr_id
+    norm2 = {"ordersvc"}
+    m2 = {r["id"] for r in rows if any(a.lower().strip() in norm2 for a in (r.get("affects") or []))}
+    assert dec_id in m2, "Decision (affects ordersvc) not returned"
+    assert adr_id in m2, "ADR (affects ordersvc) not returned"
+
+    # unknown entity → empty
+    norm3 = {"unknownservice"}
+    m3 = [r for r in rows if any(a.lower().strip() in norm3 for a in (r.get("affects") or []))]
+    assert len(m3) == 0, "No decisions should match an unknown entity"
+
+    for mid in (dec_id, adr_id, fact_id):
+        arcade_command("DELETE VERTEX FROM Memory WHERE id = :id AND namespace = :ns", {"id": mid, "ns": ns})
+
+
 def test_delete_memory(runner: TestRunner):
     """Hard-delete removes Memory vertex completely.
     ArcadeDB 26.x requires DELETE VERTEX FROM <Type> syntax.
@@ -1019,6 +1096,7 @@ ALL_TESTS = [
     ("constraint_retrieval", test_constraint_retrieval),
     ("graph_traversal", test_graph_traversal),
     ("count_and_namespace_distribution", test_count_and_namespace_distribution),
+    ("decision_pinning", test_decision_pinning),
     ("delete_memory", test_delete_memory),
     ("persistence_basic", test_persistence_basic),
     ("all_vertex_types_have_data", test_all_vertex_types_have_data),

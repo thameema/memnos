@@ -18,6 +18,7 @@ Usage (manual lifecycle):
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -37,6 +38,33 @@ logger = logging.getLogger(__name__)
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# Patterns for extracting technical entity names from free-text queries.
+# spaCy misses CamelCase service names and snake_case identifiers, so we
+# supplement with these patterns to drive decision pinning.
+_CAMEL_CASE   = re.compile(r'\b[A-Z][a-z]+(?:[A-Z][a-z0-9]+)+\b')   # PaymentService
+_ALL_CAPS     = re.compile(r'\b[A-Z]{2,}\b')                          # JWT, API, RCA
+_SNAKE_CASE   = re.compile(r'\b[a-z][a-z0-9]*(?:_[a-z0-9]+){1,}\b')  # payment_service
+_KEBAB_CASE   = re.compile(r'\b[a-z][a-z0-9]*(?:-[a-z0-9]+){1,}\b')  # payment-service
+
+
+def _query_entity_names(query: str) -> list[str]:
+    """Extract candidate entity names from a query string for decision pinning.
+
+    Returns lowercase names. These are matched against the `affects` list on
+    decision/constraint/ADR memories to find governance rules for those entities.
+    """
+    names: set[str] = set()
+    for m in _CAMEL_CASE.finditer(query):
+        names.add(m.group(0).lower())
+    for m in _ALL_CAPS.finditer(query):
+        names.add(m.group(0).lower())
+    for m in _SNAKE_CASE.finditer(query):
+        names.add(m.group(0))
+    for m in _KEBAB_CASE.finditer(query):
+        names.add(m.group(0))
+    return list(names)
 
 
 class EngramClient:
@@ -366,6 +394,46 @@ class EngramClient:
                     include_superseded=include_historical,
                     query=query,
                 )
+
+        # Decision pinning — find decision/constraint/ADR memories that explicitly
+        # govern entities mentioned in the query and prepend them above top_k results.
+        # These memories are always relevant regardless of semantic score.
+        try:
+            # Collect candidate entity names: regex extraction + spaCy
+            entity_names = _query_entity_names(query)
+            spacy_entities = await self._extractor.extract(query)
+            entity_names += [e.name for e in spacy_entities]
+            # Also include entity names from the affects lists already in results
+            for r in results:
+                entity_names += list(r.memory.affects or [])
+
+            if entity_names:
+                pinned_memories = await self._arcadedb.get_decisions_for_entities(
+                    entity_names, namespace
+                )
+                # Deduplicate: remove from vector results any ID already pinned
+                pinned_ids = {m.id for m in pinned_memories}
+                deduped_results = [r for r in results if r.memory.id not in pinned_ids]
+                # Build pinned SearchResults with score=2.0 (always above natural 0-1 range)
+                pinned_results = [
+                    SearchResult(
+                        memory=m,
+                        score=2.0,
+                        source="pinned",
+                        is_current=True,
+                        recency_score=1.0,
+                    )
+                    for m in pinned_memories
+                ]
+                if pinned_results:
+                    logger.debug(
+                        "search: pinned %d decision(s) for entities %s",
+                        len(pinned_results),
+                        list({e for e in entity_names})[:5],
+                    )
+                results = pinned_results + deduped_results
+        except Exception as exc:
+            logger.debug("Decision pinning skipped (non-fatal): %s", exc)
 
         return results
 

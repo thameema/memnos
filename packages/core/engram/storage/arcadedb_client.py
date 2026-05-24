@@ -566,6 +566,49 @@ class ArcadeDBClient:
         )
         return [_row_to_memory(r) for r in rows]
 
+    async def get_decisions_for_entities(
+        self, entity_names: list[str], namespace: str
+    ) -> list["MemoryEntry"]:
+        """Return active decision/constraint/ADR memories whose affects list
+        overlaps with any of the given entity names.
+
+        These are pinned above top_k vector results — they surface regardless
+        of semantic score because they explicitly govern the entities in the query.
+        Checks the full namespace ancestry (org:acme:eng → org:acme → org).
+        """
+        if not entity_names:
+            return []
+        normalized = {n.lower().strip() for n in entity_names if n.strip()}
+        if not normalized:
+            return []
+
+        # Build namespace ancestry list (same pattern as get_constraints)
+        parts = namespace.split(":")
+        ns_list = [":".join(parts[:i + 1]) for i in range(len(parts))]
+        placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
+        params: dict = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
+
+        rows = await self._query(
+            f"SELECT * FROM Memory "
+            f"WHERE memory_type IN ['decision', 'constraint', 'adr'] "
+            f"AND status = 'active' "
+            f"AND superseded_at IS NULL "
+            f"AND namespace IN [{placeholders}] "
+            f"LIMIT 500",
+            params,
+        )
+
+        results = []
+        seen: set[str] = set()
+        for row in rows:
+            affects = row.get("affects") or []
+            if any(a.lower().strip() in normalized for a in affects):
+                mem = _row_to_memory(row)
+                if mem.id not in seen:
+                    seen.add(mem.id)
+                    results.append(mem)
+        return results
+
     async def get_entity(self, name: str, namespace: str) -> Entity | None:
         rows = await self._query(
             "SELECT * FROM Entity WHERE name = :name AND namespace = :ns LIMIT 1",
