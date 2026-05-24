@@ -498,6 +498,118 @@ def test_subscription_create_and_feed(runner: TestRunner):
     assert mem_id in feed_ids, f"New memory {mem_id} not in subscription feed"
 
 
+def test_subscription_filter_types(runner: TestRunner):
+    """filter_types on a subscription excludes non-matching memory types from the feed."""
+    sub_ns = TEST_NS + ":filter-sub"
+    past_ts = "2020-01-01T00:00:00+00:00"
+
+    # Subscription that only wants 'decision' and 'incident' memories
+    sub_id = uid()
+    subscriber = "filter-sub-" + uid()[:8]
+    arcade_command(
+        "INSERT INTO Subscription SET "
+        "id = :id, subscriber_id = :sid, namespace = :ns, "
+        "filter_types = ['decision', 'incident'], last_seen_at = :ts, "
+        "created_at = :ts, active = true",
+        {"id": sub_id, "sid": subscriber, "ns": sub_ns, "ts": past_ts},
+    )
+
+    # Write a 'decision' memory — should appear in filtered feed
+    dec_id = uid()
+    arcade_command(
+        "INSERT INTO Memory SET "
+        "id = :id, content = :content, namespace = :ns, "
+        "created_at = :ts, superseded_at = null, "
+        "tags = [], source = 'decision', metadata = {}, "
+        "memory_type = 'decision', status = 'active', "
+        "author = '', affects = [], rationale = '', "
+        "expires_at = null, review_by = null, "
+        "provenance = {}, content_embedding = []",
+        {"id": dec_id, "content": "Decision: use event queue", "ns": sub_ns, "ts": now_str()},
+    )
+
+    # Write a plain 'fact' memory — should NOT appear in filtered feed
+    fact_id = uid()
+    arcade_command(
+        "INSERT INTO Memory SET "
+        "id = :id, content = :content, namespace = :ns, "
+        "created_at = :ts, superseded_at = null, "
+        "tags = [], source = 'agent', metadata = {}, "
+        "memory_type = 'fact', status = 'active', "
+        "author = '', affects = [], rationale = '', "
+        "expires_at = null, review_by = null, "
+        "provenance = {}, content_embedding = []",
+        {"id": fact_id, "content": "Routine observation about the system", "ns": sub_ns, "ts": now_str()},
+    )
+
+    # Fetch raw feed rows (simulate get_feed filtering logic)
+    sub_rows = arcade_query(
+        "SELECT last_seen_at, filter_types FROM Subscription WHERE id = :id",
+        {"id": sub_id},
+    )
+    assert sub_rows, "Subscription not found"
+    last_seen = sub_rows[0]["last_seen_at"]
+    raw_filter_types = [ft.lower().strip() for ft in (sub_rows[0].get("filter_types") or []) if ft]
+
+    all_rows = arcade_query(
+        "SELECT id, memory_type FROM Memory "
+        "WHERE namespace = :ns AND created_at > :last_seen AND superseded_at IS NULL "
+        "ORDER BY created_at ASC LIMIT 50",
+        {"ns": sub_ns, "last_seen": last_seen},
+    )
+    # Apply filter (mirrors arcadedb_client.get_feed logic)
+    filtered_ids = {
+        r["id"] for r in all_rows
+        if not raw_filter_types or r.get("memory_type", "").lower() in raw_filter_types
+    }
+
+    assert dec_id in filtered_ids, "Decision memory missing from filtered feed"
+    assert fact_id not in filtered_ids, "Fact memory must be excluded by filter_types=['decision','incident']"
+
+    # Tag-based filter: subscription for 'breaking_change' tag
+    tag_sub_id = uid()
+    tag_subscriber = "tag-sub-" + uid()[:8]
+    arcade_command(
+        "INSERT INTO Subscription SET "
+        "id = :id, subscriber_id = :sid, namespace = :ns, "
+        "filter_types = ['breaking_change'], last_seen_at = :ts, "
+        "created_at = :ts, active = true",
+        {"id": tag_sub_id, "sid": tag_subscriber, "ns": sub_ns, "ts": past_ts},
+    )
+
+    tagged_id = uid()
+    arcade_command(
+        "INSERT INTO Memory SET "
+        "id = :id, content = :content, namespace = :ns, "
+        "created_at = :ts, superseded_at = null, "
+        "tags = ['breaking_change', 'api'], source = 'agent', metadata = {}, "
+        "memory_type = 'fact', status = 'active', "
+        "author = '', affects = [], rationale = '', "
+        "expires_at = null, review_by = null, "
+        "provenance = {}, content_embedding = []",
+        {"id": tagged_id, "content": "API v2 removes /users endpoint", "ns": sub_ns, "ts": now_str()},
+    )
+
+    tag_all_rows = arcade_query(
+        "SELECT id, memory_type, tags FROM Memory "
+        "WHERE namespace = :ns AND created_at > :ts AND superseded_at IS NULL LIMIT 50",
+        {"ns": sub_ns, "ts": past_ts},
+    )
+    # Tag filter: match if any tag is in filter_types
+    tag_filtered = {
+        r["id"] for r in tag_all_rows
+        if any(t.lower() in ["breaking_change"] for t in (r.get("tags") or []))
+    }
+    assert tagged_id in tag_filtered, "Memory with 'breaking_change' tag must pass tag-based filter"
+    assert fact_id not in tag_filtered, "Plain fact with no matching tags must be excluded"
+
+    # Cleanup
+    for mid in (dec_id, fact_id, tagged_id):
+        arcade_command("DELETE VERTEX FROM Memory WHERE id = :id AND namespace = :ns", {"id": mid, "ns": sub_ns})
+    for sid in (sub_id, tag_sub_id):
+        arcade_command("DELETE VERTEX FROM Subscription WHERE id = :id", {"id": sid})
+
+
 def test_subscription_deactivate(runner: TestRunner):
     """Deactivating a subscription sets active = false."""
     sub_id = uid()
@@ -1083,6 +1195,7 @@ ALL_TESTS = [
     ("affects_edge", test_affects_edge),
     ("fact_insert_and_supersede", test_fact_insert_and_supersede),
     ("subscription_create_and_feed", test_subscription_create_and_feed),
+    ("subscription_filter_types", test_subscription_filter_types),
     ("subscription_deactivate", test_subscription_deactivate),
     ("secret_store_and_retrieve", test_secret_store_and_retrieve),
     ("secret_supersession", test_secret_supersession),

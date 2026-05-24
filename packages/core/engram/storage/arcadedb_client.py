@@ -1378,12 +1378,15 @@ class ArcadeDBClient:
     ) -> tuple[list["MemoryEntry"], str]:
         """Return new memories since last_seen for subscriber. Updates high-water mark.
 
+        Applies filter_types if set on the subscription — only memories whose
+        memory_type (or tags) match are returned. Empty filter_types means all types.
+
         Returns (memories, new_cursor_iso) where new_cursor_iso is the ISO timestamp
         to use as the next poll cursor.
         """
-        # Get current high-water mark
+        # Fetch high-water mark AND filter_types in one query
         sub_rows = await self._query(
-            "SELECT last_seen_at FROM Subscription "
+            "SELECT last_seen_at, filter_types FROM Subscription "
             "WHERE subscriber_id = :sid AND namespace = :ns AND active = true LIMIT 1",
             {"sid": subscriber_id, "ns": namespace},
         )
@@ -1391,6 +1394,9 @@ class ArcadeDBClient:
             return [], _dt_str(_now())
 
         last_seen = _parse_dt(sub_rows[0].get("last_seen_at")) or _now()
+        raw_filter_types = sub_rows[0].get("filter_types") or []
+        # Normalise: lowercase strings, drop empties
+        filter_types = [ft.lower().strip() for ft in raw_filter_types if ft]
         now = _now()
 
         parts = namespace.split(":")
@@ -1408,9 +1414,20 @@ class ArcadeDBClient:
         )
         memories = [_row_to_memory(r) for r in rows]
 
-        # Advance high-water mark
-        if memories:
-            new_cursor = max(m.created_at for m in memories)
+        # Apply filter_types: match memory_type value OR any tag
+        if filter_types and memories:
+            def _matches(m: "MemoryEntry") -> bool:
+                mtype = m.memory_type.value if hasattr(m.memory_type, "value") else str(m.memory_type)
+                if mtype.lower() in filter_types:
+                    return True
+                return any(t.lower() in filter_types for t in (m.tags or []))
+            memories = [m for m in memories if _matches(m)]
+
+        # Advance high-water mark to the latest record seen (pre-filter timestamp,
+        # so filtered-out records don't re-appear on the next poll)
+        all_memories_raw = [_row_to_memory(r) for r in rows]
+        if all_memories_raw:
+            new_cursor = max(m.created_at for m in all_memories_raw)
             await self._command(
                 "UPDATE Subscription SET last_seen_at = :cursor "
                 "WHERE subscriber_id = :sid AND namespace = :ns",
