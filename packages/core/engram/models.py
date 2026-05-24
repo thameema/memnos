@@ -137,8 +137,9 @@ class Subscription(BaseModel):
     """A subscription: subscriber polls namespace for new memories since last_seen."""
     id: str = Field(default_factory=_uuid)
     subscriber_id: str            # user_id or agent_id of the subscriber
-    namespace: str                # namespace being watched
+    namespace: str                # source namespace being watched
     filter_types: list[str] = Field(default_factory=list)  # [] = all types
+    delivery_namespace: str = ""  # if set, new memories are auto-copied here (fan-out push)
     last_seen_at: datetime = Field(default_factory=_now)   # high-water mark
     created_at: datetime = Field(default_factory=_now)
     active: bool = True

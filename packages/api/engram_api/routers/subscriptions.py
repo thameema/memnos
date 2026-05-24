@@ -24,7 +24,8 @@ router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
 
 class SubscribeRequest(BaseModel):
     namespace: str
-    filter_types: list[str] = []   # [] = all memory types
+    filter_types: list[str] = []          # [] = all memory types
+    delivery_namespace: str = ""          # if set, new memories are pushed here (fan-out)
 
 
 class SubscribeFeedItem(BaseModel):
@@ -51,8 +52,15 @@ async def subscribe(
     client=Depends(get_client),
 ) -> dict:
     await check_namespace_access(key_entry, req.namespace)
-    sub_id = await client.subscribe(user_id, req.namespace, req.filter_types)
-    return {"subscribed": True, "namespace": req.namespace, "subscriber_id": user_id}
+    sub_id = await client.subscribe(
+        user_id, req.namespace, req.filter_types,
+        delivery_namespace=req.delivery_namespace,
+    )
+    result = {"subscribed": True, "namespace": req.namespace, "subscriber_id": user_id}
+    if req.delivery_namespace:
+        result["delivery_namespace"] = req.delivery_namespace
+        result["fan_out"] = True
+    return result
 
 
 @router.get("/{ns}/feed", response_model=FeedResponse)

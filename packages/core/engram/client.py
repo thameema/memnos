@@ -248,7 +248,60 @@ class EngramClient:
             logger.warning("Entity extraction failed (non-fatal): %s", exc)
 
         logger.info("Memory stored: id=%s namespace=%s type=%s", memory.id, namespace, memory_type.value)
+
+        # Fan-out: push copies to subscribers who requested delivery_namespace
+        try:
+            await self._fanout_memory(memory, namespace, embedding)
+        except Exception as exc:
+            logger.debug("fan-out skipped (non-fatal): %s", exc)
+
         return memory
+
+    async def _fanout_memory(
+        self, original: MemoryEntry, source_ns: str, embedding: list[float]
+    ) -> None:
+        """Copy original memory into each subscriber's delivery_namespace (fire-and-forget)."""
+        subscribers = await self._arcadedb.get_fanout_subscribers(source_ns)
+        if not subscribers:
+            return
+
+        for sub in subscribers:
+            delivery_ns = sub["delivery_namespace"]
+            filter_types = sub["filter_types"]
+
+            # Apply filter_types check before copying
+            if filter_types:
+                mtype = original.memory_type.value if hasattr(original.memory_type, "value") else str(original.memory_type)
+                tag_match = any(t.lower() in filter_types for t in (original.tags or []))
+                if mtype.lower() not in filter_types and not tag_match:
+                    continue  # subscriber's filter excludes this memory type
+
+            from engram.models import MemoryEntry as _ME
+            copy = _ME(
+                content=original.content,
+                namespace=delivery_ns,
+                tags=list(original.tags),
+                source="fanout",
+                metadata={
+                    **original.metadata,
+                    "fanout_source": source_ns,
+                    "original_id": str(original.id),
+                },
+                memory_type=original.memory_type,
+                status=original.status,
+                author=original.author,
+                affects=list(original.affects or []),
+                rationale=original.rationale,
+                provenance=original.provenance,
+            )
+            try:
+                await self._arcadedb.insert_memory(copy, embedding)
+                logger.debug(
+                    "fan-out: copied memory %s → %s (subscriber: %s)",
+                    original.id, delivery_ns, sub["subscriber_id"],
+                )
+            except Exception as exc:
+                logger.warning("fan-out insert failed for %s → %s: %s", original.id, delivery_ns, exc)
 
     # ------------------------------------------------------------------
     # Typed write convenience methods (Tier 1)
@@ -639,15 +692,24 @@ class EngramClient:
     # ------------------------------------------------------------------
 
     async def subscribe(
-        self, subscriber_id: str, namespace: str, filter_types: list[str] | None = None
+        self,
+        subscriber_id: str,
+        namespace: str,
+        filter_types: list[str] | None = None,
+        delivery_namespace: str = "",
     ) -> str:
-        """Subscribe subscriber_id to new memories in namespace."""
+        """Subscribe subscriber_id to new memories in namespace.
+
+        If delivery_namespace is set, new memories written to namespace are
+        automatically copied (fanned out) to delivery_namespace.
+        """
         from engram.models import Subscription
         self._assert_started()
         sub = Subscription(
             subscriber_id=subscriber_id,
             namespace=namespace,
             filter_types=filter_types or [],
+            delivery_namespace=delivery_namespace,
         )
         return await self._arcadedb.upsert_subscription(sub)
 

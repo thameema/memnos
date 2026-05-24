@@ -333,6 +333,7 @@ class ArcadeDBClient:
             "CREATE PROPERTY Subscription.subscriber_id IF NOT EXISTS STRING",
             "CREATE PROPERTY Subscription.namespace IF NOT EXISTS STRING",
             "CREATE PROPERTY Subscription.filter_types IF NOT EXISTS LIST",
+            "CREATE PROPERTY Subscription.delivery_namespace IF NOT EXISTS STRING",
             "CREATE PROPERTY Subscription.last_seen_at IF NOT EXISTS DATETIME",
             "CREATE PROPERTY Subscription.created_at IF NOT EXISTS DATETIME",
             "CREATE PROPERTY Subscription.active IF NOT EXISTS BOOLEAN",
@@ -1424,11 +1425,13 @@ class ArcadeDBClient:
             await self._command(
                 "INSERT INTO Subscription SET "
                 "id = :id, subscriber_id = :sid, namespace = :ns, "
-                "filter_types = :types, last_seen_at = :last_seen, "
+                "filter_types = :types, delivery_namespace = :delivery_ns, "
+                "last_seen_at = :last_seen, "
                 "created_at = :created_at, active = true",
                 {
                     "id": sub.id, "sid": sub.subscriber_id, "ns": sub.namespace,
                     "types": sub.filter_types,
+                    "delivery_ns": sub.delivery_namespace,
                     "last_seen": _dt_str(sub.last_seen_at),
                     "created_at": _dt_str(sub.created_at),
                 },
@@ -1507,6 +1510,30 @@ class ArcadeDBClient:
             {"sid": subscriber_id, "ns": namespace},
         )
         return bool(rows and int(rows[0].get("count", 0)) > 0)
+
+    async def get_fanout_subscribers(
+        self, source_namespace: str
+    ) -> list[dict]:
+        """Return subscribers watching source_namespace with delivery_namespace set.
+
+        Each item has: subscriber_id, delivery_namespace, filter_types
+        Only returns entries where delivery_namespace is non-empty.
+        """
+        rows = await self._query(
+            "SELECT subscriber_id, delivery_namespace, filter_types FROM Subscription "
+            "WHERE namespace = :ns AND active = true AND delivery_namespace IS NOT NULL",
+            {"ns": source_namespace},
+        )
+        results = []
+        for row in rows:
+            dn = row.get("delivery_namespace") or ""
+            if dn.strip():
+                results.append({
+                    "subscriber_id": row.get("subscriber_id", ""),
+                    "delivery_namespace": dn,
+                    "filter_types": [ft.lower().strip() for ft in (row.get("filter_types") or []) if ft],
+                })
+        return results
 
     # ------------------------------------------------------------------
     # Raw query (for MCP graph_query tool)

@@ -523,13 +523,14 @@ TOOLS: list[Tool] = [
     # ---- Feature 2.1: namespace subscriptions ----
     Tool(
         name="namespace_subscribe",
-        description="Subscribe to receive new memories from a namespace. After subscribing, use namespace_feed to poll for updates. Useful for staying informed when teammates write to a shared namespace.",
+        description="Subscribe to receive new memories from a namespace. After subscribing, use namespace_feed to poll for updates. Set delivery_namespace to have new memories automatically pushed (copied) into your own namespace.",
         inputSchema={
             "type": "object",
             "properties": {
-                "namespace": {"type": "string"},
+                "namespace": {"type": "string", "description": "Source namespace to watch"},
                 "subscriber_id": {"type": "string", "description": "Your user or agent ID"},
                 "filter_types": {"type": "array", "items": {"type": "string"}, "description": "Memory types to filter to (empty = all)"},
+                "delivery_namespace": {"type": "string", "description": "If set, new memories are auto-copied here (push fan-out)"},
             },
             "required": ["namespace", "subscriber_id"],
         },
@@ -801,13 +802,18 @@ async def _dispatch(
             subscriber_id=args["subscriber_id"],
             namespace=args["namespace"],
             filter_types=args.get("filter_types") or [],
+            delivery_namespace=args.get("delivery_namespace") or "",
         )
         import json as _json
-        return [TextContent(type="text", text=_json.dumps({
+        result_obj = {
             "subscribed": True,
             "namespace": args["namespace"],
             "subscriber_id": args["subscriber_id"],
-        }))]
+        }
+        if args.get("delivery_namespace"):
+            result_obj["delivery_namespace"] = args["delivery_namespace"]
+            result_obj["fan_out"] = True
+        return [TextContent(type="text", text=_json.dumps(result_obj))]
 
     if name == "namespace_feed":
         memories, cursor = await client.get_feed(
