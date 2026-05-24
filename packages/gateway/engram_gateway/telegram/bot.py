@@ -32,10 +32,11 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 try:
-    from telegram import Update
+    from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
     from telegram.constants import ParseMode
     from telegram.ext import (
         Application,
+        CallbackQueryHandler,
         CommandHandler,
         ContextTypes,
         MessageHandler,
@@ -46,11 +47,21 @@ except ImportError:
     _TELEGRAM_AVAILABLE = False
     logger.warning("python-telegram-bot not installed; Telegram gateway disabled")
 
+# Callback data prefixes for inline feedback buttons
+_FB_UP   = "fb:+"
+_FB_DOWN = "fb:-"
+
 from engram_gateway.telegram.formatter import (
     format_result,
     format_search_results,
     format_task_status,
 )
+
+try:
+    from engram.models import MemoryType as _MemoryType
+    _MEMORY_TYPE_FACT = _MemoryType.fact
+except Exception:
+    _MEMORY_TYPE_FACT = None  # type: ignore[assignment]
 
 # Maximum message length before we switch to file attachment
 _MAX_MSG_LEN = 4000
@@ -120,6 +131,9 @@ class TelegramGateway:
         self.app.add_handler(CommandHandler("ns", self.cmd_ns))
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self.handle_feedback_callback, pattern=r"^fb:[+-]:")
         )
 
         await self.app.initialize()
@@ -410,22 +424,35 @@ class TelegramGateway:
             except asyncio.CancelledError:
                 pass
 
+        # Build feedback keyboard using the task id (or a short hash of the text)
+        task_id_str = self._last_task_id.get(user_id, "")
+        feedback_key = task_id_str if task_id_str else str(abs(hash(result_text)))[:12]
+        feedback_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("👍", callback_data=f"{_FB_UP}:{feedback_key}"),
+            InlineKeyboardButton("👎", callback_data=f"{_FB_DOWN}:{feedback_key}"),
+        ]])
+
         # Edit the "Working…" message or send as attachment
         if len(result_text) <= _MAX_MSG_LEN:
             try:
                 await working_msg.edit_text(
-                    format_result(result_text), parse_mode=ParseMode.MARKDOWN
+                    format_result(result_text),
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=feedback_kb,
                 )
             except Exception:
-                # Fall back to plain text if Markdown parse fails
-                await working_msg.edit_text(result_text)
+                await working_msg.edit_text(result_text, reply_markup=feedback_kb)
         else:
             # Send truncated preview, then full result as file
             preview = format_result(result_text[:_MAX_MSG_LEN])
             try:
-                await working_msg.edit_text(preview, parse_mode=ParseMode.MARKDOWN)
+                await working_msg.edit_text(
+                    preview,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=feedback_kb,
+                )
             except Exception:
-                await working_msg.edit_text(result_text[:_MAX_MSG_LEN])
+                await working_msg.edit_text(result_text[:_MAX_MSG_LEN], reply_markup=feedback_kb)
 
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             filename = f"engram_result_{timestamp}.txt"
@@ -449,3 +476,80 @@ class TelegramGateway:
             except Exception:
                 pass  # message may have already been edited
             dots = (dots % 3) + 1
+
+    # ------------------------------------------------------------------
+    # Inline feedback callback (👍 / 👎)
+    # ------------------------------------------------------------------
+
+    async def handle_feedback_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle 👍/👎 inline button presses and record feedback."""
+        query = update.callback_query
+        if query is None or query.data is None:
+            return
+
+        await query.answer()  # dismiss the loading spinner immediately
+
+        parts = query.data.split(":", 2)
+        if len(parts) != 3:
+            return
+
+        _, polarity, task_id = parts
+        thumbs_up = polarity == "+"
+        label = "thumbs_up" if thumbs_up else "thumbs_down"
+        emoji = "👍" if thumbs_up else "👎"
+
+        user_id = query.from_user.id if query.from_user else 0
+        namespace = self._get_namespace(user_id)
+
+        # Record feedback — try FeedbackService, fall back to direct memory write
+        recorded = False
+        if thumbs_up is not None:
+            try:
+                from engram_learning.feedback import FeedbackService  # type: ignore
+                from engram_learning.episode_store import EpisodeStore  # type: ignore
+                from engram_learning.quality_store import QualityStore  # type: ignore
+                ep_store = EpisodeStore()
+                await ep_store.init()
+                q_store = QualityStore()
+                await q_store.init()
+                svc = FeedbackService(episode_store=ep_store, quality_store=q_store)
+                if thumbs_up:
+                    await svc.record_positive(task_id)
+                else:
+                    await svc.record_negative(task_id, reason="user_thumbs_down")
+                recorded = True
+            except Exception as exc:
+                logger.debug("FeedbackService unavailable (%s); falling back to memory write", exc)
+
+            if not recorded:
+                try:
+                    kwargs: dict = dict(
+                        content=f"User rated task {task_id}: {label}",
+                        namespace=namespace,
+                        tags=["feedback", label],
+                        source="telegram",
+                    )
+                    if _MEMORY_TYPE_FACT is not None:
+                        kwargs["memory_type"] = _MEMORY_TYPE_FACT
+                    await self.client.add(**kwargs)
+                    recorded = True
+                except Exception as exc:
+                    logger.warning("Feedback memory write failed: %s", exc)
+
+        # Remove the inline keyboard and append the emoji acknowledgement
+        if query.message is not None:
+            original = query.message.text or query.message.caption or ""
+            new_text = f"{original}\n\n{emoji}"
+            try:
+                await query.edit_message_text(
+                    new_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=None,
+                )
+            except Exception:
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
