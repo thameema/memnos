@@ -1,11 +1,77 @@
 # Connecting Claude Code to engram
 
-This guide covers the full setup: registering engram as a Claude Code MCP server, and configuring `CLAUDE.md` so Claude actually uses it.
+This guide covers the full setup: registering engram as a Claude Code MCP server, configuring `CLAUDE.md` so Claude uses it, and wiring the zero-touch automation hooks so context is injected and memories are written without any manual action.
 
 ## Prerequisites
 
-- engram installed and ArcadeDB running (see [quickstart.md](quickstart.md))
+- engram server installed and running — see [Installer](#installer) below or [quickstart.md](quickstart.md)
 - Claude Code v2.0+ (CLI or desktop app)
+- macOS, Linux, WSL, or Windows (PowerShell 5.1+)
+
+---
+
+## Installer
+
+engram ships three installer scripts. Run the one that fits your situation:
+
+| Script | Platform | What it does |
+|--------|----------|--------------|
+| `install.sh` | macOS / Linux / WSL | **Orchestrator** — interactive menu, calls the scripts below |
+| `install-server.sh` | macOS / Linux / WSL | Installs engram server via Docker (ArcadeDB + API) |
+| `install-client.sh` | macOS / Linux / WSL / Git Bash | Installs Claude Code hooks on a developer machine |
+| `install-client.ps1` | Windows (PowerShell 5.1+) | Same as above for Windows |
+
+### Quick start
+
+```bash
+# Interactive — choose server / client / both
+./install.sh
+
+# Or non-interactive
+./install.sh --both        # server + client on this machine (laptop / dev box)
+./install.sh --server      # server only (dedicated VM or shared host)
+./install.sh --client      # client hooks only (team member pointing at remote server)
+```
+
+The orchestrator presents a menu when run without flags:
+
+```
+  What would you like to install?
+
+  1) Full install (server + client)
+     → Run engram server here AND install Claude Code hooks on this machine.
+  2) Server only
+     → Install engram server (Docker). Share the API URL + key with team members.
+  3) Client only
+     → Install Claude Code hooks only. Connects to an existing engram server.
+```
+
+### Windows
+
+```powershell
+# With server URL and key (e.g. pointing at a remote/shared engram server)
+.\install-client.ps1 -Server http://engram.yourcompany.com:8766 -Key engram-abc123
+
+# Local server
+.\install-client.ps1 -Server http://localhost:8766 -Key engram-abc123
+```
+
+Requires git for Windows and Claude Code for Windows. The script copies PowerShell hook scripts from `hooks/windows/` and creates a `.bat` wrapper so git can invoke the post-commit hook.
+
+### What gets installed
+
+**Server** (`install-server.sh`):
+- `~/.engram/docker-compose.yml` — ArcadeDB + engram API containers
+- `~/.engram/.env` — API key, ArcadeDB password (mode 600)
+- Pulls images and starts services
+
+**Client** (`install-client.sh` / `install-client.ps1`):
+- `~/.claude/hooks/engram.env` — central config (server URL, API key, default namespace)
+- `~/.claude/hooks/engram-inject.sh` — UserPromptSubmit hook
+- `~/.claude/hooks/engram-session-write.sh` — Stop hook
+- `~/.git-hooks/post-commit` — global git hook
+- `~/.claude/commands/engram.md` — `/engram` slash command
+- Patches `~/.claude/settings.json` to register the hooks
 
 ---
 
@@ -175,138 +241,121 @@ Three hooks work together:
 | **Stop** | Every turn end | Writes a session-state memory (branch, recent commits, CWD) |
 | **git post-commit** | Every `git commit` | Writes the commit to engram (conventional prefix → memory type) |
 
-### Install the hooks
+### Quick install
 
-**Step 1 — Create the hook scripts**
+The fastest path is the client installer — it writes all hook scripts, patches `~/.claude/settings.json`, and sets the global git hooks path in one shot:
 
 ```bash
-mkdir -p ~/.claude/hooks
+# macOS / Linux / WSL
+./install-client.sh                                              # local server (localhost:8766)
+./install-client.sh --server http://eng.example.com:8766 \
+                    --key engram-abc123                          # remote server
+./install-client.sh --server http://localhost:8766 \
+                    --key engram-abc123 \
+                    --namespace personal:me                      # with explicit namespace
 ```
 
-Create `~/.claude/hooks/engram-inject.sh`:
+```powershell
+# Windows (PowerShell 5.1+)
+.\install-client.ps1
+.\install-client.ps1 -Server http://eng.example.com:8766 -Key engram-abc123
+```
+
+The installer asks for anything not supplied as a flag, tests the server connection, and tells you at the end what it installed.
+
+After running: **restart Claude Code** (quit and reopen). The hooks are active for every project immediately — no per-repo setup needed.
+
+---
+
+### Central config file — `~/.claude/hooks/engram.env`
+
+All hooks read their connection details from a single config file so you only have one place to update when the server URL or key changes:
 
 ```bash
-#!/usr/bin/env bash
-# UserPromptSubmit hook — injects engram context on every Claude Code prompt
+# ~/.claude/hooks/engram.env
+ENGRAM_API=http://localhost:8766       # change to your remote server if needed
+ENGRAM_KEY=engram-abc123               # your API key
+ENGRAM_DEFAULT_NS=personal:me          # fallback namespace for all projects
+ENGRAM_TOP_K=5                         # memories injected per prompt
+```
 
-set -euo pipefail
+Edit this file any time to point hooks at a different server — no need to reinstall.
 
-ENGRAM_API="http://localhost:8766"    # or your remote server
-ENGRAM_KEY="your-engram-api-key"
-ENGRAM_NS="project:myproject"         # adjust to your namespace
+---
+
+### Per-project namespace — `.engram` file
+
+Drop a `.engram` file in any repo root to override the default namespace for that project:
+
+```bash
+# in ~/work/my-project/.engram
+namespace=project:my-project
+```
+
+**Namespace resolution order** (highest to lowest priority):
+
+1. `.engram` file in the git repo root
+2. `ENGRAM_NS_OVERRIDE` environment variable
+3. `ENGRAM_DEFAULT_NS` in `~/.claude/hooks/engram.env`
+
+This means every repo can silently route to its own namespace without touching the global config.
+
+---
+
+### `/engram` slash command
+
+The installer creates a `~/.claude/commands/engram.md` slash command. Type `/engram` in any Claude Code session to see:
+
+```
+engram status
+
+Namespaces
+  • personal:me
+  • project:my-project
+  • org:myteam:engineering
+
+Current namespace — project:my-project  (resolved from .engram file)
+
+Recent memories
+  [fact] 0.91 — session ended | project: my-project | branch: feature/auth-refactor | uncommitted: 3
+  [decision] 0.88 — feat: replace JWT with session tokens...
+  ...
+```
+
+If you pass a namespace argument (`/engram ns:project:other`), the command also shows how to set it permanently:
+
+```bash
+echo "namespace=project:other" > .engram
+```
+
+---
+
+### Manual install (reference)
+
+If you prefer to install hooks by hand or need to understand what the installer does:
+
+**Step 1 — Create directories**
+
+```bash
+mkdir -p ~/.claude/hooks ~/.git-hooks ~/.claude/commands
+```
+
+**Step 2 — Write `engram.env`**
+
+```bash
+cat > ~/.claude/hooks/engram.env <<'EOF'
+ENGRAM_API=http://localhost:8766
+ENGRAM_KEY=your-engram-api-key
+ENGRAM_DEFAULT_NS=personal:me
 ENGRAM_TOP_K=5
-
-INPUT=$(cat)
-CWD=$(echo "$INPUT"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd',''))" 2>/dev/null || echo "")
-PROMPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('prompt',''))" 2>/dev/null || echo "")
-
-if ! curl -sf --max-time 2 "$ENGRAM_API/api/v1/admin/health" -o /dev/null 2>/dev/null; then
-  exit 0  # engram not running — fail silently
-fi
-
-QUERY=$(echo "$PROMPT" | head -c 200 | python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.stdin.read().strip()))" 2>/dev/null || echo "")
-[[ -z "$QUERY" ]] && exit 0
-
-RESPONSE=$(curl -sf --max-time 5 \
-  "$ENGRAM_API/api/v1/memory/search?q=$QUERY&ns=$ENGRAM_NS&top_k=$ENGRAM_TOP_K" \
-  -H "X-API-Key: $ENGRAM_KEY" 2>/dev/null || echo "[]")
-
-CONTEXT=$(echo "$RESPONSE" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-results = data if isinstance(data, list) else data.get('results', [])
-if not results:
-    sys.exit(0)
-lines = ['[engram: relevant past context]']
-for r in results:
-    mem = r.get('memory', r)
-    mtype = mem.get('memory_type', 'fact')
-    content = mem.get('content', '').strip()
-    score = r.get('score', '')
-    score_str = f'  (similarity: {score:.2f})' if isinstance(score, float) else ''
-    if content:
-        lines.append(f'[{mtype}]{score_str} {content[:280]}')
-if len(lines) <= 1:
-    sys.exit(0)
-print('\n'.join(lines))
-" 2>/dev/null || echo "")
-
-[[ -z "$CONTEXT" ]] && exit 0
-
-python3 -c "
-import json, sys
-print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': sys.argv[1]}}))
-" "$CONTEXT"
+EOF
 ```
 
-Create `~/.claude/hooks/engram-session-write.sh`:
+**Step 3 — Write the hook scripts**
 
-```bash
-#!/usr/bin/env bash
-# Stop hook — writes session state to engram after every Claude Code turn
+See `install-client.sh` in the repo for the full script content — the installer writes the same scripts verbatim.
 
-set -euo pipefail
-
-ENGRAM_API="http://localhost:8766"
-ENGRAM_KEY="your-engram-api-key"
-ENGRAM_NS="project:myproject"
-
-INPUT=$(cat)
-CWD=$(echo "$INPUT"        | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd',''))" 2>/dev/null || echo "")
-SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))" 2>/dev/null || echo "")
-
-[[ -z "$CWD" ]] && exit 0
-
-if ! curl -sf --max-time 2 "$ENGRAM_API/api/v1/admin/health" -o /dev/null 2>/dev/null; then
-  exit 0
-fi
-
-PROJECT=$(basename "$CWD")
-BRANCH="" RECENT_COMMITS="" UNCOMMITTED=0
-
-if git -C "$CWD" rev-parse --git-dir >/dev/null 2>&1; then
-  BRANCH=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-  RECENT_COMMITS=$(git -C "$CWD" log --oneline -5 --no-decorate 2>/dev/null || echo "")
-  UNCOMMITTED=$(git -C "$CWD" status --short 2>/dev/null | wc -l | tr -d ' ')
-fi
-
-if [[ -n "$RECENT_COMMITS" ]]; then
-  CONTENT="session ended | project: $PROJECT | dir: $CWD${BRANCH:+ | branch: $BRANCH} | uncommitted: $UNCOMMITTED
-Recent commits:
-$RECENT_COMMITS"
-else
-  CONTENT="session ended | project: $PROJECT | dir: $CWD"
-fi
-
-PAYLOAD=$(python3 -c "
-import json, sys
-print(json.dumps({
-    'content': sys.argv[1], 'namespace': sys.argv[2], 'memory_type': 'fact',
-    'tags': ['session-log', 'auto', sys.argv[3]],
-    'metadata': {'session_id': sys.argv[4], 'project': sys.argv[3], 'source': 'claude-code-stop-hook'}
-}))
-" "$CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION_ID" 2>/dev/null)
-
-curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" \
-  -H "Content-Type: application/json" -H "X-API-Key: $ENGRAM_KEY" \
-  -d "$PAYLOAD" -o /dev/null 2>/dev/null || true
-
-exit 0
-```
-
-Make them executable:
-
-```bash
-chmod +x ~/.claude/hooks/engram-inject.sh
-chmod +x ~/.claude/hooks/engram-session-write.sh
-```
-
-**Step 2 — Register in `~/.claude/settings.json`**
-
-Add the `hooks` block (merge with any existing entries):
+**Step 4 — Register in `~/.claude/settings.json`**
 
 ```json
 {
@@ -341,96 +390,16 @@ Add the `hooks` block (merge with any existing entries):
 > Use **absolute paths** for `command`. Relative paths fail silently.  
 > `async: true` on the Stop hook means it runs after Claude responds — the user never waits for it.
 
-**Step 3 — Global git post-commit hook**
-
-This writes every commit in every repo to engram automatically.
-
-```bash
-mkdir -p ~/.git-hooks
-```
-
-Create `~/.git-hooks/post-commit`:
-
-```bash
-#!/usr/bin/env bash
-# Global post-commit — writes every git commit to engram
-# Memory type: feat/refactor → decision | fix → incident | others → fact
-
-set -euo pipefail
-
-ENGRAM_API="http://localhost:8766"
-ENGRAM_KEY="your-engram-api-key"
-ENGRAM_NS="project:myproject"
-
-if ! curl -sf --max-time 2 "$ENGRAM_API/api/v1/admin/health" -o /dev/null 2>/dev/null; then
-  exit 0
-fi
-
-REPO_NAME=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || echo "unknown")")
-COMMIT_HASH=$(git rev-parse --short HEAD)
-COMMIT_FULL=$(git rev-parse HEAD)
-COMMIT_MSG=$(git log -1 --pretty=%B | head -5)
-COMMIT_AUTHOR=$(git log -1 --pretty=%an)
-CHANGED_FILES=$(git diff-tree --no-commit-id -r --name-only HEAD | head -20 | tr '\n' ' ')
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-
-MEMORY_TYPE="fact"
-if echo "$COMMIT_MSG" | grep -qiE '^(feat|feature|refactor|arch):'; then
-  MEMORY_TYPE="decision"
-elif echo "$COMMIT_MSG" | grep -qiE '^(fix|hotfix|bug):'; then
-  MEMORY_TYPE="incident"
-fi
-
-CONTENT="[engram-commit] $COMMIT_MSG
-repo: $REPO_NAME | commit: $COMMIT_HASH | branch: $BRANCH | author: $COMMIT_AUTHOR
-files: $CHANGED_FILES"
-
-PAYLOAD=$(python3 -c "
-import json, sys
-msg, ns, mtype, commit, branch, author, files, repo = sys.argv[1:9]
-print(json.dumps({
-    'content': msg, 'namespace': ns, 'memory_type': mtype, 'author': author,
-    'tags': ['git-commit', 'auto', repo, mtype],
-    'metadata': {'commit_hash': commit, 'repo': repo, 'branch': branch, 'source': 'post-commit-hook'}
-}))
-" "$CONTENT" "$ENGRAM_NS" "$MEMORY_TYPE" "$COMMIT_FULL" "$BRANCH" "$COMMIT_AUTHOR" "$CHANGED_FILES" "$REPO_NAME" 2>/dev/null)
-
-curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" \
-  -H "Content-Type: application/json" -H "X-API-Key: $ENGRAM_KEY" \
-  -d "$PAYLOAD" -o /dev/null 2>/dev/null || true
-
-# Delegate to per-repo override if present
-LOCAL_HOOK="$(git rev-parse --git-dir 2>/dev/null)/hooks/post-commit.local"
-if [[ -x "$LOCAL_HOOK" ]]; then
-  exec "$LOCAL_HOOK" "$@"
-fi
-
-exit 0
-```
+**Step 5 — Global git post-commit hook**
 
 ```bash
 chmod +x ~/.git-hooks/post-commit
 git config --global core.hooksPath ~/.git-hooks
 ```
 
-> **Per-repo overrides:** name your repo-specific post-commit script `post-commit.local` (not `post-commit`) and the global hook will call it after writing to engram.
+> **Per-repo overrides:** create `.git/hooks/post-commit.local` in a specific repo — the global hook calls it automatically after writing to engram.
 
-### Namespace routing across projects
-
-If you work in multiple contexts (e.g. separate namespaces for different teams or security levels), add a routing function to both hooks:
-
-```bash
-get_namespace() {
-    local cwd="$1"
-    case "$cwd" in
-        *"/work/projectA"*)  echo "project:projectA" ;;
-        *"/work/projectB"*)  echo "project:projectB" ;;
-        *)                   echo "personal:me" ;;
-    esac
-}
-
-ENGRAM_NS=$(get_namespace "$CWD")
-```
+---
 
 ### What each hook writes
 
@@ -456,9 +425,31 @@ ENGRAM_NS=$(get_namespace "$CWD")
 
 ---
 
-## Team setup — shared server with per-engineer API keys
+## Team setup — shared server with per-engineer hooks
 
-If engram runs on a shared server:
+**Server admin** — run once on the shared host:
+
+```bash
+./install-server.sh
+# → generates ~/.engram/.env with ENGRAM_API_KEY and ARCADEDB_PASSWORD
+# → starts ArcadeDB + engram API via Docker
+```
+
+Share the API URL and key from `~/.engram/.env` with each developer.
+
+**Each developer** — run on their own machine:
+
+```bash
+./install-client.sh --server http://engram.yourcompany.com:8766 --key engram-abc123
+# → installs hooks, sets their default namespace, restarts Claude Code
+```
+
+On Windows:
+```powershell
+.\install-client.ps1 -Server http://engram.yourcompany.com:8766 -Key engram-abc123
+```
+
+MCP config uses SSE transport for a remote server:
 
 ```json
 {
