@@ -126,8 +126,8 @@ def summarise(turns: list[str], project: str, branch: str) -> str:
     )
     try:
         result = subprocess.run(
-            ["claude", "--print"],
-            input=prompt, capture_output=True, text=True, timeout=30
+            ["claude", "--print", "--no-session-persistence", "--strict-mcp-config", "--tools", ""],
+            input=prompt, capture_output=True, text=True, timeout=60
         )
         return result.stdout.strip()[:800]
     except Exception:

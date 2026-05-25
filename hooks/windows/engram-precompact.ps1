@@ -107,7 +107,7 @@ $promptText = "Project: $Project" + $(if ($Branch) { "  branch: $Branch" } else 
     "`n`nCapture this in-progress dev session before context is compacted. Write a dense, specific summary: what has been done, what is currently in progress, decisions made, errors encountered, exact current state. Name tickets, files, functions. Be concise (max 200 words). End with ""STATUS: <in-progress|blocked|complete>""."
 
 try {
-    $Summary = ($promptText | & claude --print 2>$null) -join "`n"
+    $Summary = ($promptText | & claude --print --no-session-persistence --strict-mcp-config --tools "" 2>$null) -join "`n"
     $Summary = $Summary.Trim()
 } catch {
     exit 0

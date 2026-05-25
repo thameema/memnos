@@ -356,8 +356,8 @@ def summarise(turns: list, project: str, branch: str) -> str:
     )
     try:
         result = subprocess.run(
-            ["claude", "--print"],
-            input=prompt, capture_output=True, text=True, timeout=30
+            ["claude", "--print", "--no-session-persistence", "--strict-mcp-config", "--tools", ""],
+            input=prompt, capture_output=True, text=True, timeout=60
         )
         return result.stdout.strip()[:800]
     except Exception:
@@ -593,7 +593,7 @@ $TURNS_TEXT
 
 Capture this in-progress dev session for another agent to resume. Write a dense, specific summary: what has been done, what is currently being worked on, decisions made, errors seen, current status. Name specific tickets, files, functions. Be concise (max 200 words). End with \"STATUS: <in-progress|blocked|complete>\"."
 
-      SUMMARY=$(echo "$PROMPT" | claude --print 2>/dev/null | head -c 1000)
+      SUMMARY=$(echo "$PROMPT" | claude --print --no-session-persistence --strict-mcp-config --tools "" 2>/dev/null | head -c 1000)
       [[ -z "$SUMMARY" ]] && exit 0
 
       CONTENT="[auto-save #$COUNT] $PROJECT${BRANCH:+ | $BRANCH} — $SUMMARY"
@@ -703,7 +703,7 @@ $TURNS_TEXT
 
 Capture this in-progress dev session before context is compacted. Write a dense, specific summary: what has been done, what is currently in progress, decisions made, errors encountered, exact current state. Name tickets, files, functions. Be concise (max 200 words). End with \"STATUS: <in-progress|blocked|complete>\"."
 
-SUMMARY=$(echo "$PROMPT" | claude --print 2>/dev/null | head -c 1000)
+SUMMARY=$(echo "$PROMPT" | claude --print --no-session-persistence --strict-mcp-config --tools "" 2>/dev/null | head -c 1000)
 [[ -z "$SUMMARY" ]] && exit 0
 
 CONTENT="[pre-compact] $PROJECT${BRANCH:+ | $BRANCH} — $SUMMARY"
@@ -842,7 +842,7 @@ $TURNS_TEXT
 
 Write a dense session summary for future reference. Cover: what was accomplished, decisions made, files changed, errors fixed. Name specific tickets, files, and functions. Be concise (max 180 words). End with \"STATUS: <complete|in-progress|blocked>\"."
 
-SUMMARY=$(echo "$PROMPT" | claude --print 2>/dev/null | head -c 1000)
+SUMMARY=$(echo "$PROMPT" | claude --print --no-session-persistence --strict-mcp-config --tools "" 2>/dev/null | head -c 1000)
 [[ -z "$SUMMARY" ]] && exit 0
 
 RICH_CONTENT="[session-end] $PROJECT${BRANCH:+ | $BRANCH} — $SUMMARY"

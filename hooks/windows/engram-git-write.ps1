@@ -156,7 +156,7 @@ if ($Elapsed -ge ($SAVE_INTERVAL_MINUTES * 60)) {
                 "`n`nCapture this in-progress dev session for another agent to resume. Write a dense, specific summary: what has been done, what is currently being worked on, decisions made, errors seen, current status. Name specific tickets, files, functions. Be concise (max 200 words). End with ""STATUS: <in-progress|blocked|complete>""."
 
             try {
-                $summary = ($promptText | & claude --print 2>$null) -join "`n"
+                $summary = ($promptText | & claude --print --no-session-persistence --strict-mcp-config --tools "" 2>$null) -join "`n"
                 $summary = $summary.Trim()
             } catch { return }
 
