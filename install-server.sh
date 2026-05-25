@@ -7,7 +7,7 @@
 #
 # Usage:
 #   ./install-server.sh
-#   curl -fsSL https://raw.githubusercontent.com/your-org/engram/main/install-server.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/thameema/engram/main/install-server.sh | bash
 
 set -euo pipefail
 
@@ -176,7 +176,7 @@ write_compose() {
   else
     # Use published image — adjust tag as releases are made
     ENGRAM_SERVICE="  engram:
-    image: ghcr.io/your-org/engram:latest
+    image: ghcr.io/thameema/engram:latest
     depends_on:
       arcadedb:
         condition: service_healthy"

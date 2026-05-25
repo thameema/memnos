@@ -8,7 +8,7 @@
 #   ./install.sh --server      # server only
 #   ./install.sh --client      # client hooks only (points to existing/remote server)
 #   ./install.sh --both        # server + client on this machine
-#   curl -fsSL https://raw.githubusercontent.com/your-org/engram/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/thameema/engram/main/install.sh | bash
 
 set -euo pipefail
 
@@ -41,7 +41,7 @@ if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
 fi
 
-GITHUB_RAW="https://raw.githubusercontent.com/your-org/engram/main"
+GITHUB_RAW="https://raw.githubusercontent.com/thameema/engram/main"
 
 _get_script() {
   local name="$1"   # install-server.sh or install-client.sh

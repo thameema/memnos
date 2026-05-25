@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import math
 import sys
+from pathlib import Path
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
-sys.path.insert(0, "/Users/thameema/git/engram/packages/core")
+sys.path.insert(0, _REPO_ROOT + "/packages/core")
 
 from engram.models import DecayPolicy, MemoryEntry, MemoryType, MemoryStatus, SearchResult
 from engram.client import _apply_decay_score, _DECAY_K_TIME, _DECAY_K_ACCESS

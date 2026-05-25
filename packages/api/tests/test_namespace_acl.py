@@ -52,7 +52,7 @@ class TestCheckNamespaceAccess:
     async def test_wildcard_allows_any_namespace(self):
         entry = _make_entry(["*"])
         # Should not raise for any namespace
-        await check_namespace_access(entry, "personal:thameema")
+        await check_namespace_access(entry, "personal:alice")
         await check_namespace_access(entry, "org:acme")
         await check_namespace_access(entry, "completely:unknown:ns")
 
@@ -66,14 +66,14 @@ class TestCheckNamespaceAccess:
     async def test_exact_match_denied(self):
         entry = _make_entry(["personal:default", "org:acme"])
         with pytest.raises(HTTPException) as exc_info:
-            await check_namespace_access(entry, "personal:thameema")
+            await check_namespace_access(entry, "personal:alice")
         assert exc_info.value.status_code == 403
-        assert "personal:thameema" in exc_info.value.detail
+        assert "personal:alice" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_prefix_wildcard_match(self):
         entry = _make_entry(["personal:*"])
-        await check_namespace_access(entry, "personal:thameema")
+        await check_namespace_access(entry, "personal:alice")
         await check_namespace_access(entry, "personal:alice")
         await check_namespace_access(entry, "personal:default")
 
@@ -102,7 +102,7 @@ class TestCheckNamespaceAccess:
     @pytest.mark.asyncio
     async def test_multiple_prefix_patterns(self):
         entry = _make_entry(["personal:*", "org:acme"])
-        await check_namespace_access(entry, "personal:thameema")
+        await check_namespace_access(entry, "personal:alice")
         await check_namespace_access(entry, "org:acme")
         with pytest.raises(HTTPException):
             await check_namespace_access(entry, "org:other")
@@ -118,8 +118,8 @@ class TestCheckNamespaceAccess:
     async def test_403_detail_includes_namespace_name(self):
         entry = _make_entry(["org:acme"])
         with pytest.raises(HTTPException) as exc_info:
-            await check_namespace_access(entry, "personal:thameema")
-        assert "personal:thameema" in exc_info.value.detail
+            await check_namespace_access(entry, "personal:alice")
+        assert "personal:alice" in exc_info.value.detail
 
 
 # ---------------------------------------------------------------------------
@@ -201,24 +201,24 @@ class TestMemoryEndpointsACL:
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
             "/memory/",
-            json={"content": "hello", "namespace": "personal:thameema"},
+            json={"content": "hello", "namespace": "personal:alice"},
             headers=AUTH_HEADER,
         )
         # 500 from mock NotImplementedError is fine — ACL did not block (no 403)
         assert resp.status_code != 403
 
     def test_write_memory_scoped_key_allowed_namespace(self):
-        app = _build_app(["personal:thameema"])
+        app = _build_app(["personal:alice"])
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
             "/memory/",
-            json={"content": "hello", "namespace": "personal:thameema"},
+            json={"content": "hello", "namespace": "personal:alice"},
             headers=AUTH_HEADER,
         )
         assert resp.status_code != 403
 
     def test_write_memory_scoped_key_denied_namespace(self):
-        app = _build_app(["personal:thameema"])
+        app = _build_app(["personal:alice"])
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
             "/memory/",
@@ -248,7 +248,7 @@ class TestMemoryEndpointsACL:
         assert resp.status_code == 403
 
     def test_search_memory_denied_namespace(self):
-        app = _build_app(["personal:thameema"])
+        app = _build_app(["personal:alice"])
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get(
             "/memory/search",
@@ -258,17 +258,17 @@ class TestMemoryEndpointsACL:
         assert resp.status_code == 403
 
     def test_search_memory_allowed_namespace(self):
-        app = _build_app(["personal:thameema"])
+        app = _build_app(["personal:alice"])
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get(
             "/memory/search",
-            params={"q": "test", "ns": "personal:thameema"},
+            params={"q": "test", "ns": "personal:alice"},
             headers=AUTH_HEADER,
         )
         assert resp.status_code == 200
 
     def test_get_memory_denied_namespace(self):
-        app = _build_app(["personal:thameema"])
+        app = _build_app(["personal:alice"])
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get(
             "/memory/some-id",
@@ -278,7 +278,7 @@ class TestMemoryEndpointsACL:
         assert resp.status_code == 403
 
     def test_delete_memory_denied_namespace(self):
-        app = _build_app(["personal:thameema"])
+        app = _build_app(["personal:alice"])
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.delete(
             "/memory/some-id",
@@ -292,7 +292,7 @@ class TestMemoryEndpointsACL:
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
             "/memory/",
-            json={"content": "hello", "namespace": "personal:thameema"},
+            json={"content": "hello", "namespace": "personal:alice"},
         )
         assert resp.status_code == 401
 
@@ -301,7 +301,7 @@ class TestMemoryEndpointsACL:
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
             "/memory/",
-            json={"content": "hello", "namespace": "personal:thameema"},
+            json={"content": "hello", "namespace": "personal:alice"},
             headers=WRONG_AUTH,
         )
         assert resp.status_code == 401
@@ -311,7 +311,7 @@ class TestGraphEndpointsACL:
     """HTTP-level namespace ACL tests for /graph/* endpoints."""
 
     def test_graph_query_denied_namespace(self):
-        app = _build_app(["personal:thameema"])
+        app = _build_app(["personal:alice"])
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
             "/graph/query",
@@ -321,18 +321,18 @@ class TestGraphEndpointsACL:
         assert resp.status_code == 403
 
     def test_graph_query_allowed_namespace(self):
-        app = _build_app(["personal:thameema"])
+        app = _build_app(["personal:alice"])
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
             "/graph/query",
-            json={"cypher": "MATCH (n) RETURN n", "namespace": "personal:thameema"},
+            json={"cypher": "MATCH (n) RETURN n", "namespace": "personal:alice"},
             headers=AUTH_HEADER,
         )
         # 200 — mock returns []
         assert resp.status_code == 200
 
     def test_get_entity_denied_namespace(self):
-        app = _build_app(["personal:thameema"])
+        app = _build_app(["personal:alice"])
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get(
             "/graph/entity/SomeEntity",
@@ -342,7 +342,7 @@ class TestGraphEndpointsACL:
         assert resp.status_code == 403
 
     def test_add_fact_denied_namespace(self):
-        app = _build_app(["personal:thameema"])
+        app = _build_app(["personal:alice"])
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
             "/graph/fact",
@@ -357,7 +357,7 @@ class TestGraphEndpointsACL:
         assert resp.status_code == 403
 
     def test_add_fact_allowed_namespace(self):
-        app = _build_app(["personal:thameema"])
+        app = _build_app(["personal:alice"])
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
             "/graph/fact",
@@ -365,7 +365,7 @@ class TestGraphEndpointsACL:
                 "subject": "Alice",
                 "predicate": "knows",
                 "object": "Bob",
-                "namespace": "personal:thameema",
+                "namespace": "personal:alice",
             },
             headers=AUTH_HEADER,
         )
@@ -386,7 +386,7 @@ class TestAdminEndpointsACL:
         assert resp.status_code not in (401, 403)
 
     def test_list_namespaces_any_authenticated_key(self):
-        app = _build_app(["personal:thameema"])
+        app = _build_app(["personal:alice"])
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/admin/namespaces", headers=AUTH_HEADER)
         assert resp.status_code == 200
@@ -402,7 +402,7 @@ class TestAdminEndpointsACL:
         assert resp.status_code == 201
 
     def test_create_namespace_scoped_key_denied(self):
-        app = _build_app(["personal:thameema"])
+        app = _build_app(["personal:alice"])
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
             "/admin/namespaces",
@@ -422,9 +422,9 @@ class TestAdminEndpointsACL:
         assert resp.status_code == 204
 
     def test_delete_namespace_scoped_key_denied(self):
-        app = _build_app(["personal:thameema"])
+        app = _build_app(["personal:alice"])
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.delete("/admin/namespaces/personal:thameema", headers=AUTH_HEADER)
+        resp = client.delete("/admin/namespaces/personal:alice", headers=AUTH_HEADER)
         assert resp.status_code == 403
 
     def test_list_namespaces_unauthenticated_returns_401(self):

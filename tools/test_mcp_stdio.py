@@ -16,18 +16,18 @@ Each message is a single JSON object terminated by a newline.
 
 Binary
 ------
-/Users/thameema/git/engram/.venv/bin/engram-mcp-stdio
+{_REPO_ROOT}/.venv/bin/engram-mcp-stdio
 
 Config
 ------
-/Users/thameema/git/engram/engram.yaml
+{_REPO_ROOT}/engram.yaml
 
 Required environment variables
 -------------------------------
 ARCADEDB_PASSWORD=engram-dev-password
 ENGRAM_API_KEY=engram-local-dev-key
 ENGRAM_VAULT_KEY=dev-key-for-local-testing-only
-ENGRAM_CONFIG=/Users/thameema/git/engram/engram.yaml
+ENGRAM_CONFIG={_REPO_ROOT}/engram.yaml
 
 Run
 ---
@@ -49,8 +49,8 @@ import pytest
 # Constants
 # ---------------------------------------------------------------------------
 
-_BINARY = "/Users/thameema/git/engram/.venv/bin/engram-mcp-stdio"
-_CONFIG = "/Users/thameema/git/engram/engram.yaml"
+_BINARY = str(Path(_REPO_ROOT) / ".venv/bin/engram-mcp-stdio")
+_CONFIG = str(Path(_REPO_ROOT) / "engram.yaml")
 _STARTUP_TIMEOUT_S = 45      # seconds to wait for the process to be ready
 _RPC_TIMEOUT_S = 30          # seconds to wait for a single RPC response
 _TEST_NS = f"test:mcp-stdio:{uuid.uuid4().hex[:8]}"

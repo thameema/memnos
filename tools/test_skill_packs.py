@@ -14,15 +14,17 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 import textwrap
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, MagicMock, patch
 
-sys.path.insert(0, "/Users/thameema/git/engram/packages/mcp-server")
-sys.path.insert(0, "/Users/thameema/git/engram/packages/api")
-sys.path.insert(0, "/Users/thameema/git/engram/packages/core")
+sys.path.insert(0, _REPO_ROOT + "/packages/mcp-server")
+sys.path.insert(0, _REPO_ROOT + "/packages/api")
+sys.path.insert(0, _REPO_ROOT + "/packages/core")
 
 from engram_mcp.skill_packs import (
     WebhookHandler,

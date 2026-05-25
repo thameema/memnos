@@ -159,7 +159,7 @@ async def check_namespace_access(
     3. Exact match: ``namespace`` is listed verbatim  →  allow.
     4. Prefix wildcard: the key lists ``"prefix:*"`` and *namespace* starts
        with ``"prefix:"``  →  allow (e.g. key has ``"personal:*"`` and the
-       requested namespace is ``"personal:thameema"``).
+       requested namespace is ``"personal:alice"``).
     5. No match  →  raise ``HTTPException(403)``.
 
     Parameters
@@ -188,7 +188,7 @@ async def check_namespace_access(
     if namespace in allowed:
         return
 
-    # Rule 4 — prefix wildcard  e.g. "personal:*" matches "personal:thameema"
+    # Rule 4 — prefix wildcard  e.g. "personal:*" matches "personal:alice"
     for pattern in allowed:
         if pattern.endswith(":*") and namespace.startswith(pattern[:-1]):
             return

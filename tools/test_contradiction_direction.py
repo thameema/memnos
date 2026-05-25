@@ -11,10 +11,12 @@ Tests cover:
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-sys.path.insert(0, "/Users/thameema/git/engram/packages/core")
+sys.path.insert(0, _REPO_ROOT + "/packages/core")
 
 from engram.contradiction.detector import (
     ContradictionWarning,

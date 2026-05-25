@@ -16,13 +16,15 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-sys.path.insert(0, "/Users/thameema/git/engram/packages/learning")
+sys.path.insert(0, _REPO_ROOT + "/packages/learning")
 
 
 # ---------------------------------------------------------------------------

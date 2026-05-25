@@ -128,7 +128,7 @@ foreach ($hookFile in $HookFiles) {
         Write-Success "Copied: $dest"
     } else {
         # Fallback: download from GitHub
-        $url = "https://raw.githubusercontent.com/your-org/engram/main/hooks/windows/$hookFile"
+        $url = "https://raw.githubusercontent.com/thameema/engram/main/hooks/windows/$hookFile"
         try {
             Invoke-WebRequest $url -OutFile $dest -UseBasicParsing
             Write-Success "Downloaded: $dest"

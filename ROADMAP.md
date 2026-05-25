@@ -100,7 +100,7 @@ Most developers use 10% of Claude Code's capabilities because they do not know w
 
 ### 2.1 Namespace Subscriptions (Pub-Sub)
 
-Teams subscribe to namespaces they care about. When the backend team writes to `org:acme:engineering:api-contracts`, the frontend team's next session receives those memories automatically.
+Teams subscribe to namespaces they care about. When the backend team writes to `org:myteam:engineering:api-contracts`, the frontend team's next session receives those memories automatically.
 
 Configuration options per subscription: filter by `memory_type`, delivery mode (`on_next_session | webhook | immediate`).
 
@@ -115,7 +115,7 @@ Replace the free-string `source` field with a structured provenance object:
 ```json
 {
   "agent_id": "claude-code-session-abc",
-  "user_id": "thameema",
+  "user_id": "alice",
   "tool": "claude-code",
   "git_commit": "abc123",
   "jira_ticket": "PROJ-242",
@@ -184,9 +184,9 @@ Gives engineering leads visibility into where knowledge is concentrated versus w
 **Enhanced behavior**: An async background job runs LLM extraction on each write to produce typed relationship edges with semantics:
 
 ```
-"Acme Health wants SaaS by Oct 2026"
-→ (Acme Health) --WANTS--> (SaaS)
-→ (Acme Health) --DEADLINE--> (2026-10-01)
+"Acme wants SaaS delivery by Q4 2026"
+→ (Acme) --WANTS--> (SaaS)
+→ (Acme) --DEADLINE--> (2026-10-01)
 ```
 
 Gated behind a config flag. Does not block the write path. Makes graph traversal and multi-hop reasoning dramatically richer without requiring authors to structure their memories manually.
@@ -197,7 +197,7 @@ Gated behind a config flag. Does not block the write path. Makes graph traversal
 
 A periodic, configurable job runs the Leiden community detection algorithm on the ArcadeDB entity graph. Results are stored as `COMMUNITY` vertex types with `BELONGS_TO` edges.
 
-Surfaces cross-namespace clusters that were never explicitly modeled — the Acme Health-related cluster, the security-compliance cluster, the AKS-platform cluster — without requiring anyone to categorize them. Useful for understanding what concepts are architecturally coupled even when they live in different namespaces.
+Surfaces cross-namespace clusters that were never explicitly modeled — the payments-related cluster, the security-compliance cluster, the platform-infrastructure cluster — without requiring anyone to categorize them. Useful for understanding what concepts are architecturally coupled even when they live in different namespaces.
 
 ---
 

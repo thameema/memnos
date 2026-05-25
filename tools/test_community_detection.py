@@ -7,15 +7,17 @@ Run with:
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 import unittest
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-sys.path.insert(0, "/Users/thameema/git/engram/packages/core")
-sys.path.insert(0, "/Users/thameema/git/engram/packages/api")
-sys.path.insert(0, "/Users/thameema/git/engram/packages/mcp-server")
+sys.path.insert(0, _REPO_ROOT + "/packages/core")
+sys.path.insert(0, _REPO_ROOT + "/packages/api")
+sys.path.insert(0, _REPO_ROOT + "/packages/mcp-server")
 
 # ---------------------------------------------------------------------------
 # TestCommunityResult

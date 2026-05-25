@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -70,8 +72,8 @@ sys.modules.setdefault("qdrant_client.models", _mock_models)
 # Now import the modules under test
 # ---------------------------------------------------------------------------
 
-sys.path.insert(0, "/Users/thameema/git/engram/packages/core")
-sys.path.insert(0, "/Users/thameema/git/engram/packages/api")
+sys.path.insert(0, _REPO_ROOT + "/packages/core")
+sys.path.insert(0, _REPO_ROOT + "/packages/api")
 
 
 # ---------------------------------------------------------------------------

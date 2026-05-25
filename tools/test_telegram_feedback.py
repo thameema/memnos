@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 import types
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -95,7 +97,7 @@ formatter_mod.format_task_status = lambda *a, **kw: "status"
 sys.modules["engram_gateway.telegram.formatter"] = formatter_mod
 
 # Add gateway package to path so real bot.py is importable
-_GW_PATH = "/Users/thameema/git/engram/packages/gateway"
+_GW_PATH = _REPO_ROOT + "/packages/gateway"
 if _GW_PATH not in sys.path:
     sys.path.insert(0, _GW_PATH)
 

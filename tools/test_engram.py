@@ -565,7 +565,7 @@ class TestEntityExtraction:
         ns = f"{TEST_NS}:entity-edges"
         write_memory(
             client,
-            "Python and FastAPI power the Acme Health HDMP REST layer on Azure",
+            "Python and FastAPI power a high-throughput REST API layer on Azure",
             ns,
         )
         time.sleep(3)

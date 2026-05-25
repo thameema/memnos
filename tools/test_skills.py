@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-sys.path.insert(0, "/Users/thameema/git/engram/packages/core")
+sys.path.insert(0, _REPO_ROOT + "/packages/core")
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +111,7 @@ class TestLoadSkills(unittest.TestCase):
             p = Path(d)
             self._write_skill(p, "myplugin.py", """
 import sys
-sys.path.insert(0, "/Users/thameema/git/engram/packages/core")
+sys.path.insert(0, _REPO_ROOT + "/packages/core")
 from engram.skills.decorator import skill
 
 @skill(name="my_custom", description="custom", parameters={"x": {"type": "string"}})
@@ -125,7 +127,7 @@ def my_custom(x): pass
             p = Path(d)
             self._write_skill(p, "_internal.py", """
 import sys
-sys.path.insert(0, "/Users/thameema/git/engram/packages/core")
+sys.path.insert(0, _REPO_ROOT + "/packages/core")
 from engram.skills.decorator import skill
 
 @skill(name="should_skip", description="x", parameters={})
@@ -154,7 +156,7 @@ def fn(): pass
             self._write_skill(p, "broken.py", "import nonexistent_module_xyz")
             self._write_skill(p, "good.py", """
 import sys
-sys.path.insert(0, "/Users/thameema/git/engram/packages/core")
+sys.path.insert(0, _REPO_ROOT + "/packages/core")
 from engram.skills.decorator import skill
 
 @skill(name="good_skill", description="ok", parameters={})

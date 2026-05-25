@@ -16,13 +16,15 @@ Covers:
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 import unittest
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-sys.path.insert(0, "/Users/thameema/git/engram/packages/core")
-sys.path.insert(0, "/Users/thameema/git/engram/packages/api")
-sys.path.insert(0, "/Users/thameema/git/engram/packages/mcp-server")
+sys.path.insert(0, _REPO_ROOT + "/packages/core")
+sys.path.insert(0, _REPO_ROOT + "/packages/api")
+sys.path.insert(0, _REPO_ROOT + "/packages/mcp-server")
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +172,7 @@ class TestPastIncidentSummary(unittest.TestCase):
 
 class TestReceiveIncidentEnriched(unittest.IsolatedAsyncioTestCase):
     def _make_fastapi_client(self, mock_engram_client):
-        sys.path.insert(0, "/Users/thameema/git/engram/packages/api")
+        sys.path.insert(0, _REPO_ROOT + "/packages/api")
         from fastapi.testclient import TestClient
         from engram_api.main import create_app
         from engram_api.auth import get_client

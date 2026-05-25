@@ -12,12 +12,14 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-sys.path.insert(0, "/Users/thameema/git/engram/packages/core")
+sys.path.insert(0, _REPO_ROOT + "/packages/core")
 
 from engram.cli.git_hooks import (
     _is_incident_branch,
