@@ -382,6 +382,10 @@
         <option value="all">All Namespaces</option>
       </select>
     </div>
+    <button class="btn-icon" id="autorefresh-toggle-btn" title="Pause auto-refresh">
+      <svg id="autorefresh-icon-pause" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+      <svg id="autorefresh-icon-play" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="display:none"><polygon points="5,3 19,12 5,21"/></svg>
+    </button>
     <span id="countdown" title="Next auto-refresh">60s</span>
     <button class="btn btn-primary" id="refresh-btn">
       <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 .49-3"/></svg>
@@ -617,6 +621,7 @@ let debounceTimer = null;
 let autoRefreshTimer = null;
 let countdownTimer  = null;
 let countdownVal    = 60;
+let autoRefreshPaused = localStorage.getItem('engram_autorefresh_paused') === 'true';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  Config helpers
@@ -1462,11 +1467,37 @@ async function revokeKey(id, prefix) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  Auto-refresh + countdown
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function applyAutoRefreshUI() {
+  const countdown = document.getElementById('countdown');
+  const pauseIcon = document.getElementById('autorefresh-icon-pause');
+  const playIcon  = document.getElementById('autorefresh-icon-play');
+  const toggleBtn = document.getElementById('autorefresh-toggle-btn');
+  if (autoRefreshPaused) {
+    countdown.textContent = '—';
+    countdown.title = 'Auto-refresh paused';
+    pauseIcon.style.display = 'none';
+    playIcon.style.display  = '';
+    toggleBtn.title = 'Resume auto-refresh';
+  } else {
+    countdown.title = 'Next auto-refresh';
+    pauseIcon.style.display = '';
+    playIcon.style.display  = 'none';
+    toggleBtn.title = 'Pause auto-refresh';
+  }
+}
+
 function resetCountdown() {
-  countdownVal = 60;
   clearInterval(countdownTimer);
   clearTimeout(autoRefreshTimer);
+
+  if (autoRefreshPaused) {
+    applyAutoRefreshUI();
+    return;
+  }
+
+  countdownVal = 60;
   document.getElementById('countdown').textContent = '60s';
+  applyAutoRefreshUI();
 
   countdownTimer = setInterval(() => {
     countdownVal--;
@@ -1486,6 +1517,12 @@ function resetCountdown() {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 document.getElementById('refresh-btn').addEventListener('click', loadAll);
 
+document.getElementById('autorefresh-toggle-btn').addEventListener('click', () => {
+  autoRefreshPaused = !autoRefreshPaused;
+  localStorage.setItem('engram_autorefresh_paused', autoRefreshPaused);
+  resetCountdown();
+});
+
 document.getElementById('ns-select').addEventListener('change', () => {
   loadAll();
   if (activeTab === 'knowledge') syncAskNamespaces();
@@ -1495,6 +1532,7 @@ document.getElementById('ns-select').addEventListener('change', () => {
 //  Boot
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 (function init() {
+  applyAutoRefreshUI();
   if (!getApiKey()) {
     openSettings();
     return;
