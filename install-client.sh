@@ -240,9 +240,13 @@ else
 fi
 PAYLOAD=$(python3 -c "
 import json, sys
-print(json.dumps({'content':sys.argv[1],'namespace':sys.argv[2],'memory_type':'fact','tags':['session-log','auto',sys.argv[3]],'metadata':{'session_id':sys.argv[4],'project':sys.argv[3],'source':'claude-code-stop-hook'}}))
+content, ns, project, session_id = sys.argv[1:5]
+print(json.dumps({'content':content,'namespace':ns,'memory_type':'fact','tags':['session-log','auto',project],'metadata':{'session_id':session_id,'project':project,'source':'claude-code-stop-hook'},'provenance':{'tool':'claude-code-stop-hook','agent_id':session_id}}))
 " "$CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION_ID" 2>/dev/null)
-curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" -H "Content-Type: application/json" -H "X-API-Key: $ENGRAM_KEY" -d "$PAYLOAD" -o /dev/null 2>/dev/null || true
+curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" \
+  -H "Content-Type: application/json" -H "X-API-Key: $ENGRAM_KEY" \
+  -H "X-Engram-Tool: claude-code-stop-hook" -H "X-Engram-Agent-Id: $SESSION_ID" \
+  -d "$PAYLOAD" -o /dev/null 2>/dev/null || true
 exit 0
 SESSION
   chmod +x "$CLAUDE_HOOKS_DIR/engram-session-write.sh"
@@ -324,10 +328,13 @@ repo: $REPO_NAME | commit: $COMMIT_HASH | branch: $BRANCH | author: $COMMIT_AUTH
 files: $CHANGED_FILES"
 PAYLOAD=$(python3 -c "
 import json,sys
-msg,ns,mtype,commit,branch,author,files,repo=sys.argv[1:9]
-print(json.dumps({'content':msg,'namespace':ns,'memory_type':mtype,'author':author,'tags':['git-commit','auto',repo,mtype],'metadata':{'commit_hash':commit,'repo':repo,'branch':branch,'source':'post-commit-hook'}}))
-" "$CONTENT" "$ENGRAM_NS" "$MEMORY_TYPE" "$COMMIT_FULL" "$BRANCH" "$COMMIT_AUTHOR" "$CHANGED_FILES" "$REPO_NAME" 2>/dev/null)
-curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" -H "Content-Type: application/json" -H "X-API-Key: $ENGRAM_KEY" -d "$PAYLOAD" -o /dev/null 2>/dev/null || true
+msg,ns,mtype,commit_full,commit_short,branch,author,files,repo=sys.argv[1:10]
+print(json.dumps({'content':msg,'namespace':ns,'memory_type':mtype,'author':author,'tags':['git-commit','auto',repo,mtype],'metadata':{'commit_hash':commit_full,'commit_short':commit_short,'repo':repo,'branch':branch,'author':author,'changed_files':files,'source':'post-commit-hook'},'provenance':{'tool':'engram-git','git_commit':commit_short,'user_id':author,'agent_id':f'git:{repo}:{commit_short}'}}))
+" "$CONTENT" "$ENGRAM_NS" "$MEMORY_TYPE" "$COMMIT_FULL" "$COMMIT_HASH" "$BRANCH" "$COMMIT_AUTHOR" "$CHANGED_FILES" "$REPO_NAME" 2>/dev/null)
+curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" \
+  -H "Content-Type: application/json" -H "X-API-Key: $ENGRAM_KEY" \
+  -H "X-Engram-Tool: engram-git" \
+  -d "$PAYLOAD" -o /dev/null 2>/dev/null || true
 LOCAL_HOOK="$(git rev-parse --git-dir 2>/dev/null)/hooks/post-commit.local"
 [[ -x "$LOCAL_HOOK" ]] && exec "$LOCAL_HOOK" "$@"
 exit 0

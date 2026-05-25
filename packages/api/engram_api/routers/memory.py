@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from engram.models import MemoryStatus, MemoryType, Provenance
 from engram_api.auth import (
@@ -56,17 +56,27 @@ def _to_response(memory, score: float | None = None) -> MemoryResponse:
 @router.post("/", response_model=MemoryResponse, status_code=201)
 async def write_memory(
     req: MemoryWriteRequest,
+    request: Request,
     user_id: str = Depends(require_api_key),
     key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
 ) -> MemoryResponse:
     """Persist a new memory entry to both the vector store and knowledge graph."""
     await check_namespace_access(key_entry, req.namespace, operation="write")
+
+    # Build provenance — caller values take precedence; server fills any blanks
+    prov = req.provenance.model_dump()
+    if not prov.get("user_id"):
+        prov["user_id"] = user_id
+    if not prov.get("tool"):
+        # X-Engram-Tool header lets callers self-identify (hooks, SDK clients)
+        prov["tool"] = request.headers.get("X-Engram-Tool", "api")
+    if not prov.get("agent_id"):
+        prov["agent_id"] = request.headers.get("X-Engram-Agent-Id", "")
+
     logger.debug(
-        "write_memory | ns=%s user=%s content=%r",
-        req.namespace,
-        user_id,
-        req.content[:120],
+        "write_memory | ns=%s user=%s tool=%s content=%r",
+        req.namespace, user_id, prov["tool"], req.content[:80],
     )
     try:
         try:
@@ -85,10 +95,10 @@ async def write_memory(
             metadata=req.metadata,
             memory_type=mem_type,
             status=mem_status,
-            author=req.author,
+            author=req.author or user_id,
             affects=req.affects,
             rationale=req.rationale,
-            provenance=Provenance(**req.provenance.model_dump()),
+            provenance=Provenance(**prov),
         )
     except Exception as exc:
         logger.exception("Failed to write memory: %s", exc)
