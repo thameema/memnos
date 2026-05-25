@@ -13,13 +13,28 @@
 # Installation: add to Claude Code settings.json hooks → UserPromptSubmit
 #   "command": "powershell.exe -NonInteractive -File C:\\path\\to\\engram-inject.ps1"
 
+# ── Launch heartbeat daemon (cross-platform Python, handles abrupt exits) ──────
+$HeartbeatScript = Join-Path $env:USERPROFILE ".claude\hooks\engram-heartbeat.py"
+if (Test-Path $HeartbeatScript) {
+    try {
+        Start-Process -FilePath "python3" -ArgumentList "`"$HeartbeatScript`"" `
+            -WindowStyle Hidden -ErrorAction SilentlyContinue
+    } catch {
+        try {
+            Start-Process -FilePath "python" -ArgumentList "`"$HeartbeatScript`"" `
+                -WindowStyle Hidden -ErrorAction SilentlyContinue
+        } catch { }
+    }
+}
+
 # ── Load config ────────────────────────────────────────────────────────────────
 $EnvFile = Join-Path $env:USERPROFILE ".claude\hooks\engram.env"
 
 $ENGRAM_API        = "http://localhost:8766"
 $ENGRAM_KEY        = ""
 $ENGRAM_DEFAULT_NS = "personal:me"
-$ENGRAM_TOP_K      = 5
+$ENGRAM_TOP_K      = 8
+$ENGRAM_MIN_SCORE  = 0.50
 
 if (Test-Path $EnvFile) {
     foreach ($line in (Get-Content $EnvFile)) {
@@ -34,6 +49,7 @@ if (Test-Path $EnvFile) {
             "ENGRAM_KEY"        { $ENGRAM_KEY        = $value }
             "ENGRAM_DEFAULT_NS" { $ENGRAM_DEFAULT_NS = $value }
             "ENGRAM_TOP_K"      { $ENGRAM_TOP_K      = [int]$value }
+            "ENGRAM_MIN_SCORE"  { $ENGRAM_MIN_SCORE  = [double]$value }
         }
     }
 }
@@ -94,7 +110,8 @@ if ([string]::IsNullOrWhiteSpace($QueryEnc)) { exit 0 }
 
 # ── Query engram ──────────────────────────────────────────────────────────────
 try {
-    $SearchUrl = "$ENGRAM_API/api/v1/memory/search?q=$QueryEnc&ns=$EngNS&top_k=$ENGRAM_TOP_K"
+    # Use ns=all — server searches every namespace the key can access
+    $SearchUrl = "$ENGRAM_API/api/v1/memory/search?q=$QueryEnc&ns=all&top_k=$ENGRAM_TOP_K"
     $Headers   = @{ "X-API-Key" = $ENGRAM_KEY }
     $Response  = Invoke-RestMethod -Uri $SearchUrl -Headers $Headers `
         -Method Get -TimeoutSec 5 -ErrorAction Stop
@@ -113,6 +130,13 @@ try {
         exit 0
     }
 
+    if ($Results.Count -eq 0) { exit 0 }
+
+    # Filter below minimum score
+    $Results = $Results | Where-Object {
+        $s = $_.score
+        ($null -ne $s) -and (($s -is [double]) -or ($s -is [decimal])) -and ([double]$s -ge $ENGRAM_MIN_SCORE)
+    }
     if ($Results.Count -eq 0) { exit 0 }
 
     $Lines = [System.Collections.Generic.List[string]]::new()
