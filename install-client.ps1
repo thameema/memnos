@@ -7,18 +7,16 @@
 #   .\install-client.ps1
 #   .\install-client.ps1 -Server http://host:8766 -Key engram-abc123
 #   .\install-client.ps1 -Server http://localhost:8766 -Key engram-abc123 -Namespace "personal:me"
-#   .\install-client.ps1 -Server http://host:8766 -Key engram-abc123 -AnthropicKey "sk-ant-..."
 #
 # Requirements: PowerShell 5.1+ (Windows 10/11 built-in) or PowerShell 7+
-#               Python 3.8+ (for heartbeat daemon and LLM summaries)
+#               Python 3.8+ (for heartbeat daemon)
 #               git for Windows, Claude Code for Windows
 
 [CmdletBinding()]
 param(
-    [string]$Server       = "",
-    [string]$Key          = "",
-    [string]$Namespace    = "",
-    [string]$AnthropicKey = ""
+    [string]$Server    = "",
+    [string]$Key       = "",
+    [string]$Namespace = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -82,18 +80,6 @@ if ([string]::IsNullOrWhiteSpace($EngramKey)) {
 
 $DefaultNS = if ($Namespace) { $Namespace } else { Read-Input "Default namespace" "personal:me" }
 
-# Optional: Anthropic API key for LLM session summaries
-$AnthropicApiKey = ""
-if ($AnthropicKey) {
-    $AnthropicApiKey = $AnthropicKey
-    Write-Info "Anthropic key: provided via -AnthropicKey"
-} else {
-    $wantLLM = Read-YN "Enable LLM session summaries? (requires Anthropic API key)" "N"
-    if ($wantLLM) {
-        $AnthropicApiKey = Read-Input "Anthropic API key (sk-ant-...)" ""
-    }
-}
-
 # ─── Test connection ──────────────────────────────────────────────────────────
 Write-Step "Testing server connection"
 try {
@@ -122,13 +108,9 @@ $EnvLines = @(
     "ENGRAM_TOP_K=8",
     "ENGRAM_MIN_SCORE=0.50",
     "ENGRAM_AUTOSAVE_MINUTES=10",
-    "ENGRAM_HEARTBEAT_MINUTES=10"
+    "ENGRAM_HEARTBEAT_MINUTES=10",
+    "# LLM summaries use claude --print (no API key needed)"
 )
-if (-not [string]::IsNullOrWhiteSpace($AnthropicApiKey)) {
-    $EnvLines += "ANTHROPIC_API_KEY=$AnthropicApiKey"
-} else {
-    $EnvLines += "# ANTHROPIC_API_KEY=sk-ant-...  (optional — enables LLM session summaries)"
-}
 $EnvFile = Join-Path $HooksDir "engram.env"
 $EnvLines | Set-Content -Path $EnvFile -Encoding UTF8
 Write-Success "Config: $EnvFile"
@@ -461,11 +443,7 @@ Write-Host "    Heartbeat daemon → safety net for Ctrl+C / power loss (every 1
 Write-Host ""
 Write-Host "  Server    : $EngramServer" -ForegroundColor Cyan
 Write-Host "  Namespace : $DefaultNS"   -ForegroundColor Cyan
-if (-not [string]::IsNullOrWhiteSpace($AnthropicApiKey)) {
-    Write-Host "  LLM summaries: enabled (Claude Haiku)" -ForegroundColor Cyan
-} else {
-    Write-Host "  [!] LLM summaries disabled — add ANTHROPIC_API_KEY to $HooksDir\engram.env" -ForegroundColor Yellow
-}
+Write-Host "  LLM summaries: via claude --print (built-in)" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Per-project namespace:" -ForegroundColor White
 Write-Host '    "namespace=project:myname" | Set-Content .engram'

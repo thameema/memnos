@@ -32,11 +32,10 @@ def load_env():
     return env
 
 cfg = load_env()
-ENGRAM_API   = cfg.get("ENGRAM_API",   os.environ.get("ENGRAM_API",   "http://localhost:8766"))
-ENGRAM_KEY   = cfg.get("ENGRAM_KEY",   os.environ.get("ENGRAM_KEY",   ""))
-ANTHROPIC_KEY= cfg.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
-DEFAULT_NS   = cfg.get("ENGRAM_DEFAULT_NS", os.environ.get("ENGRAM_DEFAULT_NS", "personal:me"))
-INTERVAL     = int(cfg.get("ENGRAM_HEARTBEAT_MINUTES", "10")) * 60  # seconds
+ENGRAM_API = cfg.get("ENGRAM_API",        os.environ.get("ENGRAM_API",        "http://localhost:8766"))
+ENGRAM_KEY = cfg.get("ENGRAM_KEY",        os.environ.get("ENGRAM_KEY",        ""))
+DEFAULT_NS = cfg.get("ENGRAM_DEFAULT_NS", os.environ.get("ENGRAM_DEFAULT_NS", "personal:me"))
+INTERVAL   = int(cfg.get("ENGRAM_HEARTBEAT_MINUTES", "10")) * 60
 
 # ── PID file — one daemon per machine ────────────────────────────────────────
 TMP = pathlib.Path(os.environ.get("TEMP", "/tmp"))
@@ -111,39 +110,26 @@ def extract_turns(transcript: pathlib.Path, max_turns: int = 12) -> list[str]:
         pass
     return turns[-max_turns:]
 
-# ── Generate summary via Claude Haiku ────────────────────────────────────────
+# ── Generate summary via claude --print (no API key needed) ──────────────────
 def summarise(turns: list[str], project: str, branch: str) -> str:
-    if not ANTHROPIC_KEY or len(turns) < 2:
+    import shutil, subprocess
+    if shutil.which("claude") is None or len(turns) < 2:
         return ""
     prompt = (
         f"Project: {project}" + (f"  branch: {branch}" if branch else "") +
         "\n\n[HEARTBEAT — session may have ended abruptly]\n\n" +
-        "\n\n".join(turns)
-    )
-    payload = json.dumps({
-        "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 220,
-        "system": (
-            "Capture this dev session for recovery. The session may have ended abruptly. "
-            "Write a dense, specific summary: what was being worked on, current status, "
-            "any in-progress changes, last known state. Name tickets, files, functions. "
-            "End with 'STATUS: <in-progress|blocked|complete|unknown>'."
-        ),
-        "messages": [{"role": "user", "content": prompt}],
-    }).encode()
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=payload,
-        headers={
-            "x-api-key": ANTHROPIC_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        method="POST",
+        "\n\n".join(turns) +
+        '\n\nCapture this session for recovery. Write a dense, specific summary: '
+        "what was being worked on, current status, any in-progress changes, last known state. "
+        "Name tickets, files, functions. Be concise (max 180 words). "
+        'End with "STATUS: <in-progress|blocked|complete|unknown>".'
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())["content"][0]["text"].strip()
+        result = subprocess.run(
+            ["claude", "--print"],
+            input=prompt, capture_output=True, text=True, timeout=30
+        )
+        return result.stdout.strip()[:800]
     except Exception:
         return ""
 

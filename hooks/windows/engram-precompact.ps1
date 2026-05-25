@@ -2,7 +2,7 @@
 #
 # Claude Code PreCompact hook — saves session state to engram before context compact.
 # Fires when Claude Code's context window approaches its limit.
-# Requires ANTHROPIC_API_KEY in engram.env for LLM summarization.
+# Uses `claude --print` for LLM summarization — no API key needed.
 #
 # Installation: add to Claude Code settings.json hooks → PreCompact (async: true)
 #   "command": "powershell.exe -NonInteractive -NoProfile -File \"C:\\path\\to\\engram-precompact.ps1\""
@@ -13,7 +13,6 @@ $EnvFile = Join-Path $env:USERPROFILE ".claude\hooks\engram.env"
 $ENGRAM_API        = "http://localhost:8766"
 $ENGRAM_KEY        = ""
 $ENGRAM_DEFAULT_NS = "personal:me"
-$ANTHROPIC_KEY     = ""
 
 if (Test-Path $EnvFile) {
     foreach ($line in (Get-Content $EnvFile)) {
@@ -24,16 +23,15 @@ if (Test-Path $EnvFile) {
         $key   = $line.Substring(0, $idx).Trim()
         $value = $line.Substring($idx + 1).Trim()
         switch ($key) {
-            "ENGRAM_API"            { $ENGRAM_API        = $value }
-            "ENGRAM_KEY"            { $ENGRAM_KEY        = $value }
-            "ENGRAM_DEFAULT_NS"     { $ENGRAM_DEFAULT_NS = $value }
-            "ANTHROPIC_API_KEY"     { $ANTHROPIC_KEY     = $value }
+            "ENGRAM_API"        { $ENGRAM_API        = $value }
+            "ENGRAM_KEY"        { $ENGRAM_KEY        = $value }
+            "ENGRAM_DEFAULT_NS" { $ENGRAM_DEFAULT_NS = $value }
         }
     }
 }
 
-# No Anthropic key — nothing to do (sparse git metadata is handled by session-write)
-if ([string]::IsNullOrWhiteSpace($ANTHROPIC_KEY)) { exit 0 }
+# claude CLI required for summaries
+if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { exit 0 }
 
 # ── Read stdin ────────────────────────────────────────────────────────────────
 try {
@@ -102,35 +100,15 @@ foreach ($line in (Get-Content $Transcript -Encoding UTF8 -ErrorAction SilentlyC
 $turns = $turns | Select-Object -Last 12
 if ($turns.Count -lt 2) { exit 0 }
 
-# ── Generate summary via Claude Haiku ────────────────────────────────────────
+# ── Generate summary via claude --print ──────────────────────────────────────
 $promptText = "Project: $Project" + $(if ($Branch) { "  branch: $Branch" } else { "" }) +
     "`n`n[PRE-COMPACT — context window approaching limit]`n`n" +
-    ($turns -join "`n`n")
-
-$systemMsg = "Capture this in-progress dev session before context is compacted. " +
-    "Write a dense, specific summary: what has been done, what is currently in progress, " +
-    "decisions made, errors encountered, exact current state. Name tickets, files, functions. " +
-    'End with "STATUS: <in-progress|blocked|complete>".'
-
-$body = @{
-    model      = "claude-haiku-4-5-20251001"
-    max_tokens = 220
-    system     = $systemMsg
-    messages   = @(@{ role = "user"; content = $promptText })
-} | ConvertTo-Json -Depth 5
+    ($turns -join "`n`n") +
+    "`n`nCapture this in-progress dev session before context is compacted. Write a dense, specific summary: what has been done, what is currently in progress, decisions made, errors encountered, exact current state. Name tickets, files, functions. Be concise (max 200 words). End with ""STATUS: <in-progress|blocked|complete>""."
 
 try {
-    $resp = Invoke-RestMethod `
-        -Uri "https://api.anthropic.com/v1/messages" `
-        -Method Post `
-        -Headers @{
-            "x-api-key"         = $ANTHROPIC_KEY
-            "anthropic-version" = "2023-06-01"
-            "content-type"      = "application/json"
-        } `
-        -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) `
-        -TimeoutSec 15
-    $Summary = $resp.content[0].text.Trim()
+    $Summary = ($promptText | & claude --print 2>$null) -join "`n"
+    $Summary = $Summary.Trim()
 } catch {
     exit 0
 }

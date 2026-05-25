@@ -8,7 +8,6 @@
 #   ./install-client.sh
 #   ./install-client.sh --server http://host:8766 --key engram-abc123
 #   ./install-client.sh --server http://localhost:8766 --key engram-abc123 --namespace personal:me
-#   ./install-client.sh --server http://host:8766 --key engram-abc123 --anthropic-key sk-ant-...
 #
 # Supports: macOS, Linux, WSL (Windows Subsystem for Linux)
 # For native Windows (PowerShell): use install-client.ps1 instead.
@@ -44,13 +43,12 @@ ask_yn() {
 }
 
 # ─── Parse arguments ──────────────────────────────────────────────────────────
-ARG_SERVER="" ARG_KEY="" ARG_NS="" ARG_ANTHROPIC_KEY=""
+ARG_SERVER="" ARG_KEY="" ARG_NS=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --server)              ARG_SERVER="$2";        shift 2 ;;
-    --key)                 ARG_KEY="$2";           shift 2 ;;
-    --namespace|--ns)      ARG_NS="$2";            shift 2 ;;
-    --anthropic-key)       ARG_ANTHROPIC_KEY="$2"; shift 2 ;;
+    --server)         ARG_SERVER="$2"; shift 2 ;;
+    --key)            ARG_KEY="$2";    shift 2 ;;
+    --namespace|--ns) ARG_NS="$2";     shift 2 ;;
     *) warn "Unknown argument: $1"; shift ;;
   esac
 done
@@ -125,18 +123,6 @@ collect_config() {
   else
     ask DEFAULT_NS "Default namespace" "personal:me"
   fi
-
-  # Optional: Anthropic API key for LLM session summaries
-  ANTHROPIC_API_KEY=""
-  if [ -n "$ARG_ANTHROPIC_KEY" ]; then
-    ANTHROPIC_API_KEY="$ARG_ANTHROPIC_KEY"
-    info "Anthropic key: provided via --anthropic-key"
-  else
-    ask_yn WANT_ANTHROPIC "Enable LLM session summaries? (requires Anthropic API key)" "N"
-    if [[ "$WANT_ANTHROPIC" == "yes" ]]; then
-      ask ANTHROPIC_API_KEY "Anthropic API key (sk-ant-...)" ""
-    fi
-  fi
 }
 
 # ─── Test server connectivity ─────────────────────────────────────────────────
@@ -167,13 +153,8 @@ ENGRAM_TOP_K=8
 ENGRAM_MIN_SCORE=0.50
 ENGRAM_AUTOSAVE_MINUTES=10
 ENGRAM_HEARTBEAT_MINUTES=10
+# LLM summaries use claude --print (no API key needed)
 ENV
-  if [ -n "$ANTHROPIC_API_KEY" ]; then
-    echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}" >> "$CLAUDE_HOOKS_DIR/engram.env"
-  else
-    echo "# ANTHROPIC_API_KEY=sk-ant-...  (optional — enables LLM session summaries)" \
-      >> "$CLAUDE_HOOKS_DIR/engram.env"
-  fi
   success "Config: $CLAUDE_HOOKS_DIR/engram.env"
 
   # ── inject hook (UserPromptSubmit) ─────────────────────────────────────────
@@ -269,6 +250,7 @@ import sys
 import time
 import urllib.request
 
+# ── Config (read from engram.env if present) ─────────────────────────────────
 def load_env():
     env = {}
     env_path = pathlib.Path(__file__).parent / "engram.env"
@@ -281,12 +263,12 @@ def load_env():
     return env
 
 cfg = load_env()
-ENGRAM_API    = cfg.get("ENGRAM_API",   os.environ.get("ENGRAM_API",   "http://localhost:8766"))
-ENGRAM_KEY    = cfg.get("ENGRAM_KEY",   os.environ.get("ENGRAM_KEY",   ""))
-ANTHROPIC_KEY = cfg.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
-DEFAULT_NS    = cfg.get("ENGRAM_DEFAULT_NS", os.environ.get("ENGRAM_DEFAULT_NS", "personal:me"))
-INTERVAL      = int(cfg.get("ENGRAM_HEARTBEAT_MINUTES", "10")) * 60
+ENGRAM_API = cfg.get("ENGRAM_API",        os.environ.get("ENGRAM_API",        "http://localhost:8766"))
+ENGRAM_KEY = cfg.get("ENGRAM_KEY",        os.environ.get("ENGRAM_KEY",        ""))
+DEFAULT_NS = cfg.get("ENGRAM_DEFAULT_NS", os.environ.get("ENGRAM_DEFAULT_NS", "personal:me"))
+INTERVAL   = int(cfg.get("ENGRAM_HEARTBEAT_MINUTES", "10")) * 60
 
+# ── PID file — one daemon per machine ────────────────────────────────────────
 TMP       = pathlib.Path(os.environ.get("TEMP", "/tmp"))
 PID_FILE  = TMP / "engram_heartbeat.pid"
 MARK_FILE = TMP / "engram_heartbeat_marker"
@@ -316,6 +298,7 @@ def cleanup(*_):
     PID_FILE.unlink(missing_ok=True)
     sys.exit(0)
 
+# ── Transcript discovery ──────────────────────────────────────────────────────
 def find_active_transcripts(since_seconds: int = 900) -> list:
     projects_dir = pathlib.Path.home() / ".claude" / "projects"
     if not projects_dir.exists():
@@ -326,6 +309,7 @@ def find_active_transcripts(since_seconds: int = 900) -> list:
         if p.stat().st_mtime > cutoff
     ]
 
+# ── Extract recent turns from transcript ─────────────────────────────────────
 def extract_turns(transcript: pathlib.Path, max_turns: int = 12) -> list:
     turns = []
     try:
@@ -356,41 +340,30 @@ def extract_turns(transcript: pathlib.Path, max_turns: int = 12) -> list:
         pass
     return turns[-max_turns:]
 
+# ── Generate summary via claude --print (no API key needed) ──────────────────
 def summarise(turns: list, project: str, branch: str) -> str:
-    if not ANTHROPIC_KEY or len(turns) < 2:
+    import shutil, subprocess
+    if shutil.which("claude") is None or len(turns) < 2:
         return ""
     prompt = (
         f"Project: {project}" + (f"  branch: {branch}" if branch else "") +
         "\n\n[HEARTBEAT — session may have ended abruptly]\n\n" +
-        "\n\n".join(turns)
-    )
-    payload = json.dumps({
-        "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 220,
-        "system": (
-            "Capture this dev session for recovery. The session may have ended abruptly. "
-            "Write a dense, specific summary: what was being worked on, current status, "
-            "any in-progress changes, last known state. Name tickets, files, functions. "
-            "End with 'STATUS: <in-progress|blocked|complete|unknown>'."
-        ),
-        "messages": [{"role": "user", "content": prompt}],
-    }).encode()
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=payload,
-        headers={
-            "x-api-key": ANTHROPIC_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        method="POST",
+        "\n\n".join(turns) +
+        '\n\nCapture this session for recovery. Write a dense, specific summary: '
+        "what was being worked on, current status, any in-progress changes, last known state. "
+        "Name tickets, files, functions. Be concise (max 180 words). "
+        'End with "STATUS: <in-progress|blocked|complete|unknown>".'
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())["content"][0]["text"].strip()
+        result = subprocess.run(
+            ["claude", "--print"],
+            input=prompt, capture_output=True, text=True, timeout=30
+        )
+        return result.stdout.strip()[:800]
     except Exception:
         return ""
 
+# ── Write memory to engram ────────────────────────────────────────────────────
 def write_memory(content: str, namespace: str, project: str, session_id: str):
     if not ENGRAM_KEY:
         return
@@ -417,6 +390,7 @@ def write_memory(content: str, namespace: str, project: str, session_id: str):
     except Exception:
         pass
 
+# ── Per-session last-save tracking ───────────────────────────────────────────
 last_saved: dict = {}
 
 def process_transcript(transcript: pathlib.Path):
@@ -499,6 +473,7 @@ HEARTBEAT
 # PostToolUse hook — two jobs:
 # 1. Git commits: written to engram immediately (real-time cross-session visibility)
 # 2. Periodic auto-save: every 10 minutes of tool activity, background session save
+#    Uses `claude --print` for summaries — no separate API key required.
 set -euo pipefail
 
 HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -569,6 +544,10 @@ ELAPSED=$(( NOW - LAST_SAVE ))
 
 if [[ $ELAPSED -ge $(( SAVE_INTERVAL_MINUTES * 60 )) ]]; then
   echo "$NOW" > "$LAST_SAVE_FILE"
+
+  # Require claude CLI for summaries
+  command -v claude &>/dev/null || exit 0
+
   TRANSCRIPT=$(echo "$INPUT" | python3 -c \
     "import sys,json; d=json.load(sys.stdin); print(d.get('transcript_path',''))" 2>/dev/null || echo "")
   if [[ -z "$TRANSCRIPT" || ! -f "$TRANSCRIPT" ]]; then
@@ -576,29 +555,23 @@ if [[ $ELAPSED -ge $(( SAVE_INTERVAL_MINUTES * 60 )) ]]; then
     TRANSCRIPT="$HOME/.claude/projects/$SLUG/$SESSION.jsonl"
   fi
 
-  ANTHROPIC_KEY="${ANTHROPIC_API_KEY:-}"
-
-  if [[ -f "$TRANSCRIPT" && -n "$ANTHROPIC_KEY" ]]; then
+  if [[ -f "$TRANSCRIPT" ]]; then
+    # Run in background so it never blocks the tool response
     (
-      SUMMARY=$(python3 - "$TRANSCRIPT" "$ANTHROPIC_KEY" "$PROJECT" "$BRANCH" "$COUNT" <<'PYEOF'
-import json, sys, urllib.request
-
-transcript_path, api_key, project, branch, count = sys.argv[1:6]
-
+      TURNS_TEXT=$(python3 - "$TRANSCRIPT" <<'PYEOF'
+import json, sys
 turns = []
 try:
-    with open(transcript_path) as f:
+    with open(sys.argv[1]) as f:
         for line in f:
             try:
                 d = json.loads(line.strip())
                 role = d.get('type', '')
-                if role not in ('user', 'assistant'):
-                    continue
+                if role not in ('user', 'assistant'): continue
                 msg = d.get('message', {})
                 content = msg.get('content', '')
                 text = ''
-                if isinstance(content, str):
-                    text = content
+                if isinstance(content, str): text = content
                 elif isinstance(content, list):
                     for c in content:
                         if isinstance(c, dict) and c.get('type') == 'text':
@@ -606,52 +579,21 @@ try:
                 text = text.strip()
                 if len(text) > 20:
                     turns.append(f"{role.upper()}: {text[:500]}")
-            except Exception:
-                continue
-except Exception:
-    sys.exit(0)
-
-turns = turns[-12:]
-if len(turns) < 2:
-    sys.exit(0)
-
-prompt = (
-    f"Project: {project}" + (f"  branch: {branch}" if branch else "") +
-    f"  [auto-save at tool-call #{count}]\n\n" +
-    "\n\n".join(turns)
-)
-
-payload = json.dumps({
-    'model':      'claude-haiku-4-5-20251001',
-    'max_tokens': 220,
-    'system': (
-        'Capture this in-progress dev session for another agent to resume. '
-        'Write a dense, specific summary: what has been done, what is currently being worked on, '
-        'decisions made, errors seen, current status. Name specific tickets, files, functions. '
-        'End with "STATUS: <in-progress|blocked|complete>".'
-    ),
-    'messages': [{'role': 'user', 'content': prompt}],
-}).encode()
-
-req = urllib.request.Request(
-    'https://api.anthropic.com/v1/messages',
-    data=payload,
-    headers={
-        'x-api-key':         api_key,
-        'anthropic-version': '2023-06-01',
-        'content-type':      'application/json',
-    },
-    method='POST',
-)
-try:
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        result = json.loads(resp.read())
-        print(result['content'][0]['text'].strip())
-except Exception:
-    sys.exit(0)
+            except: continue
+except: pass
+print('\n\n'.join(turns[-12:]))
 PYEOF
       )
 
+      [[ -z "$TURNS_TEXT" ]] && exit 0
+
+      PROMPT="Project: $PROJECT${BRANCH:+  branch: $BRANCH}  [auto-save #$COUNT]
+
+$TURNS_TEXT
+
+Capture this in-progress dev session for another agent to resume. Write a dense, specific summary: what has been done, what is currently being worked on, decisions made, errors seen, current status. Name specific tickets, files, functions. Be concise (max 200 words). End with \"STATUS: <in-progress|blocked|complete>\"."
+
+      SUMMARY=$(echo "$PROMPT" | claude --print 2>/dev/null | head -c 1000)
       [[ -z "$SUMMARY" ]] && exit 0
 
       CONTENT="[auto-save #$COUNT] $PROJECT${BRANCH:+ | $BRANCH} — $SUMMARY"
@@ -687,7 +629,7 @@ GITWRITE
   cat > "$CLAUDE_HOOKS_DIR/engram-precompact.sh" <<'PRECOMPACT'
 #!/usr/bin/env bash
 # PreCompact hook — saves session state to engram before Claude Code compacts context.
-# Fires automatically when the context window approaches its limit.
+# Uses `claude --print` for LLM summarization — no separate API key required.
 set -euo pipefail
 
 HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -695,14 +637,16 @@ HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ENGRAM_API="${ENGRAM_API:-http://localhost:8766}"
 ENGRAM_KEY="${ENGRAM_KEY:-}"
-ANTHROPIC_KEY="${ANTHROPIC_API_KEY:-}"
 
 INPUT=$(cat)
-CWD=$(echo        "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd',''))"         2>/dev/null || echo "")
-SESSION=$(echo    "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))"  2>/dev/null || echo "")
+CWD=$(echo        "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd',''))"          2>/dev/null || echo "")
+SESSION=$(echo    "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))"   2>/dev/null || echo "")
 TRANSCRIPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('transcript_path',''))" 2>/dev/null || echo "")
 
 [[ -z "$SESSION" ]] && exit 0
+
+# claude CLI required for summaries
+command -v claude &>/dev/null || exit 0
 
 # Namespace resolution
 ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:me}"
@@ -715,34 +659,27 @@ fi
 PROJECT=$(basename "${CWD:-unknown}")
 BRANCH=$(git -C "${CWD:-.}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 
-# Find transcript if not provided
+# Find transcript
 if [[ -z "$TRANSCRIPT" || ! -f "$TRANSCRIPT" ]]; then
   SLUG=$(python3 -c "print('${CWD}'.replace('/', '-'))" 2>/dev/null || echo "")
   TRANSCRIPT="$HOME/.claude/projects/$SLUG/$SESSION.jsonl"
 fi
-
 [[ ! -f "$TRANSCRIPT" ]] && exit 0
-[[ -z "$ANTHROPIC_KEY" ]] && exit 0
 
-SUMMARY=$(python3 - "$TRANSCRIPT" "$ANTHROPIC_KEY" "$PROJECT" "$BRANCH" <<'PYEOF'
-import json, sys, urllib.request
-
-transcript_path, api_key, project, branch = sys.argv[1:5]
-
+TURNS_TEXT=$(python3 - "$TRANSCRIPT" <<'PYEOF'
+import json, sys
 turns = []
 try:
-    with open(transcript_path) as f:
+    with open(sys.argv[1]) as f:
         for line in f:
             try:
                 d = json.loads(line.strip())
                 role = d.get('type', '')
-                if role not in ('user', 'assistant'):
-                    continue
+                if role not in ('user', 'assistant'): continue
                 msg = d.get('message', {})
                 content = msg.get('content', '')
                 text = ''
-                if isinstance(content, str):
-                    text = content
+                if isinstance(content, str): text = content
                 elif isinstance(content, list):
                     for c in content:
                         if isinstance(c, dict) and c.get('type') == 'text':
@@ -750,51 +687,23 @@ try:
                 text = text.strip()
                 if len(text) > 20:
                     turns.append(f"{role.upper()}: {text[:500]}")
-            except Exception:
-                continue
-except Exception:
-    sys.exit(0)
-
-turns = turns[-12:]
-if len(turns) < 2:
-    sys.exit(0)
-
-prompt = (
-    f"Project: {project}" + (f"  branch: {branch}" if branch else "") +
-    "\n\n[PRE-COMPACT — context window approaching limit]\n\n" +
-    "\n\n".join(turns)
-)
-
-payload = json.dumps({
-    'model':      'claude-haiku-4-5-20251001',
-    'max_tokens': 220,
-    'system': (
-        'Capture this in-progress dev session before context is compacted. '
-        'Write a dense, specific summary: what has been done, what is currently in progress, '
-        'decisions made, errors encountered, exact current state. Name tickets, files, functions. '
-        'End with "STATUS: <in-progress|blocked|complete>".'
-    ),
-    'messages': [{'role': 'user', 'content': prompt}],
-}).encode()
-
-req = urllib.request.Request(
-    'https://api.anthropic.com/v1/messages',
-    data=payload,
-    headers={
-        'x-api-key':         api_key,
-        'anthropic-version': '2023-06-01',
-        'content-type':      'application/json',
-    },
-    method='POST',
-)
-try:
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        print(json.loads(resp.read())['content'][0]['text'].strip())
-except Exception:
-    sys.exit(0)
+            except: continue
+except: pass
+print('\n\n'.join(turns[-12:]))
 PYEOF
 )
 
+[[ -z "$TURNS_TEXT" ]] && exit 0
+
+PROMPT="Project: $PROJECT${BRANCH:+  branch: $BRANCH}
+
+[PRE-COMPACT — context window approaching limit]
+
+$TURNS_TEXT
+
+Capture this in-progress dev session before context is compacted. Write a dense, specific summary: what has been done, what is currently in progress, decisions made, errors encountered, exact current state. Name tickets, files, functions. Be concise (max 200 words). End with \"STATUS: <in-progress|blocked|complete>\"."
+
+SUMMARY=$(echo "$PROMPT" | claude --print 2>/dev/null | head -c 1000)
 [[ -z "$SUMMARY" ]] && exit 0
 
 CONTENT="[pre-compact] $PROJECT${BRANCH:+ | $BRANCH} — $SUMMARY"
@@ -827,7 +736,7 @@ PRECOMPACT
 #!/usr/bin/env bash
 # Stop hook — writes session state to engram at the end of every Claude Code session.
 # Stage A: sparse git metadata (always runs, fast).
-# Stage B: LLM summary via Claude Haiku (runs if ANTHROPIC_API_KEY is set).
+# Stage B: LLM summary via `claude --print` (no API key — uses existing Claude Code auth).
 set -euo pipefail
 
 HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -835,11 +744,10 @@ HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ENGRAM_API="${ENGRAM_API:-http://localhost:8766}"
 ENGRAM_KEY="${ENGRAM_KEY:-}"
-ANTHROPIC_KEY="${ANTHROPIC_API_KEY:-}"
 
 INPUT=$(cat)
-CWD=$(echo        "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd',''))"         2>/dev/null || echo "")
-SESSION=$(echo    "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))"  2>/dev/null || echo "")
+CWD=$(echo        "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd',''))"          2>/dev/null || echo "")
+SESSION=$(echo    "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))"   2>/dev/null || echo "")
 TRANSCRIPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('transcript_path',''))" 2>/dev/null || echo "")
 
 [[ -z "$CWD" ]] && exit 0
@@ -887,8 +795,8 @@ print(json.dumps({
     -H "X-Engram-Tool: stop-hook" \
     -d @- -o /dev/null 2>/dev/null || true
 
-# ── Stage B: LLM session summary ─────────────────────────────────────────────
-[[ -z "$ANTHROPIC_KEY" ]] && exit 0
+# ── Stage B: LLM summary via claude --print (no separate API key needed) ──────
+command -v claude &>/dev/null || exit 0
 
 # Find transcript
 if [[ -z "$TRANSCRIPT" || ! -f "$TRANSCRIPT" ]]; then
@@ -897,25 +805,20 @@ if [[ -z "$TRANSCRIPT" || ! -f "$TRANSCRIPT" ]]; then
 fi
 [[ ! -f "$TRANSCRIPT" ]] && exit 0
 
-SUMMARY=$(python3 - "$TRANSCRIPT" "$ANTHROPIC_KEY" "$PROJECT" "$BRANCH" <<'PYEOF'
-import json, sys, urllib.request
-
-transcript_path, api_key, project, branch = sys.argv[1:5]
-
+TURNS_TEXT=$(python3 - "$TRANSCRIPT" <<'PYEOF'
+import json, sys
 turns = []
 try:
-    with open(transcript_path) as f:
+    with open(sys.argv[1]) as f:
         for line in f:
             try:
                 d = json.loads(line.strip())
                 role = d.get('type', '')
-                if role not in ('user', 'assistant'):
-                    continue
+                if role not in ('user', 'assistant'): continue
                 msg = d.get('message', {})
                 content = msg.get('content', '')
                 text = ''
-                if isinstance(content, str):
-                    text = content
+                if isinstance(content, str): text = content
                 elif isinstance(content, list):
                     for c in content:
                         if isinstance(c, dict) and c.get('type') == 'text':
@@ -923,51 +826,23 @@ try:
                 text = text.strip()
                 if len(text) > 20:
                     turns.append(f"{role.upper()}: {text[:500]}")
-            except Exception:
-                continue
-except Exception:
-    sys.exit(0)
-
-turns = turns[-8:]
-if len(turns) < 2:
-    sys.exit(0)
-
-prompt = (
-    f"Project: {project}" + (f"  branch: {branch}" if branch else "") +
-    "\n\n[SESSION END]\n\n" +
-    "\n\n".join(turns)
-)
-
-payload = json.dumps({
-    'model':      'claude-haiku-4-5-20251001',
-    'max_tokens': 180,
-    'system': (
-        'Write a dense session summary for future reference. '
-        'Cover: what was accomplished, decisions made, files changed, errors fixed. '
-        'Name specific tickets, files, and functions. Be concise but complete. '
-        'End with "STATUS: <complete|in-progress|blocked>".'
-    ),
-    'messages': [{'role': 'user', 'content': prompt}],
-}).encode()
-
-req = urllib.request.Request(
-    'https://api.anthropic.com/v1/messages',
-    data=payload,
-    headers={
-        'x-api-key':         api_key,
-        'anthropic-version': '2023-06-01',
-        'content-type':      'application/json',
-    },
-    method='POST',
-)
-try:
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        print(json.loads(resp.read())['content'][0]['text'].strip())
-except Exception:
-    sys.exit(0)
+            except: continue
+except: pass
+print('\n\n'.join(turns[-8:]))
 PYEOF
 )
 
+[[ -z "$TURNS_TEXT" ]] && exit 0
+
+PROMPT="Project: $PROJECT${BRANCH:+  branch: $BRANCH}
+
+[SESSION END]
+
+$TURNS_TEXT
+
+Write a dense session summary for future reference. Cover: what was accomplished, decisions made, files changed, errors fixed. Name specific tickets, files, and functions. Be concise (max 180 words). End with \"STATUS: <complete|in-progress|blocked>\"."
+
+SUMMARY=$(echo "$PROMPT" | claude --print 2>/dev/null | head -c 1000)
 [[ -z "$SUMMARY" ]] && exit 0
 
 RICH_CONTENT="[session-end] $PROJECT${BRANCH:+ | $BRANCH} — $SUMMARY"
@@ -1305,12 +1180,7 @@ print_success() {
   echo ""
   echo -e "  ${BOLD}Server${NC}    : ${ENGRAM_SERVER}"
   echo -e "  ${BOLD}Namespace${NC} : ${DEFAULT_NS}"
-  if [ -n "$ANTHROPIC_API_KEY" ]; then
-    echo -e "  ${BOLD}LLM summaries${NC}: enabled (Claude Haiku)"
-  else
-    echo -e "  ${YELLOW}  [!]${NC} LLM summaries disabled — add ANTHROPIC_API_KEY to"
-    echo -e "        ${DIM}~/.claude/hooks/engram.env${NC} to enable richer session saves."
-  fi
+  echo -e "  ${BOLD}LLM summaries${NC}: via claude --print (built-in)"
   echo ""
   echo -e "  ${BOLD}Per-project namespace:${NC}  echo 'namespace=project:myname' > /path/to/repo/.engram"
   echo -e "  ${BOLD}Manual save:${NC}            /engram save  (in Claude Code)"

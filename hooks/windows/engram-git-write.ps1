@@ -13,7 +13,6 @@ $EnvFile = Join-Path $env:USERPROFILE ".claude\hooks\engram.env"
 $ENGRAM_API             = "http://localhost:8766"
 $ENGRAM_KEY             = ""
 $ENGRAM_DEFAULT_NS      = "personal:me"
-$ANTHROPIC_KEY          = ""
 $SAVE_INTERVAL_MINUTES  = 10
 
 if (Test-Path $EnvFile) {
@@ -28,7 +27,6 @@ if (Test-Path $EnvFile) {
             "ENGRAM_API"              { $ENGRAM_API            = $value }
             "ENGRAM_KEY"              { $ENGRAM_KEY            = $value }
             "ENGRAM_DEFAULT_NS"       { $ENGRAM_DEFAULT_NS     = $value }
-            "ANTHROPIC_API_KEY"       { $ANTHROPIC_KEY         = $value }
             "ENGRAM_AUTOSAVE_MINUTES" { $SAVE_INTERVAL_MINUTES = [int]$value }
         }
     }
@@ -127,10 +125,10 @@ if ($Elapsed -ge ($SAVE_INTERVAL_MINUTES * 60)) {
         $Transcript = Join-Path $env:USERPROFILE ".claude\projects\$Slug\$SessionId.jsonl"
     }
 
-    if ((Test-Path $Transcript) -and -not [string]::IsNullOrWhiteSpace($ANTHROPIC_KEY)) {
+    if ((Test-Path $Transcript) -and (Get-Command claude -ErrorAction SilentlyContinue)) {
         # Run summarization + write in a background job so it never blocks the tool response
         $bgScript = {
-            param($transcript, $apiKey, $project, $branch, $count, $engramApi, $engramKey, $ns, $sessionId)
+            param($transcript, $project, $branch, $count, $engramApi, $engramKey, $ns, $sessionId)
 
             $turns = @()
             foreach ($line in (Get-Content $transcript -Encoding UTF8 -ErrorAction SilentlyContinue)) {
@@ -154,23 +152,12 @@ if ($Elapsed -ge ($SAVE_INTERVAL_MINUTES * 60)) {
             if ($turns.Count -lt 2) { return }
 
             $promptText = "Project: $project" + $(if ($branch) { "  branch: $branch" } else { "" }) +
-                "  [auto-save at tool-call #$count]`n`n" + ($turns -join "`n`n")
-
-            $body = @{
-                model      = "claude-haiku-4-5-20251001"
-                max_tokens = 220
-                system     = "Capture this in-progress dev session for another agent to resume. Write a dense, specific summary: what has been done, what is currently being worked on, decisions made, errors seen, current status. Name specific tickets, files, functions. End with 'STATUS: <in-progress|blocked|complete>'."
-                messages   = @(@{ role = "user"; content = $promptText })
-            } | ConvertTo-Json -Depth 5
+                "  [auto-save at tool-call #$count]`n`n" + ($turns -join "`n`n") +
+                "`n`nCapture this in-progress dev session for another agent to resume. Write a dense, specific summary: what has been done, what is currently being worked on, decisions made, errors seen, current status. Name specific tickets, files, functions. Be concise (max 200 words). End with ""STATUS: <in-progress|blocked|complete>""."
 
             try {
-                $resp = Invoke-RestMethod `
-                    -Uri "https://api.anthropic.com/v1/messages" `
-                    -Method Post `
-                    -Headers @{ "x-api-key" = $apiKey; "anthropic-version" = "2023-06-01"; "content-type" = "application/json" } `
-                    -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) `
-                    -TimeoutSec 15
-                $summary = $resp.content[0].text.Trim()
+                $summary = ($promptText | & claude --print 2>$null) -join "`n"
+                $summary = $summary.Trim()
             } catch { return }
 
             if ([string]::IsNullOrWhiteSpace($summary)) { return }
@@ -196,7 +183,7 @@ if ($Elapsed -ge ($SAVE_INTERVAL_MINUTES * 60)) {
         }
 
         Start-Job -ScriptBlock $bgScript -ArgumentList `
-            $Transcript, $ANTHROPIC_KEY, $Project, $Branch, $Count,
+            $Transcript, $Project, $Branch, $Count,
             $ENGRAM_API, $ENGRAM_KEY, $EngNS, $SessionId | Out-Null
     }
 }
