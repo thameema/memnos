@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import time as _time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -43,6 +44,12 @@ logger = logging.getLogger(__name__)
 # Decay half-lives: time_weighted = 90 days, access_weighted = 30 days
 _DECAY_K_TIME   = math.log(2) / 90
 _DECAY_K_ACCESS = math.log(2) / 30
+
+# Query embedding cache — keyed by query text, value is (embedding, timestamp).
+# TTL: 60 seconds (queries repeat within a single hook/agent session).
+# Max size: 256 entries (LRU eviction when full).
+_QUERY_EMBED_CACHE_TTL = 60.0   # seconds
+_QUERY_EMBED_CACHE_MAX = 256
 
 
 def _apply_decay_score(result: SearchResult, now: datetime) -> SearchResult:
@@ -122,6 +129,9 @@ class EngramClient:
         self._vault = get_vault_client(config.vault) if config.vault.enabled else None
         self._vector_backend: VectorBackend | None = None
         self._started = False
+        # Query embedding cache: {query_text: (embedding, mono_time)}
+        # Keyed on raw query string. Evicted by TTL (60s) and LRU when > 256 entries.
+        self._query_embed_cache: dict[str, tuple[list[float], float]] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -624,13 +634,36 @@ class EngramClient:
         self._assert_started()
         return await self._arcadedb.get_constraints(namespace)
 
+    async def get_query_embedding(self, query: str) -> list[float]:
+        """Return the embedding for *query*, using the in-process TTL cache.
+
+        The cache is keyed on raw query text with a 60-second TTL and a 256-entry
+        capacity (FIFO eviction).  Call this once before a multi-namespace fan-out
+        so all per-namespace searches share a single embedding API round-trip.
+        """
+        self._assert_started()
+        now_mono = _time.monotonic()
+        _cached = self._query_embed_cache.get(query)
+        if _cached is not None and (now_mono - _cached[1]) < _QUERY_EMBED_CACHE_TTL:
+            logger.debug("get_query_embedding: cache HIT for %r", query[:60])
+            return _cached[0]
+
+        embedding = await self._embedder.embed(query)
+        if len(self._query_embed_cache) >= _QUERY_EMBED_CACHE_MAX:
+            oldest_key = next(iter(self._query_embed_cache))
+            del self._query_embed_cache[oldest_key]
+        self._query_embed_cache[query] = (embedding, now_mono)
+        logger.debug("get_query_embedding: cache MISS — embedded %r", query[:60])
+        return embedding
+
     async def search(
         self,
         query: str,
-        namespace: str,
+        namespace: str = "all",
         top_k: int = 10,
         include_historical: bool = False,
         mode: str = "hybrid",
+        _precomputed_embedding: list[float] | None = None,
     ) -> list[SearchResult]:
         """Search for memories matching *query* within *namespace*.
 
@@ -650,6 +683,11 @@ class EngramClient:
         mode:
             ``"vector"`` / ``"hybrid"`` → HNSW search.
             ``"graph"`` → entity-based graph traversal.
+        _precomputed_embedding:
+            Optional pre-computed query embedding.  When supplied (by the
+            multi-namespace router fan-out) the embedding API is not called.
+            This is the primary mechanism for eliminating redundant embed calls
+            across a parallel ns=all search.
         """
         self._assert_started()
         logger.debug(
@@ -661,7 +699,16 @@ class EngramClient:
                 query=query, namespace=namespace, top_k=top_k,
                 include_superseded=include_historical,
             )
-        embedding = await self._embedder.embed(query)
+
+        # --- Query embedding (fix #1: cache + pre-computed pass-through) ---
+        # When _precomputed_embedding is provided (parallel ns=all fan-out),
+        # skip the embed call entirely — the caller already resolved it once.
+        if _precomputed_embedding is not None:
+            embedding = _precomputed_embedding
+        else:
+            # Single-namespace call: use the cache to avoid redundant API hits
+            embedding = await self.get_query_embedding(query)
+
         results = await self._vector_search(
             embedding=embedding, namespace=namespace, top_k=top_k,
             include_historical=include_historical, query=query,

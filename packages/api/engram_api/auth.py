@@ -252,6 +252,48 @@ async def check_vault_access(
     )
 
 
+def _namespace_matches(pattern: str, namespace: str) -> bool:
+    """Return True if *namespace* is covered by *pattern*.
+
+    Rules (mirrors check_namespace_access):
+      - ``"*"`` matches everything.
+      - Exact string equality.
+      - ``"prefix:*"`` matches any namespace that starts with ``"prefix:"``.
+    """
+    if pattern == "*":
+        return True
+    if pattern == namespace:
+        return True
+    if pattern.endswith(":*") and namespace.startswith(pattern[:-1]):
+        return True
+    return False
+
+
+def get_accessible_namespaces(
+    key_entry: ApiKeyEntry,
+    all_db_namespaces: list[str],
+) -> list[str]:
+    """Filter *all_db_namespaces* to only those the key is allowed to read.
+
+    This is a pure in-memory filter — no DB calls.  The full namespace list
+    from ArcadeDB is passed in; we return the subset that satisfies the key's
+    ACL patterns.
+
+    A key with ``["*"]`` in its namespaces list gets all DB namespaces back.
+    A key with ``["personal:alice", "org:myteam:*"]`` gets only namespaces
+    that exactly match ``"personal:alice"`` or start with ``"org:myteam:"``.
+    """
+    allowed: list[str] = getattr(key_entry, "namespaces", []) or []
+    if not allowed:
+        return []
+
+    accessible: list[str] = []
+    for ns in all_db_namespaces:
+        if any(_namespace_matches(pattern, ns) for pattern in allowed):
+            accessible.append(ns)
+    return accessible
+
+
 async def require_admin_access(
     key_entry: ApiKeyEntry = Depends(require_api_key_entry),
 ) -> ApiKeyEntry:

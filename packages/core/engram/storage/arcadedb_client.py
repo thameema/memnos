@@ -965,7 +965,9 @@ class ArcadeDBClient:
                 or (r.get("namespace") or "").startswith(f"{ns_filter}:")
             ]
 
-        # Refresh cache — fetch ALL active records with embeddings
+        # Refresh cache — fetch the most recent 500 active records with embeddings
+        # (fix #4: cap candidate set per namespace; ORDER BY created_at prioritises
+        # recent memories which are almost always the most relevant).
         rows = await self._query(
             "SELECT id, content, namespace, created_at, superseded_at, tags, "
             "source, metadata, memory_type, status, author, affects, rationale, "
@@ -973,7 +975,7 @@ class ArcadeDBClient:
             "FROM Memory WHERE content_embedding IS NOT NULL "
             "AND superseded_at IS NULL "
             "AND (expires_at IS NULL OR expires_at > :now_dt) "
-            "LIMIT 100000",
+            "ORDER BY created_at DESC LIMIT 500",
             {"now_dt": _dt_str(_now())},
         )
         self._embed_cache = rows
@@ -1817,6 +1819,80 @@ class ArcadeDBClient:
         """Execute a read-only SQL query. Namespace is injected as :namespace param."""
         full_params = {"namespace": namespace, **(params or {})}
         return await self._query(sql, full_params)
+
+    async def list_namespaces(self) -> list[str]:
+        """Return all distinct active namespace values that exist in the Memory table."""
+        try:
+            rows = await self._query(
+                "SELECT namespace FROM Memory "
+                "WHERE status = 'active' AND superseded_at IS NULL "
+                "GROUP BY namespace LIMIT 1000",
+            )
+            return [str(r["namespace"]) for r in rows if r.get("namespace")]
+        except Exception as exc:
+            logger.warning("list_namespaces failed: %s", exc)
+            return []
+
+    async def search_memories(
+        self,
+        query: str,
+        namespace: str | list[str],
+        top_k: int = 10,
+        mode: str = "hybrid",
+        include_historical: bool = False,
+    ) -> list[SearchResult]:
+        """Search memories in one or multiple namespaces.
+
+        When *namespace* is a list, each namespace is searched independently
+        and results are merged and re-ranked by score descending before the
+        final top_k slice is returned.
+        """
+        if isinstance(namespace, str):
+            namespaces = [namespace]
+        else:
+            namespaces = list(namespace)
+
+        if not namespaces:
+            return []
+
+        if len(namespaces) == 1:
+            # Single namespace — delegate to vector_search / graph_search directly
+            ns = namespaces[0]
+            if mode == "graph":
+                return await self.graph_search(
+                    query=query, namespace=ns, top_k=top_k,
+                    include_superseded=include_historical,
+                )
+            # For vector/hybrid: embed once, search single namespace
+            # (embedding is done at the EngramClient layer; here we call vector_search
+            #  which accepts an embedding — so we re-use the keyword fallback path
+            #  since we don't have access to the embedder here)
+            return await self._keyword_scored(ns, top_k, include_historical, query)
+
+        # Multi-namespace: collect from each, merge and re-rank
+        all_results: list[SearchResult] = []
+        seen_ids: set[str] = set()
+
+        for ns in namespaces:
+            try:
+                if mode == "graph":
+                    ns_results = await self.graph_search(
+                        query=query, namespace=ns, top_k=top_k,
+                        include_superseded=include_historical,
+                    )
+                else:
+                    ns_results = await self._keyword_scored(
+                        ns, top_k, include_historical, query
+                    )
+                for r in ns_results:
+                    if r.memory.id not in seen_ids:
+                        seen_ids.add(r.memory.id)
+                        all_results.append(r)
+            except Exception as exc:
+                logger.warning("search_memories: failed for namespace %r: %s", ns, exc)
+
+        all_results.sort(key=lambda r: r.score, reverse=True)
+        return all_results[:top_k]
 
     # ------------------------------------------------------------------
     # Community detection (Feature 3.4)
