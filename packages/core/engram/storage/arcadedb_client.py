@@ -512,9 +512,10 @@ class ArcadeDBClient:
         return _row_to_memory(rows[0])
 
     async def supersede_memory(self, memory_id: str, namespace: str) -> bool:
-        """Set superseded_at = now() on a memory."""
+        """Mark a memory superseded: sets superseded_at AND status='superseded'."""
         rows = await self._command(
-            "UPDATE Memory SET superseded_at = :now WHERE id = :id AND namespace = :ns",
+            "UPDATE Memory SET superseded_at = :now, status = 'superseded' "
+            "WHERE id = :id AND namespace = :ns",
             {"now": _dt_str(_now()), "id": memory_id, "ns": namespace},
         )
         self._embed_cache_dirty = True
@@ -890,6 +891,13 @@ class ArcadeDBClient:
     # Vector + hybrid search
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _unwrap_embedding(row: dict) -> None:
+        """Flatten content_embedding in-place if ArcadeDB returned it as [[...]] instead of [...]."""
+        emb = row.get("content_embedding")
+        if isinstance(emb, list) and len(emb) == 1 and isinstance(emb[0], list):
+            row["content_embedding"] = emb[0]
+
     async def vector_search(
         self,
         embedding: list[float],
@@ -897,6 +905,7 @@ class ArcadeDBClient:
         top_k: int = 10,
         include_superseded: bool = False,
         query: str = "",
+        as_of: "datetime | None" = None,
     ) -> list[SearchResult]:
         """Search Memory by vector similarity with recency weighting.
 
@@ -908,18 +917,34 @@ class ArcadeDBClient:
         An in-memory embedding cache (TTL = _EMBED_CACHE_TTL) is maintained
         so that repeated searches within the TTL window skip the ArcadeDB round-trip
         and run in <1ms.
+
+        When ``as_of`` is provided the cache is bypassed and only memories that
+        existed and were active at that instant are considered.
         """
         ns_filter = "all" if namespace in ("all", "", "*") else namespace
 
         try:
-            rows = await self._get_candidate_rows(namespace, include_superseded)
+            rows = await self._get_candidate_rows(namespace, include_superseded, as_of=as_of)
         except Exception as exc:
             logger.warning("Failed to fetch candidates for vector search: %s", exc)
             rows = []
 
+        # Defensive namespace post-filter: ensure no cross-namespace leakage even
+        # if the SQL LIKE clause did not filter correctly.
+        if ns_filter != "all":
+            rows = [
+                r for r in rows
+                if (r.get("namespace") == ns_filter
+                    or (r.get("namespace") or "").startswith(f"{ns_filter}:"))
+            ]
+
+        # Flatten embeddings: ArcadeDB LIST type can return [[...]] instead of [...]
+        for row in rows:
+            self._unwrap_embedding(row)
+
         if not rows:
             logger.debug("No embedding candidates — falling back to keyword scan")
-            return await self._keyword_scored(namespace, top_k, include_superseded, query)
+            return await self._keyword_scored(namespace, top_k, include_superseded, query, as_of=as_of)
 
         # Filter to same dimension as query
         q_dim = len(embedding)
@@ -957,16 +982,45 @@ class ArcadeDBClient:
         self,
         namespace: str,
         include_superseded: bool = False,
+        as_of: "datetime | None" = None,
     ) -> list[dict]:
         """Return Memory rows with embeddings, using an in-memory TTL cache.
 
         The cache is invalidated on any insert/update/delete to Memory and
         expires automatically after _EMBED_CACHE_TTL seconds.
+
+        When ``as_of`` is provided the cache is bypassed and a fresh temporal
+        query is issued: returns memories that existed AND were active at that
+        instant (created_at <= as_of AND (superseded_at IS NULL OR superseded_at > as_of)).
         """
+        ns_filter = "all" if namespace in ("all", "", "*") else namespace
+        ns_clause = "" if ns_filter == "all" else (
+            "AND (namespace = :ns OR namespace LIKE :ns_prefix)"
+        )
+        ns_params: dict = {} if ns_filter == "all" else {
+            "ns": ns_filter, "ns_prefix": f"{ns_filter}:%",
+        }
+
+        # Point-in-time query — always bypass cache, use temporal WHERE clause
+        if as_of is not None:
+            as_of_str = _dt_str(as_of)
+            rows = await self._query(
+                f"SELECT id, content, namespace, created_at, superseded_at, tags, "
+                f"source, metadata, memory_type, status, author, affects, rationale, "
+                f"expires_at, review_by, provenance, content_embedding "
+                f"FROM Memory WHERE content_embedding IS NOT NULL "
+                f"AND created_at <= :as_of "
+                f"AND (superseded_at IS NULL OR superseded_at > :as_of) "
+                f"AND (expires_at IS NULL OR expires_at > :as_of) "
+                f"{ns_clause} "
+                f"ORDER BY created_at DESC LIMIT 500",
+                {"as_of": as_of_str, **ns_params},
+            )
+            return rows
+
         now = _time.monotonic()
         if not self._embed_cache_dirty and (now - self._embed_cache_ts) < _EMBED_CACHE_TTL:
             # Return from cache, filtered for namespace and supersession
-            ns_filter = "all" if namespace in ("all", "", "*") else namespace
             if ns_filter == "all":
                 return list(self._embed_cache)
             return [
@@ -1023,9 +1077,10 @@ class ArcadeDBClient:
         top_k: int,
         include_superseded: bool,
         query: str,
+        as_of: "datetime | None" = None,
     ) -> list[SearchResult]:
         """Score fallback rows from _fallback_scan and return as SearchResults."""
-        rows = await self._fallback_scan(namespace, top_k, include_superseded, query=query)
+        rows = await self._fallback_scan(namespace, top_k, include_superseded, query=query, as_of=as_of)
         temporal = _is_temporal_query(query)
         keywords = [w.lower() for w in query.split() if len(w) >= 3] if query else []
         _temporal_kw = frozenset({"last", "latest", "recent", "recently", "newest", "current", "new"})
@@ -1067,17 +1122,30 @@ class ArcadeDBClient:
         namespace: str,
         top_k: int = 10,
         include_superseded: bool = False,
+        as_of: "datetime | None" = None,
     ) -> list[SearchResult]:
         """Entity-traversal search: find memories that MENTION entities in query.
 
         Extracts entities from the query text using spaCy, then traverses
         MENTIONS edges to find all memories that reference those entities.
         Falls back to a full-text content match when no entities are found.
+
+        When ``as_of`` is provided only memories active at that instant are
+        returned regardless of ``include_superseded``.
         """
         from engram.extraction.spacy_extractor import get_extractor
 
         ns_filter = "all" if namespace in ("all", "", "*") else namespace
-        superseded_clause = "" if include_superseded else "AND m.superseded_at IS NULL"
+        if as_of is not None:
+            as_of_str = _dt_str(as_of)
+            superseded_clause = (
+                "AND m.created_at <= :as_of "
+                "AND (m.superseded_at IS NULL OR m.superseded_at > :as_of)"
+            )
+        elif include_superseded:
+            superseded_clause = ""
+        else:
+            superseded_clause = "AND m.superseded_at IS NULL"
 
         try:
             extracted = get_extractor().extract_sync(query)
@@ -1087,9 +1155,11 @@ class ArcadeDBClient:
 
         rows: list[dict] = []
 
+        # Extra params needed when as_of is set (temporal clause uses :as_of)
+        as_of_params: dict = {"as_of": as_of_str} if as_of is not None else {}
+
         if entity_names:
             # Traverse MENTIONS edges from matching Entity vertices
-            ns_clause = "" if ns_filter == "all" else "AND m.namespace = :ns OR m.namespace LIKE :ns_prefix"
             sql = (
                 f"SELECT EXPAND(IN('MENTIONS')) AS m "
                 f"FROM Entity WHERE name IN :names AND (namespace = :ns OR namespace LIKE :ns_prefix) "
@@ -1106,6 +1176,7 @@ class ArcadeDBClient:
                         "ns": ns_filter,
                         "ns_prefix": f"{ns_filter}:%",
                         "topK": top_k,
+                        **as_of_params,
                     },
                 )
             except Exception as exc:
@@ -1113,7 +1184,13 @@ class ArcadeDBClient:
 
         if not rows:
             # Full-text content search fallback
-            superseded_sql = "" if include_superseded else "AND superseded_at IS NULL"
+            if as_of is not None:
+                superseded_sql = (
+                    "AND created_at <= :as_of "
+                    "AND (superseded_at IS NULL OR superseded_at > :as_of)"
+                )
+            else:
+                superseded_sql = "" if include_superseded else "AND superseded_at IS NULL"
             ns_sql = "" if ns_filter == "all" else "AND (namespace = :ns OR namespace LIKE :ns_prefix)"
             sql = (
                 f"SELECT * FROM Memory "
@@ -1122,7 +1199,7 @@ class ArcadeDBClient:
             )
             # Build keyword pattern from first few words of query
             first_word = query.strip().split()[0] if query.strip() else query
-            params: dict = {"pattern": f"%{first_word}%", "topK": top_k}
+            params: dict = {"pattern": f"%{first_word}%", "topK": top_k, **as_of_params}
             if ns_filter != "all":
                 params["ns"] = ns_filter
                 params["ns_prefix"] = f"{ns_filter}:%"
@@ -1148,12 +1225,16 @@ class ArcadeDBClient:
     async def _fallback_scan(
         self, namespace: str, top_k: int, include_superseded: bool,
         query: str = "",
+        as_of: "datetime | None" = None,
     ) -> list[dict]:
         """Keyword-based fallback when vector search is unavailable.
 
         Searches for significant terms from the query using LIKE, fetches a
         broad candidate set, then re-ranks by keyword hit count so that the
         most relevant memories surface first.
+
+        When ``as_of`` is provided only memories active at that instant are
+        returned (created_at <= as_of AND (superseded_at IS NULL OR superseded_at > as_of)).
         """
         ns_filter = namespace if namespace not in ("all", "", "*") else None
 
@@ -1177,10 +1258,18 @@ class ArcadeDBClient:
             where_parts.append("(namespace = :ns OR namespace LIKE :ns_prefix)")
             params["ns"] = ns_filter
             params["ns_prefix"] = f"{ns_filter}:%"
-        if not include_superseded:
-            where_parts.append("superseded_at IS NULL")
-        where_parts.append("(expires_at IS NULL OR expires_at > :now_dt)")
-        params["now_dt"] = _dt_str(_now())
+        if as_of is not None:
+            # Point-in-time: memories that existed and were active at as_of
+            as_of_str = _dt_str(as_of)
+            where_parts.append("created_at <= :as_of")
+            where_parts.append("(superseded_at IS NULL OR superseded_at > :as_of)")
+            where_parts.append("(expires_at IS NULL OR expires_at > :as_of)")
+            params["as_of"] = as_of_str
+        else:
+            if not include_superseded:
+                where_parts.append("superseded_at IS NULL")
+            where_parts.append("(expires_at IS NULL OR expires_at > :now_dt)")
+            params["now_dt"] = _dt_str(_now())
         if keywords:
             # Match any memory containing at least one keyword
             kw_clauses = " OR ".join(

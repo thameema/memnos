@@ -319,9 +319,15 @@ class EngramClient:
         top_k: int,
         include_historical: bool,
         query: str,
+        as_of: "datetime | None" = None,
     ) -> "list[SearchResult]":
-        """Route vector search to Qdrant (if active) or ArcadeDB built-in."""
-        if self._vector_backend is not None:
+        """Route vector search to Qdrant (if active) or ArcadeDB built-in.
+
+        When ``as_of`` is provided Qdrant is bypassed — it stores only a
+        boolean superseded flag, not timestamps, so point-in-time queries
+        must go directly to ArcadeDB.
+        """
+        if self._vector_backend is not None and as_of is None:
             id_score_pairs = await self._vector_backend.search(
                 embedding=embedding,
                 namespace=namespace,
@@ -332,7 +338,6 @@ class EngramClient:
             _cross_ns = namespace.lower().strip() in ("", "all", "*")
             for mem_id, score in id_score_pairs:
                 if _cross_ns:
-                    # Cross-namespace search: look up by ID only, no namespace filter
                     mem = await self._arcadedb.get_memory_by_id(mem_id)
                 else:
                     mem = await self._arcadedb.get_memory(mem_id, namespace)
@@ -352,6 +357,7 @@ class EngramClient:
             top_k=top_k,
             include_superseded=include_historical,
             query=query,
+            as_of=as_of,
         )
 
     async def _dispatch_llm_extraction(self, memory: MemoryEntry, namespace: str) -> None:
@@ -669,6 +675,7 @@ class EngramClient:
         include_historical: bool = False,
         mode: str = "hybrid",
         _precomputed_embedding: list[float] | None = None,
+        as_of: "datetime | None" = None,
     ) -> list[SearchResult]:
         """Search for memories matching *query* within *namespace*.
 
@@ -688,21 +695,22 @@ class EngramClient:
         mode:
             ``"vector"`` / ``"hybrid"`` → HNSW search.
             ``"graph"`` → entity-based graph traversal.
+        as_of:
+            Point-in-time query. When set, return only memories that existed
+            and were active at this UTC instant. Qdrant is bypassed; ArcadeDB
+            temporal filters are applied directly.
         _precomputed_embedding:
-            Optional pre-computed query embedding.  When supplied (by the
-            multi-namespace router fan-out) the embedding API is not called.
-            This is the primary mechanism for eliminating redundant embed calls
-            across a parallel ns=all search.
+            Optional pre-computed query embedding (parallel ns=all fan-out).
         """
         self._assert_started()
         logger.debug(
-            "search: query=%r namespace=%s top_k=%d historical=%s mode=%s",
-            query, namespace, top_k, include_historical, mode,
+            "search: query=%r namespace=%s top_k=%d historical=%s mode=%s as_of=%s",
+            query, namespace, top_k, include_historical, mode, as_of,
         )
         if mode == "graph":
             return await self._arcadedb.graph_search(
                 query=query, namespace=namespace, top_k=top_k,
-                include_superseded=include_historical,
+                include_superseded=include_historical, as_of=as_of,
             )
 
         # --- Query embedding (fix #1: cache + pre-computed pass-through) ---
@@ -716,12 +724,13 @@ class EngramClient:
 
         results = await self._vector_search(
             embedding=embedding, namespace=namespace, top_k=top_k,
-            include_historical=include_historical, query=query,
+            include_historical=include_historical, query=query, as_of=as_of,
         )
 
         # Namespace expansion: if specific namespace returned nothing, widen to parent.
         # e.g. "org:acme:private:customers:client-a" → "org:acme:private:customers" → "org:acme"
-        if not results and namespace not in ("all", "*", ""):
+        # Skip when as_of is set — point-in-time queries must be strictly namespace-scoped.
+        if not results and namespace not in ("all", "*", "") and as_of is None:
             parts = namespace.split(":")
             while len(parts) > 1 and not results:
                 parts = parts[:-1]
@@ -729,7 +738,7 @@ class EngramClient:
                 logger.debug("search: no results in %r, expanding to %r", namespace, parent_ns)
                 results = await self._vector_search(
                     embedding=embedding, namespace=parent_ns, top_k=top_k,
-                    include_historical=include_historical, query=query,
+                    include_historical=include_historical, query=query, as_of=as_of,
                 )
 
         # Decision pinning — find decision/constraint/ADR memories that explicitly

@@ -106,12 +106,36 @@ def write_memory(client: httpx.Client, content: str, namespace: str, **kwargs) -
     return r.json()
 
 
-def search_memories(client: httpx.Client, query: str, namespace: str, top_k: int = 5) -> list[dict]:
-    """GET /api/v1/memory/search and return results list."""
-    r = client.get("/api/v1/memory/search", params={"q": query, "ns": namespace, "top_k": top_k})
+def search_memories(
+    client: httpx.Client,
+    query: str,
+    namespace: str,
+    top_k: int = 5,
+    mode: str = "hybrid",
+    as_of: str | None = None,
+) -> list[dict]:
+    """GET /api/v1/memory/search and return results list.
+
+    Parameters
+    ----------
+    as_of : ISO-8601 UTC string e.g. "2026-05-01T12:00:00Z".
+        When set, returns the point-in-time snapshot at that instant.
+    """
+    params: dict = {"q": query, "ns": namespace, "top_k": top_k, "mode": mode}
+    if as_of is not None:
+        params["as_of"] = as_of
+    r = client.get("/api/v1/memory/search", params=params)
     assert r.status_code == 200, f"search failed: {r.status_code} {r.text}"
     data = r.json()
     return data if isinstance(data, list) else data.get("results", [])
+
+
+def content_list(results: list[dict]) -> list[str]:
+    """Extract content strings from search results (handles both flat and nested formats)."""
+    return [
+        r.get("content") or r.get("memory", {}).get("content", "")
+        for r in results
+    ]
 
 
 def wait_for(fn, timeout: float = 10.0, interval: float = 0.5, msg: str = "condition") -> None:

@@ -31,6 +31,8 @@ class MemoryWriteRequest(BaseModel):
     affects: list[str] = []
     rationale: str = ""
     provenance: ProvenanceInput = Field(default_factory=ProvenanceInput)
+    expires_at: datetime | None = None
+    review_by: datetime | None = None
 
 
 class MemorySearchRequest(BaseModel):
@@ -50,6 +52,7 @@ class MemoryResponse(BaseModel):
     memory_type: str = "fact"
     author: str = ""
     provenance: dict = Field(default_factory=dict)
+    contradiction_warnings: list[dict] = Field(default_factory=list)
 
 
 class ReviewDueItem(BaseModel):

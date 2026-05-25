@@ -140,6 +140,37 @@ class TestDetectDirection(unittest.TestCase):
         direction = detect_direction(new_text, existing)
         self.assertIn(direction, ("negation_detected", "opposite_polarity"))
 
+    # ── topic_update ──────────────────────────────────────────────────────────
+
+    def test_topic_update_status_flip(self):
+        # "the database migration" = 3 shared prefix words; status diverges after
+        existing = "the database migration: not yet started. Planned for Q2."
+        new_text = "the database migration: completed. Ran successfully on 2026-05-15."
+        direction = detect_direction(new_text, existing)
+        self.assertEqual(direction, "topic_update")
+
+    def test_topic_update_feature_done(self):
+        existing = "auth service refactor: in progress. ETA next sprint."
+        new_text = "auth service refactor: done. Merged to main on Friday."
+        direction = detect_direction(new_text, existing)
+        self.assertEqual(direction, "topic_update")
+
+    def test_topic_update_requires_three_shared_words(self):
+        # Only 2 shared prefix words — should NOT fire topic_update
+        existing = "deploy service: pending"
+        new_text = "deploy service: finished"
+        direction = detect_direction(new_text, existing)
+        # Two-word prefix is too short; result may be None or another direction
+        self.assertNotEqual(direction, "topic_update")
+
+    def test_topic_update_same_completion_no_fire(self):
+        # Same prefix AND same suffix — not an update, just a duplicate
+        existing = "migration status: not yet done. ETA Q3."
+        new_text = "migration status: not yet done. ETA Q3."
+        direction = detect_direction(new_text, existing)
+        # Identical texts → no direction (shared_prefix == full length → divergent is empty)
+        self.assertIsNone(direction)
+
 
 # ---------------------------------------------------------------------------
 # check_contradictions — direction field in ContradictionWarning

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -61,7 +62,14 @@ async def write_memory(
     key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
 ) -> MemoryResponse:
-    """Persist a new memory entry to both the vector store and knowledge graph."""
+    """Persist a new memory entry to both the vector store and knowledge graph.
+
+    Contradiction detection runs PRE-write so the new memory's ID can be
+    recorded in ``affects`` and conflicting memories can be superseded
+    atomically in the same request. Directional contradictions
+    (negation_detected / opposite_polarity) are auto-superseded; similarity_only
+    matches surface as warnings only.
+    """
     await check_namespace_access(key_entry, req.namespace, operation="write")
 
     # Build provenance — caller values take precedence; server fills any blanks
@@ -69,15 +77,47 @@ async def write_memory(
     if not prov.get("user_id"):
         prov["user_id"] = user_id
     if not prov.get("tool"):
-        # X-Engram-Tool header lets callers self-identify (hooks, SDK clients)
         prov["tool"] = request.headers.get("X-Engram-Tool", "api")
     if not prov.get("agent_id"):
         prov["agent_id"] = request.headers.get("X-Engram-Agent-Id", "")
 
+    # ── Pre-write: contradiction check ────────────────────────────────────────
+    # Runs before insert so the new memory is not yet in the DB (no self-match)
+    # and so auto-superseded IDs can be included in the new memory's `affects`.
+    from engram.contradiction.detector import check_contradictions
+    pre_warnings: list = []
+    to_supersede: list = []   # directional — will be auto-superseded
+    warn_only: list = []      # similarity_only — surface as warnings, human decides
+
+    try:
+        pre_warnings = await check_contradictions(
+            client, req.content, req.namespace, req.memory_type, req.tags
+        )
+        for w in pre_warnings:
+            # Auto-supersede: explicit directional contradiction, OR high-similarity
+            # same-topic status flip (e.g. "not yet done" → "completed").
+            is_directional = w.direction in ("negation_detected", "opposite_polarity", "topic_update", "llm_confirmed")
+            is_high_sim_flip = w.direction == "similarity_only" and w.similarity >= 0.75
+            if is_directional or is_high_sim_flip:
+                to_supersede.append(w)
+            else:
+                warn_only.append(w)
+    except Exception as exc:
+        logger.debug("Pre-write contradiction check skipped: %s", exc)
+
+    # Merge auto-supersede IDs into affects for lineage tracking
+    affects = list(req.affects or [])
+    for w in to_supersede:
+        if w.existing_id and w.existing_id not in affects:
+            affects.append(w.existing_id)
+
     logger.debug(
-        "write_memory | ns=%s user=%s tool=%s content=%r",
-        req.namespace, user_id, prov["tool"], req.content[:80],
+        "write_memory | ns=%s user=%s tool=%s contradictions=%d superseding=%d content=%r",
+        req.namespace, user_id, prov["tool"],
+        len(pre_warnings), len(to_supersede), req.content[:80],
     )
+
+    # ── Write new memory ──────────────────────────────────────────────────────
     try:
         try:
             mem_type = MemoryType(req.memory_type)
@@ -96,15 +136,53 @@ async def write_memory(
             memory_type=mem_type,
             status=mem_status,
             author=req.author or user_id,
-            affects=req.affects,
+            affects=affects,
             rationale=req.rationale,
             provenance=Provenance(**prov),
+            expires_at=req.expires_at,
+            review_by=req.review_by,
         )
     except Exception as exc:
         logger.exception("Failed to write memory: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    return _to_response(memory)
+    # ── Auto-supersede directional contradictions ─────────────────────────────
+    superseded_ids: set[str] = set()
+    for w in to_supersede:
+        try:
+            ok = await client.supersede(w.existing_id, req.namespace)
+            if ok:
+                superseded_ids.add(w.existing_id)
+                logger.info(
+                    "auto_superseded | old=%s new=%s ns=%s direction=%s sim=%.2f",
+                    w.existing_id, str(memory.id), req.namespace,
+                    w.direction, w.similarity,
+                )
+            else:
+                logger.warning(
+                    "auto_supersede_failed | id=%s not found in ns=%s",
+                    w.existing_id, req.namespace,
+                )
+        except Exception as exc:
+            logger.warning("auto_supersede error (non-fatal) id=%s: %s", w.existing_id, exc)
+
+    # ── Build response with contradiction audit trail ─────────────────────────
+    response = _to_response(memory)
+    all_warnings = to_supersede + warn_only
+    if all_warnings:
+        response.contradiction_warnings = [
+            {
+                "existing_id": w.existing_id,
+                "existing_content": w.existing_content[:200],
+                "similarity": round(w.similarity, 3),
+                "reason": w.reason,
+                "direction": getattr(w, "direction", ""),
+                "auto_superseded": w.existing_id in superseded_ids,
+            }
+            for w in all_warnings
+        ]
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +232,14 @@ async def search_memory(
     ),
     top_k: int = Query(10, ge=1, le=100),
     mode: str = Query("hybrid", description="hybrid | vector | graph"),
+    as_of: datetime | None = Query(
+        None,
+        description=(
+            "Point-in-time query: return memories as they existed at this UTC timestamp. "
+            "Superseded memories still active at this time are included; memories created "
+            "after this time are excluded. Format: ISO 8601 (e.g. 2026-05-01T12:00:00Z)."
+        ),
+    ),
     user_id: str = Depends(require_api_key),
     key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
@@ -195,7 +281,7 @@ async def search_memory(
         # result set. We ask for top_k * 4 to ensure enough results survive the
         # namespace filter, then trim back to top_k.
         try:
-            results = await client.search(q, "all", top_k * 4, mode=mode)
+            results = await client.search(q, "all", top_k * 4, mode=mode, as_of=as_of)
         except Exception as exc:
             logger.exception("Multi-namespace search failed: %s", exc)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -209,11 +295,11 @@ async def search_memory(
         # Single-namespace path — existing behaviour
         await check_namespace_access(key_entry, _ns_raw)
         logger.debug(
-            "search_memory | ns=%s mode=%s top_k=%d user=%s q=%r",
-            _ns_raw, mode, top_k, user_id, q[:120],
+            "search_memory | ns=%s mode=%s top_k=%d as_of=%s user=%s q=%r",
+            _ns_raw, mode, top_k, as_of, user_id, q[:120],
         )
         try:
-            results = await client.search(q, _ns_raw, top_k, mode=mode)
+            results = await client.search(q, _ns_raw, top_k, mode=mode, as_of=as_of)
         except Exception as exc:
             logger.exception("Memory search failed: %s", exc)
             raise HTTPException(status_code=500, detail=str(exc)) from exc

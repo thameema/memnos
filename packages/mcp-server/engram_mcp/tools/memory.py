@@ -194,6 +194,32 @@ async def handle_memory_write(
     prov_dict = provenance or {}
     prov_obj = Provenance(**prov_dict) if prov_dict else Provenance()
 
+    # ── Pre-write: contradiction check ────────────────────────────────────────
+    from engram.contradiction.detector import check_contradictions
+    pre_warnings: list = []
+    to_supersede: list = []
+    warn_only: list = []
+    try:
+        pre_warnings = await check_contradictions(
+            client, content, namespace, memory_type, tags or []
+        )
+        for w in pre_warnings:
+            is_directional = w.direction in ("negation_detected", "opposite_polarity", "topic_update", "llm_confirmed")
+            is_high_sim_flip = w.direction == "similarity_only" and w.similarity >= 0.75
+            if is_directional or is_high_sim_flip:
+                to_supersede.append(w)
+            else:
+                warn_only.append(w)
+    except Exception as exc:
+        logger.debug("Pre-write contradiction check skipped: %s", exc)
+
+    # Merge auto-supersede IDs into affects for lineage tracking
+    resolved_affects = list(affects or [])
+    for w in to_supersede:
+        if w.existing_id and w.existing_id not in resolved_affects:
+            resolved_affects.append(w.existing_id)
+
+    # ── Write new memory ──────────────────────────────────────────────────────
     memory = await client.add(
         content=content,
         namespace=namespace,
@@ -203,10 +229,25 @@ async def handle_memory_write(
         memory_type=mem_type,
         status=mem_status,
         author=author,
-        affects=affects or [],
+        affects=resolved_affects,
         rationale=rationale,
         provenance=prov_obj,
     )
+
+    # ── Auto-supersede directional contradictions ─────────────────────────────
+    superseded_ids: set[str] = set()
+    for w in to_supersede:
+        try:
+            ok = await client.supersede(w.existing_id, namespace)
+            if ok:
+                superseded_ids.add(w.existing_id)
+                logger.info(
+                    "auto_superseded | old=%s new=%s ns=%s direction=%s sim=%.2f",
+                    w.existing_id, str(memory.id), namespace,
+                    w.direction, w.similarity,
+                )
+        except Exception as exc:
+            logger.warning("auto_supersede error (non-fatal) id=%s: %s", w.existing_id, exc)
 
     result = {
         "id": str(memory.id),
@@ -217,23 +258,19 @@ async def handle_memory_write(
         else str(memory.created_at),
     }
 
-    # After successful write, check for contradictions (non-blocking)
-    from engram.contradiction.detector import check_contradictions
-    try:
-        warnings = await check_contradictions(client, content, namespace)
-        if warnings:
-            result["contradiction_warnings"] = [
-                {
-                    "existing_id": w.existing_id,
-                    "existing_content": w.existing_content[:200],
-                    "similarity": round(w.similarity, 3),
-                    "reason": w.reason,
-                    "direction": getattr(w, "direction", ""),
-                }
-                for w in warnings
-            ]
-    except Exception as exc:
-        logger.debug("Contradiction check skipped: %s", exc)
+    all_warnings = to_supersede + warn_only
+    if all_warnings:
+        result["contradiction_warnings"] = [
+            {
+                "existing_id": w.existing_id,
+                "existing_content": w.existing_content[:200],
+                "similarity": round(w.similarity, 3),
+                "reason": w.reason,
+                "direction": getattr(w, "direction", ""),
+                "auto_superseded": w.existing_id in superseded_ids,
+            }
+            for w in all_warnings
+        ]
 
     return result
 
