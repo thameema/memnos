@@ -329,8 +329,13 @@ class EngramClient:
                 include_superseded=include_historical,
             )
             results: list[SearchResult] = []
+            _cross_ns = namespace.lower().strip() in ("", "all", "*")
             for mem_id, score in id_score_pairs:
-                mem = await self._arcadedb.get_memory(mem_id, namespace)
+                if _cross_ns:
+                    # Cross-namespace search: look up by ID only, no namespace filter
+                    mem = await self._arcadedb.get_memory_by_id(mem_id)
+                else:
+                    mem = await self._arcadedb.get_memory(mem_id, namespace)
                 if mem is not None:
                     results.append(SearchResult(
                         memory=mem,

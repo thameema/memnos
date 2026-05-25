@@ -501,6 +501,16 @@ class ArcadeDBClient:
             return None
         return _row_to_memory(rows[0])
 
+    async def get_memory_by_id(self, memory_id: str) -> MemoryEntry | None:
+        """Look up a memory by ID without a namespace constraint (for cross-ns Qdrant results)."""
+        rows = await self._query(
+            "SELECT * FROM Memory WHERE id = :id AND status = 'active' LIMIT 1",
+            {"id": memory_id},
+        )
+        if not rows:
+            return None
+        return _row_to_memory(rows[0])
+
     async def supersede_memory(self, memory_id: str, namespace: str) -> bool:
         """Set superseded_at = now() on a memory."""
         rows = await self._command(

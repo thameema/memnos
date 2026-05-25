@@ -53,12 +53,28 @@ arcadedb:
   password: ${ARCADEDB_PASSWORD}
 
 embeddings:
-  provider: local          # "local" (no API key) or "openai"
-  model: all-MiniLM-L6-v2  # 384-dim, fast, runs on CPU
-  # OpenAI alternative (requires pip install 'engram-core[openai-embeddings]'):
+  # ⚠️  IMPORTANT: do not change provider/model after writing memories.
+  #     Switching models requires re-running tools/reembed.py + tools/migrate_to_qdrant.py.
+  #     All existing vectors become unsearchable until migration completes.
+  provider: local          # "local" (free, CPU, ~90 MB) | "openai" (best quality, ~$0.02/1M tokens)
+  model: all-MiniLM-L6-v2  # 384-dim, fast, no API key required
+  # For better local quality (~1.3 GB):
+  # model: BAAI/bge-large-en-v1.5
+  # OpenAI option (requires pip install 'engram-core[openai-embeddings]'):
   # provider: openai
-  # model: text-embedding-3-small
+  # model: text-embedding-3-small   # 1536-dim
   # api_key: ${OPENAI_API_KEY}
+
+vector_backend:
+  # "arcadedb" (default) — Python-layer cosine similarity, good up to ~100K memories
+  # "qdrant"  — HNSW ANN via Qdrant, ~3 ms search regardless of corpus size
+  #             Requires: docker compose --profile qdrant up -d
+  #             Backfill:  python3 tools/migrate_to_qdrant.py
+  backend: ${ENGRAM_VECTOR_BACKEND:-arcadedb}
+  qdrant:
+    url: ${QDRANT_URL:-http://qdrant:6333}
+    api_key: ${QDRANT_API_KEY:-}
+    collection: engram_memories
 
 runtime:
   default: api

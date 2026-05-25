@@ -10,8 +10,10 @@ Select the backend via ENGRAM_VECTOR_BACKEND environment variable:
   (unset / anything else)       → use ArcadeDB built-in (no external backend)
 
 When ENGRAM_VECTOR_BACKEND=qdrant, also set:
-  ENGRAM_QDRANT_URL        default: http://localhost:6333
-  ENGRAM_QDRANT_API_KEY    optional, for Qdrant Cloud
+  QDRANT_URL               default: http://localhost:6333   (checked first)
+  ENGRAM_QDRANT_URL        fallback alias for QDRANT_URL
+  QDRANT_API_KEY           optional, for Qdrant Cloud       (checked first)
+  ENGRAM_QDRANT_API_KEY    fallback alias for QDRANT_API_KEY
   ENGRAM_QDRANT_COLLECTION default: engram_memories
 """
 
@@ -86,8 +88,16 @@ def create_vector_backend(vector_dim: int) -> "VectorBackend | None":
     backend_type = os.environ.get("ENGRAM_VECTOR_BACKEND", "").lower().strip()
     if backend_type == "qdrant":
         from engram.storage.qdrant_backend import QdrantVectorBackend  # noqa: PLC0415
-        url = os.environ.get("ENGRAM_QDRANT_URL", "http://localhost:6333")
-        api_key = os.environ.get("ENGRAM_QDRANT_API_KEY") or None
+        url = (
+            os.environ.get("QDRANT_URL")
+            or os.environ.get("ENGRAM_QDRANT_URL")
+            or "http://localhost:6333"
+        )
+        api_key = (
+            os.environ.get("QDRANT_API_KEY")
+            or os.environ.get("ENGRAM_QDRANT_API_KEY")
+            or None
+        )
         collection = os.environ.get("ENGRAM_QDRANT_COLLECTION", "engram_memories")
         logger.info(
             "Vector backend: Qdrant at %s (collection=%s, dim=%d)",

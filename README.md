@@ -245,7 +245,97 @@ See the complete guide in [docs/claude-code-setup.md](docs/claude-code-setup.md)
 
 **Infrastructure (default):** one Docker container (ArcadeDB) — no Neo4j, no Graphiti. Vector search uses numpy-accelerated cosine similarity in the Python layer with a 5-minute TTL cache, scaling comfortably to ~100K memories.
 
-**Optional Qdrant backend:** set `ENGRAM_VECTOR_BACKEND=qdrant` and install `pip install 'engram-core[qdrant]'` to switch to HNSW ANN search via Qdrant. Add a `qdrant` service to your `docker-compose.yml` (see the commented block in the repo) or point `QDRANT_URL` at an existing instance. Recommended when your namespace exceeds ~100K memories.
+**Optional Qdrant backend:** set `ENGRAM_VECTOR_BACKEND=qdrant` and start the `qdrant` profile to enable HNSW ANN search. See [Enabling Qdrant](#enabling-qdrant-optional) below. Recommended for corpora that will grow beyond ~100K memories or for single users wanting search quality that does not degrade over time.
+
+---
+
+## Embeddings and the LLM
+
+### How engram uses two separate AI models
+
+engram uses your conversational LLM (Claude, via Anthropic API) for reasoning and your embedding model for semantic search. These are different tasks:
+
+| Task | Model | When |
+|------|-------|------|
+| Store a memory | Embedding model | At write time — content → stored vector |
+| Search memories | Embedding model | At search time — query → query vector → cosine similarity |
+| Reflect / summarise | LLM (Anthropic) | Nightly background job |
+| Answer your question | LLM (Claude Code) | In conversation |
+
+The LLM never does vector search. The embedding model never reasons. Both run every session.
+
+**Why can't the search query go directly to the LLM?** The LLM would need to read all memories in its context window to find the relevant ones — at ~1K tokens per memory, 1000 memories = 1M tokens per query. That is too slow, too expensive, and hits context limits. Embeddings compress each memory into a fixed-size vector (384 or 1536 numbers). Cosine similarity finds the nearest vectors in milliseconds without reading the content.
+
+### Anthropic does not provide an embedding API
+
+Anthropic's Claude models are decoder-only LLMs — they cannot produce the fixed-dimension vectors that semantic search requires. A separate encoder-only model is needed.
+
+engram ships three options:
+
+| Mode | Model | Cost | Disk | Quality |
+|------|-------|------|------|---------|
+| `local` (default) | `all-MiniLM-L6-v2` | Free | ~90 MB | Good |
+| `local-large` | `BAAI/bge-large-en-v1.5` | Free | ~1.3 GB | Better |
+| `openai` | `text-embedding-3-small` | ~$0.02/1M tokens | None | Best |
+
+Set `ENGRAM_EMBED_MODE` in your `.env` to choose. `auto` uses OpenAI if `OPENAI_API_KEY` is present, otherwise falls back to `all-MiniLM-L6-v2`.
+
+### ⚠️ Embedding model lock-in — read before you start
+
+**You cannot switch embedding models after writing memories without running a migration.**
+
+Every memory stored in engram contains a vector produced by the embedding model that was active at write time. Different models produce different vector dimensions (384 vs 1536) and incompatible vector spaces — a query embedded with model B cannot find memories embedded with model A.
+
+**If you switch models, all existing memories become invisible to search.**
+
+A migration script (`tools/reembed.py`) exists to re-embed all ArcadeDB memories with the new model, and `tools/migrate_to_qdrant.py` syncs those vectors into Qdrant. But this process:
+- Costs API tokens if switching to OpenAI embeddings
+- Takes time proportional to your corpus size (749 memories ≈ 30 seconds with batching)
+- Requires a maintenance window (search quality degrades mid-migration)
+
+**Recommendation:** decide on your embedding model before writing your first memory. If you are an individual developer, `local` (free, no API key) is fine for most corpora. If you want the best semantic quality and don't mind a small ongoing cost, use `openai`.
+
+---
+
+## Enabling Qdrant (optional)
+
+The default ArcadeDB vector search fetches the 500 most recent memories and does cosine similarity in Python. This works well up to a few thousand memories but degrades as the corpus grows — older memories fall outside the 500-record window and become unsearchable.
+
+Qdrant replaces this with an HNSW index that searches all memories in ~3 ms regardless of corpus size.
+
+### First-time setup
+
+```bash
+# 1. Install the Qdrant client inside the engram container
+pip install 'qdrant-client>=1.9'
+# Or rebuild: ENGRAM_EMBED_MODE=... docker compose build engram
+
+# 2. Start Qdrant
+docker compose --profile qdrant up -d qdrant
+
+# 3. Backfill your existing memories into Qdrant (run once)
+python3 tools/migrate_to_qdrant.py
+
+# 4. Enable the Qdrant backend — add to ~/.engram/.env or your .env:
+echo "ENGRAM_VECTOR_BACKEND=qdrant" >> .env
+echo "QDRANT_URL=http://localhost:6333" >> .env
+
+# 5. Restart engram to pick up the new config
+docker compose restart engram
+```
+
+### Verify it's working
+
+```bash
+curl -s "http://localhost:8766/api/v1/memory/search?q=test&ns=all" \
+  -H "X-API-Key: your-key" | python3 -m json.tool | head -20
+```
+
+Response time should drop from ~200 ms to ~10 ms on a warm query after enabling Qdrant.
+
+### Data directory
+
+Qdrant data is persisted at `~/.engram/qdrant/` (or `$ENGRAM_DATA_DIR/qdrant/`). Include this directory in your backups.
 
 ---
 

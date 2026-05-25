@@ -130,22 +130,32 @@ class QdrantVectorBackend(VectorBackend):
 
         client = await self._ensure_client()
 
-        conditions = [FieldCondition(key=_NAMESPACE_FIELD, match=MatchValue(value=namespace))]
+        # When namespace is "all" / "" / "*" the caller wants a global search;
+        # ACL filtering is applied upstream — skip the namespace clause here.
+        _cross_ns = namespace.lower().strip() in ("", "all", "*")
+
+        conditions = []
+        if not _cross_ns:
+            conditions.append(
+                FieldCondition(key=_NAMESPACE_FIELD, match=MatchValue(value=namespace))
+            )
         if not include_superseded:
             conditions.append(
                 FieldCondition(key=_SUPERSEDED_FIELD, match=MatchValue(value=False))
             )
 
-        query_filter = Filter(must=conditions)
+        query_filter = Filter(must=conditions) if conditions else None
 
-        hits = await client.search(
+        # qdrant-client >= 1.10 replaced search() with query_points()
+        result = await client.query_points(
             collection_name=self._collection,
-            query_vector=embedding,
+            query=embedding,
             query_filter=query_filter,
             limit=top_k,
             with_payload=False,
+            with_vectors=False,
         )
-        return [(str(h.id), float(h.score)) for h in hits]
+        return [(str(h.id), float(h.score)) for h in result.points]
 
     async def delete(self, memory_id: str) -> None:
         from qdrant_client.models import PointIdsList  # type: ignore

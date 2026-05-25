@@ -52,6 +52,10 @@ RUN if [ "$EMBED_MODE" = "local" ]; then \
     python -m spacy download en_core_web_sm; \
 fi
 
+# Qdrant client — always installed (lightweight, ~5 MB); backend only activates
+# when ENGRAM_VECTOR_BACKEND=qdrant is set at runtime.
+RUN pip install --no-cache-dir "qdrant-client>=1.9"
+
 # ── Layer 2: install engram packages in editable mode ─────────────────────
 COPY packages/ packages/
 COPY agents/   agents/
