@@ -1024,6 +1024,8 @@ def test_graph_traversal(runner: TestRunner):
 def test_count_and_namespace_distribution(runner: TestRunner):
     """COUNT queries and namespace distribution work correctly."""
     ns = TEST_NS + ":count-test"
+    # Clean up any records from previous runs so count is deterministic
+    arcade_command("DELETE FROM Memory WHERE namespace = :ns", {"ns": ns})
     expected_count = 5
     for _ in range(expected_count):
         arcade_command(
