@@ -102,6 +102,27 @@ try {
     # not a git repo or git unavailable — keep default namespace
 }
 
+# ── Secret pattern detection ─────────────────────────────────────────────────
+$VaultAlert = ""
+$SecretPatterns = @(
+    @{ Pattern = 'sk-ant-api[0-9A-Za-z\-]{20,}';                                                           Label = 'Anthropic API key' },
+    @{ Pattern = '\bsk-[0-9A-Za-z]{40,}';                                                                  Label = 'API key (sk-)' },
+    @{ Pattern = '\bghp_[0-9A-Za-z]{36,}';                                                                 Label = 'GitHub personal token' },
+    @{ Pattern = '\bghs_[0-9A-Za-z]{36,}';                                                                 Label = 'GitHub service token' },
+    @{ Pattern = '\bAKIA[0-9A-Z]{16}\b';                                                                   Label = 'AWS access key' },
+    @{ Pattern = '-----BEGIN [A-Z ]+ PRIVATE KEY-----';                                                     Label = 'private key PEM' },
+    @{ Pattern = 'ey[A-Za-z0-9_\-]{20,}\.ey[A-Za-z0-9_\-]{20,}';                                         Label = 'JWT token' },
+    @{ Pattern = '(?i)(?:password|api[_-]?key|access[_-]?key|auth[_-]?token|client[_-]?secret)\s*[=:]\s*["'']+(?!\s)[^\s"'']{16,}'; Label = 'credential assignment' }
+)
+$FoundTypes = @()
+foreach ($p in $SecretPatterns) {
+    if ($Prompt -match $p.Pattern) { $FoundTypes += $p.Label }
+}
+if ($FoundTypes.Count -gt 0) {
+    $TypeList   = $FoundTypes -join ", "
+    $VaultAlert = "[vault-alert] Potential secret in prompt ($TypeList) — save to engram vault before use: vault_secret_set(key_name=`"<name>`", value=`"<value>`", namespace=`"...`")"
+}
+
 # ── Build search query ────────────────────────────────────────────────────────
 $QueryRaw  = $Prompt.Substring(0, [Math]::Min(200, $Prompt.Length))
 $QueryEnc  = [System.Uri]::EscapeDataString($QueryRaw)
@@ -166,6 +187,17 @@ try {
 
     $Context = $Lines -join "`n"
 } catch {
+    $Context = ""
+}
+
+# ── Merge engram context + vault alert ───────────────────────────────────────
+if ($Context -ne "" -and $VaultAlert -ne "") {
+    $FullContext = "$Context`n$VaultAlert"
+} elseif ($Context -ne "") {
+    $FullContext = $Context
+} elseif ($VaultAlert -ne "") {
+    $FullContext = $VaultAlert
+} else {
     exit 0
 }
 
@@ -174,7 +206,7 @@ try {
     $Output = [ordered]@{
         hookSpecificOutput = [ordered]@{
             hookEventName     = "UserPromptSubmit"
-            additionalContext = $Context
+            additionalContext = $FullContext
         }
     }
     $Output | ConvertTo-Json -Depth 5 -Compress | Write-Output

@@ -184,6 +184,29 @@ PROMPT=$(echo "$INPUT" | python3 -c \
 PROMPT_LEN=${#PROMPT}
 [[ $PROMPT_LEN -lt 15 ]] && exit 0
 
+# ── Secret pattern detection ──────────────────────────────────────────────────
+VAULT_ALERT=$(echo "$PROMPT" | python3 -c "
+import sys, re
+PATTERNS = [
+    (r'sk-ant-api[0-9A-Za-z\-]{20,}',                                                  'Anthropic API key'),
+    (r'\bsk-[0-9A-Za-z]{40,}',                                                         'API key (sk-)'),
+    (r'\bghp_[0-9A-Za-z]{36,}',                                                        'GitHub personal token'),
+    (r'\bghs_[0-9A-Za-z]{36,}',                                                        'GitHub service token'),
+    (r'\bAKIA[0-9A-Z]{16}\b',                                                          'AWS access key'),
+    (r'-----BEGIN [A-Z ]+ PRIVATE KEY-----',                                            'private key PEM'),
+    (r'ey[A-Za-z0-9_-]{20,}\.ey[A-Za-z0-9_-]{20,}',                                  'JWT token'),
+    (r'(?i)(?:password|api[_-]?key|access[_-]?key|auth[_-]?token|client[_-]?secret)\s*[=:]\s*[\"\']+(?!\s)[^\s\"\']{16,}', 'credential assignment'),
+]
+text = sys.stdin.read()
+found = []
+for pattern, label in PATTERNS:
+    if re.search(pattern, text):
+        found.append(label)
+if found:
+    types = ', '.join(found)
+    print(f'[vault-alert] Potential secret in prompt ({types}) — save to engram vault before use: vault_secret_set(key_name=\"<name>\", value=\"<value>\", namespace=\"...\")')
+" 2>/dev/null || echo "")
+
 QUERY=$(echo "$PROMPT" | head -c 200 | python3 -c \
   "import sys,urllib.parse; print(urllib.parse.quote(sys.stdin.read().strip()))" 2>/dev/null || echo "")
 [[ -z "$QUERY" ]] && exit 0
@@ -217,12 +240,22 @@ if len(lines) <= 1:
 print('\n'.join(lines))
 " 2>/dev/null || echo "")
 
-[[ -z "$CONTEXT" ]] && exit 0
+# Merge engram context and vault alert — either or both may be present
+if [[ -n "$CONTEXT" && -n "$VAULT_ALERT" ]]; then
+  FULL_CONTEXT="$CONTEXT
+$VAULT_ALERT"
+elif [[ -n "$CONTEXT" ]]; then
+  FULL_CONTEXT="$CONTEXT"
+elif [[ -n "$VAULT_ALERT" ]]; then
+  FULL_CONTEXT="$VAULT_ALERT"
+else
+  exit 0
+fi
 
 python3 -c "
 import json, sys
 print(json.dumps({'hookSpecificOutput':{'hookEventName':'UserPromptSubmit','additionalContext':sys.argv[1]}}))
-" "$CONTEXT"
+" "$FULL_CONTEXT"
 INJECT
   chmod +x "$CLAUDE_HOOKS_DIR/engram-inject.sh"
   success "Inject hook: $CLAUDE_HOOKS_DIR/engram-inject.sh"
