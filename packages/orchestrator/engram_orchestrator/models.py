@@ -5,7 +5,7 @@ engram_orchestrator.models — Task and SubTask data models.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from uuid import uuid4
 
@@ -45,7 +45,7 @@ class Task:
     result: str | None = None
     error: str | None = None
     token_cost: int = 0
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: datetime | None = None
     parent_task_id: str | None = None
     tags: list[str] = field(default_factory=list)

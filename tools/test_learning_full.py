@@ -20,7 +20,7 @@ from pathlib import Path
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -83,7 +83,7 @@ class TestEpisodeStore(unittest.IsolatedAsyncioTestCase):
     async def test_get_recent(self):
         from engram_learning.models import EpisodicRecord, Outcome
         ep = EpisodicRecord(namespace="ns1", original_prompt="recent task",
-                            outcome=Outcome.SUCCESS, created_at=datetime.utcnow())
+                            outcome=Outcome.SUCCESS, created_at=datetime.now(timezone.utc))
         await self.store.save(ep)
         results = await self.store.get_recent("ns1", days=7)
         self.assertTrue(any(r.id == ep.id for r in results))
@@ -92,7 +92,7 @@ class TestEpisodeStore(unittest.IsolatedAsyncioTestCase):
         from engram_learning.models import EpisodicRecord, Outcome
         ep = EpisodicRecord(namespace="ns1", original_prompt="old task",
                             outcome=Outcome.FAILURE,
-                            created_at=datetime.utcnow() - timedelta(days=30))
+                            created_at=datetime.now(timezone.utc) - timedelta(days=30))
         await self.store.save(ep)
         results = await self.store.get_recent("ns1", days=7)
         self.assertFalse(any(r.id == ep.id for r in results))
@@ -117,7 +117,7 @@ class TestEpisodeStore(unittest.IsolatedAsyncioTestCase):
         from engram_learning.models import EpisodicRecord, Outcome
         ep = EpisodicRecord(namespace="stale_ns", original_prompt="old",
                             outcome=Outcome.SUCCESS,
-                            created_at=datetime.utcnow() - timedelta(days=20))
+                            created_at=datetime.now(timezone.utc) - timedelta(days=20))
         await self.store.save(ep)
         ns_list = await self.store.get_active_namespaces(days=7)
         self.assertNotIn("stale_ns", ns_list)
@@ -676,7 +676,7 @@ class TestHeuristicDecayService(unittest.IsolatedAsyncioTestCase):
     async def test_recent_heuristic_not_decayed(self):
         from engram_learning.models import Heuristic
         h = Heuristic(namespace="ns1", rule="fresh rule", confidence=0.8,
-                      last_triggered_at=datetime.utcnow())
+                      last_triggered_at=datetime.now(timezone.utc))
         await self.store.add(h)
         await self.svc.run("ns1")
         all_h = await self.store.get_all("ns1")
@@ -685,7 +685,7 @@ class TestHeuristicDecayService(unittest.IsolatedAsyncioTestCase):
     async def test_stale_heuristic_is_decayed(self):
         from engram_learning.models import Heuristic
         h = Heuristic(namespace="ns1", rule="stale rule", confidence=0.8,
-                      last_triggered_at=datetime.utcnow() - timedelta(days=60))
+                      last_triggered_at=datetime.now(timezone.utc) - timedelta(days=60))
         await self.store.add(h)
         await self.svc.run("ns1")
         all_h = await self.store.get_all("ns1")
@@ -694,7 +694,7 @@ class TestHeuristicDecayService(unittest.IsolatedAsyncioTestCase):
     async def test_very_stale_heuristic_is_deleted(self):
         from engram_learning.models import Heuristic
         h = Heuristic(namespace="ns1", rule="dying rule", confidence=0.09,
-                      last_triggered_at=datetime.utcnow() - timedelta(days=60))
+                      last_triggered_at=datetime.now(timezone.utc) - timedelta(days=60))
         await self.store.add(h)
         await self.svc.run("ns1")
         all_h = await self.store.get_all("ns1")

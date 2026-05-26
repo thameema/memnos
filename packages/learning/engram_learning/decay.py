@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from engram_learning.heuristic_store import HeuristicStore
 
@@ -22,7 +22,7 @@ class HeuristicDecayService:
 
     async def run(self, namespace: str):
         heuristics = await self.store.get_all(namespace)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         deleted = 0
         decayed = 0
         for h in heuristics:

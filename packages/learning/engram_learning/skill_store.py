@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -50,7 +50,7 @@ class SkillStore:
             avg_duration_s=row[7] or 0.0,
             success_rate=row[8] or 1.0,
             source_episode_id=row[9] or "",
-            created_at=datetime.fromisoformat(row[10]) if row[10] else datetime.utcnow(),
+            created_at=datetime.fromisoformat(row[10]) if row[10] else datetime.now(timezone.utc),
             last_used_at=datetime.fromisoformat(row[11]) if row[11] else None,
             use_count=row[12] or 0,
         )
@@ -113,7 +113,7 @@ class SkillStore:
                            last_used_at=?,
                            success_rate=((success_rate * use_count) + 1.0) / (use_count + 1)
                        WHERE id=?""",
-                    (datetime.utcnow().isoformat(), template_id),
+                    (datetime.now(timezone.utc).isoformat(), template_id),
                 )
             else:
                 await db.execute(
@@ -122,7 +122,7 @@ class SkillStore:
                            last_used_at=?,
                            success_rate=(success_rate * use_count) / (use_count + 1)
                        WHERE id=?""",
-                    (datetime.utcnow().isoformat(), template_id),
+                    (datetime.now(timezone.utc).isoformat(), template_id),
                 )
             await db.commit()
 

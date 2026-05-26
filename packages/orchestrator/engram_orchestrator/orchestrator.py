@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from engram.config import EngramConfig
@@ -366,7 +366,7 @@ class Orchestrator:
                 ep_store = EpisodeStore()
                 await ep_store.init()
                 elapsed = (
-                    (datetime.utcnow() - task.created_at).total_seconds()
+                    (datetime.now(timezone.utc) - task.created_at).total_seconds()
                 )
                 ep = EpisodicRecord(
                     task_id=task.id,
@@ -407,7 +407,7 @@ class Orchestrator:
             # ----------------------------------------------------------
             task.result = final_result
             task.status = TaskStatus.COMPLETE
-            task.completed_at = datetime.utcnow()
+            task.completed_at = datetime.now(timezone.utc)
             await self._task_store.update_status(
                 task.id, TaskStatus.COMPLETE, result=final_result
             )
@@ -421,7 +421,7 @@ class Orchestrator:
             logger.error("Orchestrator: task %s — %s", task.id[:8], err)
             task.error = err
             task.status = TaskStatus.FAILED
-            task.completed_at = datetime.utcnow()
+            task.completed_at = datetime.now(timezone.utc)
             await self._task_store.update_status(task.id, TaskStatus.FAILED, error=err)
             return task
 
@@ -432,7 +432,7 @@ class Orchestrator:
             )
             task.error = err
             task.status = TaskStatus.FAILED
-            task.completed_at = datetime.utcnow()
+            task.completed_at = datetime.now(timezone.utc)
             await self._task_store.update_status(task.id, TaskStatus.FAILED, error=err)
             return task
 

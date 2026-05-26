@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -64,7 +64,7 @@ class EpisodeStore:
             runtime=row[6], outcome=Outcome(row[7]),
             user_feedback=row[8], quality_score=row[9],
             duration_s=row[10] or 0.0, token_cost=row[11] or 0,
-            created_at=datetime.fromisoformat(row[12]) if row[12] else datetime.utcnow(),
+            created_at=datetime.fromisoformat(row[12]) if row[12] else datetime.now(timezone.utc),
             tags=json.loads(row[13] or "[]"),
         )
 
@@ -81,7 +81,7 @@ class EpisodeStore:
                 return self._row_to_episode(row) if row else None
 
     async def get_recent(self, namespace: str, days: int = 7) -> list[EpisodicRecord]:
-        since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
                 "SELECT * FROM episodes WHERE namespace=? AND created_at>=? ORDER BY created_at DESC",
@@ -92,7 +92,7 @@ class EpisodeStore:
 
     async def get_active_namespaces(self, days: int = 7) -> list[str]:
         """Return distinct namespaces that have had episodes in the last *days* days."""
-        since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
                 "SELECT DISTINCT namespace FROM episodes WHERE created_at >= ?",

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -40,7 +40,7 @@ class QualityStore:
             agent_name=row[0], task_tag=row[1], namespace=row[2],
             sample_count=row[3] or 0, avg_quality_score=row[4] or 0.0,
             avg_duration_s=row[5] or 0.0, failure_rate=row[6] or 0.0,
-            last_updated=datetime.fromisoformat(row[7]) if row[7] else datetime.utcnow(),
+            last_updated=datetime.fromisoformat(row[7]) if row[7] else datetime.now(timezone.utc),
         )
 
     async def update(
@@ -71,14 +71,14 @@ class QualityStore:
                        SET sample_count=?, avg_quality_score=?, avg_duration_s=?,
                            failure_rate=?, last_updated=?
                        WHERE agent_name=? AND task_tag=? AND namespace=?""",
-                    (new_n, new_avg_q, new_avg_d, new_fail, datetime.utcnow().isoformat(),
+                    (new_n, new_avg_q, new_avg_d, new_fail, datetime.now(timezone.utc).isoformat(),
                      agent_name, task_tag, namespace),
                 )
             else:
                 await db.execute(
                     "INSERT INTO quality_records VALUES (?,?,?,?,?,?,?,?)",
                     (agent_name, task_tag, namespace, 1, quality_score, duration_s,
-                     0.0 if success else 1.0, datetime.utcnow().isoformat()),
+                     0.0 if success else 1.0, datetime.now(timezone.utc).isoformat()),
                 )
             await db.commit()
 

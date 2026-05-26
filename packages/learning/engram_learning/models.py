@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 from enum import Enum
 from uuid import uuid4
 
@@ -27,7 +31,7 @@ class EpisodicRecord:
     quality_score: float | None = None
     duration_s: float = 0.0
     token_cost: int = 0
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=_now)
     tags: list[str] = field(default_factory=list)
 
 
@@ -42,7 +46,7 @@ class Heuristic:
     confidence: float = 0.8
     triggered_count: int = 0
     overridden_count: int = 0
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=_now)
     last_triggered_at: datetime | None = None
 
 
@@ -58,7 +62,7 @@ class SkillTemplate:
     avg_duration_s: float = 0.0
     success_rate: float = 1.0
     source_episode_id: str = ""
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=_now)
     last_used_at: datetime | None = None
     use_count: int = 0
 
@@ -72,4 +76,4 @@ class QualityRecord:
     avg_quality_score: float = 0.0
     avg_duration_s: float = 0.0
     failure_rate: float = 0.0
-    last_updated: datetime = field(default_factory=datetime.utcnow)
+    last_updated: datetime = field(default_factory=_now)

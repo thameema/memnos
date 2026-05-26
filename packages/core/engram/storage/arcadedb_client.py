@@ -141,14 +141,18 @@ def _now() -> datetime:
 
 
 def _dt_str(dt: datetime | None) -> str | None:
-    """Format datetime as ISO-8601 for ArcadeDB INSERT/UPDATE parameters.
+    """Serialize a datetime to ISO-8601 UTC string for ArcadeDB storage.
 
-    ArcadeDB parses ISO-8601 on write and converts it internally to space-separated
-    format ("YYYY-MM-DD HH:MM:SS.mmm").  Keep ISO format here so storage works.
-    Use _dt_str_cmp() for WHERE-clause comparisons where ArcadeDB does string ordering.
+    Always normalises to UTC and emits an explicit +00:00 offset so every
+    stored timestamp is unambiguous regardless of the caller's local timezone.
+    Naive datetimes (no tzinfo) are assumed to already be UTC.
     """
     if dt is None:
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
     return dt.isoformat()
 
 

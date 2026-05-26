@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -47,7 +47,7 @@ class HeuristicStore:
             confidence=row[6] or 0.8,
             triggered_count=row[7] or 0,
             overridden_count=row[8] or 0,
-            created_at=datetime.fromisoformat(row[9]) if row[9] else datetime.utcnow(),
+            created_at=datetime.fromisoformat(row[9]) if row[9] else datetime.now(timezone.utc),
             last_triggered_at=datetime.fromisoformat(row[10]) if row[10] else None,
         )
 
@@ -97,7 +97,7 @@ class HeuristicStore:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "UPDATE heuristics SET triggered_count=triggered_count+1, last_triggered_at=? WHERE id=?",
-                (datetime.utcnow().isoformat(), heuristic_id),
+                (datetime.now(timezone.utc).isoformat(), heuristic_id),
             )
             await db.commit()
 

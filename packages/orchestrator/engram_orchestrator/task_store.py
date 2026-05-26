@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +54,7 @@ def _row_to_task(row: dict[str, Any]) -> Task:
         result=row.get("result"),
         error=row.get("error"),
         token_cost=row.get("token_cost") or 0,
-        created_at=_str_to_dt(row.get("created_at")) or datetime.utcnow(),
+        created_at=_str_to_dt(row.get("created_at")) or datetime.now(timezone.utc),
         completed_at=_str_to_dt(row.get("completed_at")),
         parent_task_id=row.get("parent_task_id"),
         tags=tags,
@@ -216,7 +216,7 @@ class TaskStore:
         """Update a task's status and optionally its result/error."""
         assert self._db is not None
         completed_at = (
-            _dt_to_str(datetime.utcnow())
+            _dt_to_str(datetime.now(timezone.utc))
             if status in (TaskStatus.COMPLETE, TaskStatus.FAILED)
             else None
         )
@@ -296,7 +296,7 @@ class TaskStore:
     ) -> None:
         """Update a subtask's status, result, and timing fields."""
         assert self._db is not None
-        now = _dt_to_str(datetime.utcnow())
+        now = _dt_to_str(datetime.now(timezone.utc))
         if status == TaskStatus.RUNNING:
             await self._db.execute(
                 "UPDATE subtasks SET status = ?, started_at = COALESCE(started_at, ?) WHERE id = ?",

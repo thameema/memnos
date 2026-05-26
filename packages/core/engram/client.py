@@ -52,6 +52,21 @@ _QUERY_EMBED_CACHE_TTL = 60.0   # seconds
 _QUERY_EMBED_CACHE_MAX = 256
 
 
+def _dt_utc_iso(dt: datetime | None) -> str:
+    """Return an ISO-8601 UTC string with explicit +00:00 offset.
+
+    Naive datetimes are assumed UTC; any other timezone is converted to UTC.
+    Falls back to empty string on None so callers can use it safely in payloads.
+    """
+    if dt is None:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat()
+
+
 def _apply_decay_score(result: SearchResult, now: datetime) -> SearchResult:
     """Multiply search score by a time-decay factor if the memory has a decay policy."""
     mem = result.memory
@@ -404,7 +419,7 @@ class EngramClient:
                 "memory_type": memory.memory_type.value if hasattr(memory.memory_type, "value") else str(memory.memory_type),
                 "author": memory.author,
                 "tags": list(memory.tags or []),
-                "created_at": memory.created_at.isoformat() if hasattr(memory.created_at, "isoformat") else str(memory.created_at),
+                "created_at": _dt_utc_iso(memory.created_at),
             },
         }
         try:
@@ -439,7 +454,7 @@ class EngramClient:
                 "memory_type": memory.memory_type.value if hasattr(memory.memory_type, "value") else str(memory.memory_type),
                 "author": memory.author,
                 "tags": list(memory.tags or []),
-                "created_at": memory.created_at.isoformat() if hasattr(memory.created_at, "isoformat") else str(memory.created_at),
+                "created_at": _dt_utc_iso(memory.created_at),
             },
         }
 

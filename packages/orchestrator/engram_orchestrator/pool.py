@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .models import SubTask, TaskStatus
@@ -54,7 +54,7 @@ class WorkerPool:
             worker: BaseWorker | None = None
             async with sem:
                 subtask.status = TaskStatus.RUNNING
-                subtask.started_at = datetime.utcnow()
+                subtask.started_at = datetime.now(timezone.utc)
 
                 try:
                     worker = worker_factory(subtask)
@@ -75,7 +75,7 @@ class WorkerPool:
                         exc,
                     )
                 finally:
-                    subtask.completed_at = datetime.utcnow()
+                    subtask.completed_at = datetime.now(timezone.utc)
                     if worker is not None:
                         try:
                             await worker.teardown()
@@ -100,7 +100,7 @@ class WorkerPool:
             if isinstance(res, BaseException):
                 subtasks[i].error = f"Unexpected pool error: {res}"
                 subtasks[i].status = TaskStatus.FAILED
-                subtasks[i].completed_at = datetime.utcnow()
+                subtasks[i].completed_at = datetime.now(timezone.utc)
                 updated.append(subtasks[i])
             else:
                 updated.append(res)  # type: ignore[arg-type]

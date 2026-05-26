@@ -102,8 +102,8 @@ class TestDispatchWebhooks(unittest.IsolatedAsyncioTestCase):
         m.memory_type = MemoryType.fact
         m.author = "agent"
         m.tags = tags or []
-        from datetime import datetime
-        m.created_at = datetime.utcnow()
+        from datetime import datetime, timezone
+        m.created_at = datetime.now(timezone.utc)
         return m
 
     async def test_no_op_when_no_webhook_subscribers(self):
