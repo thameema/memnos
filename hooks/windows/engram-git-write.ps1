@@ -153,10 +153,15 @@ if ($Elapsed -ge ($SAVE_INTERVAL_MINUTES * 60)) {
 
             $promptText = "Project: $project" + $(if ($branch) { "  branch: $branch" } else { "" }) +
                 "  [auto-save at tool-call #$count]`n`n" + ($turns -join "`n`n") +
-                "`n`nCapture this in-progress dev session for another agent to resume. Write a dense, specific summary: what has been done, what is currently being worked on, decisions made, errors seen, current status. Name specific tickets, files, functions. Be concise (max 200 words). End with ""STATUS: <in-progress|blocked|complete>""."
+                "`n`nCapture this in-progress dev session for another agent to resume. Write a dense, specific summary: what has been done, what is currently being worked on, decisions made, errors seen, current status. Name specific tickets, files, functions. Be concise (max 200 words). End with ""STATUS: <in-progress|blocked|complete>""." +
+                "`nIMPORTANT: respond with PLAIN TEXT ONLY. Do not generate any tool calls, <function_calls> XML, or <invoke> tags."
 
             try {
-                $summary = ($promptText | & claude --print --no-session-persistence --strict-mcp-config --tools "" 2>$null) -join "`n"
+                $rawOutput = ($promptText | & claude --print --no-session-persistence --strict-mcp-config --tools "" 2>$null) -join "`n"
+                # Strip tool call XML that claude --print may emit even with --tools ""
+                $summary = [regex]::Replace($rawOutput, '(?s)<function_calls>.*?</function_calls>', '')
+                $summary = [regex]::Replace($summary,   '(?s)<tool_call>.*?</tool_call>', '')
+                $summary = [regex]::Replace($summary,   '(\r?\n){3,}', "`n`n")
                 $summary = $summary.Trim()
             } catch { return }
 

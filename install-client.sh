@@ -624,9 +624,18 @@ PYEOF
 
 $TURNS_TEXT
 
-Capture this in-progress dev session for another agent to resume. Write a dense, specific summary: what has been done, what is currently being worked on, decisions made, errors seen, current status. Name specific tickets, files, functions. Be concise (max 200 words). End with \"STATUS: <in-progress|blocked|complete>\"."
+Capture this in-progress dev session for another agent to resume. Write a dense, specific summary: what has been done, what is currently being worked on, decisions made, errors seen, current status. Name specific tickets, files, functions. Be concise (max 200 words). End with \"STATUS: <in-progress|blocked|complete>\".
+IMPORTANT: respond with PLAIN TEXT ONLY. Do not generate any tool calls, <function_calls> XML, or <invoke> tags."
 
-      SUMMARY=$(echo "$PROMPT" | claude --print --no-session-persistence --strict-mcp-config --tools "" 2>/dev/null | head -c 1000)
+      SUMMARY=$(echo "$PROMPT" | claude --print --no-session-persistence --strict-mcp-config --tools "" 2>/dev/null \
+        | python3 -c "
+import re, sys
+t = sys.stdin.read()
+t = re.sub(r'<function_calls>.*?</function_calls>', '', t, flags=re.DOTALL)
+t = re.sub(r'<tool_call>.*?</tool_call>', '', t, flags=re.DOTALL)
+t = re.sub(r'\n{3,}', '\n\n', t)
+print(t.strip()[:1000])
+" 2>/dev/null)
       [[ -z "$SUMMARY" ]] && exit 0
 
       CONTENT="[auto-save #$COUNT] $PROJECT${BRANCH:+ | $BRANCH} — $SUMMARY"
@@ -734,9 +743,18 @@ PROMPT="Project: $PROJECT${BRANCH:+  branch: $BRANCH}
 
 $TURNS_TEXT
 
-Capture this in-progress dev session before context is compacted. Write a dense, specific summary: what has been done, what is currently in progress, decisions made, errors encountered, exact current state. Name tickets, files, functions. Be concise (max 200 words). End with \"STATUS: <in-progress|blocked|complete>\"."
+Capture this in-progress dev session before context is compacted. Write a dense, specific summary: what has been done, what is currently in progress, decisions made, errors encountered, exact current state. Name tickets, files, functions. Be concise (max 200 words). End with \"STATUS: <in-progress|blocked|complete>\".
+IMPORTANT: respond with PLAIN TEXT ONLY. Do not generate any tool calls, <function_calls> XML, or <invoke> tags."
 
-SUMMARY=$(echo "$PROMPT" | claude --print --no-session-persistence --strict-mcp-config --tools "" 2>/dev/null | head -c 1000)
+SUMMARY=$(echo "$PROMPT" | claude --print --no-session-persistence --strict-mcp-config --tools "" 2>/dev/null \
+  | python3 -c "
+import re, sys
+t = sys.stdin.read()
+t = re.sub(r'<function_calls>.*?</function_calls>', '', t, flags=re.DOTALL)
+t = re.sub(r'<tool_call>.*?</tool_call>', '', t, flags=re.DOTALL)
+t = re.sub(r'\n{3,}', '\n\n', t)
+print(t.strip()[:1000])
+" 2>/dev/null)
 [[ -z "$SUMMARY" ]] && exit 0
 
 CONTENT="[pre-compact] $PROJECT${BRANCH:+ | $BRANCH} — $SUMMARY"
@@ -873,9 +891,18 @@ PROMPT="Project: $PROJECT${BRANCH:+  branch: $BRANCH}
 
 $TURNS_TEXT
 
-Write a dense session summary for future reference. Cover: what was accomplished, decisions made, files changed, errors fixed. Name specific tickets, files, and functions. Be concise (max 180 words). End with \"STATUS: <complete|in-progress|blocked>\"."
+Write a dense session summary for future reference. Cover: what was accomplished, decisions made, files changed, errors fixed. Name specific tickets, files, and functions. Be concise (max 180 words). End with \"STATUS: <complete|in-progress|blocked>\".
+IMPORTANT: respond with PLAIN TEXT ONLY. Do not generate any tool calls, <function_calls> XML, or <invoke> tags."
 
-SUMMARY=$(echo "$PROMPT" | claude --print --no-session-persistence --strict-mcp-config --tools "" 2>/dev/null | head -c 1000)
+SUMMARY=$(echo "$PROMPT" | claude --print --no-session-persistence --strict-mcp-config --tools "" 2>/dev/null \
+  | python3 -c "
+import re, sys
+t = sys.stdin.read()
+t = re.sub(r'<function_calls>.*?</function_calls>', '', t, flags=re.DOTALL)
+t = re.sub(r'<tool_call>.*?</tool_call>', '', t, flags=re.DOTALL)
+t = re.sub(r'\n{3,}', '\n\n', t)
+print(t.strip()[:1000])
+" 2>/dev/null)
 [[ -z "$SUMMARY" ]] && exit 0
 
 RICH_CONTENT="[session-end] $PROJECT${BRANCH:+ | $BRANCH} — $SUMMARY"

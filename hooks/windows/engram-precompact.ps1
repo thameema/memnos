@@ -104,10 +104,14 @@ if ($turns.Count -lt 2) { exit 0 }
 $promptText = "Project: $Project" + $(if ($Branch) { "  branch: $Branch" } else { "" }) +
     "`n`n[PRE-COMPACT — context window approaching limit]`n`n" +
     ($turns -join "`n`n") +
-    "`n`nCapture this in-progress dev session before context is compacted. Write a dense, specific summary: what has been done, what is currently in progress, decisions made, errors encountered, exact current state. Name tickets, files, functions. Be concise (max 200 words). End with ""STATUS: <in-progress|blocked|complete>""."
+    "`n`nCapture this in-progress dev session before context is compacted. Write a dense, specific summary: what has been done, what is currently in progress, decisions made, errors encountered, exact current state. Name tickets, files, functions. Be concise (max 200 words). End with ""STATUS: <in-progress|blocked|complete>""." +
+    "`nIMPORTANT: respond with PLAIN TEXT ONLY. Do not generate any tool calls, <function_calls> XML, or <invoke> tags."
 
 try {
-    $Summary = ($promptText | & claude --print --no-session-persistence --strict-mcp-config --tools "" 2>$null) -join "`n"
+    $rawOutput = ($promptText | & claude --print --no-session-persistence --strict-mcp-config --tools "" 2>$null) -join "`n"
+    $Summary = [regex]::Replace($rawOutput, '(?s)<function_calls>.*?</function_calls>', '')
+    $Summary = [regex]::Replace($Summary,   '(?s)<tool_call>.*?</tool_call>', '')
+    $Summary = [regex]::Replace($Summary,   '(\r?\n){3,}', "`n`n")
     $Summary = $Summary.Trim()
 } catch {
     exit 0

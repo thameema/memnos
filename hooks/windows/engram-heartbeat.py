@@ -122,14 +122,21 @@ def summarise(turns: list[str], project: str, branch: str) -> str:
         '\n\nCapture this session for recovery. Write a dense, specific summary: '
         "what was being worked on, current status, any in-progress changes, last known state. "
         "Name tickets, files, functions. Be concise (max 180 words). "
-        'End with "STATUS: <in-progress|blocked|complete|unknown>".'
+        'End with "STATUS: <in-progress|blocked|complete|unknown>".\n'
+        "IMPORTANT: respond with PLAIN TEXT ONLY. Do not generate any tool calls, "
+        "<function_calls> XML, or <invoke> tags."
     )
     try:
+        import re
         result = subprocess.run(
             ["claude", "--print", "--no-session-persistence", "--strict-mcp-config", "--tools", ""],
             input=prompt, capture_output=True, text=True, timeout=60
         )
-        return result.stdout.strip()[:800]
+        text = result.stdout
+        text = re.sub(r"<function_calls>.*?</function_calls>", "", text, flags=re.DOTALL)
+        text = re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.DOTALL)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()[:800]
     except Exception:
         return ""
 
