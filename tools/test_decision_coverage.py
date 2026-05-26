@@ -63,13 +63,13 @@ PROJECT_NAMESPACES: dict[str, dict] = {
         "min_decisions":   3,   # ArcadeDB choice, hook pipeline, namespace routing, etc.
         "min_constraints": 0,   # constraints not yet written for engram itself
         "key_components":  ["arcadedb", "hooks", "vault", "mcp"],
-        "min_quality_pct": 0.0, # backfill affects[]/rationale then raise this
+        "min_quality_pct": 1.0,
     },
     "org:acme:engineering": {
         "min_decisions":   1,
         "min_constraints": 0,
         "key_components":  [],
-        "min_quality_pct": 0.0,
+        "min_quality_pct": 1.0,
     },
 }
 
