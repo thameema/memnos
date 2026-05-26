@@ -141,9 +141,26 @@ def _now() -> datetime:
 
 
 def _dt_str(dt: datetime | None) -> str | None:
+    """Format datetime as ISO-8601 for ArcadeDB INSERT/UPDATE parameters.
+
+    ArcadeDB parses ISO-8601 on write and converts it internally to space-separated
+    format ("YYYY-MM-DD HH:MM:SS.mmm").  Keep ISO format here so storage works.
+    Use _dt_str_cmp() for WHERE-clause comparisons where ArcadeDB does string ordering.
+    """
     if dt is None:
         return None
     return dt.isoformat()
+
+
+def _dt_str_cmp(dt: datetime | None) -> str | None:
+    """Format datetime for use in ArcadeDB WHERE clause comparisons.
+
+    ArcadeDB parses ISO-8601 correctly in both INSERT and WHERE contexts — the
+    same format works for storage and for temporal comparisons.  This function
+    is a thin alias of _dt_str kept so call sites are clearly labelled as
+    "comparison context" vs "insert context".
+    """
+    return _dt_str(dt)
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -664,7 +681,10 @@ class ArcadeDBClient:
         return [_row_to_memory(r) for r in rows]
 
     async def get_decisions_for_entities(
-        self, entity_names: list[str], namespace: str
+        self,
+        entity_names: list[str],
+        namespace: str,
+        as_of: "datetime | None" = None,
     ) -> list["MemoryEntry"]:
         """Return active decision/constraint/ADR memories whose affects list
         overlaps with any of the given entity names.
@@ -672,6 +692,9 @@ class ArcadeDBClient:
         These are pinned above top_k vector results — they surface regardless
         of semantic score because they explicitly govern the entities in the query.
         Checks the full namespace ancestry (org:acme:eng → org:acme → org).
+
+        When as_of is provided, only memories that were active at that instant
+        are returned (created_at <= as_of AND superseded_at > as_of or NULL).
         """
         if not entity_names:
             return []
@@ -685,11 +708,24 @@ class ArcadeDBClient:
         placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
         params: dict = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
 
+        # Point-in-time filter: only memories active at as_of.
+        # When as_of is set, replace the static superseded_at IS NULL guard with
+        # the full temporal window so memories superseded after as_of are included.
+        if as_of is not None:
+            as_of_str = _dt_str_cmp(as_of)
+            params["as_of"] = as_of_str
+            superseded_clause = (
+                "AND created_at <= :as_of "
+                "AND (superseded_at IS NULL OR superseded_at > :as_of) "
+            )
+        else:
+            superseded_clause = "AND superseded_at IS NULL "
+
         rows = await self._query(
             f"SELECT * FROM Memory "
             f"WHERE memory_type IN ['decision', 'constraint', 'adr'] "
             f"AND status = 'active' "
-            f"AND superseded_at IS NULL "
+            f"{superseded_clause}"
             f"AND namespace IN [{placeholders}] "
             f"LIMIT 500",
             params,
@@ -1003,7 +1039,7 @@ class ArcadeDBClient:
 
         # Point-in-time query — always bypass cache, use temporal WHERE clause
         if as_of is not None:
-            as_of_str = _dt_str(as_of)
+            as_of_str = _dt_str_cmp(as_of)
             rows = await self._query(
                 f"SELECT id, content, namespace, created_at, superseded_at, tags, "
                 f"source, metadata, memory_type, status, author, affects, rationale, "
@@ -1137,7 +1173,7 @@ class ArcadeDBClient:
 
         ns_filter = "all" if namespace in ("all", "", "*") else namespace
         if as_of is not None:
-            as_of_str = _dt_str(as_of)
+            as_of_str = _dt_str_cmp(as_of)
             superseded_clause = (
                 "AND m.created_at <= :as_of "
                 "AND (m.superseded_at IS NULL OR m.superseded_at > :as_of)"
@@ -1260,7 +1296,7 @@ class ArcadeDBClient:
             params["ns_prefix"] = f"{ns_filter}:%"
         if as_of is not None:
             # Point-in-time: memories that existed and were active at as_of
-            as_of_str = _dt_str(as_of)
+            as_of_str = _dt_str_cmp(as_of)
             where_parts.append("created_at <= :as_of")
             where_parts.append("(superseded_at IS NULL OR superseded_at > :as_of)")
             where_parts.append("(expires_at IS NULL OR expires_at > :as_of)")

@@ -347,6 +347,11 @@ async def check_contradictions(
     warnings: list[ContradictionWarning] = []
     for r in results:
         score = float(getattr(r, "score", 0.0))
+        # Pinned governance records have score=2.0 (an artificial governance weight,
+        # not a cosine similarity). Skip them — contradiction detection operates on
+        # semantic similarity only, not on entity-matching governance signals.
+        if score > 1.0:
+            continue
         if score < threshold:
             continue
         existing = r.memory if hasattr(r, "memory") else r

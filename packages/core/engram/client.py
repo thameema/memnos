@@ -755,7 +755,7 @@ class EngramClient:
 
             if entity_names:
                 pinned_memories = await self._arcadedb.get_decisions_for_entities(
-                    entity_names, namespace
+                    entity_names, namespace, as_of=as_of
                 )
                 # Deduplicate: remove from vector results any ID already pinned
                 pinned_ids = {m.id for m in pinned_memories}
