@@ -46,6 +46,8 @@ def _to_response(memory, score: float | None = None) -> MemoryResponse:
         score=score,
         memory_type=memory.memory_type.value if hasattr(memory.memory_type, "value") else str(memory.memory_type),
         author=getattr(memory, "author", ""),
+        affects=list(getattr(memory, "affects", None) or []),
+        rationale=getattr(memory, "rationale", "") or "",
         provenance=prov_dict,
     )
 

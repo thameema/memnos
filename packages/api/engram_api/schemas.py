@@ -51,6 +51,8 @@ class MemoryResponse(BaseModel):
     score: float | None = None
     memory_type: str = "fact"
     author: str = ""
+    affects: list[str] = Field(default_factory=list)
+    rationale: str = ""
     provenance: dict = Field(default_factory=dict)
     contradiction_warnings: list[dict] = Field(default_factory=list)
 
