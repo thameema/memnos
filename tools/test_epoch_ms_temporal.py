@@ -373,7 +373,7 @@ def test_sqlite_episode_store_epoch_ms_roundtrip(runner: Runner):
     con.execute(
         "INSERT INTO episodes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         ("ep-1", "t-1", "test:ns", "prompt", "[]", "agent", "api",
-         "success", None, 0.9, 1.0, 100, epoch_ms_str, "[]"),
+         "SUCCESS", None, 0.9, 1.0, 100, epoch_ms_str, "[]"),
     )
     con.commit()
     con.close()

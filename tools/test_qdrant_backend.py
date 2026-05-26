@@ -129,6 +129,13 @@ class TestCreateVectorBackend(unittest.TestCase):
 # QdrantVectorBackend — using stubbed qdrant_client
 # ---------------------------------------------------------------------------
 
+def _make_query_result(hits):
+    """Wrap a list of hit mocks in a QueryResponse-like object."""
+    result = MagicMock()
+    result.points = hits
+    return result
+
+
 def _make_mock_async_qdrant_client():
     client = MagicMock()
     coll_list = MagicMock()
@@ -136,7 +143,7 @@ def _make_mock_async_qdrant_client():
     client.get_collections = AsyncMock(return_value=coll_list)
     client.create_collection = AsyncMock()
     client.upsert = AsyncMock()
-    client.search = AsyncMock(return_value=[])
+    client.query_points = AsyncMock(return_value=_make_query_result([]))
     client.delete = AsyncMock()
     client.set_payload = AsyncMock()
     client.close = AsyncMock()
@@ -178,11 +185,11 @@ class TestQdrantVectorBackend(unittest.IsolatedAsyncioTestCase):
         hit = MagicMock()
         hit.id = "mem-001"
         hit.score = 0.95
-        mock_client.search = AsyncMock(return_value=[hit])
+        mock_client.query_points = AsyncMock(return_value=_make_query_result([hit]))
 
         results = await backend.search([0.2] * 384, "test:ns", top_k=5)
         self.assertEqual(results, [("mem-001", 0.95)])
-        call_kwargs = mock_client.search.call_args.kwargs
+        call_kwargs = mock_client.query_points.call_args.kwargs
         self.assertEqual(call_kwargs["collection_name"], "test_memories")
         self.assertEqual(call_kwargs["limit"], 5)
         filt = call_kwargs["query_filter"]
@@ -195,7 +202,7 @@ class TestQdrantVectorBackend(unittest.IsolatedAsyncioTestCase):
         backend._client = mock_client
 
         await backend.search([0.1] * 384, "test:ns", top_k=5, include_superseded=False)
-        filt = mock_client.search.call_args.kwargs["query_filter"]
+        filt = mock_client.query_points.call_args.kwargs["query_filter"]
         must_keys = [c.key for c in filt.must]
         self.assertIn("superseded", must_keys)
 
@@ -205,7 +212,7 @@ class TestQdrantVectorBackend(unittest.IsolatedAsyncioTestCase):
         backend._client = mock_client
 
         await backend.search([0.1] * 384, "test:ns", top_k=5, include_superseded=True)
-        filt = mock_client.search.call_args.kwargs["query_filter"]
+        filt = mock_client.query_points.call_args.kwargs["query_filter"]
         must_keys = [c.key for c in filt.must]
         self.assertNotIn("superseded", must_keys)
 
@@ -216,7 +223,7 @@ class TestQdrantVectorBackend(unittest.IsolatedAsyncioTestCase):
 
         h1 = MagicMock(); h1.id = "m1"; h1.score = 0.9
         h2 = MagicMock(); h2.id = "m2"; h2.score = 0.7
-        mock_client.search = AsyncMock(return_value=[h1, h2])
+        mock_client.query_points = AsyncMock(return_value=_make_query_result([h1, h2]))
 
         results = await backend.search([0.1] * 384, "ns", top_k=2)
         self.assertEqual(results, [("m1", 0.9), ("m2", 0.7)])

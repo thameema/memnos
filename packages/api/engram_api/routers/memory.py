@@ -224,7 +224,7 @@ async def review_due(
 
 @router.get("/search", response_model=list[MemoryResponse])
 async def search_memory(
-    q: str = Query(..., description="Natural-language search query"),
+    q: str = Query(..., description="Natural-language search query", min_length=1),
     ns: str = Query(
         default="all",
         description=(

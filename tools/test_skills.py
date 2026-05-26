@@ -109,12 +109,12 @@ class TestLoadSkills(unittest.TestCase):
         from engram.skills.loader import load_skills
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
-            self._write_skill(p, "myplugin.py", """
+            self._write_skill(p, "myplugin.py", f"""
 import sys
-sys.path.insert(0, _REPO_ROOT + "/packages/core")
+sys.path.insert(0, {repr(_REPO_ROOT + "/packages/core")})
 from engram.skills.decorator import skill
 
-@skill(name="my_custom", description="custom", parameters={"x": {"type": "string"}})
+@skill(name="my_custom", description="custom", parameters={{"x": {{"type": "string"}}}})
 def my_custom(x): pass
 """)
             skills = load_skills(p)
@@ -125,12 +125,12 @@ def my_custom(x): pass
         from engram.skills.loader import load_skills
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
-            self._write_skill(p, "_internal.py", """
+            self._write_skill(p, "_internal.py", f"""
 import sys
-sys.path.insert(0, _REPO_ROOT + "/packages/core")
+sys.path.insert(0, {repr(_REPO_ROOT + "/packages/core")})
 from engram.skills.decorator import skill
 
-@skill(name="should_skip", description="x", parameters={})
+@skill(name="should_skip", description="x", parameters={{}})
 def fn(): pass
 """)
             skills = load_skills(p)
@@ -154,12 +154,12 @@ def fn(): pass
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
             self._write_skill(p, "broken.py", "import nonexistent_module_xyz")
-            self._write_skill(p, "good.py", """
+            self._write_skill(p, "good.py", f"""
 import sys
-sys.path.insert(0, _REPO_ROOT + "/packages/core")
+sys.path.insert(0, {repr(_REPO_ROOT + "/packages/core")})
 from engram.skills.decorator import skill
 
-@skill(name="good_skill", description="ok", parameters={})
+@skill(name="good_skill", description="ok", parameters={{}})
 def good(): pass
 """)
             skills = load_skills(p)

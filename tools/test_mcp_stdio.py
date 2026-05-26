@@ -44,11 +44,13 @@ import uuid
 from typing import Any
 
 import pytest
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
+_REPO_ROOT = Path(__file__).parent.parent
 _BINARY = str(Path(_REPO_ROOT) / ".venv/bin/engram-mcp-stdio")
 _CONFIG = str(Path(_REPO_ROOT) / "engram.yaml")
 _STARTUP_TIMEOUT_S = 45      # seconds to wait for the process to be ready

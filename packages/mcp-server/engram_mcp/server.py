@@ -738,8 +738,7 @@ async def _dispatch(
             rationale=str(args.get("rationale", "")),
             provenance=prov_dict,
         )
-        import json as _json
-        return [TextContent(type="text", text=_json.dumps(_dt_to_iso(result), indent=2))]
+        return _dt_to_iso(result)
 
     if name == "memory_delete":
         return await handle_memory_delete(
