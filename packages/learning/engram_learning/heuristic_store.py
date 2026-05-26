@@ -14,6 +14,32 @@ logger = logging.getLogger(__name__)
 _DB_PATH = Path.home() / ".engram" / "learning.db"
 
 
+def _to_ms(dt: datetime | None) -> int | None:
+    if dt is None:
+        return None
+    dt = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def _from_ms(val) -> datetime | None:
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return datetime.fromtimestamp(int(val) / 1000, tz=timezone.utc)
+    s = str(val).strip()
+    if s.lstrip('-').isdigit():
+        return datetime.fromtimestamp(int(s) / 1000, tz=timezone.utc)
+    try:
+        dt = datetime.fromisoformat(s.replace(" ", "T").replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _now_ms() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
 class HeuristicStore:
     def __init__(self, db_path: Path | str | None = None):
         self.db_path = Path(db_path or _DB_PATH)
@@ -32,8 +58,8 @@ class HeuristicStore:
                     confidence REAL,
                     triggered_count INTEGER,
                     overridden_count INTEGER,
-                    created_at TEXT,
-                    last_triggered_at TEXT
+                    created_at INTEGER,
+                    last_triggered_at INTEGER
                 )
             """)
             await db.execute("CREATE INDEX IF NOT EXISTS h_ns ON heuristics(namespace)")
@@ -47,8 +73,8 @@ class HeuristicStore:
             confidence=row[6] or 0.8,
             triggered_count=row[7] or 0,
             overridden_count=row[8] or 0,
-            created_at=datetime.fromisoformat(row[9]) if row[9] else datetime.now(timezone.utc),
-            last_triggered_at=datetime.fromisoformat(row[10]) if row[10] else None,
+            created_at=_from_ms(row[9]) or datetime.now(timezone.utc),
+            last_triggered_at=_from_ms(row[10]),
         )
 
     async def add(self, h: Heuristic):
@@ -59,8 +85,8 @@ class HeuristicStore:
                     h.id, h.namespace, h.rule, h.rationale, h.source_episode_id,
                     json.dumps(h.applies_to_tags), h.confidence,
                     h.triggered_count, h.overridden_count,
-                    h.created_at.isoformat(),
-                    h.last_triggered_at.isoformat() if h.last_triggered_at else None,
+                    _to_ms(h.created_at),
+                    _to_ms(h.last_triggered_at),
                 ),
             )
             await db.commit()
@@ -97,7 +123,7 @@ class HeuristicStore:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "UPDATE heuristics SET triggered_count=triggered_count+1, last_triggered_at=? WHERE id=?",
-                (datetime.now(timezone.utc).isoformat(), heuristic_id),
+                (_now_ms(), heuristic_id),
             )
             await db.commit()
 

@@ -14,6 +14,32 @@ logger = logging.getLogger(__name__)
 _DB_PATH = Path.home() / ".engram" / "learning.db"
 
 
+def _to_ms(dt: datetime | None) -> int | None:
+    if dt is None:
+        return None
+    dt = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def _from_ms(val) -> datetime | None:
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return datetime.fromtimestamp(int(val) / 1000, tz=timezone.utc)
+    s = str(val).strip()
+    if s.lstrip('-').isdigit():
+        return datetime.fromtimestamp(int(s) / 1000, tz=timezone.utc)
+    try:
+        dt = datetime.fromisoformat(s.replace(" ", "T").replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _now_ms() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
 class SkillStore:
     def __init__(self, db_path: Path | str | None = None):
         self.db_path = Path(db_path or _DB_PATH)
@@ -33,8 +59,8 @@ class SkillStore:
                     avg_duration_s REAL,
                     success_rate REAL,
                     source_episode_id TEXT,
-                    created_at TEXT,
-                    last_used_at TEXT,
+                    created_at INTEGER,
+                    last_used_at INTEGER,
                     use_count INTEGER
                 )
             """)
@@ -50,8 +76,8 @@ class SkillStore:
             avg_duration_s=row[7] or 0.0,
             success_rate=row[8] or 1.0,
             source_episode_id=row[9] or "",
-            created_at=datetime.fromisoformat(row[10]) if row[10] else datetime.now(timezone.utc),
-            last_used_at=datetime.fromisoformat(row[11]) if row[11] else None,
+            created_at=_from_ms(row[10]) or datetime.now(timezone.utc),
+            last_used_at=_from_ms(row[11]),
             use_count=row[12] or 0,
         )
 
@@ -63,8 +89,8 @@ class SkillStore:
                     t.id, t.name, t.namespace, t.description,
                     json.dumps(t.trigger_patterns), json.dumps(t.steps),
                     json.dumps(t.tools_used), t.avg_duration_s, t.success_rate,
-                    t.source_episode_id, t.created_at.isoformat(),
-                    t.last_used_at.isoformat() if t.last_used_at else None,
+                    t.source_episode_id, _to_ms(t.created_at),
+                    _to_ms(t.last_used_at),
                     t.use_count,
                 ),
             )
@@ -113,7 +139,7 @@ class SkillStore:
                            last_used_at=?,
                            success_rate=((success_rate * use_count) + 1.0) / (use_count + 1)
                        WHERE id=?""",
-                    (datetime.now(timezone.utc).isoformat(), template_id),
+                    (_now_ms(), template_id),
                 )
             else:
                 await db.execute(
@@ -122,7 +148,7 @@ class SkillStore:
                            last_used_at=?,
                            success_rate=(success_rate * use_count) / (use_count + 1)
                        WHERE id=?""",
-                    (datetime.now(timezone.utc).isoformat(), template_id),
+                    (_now_ms(), template_id),
                 )
             await db.commit()
 

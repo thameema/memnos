@@ -16,23 +16,30 @@ from .models import SubTask, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 
-_DT_FORMAT = "%Y-%m-%dT%H:%M:%S.%f"
-
-
-def _dt_to_str(dt: datetime | None) -> str | None:
+def _to_ms(dt: datetime | None) -> int | None:
     if dt is None:
         return None
-    return dt.strftime(_DT_FORMAT)
+    dt = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
 
 
-def _str_to_dt(s: str | None) -> datetime | None:
-    if s is None:
+def _from_ms(val) -> datetime | None:
+    if val is None:
         return None
+    if isinstance(val, (int, float)):
+        return datetime.fromtimestamp(int(val) / 1000, tz=timezone.utc)
+    s = str(val).strip()
+    if s.lstrip('-').isdigit():
+        return datetime.fromtimestamp(int(s) / 1000, tz=timezone.utc)
     try:
-        return datetime.strptime(s, _DT_FORMAT)
+        dt = datetime.fromisoformat(s.replace(" ", "T").replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     except ValueError:
-        # Fallback for timestamps without microseconds
-        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S")
+        return None
+
+
+def _now_ms() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
 
 
 def _row_to_task(row: dict[str, Any]) -> Task:
@@ -54,8 +61,8 @@ def _row_to_task(row: dict[str, Any]) -> Task:
         result=row.get("result"),
         error=row.get("error"),
         token_cost=row.get("token_cost") or 0,
-        created_at=_str_to_dt(row.get("created_at")) or datetime.now(timezone.utc),
-        completed_at=_str_to_dt(row.get("completed_at")),
+        created_at=_from_ms(row.get("created_at")) or datetime.now(timezone.utc),
+        completed_at=_from_ms(row.get("completed_at")),
         parent_task_id=row.get("parent_task_id"),
         tags=tags,
     )
@@ -71,8 +78,8 @@ def _dict_to_subtask(d: dict[str, Any]) -> SubTask:
         status=TaskStatus(d.get("status", TaskStatus.PENDING)),
         result=d.get("result"),
         error=d.get("error"),
-        started_at=_str_to_dt(d.get("started_at")),
-        completed_at=_str_to_dt(d.get("completed_at")),
+        started_at=_from_ms(d.get("started_at")),
+        completed_at=_from_ms(d.get("completed_at")),
     )
 
 
@@ -86,8 +93,8 @@ def _subtask_to_dict(st: SubTask) -> dict[str, Any]:
         "status": st.status.value,
         "result": st.result,
         "error": st.error,
-        "started_at": _dt_to_str(st.started_at),
-        "completed_at": _dt_to_str(st.completed_at),
+        "started_at": _to_ms(st.started_at),
+        "completed_at": _to_ms(st.completed_at),
     }
 
 
@@ -131,8 +138,8 @@ class TaskStore:
                 result          TEXT,
                 error           TEXT,
                 token_cost      INTEGER NOT NULL DEFAULT 0,
-                created_at      TEXT,
-                completed_at    TEXT,
+                created_at      INTEGER,
+                completed_at    INTEGER,
                 parent_task_id  TEXT,
                 tags_json       TEXT NOT NULL DEFAULT '[]',
                 subtasks_json   TEXT NOT NULL DEFAULT '[]'
@@ -150,8 +157,8 @@ class TaskStore:
                 status          TEXT NOT NULL DEFAULT 'PENDING',
                 result          TEXT,
                 error           TEXT,
-                started_at      TEXT,
-                completed_at    TEXT,
+                started_at      INTEGER,
+                completed_at    INTEGER,
                 FOREIGN KEY (parent_task_id) REFERENCES tasks(id)
             );
 
@@ -186,8 +193,8 @@ class TaskStore:
                 task.result,
                 task.error,
                 task.token_cost,
-                _dt_to_str(task.created_at),
-                _dt_to_str(task.completed_at),
+                _to_ms(task.created_at),
+                _to_ms(task.completed_at),
                 task.parent_task_id,
                 tags_json,
                 subtasks_json,
@@ -216,7 +223,7 @@ class TaskStore:
         """Update a task's status and optionally its result/error."""
         assert self._db is not None
         completed_at = (
-            _dt_to_str(datetime.now(timezone.utc))
+            _now_ms()
             if status in (TaskStatus.COMPLETE, TaskStatus.FAILED)
             else None
         )
@@ -281,8 +288,8 @@ class TaskStore:
                 subtask.status.value,
                 subtask.result,
                 subtask.error,
-                _dt_to_str(subtask.started_at),
-                _dt_to_str(subtask.completed_at),
+                _to_ms(subtask.started_at),
+                _to_ms(subtask.completed_at),
             ),
         )
         await self._db.commit()
@@ -296,7 +303,7 @@ class TaskStore:
     ) -> None:
         """Update a subtask's status, result, and timing fields."""
         assert self._db is not None
-        now = _dt_to_str(datetime.now(timezone.utc))
+        now = _now_ms()
         if status == TaskStatus.RUNNING:
             await self._db.execute(
                 "UPDATE subtasks SET status = ?, started_at = COALESCE(started_at, ?) WHERE id = ?",

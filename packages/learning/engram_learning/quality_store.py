@@ -13,6 +13,25 @@ logger = logging.getLogger(__name__)
 _DB_PATH = Path.home() / ".engram" / "learning.db"
 
 
+def _from_ms(val) -> datetime | None:
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return datetime.fromtimestamp(int(val) / 1000, tz=timezone.utc)
+    s = str(val).strip()
+    if s.lstrip('-').isdigit():
+        return datetime.fromtimestamp(int(s) / 1000, tz=timezone.utc)
+    try:
+        dt = datetime.fromisoformat(s.replace(" ", "T").replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _now_ms() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
 class QualityStore:
     def __init__(self, db_path: Path | str | None = None):
         self.db_path = Path(db_path or _DB_PATH)
@@ -29,7 +48,7 @@ class QualityStore:
                     avg_quality_score REAL,
                     avg_duration_s REAL,
                     failure_rate REAL,
-                    last_updated TEXT,
+                    last_updated INTEGER,
                     PRIMARY KEY (agent_name, task_tag, namespace)
                 )
             """)
@@ -40,7 +59,7 @@ class QualityStore:
             agent_name=row[0], task_tag=row[1], namespace=row[2],
             sample_count=row[3] or 0, avg_quality_score=row[4] or 0.0,
             avg_duration_s=row[5] or 0.0, failure_rate=row[6] or 0.0,
-            last_updated=datetime.fromisoformat(row[7]) if row[7] else datetime.now(timezone.utc),
+            last_updated=_from_ms(row[7]) or datetime.now(timezone.utc),
         )
 
     async def update(
@@ -71,14 +90,14 @@ class QualityStore:
                        SET sample_count=?, avg_quality_score=?, avg_duration_s=?,
                            failure_rate=?, last_updated=?
                        WHERE agent_name=? AND task_tag=? AND namespace=?""",
-                    (new_n, new_avg_q, new_avg_d, new_fail, datetime.now(timezone.utc).isoformat(),
+                    (new_n, new_avg_q, new_avg_d, new_fail, _now_ms(),
                      agent_name, task_tag, namespace),
                 )
             else:
                 await db.execute(
                     "INSERT INTO quality_records VALUES (?,?,?,?,?,?,?,?)",
                     (agent_name, task_tag, namespace, 1, quality_score, duration_s,
-                     0.0 if success else 1.0, datetime.now(timezone.utc).isoformat()),
+                     0.0 if success else 1.0, _now_ms()),
                 )
             await db.commit()
 

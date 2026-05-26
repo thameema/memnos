@@ -31,6 +31,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from engram.time import from_epoch_ms, now_ms, to_epoch_ms
+
 # ---------------------------------------------------------------------------
 # Temporal query helpers
 # ---------------------------------------------------------------------------
@@ -140,42 +142,22 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _dt_str(dt: datetime | None) -> str | None:
-    """Serialize a datetime to ISO-8601 UTC string for ArcadeDB storage.
-
-    Always normalises to UTC and emits an explicit +00:00 offset so every
-    stored timestamp is unambiguous regardless of the caller's local timezone.
-    Naive datetimes (no tzinfo) are assumed to already be UTC.
-    """
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    return dt.isoformat()
-
-
-def _dt_str_cmp(dt: datetime | None) -> str | None:
-    """Format datetime for use in ArcadeDB WHERE clause comparisons.
-
-    ArcadeDB parses ISO-8601 correctly in both INSERT and WHERE contexts — the
-    same format works for storage and for temporal comparisons.  This function
-    is a thin alias of _dt_str kept so call sites are clearly labelled as
-    "comparison context" vs "insert context".
-    """
-    return _dt_str(dt)
-
-
 def _parse_dt(value: Any) -> datetime | None:
+    """Parse a datetime value from an ArcadeDB REST response.
+
+    ArcadeDB's REST API serialises DATETIME properties as space-separated
+    strings ('2026-05-23 06:08:12.907') regardless of how they were written.
+    Integers (epoch ms) are returned as-is when the property type is LONG.
+    """
     if value is None:
         return None
+    if isinstance(value, (int, float)):
+        return from_epoch_ms(int(value))
     if isinstance(value, datetime):
-        # ArcadeDB may return naive datetimes; treat them as UTC
         return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str):
         try:
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(value.replace(" ", "T").replace("Z", "+00:00"))
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt
@@ -491,8 +473,8 @@ class ArcadeDBClient:
             "id": memory.id,
             "content": memory.content,
             "namespace": memory.namespace,
-            "created_at": _dt_str(memory.created_at),
-            "superseded_at": _dt_str(memory.superseded_at),
+            "created_at": to_epoch_ms(memory.created_at),
+            "superseded_at": to_epoch_ms(memory.superseded_at),
             "tags": memory.tags,
             "source": memory.source,
             "metadata": memory.metadata,
@@ -501,11 +483,11 @@ class ArcadeDBClient:
             "author": memory.author,
             "affects": memory.affects,
             "rationale": memory.rationale,
-            "expires_at": _dt_str(memory.expires_at),
-            "review_by": _dt_str(memory.review_by),
+            "expires_at": to_epoch_ms(memory.expires_at),
+            "review_by": to_epoch_ms(memory.review_by),
             "provenance": memory.provenance.model_dump() if memory.provenance else {},
             "decay_policy": memory.decay_policy.value if hasattr(memory.decay_policy, 'value') else str(memory.decay_policy or "none"),
-            "last_accessed_at": _dt_str(memory.last_accessed_at),
+            "last_accessed_at": to_epoch_ms(memory.last_accessed_at),
             "embedding": embedding,
         }
         await self._command(sql, params)
@@ -537,7 +519,7 @@ class ArcadeDBClient:
         rows = await self._command(
             "UPDATE Memory SET superseded_at = :now, status = 'superseded' "
             "WHERE id = :id AND namespace = :ns",
-            {"now": _dt_str(_now()), "id": memory_id, "ns": namespace},
+            {"now": now_ms(), "id": memory_id, "ns": namespace},
         )
         self._embed_cache_dirty = True
         return bool(rows)
@@ -562,7 +544,7 @@ class ArcadeDBClient:
             "WHERE name = :name AND namespace = :ns",
             {
                 "etype": entity.entity_type,
-                "created_at": _dt_str(entity.created_at),
+                "created_at": to_epoch_ms(entity.created_at),
                 "name": entity.name,
                 "ns": entity.namespace,
             },
@@ -579,7 +561,7 @@ class ArcadeDBClient:
                     "name": entity.name,
                     "etype": entity.entity_type,
                     "ns": entity.namespace,
-                    "created_at": _dt_str(entity.created_at),
+                    "created_at": to_epoch_ms(entity.created_at),
                 },
             )
         return entity.id
@@ -716,7 +698,7 @@ class ArcadeDBClient:
         # When as_of is set, replace the static superseded_at IS NULL guard with
         # the full temporal window so memories superseded after as_of are included.
         if as_of is not None:
-            as_of_str = _dt_str_cmp(as_of)
+            as_of_str = to_epoch_ms(as_of)
             params["as_of"] = as_of_str
             superseded_clause = (
                 "AND created_at <= :as_of "
@@ -781,8 +763,8 @@ class ArcadeDBClient:
                 "pred": fact.predicate,
                 "obj": fact.object,
                 "ns": fact.namespace,
-                "created_at": _dt_str(fact.created_at),
-                "superseded_at": _dt_str(fact.superseded_at),
+                "created_at": to_epoch_ms(fact.created_at),
+                "superseded_at": to_epoch_ms(fact.superseded_at),
                 "source_mid": fact.source_memory_id,
             },
         )
@@ -791,7 +773,7 @@ class ArcadeDBClient:
     async def supersede_fact(self, fact_id: str, namespace: str) -> bool:
         rows = await self._command(
             "UPDATE Fact SET superseded_at = :now WHERE id = :id AND namespace = :ns",
-            {"now": _dt_str(_now()), "id": fact_id, "ns": namespace},
+            {"now": now_ms(), "id": fact_id, "ns": namespace},
         )
         return bool(rows)
 
@@ -814,8 +796,8 @@ class ArcadeDBClient:
                 "sha": asset.sha256,
                 "content": asset.extracted_content,
                 "ns": asset.namespace,
-                "created_at": _dt_str(asset.created_at),
-                "superseded_at": _dt_str(asset.superseded_at),
+                "created_at": to_epoch_ms(asset.created_at),
+                "superseded_at": to_epoch_ms(asset.superseded_at),
                 "created_by": asset.created_by,
                 "embedding": embed_val,
             },
@@ -835,7 +817,7 @@ class ArcadeDBClient:
     async def supersede_asset(self, asset_id: str, namespace: str) -> bool:
         rows = await self._command(
             "UPDATE Asset SET superseded_at = :now WHERE id = :id AND namespace = :ns",
-            {"now": _dt_str(_now()), "id": asset_id, "ns": namespace},
+            {"now": now_ms(), "id": asset_id, "ns": namespace},
         )
         return bool(rows)
 
@@ -1043,7 +1025,7 @@ class ArcadeDBClient:
 
         # Point-in-time query — always bypass cache, use temporal WHERE clause
         if as_of is not None:
-            as_of_str = _dt_str_cmp(as_of)
+            as_of_str = to_epoch_ms(as_of)
             rows = await self._query(
                 f"SELECT id, content, namespace, created_at, superseded_at, tags, "
                 f"source, metadata, memory_type, status, author, affects, rationale, "
@@ -1080,7 +1062,7 @@ class ArcadeDBClient:
             "AND superseded_at IS NULL "
             "AND (expires_at IS NULL OR expires_at > :now_dt) "
             "ORDER BY created_at DESC LIMIT 500",
-            {"now_dt": _dt_str(_now())},
+            {"now_dt": now_ms()},
         )
         self._embed_cache = rows
         self._embed_cache_ts = now
@@ -1177,7 +1159,7 @@ class ArcadeDBClient:
 
         ns_filter = "all" if namespace in ("all", "", "*") else namespace
         if as_of is not None:
-            as_of_str = _dt_str_cmp(as_of)
+            as_of_str = to_epoch_ms(as_of)
             superseded_clause = (
                 "AND m.created_at <= :as_of "
                 "AND (m.superseded_at IS NULL OR m.superseded_at > :as_of)"
@@ -1300,7 +1282,7 @@ class ArcadeDBClient:
             params["ns_prefix"] = f"{ns_filter}:%"
         if as_of is not None:
             # Point-in-time: memories that existed and were active at as_of
-            as_of_str = _dt_str_cmp(as_of)
+            as_of_str = to_epoch_ms(as_of)
             where_parts.append("created_at <= :as_of")
             where_parts.append("(superseded_at IS NULL OR superseded_at > :as_of)")
             where_parts.append("(expires_at IS NULL OR expires_at > :as_of)")
@@ -1309,7 +1291,7 @@ class ArcadeDBClient:
             if not include_superseded:
                 where_parts.append("superseded_at IS NULL")
             where_parts.append("(expires_at IS NULL OR expires_at > :now_dt)")
-            params["now_dt"] = _dt_str(_now())
+            params["now_dt"] = now_ms()
         if keywords:
             # Match any memory containing at least one keyword
             kw_clauses = " OR ".join(
@@ -1407,7 +1389,8 @@ class ArcadeDBClient:
             ns = r.get("namespace")
             lw = r.get("last_write")
             if ns and lw:
-                result[str(ns)] = _dt_str(_parse_dt(lw)) if _parse_dt(lw) else str(lw)
+                dt = _parse_dt(lw)
+                result[str(ns)] = dt.isoformat() if dt else str(lw)
         return result
 
     async def count_approaching_expiry(self, namespace: str, days: int = 7) -> int:
@@ -1419,8 +1402,8 @@ class ArcadeDBClient:
         ns_list = [":".join(parts[:i+1]) for i in range(len(parts))]
         placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
         params = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
-        params["now_dt"] = _dt_str(now)
-        params["cutoff_dt"] = _dt_str(cutoff)
+        params["now_dt"] = to_epoch_ms(now)
+        params["cutoff_dt"] = to_epoch_ms(cutoff)
         try:
             rows = await self._query(
                 f"SELECT count(*) AS cnt FROM Memory "
@@ -1570,8 +1553,8 @@ class ArcadeDBClient:
                 "ns": secret.namespace,
                 "value_enc": secret.value_enc,
                 "dek_enc": secret.dek_enc,
-                "created_at": _dt_str(secret.created_at),
-                "superseded_at": _dt_str(secret.superseded_at),
+                "created_at": to_epoch_ms(secret.created_at),
+                "superseded_at": to_epoch_ms(secret.superseded_at),
                 "created_by": secret.created_by,
                 "tags": secret.tags,
             },
@@ -1628,7 +1611,7 @@ class ArcadeDBClient:
     async def supersede_secret(self, secret_id: str, namespace: str) -> bool:
         rows = await self._command(
             "UPDATE Secret SET superseded_at = :now WHERE id = :id AND namespace = :ns",
-            {"now": _dt_str(_now()), "id": secret_id, "ns": namespace},
+            {"now": now_ms(), "id": secret_id, "ns": namespace},
         )
         return bool(rows)
 
@@ -1684,7 +1667,7 @@ class ArcadeDBClient:
                 "namespace": log.namespace,
                 "action": log.action,
                 "accessed_by": log.accessed_by,
-                "accessed_at": _dt_str(log.accessed_at),
+                "accessed_at": to_epoch_ms(log.accessed_at),
                 "ok": log.ok,
                 "err_msg": log.err_msg,
             },
@@ -1719,7 +1702,7 @@ class ArcadeDBClient:
         ns_list = [":".join(parts[:i+1]) for i in range(len(parts))]
         placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
         params = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
-        params["now_dt"] = _dt_str(_now())
+        params["now_dt"] = now_ms()
         params["limit"] = limit
         rows = await self._query(
             f"SELECT * FROM Memory "
@@ -1779,7 +1762,7 @@ class ArcadeDBClient:
         """Fire-and-forget: stamp last_accessed_at = now on memories returned in search."""
         if not memory_ids:
             return
-        now_str = _dt_str(_now())
+        now_str = now_ms()
         for mid in memory_ids:
             try:
                 await self._command(
@@ -1801,7 +1784,7 @@ class ArcadeDBClient:
             "delivery_mode = :mode, webhook_url = :webhook "
             "WHERE subscriber_id = :sid AND namespace = :ns",
             {
-                "last_seen": _dt_str(sub.last_seen_at),
+                "last_seen": to_epoch_ms(sub.last_seen_at),
                 "sid": sub.subscriber_id,
                 "ns": sub.namespace,
                 "mode": sub.delivery_mode,
@@ -1822,8 +1805,8 @@ class ArcadeDBClient:
                     "delivery_ns": sub.delivery_namespace,
                     "mode": sub.delivery_mode,
                     "webhook": sub.webhook_url,
-                    "last_seen": _dt_str(sub.last_seen_at),
-                    "created_at": _dt_str(sub.created_at),
+                    "last_seen": to_epoch_ms(sub.last_seen_at),
+                    "created_at": to_epoch_ms(sub.created_at),
                 },
             )
         return sub.id
@@ -1846,7 +1829,7 @@ class ArcadeDBClient:
             {"sid": subscriber_id, "ns": namespace},
         )
         if not sub_rows:
-            return [], _dt_str(_now())
+            return [], _now().isoformat()
 
         last_seen = _parse_dt(sub_rows[0].get("last_seen_at")) or _now()
         raw_filter_types = sub_rows[0].get("filter_types") or []
@@ -1858,7 +1841,7 @@ class ArcadeDBClient:
         ns_list = [":".join(parts[:i+1]) for i in range(len(parts))]
         placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
         params = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
-        params.update({"last_seen": _dt_str(last_seen), "limit": limit})
+        params.update({"last_seen": to_epoch_ms(last_seen), "limit": limit})
         rows = await self._query(
             f"SELECT * FROM Memory "
             f"WHERE created_at > :last_seen "
@@ -1886,12 +1869,12 @@ class ArcadeDBClient:
             await self._command(
                 "UPDATE Subscription SET last_seen_at = :cursor "
                 "WHERE subscriber_id = :sid AND namespace = :ns",
-                {"cursor": _dt_str(new_cursor), "sid": subscriber_id, "ns": namespace},
+                {"cursor": to_epoch_ms(new_cursor), "sid": subscriber_id, "ns": namespace},
             )
         else:
             new_cursor = now
 
-        return memories, _dt_str(new_cursor)
+        return memories, new_cursor.isoformat() if isinstance(new_cursor, datetime) else _now().isoformat()
 
     async def delete_subscription(self, subscriber_id: str, namespace: str) -> bool:
         rows = await self._command(
@@ -2082,7 +2065,7 @@ class ArcadeDBClient:
                 "label": community.label,
                 "members": community.member_names,
                 "count": community.member_count,
-                "detected_at": _dt_str(community.detected_at),
+                "detected_at": to_epoch_ms(community.detected_at),
                 "ns": community.namespace,
             },
         )
@@ -2097,7 +2080,7 @@ class ArcadeDBClient:
                     "ns": community.namespace,
                     "members": community.member_names,
                     "count": community.member_count,
-                    "detected_at": _dt_str(community.detected_at),
+                    "detected_at": to_epoch_ms(community.detected_at),
                 },
             )
         return community.id
