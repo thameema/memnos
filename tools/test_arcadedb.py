@@ -769,6 +769,7 @@ def test_vector_search(runner: TestRunner):
     ]
     inserted_ids = {}
     ns = TEST_NS + ":vector-test"
+    arcade_command("DELETE FROM Memory WHERE namespace = :ns", {"ns": ns})
     for content, key in memories:
         mem_id = uid()
         embedding = embed(openai_client, content)

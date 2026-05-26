@@ -60,6 +60,7 @@ async def health_check(
     return HealthResponse(
         status=overall,
         arcadedb=arcadedb_status,
+        schema_version="1.0",
     )
 
 
