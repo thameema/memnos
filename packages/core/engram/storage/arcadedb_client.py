@@ -684,44 +684,83 @@ class ArcadeDBClient:
         """
         if not entity_names:
             return []
-        normalized = {n.lower().strip() for n in entity_names if n.strip()}
+        normalized = [n.lower().strip() for n in entity_names if n.strip()]
         if not normalized:
             return []
 
         # Build namespace ancestry list (same pattern as get_constraints)
         parts = namespace.split(":")
         ns_list = [":".join(parts[:i + 1]) for i in range(len(parts))]
-        placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
+
+        # Build params: ns0..nsN, n0..nN
         params: dict = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
+        for i, name in enumerate(normalized):
+            params[f"n{i}"] = name
+        ns_ph = ", ".join(f":ns{i}" for i in range(len(ns_list)))
+        name_ph = ", ".join(f":n{i}" for i in range(len(normalized)))
 
         # Point-in-time filter: only memories active at as_of.
         # When as_of is set, replace the static superseded_at IS NULL guard with
         # the full temporal window so memories superseded after as_of are included.
         if as_of is not None:
-            as_of_str = to_epoch_ms(as_of)
-            params["as_of"] = as_of_str
-            superseded_clause = (
+            params["as_of"] = to_epoch_ms(as_of)
+            temporal = (
                 "AND created_at <= :as_of "
                 "AND (superseded_at IS NULL OR superseded_at > :as_of) "
             )
         else:
-            superseded_clause = "AND superseded_at IS NULL "
+            temporal = "AND superseded_at IS NULL "
 
-        rows = await self._query(
+        # Graph traversal: Memory -[AFFECTS]-> Entity
+        # Faster and complete vs full-table scan + Python filter:
+        #   - O(E_query × degree) vs O(D × A) Python list matching
+        #   - No false positives from substring matching
+        #   - No 500-row cap missing records for large datasets
+        match_sql = (
+            "MATCH {type: Memory, as: m, where: ("
+            + "  status = 'active' "
+            + " " + temporal
+            + " AND namespace IN [" + ns_ph + "] "
+            + "  AND memory_type IN ['decision', 'constraint', 'adr']"
+            + ")}-AFFECTS->{type: Entity, as: e, where: (name IN [" + name_ph + "])} "
+            + "RETURN m.id as id"
+        )
+
+        try:
+            match_rows = await self._query(match_sql, params)
+            matched_ids = {row["id"] for row in match_rows if row.get("id")}
+        except Exception as exc:
+            logger.warning("Graph traversal for governance failed, falling back to list-match: %s", exc)
+            matched_ids = None
+
+        if matched_ids is not None:
+            if not matched_ids:
+                return []
+            # Fetch full Memory records for matched IDs
+            id_ph = ", ".join(f":mid{i}" for i in range(len(matched_ids)))
+            id_params = {f"mid{i}": mid for i, mid in enumerate(matched_ids)}
+            rows = await self._query(
+                f"SELECT * FROM Memory WHERE id IN [{id_ph}]",
+                id_params,
+            )
+            return list({r["id"]: _row_to_memory(r) for r in rows}.values())
+
+        # Fallback: original list-match (handles pre-graph-edge data)
+        all_rows = await self._query(
             f"SELECT * FROM Memory "
             f"WHERE memory_type IN ['decision', 'constraint', 'adr'] "
             f"AND status = 'active' "
-            f"{superseded_clause}"
-            f"AND namespace IN [{placeholders}] "
+            f"{temporal}"
+            f"AND namespace IN [{ns_ph}] "
             f"LIMIT 500",
             params,
         )
-
         results = []
         seen: set[str] = set()
-        for row in rows:
+        normalized_set = set(normalized)
+        for row in all_rows:
             affects = row.get("affects") or []
-            if any(a.lower().strip() in normalized for a in affects):
+            if any(a.lower().strip() in normalized_set for a in affects):
                 mem = _row_to_memory(row)
                 if mem.id not in seen:
                     seen.add(mem.id)

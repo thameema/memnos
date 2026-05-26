@@ -270,7 +270,7 @@ class EngramClient:
             except Exception as exc:
                 logger.warning("Qdrant upsert failed (non-fatal): %s", exc)
 
-        # Entity extraction + graph edges (best-effort, never blocks write)
+        # Entity extraction + MENTIONS edges (best-effort, never blocks write)
         try:
             extracted = await self._extractor.extract(content)
             for ent in extracted:
@@ -281,9 +281,16 @@ class EngramClient:
                 )
                 await self._arcadedb.upsert_entity(entity_model)
                 await self._arcadedb.create_mentions_edge(memory.id, ent.name, namespace)
+            if extracted:
+                logger.debug(
+                    "Extracted %d entities for memory %s", len(extracted), memory.id
+                )
+        except Exception as exc:
+            logger.warning("Entity extraction failed (non-fatal): %s", exc)
 
-            # AFFECTS edges — connect decision/constraint memories to the entities they govern
-            for entity_name in (affects or []):
+        # AFFECTS edges — always run, independent of NLP extraction
+        for entity_name in (affects or []):
+            try:
                 entity_model = Entity(
                     name=entity_name.lower(),
                     entity_type="DECISION",
@@ -291,13 +298,8 @@ class EngramClient:
                 )
                 await self._arcadedb.upsert_entity(entity_model)
                 await self._arcadedb.create_affects_edge(memory.id, entity_name, namespace)
-
-            if extracted:
-                logger.debug(
-                    "Extracted %d entities for memory %s", len(extracted), memory.id
-                )
-        except Exception as exc:
-            logger.warning("Entity extraction failed (non-fatal): %s", exc)
+            except Exception as exc:
+                logger.warning("AFFECTS edge creation failed (non-fatal) %s: %s", entity_name, exc)
 
         logger.info("Memory stored: id=%s namespace=%s type=%s", memory.id, namespace, memory_type.value)
 
