@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import subprocess
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -30,6 +32,28 @@ from engram_api.schemas import MemoryResponse, MemoryWriteRequest, ReviewDueItem
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/memory", tags=["memory"])
+
+
+def _detect_git_commit() -> str:
+    """Return short SHA from env var (set at build/deploy time) or git CLI fallback."""
+    # 1. Explicit env var — set this in docker-compose or CI: ENGRAM_GIT_COMMIT=abc1234
+    commit = os.environ.get("ENGRAM_GIT_COMMIT", "").strip()
+    if commit:
+        return commit
+    # 2. Try git CLI (works in dev, not in slim Docker images)
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+_SERVER_GIT_COMMIT: str = _detect_git_commit()
 
 
 def _to_response(memory, score: float | None = None) -> MemoryResponse:
@@ -72,6 +96,9 @@ async def write_memory(
     (negation_detected / opposite_polarity) are auto-superseded; similarity_only
     matches surface as warnings only.
     """
+    if not req.content or not req.content.strip():
+        raise HTTPException(status_code=422, detail="content must not be empty")
+
     await check_namespace_access(key_entry, req.namespace, operation="write")
 
     # Build provenance — caller values take precedence; server fills any blanks
@@ -82,6 +109,8 @@ async def write_memory(
         prov["tool"] = request.headers.get("X-Engram-Tool", "api")
     if not prov.get("agent_id"):
         prov["agent_id"] = request.headers.get("X-Engram-Agent-Id", "")
+    if not prov.get("git_commit"):
+        prov["git_commit"] = _SERVER_GIT_COMMIT
 
     # ── Pre-write: contradiction check ────────────────────────────────────────
     # Runs before insert so the new memory is not yet in the DB (no self-match)
@@ -318,6 +347,52 @@ async def search_memory(
 
 
 # ---------------------------------------------------------------------------
+# Governance
+# ---------------------------------------------------------------------------
+
+@router.get("/governance", response_model=dict)
+async def get_governance(
+    entities: str = Query(..., description="Comma-separated entity names"),
+    ns: str = Query(..., description="Namespace to search within"),
+    user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
+    client=Depends(get_client),
+) -> dict:
+    """Return active constraints and decisions/ADRs governing a set of entities.
+
+    Decisions/ADRs are filtered by whether their affects[] field overlaps with
+    the requested entities. Constraints are all active constraints in the namespace.
+    """
+    await check_namespace_access(key_entry, ns)
+
+    entity_list = [e.strip() for e in entities.split(",") if e.strip()]
+    entity_set = {e.lower() for e in entity_list}
+
+    try:
+        decision_query = " ".join(entity_list) if entity_list else "decisions architecture"
+        raw_decisions = await client.search(decision_query, ns, top_k=100)
+        decisions = [
+            r for r in raw_decisions
+            if r.memory.memory_type.value in ("decision", "adr")
+            and entity_set & {a.lower() for a in (getattr(r.memory, "affects", None) or [])}
+        ]
+
+        constraint_results = await client.search("constraints rules must always", ns, top_k=50)
+        constraints = [
+            r for r in constraint_results
+            if r.memory.memory_type.value == "constraint"
+        ]
+    except Exception as exc:
+        logger.exception("Governance query failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "decisions": [_to_response(r.memory, score=r.score) for r in decisions],
+        "constraints": [_to_response(r.memory, score=r.score) for r in constraints],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Get by ID
 # ---------------------------------------------------------------------------
 
@@ -373,49 +448,3 @@ async def delete_memory(
 
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Memory {memory_id!r} not found")
-
-
-# ---------------------------------------------------------------------------
-# Governance
-# ---------------------------------------------------------------------------
-
-@router.get("/governance", response_model=dict)
-async def get_governance(
-    entities: str = Query(..., description="Comma-separated entity names"),
-    ns: str = Query(..., description="Namespace to search within"),
-    user_id: str = Depends(require_api_key),
-    key_entry=Depends(require_api_key_entry),
-    client=Depends(get_client),
-) -> dict:
-    """Return active constraints and decisions/ADRs governing a set of entities.
-
-    Decisions/ADRs are filtered by whether their affects[] field overlaps with
-    the requested entities. Constraints are all active constraints in the namespace.
-    """
-    await check_namespace_access(key_entry, ns)
-
-    entity_list = [e.strip() for e in entities.split(",") if e.strip()]
-    entity_set = {e.lower() for e in entity_list}
-
-    try:
-        decision_query = " ".join(entity_list) if entity_list else "decisions architecture"
-        raw_decisions = await client.search(decision_query, ns, top_k=100)
-        decisions = [
-            r for r in raw_decisions
-            if r.memory.memory_type.value in ("decision", "adr")
-            and entity_set & {a.lower() for a in (getattr(r.memory, "affects", None) or [])}
-        ]
-
-        constraint_results = await client.search("constraints rules must always", ns, top_k=50)
-        constraints = [
-            r for r in constraint_results
-            if r.memory.memory_type.value == "constraint"
-        ]
-    except Exception as exc:
-        logger.exception("Governance query failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    return {
-        "decisions": [_to_response(r.memory, score=r.score) for r in decisions],
-        "constraints": [_to_response(r.memory, score=r.score) for r in constraints],
-    }

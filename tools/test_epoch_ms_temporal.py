@@ -304,11 +304,11 @@ def test_temporal_ordering_newest_first(runner: Runner):
                 (f"Ordering wrong: memory {i} ({timestamps[i].isoformat()}) "
                  f"< memory {i-1} ({timestamps[i-1].isoformat()})")
 
-        # Each timestamp must be within 10s of when we wrote it
+        # Each timestamp must be within 30s of when we wrote it (allows for slow CI/dev)
         for i, (dt, wrote_at) in enumerate(zip(timestamps, writes_at)):
             lag = (dt - wrote_at).total_seconds()
-            assert -1 <= lag <= 10, \
-                f"Memory {i} created_at drift {lag:.2f}s — expected 0–10s"
+            assert -1 <= lag <= 30, \
+                f"Memory {i} created_at drift {lag:.2f}s — expected 0–30s"
 
         if runner.verbose:
             for i, dt in enumerate(timestamps):

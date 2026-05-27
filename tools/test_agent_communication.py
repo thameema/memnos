@@ -81,7 +81,7 @@ def now_iso() -> str:
 def api(method: str, path: str, **kwargs) -> httpx.Response:
     headers = {"X-API-Key": ENGRAM_KEY, "Content-Type": "application/json"}
     url = ENGRAM_API.rstrip("/") + path
-    with httpx.Client(timeout=10) as c:
+    with httpx.Client(timeout=30) as c:  # 30s covers slow OpenAI embedding calls
         return c.request(method, url, headers=headers, **kwargs)
 
 
