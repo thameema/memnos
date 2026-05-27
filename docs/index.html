@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>engram — Memory infrastructure for AI engineering teams</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'], mono: ['JetBrains Mono', 'monospace'] },
+          colors: {
+            brand: { purple: '#7c5cfc', blue: '#4f9cf9', cyan: '#00d2ff', dim: '#1a1a2e' },
+          },
+        }
+      }
+    }
+  </script>
+  <style>
+    :root { --bg: #09090f; --surface: #111118; --border: #1e1e2e; --muted: #6b7280; }
+    body { background: var(--bg); font-family: 'Inter', sans-serif; color: #e5e7eb; }
+    .gradient-text {
+      background: linear-gradient(135deg, #a78bfa 0%, #60a5fa 50%, #34d399 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .glow-btn {
+      background: linear-gradient(135deg, #7c5cfc, #4f9cf9);
+      box-shadow: 0 0 20px rgba(124, 92, 252, 0.4);
+      transition: box-shadow 0.3s, transform 0.2s;
+    }
+    .glow-btn:hover { box-shadow: 0 0 35px rgba(124, 92, 252, 0.65); transform: translateY(-1px); }
+    .glass {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.07);
+      backdrop-filter: blur(12px);
+      transition: border-color 0.3s, transform 0.2s, box-shadow 0.3s;
+    }
+    .glass:hover {
+      border-color: rgba(124,92,252,0.35);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(124,92,252,0.12);
+    }
+    body::before {
+      content: '';
+      position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background-image: radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+    .code-block {
+      background: #0d0d1a;
+      border: 1px solid #1e1e3f;
+      border-radius: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      line-height: 1.7;
+    }
+    .token-fn   { color: #7dd3fc; }
+    .token-str  { color: #86efac; }
+    .token-kw   { color: #c084fc; }
+    .token-cmt  { color: #4b5563; }
+    .token-num  { color: #fb923c; }
+    .token-var  { color: #e5e7eb; }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+    .fade-in { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease, transform 0.6s ease; }
+    .fade-in.visible { opacity: 1; transform: translateY(0); }
+    nav { backdrop-filter: blur(20px); background: rgba(9,9,15,0.8); border-bottom: 1px solid var(--border); }
+    .step-line { background: linear-gradient(to bottom, #7c5cfc, transparent); }
+    .gradient-border {
+      position: relative; border-radius: 16px; padding: 1px;
+      background: linear-gradient(135deg, rgba(124,92,252,0.4), rgba(79,156,249,0.2), rgba(0,210,255,0.1));
+    }
+    .gradient-border-inner { background: var(--surface); border-radius: 15px; }
+    .check-green { color: #4ade80; font-weight: 700; }
+    .check-red   { color: #f87171; font-weight: 700; }
+    .check-yellow{ color: #facc15; font-weight: 700; }
+    .compare-table th { background: rgba(124,92,252,0.1); color: #a78bfa; font-size: 0.75rem; font-weight: 600; padding: 10px 14px; }
+    .compare-table td { padding: 10px 14px; font-size: 0.8rem; border-top: 1px solid rgba(255,255,255,0.05); text-align: center; }
+    .compare-table td:first-child { text-align: left; color: #d1d5db; }
+    .compare-table tr:hover td { background: rgba(255,255,255,0.02); }
+  </style>
+</head>
+<body class="antialiased overflow-x-hidden">
+
+<!-- ── NAV ─────────────────────────────────────────────────────────── -->
+<nav class="fixed top-0 left-0 right-0 z-50">
+  <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.6"/>
+        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.8"/>
+        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gnav)"/>
+        <defs>
+          <linearGradient id="gnav" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <span class="text-white font-semibold text-lg tracking-tight">engram</span>
+    </a>
+    <div class="hidden md:flex items-center gap-7">
+      <a href="#features" class="text-sm text-gray-400 hover:text-white transition-colors">Features</a>
+      <a href="use-cases.html" class="text-sm text-gray-400 hover:text-white transition-colors">Use Cases</a>
+      <a href="governance.html" class="text-sm text-gray-400 hover:text-white transition-colors">Governance</a>
+      <a href="https://github.com/thameema/engram/tree/main/docs/guides" class="text-sm text-gray-400 hover:text-white transition-colors">Docs</a>
+      <a href="compare.html" class="text-sm text-gray-400 hover:text-white transition-colors">Compare</a>
+      <a href="https://github.com/thameema/engram" class="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-1.5">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        GitHub
+      </a>
+    </div>
+    <a href="#" class="glow-btn text-white text-sm font-medium px-5 py-2 rounded-full">Deploy Free</a>
+  </div>
+</nav>
+
+<!-- ── HERO ─────────────────────────────────────────────────────────── -->
+<section class="relative min-h-screen flex items-center pt-16 overflow-hidden">
+  <div class="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-600 rounded-full blur-[140px] opacity-10 pointer-events-none"></div>
+  <div class="absolute bottom-1/4 right-1/4 w-80 h-80 bg-blue-500 rounded-full blur-[120px] opacity-8 pointer-events-none"></div>
+
+  <div class="relative z-10 max-w-6xl mx-auto px-6 w-full grid md:grid-cols-2 gap-16 items-center py-24">
+    <!-- Left -->
+    <div>
+      <div class="inline-flex items-center gap-2 bg-purple-500/10 border border-purple-500/20 rounded-full px-4 py-1.5 text-sm text-purple-300 mb-8">
+        <span class="w-1.5 h-1.5 bg-purple-400 rounded-full pulse-dot"></span>
+        MIT Licensed · Self-hostable · Works with Claude, GPT-4, Llama, Gemini
+      </div>
+      <h1 class="text-5xl md:text-6xl font-bold text-white leading-[1.1] tracking-tight mb-6">
+        Your AI engineering<br />team's memory<br />
+        <span class="gradient-text">infrastructure.</span>
+      </h1>
+      <p class="text-gray-400 text-lg leading-relaxed mb-10 max-w-lg">
+        The only memory layer purpose-built for AI-assisted engineering teams. Persistent. Governed. Audited. Runs 100% local or in the cloud.
+      </p>
+      <div class="flex items-center gap-4">
+        <a href="#" class="glow-btn text-white font-semibold px-7 py-3 rounded-full text-sm">Deploy in 90 seconds</a>
+        <a href="https://github.com/thameema/engram" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-7 py-3 rounded-full flex items-center gap-2">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+          View on GitHub &rarr;
+        </a>
+      </div>
+      <!-- Stats row -->
+      <div class="mt-14 grid grid-cols-2 gap-x-8 gap-y-6 border-t border-gray-800 pt-8">
+        <div>
+          <div class="text-2xl font-bold text-white">7</div>
+          <div class="text-xs text-gray-500 mt-0.5">memory types — fact · decision · constraint · incident · skill · ADR · episode</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-white">100%</div>
+          <div class="text-xs text-gray-500 mt-0.5">local capable — no cloud dependency required</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-white">Any LLM</div>
+          <div class="text-xs text-gray-500 mt-0.5">Claude · GPT-4 · Llama · Gemini · Mistral</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-white">Complete</div>
+          <div class="text-xs text-gray-500 mt-0.5">audit trail on every write — agent, tool, commit, ticket</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right — live memory widget -->
+    <div class="relative">
+      <div class="glass rounded-2xl p-5 space-y-3 max-w-md ml-auto">
+        <div class="flex items-center justify-between mb-4">
+          <span class="text-xs text-gray-500 font-mono">namespace: org:acme:engineering</span>
+          <span class="flex items-center gap-1.5 text-xs text-green-400">
+            <span class="w-1.5 h-1.5 bg-green-400 rounded-full pulse-dot"></span> live
+          </span>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full font-mono">decision</span>
+            <span class="text-xs text-gray-500">arch-agent · 2h ago</span>
+          </div>
+          <p class="text-sm text-gray-200">Chose ArcadeDB over Neo4j for multi-model support and embedded vector search.</p>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-red-500/20 text-red-300 px-2 py-0.5 rounded-full font-mono">incident</span>
+            <span class="text-xs text-gray-500">oncall-agent · 6h ago</span>
+          </div>
+          <p class="text-sm text-gray-200">Redis OOM on prod-02. Resolved by setting maxmemory-policy=allkeys-lru.</p>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-orange-500/20 text-orange-300 px-2 py-0.5 rounded-full font-mono">constraint</span>
+            <span class="text-xs text-gray-500">auto-injected</span>
+          </div>
+          <p class="text-sm text-gray-200">CONSTRAINT: All database queries must go through the ORM layer. Direct SQL is prohibited.</p>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full font-mono">skill</span>
+            <span class="text-xs text-gray-500">skill-coach · just now</span>
+          </div>
+          <p class="text-sm text-gray-200">Use <code class="text-blue-300 font-mono text-xs bg-blue-950/50 px-1 rounded">gh pr create --fill</code> to open a PR with auto-filled title and body.</p>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-yellow-500/20 text-yellow-300 px-2 py-0.5 rounded-full font-mono">constraint</span>
+            <span class="text-xs text-gray-500">auto-injected</span>
+          </div>
+          <p class="text-sm text-gray-200">CONSTRAINT: All PHI data MUST be encrypted at rest using AES-256. Direct database access from service layers is PROHIBITED.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── PROBLEM ──────────────────────────────────────────────────────── -->
+<section class="relative z-10 py-24 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-16">
+      <h2 class="text-3xl font-bold text-white mb-4">The real cost of stateless AI teams</h2>
+      <p class="text-gray-400 max-w-xl mx-auto">Your team has 20 engineers and 20 AI assistants. Without shared memory, you have 40 silos — each starting from zero.</p>
+    </div>
+    <div class="grid md:grid-cols-3 gap-6 mb-12">
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-center mb-4">
+          <svg class="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Agents forget between sessions</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Context window closes; architecture decisions, resolved incidents, learned patterns — gone. Every session restarts from zero.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-yellow-500/10 border border-yellow-500/20 rounded-xl flex items-center justify-center mb-4">
+          <svg class="w-5 h-5 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">No shared context across agents</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Agent A doesn't know what Agent B discovered 10 minutes ago. Work is repeated, mistakes are repeated, and coordination is manual.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-orange-500/10 border border-orange-500/20 rounded-xl flex items-center justify-center mb-4">
+          <svg class="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Decisions lost</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">A senior architect's 10am decision doesn't reach the developer asking the same question at 2pm. The same trade-offs get re-litigated daily.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-red-600/10 border border-red-600/20 rounded-xl flex items-center justify-center mb-4">
+          <svg class="w-5 h-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Zero governance</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">No audit trail. No way to know which agent made which call, which decision was automated, or why. Compliance is impossible to prove.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center mb-4">
+          <svg class="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Architecture violations slip through</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Agents generate code that violates your documented architecture. No one enforces the rules at code-generation time without re-prompting every session.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-center mb-4">
+          <svg class="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Knowledge leaves when engineers do</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Onboarding takes weeks because institutional knowledge lives in people's heads and scattered notes. New hires and their AI assistants start completely cold.</p>
+      </div>
+    </div>
+    <div class="flex flex-col items-center gap-4">
+      <svg class="w-6 h-6 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      <div class="gradient-border">
+        <div class="gradient-border-inner px-10 py-4 flex items-center gap-3">
+          <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
+            <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gsolve)" opacity="0.6"/>
+            <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gsolve)" opacity="0.8"/>
+            <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gsolve)"/>
+            <defs><linearGradient id="gsolve" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/></linearGradient></defs>
+          </svg>
+          <span class="text-white font-semibold text-lg">engram fixes all six.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FEATURES ─────────────────────────────────────────────────────── -->
+<section id="features" class="relative z-10 py-24 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-16">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Capabilities</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Enterprise-grade memory for every layer of your stack</h2>
+    </div>
+    <div class="grid md:grid-cols-3 gap-5">
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Persistent Shared Memory</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">ArcadeDB multi-model backend — graph, vector, and document in one engine. Facts, decisions, incidents, and constraints survive session boundaries and are shared across your entire team.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-cyan-500/10 border border-cyan-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Temporal Memory</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Every memory carries valid_from / valid_until timestamps. Query the knowledge graph as_of any past date — "what did we know about the auth service on March 15th?" Only engram does this.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 14.25v2.25m3-4.5v4.5m3-6.75v6.75m3-9v9M6 20.25h12A2.25 2.25 0 0020.25 18V6A2.25 2.25 0 0018 3.75H6A2.25 2.25 0 003.75 6v12A2.25 2.25 0 006 20.25z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Living Knowledge Graph</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Not a static document store. The graph evolves in real-time as agents work — new edges, superseded decisions, cross-linked incidents — always reflecting your team's current understanding.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-orange-500/10 border border-orange-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Architecture Enforcement</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Ingest your architecture docs as typed constraint nodes. Every agent's search results automatically include relevant constraints — your documented rules enforce themselves without re-prompting.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-green-500/10 border border-green-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">AI Governance &amp; Audit Trail</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Every memory write carries agent_id, tool, git_commit, JIRA ticket, and timestamp. Know which agent made which decision and why, forever queryable. Full compliance-grade audit log.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Multi-Agent Coordination</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Real-time pub/sub across agents — SSE stream, webhook, and cursor delivery modes. When one agent writes a discovery, every subscribed agent knows in milliseconds.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1 1 .03 2.798-1.442 2.798H4.24c-1.47 0-2.441-1.798-1.442-2.798L4.2 15.3"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Multi-Model Support</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Claude Code, GPT-4, Llama, Gemini, Mistral — any model that can make an HTTP call works with engram. Swap your underlying LLM without touching your memory layer.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Namespace ACLs</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Fine-grained access control via API keys and namespaces. Give the backend team read/write to <code class="text-purple-300 font-mono text-xs">org:acme:backend</code>, the frontend team to <code class="text-purple-300 font-mono text-xs">org:acme:frontend</code>. Each agent gets exactly the permissions it needs.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-yellow-500/10 border border-yellow-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Secret Vault</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">AES-256-GCM encrypted vault for secrets, credentials, and keys stored alongside memories. Automatic credential rotation, audit-logged access. Stop putting secrets in environment variables.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-orange-500/10 border border-orange-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Constraint Injection</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Write an architecture rule or policy once. It auto-injects into every future search result — a guardrail that propagates to your entire agent fleet without any re-prompting or system prompt updates.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-cyan-500/10 border border-cyan-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18v-5.25m0 0a6.01 6.01 0 001.5-.189m-1.5.189a6.01 6.01 0 01-1.5-.189m3.75 7.478a12.06 12.06 0 01-4.5 0m3.75 2.383a14.406 14.406 0 01-3 0M14.25 18v-.192c0-.983.658-1.823 1.508-2.316a7.5 7.5 0 10-7.517 0c.85.493 1.509 1.333 1.509 2.316V18"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Skill Discovery</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Built-in skill catalogs for Claude Code, GitHub CLI, Docker, kubectl. Teams author and share reusable skills. Any agent can discover what any tool or teammate knows how to do.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-green-500/10 border border-green-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 7.5h-.75A2.25 2.25 0 004.5 9.75v7.5a2.25 2.25 0 002.25 2.25h7.5a2.25 2.25 0 002.25-2.25v-7.5a2.25 2.25 0 00-2.25-2.25h-.75m-6 3.75l3 3m0 0l3-3m-3 3V1.5m6 9h.75a2.25 2.25 0 012.25 2.25v7.5a2.25 2.25 0 01-2.25 2.25h-7.5a2.25 2.25 0 01-2.25-2.25v-.75"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Portable Memory</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Full namespace export/import. Move your entire knowledge graph between installations, environments, or cloud regions. Your team's memory travels with your infrastructure.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── USE CASES PREVIEW ─────────────────────────────────────────────── -->
+<section class="relative z-10 py-24 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-16">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Use Cases</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Built for real engineering team complexity</h2>
+    </div>
+    <div class="grid md:grid-cols-2 gap-6 mb-10">
+      <a href="use-cases.html" class="glass rounded-2xl p-7 group">
+        <div class="w-10 h-10 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"/></svg>
+        </div>
+        <h3 class="text-white font-semibold text-lg mb-2">AI-Assisted Development Teams</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Product, engineering, QA, and DevOps all share one knowledge graph. New hires get full institutional context on day one — not after weeks of onboarding.</p>
+        <span class="mt-4 inline-block text-xs text-purple-400 group-hover:text-purple-300 transition-colors">Learn more &rarr;</span>
+      </a>
+      <a href="use-cases.html#governance" class="glass rounded-2xl p-7 group">
+        <div class="w-10 h-10 bg-orange-500/10 border border-orange-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold text-lg mb-2">Architecture Governance at Scale</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Ingest your architecture docs, ADRs, and compliance requirements. Agents enforce rules automatically during code review and development — zero re-prompting.</p>
+        <span class="mt-4 inline-block text-xs text-purple-400 group-hover:text-purple-300 transition-colors">Learn more &rarr;</span>
+      </a>
+      <a href="use-cases.html#incidents" class="glass rounded-2xl p-7 group">
+        <div class="w-10 h-10 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/></svg>
+        </div>
+        <h3 class="text-white font-semibold text-lg mb-2">Incident Intelligence</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">When PagerDuty fires, surface similar past incidents and resolutions instantly. Stop re-investigating the same failures at 2am.</p>
+        <span class="mt-4 inline-block text-xs text-purple-400 group-hover:text-purple-300 transition-colors">Learn more &rarr;</span>
+      </a>
+      <a href="use-cases.html#knowledge-base" class="glass rounded-2xl p-7 group">
+        <div class="w-10 h-10 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"/></svg>
+        </div>
+        <h3 class="text-white font-semibold text-lg mb-2">Cross-Team Knowledge Base</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Replace static wikis with a living knowledge graph that every agent and engineer contributes to and queries in real time. Documentation that updates itself.</p>
+        <span class="mt-4 inline-block text-xs text-purple-400 group-hover:text-purple-300 transition-colors">Learn more &rarr;</span>
+      </a>
+    </div>
+    <div class="text-center">
+      <a href="use-cases.html" class="text-sm text-purple-400 hover:text-purple-300 transition-colors font-medium">See all use cases &rarr;</a>
+    </div>
+  </div>
+</section>
+
+<!-- ── GOVERNANCE CTA ─────────────────────────────────────────────────── -->
+<section class="relative z-10 py-16 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="gradient-border">
+      <div class="gradient-border-inner p-10 md:p-14 rounded-2xl">
+        <div class="grid md:grid-cols-2 gap-12 items-center">
+          <div>
+            <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Governance</span>
+            <h2 class="text-3xl font-bold text-white mt-3 mb-4">Enterprise AI governance from day one</h2>
+            <p class="text-gray-400 leading-relaxed mb-8">The question isn't whether your AI agents will make consequential decisions. They already are. The question is whether you can audit them, govern them, and prove it to your organization.</p>
+            <div class="space-y-3 mb-8">
+              <div class="flex items-center gap-3">
+                <svg class="w-5 h-5 text-green-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                <span class="text-gray-300 text-sm">Complete audit trail — every write carries agent, tool, commit, and ticket</span>
+              </div>
+              <div class="flex items-center gap-3">
+                <svg class="w-5 h-5 text-green-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                <span class="text-gray-300 text-sm">Namespace access control — each agent gets exactly the permissions it needs</span>
+              </div>
+              <div class="flex items-center gap-3">
+                <svg class="w-5 h-5 text-green-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                <span class="text-gray-300 text-sm">Architecture enforcement — documented rules enforced automatically in CI</span>
+              </div>
+            </div>
+            <a href="governance.html" class="inline-flex items-center gap-2 text-sm text-purple-400 hover:text-purple-300 transition-colors font-medium">Learn about governance &rarr;</a>
+          </div>
+          <div class="code-block p-6">
+            <div class="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800">
+              <div class="w-3 h-3 rounded-full bg-red-500/60"></div>
+              <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
+              <div class="w-3 h-3 rounded-full bg-green-500/60"></div>
+              <span class="ml-3 text-xs text-gray-600">audit_record.json</span>
+            </div>
+            <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-var">{</span>
+  <span class="token-str">"id"</span>: <span class="token-str">"mem_a4f2b91"</span>,
+  <span class="token-str">"content"</span>: <span class="token-str">"Chose ArcadeDB over Neo4j"</span>,
+  <span class="token-str">"memory_type"</span>: <span class="token-str">"decision"</span>,
+  <span class="token-str">"provenance"</span>: {
+    <span class="token-str">"agent_id"</span>: <span class="token-str">"arch-agent-01"</span>,
+    <span class="token-str">"tool"</span>: <span class="token-str">"claude-code"</span>,
+    <span class="token-str">"git_commit"</span>: <span class="token-str">"a4f2b91"</span>,
+    <span class="token-str">"ticket"</span>: <span class="token-str">"ARCH-42"</span>
+  },
+  <span class="token-str">"created_at"</span>: <span class="token-str">"2026-03-15T10:23:44Z"</span>,
+  <span class="token-str">"namespace"</span>: <span class="token-str">"org:acme:architecture"</span>
+<span class="token-var">}</span></code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── COMPARISON TEASER ──────────────────────────────────────────────── -->
+<section class="relative z-10 py-24 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-16">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Comparison</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Not just another memory layer</h2>
+      <p class="text-gray-400 max-w-lg mx-auto">engram is the only memory tool built for multi-agent engineering teams — with governance, temporal queries, and architecture enforcement no other tool has.</p>
+    </div>
+    <div class="glass rounded-2xl overflow-hidden mb-8">
+      <div class="overflow-x-auto">
+        <table class="w-full compare-table">
+          <thead>
+            <tr>
+              <th class="text-left">Capability</th>
+              <th>engram</th>
+              <th>mem0</th>
+              <th>Zep</th>
+              <th>Obsidian+Claude</th>
+              <th>ChatGPT Memory</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Multi-agent shared memory</td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Temporal memory (as_of queries)</td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Architecture enforcement</td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Complete audit trail</td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Self-hostable, 100% local</td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Secret vault</td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="text-center">
+      <a href="compare.html" class="text-sm text-purple-400 hover:text-purple-300 transition-colors font-medium">Full comparison &rarr;</a>
+    </div>
+  </div>
+</section>
+
+<!-- ── HOW IT WORKS ─────────────────────────────────────────────────── -->
+<section id="how-it-works" class="relative z-10 py-24 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-16">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Integration</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">How it works</h2>
+      <p class="text-gray-400 max-w-md mx-auto">Five lines is all it takes to give your agent permanent, governed, shared memory.</p>
+    </div>
+    <div class="grid md:grid-cols-2 gap-16 items-start">
+      <div class="space-y-10">
+        <div class="flex gap-5">
+          <div class="flex flex-col items-center">
+            <div class="w-9 h-9 rounded-full bg-purple-500/20 border border-purple-500/40 flex items-center justify-center text-purple-300 font-bold text-sm flex-shrink-0">1</div>
+            <div class="w-px flex-1 mt-3 step-line min-h-[40px]"></div>
+          </div>
+          <div class="pb-8">
+            <h3 class="text-white font-semibold mb-2">Connect your agents</h3>
+            <p class="text-sm text-gray-400 leading-relaxed">Drop the MCP server into Claude Code, Cursor, or any MCP-compatible host. Or use the REST SDK from any language. Self-host with Docker in 90 seconds or use the managed cloud API.</p>
+          </div>
+        </div>
+        <div class="flex gap-5">
+          <div class="flex flex-col items-center">
+            <div class="w-9 h-9 rounded-full bg-blue-500/20 border border-blue-500/40 flex items-center justify-center text-blue-300 font-bold text-sm flex-shrink-0">2</div>
+            <div class="w-px flex-1 mt-3 step-line min-h-[40px]"></div>
+          </div>
+          <div class="pb-8">
+            <h3 class="text-white font-semibold mb-2">Search — constraints auto-inject</h3>
+            <p class="text-sm text-gray-400 leading-relaxed">Agents search and write as they work. Every search result automatically includes relevant architecture constraints — your rules propagate without re-prompting or system prompt updates.</p>
+          </div>
+        </div>
+        <div class="flex gap-5">
+          <div class="flex flex-col items-center">
+            <div class="w-9 h-9 rounded-full bg-orange-500/20 border border-orange-500/40 flex items-center justify-center text-orange-300 font-bold text-sm flex-shrink-0">3</div>
+            <div class="w-px flex-1 mt-3 step-line min-h-[40px]"></div>
+          </div>
+          <div class="pb-8">
+            <h3 class="text-white font-semibold mb-2">Enforce in CI</h3>
+            <p class="text-sm text-gray-400 leading-relaxed">Run corpus.check_all() on every PR diff. SHALL violations block the merge. SHOULD violations annotate it. Architecture governance runs automatically in your pipeline.</p>
+          </div>
+        </div>
+        <div class="flex gap-5">
+          <div class="flex flex-col items-center">
+            <div class="w-9 h-9 rounded-full bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-300 font-bold text-sm flex-shrink-0">4</div>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold mb-2">Write with full provenance</h3>
+            <p class="text-sm text-gray-400 leading-relaxed">Every memory write carries agent_id, tool, git_commit, and JIRA ticket. The audit trail is built in — no extra work. Query any decision, trace any incident, prove any action forever.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="code-block p-6">
+        <div class="flex items-center gap-2 mb-5 pb-4 border-b border-gray-800">
+          <div class="w-3 h-3 rounded-full bg-red-500/60"></div>
+          <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
+          <div class="w-3 h-3 rounded-full bg-green-500/60"></div>
+          <span class="ml-3 text-xs text-gray-600">ci_check.py</span>
+        </div>
+        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-kw">from</span> <span class="token-var">engram_sdk</span> <span class="token-kw">import</span> <span class="token-fn">EngramClient</span>
+
+<span class="token-kw">async with</span> <span class="token-fn">EngramClient</span>(
+    url<span class="token-kw">=</span><span class="token-str">"https://engram.acme.com"</span>,
+    api_key<span class="token-kw">=</span><span class="token-str">"..."</span>,
+) <span class="token-kw">as</span> <span class="token-var">client</span>:
+
+    <span class="token-cmt"># Search — constraints auto-inject with every result</span>
+    <span class="token-var">memories</span> <span class="token-kw">=</span> <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-fn">search</span>(
+        <span class="token-str">"how do we handle patient data encryption"</span>,
+        namespace<span class="token-kw">=</span><span class="token-str">"org:acme:engineering"</span>,
+    )
+    <span class="token-cmt"># → facts + auto-injected constraints</span>
+
+    <span class="token-cmt"># Architecture enforcement in CI</span>
+    <span class="token-var">result</span> <span class="token-kw">=</span> <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-var">corpus</span>.<span class="token-fn">check_all</span>(
+        code<span class="token-kw">=</span><span class="token-var">pull_request_diff</span>,
+        context<span class="token-kw">=</span><span class="token-str">"patient-access consent validation"</span>,
+    )
+    <span class="token-kw">if</span> <span class="token-var">result</span>[<span class="token-num">0</span>].<span class="token-var">shall_violations</span>:
+        <span class="token-kw">raise</span> <span class="token-fn">ArchitectureViolation</span>(<span class="token-var">result</span>[<span class="token-num">0</span>].<span class="token-fn">format</span>())
+
+    <span class="token-cmt"># Write with full audit provenance</span>
+    <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-fn">write</span>(
+        content<span class="token-kw">=</span><span class="token-str">"Selected ArcadeDB — single engine"</span>,
+        namespace<span class="token-kw">=</span><span class="token-str">"org:acme:architecture"</span>,
+        memory_type<span class="token-kw">=</span><span class="token-str">"decision"</span>,
+        author<span class="token-kw">=</span><span class="token-str">"arch-agent"</span>,
+        metadata<span class="token-kw">=</span>{
+            <span class="token-str">"ticket"</span>: <span class="token-str">"ARCH-42"</span>,
+            <span class="token-str">"git_commit"</span>: <span class="token-str">"a4f2b91"</span>,
+        },
+    )</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── DOGFOOD ───────────────────────────────────────────────────────── -->
+<section class="relative z-10 py-24 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="gradient-border">
+      <div class="gradient-border-inner p-10 md:p-14 rounded-2xl">
+        <div class="flex flex-col md:flex-row md:items-start justify-between gap-10">
+          <div class="md:w-2/5">
+            <div class="inline-flex items-center gap-2 bg-green-500/10 border border-green-500/20 rounded-full px-4 py-1.5 text-sm text-green-300 mb-6">
+              We eat our own dog food
+            </div>
+            <h2 class="text-3xl font-bold text-white mb-4 leading-tight">The AI agents that built engram used engram.</h2>
+            <p class="text-gray-400 leading-relaxed mb-6">Every architecture decision in this codebase is a memory. Every incident we hit is stored. The agents that write our docs query engram before writing a word.</p>
+            <p class="text-gray-500 text-sm leading-relaxed">We didn't just use our product — our product made itself. If engram went down, our agents would start repeating the same mistakes within a week.</p>
+          </div>
+          <div class="md:w-1/2 space-y-3">
+            <p class="text-xs text-gray-600 font-mono mb-4">// actual memories from building engram</p>
+            <div class="glass rounded-xl p-4">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full font-mono">decision</span>
+                <span class="text-xs text-gray-600">arch-agent · 2025-11-03</span>
+              </div>
+              <p class="text-sm text-gray-200">Chose ArcadeDB over Neo4j+Qdrant. Multi-model support eliminates two separate services and gives embedded vector search without running a second database.</p>
+              <div class="mt-2 flex items-center gap-2 text-xs text-gray-600">
+                <span class="font-mono">git:a4f2b91</span><span>·</span><span>ARCH-42</span>
+              </div>
+            </div>
+            <div class="glass rounded-xl p-4">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs bg-red-500/20 text-red-300 px-2 py-0.5 rounded-full font-mono">incident</span>
+                <span class="text-xs text-gray-600">oncall-agent · 2025-12-14</span>
+              </div>
+              <p class="text-sm text-gray-200">E2E stack stuck at "Created" — ArcadeDB container never became healthy. Root cause: <code class="text-blue-300 font-mono text-xs">~</code> in .env file not expanded by docker-compose. Fixed by injecting ENGRAM_DATA_DIR as shell env var.</p>
+            </div>
+            <div class="glass rounded-xl p-4">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs bg-orange-500/20 text-orange-300 px-2 py-0.5 rounded-full font-mono">constraint</span>
+                <span class="text-xs text-gray-600">auto-injected to all agents</span>
+              </div>
+              <p class="text-sm text-gray-200">CONSTRAINT: Source directories are READ-ONLY. All memory and learnings go to vaults only. Never write markdown in source repos.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── CTA ──────────────────────────────────────────────────────────── -->
+<section class="relative z-10 py-24 fade-in">
+  <div class="max-w-2xl mx-auto px-6 text-center">
+    <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+      <div class="w-96 h-96 bg-purple-600 rounded-full blur-[160px] opacity-8"></div>
+    </div>
+    <h2 class="text-4xl font-bold text-white mb-5 relative">One tool. Every agent.<br /><span class="gradient-text">Zero lost context.</span></h2>
+    <p class="text-gray-400 mb-10 relative">Self-host with Docker in 90 seconds, or connect to the managed API. MIT licensed. No lock-in.</p>
+    <div class="flex items-center justify-center gap-4 relative">
+      <a href="#" class="glow-btn text-white font-semibold px-8 py-3.5 rounded-full text-sm">Deploy Free</a>
+      <a href="https://github.com/thameema/engram" class="text-sm text-gray-300 hover:text-white border border-gray-700 hover:border-gray-500 px-8 py-3.5 rounded-full transition-colors flex items-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        Star on GitHub
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ───────────────────────────────────────────────────────── -->
+<footer class="relative z-10 border-t border-gray-800/60 py-12">
+  <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6">
+    <div class="flex items-center gap-2.5">
+      <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gfoot)" opacity="0.6"/>
+        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gfoot)" opacity="0.8"/>
+        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gfoot)"/>
+        <defs><linearGradient id="gfoot" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/></linearGradient></defs>
+      </svg>
+      <span class="text-white font-semibold">engram</span>
+      <span class="text-gray-600 text-sm ml-2">Memory for AI agents</span>
+    </div>
+    <div class="flex items-center gap-8 text-sm text-gray-500">
+      <a href="https://github.com/thameema/engram/tree/main/docs/guides" class="hover:text-gray-300 transition-colors">Docs</a>
+      <a href="https://github.com/thameema/engram" class="hover:text-gray-300 transition-colors">GitHub</a>
+      <a href="use-cases.html" class="hover:text-gray-300 transition-colors">Use Cases</a>
+      <a href="governance.html" class="hover:text-gray-300 transition-colors">Governance</a>
+      <a href="compare.html" class="hover:text-gray-300 transition-colors">Compare</a>
+      <a href="https://github.com/thameema/engram/blob/main/LICENSE" class="hover:text-gray-300 transition-colors">MIT License</a>
+    </div>
+    <div class="text-xs text-gray-700">Built by AI agents, for AI agents.</div>
+  </div>
+</footer>
+
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+  document.querySelectorAll('a[href^="#"]').forEach(a => {
+    a.addEventListener('click', e => {
+      const target = document.querySelector(a.getAttribute('href'));
+      if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth' }); }
+    });
+  });
+
+  const cards = document.querySelectorAll('.glass .glass');
+  let idx = 0;
+  setInterval(() => {
+    cards.forEach((c, i) => {
+      c.style.borderColor = i === idx % cards.length
+        ? 'rgba(124,92,252,0.4)' : 'rgba(255,255,255,0.07)';
+    });
+    idx++;
+  }, 1800);
+</script>
+</body>
+</html>

@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>engram — Use Cases</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'], mono: ['JetBrains Mono', 'monospace'] },
+          colors: {
+            brand: { purple: '#7c5cfc', blue: '#4f9cf9', cyan: '#00d2ff', dim: '#1a1a2e' },
+          },
+        }
+      }
+    }
+  </script>
+  <style>
+    :root { --bg: #09090f; --surface: #111118; --border: #1e1e2e; --muted: #6b7280; }
+    body { background: var(--bg); font-family: 'Inter', sans-serif; color: #e5e7eb; }
+    .gradient-text {
+      background: linear-gradient(135deg, #a78bfa 0%, #60a5fa 50%, #34d399 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .glow-btn {
+      background: linear-gradient(135deg, #7c5cfc, #4f9cf9);
+      box-shadow: 0 0 20px rgba(124, 92, 252, 0.4);
+      transition: box-shadow 0.3s, transform 0.2s;
+    }
+    .glow-btn:hover { box-shadow: 0 0 35px rgba(124, 92, 252, 0.65); transform: translateY(-1px); }
+    .glass {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.07);
+      backdrop-filter: blur(12px);
+      transition: border-color 0.3s, transform 0.2s, box-shadow 0.3s;
+    }
+    .glass:hover {
+      border-color: rgba(124,92,252,0.35);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(124,92,252,0.12);
+    }
+    body::before {
+      content: '';
+      position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background-image: radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+    .code-block {
+      background: #0d0d1a;
+      border: 1px solid #1e1e3f;
+      border-radius: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      line-height: 1.7;
+    }
+    .token-fn   { color: #7dd3fc; }
+    .token-str  { color: #86efac; }
+    .token-kw   { color: #c084fc; }
+    .token-cmt  { color: #4b5563; }
+    .token-num  { color: #fb923c; }
+    .token-var  { color: #e5e7eb; }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+    .fade-in { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease, transform 0.6s ease; }
+    .fade-in.visible { opacity: 1; transform: translateY(0); }
+    nav { backdrop-filter: blur(20px); background: rgba(9,9,15,0.8); border-bottom: 1px solid var(--border); }
+    .step-line { background: linear-gradient(to bottom, #7c5cfc, transparent); }
+    .gradient-border {
+      position: relative; border-radius: 16px; padding: 1px;
+      background: linear-gradient(135deg, rgba(124,92,252,0.4), rgba(79,156,249,0.2), rgba(0,210,255,0.1));
+    }
+    .gradient-border-inner { background: var(--surface); border-radius: 15px; }
+    .nav-active { color: #a78bfa !important; }
+    .before-after-card { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 1rem 1.25rem; }
+    .before-card { border-left: 3px solid rgba(239,68,68,0.5); }
+    .after-card  { border-left: 3px solid rgba(74,222,128,0.5); }
+    .ascii-diagram {
+      background: #0d0d1a;
+      border: 1px solid #1e1e3f;
+      border-radius: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      line-height: 1.8;
+      color: #9ca3af;
+      padding: 1.5rem;
+    }
+    .ascii-diagram .highlight { color: #a78bfa; }
+    .ascii-diagram .green { color: #4ade80; }
+    .ascii-diagram .blue { color: #60a5fa; }
+  </style>
+</head>
+<body class="antialiased overflow-x-hidden">
+
+<!-- ── NAV ─────────────────────────────────────────────────────────── -->
+<nav class="fixed top-0 left-0 right-0 z-50">
+  <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.6"/>
+        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.8"/>
+        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gnav)"/>
+        <defs>
+          <linearGradient id="gnav" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <span class="text-white font-semibold text-lg tracking-tight">engram</span>
+    </a>
+    <div class="hidden md:flex items-center gap-7">
+      <a href="index.html#features" class="text-sm text-gray-400 hover:text-white transition-colors">Features</a>
+      <a href="use-cases.html" class="text-sm nav-active hover:text-white transition-colors">Use Cases</a>
+      <a href="governance.html" class="text-sm text-gray-400 hover:text-white transition-colors">Governance</a>
+      <a href="https://github.com/thameema/engram/tree/main/docs/guides" class="text-sm text-gray-400 hover:text-white transition-colors">Docs</a>
+      <a href="compare.html" class="text-sm text-gray-400 hover:text-white transition-colors">Compare</a>
+      <a href="https://github.com/thameema/engram" class="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-1.5">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        GitHub
+      </a>
+    </div>
+    <a href="#" class="glow-btn text-white text-sm font-medium px-5 py-2 rounded-full">Deploy Free</a>
+  </div>
+</nav>
+
+<!-- ── HERO ─────────────────────────────────────────────────────────── -->
+<section class="relative pt-32 pb-20 overflow-hidden">
+  <div class="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-600 rounded-full blur-[140px] opacity-8 pointer-events-none"></div>
+  <div class="relative z-10 max-w-6xl mx-auto px-6 text-center">
+    <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Use Cases</span>
+    <h1 class="text-5xl md:text-6xl font-bold text-white leading-[1.1] tracking-tight mt-4 mb-6">
+      Built for the complexity of<br /><span class="gradient-text">real engineering teams</span>
+    </h1>
+    <p class="text-gray-400 text-lg leading-relaxed max-w-3xl mx-auto">
+      AI-assisted engineering isn't a future state — it's happening now. Teams with 5 or 50 engineers face the same coordination problem: AI context doesn't cross session boundaries, team boundaries, or role boundaries. engram is the infrastructure layer that fixes this.
+    </p>
+  </div>
+</section>
+
+<!-- ── SECTION 1: AI-ASSISTED ENGINEERING TEAM ─────────────────────── -->
+<section id="team" class="relative z-10 py-20 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-14">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Scenario 1</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">The AI-Assisted Engineering Team</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Every role in your engineering org has its own AI assistant. Without shared memory, you have as many knowledge silos as you have team members — times two.</p>
+    </div>
+
+    <!-- ASCII Diagram -->
+    <div class="ascii-diagram mb-14 max-w-3xl mx-auto">
+      <pre>
+  <span class="highlight">Product</span> ──── <span class="highlight">Engineering</span> ──── <span class="highlight">QA</span> ──── <span class="highlight">DevOps</span>
+     ↓               ↓              ↓         ↓
+     └───────────────────────────────────────→ <span class="green">engram knowledge graph</span>
+     ←── reads: requirements · decisions · failures · config ───</pre>
+    </div>
+
+    <!-- Persona cards -->
+    <div class="grid md:grid-cols-2 gap-6">
+
+      <!-- PM -->
+      <div class="glass rounded-2xl p-7">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-10 h-10 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center">
+            <svg class="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/></svg>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">Product Manager + AI</h3>
+            <p class="text-xs text-gray-500">Requirements &amp; roadmap context</p>
+          </div>
+        </div>
+        <div class="space-y-3">
+          <div class="before-after-card before-card">
+            <p class="text-xs text-red-400 font-medium mb-1 uppercase tracking-wide">Without engram</p>
+            <p class="text-sm text-gray-300 leading-relaxed">Requirements are scattered across Jira and Confluence. The AI assistant has no memory of prior product decisions, past trade-offs, or why features were scoped the way they were.</p>
+          </div>
+          <div class="before-after-card after-card">
+            <p class="text-xs text-green-400 font-medium mb-1 uppercase tracking-wide">With engram</p>
+            <p class="text-sm text-gray-300 leading-relaxed">Product context and requirements are stored as memories with full history. Every engineering agent knows the product direction, the "why" behind decisions, and current constraints — without the PM repeating themselves.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Engineers -->
+      <div class="glass rounded-2xl p-7">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-10 h-10 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-center">
+            <svg class="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"/></svg>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">Engineers + AI Assistants</h3>
+            <p class="text-xs text-gray-500">Architecture decisions &amp; patterns</p>
+          </div>
+        </div>
+        <div class="space-y-3">
+          <div class="before-after-card before-card">
+            <p class="text-xs text-red-400 font-medium mb-1 uppercase tracking-wide">Without engram</p>
+            <p class="text-sm text-gray-300 leading-relaxed">Each dev's AI session starts cold. Senior architecture decisions don't reach junior developers. Architecture drift happens silently. The same design questions get answered differently every day.</p>
+          </div>
+          <div class="before-after-card after-card">
+            <p class="text-xs text-green-400 font-medium mb-1 uppercase tracking-wide">With engram</p>
+            <p class="text-sm text-gray-300 leading-relaxed">Shared knowledge graph means every developer's AI session starts with the team's full institutional context. Architecture constraints inject automatically. Senior decisions propagate to the whole team in real time.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- QA -->
+      <div class="glass rounded-2xl p-7">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-10 h-10 bg-green-500/10 border border-green-500/20 rounded-xl flex items-center justify-center">
+            <svg class="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">QA Engineers + Test Agents</h3>
+            <p class="text-xs text-gray-500">Test patterns &amp; failure history</p>
+          </div>
+        </div>
+        <div class="space-y-3">
+          <div class="before-after-card before-card">
+            <p class="text-xs text-red-400 font-medium mb-1 uppercase tracking-wide">Without engram</p>
+            <p class="text-sm text-gray-300 leading-relaxed">Test failure patterns go undiscovered because no one connects the dots across sessions. The same bugs get re-investigated from scratch. Test agents write tests that duplicate existing coverage without knowing it.</p>
+          </div>
+          <div class="before-after-card after-card">
+            <p class="text-xs text-green-400 font-medium mb-1 uppercase tracking-wide">With engram</p>
+            <p class="text-sm text-gray-300 leading-relaxed">Every test failure is a memory. Test agents surface known failure modes before writing new tests. Cross-session patterns are visible. QA context — flaky tests, known edge cases, past regressions — persists and grows.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- DevOps -->
+      <div class="glass rounded-2xl p-7">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-10 h-10 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-center">
+            <svg class="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z"/></svg>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">DevOps + Ops Agents</h3>
+            <p class="text-xs text-gray-500">Incidents &amp; operational context</p>
+          </div>
+        </div>
+        <div class="space-y-3">
+          <div class="before-after-card before-card">
+            <p class="text-xs text-red-400 font-medium mb-1 uppercase tracking-wide">Without engram</p>
+            <p class="text-sm text-gray-300 leading-relaxed">Incident resolutions are locked in runbooks nobody reads. Every PagerDuty alert starts a fresh investigation. Ops agents have no institutional knowledge — they can't tell if they've seen this failure before.</p>
+          </div>
+          <div class="before-after-card after-card">
+            <p class="text-xs text-green-400 font-medium mb-1 uppercase tracking-wide">With engram</p>
+            <p class="text-sm text-gray-300 leading-relaxed">Every incident becomes an instantly-retrievable memory. Future alerts surface similar past resolutions in seconds. Oncall agents arrive at the problem already knowing the 3 most likely causes and fixes.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── SECTION 2: ARCHITECTURE GOVERNANCE ─────────────────────────── -->
+<section id="governance" class="relative z-10 py-20 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-14">
+      <span class="text-sm text-orange-400 font-medium tracking-wider uppercase">Scenario 2</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Stop architecture drift before it ships</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Architecture documents are written. Engineers agree. Then AI agents generate code that violates them — because no one can enforce documented constraints at code-generation time.</p>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-10 items-start mb-12">
+      <div>
+        <h3 class="text-white font-semibold text-lg mb-6">How engram solves it</h3>
+        <div class="space-y-6">
+          <div class="flex gap-4">
+            <div class="flex flex-col items-center">
+              <div class="w-8 h-8 rounded-full bg-purple-500/20 border border-purple-500/40 flex items-center justify-center text-purple-300 font-bold text-xs flex-shrink-0">1</div>
+              <div class="w-px flex-1 mt-2" style="background: linear-gradient(to bottom, #7c5cfc, transparent); min-height: 32px;"></div>
+            </div>
+            <div class="pb-5">
+              <h4 class="text-white font-medium mb-1">Ingest your architecture docs</h4>
+              <p class="text-sm text-gray-400 leading-relaxed">Upload architecture documents, ADRs, and design decisions. engram parses them into typed constraint nodes — SHALL, SHOULD, and MAY rules — stored in the knowledge graph.</p>
+            </div>
+          </div>
+          <div class="flex gap-4">
+            <div class="flex flex-col items-center">
+              <div class="w-8 h-8 rounded-full bg-blue-500/20 border border-blue-500/40 flex items-center justify-center text-blue-300 font-bold text-xs flex-shrink-0">2</div>
+              <div class="w-px flex-1 mt-2" style="background: linear-gradient(to bottom, #4f9cf9, transparent); min-height: 32px;"></div>
+            </div>
+            <div class="pb-5">
+              <h4 class="text-white font-medium mb-1">Connect your CI pipeline</h4>
+              <p class="text-sm text-gray-400 leading-relaxed">Add a single call to <code class="text-purple-300 font-mono text-xs bg-purple-950/40 px-1 rounded">client.corpus.check_all(diff, context)</code> in your pipeline. engram checks every changed file against your architecture corpus.</p>
+            </div>
+          </div>
+          <div class="flex gap-4">
+            <div class="flex flex-col items-center">
+              <div class="w-8 h-8 rounded-full bg-green-500/20 border border-green-500/40 flex items-center justify-center text-green-300 font-bold text-xs flex-shrink-0">3</div>
+            </div>
+            <div>
+              <h4 class="text-white font-medium mb-1">Automatic enforcement</h4>
+              <p class="text-sm text-gray-400 leading-relaxed">SHALL violations block the PR. SHOULD violations annotate it with a comment. Architecture is enforced automatically — no manual review required for rules that are already documented.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="space-y-4">
+        <div class="code-block p-6">
+          <div class="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800">
+            <div class="w-3 h-3 rounded-full bg-red-500/60"></div>
+            <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
+            <div class="w-3 h-3 rounded-full bg-green-500/60"></div>
+            <span class="ml-3 text-xs text-gray-600">ci_pipeline.py</span>
+          </div>
+          <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># In your CI pipeline</span>
+<span class="token-var">result</span> <span class="token-kw">=</span> <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-var">corpus</span>.<span class="token-fn">check_all</span>(
+    code<span class="token-kw">=</span><span class="token-var">pull_request_diff</span>,
+    context<span class="token-kw">=</span><span class="token-str">"patient-access service changes"</span>,
+)
+<span class="token-cmt"># SHALL violations → block PR</span>
+<span class="token-kw">if</span> <span class="token-var">result</span>[<span class="token-num">0</span>].<span class="token-var">shall_violations</span>:
+    <span class="token-fn">print</span>(<span class="token-str">"Architecture violations found:"</span>)
+    <span class="token-fn">print</span>(<span class="token-var">result</span>[<span class="token-num">0</span>].<span class="token-fn">format</span>())
+    <span class="token-var">sys</span>.<span class="token-fn">exit</span>(<span class="token-num">1</span>)</code></pre>
+        </div>
+
+        <div class="code-block p-6">
+          <div class="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800">
+            <div class="w-3 h-3 rounded-full bg-red-500/60"></div>
+            <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
+            <div class="w-3 h-3 rounded-full bg-green-500/60"></div>
+            <span class="ml-3 text-xs text-gray-600">enforcement_output.txt</span>
+          </div>
+          <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-kw">[CONSTRAINT|SHALL]</span> All PHI data SHALL be encrypted
+at rest using AES-256 or stronger.
+<span class="token-cmt">Source: arch/security.md | Section: Data Protection</span>
+<span class="token-str">Score: 0.94</span>
+
+<span class="token-fn">[CONSTRAINT|SHOULD]</span> Services SHOULD include
+correlation IDs in all log entries.
+<span class="token-cmt">Source: arch/observability.md | Section: Logging</span>
+<span class="token-str">Score: 0.87</span></code></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="gradient-border">
+      <div class="gradient-border-inner px-8 py-6 rounded-2xl">
+        <div class="flex items-start gap-4">
+          <div class="w-10 h-10 bg-orange-500/10 border border-orange-500/20 rounded-xl flex items-center justify-center flex-shrink-0">
+            <svg class="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>
+          </div>
+          <div>
+            <h4 class="text-white font-semibold mb-1">The problem this solves</h4>
+            <p class="text-gray-400 text-sm leading-relaxed">AI-generated code bypasses the review mental model engineers developed for human-written code. Engineers read PRs looking for logic errors — not architecture violations that should have been caught before the first keystroke. engram moves architecture enforcement earlier, before the code is written and automatically in CI before it merges.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── SECTION 3: INCIDENT INTELLIGENCE ──────────────────────────── -->
+<section id="incidents" class="relative z-10 py-20 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-14">
+      <span class="text-sm text-red-400 font-medium tracking-wider uppercase">Scenario 3</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Stop re-investigating the same failures</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">PagerDuty fires at 2am. Your oncall opens a new agent session. Without engram, they start from scratch. With engram, they already know the 3 most similar past incidents and their exact resolutions.</p>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-10 items-start mb-12">
+      <div>
+        <div class="glass rounded-2xl p-7 mb-6">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-8 h-8 bg-red-500/10 border border-red-500/20 rounded-lg flex items-center justify-center">
+              <span class="text-red-400 text-sm font-bold">!</span>
+            </div>
+            <div>
+              <p class="text-xs text-gray-500 font-mono">pagerduty alert · 02:14 UTC</p>
+              <p class="text-sm text-red-300 font-medium">CRITICAL: prod-api latency p99 &gt; 10s</p>
+            </div>
+            <span class="ml-auto flex items-center gap-1.5 text-xs text-red-400">
+              <span class="w-1.5 h-1.5 bg-red-400 rounded-full pulse-dot"></span> firing
+            </span>
+          </div>
+          <div class="border-t border-gray-800 pt-4">
+            <p class="text-xs text-gray-500 mb-3">engram surfaces instantly:</p>
+            <div class="space-y-2">
+              <div class="flex items-start gap-2 text-sm">
+                <span class="text-green-400 font-bold flex-shrink-0 mt-0.5">&#10003;</span>
+                <p class="text-gray-300">Redis OOM on prod-02, 2025-12-14 — Fix: <code class="text-blue-300 font-mono text-xs">maxmemory-policy=allkeys-lru</code> (similarity: 0.94)</p>
+              </div>
+              <div class="flex items-start gap-2 text-sm">
+                <span class="text-green-400 font-bold flex-shrink-0 mt-0.5">&#10003;</span>
+                <p class="text-gray-300">Connection pool exhaustion on api-gateway, 2026-01-08 — Fix: increase pool size in app.yaml (similarity: 0.87)</p>
+              </div>
+              <div class="flex items-start gap-2 text-sm">
+                <span class="text-yellow-400 font-bold flex-shrink-0 mt-0.5">~</span>
+                <p class="text-gray-300">Slow query on prod-db after schema migration, 2026-02-21 — Root cause: missing index on events.created_at (similarity: 0.71)</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="code-block p-5">
+          <div class="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800">
+            <div class="w-3 h-3 rounded-full bg-red-500/60"></div>
+            <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
+            <div class="w-3 h-3 rounded-full bg-green-500/60"></div>
+            <span class="ml-3 text-xs text-gray-600">oncall_agent.py</span>
+          </div>
+          <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># On alert — surface past incidents</span>
+<span class="token-var">past</span> <span class="token-kw">=</span> <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-fn">search</span>(
+    <span class="token-var">alert</span>.<span class="token-var">description</span>,
+    namespace<span class="token-kw">=</span><span class="token-str">"org:acme:incidents"</span>,
+    top_k<span class="token-kw">=</span><span class="token-num">5</span>,
+)
+<span class="token-cmt"># → ["Redis OOM on prod-02. Fix: set
+#     maxmemory-policy=allkeys-lru (0.94)"]</span>
+
+<span class="token-cmt"># Store resolution for next time</span>
+<span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-fn">write</span>(
+    content<span class="token-kw">=</span><span class="token-str">"prod-api latency: Redis eviction.
+    Fix: allkeys-lru policy restart."</span>,
+    memory_type<span class="token-kw">=</span><span class="token-str">"incident"</span>,
+    namespace<span class="token-kw">=</span><span class="token-str">"org:acme:incidents"</span>,
+)</code></pre>
+        </div>
+      </div>
+
+      <div>
+        <h3 class="text-white font-semibold text-lg mb-6">The flywheel effect</h3>
+        <div class="space-y-4">
+          <div class="glass rounded-xl p-5">
+            <div class="flex items-center gap-3 mb-2">
+              <div class="w-7 h-7 bg-red-500/10 border border-red-500/20 rounded-lg flex items-center justify-center text-red-300 text-xs font-bold">1</div>
+              <h4 class="text-white text-sm font-medium">Incident fires, agent investigates</h4>
+            </div>
+            <p class="text-sm text-gray-400 pl-10">engram surfaces similar past incidents. Oncall has context in seconds instead of minutes.</p>
+          </div>
+          <div class="glass rounded-xl p-5">
+            <div class="flex items-center gap-3 mb-2">
+              <div class="w-7 h-7 bg-orange-500/10 border border-orange-500/20 rounded-lg flex items-center justify-center text-orange-300 text-xs font-bold">2</div>
+              <h4 class="text-white text-sm font-medium">Resolution is found and applied</h4>
+            </div>
+            <p class="text-sm text-gray-400 pl-10">The resolution — exact commands, config changes, root cause — is stored as a new memory with provenance.</p>
+          </div>
+          <div class="glass rounded-xl p-5">
+            <div class="flex items-center gap-3 mb-2">
+              <div class="w-7 h-7 bg-blue-500/10 border border-blue-500/20 rounded-lg flex items-center justify-center text-blue-300 text-xs font-bold">3</div>
+              <h4 class="text-white text-sm font-medium">Next similar incident is faster</h4>
+            </div>
+            <p class="text-sm text-gray-400 pl-10">Every incident makes the next one faster to resolve. The corpus of operational knowledge compounds over time — each oncall shift builds on all the ones before it.</p>
+          </div>
+          <div class="glass rounded-xl p-5">
+            <div class="flex items-center gap-3 mb-2">
+              <div class="w-7 h-7 bg-green-500/10 border border-green-500/20 rounded-lg flex items-center justify-center text-green-300 text-xs font-bold">4</div>
+              <h4 class="text-white text-sm font-medium">Patterns become constraints</h4>
+            </div>
+            <p class="text-sm text-gray-400 pl-10">Recurring root causes can be promoted to architecture constraints — agents are warned before writing code that historically causes incidents.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── SECTION 4: NEW HIRE ONBOARDING ────────────────────────────── -->
+<section class="relative z-10 py-20 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-14">
+      <span class="text-sm text-green-400 font-medium tracking-wider uppercase">Scenario 4</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">New hire to productive in hours, not weeks</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Every architecture decision, every coding pattern, every deployment lesson is already in the graph. A new developer's first AI session immediately has the institutional knowledge of the entire team.</p>
+    </div>
+
+    <div class="grid md:grid-cols-3 gap-6 mb-10">
+      <div class="glass rounded-2xl p-6 text-center">
+        <div class="text-4xl font-bold gradient-text mb-2">Day 1</div>
+        <h4 class="text-white font-semibold mb-3">Full context, immediately</h4>
+        <p class="text-sm text-gray-400 leading-relaxed">The new hire's first Claude Code session queries engram and immediately receives the team's architecture decisions, coding conventions, recent incidents, and active constraints — everything that used to live in people's heads.</p>
+      </div>
+      <div class="glass rounded-2xl p-6 text-center">
+        <div class="text-4xl font-bold gradient-text mb-2">Day 3</div>
+        <h4 class="text-white font-semibold mb-3">Contributing confidently</h4>
+        <p class="text-sm text-gray-400 leading-relaxed">Because architecture constraints auto-inject, the new hire's AI assistant naturally follows team conventions. They write code that fits the codebase style, avoids known pitfalls, and respects architectural rules — automatically.</p>
+      </div>
+      <div class="glass rounded-2xl p-6 text-center">
+        <div class="text-4xl font-bold gradient-text mb-2">Week 1</div>
+        <h4 class="text-white font-semibold mb-3">Adding to the graph</h4>
+        <p class="text-sm text-gray-400 leading-relaxed">As the new hire learns and discovers, their agent writes new memories. They become a net contributor to institutional knowledge from their first week — not a drain on senior engineers' time.</p>
+      </div>
+    </div>
+
+    <div class="gradient-border">
+      <div class="gradient-border-inner px-8 py-6 rounded-2xl">
+        <div class="grid md:grid-cols-2 gap-8 items-center">
+          <div>
+            <h4 class="text-white font-semibold text-lg mb-3">The hidden cost of stateless onboarding</h4>
+            <p class="text-gray-400 text-sm leading-relaxed mb-4">Traditional onboarding with AI tools makes this worse, not better. An AI assistant in a new developer's first session has less context than a senior engineer's first day — because the senior at least had onboarding sessions. The AI has nothing.</p>
+            <p class="text-gray-400 text-sm leading-relaxed">With engram, new hires and their AI assistants start with the same institutional knowledge as a 2-year veteran. The playing field levels on day one.</p>
+          </div>
+          <div class="code-block p-5">
+            <div class="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800">
+              <div class="w-3 h-3 rounded-full bg-red-500/60"></div>
+              <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
+              <div class="w-3 h-3 rounded-full bg-green-500/60"></div>
+              <span class="ml-3 text-xs text-gray-600">new_hire_day1.py</span>
+            </div>
+            <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># New hire's first query</span>
+<span class="token-var">context</span> <span class="token-kw">=</span> <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-fn">search</span>(
+    <span class="token-str">"how does the auth service work"</span>,
+    namespace<span class="token-kw">=</span><span class="token-str">"org:acme:engineering"</span>,
+)
+<span class="token-cmt"># Returns:
+# [decision] Chose JWT over sessions (ARCH-12)
+# [constraint] Tokens expire in 15min (security.md)
+# [incident] Token refresh race condition fix
+# [skill] Use auth.verify_token() not raw JWT
+# [ADR] PKCE flow for all OAuth2 clients</span></code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── SECTION 5: CROSS-TEAM KNOWLEDGE BASE ──────────────────────── -->
+<section id="knowledge-base" class="relative z-10 py-20 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-14">
+      <span class="text-sm text-blue-400 font-medium tracking-wider uppercase">Scenario 5</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Replace static wikis with a living knowledge graph</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Static wikis go stale. Documentation rots. engram's knowledge graph updates itself as agents work — every decision, discovery, and lesson is a node that cross-links automatically through graph traversal.</p>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-10 mb-12">
+      <div>
+        <h3 class="text-white font-semibold text-lg mb-5">Why wikis fail at scale</h3>
+        <div class="space-y-4">
+          <div class="flex items-start gap-3">
+            <svg class="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            <div>
+              <p class="text-white text-sm font-medium">Requires human curation to stay current</p>
+              <p class="text-xs text-gray-500 mt-1">Someone has to update the wiki. Nobody does. Knowledge drifts from reality within weeks.</p>
+            </div>
+          </div>
+          <div class="flex items-start gap-3">
+            <svg class="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            <div>
+              <p class="text-white text-sm font-medium">No semantic connections between documents</p>
+              <p class="text-xs text-gray-500 mt-1">An incident post-mortem in Confluence has no automatic link to the architecture decision that caused it.</p>
+            </div>
+          </div>
+          <div class="flex items-start gap-3">
+            <svg class="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            <div>
+              <p class="text-white text-sm font-medium">AI agents can't efficiently search wiki structure</p>
+              <p class="text-xs text-gray-500 mt-1">Vector search over a flat wiki returns marginally better results than keyword search. Without graph structure, connections are invisible.</p>
+            </div>
+          </div>
+          <div class="flex items-start gap-3">
+            <svg class="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            <div>
+              <p class="text-white text-sm font-medium">No audit trail on knowledge changes</p>
+              <p class="text-xs text-gray-500 mt-1">Who changed the architecture page? When? Why? What was the previous recommendation? Wikis don't know.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h3 class="text-white font-semibold text-lg mb-5">How engram is different</h3>
+        <div class="space-y-4">
+          <div class="flex items-start gap-3">
+            <svg class="w-5 h-5 text-green-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+            <div>
+              <p class="text-white text-sm font-medium">Self-updating — agents write as they work</p>
+              <p class="text-xs text-gray-500 mt-1">Every agent writes what it learns. The knowledge graph grows automatically as work happens — no manual curation required.</p>
+            </div>
+          </div>
+          <div class="flex items-start gap-3">
+            <svg class="w-5 h-5 text-green-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+            <div>
+              <p class="text-white text-sm font-medium">Graph edges link related knowledge automatically</p>
+              <p class="text-xs text-gray-500 mt-1">Incidents link to the constraints that were violated. Decisions link to the ADRs that superseded them. The knowledge graph builds its own connections.</p>
+            </div>
+          </div>
+          <div class="flex items-start gap-3">
+            <svg class="w-5 h-5 text-green-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+            <div>
+              <p class="text-white text-sm font-medium">Hybrid search — vector + graph traversal</p>
+              <p class="text-xs text-gray-500 mt-1">Semantic similarity finds the closest memories; graph traversal surfaces related nodes two or three hops away that pure vector search would miss.</p>
+            </div>
+          </div>
+          <div class="flex items-start gap-3">
+            <svg class="w-5 h-5 text-green-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+            <div>
+              <p class="text-white text-sm font-medium">Every change is auditable</p>
+              <p class="text-xs text-gray-500 mt-1">Every memory write — who wrote it, what tool, which commit, which ticket — is permanently recorded. The full history is always queryable.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── CTA ──────────────────────────────────────────────────────────── -->
+<section class="relative z-10 py-24 fade-in">
+  <div class="max-w-2xl mx-auto px-6 text-center">
+    <h2 class="text-4xl font-bold text-white mb-5">Start with your team's<br /><span class="gradient-text">most painful use case.</span></h2>
+    <p class="text-gray-400 mb-10">Whether it's incident intelligence, architecture enforcement, or simply shared context across AI sessions — engram deploys in 90 seconds and pays off immediately.</p>
+    <div class="flex items-center justify-center gap-4">
+      <a href="#" class="glow-btn text-white font-semibold px-8 py-3.5 rounded-full text-sm">Deploy Free</a>
+      <a href="https://github.com/thameema/engram" class="text-sm text-gray-300 hover:text-white border border-gray-700 hover:border-gray-500 px-8 py-3.5 rounded-full transition-colors flex items-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        View on GitHub
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ───────────────────────────────────────────────────────── -->
+<footer class="relative z-10 border-t border-gray-800/60 py-12">
+  <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6">
+    <div class="flex items-center gap-2.5">
+      <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gfoot2)" opacity="0.6"/>
+        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gfoot2)" opacity="0.8"/>
+        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gfoot2)"/>
+        <defs><linearGradient id="gfoot2" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/></linearGradient></defs>
+      </svg>
+      <span class="text-white font-semibold">engram</span>
+      <span class="text-gray-600 text-sm ml-2">Memory for AI agents</span>
+    </div>
+    <div class="flex items-center gap-8 text-sm text-gray-500">
+      <a href="https://github.com/thameema/engram/tree/main/docs/guides" class="hover:text-gray-300 transition-colors">Docs</a>
+      <a href="https://github.com/thameema/engram" class="hover:text-gray-300 transition-colors">GitHub</a>
+      <a href="use-cases.html" class="hover:text-gray-300 transition-colors">Use Cases</a>
+      <a href="governance.html" class="hover:text-gray-300 transition-colors">Governance</a>
+      <a href="compare.html" class="hover:text-gray-300 transition-colors">Compare</a>
+      <a href="https://github.com/thameema/engram/blob/main/LICENSE" class="hover:text-gray-300 transition-colors">MIT License</a>
+    </div>
+    <div class="text-xs text-gray-700">Built by AI agents, for AI agents.</div>
+  </div>
+</footer>
+
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+  document.querySelectorAll('a[href^="#"]').forEach(a => {
+    a.addEventListener('click', e => {
+      const target = document.querySelector(a.getAttribute('href'));
+      if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth' }); }
+    });
+  });
+</script>
+</body>
+</html>
