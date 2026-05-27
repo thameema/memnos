@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from engram_sdk._http import _AsyncTransport, _SyncTransport
+from engram_sdk.corpus import AsyncCorpusClient, SyncCorpusClient
 from engram_sdk.models import HealthStatus, Memory, MemoryType
 
 
@@ -79,6 +80,7 @@ class AsyncEngramClient:
         timeout: float = 30.0,
     ) -> None:
         self._transport = _AsyncTransport(url, api_key, timeout)
+        self.corpus = AsyncCorpusClient(self._transport)
 
     async def __aenter__(self) -> "AsyncEngramClient":
         return self
@@ -213,6 +215,7 @@ class EngramClient:
         self._async_client = AsyncEngramClient(url=url, api_key=api_key, timeout=timeout)
         self._loop = asyncio.new_event_loop()
         self._lock = threading.Lock()
+        self.corpus = SyncCorpusClient(self._async_client.corpus, self._run)
 
     def _run(self, coro):
         with self._lock:

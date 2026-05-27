@@ -21,7 +21,6 @@ import hmac
 import logging
 import os
 import re
-import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
@@ -129,57 +128,31 @@ async def _run_sync(corpus: Corpus, client, store) -> None:
     await store.update_sync_state(corpus_id, status="syncing")
 
     try:
-        from engram.corpus.extractor import extract_corpus
-        from engram.models import MemoryType, MemoryStatus, Provenance
+        from engram.corpus.connectors import get_connector
 
-        source_path = Path(corpus.source_path)
-        if not source_path.exists():
-            raise FileNotFoundError(f"source_path does not exist: {source_path}")
-
-        # Detect current git SHA for freshness tracking
-        git_sha = ""
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(source_path), "rev-parse", "--short", "HEAD"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode == 0:
-                git_sha = result.stdout.strip()
-        except Exception:
-            pass
-
-        nodes = extract_corpus(
-            source_path=source_path,
-            path_pattern=corpus.path_pattern,
+        connector_type = getattr(corpus, "connector_type", "git-doc") or "git-doc"
+        connector = get_connector(
+            connector_type,
             corpus_id=corpus_id,
             namespace=corpus.namespace,
-            git_sha=git_sha,
+            source_path=corpus.source_path,
+            path_pattern=corpus.path_pattern,
         )
+        sync_result = await connector.sync(client)
 
-        written = 0
-        for node in nodes:
-            try:
-                await client.add(
-                    content=node.content,
-                    namespace=corpus.namespace,
-                    tags=node.tags,
-                    source="corpus",
-                    memory_type=MemoryType(node.memory_type),
-                    status=MemoryStatus.active,
-                    metadata=node.metadata,
-                    provenance=Provenance(tool="corpus-sync", git_commit=git_sha),
-                )
-                written += 1
-            except Exception as exc:
-                logger.warning("corpus sync: failed to write node — %s", exc)
-
+        status = "ready" if sync_result.ok else "error"
+        error_msg = "; ".join(sync_result.errors) if sync_result.errors else ""
         await store.update_sync_state(
             corpus_id,
-            status="ready",
-            node_count=written,
-            last_sync_sha=git_sha,
+            status=status,
+            node_count=sync_result.nodes_written,
+            last_sync_sha=sync_result.git_sha,
+            error_msg=error_msg,
         )
-        logger.info("corpus sync done | id=%s nodes=%d sha=%s", corpus_id, written, git_sha)
+        logger.info(
+            "corpus sync done | id=%s connector=%s nodes=%d sha=%s",
+            corpus_id, connector_type, sync_result.nodes_written, sync_result.git_sha,
+        )
 
     except Exception as exc:
         logger.exception("corpus sync failed | id=%s: %s", corpus_id, exc)
