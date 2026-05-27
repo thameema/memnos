@@ -306,6 +306,7 @@ def create_app() -> FastAPI:
     from engram_api.routers.webhooks import router as webhooks_router  # noqa: PLC0415
     from engram_api.routers.learning_admin import router as learning_router  # noqa: PLC0415
     from engram_api.routers.agents import router as agents_router  # noqa: PLC0415
+    from engram_api.routers.corpus import router as corpus_router  # noqa: PLC0415
 
     application = FastAPI(
         title="engram",
@@ -338,6 +339,7 @@ def create_app() -> FastAPI:
     application.include_router(webhooks_router, prefix=api_prefix)
     application.include_router(learning_router, prefix=api_prefix)
     application.include_router(agents_router, prefix=api_prefix)
+    application.include_router(corpus_router, prefix=api_prefix)
 
     # Interactive knowledge graph dashboard
     _dashboard_path = pathlib.Path(__file__).parent / "static" / "dashboard.html"
