@@ -226,6 +226,36 @@ class Graph(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Corpus — architecture doc ingestion source
+# ---------------------------------------------------------------------------
+
+class Corpus(BaseModel):
+    """A registered corpus source: a directory (or git repo path) of docs ingested
+    into engram as typed constraint/decision/fact nodes.
+
+    ``status`` lifecycle: pending → syncing → ready | error
+    ``watch=True`` enables auto-sync via the GitLab CI webhook endpoint.
+    """
+
+    id: str = Field(default_factory=_uuid)
+    name: str                                    # human label e.g. "hdig-platform-architecture"
+    source_path: str                             # local path or git-cloned directory
+    path_pattern: str = "**/*.md"               # glob relative to source_path
+    namespace: str                               # target engram namespace
+    watch: bool = False                          # re-sync on webhook push
+    webhook_secret: str = ""                     # HMAC secret for GitLab CI webhook
+    last_sync_sha: str = ""                      # git SHA of last successful sync
+    last_sync_at: datetime | None = None
+    node_count: int = 0                          # memory nodes written in last sync
+    status: str = "pending"                      # pending | syncing | ready | error
+    error_msg: str = ""
+    created_at: datetime = Field(default_factory=_now)
+    created_by: str = ""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+
+# ---------------------------------------------------------------------------
 # Binary asset reference
 # ---------------------------------------------------------------------------
 

@@ -59,6 +59,10 @@ from engram_mcp.tools.vault import (
     handle_secret_rotate,
     handle_vault_audit,
 )
+from engram_mcp.tools.corpus import (
+    handle_corpus_check,
+    handle_corpus_list,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -619,6 +623,51 @@ TOOLS: list[Tool] = [
             "required": ["entity", "namespace"],
         },
     ),
+    # ---- corpus: architecture constraint enforcement ----
+    Tool(
+        name="corpus_check",
+        description=(
+            "Return architecture constraints from an ingested corpus relevant to a code snippet. "
+            "Use before implementing or reviewing code in hdig modules to surface applicable "
+            "SHALL/SHOULD rules from LLDs, HLDs, and shared-module specs with source citations. "
+            "Call corpus_list first to get the corpus_id."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "corpus_id": {
+                    "type": "string",
+                    "description": "ID of the registered corpus (from corpus_list)",
+                },
+                "code": {
+                    "type": "string",
+                    "description": "Code snippet being reviewed or about to be implemented",
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Free-text description of what the code does and which module/component it belongs to (e.g. 'patient-access consent validation filter')",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "Max constraints to return",
+                },
+            },
+            "required": ["corpus_id", "code"],
+        },
+    ),
+    Tool(
+        name="corpus_list",
+        description=(
+            "List all registered architecture corpus sources and their sync status. "
+            "Returns corpus IDs needed for corpus_check."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
     # ---- Feature: automatic past-incident retrieval ----
     Tool(
         name="incident_context",
@@ -1022,6 +1071,23 @@ async def _dispatch(
             "cursor": cursor,
             "count": len(items),
         }, indent=2))]
+
+    # ---- corpus: architecture constraint enforcement ----
+    if name == "corpus_check":
+        result = await handle_corpus_check(
+            client,
+            corpus_id=args["corpus_id"],
+            code=str(args.get("code", "")),
+            context=str(args.get("context", "")),
+            top_k=int(args.get("top_k", 10)),
+        )
+        text = result.get("formatted") or str(result.get("constraints", []))
+        return [TextContent(type="text", text=text)]
+
+    if name == "corpus_list":
+        result = await handle_corpus_list(client)
+        text = result.get("formatted") or "No corpora registered."
+        return [TextContent(type="text", text=text)]
 
     # ---- past-incident retrieval ----
     if name == "incident_context":
