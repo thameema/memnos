@@ -2106,13 +2106,13 @@ class ArcadeDBClient:
         ns_filter = namespace if namespace not in ("all", "", "*") else None
         if ns_filter:
             rows = await self._query(
-                "SELECT out.id as memory_id, in.name as entity_name "
-                "FROM MENTIONS WHERE out.namespace = :ns AND in.namespace = :ns",
+                "SELECT @out.id as memory_id, @in.name as entity_name "
+                "FROM MENTIONS WHERE @out.namespace = :ns AND @in.namespace = :ns",
                 {"ns": ns_filter},
             )
         else:
             rows = await self._query(
-                "SELECT out.id as memory_id, in.name as entity_name FROM MENTIONS"
+                "SELECT @out.id as memory_id, @in.name as entity_name FROM MENTIONS"
             )
         # Group by memory_id, then emit all pairs
         from collections import defaultdict
