@@ -1911,17 +1911,19 @@ class ArcadeDBClient:
         filter_types = [ft.lower().strip() for ft in raw_filter_types if ft]
         now = _now()
 
-        parts = namespace.split(":")
-        ns_list = [":".join(parts[:i+1]) for i in range(len(parts))]
-        placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
-        params = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
-        params.update({"last_seen": to_epoch_ms(last_seen), "limit": limit})
+        # Match subscription namespace and all child namespaces (event-log semantics:
+        # include superseded memories so the feed shows every write, not just survivors)
+        params = {
+            "ns": namespace,
+            "ns_prefix": namespace + ":%",
+            "last_seen": to_epoch_ms(last_seen),
+            "limit": limit,
+        }
         rows = await self._query(
-            f"SELECT * FROM Memory "
-            f"WHERE created_at > :last_seen "
-            f"AND superseded_at IS NULL "
-            f"AND namespace IN [{placeholders}] "
-            f"ORDER BY created_at ASC LIMIT :limit",
+            "SELECT * FROM Memory "
+            "WHERE created_at > :last_seen "
+            "AND (namespace = :ns OR namespace LIKE :ns_prefix) "
+            "ORDER BY created_at ASC LIMIT :limit",
             params,
         )
         memories = [_row_to_memory(r) for r in rows]
