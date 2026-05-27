@@ -1,0 +1,49 @@
+name: Release & Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-and-publish:
+    name: Build & publish packages
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tools
+        run: pip install --upgrade pip build twine
+
+      - name: Build engram-sdk
+        run: python -m build packages/sdk --outdir dist/
+
+      - name: Build engram-core
+        run: python -m build packages/core --outdir dist/
+
+      - name: Publish to GitHub Packages
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          TWINE_REPOSITORY_URL: https://pypi.pkg.github.com/${{ github.repository_owner }}/
+        run: twine upload dist/*
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          gh release create "$TAG" \
+            --title "engram $TAG" \
+            --generate-notes \
+            dist/*.whl dist/*.tar.gz
