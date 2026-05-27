@@ -504,6 +504,41 @@ class ArcadeDBClient:
             return None
         return _row_to_memory(rows[0])
 
+    async def scan_namespace(
+        self,
+        namespace: str,
+        *,
+        batch_size: int = 500,
+        memory_type: str | None = None,
+        include_superseded: bool = False,
+    ) -> list[MemoryEntry]:
+        """Return all memories in a namespace, paginated internally using SKIP/LIMIT.
+
+        Use for export/backup — not for search (no ranking).
+        """
+        where_parts = ["namespace = :ns"]
+        params: dict = {"ns": namespace}
+        if not include_superseded:
+            where_parts.append("status = 'active'")
+        if memory_type is not None:
+            where_parts.append("memory_type = :mt")
+            params["mt"] = memory_type
+
+        where = "WHERE " + " AND ".join(where_parts)
+        results: list[MemoryEntry] = []
+        skip = 0
+        while True:
+            rows = await self.execute(
+                f"SELECT * FROM Memory {where} ORDER BY created_at ASC "
+                f"SKIP {skip} LIMIT {batch_size}",
+                params,
+            )
+            results.extend(_row_to_memory(row) for row in rows)
+            if len(rows) < batch_size:
+                break
+            skip += batch_size
+        return results
+
     async def get_memory_by_id(self, memory_id: str) -> MemoryEntry | None:
         """Look up a memory by ID without a namespace constraint (for cross-ns Qdrant results)."""
         rows = await self._query(

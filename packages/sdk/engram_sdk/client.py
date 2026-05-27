@@ -159,6 +159,41 @@ class AsyncEngramClient:
             and entity_set & {a.lower() for a in m.affects}
         ]
 
+    async def export_namespace(
+        self,
+        namespace: str,
+        *,
+        memory_type: str | None = None,
+        include_superseded: bool = False,
+    ) -> dict:
+        """Export all memories in a namespace. Returns the export envelope dict."""
+        params: dict[str, Any] = {"ns": namespace, "format": "json"}
+        if memory_type:
+            params["memory_type"] = memory_type
+        if include_superseded:
+            params["include_superseded"] = "true"
+        return await self._transport.get("/api/v1/admin/export", params=params)
+
+    async def import_namespace(
+        self,
+        data: dict,
+        *,
+        target_namespace: str | None = None,
+    ) -> dict:
+        """Import memories from an export envelope. Returns {imported, skipped, namespace}."""
+        path = "/api/v1/admin/import"
+        if target_namespace:
+            from urllib.parse import quote
+            path = f"{path}?ns={quote(target_namespace, safe='')}"
+        return await self._transport.post(path, json=data)
+
+    async def list_namespaces(self) -> list[str]:
+        """Return all configured namespace names."""
+        data = await self._transport.get("/api/v1/admin/namespaces")
+        if isinstance(data, list):
+            return [item["name"] if isinstance(item, dict) else item for item in data]
+        return []
+
 
 class EngramClient:
     """Synchronous wrapper around AsyncEngramClient. Suitable for scripts and non-async code.
@@ -246,3 +281,31 @@ class EngramClient:
         return self._run(
             self._async_client.get_governing_decisions(entities, namespace)
         )
+
+    def export_namespace(
+        self,
+        namespace: str,
+        *,
+        memory_type: str | None = None,
+        include_superseded: bool = False,
+    ) -> dict:
+        return self._run(
+            self._async_client.export_namespace(
+                namespace,
+                memory_type=memory_type,
+                include_superseded=include_superseded,
+            )
+        )
+
+    def import_namespace(
+        self,
+        data: dict,
+        *,
+        target_namespace: str | None = None,
+    ) -> dict:
+        return self._run(
+            self._async_client.import_namespace(data, target_namespace=target_namespace)
+        )
+
+    def list_namespaces(self) -> list[str]:
+        return self._run(self._async_client.list_namespaces())

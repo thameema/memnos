@@ -43,6 +43,7 @@ engram-decay = "engram.cli.decay_cli:main"
 engram-vault = "engram.cli.vault_cli:main"
 engram-community = "engram.cli.community_cli:main"
 engram-migrate = "engram.cli.migrate_cli:main"
+engram-export = "engram.cli.export_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
