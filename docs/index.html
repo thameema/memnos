@@ -104,6 +104,7 @@
     <div class="hidden md:flex items-center gap-7">
       <a href="#features" class="text-sm text-gray-400 hover:text-white transition-colors">Features</a>
       <a href="use-cases.html" class="text-sm text-gray-400 hover:text-white transition-colors">Use Cases</a>
+      <a href="#sdk" class="text-sm text-gray-400 hover:text-white transition-colors">SDK</a>
       <a href="governance.html" class="text-sm text-gray-400 hover:text-white transition-colors">Governance</a>
       <a href="https://github.com/thameema/engram/tree/main/docs/guides" class="text-sm text-gray-400 hover:text-white transition-colors">Docs</a>
       <a href="compare.html" class="text-sm text-gray-400 hover:text-white transition-colors">Compare</a>
@@ -569,6 +570,196 @@
   </div>
 </section>
 
+<!-- ── SDK ───────────────────────────────────────────────────────────── -->
+<section id="sdk" class="relative z-10 py-24 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-16">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Python SDK</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Works with every framework your team already uses</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">engram-sdk is a zero-dependency Python client with optional integrations for LangChain, LlamaIndex, and architecture enforcement. Install what you need.</p>
+    </div>
+
+    <!-- Install pills -->
+    <div class="flex flex-wrap justify-center gap-3 mb-12">
+      <div class="code-block px-4 py-2 text-xs flex items-center gap-2">
+        <span class="text-gray-500">$</span>
+        <span class="text-green-300">pip install engram-sdk</span>
+        <span class="text-gray-600 ml-2 text-xs">core</span>
+      </div>
+      <div class="code-block px-4 py-2 text-xs flex items-center gap-2">
+        <span class="text-gray-500">$</span>
+        <span class="text-green-300">pip install 'engram-sdk[langchain]'</span>
+        <span class="text-gray-600 ml-2 text-xs">+ LangChain</span>
+      </div>
+      <div class="code-block px-4 py-2 text-xs flex items-center gap-2">
+        <span class="text-gray-500">$</span>
+        <span class="text-green-300">pip install 'engram-sdk[llamaindex]'</span>
+        <span class="text-gray-600 ml-2 text-xs">+ LlamaIndex</span>
+      </div>
+      <div class="code-block px-4 py-2 text-xs flex items-center gap-2">
+        <span class="text-gray-500">$</span>
+        <span class="text-green-300">pip install 'engram-sdk[all]'</span>
+        <span class="text-gray-600 ml-2 text-xs">everything</span>
+      </div>
+    </div>
+
+    <!-- Tabs + code -->
+    <div class="max-w-4xl mx-auto">
+      <!-- Tab buttons -->
+      <div class="flex gap-1 mb-0 border-b border-gray-800">
+        <button onclick="showTab('tab-basic')" id="btn-tab-basic"
+          class="sdk-tab px-5 py-3 text-sm font-medium text-gray-300 border-b-2 border-purple-500 transition-colors">
+          Basic memory
+        </button>
+        <button onclick="showTab('tab-langchain')" id="btn-tab-langchain"
+          class="sdk-tab px-5 py-3 text-sm font-medium text-gray-500 border-b-2 border-transparent hover:text-gray-300 transition-colors">
+          LangChain
+        </button>
+        <button onclick="showTab('tab-llamaindex')" id="btn-tab-llamaindex"
+          class="sdk-tab px-5 py-3 text-sm font-medium text-gray-500 border-b-2 border-transparent hover:text-gray-300 transition-colors">
+          LlamaIndex
+        </button>
+        <button onclick="showTab('tab-corpus')" id="btn-tab-corpus"
+          class="sdk-tab px-5 py-3 text-sm font-medium text-gray-500 border-b-2 border-transparent hover:text-gray-300 transition-colors">
+          Architecture enforcement
+        </button>
+      </div>
+
+      <!-- Tab panels -->
+      <div id="tab-basic" class="sdk-panel code-block p-6 rounded-tl-none">
+        <div class="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800">
+          <div class="w-2.5 h-2.5 rounded-full bg-red-500/60"></div>
+          <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/60"></div>
+          <div class="w-2.5 h-2.5 rounded-full bg-green-500/60"></div>
+          <span class="ml-2 text-xs text-gray-600">agent_memory.py</span>
+        </div>
+        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-kw">from</span> <span class="token-var">engram_sdk</span> <span class="token-kw">import</span> <span class="token-fn">EngramClient</span>
+
+<span class="token-kw">with</span> <span class="token-fn">EngramClient</span>(url<span class="token-kw">=</span><span class="token-str">"http://localhost:8766"</span>, api_key<span class="token-kw">=</span><span class="token-str">"..."</span>) <span class="token-kw">as</span> <span class="token-var">client</span>:
+    <span class="token-cmt"># Write a decision with full provenance</span>
+    <span class="token-var">client</span>.<span class="token-fn">write</span>(
+        <span class="token-str">"JWT tokens must expire after 15 minutes in production"</span>,
+        namespace<span class="token-kw">=</span><span class="token-str">"org:acme:security"</span>,
+        memory_type<span class="token-kw">=</span><span class="token-str">"constraint"</span>,
+        affects<span class="token-kw">=</span>[<span class="token-str">"auth"</span>, <span class="token-str">"api-gateway"</span>],
+        rationale<span class="token-kw">=</span><span class="token-str">"Compliance requirement — SOC2 CC6.1"</span>,
+    )
+
+    <span class="token-cmt"># Semantic search across all team memories</span>
+    <span class="token-var">results</span> <span class="token-kw">=</span> <span class="token-var">client</span>.<span class="token-fn">search</span>(
+        <span class="token-str">"authentication token expiry policy"</span>,
+        namespace<span class="token-kw">=</span><span class="token-str">"org:acme:security"</span>,
+    )
+    <span class="token-kw">for</span> <span class="token-var">r</span> <span class="token-kw">in</span> <span class="token-var">results</span>:
+        <span class="token-fn">print</span>(<span class="token-str">f"[{r.memory_type}] {r.content}"</span>)</code></pre>
+      </div>
+
+      <div id="tab-langchain" class="sdk-panel hidden code-block p-6 rounded-tl-none">
+        <div class="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800">
+          <div class="w-2.5 h-2.5 rounded-full bg-red-500/60"></div>
+          <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/60"></div>
+          <div class="w-2.5 h-2.5 rounded-full bg-green-500/60"></div>
+          <span class="ml-2 text-xs text-gray-600">chain.py — LangChain memory backend</span>
+        </div>
+        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># pip install 'engram-sdk[langchain]'</span>
+<span class="token-kw">from</span> <span class="token-var">langchain.chains</span> <span class="token-kw">import</span> <span class="token-fn">ConversationChain</span>
+<span class="token-kw">from</span> <span class="token-var">engram_sdk</span> <span class="token-kw">import</span> <span class="token-fn">EngramClient</span>
+<span class="token-kw">from</span> <span class="token-var">engram_sdk.integrations.langchain</span> <span class="token-kw">import</span> <span class="token-fn">EngramMemory</span>
+
+<span class="token-var">client</span> <span class="token-kw">=</span> <span class="token-fn">EngramClient</span>(url<span class="token-kw">=</span><span class="token-str">"http://localhost:8766"</span>, api_key<span class="token-kw">=</span><span class="token-str">"..."</span>)
+
+<span class="token-cmt"># Drop in as a LangChain memory backend</span>
+<span class="token-cmt"># Every conversation is persisted in engram across sessions</span>
+<span class="token-var">memory</span> <span class="token-kw">=</span> <span class="token-fn">EngramMemory</span>(
+    client<span class="token-kw">=</span><span class="token-var">client</span>,
+    namespace<span class="token-kw">=</span><span class="token-str">"org:acme:agents"</span>,
+    session_id<span class="token-kw">=</span><span class="token-str">"session-42"</span>,
+)
+
+<span class="token-var">chain</span> <span class="token-kw">=</span> <span class="token-fn">ConversationChain</span>(llm<span class="token-kw">=</span><span class="token-var">your_llm</span>, memory<span class="token-kw">=</span><span class="token-var">memory</span>)
+
+<span class="token-cmt"># Past sessions are auto-injected as context — no extra code needed</span>
+<span class="token-var">chain</span>.<span class="token-fn">run</span>(<span class="token-str">"What database did we pick for the user service?"</span>)
+<span class="token-cmt"># → remembers decisions made weeks ago across all prior sessions</span></code></pre>
+      </div>
+
+      <div id="tab-llamaindex" class="sdk-panel hidden code-block p-6 rounded-tl-none">
+        <div class="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800">
+          <div class="w-2.5 h-2.5 rounded-full bg-red-500/60"></div>
+          <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/60"></div>
+          <div class="w-2.5 h-2.5 rounded-full bg-green-500/60"></div>
+          <span class="ml-2 text-xs text-gray-600">rag_pipeline.py — LlamaIndex reader</span>
+        </div>
+        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># pip install 'engram-sdk[llamaindex]'</span>
+<span class="token-kw">from</span> <span class="token-var">llama_index.core</span> <span class="token-kw">import</span> <span class="token-fn">VectorStoreIndex</span>
+<span class="token-kw">from</span> <span class="token-var">engram_sdk</span> <span class="token-kw">import</span> <span class="token-fn">EngramClient</span>
+<span class="token-kw">from</span> <span class="token-var">engram_sdk.integrations.llamaindex</span> <span class="token-kw">import</span> <span class="token-fn">EngramReader</span>
+
+<span class="token-var">client</span> <span class="token-kw">=</span> <span class="token-fn">EngramClient</span>(url<span class="token-kw">=</span><span class="token-str">"http://localhost:8766"</span>, api_key<span class="token-kw">=</span><span class="token-str">"..."</span>)
+<span class="token-var">reader</span> <span class="token-kw">=</span> <span class="token-fn">EngramReader</span>(client<span class="token-kw">=</span><span class="token-var">client</span>, namespace<span class="token-kw">=</span><span class="token-str">"org:acme:engineering"</span>)
+
+<span class="token-cmt"># Load engram memories as LlamaIndex Documents</span>
+<span class="token-var">documents</span> <span class="token-kw">=</span> <span class="token-var">reader</span>.<span class="token-fn">load_data</span>(
+    query<span class="token-kw">=</span><span class="token-str">"database and infrastructure decisions"</span>,
+    top_k<span class="token-kw">=</span><span class="token-num">20</span>,
+)
+
+<span class="token-cmt"># Build a RAG index on top of your team's living memory</span>
+<span class="token-var">index</span> <span class="token-kw">=</span> <span class="token-fn">VectorStoreIndex</span>.<span class="token-fn">from_documents</span>(<span class="token-var">documents</span>)
+<span class="token-var">engine</span> <span class="token-kw">=</span> <span class="token-var">index</span>.<span class="token-fn">as_query_engine</span>()
+<span class="token-fn">print</span>(<span class="token-var">engine</span>.<span class="token-fn">query</span>(<span class="token-str">"What auth approach did we choose and why?"</span>))</code></pre>
+      </div>
+
+      <div id="tab-corpus" class="sdk-panel hidden code-block p-6 rounded-tl-none">
+        <div class="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800">
+          <div class="w-2.5 h-2.5 rounded-full bg-red-500/60"></div>
+          <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/60"></div>
+          <div class="w-2.5 h-2.5 rounded-full bg-green-500/60"></div>
+          <span class="ml-2 text-xs text-gray-600">ci_gate.py — architecture enforcement in CI</span>
+        </div>
+        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-kw">from</span> <span class="token-var">engram_sdk</span> <span class="token-kw">import</span> <span class="token-fn">EngramClient</span>
+
+<span class="token-kw">with</span> <span class="token-fn">EngramClient</span>(url<span class="token-kw">=</span><span class="token-str">"http://localhost:8766"</span>, api_key<span class="token-kw">=</span><span class="token-str">"..."</span>) <span class="token-kw">as</span> <span class="token-var">client</span>:
+    <span class="token-cmt"># Check a PR diff against your architecture constraints</span>
+    <span class="token-var">result</span> <span class="token-kw">=</span> <span class="token-var">client</span>.<span class="token-var">corpus</span>.<span class="token-fn">check</span>(
+        corpus_id<span class="token-kw">=</span><span class="token-str">"arch-docs"</span>,
+        content<span class="token-kw">=</span><span class="token-var">pull_request_diff</span>,
+    )
+
+    <span class="token-cmt"># SHALL violations = hard failures → block the merge</span>
+    <span class="token-kw">if</span> <span class="token-var">result</span>.<span class="token-var">shall_violations</span>:
+        <span class="token-fn">print</span>(<span class="token-var">result</span>.<span class="token-fn">format</span>())
+        <span class="token-fn">raise</span> <span class="token-fn">SystemExit</span>(<span class="token-num">1</span>)
+
+    <span class="token-cmt"># SHOULD violations = warnings → annotate the PR</span>
+    <span class="token-kw">for</span> <span class="token-var">v</span> <span class="token-kw">in</span> <span class="token-var">result</span>.<span class="token-var">should_violations</span>:
+        <span class="token-fn">print</span>(<span class="token-str">f"⚠ {v.rule}"</span>)
+
+<span class="token-cmt"># Severity: SHALL/MUST NOT → block · SHOULD → warn · MAY → info</span></code></pre>
+      </div>
+    </div>
+
+    <!-- Framework badges -->
+    <div class="flex flex-wrap justify-center gap-4 mt-12">
+      <div class="glass rounded-lg px-4 py-2 flex items-center gap-2 text-sm text-gray-300">
+        <span class="text-purple-400">&#x2713;</span> Claude Code (MCP)
+      </div>
+      <div class="glass rounded-lg px-4 py-2 flex items-center gap-2 text-sm text-gray-300">
+        <span class="text-purple-400">&#x2713;</span> LangChain
+      </div>
+      <div class="glass rounded-lg px-4 py-2 flex items-center gap-2 text-sm text-gray-300">
+        <span class="text-purple-400">&#x2713;</span> LlamaIndex
+      </div>
+      <div class="glass rounded-lg px-4 py-2 flex items-center gap-2 text-sm text-gray-300">
+        <span class="text-purple-400">&#x2713;</span> REST API (any language)
+      </div>
+      <div class="glass rounded-lg px-4 py-2 flex items-center gap-2 text-sm text-gray-300">
+        <span class="text-purple-400">&#x2713;</span> Cursor / Windsurf
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ── HOW IT WORKS ─────────────────────────────────────────────────── -->
 <section id="how-it-works" class="relative z-10 py-24 fade-in">
   <div class="max-w-6xl mx-auto px-6">
@@ -777,6 +968,19 @@
     });
     idx++;
   }, 1800);
+
+  // SDK tabs
+  function showTab(id) {
+    document.querySelectorAll('.sdk-panel').forEach(p => p.classList.add('hidden'));
+    document.querySelectorAll('.sdk-tab').forEach(b => {
+      b.classList.remove('border-purple-500', 'text-gray-300');
+      b.classList.add('border-transparent', 'text-gray-500');
+    });
+    document.getElementById(id).classList.remove('hidden');
+    const btn = document.getElementById('btn-' + id);
+    btn.classList.add('border-purple-500', 'text-gray-300');
+    btn.classList.remove('border-transparent', 'text-gray-500');
+  }
 </script>
 </body>
 </html>
