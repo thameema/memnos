@@ -92,7 +92,7 @@ class TestRuntimeKeyStore:
         from engram_api.key_store import RuntimeKeyStore
         db = tmp_path / "keys.db"
         s = RuntimeKeyStore(db_path=db)
-        asyncio.get_event_loop().run_until_complete(s.init())
+        asyncio.run(s.init())
         return s
 
     async def test_create_returns_plaintext_key(self, store):
@@ -488,7 +488,7 @@ def _build_admin_app():
 
     tmp = tempfile.mktemp(suffix=".db")
     store = RuntimeKeyStore(db_path=tmp)
-    asyncio.get_event_loop().run_until_complete(store.init())
+    asyncio.run(store.init())
     app.state.key_store = store
 
     app.include_router(admin_router.router, prefix="/api/v1")
@@ -579,7 +579,7 @@ class TestAdminKeyEndpoints:
         ])
         tmp = tempfile.mktemp(suffix=".db")
         store = RuntimeKeyStore(db_path=tmp)
-        asyncio.get_event_loop().run_until_complete(store.init())
+        asyncio.run(store.init())
         app.state.key_store = store
         app.include_router(admin_router.router, prefix="/api/v1")
 

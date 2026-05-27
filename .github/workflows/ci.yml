@@ -29,7 +29,8 @@ jobs:
           pip install -e packages/api
           pip install -e packages/learning
           pip install -e "packages/gateway[telegram]"
-          pip install pytest pytest-asyncio httpx
+          pip install -e packages/sdk
+          pip install pytest pytest-asyncio httpx aiosqlite
 
       - name: Syntax check — all packages
         run: |
@@ -56,3 +57,9 @@ jobs:
 
       - name: Tests — Phase 2 API features
         run: python -m pytest tools/test_api_features.py -v --tb=short
+
+      - name: Tests — corpus ingestion & constraint enforcement
+        run: python -m pytest tools/test_corpus.py -v --tb=short -k "not integration"
+
+      - name: Tests — subscriptions
+        run: python -m pytest tools/test_subscriptions.py -v --tb=short -k "not integration"
