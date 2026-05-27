@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>engram — Comparison</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'], mono: ['JetBrains Mono', 'monospace'] },
+          colors: {
+            brand: { purple: '#7c5cfc', blue: '#4f9cf9', cyan: '#00d2ff', dim: '#1a1a2e' },
+          },
+        }
+      }
+    }
+  </script>
+  <style>
+    :root { --bg: #09090f; --surface: #111118; --border: #1e1e2e; --muted: #6b7280; }
+    body { background: var(--bg); font-family: 'Inter', sans-serif; color: #e5e7eb; }
+    .gradient-text {
+      background: linear-gradient(135deg, #a78bfa 0%, #60a5fa 50%, #34d399 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .glow-btn {
+      background: linear-gradient(135deg, #7c5cfc, #4f9cf9);
+      box-shadow: 0 0 20px rgba(124, 92, 252, 0.4);
+      transition: box-shadow 0.3s, transform 0.2s;
+    }
+    .glow-btn:hover { box-shadow: 0 0 35px rgba(124, 92, 252, 0.65); transform: translateY(-1px); }
+    .glass {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.07);
+      backdrop-filter: blur(12px);
+      transition: border-color 0.3s, transform 0.2s, box-shadow 0.3s;
+    }
+    .glass:hover {
+      border-color: rgba(124,92,252,0.35);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(124,92,252,0.12);
+    }
+    body::before {
+      content: '';
+      position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background-image: radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+    .code-block {
+      background: #0d0d1a;
+      border: 1px solid #1e1e3f;
+      border-radius: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      line-height: 1.7;
+    }
+    .token-fn   { color: #7dd3fc; }
+    .token-str  { color: #86efac; }
+    .token-kw   { color: #c084fc; }
+    .token-cmt  { color: #4b5563; }
+    .token-num  { color: #fb923c; }
+    .token-var  { color: #e5e7eb; }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+    .fade-in { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease, transform 0.6s ease; }
+    .fade-in.visible { opacity: 1; transform: translateY(0); }
+    nav { backdrop-filter: blur(20px); background: rgba(9,9,15,0.8); border-bottom: 1px solid var(--border); }
+    .gradient-border {
+      position: relative; border-radius: 16px; padding: 1px;
+      background: linear-gradient(135deg, rgba(124,92,252,0.4), rgba(79,156,249,0.2), rgba(0,210,255,0.1));
+    }
+    .gradient-border-inner { background: var(--surface); border-radius: 15px; }
+    .nav-active { color: #a78bfa !important; }
+    .check-green  { color: #4ade80; font-weight: 700; font-size: 1rem; }
+    .check-red    { color: #f87171; font-weight: 700; font-size: 1rem; }
+    .check-yellow { color: #facc15; font-weight: 700; font-size: 0.85rem; }
+    /* Main comparison table */
+    .big-compare { border-collapse: collapse; width: 100%; }
+    .big-compare thead th {
+      background: rgba(9,9,15,0.95);
+      padding: 14px 12px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-align: center;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      position: sticky;
+      top: 64px;
+      z-index: 10;
+    }
+    .big-compare thead th:first-child { text-align: left; color: #9ca3af; }
+    .big-compare thead th.col-engram {
+      color: #a78bfa;
+      background: rgba(124,92,252,0.08);
+    }
+    .big-compare tbody td {
+      padding: 12px 12px;
+      font-size: 0.82rem;
+      border-top: 1px solid rgba(255,255,255,0.04);
+      text-align: center;
+      vertical-align: middle;
+    }
+    .big-compare tbody td:first-child {
+      text-align: left;
+      color: #d1d5db;
+      font-weight: 500;
+    }
+    .big-compare tbody td.col-engram { background: rgba(124,92,252,0.05); }
+    .big-compare tbody tr:hover td { background: rgba(255,255,255,0.02); }
+    .big-compare tbody tr:hover td.col-engram { background: rgba(124,92,252,0.08); }
+    .big-compare .section-header td {
+      background: rgba(255,255,255,0.02);
+      color: #6b7280;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 8px 12px;
+      text-align: left;
+    }
+    /* vs sections */
+    .vs-card { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 1.5rem; }
+    .diff-row { display: flex; gap: 1rem; margin-bottom: 0.75rem; }
+    .diff-label { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem; }
+    /* Obsidian comparison table */
+    .obsidian-table th { background: rgba(124,92,252,0.1); color: #a78bfa; font-size: 0.75rem; font-weight: 600; padding: 10px 14px; text-align: left; }
+    .obsidian-table td { padding: 10px 14px; font-size: 0.8rem; border-top: 1px solid rgba(255,255,255,0.05); vertical-align: top; }
+    .obsidian-table td:first-child { color: #9ca3af; font-weight: 500; white-space: nowrap; }
+    .obsidian-table tr:hover td { background: rgba(255,255,255,0.02); }
+  </style>
+</head>
+<body class="antialiased overflow-x-hidden">
+
+<!-- ── NAV ─────────────────────────────────────────────────────────── -->
+<nav class="fixed top-0 left-0 right-0 z-50">
+  <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.6"/>
+        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.8"/>
+        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gnav)"/>
+        <defs>
+          <linearGradient id="gnav" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <span class="text-white font-semibold text-lg tracking-tight">engram</span>
+    </a>
+    <div class="hidden md:flex items-center gap-7">
+      <a href="index.html#features" class="text-sm text-gray-400 hover:text-white transition-colors">Features</a>
+      <a href="use-cases.html" class="text-sm text-gray-400 hover:text-white transition-colors">Use Cases</a>
+      <a href="governance.html" class="text-sm text-gray-400 hover:text-white transition-colors">Governance</a>
+      <a href="https://github.com/thameema/engram/tree/main/docs/guides" class="text-sm text-gray-400 hover:text-white transition-colors">Docs</a>
+      <a href="compare.html" class="text-sm nav-active hover:text-white transition-colors">Compare</a>
+      <a href="https://github.com/thameema/engram" class="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-1.5">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        GitHub
+      </a>
+    </div>
+    <a href="#" class="glow-btn text-white text-sm font-medium px-5 py-2 rounded-full">Deploy Free</a>
+  </div>
+</nav>
+
+<!-- ── HERO ─────────────────────────────────────────────────────────── -->
+<section class="relative pt-32 pb-20 overflow-hidden">
+  <div class="absolute top-0 right-1/3 w-96 h-96 bg-purple-600 rounded-full blur-[160px] opacity-7 pointer-events-none"></div>
+  <div class="relative z-10 max-w-6xl mx-auto px-6 text-center">
+    <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Comparison</span>
+    <h1 class="text-5xl md:text-6xl font-bold text-white leading-[1.1] tracking-tight mt-4 mb-6">
+      How engram compares to<br /><span class="gradient-text">other memory tools</span>
+    </h1>
+    <p class="text-gray-400 text-lg leading-relaxed max-w-3xl mx-auto">
+      Memory for AI agents is a crowded space. Here's what makes engram different — and why it matters for engineering teams at scale. The short version: engram is the only memory tool built for organizations, not individuals.
+    </p>
+  </div>
+</section>
+
+<!-- ── FULL COMPARISON TABLE ─────────────────────────────────────── -->
+<section class="relative z-10 py-12 fade-in">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="text-center mb-10">
+      <h2 class="text-2xl font-bold text-white mb-3">Full feature matrix</h2>
+      <p class="text-gray-500 text-sm">&#10003; = supported &nbsp;&nbsp; &#10007; = not supported &nbsp;&nbsp; ~ = partial or limited support</p>
+    </div>
+
+    <div class="glass rounded-2xl overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="big-compare">
+          <thead>
+            <tr>
+              <th style="min-width:220px;">Capability</th>
+              <th class="col-engram" style="min-width:100px;">
+                <div class="flex items-center justify-center gap-1.5">
+                  <svg width="14" height="14" viewBox="0 0 28 28" fill="none"><rect x="4" y="17" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.8"/><rect x="4" y="11" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.9"/><rect x="4" y="5" width="20" height="5" rx="2.5" fill="#a78bfa"/></svg>
+                  engram
+                </div>
+              </th>
+              <th style="min-width:85px;">mem0</th>
+              <th style="min-width:85px;">Zep</th>
+              <th style="min-width:85px;">Graphiti</th>
+              <th style="min-width:100px;">Letta / MemGPT</th>
+              <th style="min-width:110px;">Obsidian+Claude</th>
+              <th style="min-width:110px;">ChatGPT Memory</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- Memory Layer -->
+            <tr class="section-header"><td colspan="8">Memory Layer</td></tr>
+            <tr>
+              <td>Multi-agent shared memory</td>
+              <td class="col-engram"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Temporal memory (as_of queries)</td>
+              <td class="col-engram"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Knowledge graph (not just vector)</td>
+              <td class="col-engram"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>7 typed memory kinds</td>
+              <td class="col-engram"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Constraint auto-injection on search</td>
+              <td class="col-engram"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <!-- Governance -->
+            <tr class="section-header"><td colspan="8">Governance &amp; Security</td></tr>
+            <tr>
+              <td>Complete audit trail with provenance</td>
+              <td class="col-engram"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Namespace-based ACLs</td>
+              <td class="col-engram"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Encrypted secret vault</td>
+              <td class="col-engram"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Architecture enforcement (corpus CI)</td>
+              <td class="col-engram"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <!-- Infrastructure -->
+            <tr class="section-header"><td colspan="8">Infrastructure &amp; Integration</td></tr>
+            <tr>
+              <td>Self-hostable, 100% local</td>
+              <td class="col-engram"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Real-time pub/sub (SSE / webhook)</td>
+              <td class="col-engram"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Multi-model support</td>
+              <td class="col-engram"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Export / import portability</td>
+              <td class="col-engram"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Open source / MIT license</td>
+              <td class="col-engram"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <p class="text-xs text-gray-600 text-center mt-3">~ indicates partial or limited support. Information based on public documentation and known capabilities as of 2026.</p>
+  </div>
+</section>
+
+<!-- ── VS MEM0 ───────────────────────────────────────────────────── -->
+<section id="vs-mem0" class="relative z-10 py-20 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <h2 class="text-3xl font-bold text-white mb-4">engram vs mem0</h2>
+      <p class="text-gray-400 max-w-xl mx-auto">mem0 is a per-user memory layer for individual AI assistants. engram is organizational memory for multi-agent engineering teams. These are different products solving different problems.</p>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-8 mb-10">
+      <div class="vs-card">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-9 h-9 bg-gray-500/10 border border-gray-500/20 rounded-xl flex items-center justify-center">
+            <span class="text-gray-400 text-sm font-bold">m0</span>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">mem0</h3>
+            <p class="text-xs text-gray-500">Per-user memory for individual AI assistants</p>
+          </div>
+        </div>
+        <ul class="space-y-2 text-sm text-gray-400">
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Stores per-user conversation facts and preferences</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Optimized for single-user AI assistant recall</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>No concept of multi-agent coordination</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>No governance, audit trail, or access control</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>No architectural enforcement or constraint ingestion</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Good for: personal AI assistants, chatbots</li>
+        </ul>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-9 h-9 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center">
+            <svg width="16" height="16" viewBox="0 0 28 28" fill="none"><rect x="4" y="17" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.8"/><rect x="4" y="11" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.9"/><rect x="4" y="5" width="20" height="5" rx="2.5" fill="#a78bfa"/></svg>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">engram</h3>
+            <p class="text-xs text-gray-500">Organizational memory for AI engineering teams</p>
+          </div>
+        </div>
+        <ul class="space-y-2 text-sm text-gray-400">
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Stores team knowledge graphs — decisions, constraints, incidents</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Shared across entire agent fleet — not per-user</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Real-time pub/sub for multi-agent coordination</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Enterprise-grade ACLs, audit trail, secret vault</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Architecture enforcement — corpus checks in CI</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Good for: engineering teams with multiple AI agents</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="gradient-border">
+      <div class="gradient-border-inner px-8 py-5 rounded-2xl">
+        <p class="text-gray-300 text-sm leading-relaxed text-center"><strong class="text-white">The fundamental difference:</strong> mem0 remembers what you told it. engram stores what your team built, decided, and learned — shared across every agent, governed, audited, and enforced. Different scope entirely.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── VS ZEP ─────────────────────────────────────────────────────── -->
+<section id="vs-zep" class="relative z-10 py-20 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <h2 class="text-3xl font-bold text-white mb-4">engram vs Zep</h2>
+      <p class="text-gray-400 max-w-xl mx-auto">Zep focuses on long-term memory for individual AI assistants, primarily through conversation history summarization. engram stores typed organizational knowledge with governance.</p>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-6 mb-10">
+      <div class="space-y-4">
+        <h3 class="text-white font-semibold text-base mb-3">What Zep does well</h3>
+        <div class="vs-card">
+          <p class="text-xs text-gray-500 font-medium mb-1 uppercase tracking-wide">Conversation memory</p>
+          <p class="text-sm text-gray-300">Zep stores and summarizes chat history efficiently. For a single AI assistant that needs to remember previous conversations, Zep works well.</p>
+        </div>
+        <div class="vs-card">
+          <p class="text-xs text-gray-500 font-medium mb-1 uppercase tracking-wide">Long-term user preferences</p>
+          <p class="text-sm text-gray-300">Zep extracts entities and facts from conversations and persists them across sessions for a single user's AI assistant.</p>
+        </div>
+      </div>
+
+      <div class="space-y-4">
+        <h3 class="text-white font-semibold text-base mb-3">Where engram is different</h3>
+        <div class="glass rounded-xl p-4">
+          <p class="text-xs text-purple-400 font-medium mb-1 uppercase tracking-wide">Typed knowledge, not summaries</p>
+          <p class="text-sm text-gray-400">engram stores typed memories — decisions, constraints, incidents, ADRs. Not chat history summaries. The distinction matters for architecture governance and incident intelligence.</p>
+        </div>
+        <div class="glass rounded-xl p-4">
+          <p class="text-xs text-purple-400 font-medium mb-1 uppercase tracking-wide">No temporal memory in Zep</p>
+          <p class="text-sm text-gray-400">engram's as_of temporal queries have no equivalent in Zep. "What did we know about the auth service on March 15th" is a uniquely engram capability.</p>
+        </div>
+        <div class="glass rounded-xl p-4">
+          <p class="text-xs text-purple-400 font-medium mb-1 uppercase tracking-wide">Multi-agent coordination</p>
+          <p class="text-sm text-gray-400">Zep has no real-time multi-agent coordination mechanism. There's no pub/sub, no cross-agent event stream, no way for one agent's discovery to reach another agent in real time.</p>
+        </div>
+        <div class="glass rounded-xl p-4">
+          <p class="text-xs text-purple-400 font-medium mb-1 uppercase tracking-wide">Architecture enforcement</p>
+          <p class="text-sm text-gray-400">Zep has no concept of typed constraint nodes, corpus ingestion, or CI pipeline enforcement. It cannot check a PR diff against your architecture documentation.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── VS OBSIDIAN + CLAUDE.MD ────────────────────────────────────── -->
+<section id="vs-obsidian" class="relative z-10 py-20 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <h2 class="text-3xl font-bold text-white mb-4">engram vs Obsidian + CLAUDE.md</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">This is the most common current approach for teams using Claude Code. Markdown notes in Obsidian, CLAUDE.md files in repos. It works — for a while. Here's where it breaks down at scale.</p>
+    </div>
+
+    <div class="glass rounded-2xl overflow-hidden mb-10">
+      <div class="overflow-x-auto">
+        <table class="w-full obsidian-table">
+          <thead>
+            <tr>
+              <th>Dimension</th>
+              <th>Obsidian + CLAUDE.md</th>
+              <th>engram</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Who writes the memory</td>
+              <td><span class="text-gray-300">You, the human — manually</span></td>
+              <td><span class="text-purple-300">AI agents write as they work, automatically</span></td>
+            </tr>
+            <tr>
+              <td>Stays current</td>
+              <td><span class="text-gray-300">Decays — requires manual upkeep; outdated in weeks</span></td>
+              <td><span class="text-purple-300">Self-updating — agents write every session</span></td>
+            </tr>
+            <tr>
+              <td>Multi-agent shared</td>
+              <td><span class="text-gray-300">No — each agent reads its own CLAUDE.md snapshot</span></td>
+              <td><span class="text-purple-300">Yes — all agents read the same live graph</span></td>
+            </tr>
+            <tr>
+              <td>Temporal queries</td>
+              <td><span class="text-gray-300">No — there is no "as of March 15th" for markdown files</span></td>
+              <td><span class="text-purple-300">Yes — every node carries valid_from / valid_until</span></td>
+            </tr>
+            <tr>
+              <td>Architecture enforcement</td>
+              <td><span class="text-gray-300">No — CLAUDE.md can suggest; it cannot block a PR</span></td>
+              <td><span class="text-purple-300">Yes — corpus.check_all() enforces in CI</span></td>
+            </tr>
+            <tr>
+              <td>Audit trail</td>
+              <td><span class="text-gray-300">Git blame on the markdown file — no agent attribution</span></td>
+              <td><span class="text-purple-300">Every write: agent_id, tool, git_commit, ticket, timestamp</span></td>
+            </tr>
+            <tr>
+              <td>Access control</td>
+              <td><span class="text-gray-300">File system permissions — no granular ACLs</span></td>
+              <td><span class="text-purple-300">Namespace ACLs per API key — surgical control</span></td>
+            </tr>
+            <tr>
+              <td>Real-time coordination</td>
+              <td><span class="text-gray-300">No — files are read at session start, static thereafter</span></td>
+              <td><span class="text-purple-300">SSE / webhook push — agents know in milliseconds</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="gradient-border mb-8">
+      <div class="gradient-border-inner px-8 py-6 rounded-2xl">
+        <p class="text-white font-semibold text-lg mb-3 text-center">The fundamental difference</p>
+        <p class="text-gray-400 text-sm leading-relaxed text-center max-w-2xl mx-auto">"Obsidian is a notebook you manage. You are the librarian. engram is a living knowledge graph the team builds together — where AI is also a contributor. The former scales with your discipline. The latter scales with your team's activity."</p>
+      </div>
+    </div>
+
+    <div class="glass rounded-2xl p-6">
+      <h4 class="text-white font-semibold mb-3">When Obsidian + CLAUDE.md works</h4>
+      <p class="text-gray-400 text-sm leading-relaxed mb-4">For a solo developer or a very small team that is disciplined about maintaining markdown notes, Obsidian + CLAUDE.md is a reasonable starting point. It has zero infrastructure overhead and works well for a single user's Claude Code context.</p>
+      <h4 class="text-white font-semibold mb-3">When it breaks down</h4>
+      <div class="grid md:grid-cols-3 gap-4">
+        <div class="bg-white/2 rounded-xl p-4">
+          <p class="text-xs text-red-400 font-medium mb-1 uppercase">Team &gt; 3 people</p>
+          <p class="text-xs text-gray-500 leading-relaxed">Notes diverge. CLAUDE.md files proliferate. No one knows which version is canonical. Agents get contradictory instructions from different files.</p>
+        </div>
+        <div class="bg-white/2 rounded-xl p-4">
+          <p class="text-xs text-red-400 font-medium mb-1 uppercase">Multiple AI agents</p>
+          <p class="text-xs text-gray-500 leading-relaxed">Agent A's CLAUDE.md is different from Agent B's. They make inconsistent decisions because they read different context snapshots.</p>
+        </div>
+        <div class="bg-white/2 rounded-xl p-4">
+          <p class="text-xs text-red-400 font-medium mb-1 uppercase">Any compliance requirement</p>
+          <p class="text-xs text-gray-500 leading-relaxed">There is no audit trail, no governance, and no way to prove which AI agent made which decision. Compliance requires more than git blame on a markdown file.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── THREE UNIQUE THINGS ────────────────────────────────────────── -->
+<section class="relative z-10 py-20 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-14">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">What Makes engram Unique</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Three things no other memory tool has</h2>
+      <p class="text-gray-400 max-w-lg mx-auto">These aren't features — they're capabilities that exist nowhere else in the AI memory tooling ecosystem.</p>
+    </div>
+
+    <div class="grid md:grid-cols-3 gap-6">
+      <div class="gradient-border h-full">
+        <div class="gradient-border-inner p-8 rounded-2xl h-full">
+          <div class="w-12 h-12 bg-cyan-500/10 border border-cyan-500/20 rounded-2xl flex items-center justify-center mb-6">
+            <svg class="w-6 h-6 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          </div>
+          <h3 class="text-white font-bold text-xl mb-3">Temporal Memory</h3>
+          <p class="text-gray-400 text-sm leading-relaxed mb-4">Query the knowledge graph as of any past date. Know what your team knew on March 15th. Track how understanding evolved. Watch when a decision was superseded and by what.</p>
+          <div class="code-block p-4 mt-4">
+            <pre class="text-xs leading-relaxed"><code><span class="token-cmt"># What did we know about auth on March 15?</span>
+<span class="token-var">results</span> <span class="token-kw">=</span> <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-fn">search</span>(
+    <span class="token-str">"authentication strategy"</span>,
+    as_of<span class="token-kw">=</span><span class="token-str">"2026-03-15"</span>,
+    namespace<span class="token-kw">=</span><span class="token-str">"org:acme:engineering"</span>,
+)</code></pre>
+          </div>
+          <p class="text-xs text-cyan-400 mt-4 font-medium">Only engram supports this.</p>
+        </div>
+      </div>
+
+      <div class="gradient-border h-full">
+        <div class="gradient-border-inner p-8 rounded-2xl h-full">
+          <div class="w-12 h-12 bg-orange-500/10 border border-orange-500/20 rounded-2xl flex items-center justify-center mb-6">
+            <svg class="w-6 h-6 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
+          </div>
+          <h3 class="text-white font-bold text-xl mb-3">Architecture Enforcement</h3>
+          <p class="text-gray-400 text-sm leading-relaxed mb-4">Ingest your docs as constraints. Every agent's code is automatically checked against your architecture at search time and in CI. This is governance, not just memory — rules that enforce themselves.</p>
+          <div class="code-block p-4 mt-4">
+            <pre class="text-xs leading-relaxed"><code><span class="token-cmt"># Enforce in CI — no manual review</span>
+<span class="token-var">result</span> <span class="token-kw">=</span> <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-var">corpus</span>.<span class="token-fn">check_all</span>(
+    code<span class="token-kw">=</span><span class="token-var">pr_diff</span>,
+    context<span class="token-kw">=</span><span class="token-str">"auth service"</span>,
+)
+<span class="token-kw">if</span> <span class="token-var">result</span>[<span class="token-num">0</span>].<span class="token-var">shall_violations</span>:
+    <span class="token-var">sys</span>.<span class="token-fn">exit</span>(<span class="token-num">1</span>)</code></pre>
+          </div>
+          <p class="text-xs text-orange-400 mt-4 font-medium">Only engram supports this.</p>
+        </div>
+      </div>
+
+      <div class="gradient-border h-full">
+        <div class="gradient-border-inner p-8 rounded-2xl h-full">
+          <div class="w-12 h-12 bg-green-500/10 border border-green-500/20 rounded-2xl flex items-center justify-center mb-6">
+            <svg class="w-6 h-6 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z"/></svg>
+          </div>
+          <h3 class="text-white font-bold text-xl mb-3">Complete Audit Trail</h3>
+          <p class="text-gray-400 text-sm leading-relaxed mb-4">Every memory write carries agent_id, tool, git_commit, and ticket. In an AI-assisted world, know exactly which agent made which decision and why. Forever queryable. Compliance-grade provenance.</p>
+          <div class="code-block p-4 mt-4">
+            <pre class="text-xs leading-relaxed"><code><span class="token-cmt"># Query by agent — who made this?</span>
+<span class="token-var">decisions</span> <span class="token-kw">=</span> <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-fn">query</span>(
+    memory_type<span class="token-kw">=</span><span class="token-str">"decision"</span>,
+    provenance__agent_id<span class="token-kw">=</span><span class="token-str">"arch-agent-01"</span>,
+    provenance__ticket<span class="token-kw">=</span><span class="token-str">"ARCH-42"</span>,
+)</code></pre>
+          </div>
+          <p class="text-xs text-green-400 mt-4 font-medium">Only engram supports this at team scale.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── CTA ──────────────────────────────────────────────────────────── -->
+<section class="relative z-10 py-24 fade-in">
+  <div class="max-w-2xl mx-auto px-6 text-center">
+    <h2 class="text-4xl font-bold text-white mb-5">Ready to stop comparing<br /><span class="gradient-text">and start deploying?</span></h2>
+    <p class="text-gray-400 mb-10">Self-host with Docker in 90 seconds. MIT licensed. No lock-in. If you're running AI-assisted engineering at any scale, your team needs a memory layer built for teams — not individuals.</p>
+    <div class="flex items-center justify-center gap-4">
+      <a href="#" class="glow-btn text-white font-semibold px-8 py-3.5 rounded-full text-sm">Deploy Free</a>
+      <a href="https://github.com/thameema/engram" class="text-sm text-gray-300 hover:text-white border border-gray-700 hover:border-gray-500 px-8 py-3.5 rounded-full transition-colors flex items-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        Star on GitHub
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ───────────────────────────────────────────────────────── -->
+<footer class="relative z-10 border-t border-gray-800/60 py-12">
+  <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6">
+    <div class="flex items-center gap-2.5">
+      <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gfoot4)" opacity="0.6"/>
+        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gfoot4)" opacity="0.8"/>
+        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gfoot4)"/>
+        <defs><linearGradient id="gfoot4" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/></linearGradient></defs>
+      </svg>
+      <span class="text-white font-semibold">engram</span>
+      <span class="text-gray-600 text-sm ml-2">Memory for AI agents</span>
+    </div>
+    <div class="flex items-center gap-8 text-sm text-gray-500">
+      <a href="https://github.com/thameema/engram/tree/main/docs/guides" class="hover:text-gray-300 transition-colors">Docs</a>
+      <a href="https://github.com/thameema/engram" class="hover:text-gray-300 transition-colors">GitHub</a>
+      <a href="use-cases.html" class="hover:text-gray-300 transition-colors">Use Cases</a>
+      <a href="governance.html" class="hover:text-gray-300 transition-colors">Governance</a>
+      <a href="compare.html" class="hover:text-gray-300 transition-colors">Compare</a>
+      <a href="https://github.com/thameema/engram/blob/main/LICENSE" class="hover:text-gray-300 transition-colors">MIT License</a>
+    </div>
+    <div class="text-xs text-gray-700">Built by AI agents, for AI agents.</div>
+  </div>
+</footer>
+
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+  document.querySelectorAll('a[href^="#"]').forEach(a => {
+    a.addEventListener('click', e => {
+      const target = document.querySelector(a.getAttribute('href'));
+      if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth' }); }
+    });
+  });
+</script>
+</body>
+</html>
