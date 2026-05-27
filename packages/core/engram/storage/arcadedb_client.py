@@ -504,6 +504,41 @@ class ArcadeDBClient:
             return None
         return _row_to_memory(rows[0])
 
+    async def scan_namespace(
+        self,
+        namespace: str,
+        *,
+        batch_size: int = 500,
+        memory_type: str | None = None,
+        include_superseded: bool = False,
+    ) -> list[MemoryEntry]:
+        """Return all memories in a namespace, paginated internally using SKIP/LIMIT.
+
+        Use for export/backup — not for search (no ranking).
+        """
+        where_parts = ["namespace = :ns"]
+        params: dict = {"ns": namespace}
+        if not include_superseded:
+            where_parts.append("status = 'active'")
+        if memory_type is not None:
+            where_parts.append("memory_type = :mt")
+            params["mt"] = memory_type
+
+        where = "WHERE " + " AND ".join(where_parts)
+        results: list[MemoryEntry] = []
+        skip = 0
+        while True:
+            rows = await self.execute(
+                f"SELECT * FROM Memory {where} ORDER BY created_at ASC "
+                f"SKIP {skip} LIMIT {batch_size}",
+                params,
+            )
+            results.extend(_row_to_memory(row) for row in rows)
+            if len(rows) < batch_size:
+                break
+            skip += batch_size
+        return results
+
     async def get_memory_by_id(self, memory_id: str) -> MemoryEntry | None:
         """Look up a memory by ID without a namespace constraint (for cross-ns Qdrant results)."""
         rows = await self._query(
@@ -1876,17 +1911,19 @@ class ArcadeDBClient:
         filter_types = [ft.lower().strip() for ft in raw_filter_types if ft]
         now = _now()
 
-        parts = namespace.split(":")
-        ns_list = [":".join(parts[:i+1]) for i in range(len(parts))]
-        placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
-        params = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
-        params.update({"last_seen": to_epoch_ms(last_seen), "limit": limit})
+        # Match subscription namespace and all child namespaces (event-log semantics:
+        # include superseded memories so the feed shows every write, not just survivors)
+        params = {
+            "ns": namespace,
+            "ns_prefix": namespace + ":%",
+            "last_seen": to_epoch_ms(last_seen),
+            "limit": limit,
+        }
         rows = await self._query(
-            f"SELECT * FROM Memory "
-            f"WHERE created_at > :last_seen "
-            f"AND superseded_at IS NULL "
-            f"AND namespace IN [{placeholders}] "
-            f"ORDER BY created_at ASC LIMIT :limit",
+            "SELECT * FROM Memory "
+            "WHERE created_at > :last_seen "
+            "AND (namespace = :ns OR namespace LIKE :ns_prefix) "
+            "ORDER BY created_at ASC LIMIT :limit",
             params,
         )
         memories = [_row_to_memory(r) for r in rows]
@@ -2069,13 +2106,13 @@ class ArcadeDBClient:
         ns_filter = namespace if namespace not in ("all", "", "*") else None
         if ns_filter:
             rows = await self._query(
-                "SELECT out.id as memory_id, in.name as entity_name "
-                "FROM MENTIONS WHERE out.namespace = :ns AND in.namespace = :ns",
+                "SELECT @out.id as memory_id, @in.name as entity_name "
+                "FROM MENTIONS WHERE @out.namespace = :ns AND @in.namespace = :ns",
                 {"ns": ns_filter},
             )
         else:
             rows = await self._query(
-                "SELECT out.id as memory_id, in.name as entity_name FROM MENTIONS"
+                "SELECT @out.id as memory_id, @in.name as entity_name FROM MENTIONS"
             )
         # Group by memory_id, then emit all pairs
         from collections import defaultdict
@@ -2179,6 +2216,18 @@ class ArcadeDBClient:
             "member_names": r.get("member_names") or [],
             "member_count": r.get("member_count", 0),
         }
+
+    # ------------------------------------------------------------------
+    # Public wrappers for migration runner
+    # ------------------------------------------------------------------
+
+    async def execute(self, sql: str, params: dict | None = None) -> list[dict]:
+        """Public wrapper for arbitrary SQL queries. Used by migration runner."""
+        return await self._query(sql, params or {})
+
+    async def execute_command(self, sql: str, params: dict | None = None) -> None:
+        """Public wrapper for arbitrary SQL commands. Used by migration runner."""
+        await self._command(sql, params or {})
 
 
 # ---------------------------------------------------------------------------

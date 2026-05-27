@@ -112,6 +112,7 @@ class HealthResponse(BaseModel):
     status: str
     arcadedb: str
     version: str = "0.2.0"
+    schema_version: str = "1.0"
 
 
 class NamespaceCreateRequest(BaseModel):

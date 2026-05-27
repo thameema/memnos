@@ -520,6 +520,12 @@ class EngramClient:
             )
             try:
                 await self._arcadedb.insert_memory(copy, embedding)
+                if self._vector_backend is not None:
+                    try:
+                        mtype = copy.memory_type.value if hasattr(copy.memory_type, "value") else str(copy.memory_type)
+                        await self._vector_backend.upsert(str(copy.id), embedding, delivery_ns, memory_type=mtype)
+                    except Exception as qexc:
+                        logger.warning("fan-out Qdrant upsert failed (non-fatal): %s", qexc)
                 logger.debug(
                     "fan-out: copied memory %s → %s (subscriber: %s)",
                     original.id, delivery_ns, sub["subscriber_id"],
