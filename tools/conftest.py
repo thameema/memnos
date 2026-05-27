@@ -9,6 +9,10 @@ automatically skipped rather than erroring.
 """
 from __future__ import annotations
 
+# smoke_test.py is a standalone runner script; its test_* functions take a
+# requests.Session param that is not a pytest fixture, so exclude it.
+collect_ignore = ["smoke_test.py"]
+
 import os
 from types import SimpleNamespace
 

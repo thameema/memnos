@@ -630,3 +630,242 @@ class TestCommunityAPIEndpoint(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Part C — Integration tests (require live ArcadeDB + engram API)
+# Uses the pytest runner fixture from conftest.py; skipped automatically
+# when the engram API is not reachable.
+# ---------------------------------------------------------------------------
+
+import base64
+import json
+import os
+import uuid
+
+import pytest
+
+_ARCADEDB_URL = "http://localhost:2480"
+_DB_NAME = "engram"
+_ENGRAM_API = os.environ.get("ENGRAM_API_URL", "http://127.0.0.1:8766")
+_ENGRAM_KEY = os.environ.get("ENGRAM_API_KEY", "engram-local-dev-key")
+_TEST_COMM_NS_BASE = "test:community:integ"
+
+
+def _adb_auth() -> dict:
+    pw = os.environ.get("ARCADEDB_PASSWORD", "engram-dev-password")
+    creds = base64.b64encode(f"root:{pw}".encode()).decode()
+    return {"Authorization": f"Basic {creds}", "Content-Type": "application/json"}
+
+
+def _adb_command(sql: str, params: dict | None = None) -> list[dict]:
+    import httpx
+    body: dict = {"language": "sql", "command": sql}
+    if params:
+        body["params"] = params
+    r = httpx.post(
+        f"{_ARCADEDB_URL}/api/v1/command/{_DB_NAME}",
+        content=json.dumps(body),
+        headers=_adb_auth(),
+        timeout=10.0,
+    )
+    r.raise_for_status()
+    return r.json().get("result", [])
+
+
+def _adb_query(sql: str, params: dict | None = None) -> list[dict]:
+    import httpx
+    body: dict = {"language": "sql", "command": sql}
+    if params:
+        body["params"] = params
+    r = httpx.post(
+        f"{_ARCADEDB_URL}/api/v1/query/{_DB_NAME}",
+        content=json.dumps(body),
+        headers=_adb_auth(),
+        timeout=10.0,
+    )
+    r.raise_for_status()
+    return r.json().get("result", [])
+
+
+def _uid8() -> str:
+    return str(uuid.uuid4())[:8]
+
+
+def _now_ms() -> int:
+    from datetime import datetime, timezone
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
+def _setup_cooccurrence_graph(ns: str) -> None:
+    """Seed ArcadeDB with entities and MENTIONS edges for community detection.
+
+    Graph layout:
+      memory0 → alpha, beta, gamma  (3-way; alpha/beta reinforced by memory1)
+      memory1 → alpha, beta
+      memory2 → delta, gamma        (gamma bridges the two groups)
+
+    With greedy modularity this should produce at least one community of
+    size >= 2 (alpha+beta+gamma form the densest cluster).
+    """
+    for i in range(3):
+        _adb_command(
+            "INSERT INTO Memory SET "
+            "id = :id, content = :content, namespace = :ns, "
+            "created_at = :ts, superseded_at = null, "
+            "tags = [], source = 'test', metadata = {}, "
+            "memory_type = 'fact', status = 'active', "
+            "author = '', affects = [], rationale = '', "
+            "expires_at = null, review_by = null, "
+            "provenance = {}, content_embedding = []",
+            {"id": f"{ns}-mem{i}", "content": f"comm integ memory {i}", "ns": ns, "ts": _now_ms()},
+        )
+
+    for ename in ("alpha", "beta", "gamma", "delta"):
+        _adb_command(
+            "INSERT INTO Entity SET "
+            "id = :id, name = :name, entity_type = 'CONCEPT', namespace = :ns, created_at = :ts",
+            {"id": f"{ns}-{ename}", "name": ename, "ns": ns, "ts": _now_ms()},
+        )
+
+    edges = [
+        (f"{ns}-mem0", "alpha"),
+        (f"{ns}-mem0", "beta"),
+        (f"{ns}-mem0", "gamma"),
+        (f"{ns}-mem1", "alpha"),
+        (f"{ns}-mem1", "beta"),
+        (f"{ns}-mem2", "delta"),
+        (f"{ns}-mem2", "gamma"),
+    ]
+    for mid, ename in edges:
+        _adb_command(
+            "CREATE EDGE MENTIONS "
+            "FROM (SELECT FROM Memory WHERE id = :mid AND namespace = :ns) "
+            "TO (SELECT FROM Entity WHERE name = :ename AND namespace = :ns) "
+            "IF NOT EXISTS",
+            {"mid": mid, "ename": ename, "ns": ns},
+        )
+
+
+def _cleanup_ns(ns: str) -> None:
+    for vtype in ("Community", "Entity", "Memory"):
+        try:
+            _adb_command(f"DELETE VERTEX {vtype} WHERE namespace = :ns", {"ns": ns})
+        except Exception:
+            pass
+
+
+async def _run_detect(ns: str):
+    from engram.storage.arcadedb_client import ArcadeDBClient
+    from engram.community.detector import detect_communities
+
+    pw = os.environ.get("ARCADEDB_PASSWORD", "engram-dev-password")
+    client = ArcadeDBClient(
+        host="localhost",
+        port=2480,
+        username="root",
+        password=pw,
+        database=_DB_NAME,
+    )
+    client._client = __import__("httpx").AsyncClient(
+        headers=client._headers,
+        timeout=__import__("httpx").Timeout(30.0, connect=10.0),
+    )
+    try:
+        return await detect_communities(client, ns, min_size=2, persist=True)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_detect_communities_finds_cluster(runner) -> None:
+    """detect_communities returns at least one cluster from seeded co-occurrences."""
+    ns = f"{_TEST_COMM_NS_BASE}:{_uid8()}"
+    _cleanup_ns(ns)
+    try:
+        _setup_cooccurrence_graph(ns)
+        results = await _run_detect(ns)
+        assert results, "No communities detected — expected at least one cluster"
+        assert all(r.member_count >= 2 for r in results), "All communities must have >= 2 members"
+        all_members = {m for r in results for m in r.member_names}
+        assert "alpha" in all_members and "beta" in all_members, (
+            "alpha and beta should be in the same community (co-appear in 2 memories)"
+        )
+    finally:
+        _cleanup_ns(ns)
+
+
+@pytest.mark.asyncio
+async def test_detect_communities_persists_to_db(runner) -> None:
+    """Community vertices are written to ArcadeDB after detection."""
+    ns = f"{_TEST_COMM_NS_BASE}:{_uid8()}"
+    _cleanup_ns(ns)
+    try:
+        _setup_cooccurrence_graph(ns)
+        results = await _run_detect(ns)
+        assert results, "No communities to check persistence for"
+
+        rows = _adb_query(
+            "SELECT id, label, member_count FROM Community WHERE namespace = :ns",
+            {"ns": ns},
+        )
+        assert rows, "Community vertices not found in ArcadeDB after detect_communities"
+        stored_ids = {r["id"] for r in rows}
+        for r in results:
+            assert r.community_id in stored_ids, (
+                f"Community {r.community_id} not persisted"
+            )
+    finally:
+        _cleanup_ns(ns)
+
+
+@pytest.mark.asyncio
+async def test_communities_api_endpoint(runner) -> None:
+    """GET /knowledge/communities returns persisted communities for a namespace."""
+    import httpx as _httpx
+    ns = f"{_TEST_COMM_NS_BASE}:{_uid8()}"
+    _cleanup_ns(ns)
+    try:
+        _setup_cooccurrence_graph(ns)
+        results = await _run_detect(ns)
+        assert results, "No communities detected — cannot test API endpoint"
+
+        with _httpx.Client(headers={"X-API-Key": _ENGRAM_KEY}, timeout=10) as client:
+            r = client.get(f"{_ENGRAM_API}/api/v1/knowledge/communities", params={"ns": ns})
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+        body = r.json()
+        assert body["namespace"] == ns
+        assert body["count"] >= 1, "API returned 0 communities after detection"
+        returned_ids = {c["id"] for c in body["communities"]}
+        for result in results:
+            assert result.community_id in returned_ids, (
+                f"Community {result.community_id} missing from API response"
+            )
+    finally:
+        _cleanup_ns(ns)
+
+
+@pytest.mark.asyncio
+async def test_communities_min_size_filter(runner) -> None:
+    """Communities with fewer members than min_size are excluded from results."""
+    ns = f"{_TEST_COMM_NS_BASE}:{_uid8()}"
+    _cleanup_ns(ns)
+    try:
+        _setup_cooccurrence_graph(ns)
+        results_min3 = await _run_detect(ns)
+        all_meet_size = all(r.member_count >= 2 for r in results_min3)
+        assert all_meet_size, "Some communities violate the min_size=2 threshold"
+    finally:
+        _cleanup_ns(ns)
+
+
+@pytest.mark.asyncio
+async def test_detect_communities_empty_namespace(runner) -> None:
+    """detect_communities on a namespace with no entities returns empty list."""
+    ns = f"{_TEST_COMM_NS_BASE}:empty:{_uid8()}"
+    _cleanup_ns(ns)
+    try:
+        results = await _run_detect(ns)
+        assert results == [], f"Expected empty list, got: {results}"
+    finally:
+        _cleanup_ns(ns)

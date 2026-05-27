@@ -373,3 +373,49 @@ async def delete_memory(
 
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Memory {memory_id!r} not found")
+
+
+# ---------------------------------------------------------------------------
+# Governance
+# ---------------------------------------------------------------------------
+
+@router.get("/governance", response_model=dict)
+async def get_governance(
+    entities: str = Query(..., description="Comma-separated entity names"),
+    ns: str = Query(..., description="Namespace to search within"),
+    user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
+    client=Depends(get_client),
+) -> dict:
+    """Return active constraints and decisions/ADRs governing a set of entities.
+
+    Decisions/ADRs are filtered by whether their affects[] field overlaps with
+    the requested entities. Constraints are all active constraints in the namespace.
+    """
+    await check_namespace_access(key_entry, ns)
+
+    entity_list = [e.strip() for e in entities.split(",") if e.strip()]
+    entity_set = {e.lower() for e in entity_list}
+
+    try:
+        decision_query = " ".join(entity_list) if entity_list else "decisions architecture"
+        raw_decisions = await client.search(decision_query, ns, top_k=100)
+        decisions = [
+            r for r in raw_decisions
+            if r.memory.memory_type.value in ("decision", "adr")
+            and entity_set & {a.lower() for a in (getattr(r.memory, "affects", None) or [])}
+        ]
+
+        constraint_results = await client.search("constraints rules must always", ns, top_k=50)
+        constraints = [
+            r for r in constraint_results
+            if r.memory.memory_type.value == "constraint"
+        ]
+    except Exception as exc:
+        logger.exception("Governance query failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "decisions": [_to_response(r.memory, score=r.score) for r in decisions],
+        "constraints": [_to_response(r.memory, score=r.score) for r in constraints],
+    }

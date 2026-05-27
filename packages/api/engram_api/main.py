@@ -189,6 +189,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await client.start()
     logger.info("EngramClient started")
 
+    from engram.migrations.runner import run_pending  # noqa: PLC0415
+    applied = await run_pending(client._arcadedb)
+    if applied:
+        logger.info("Applied %d migration(s): %s", len(applied), applied)
+    else:
+        logger.info("Schema up to date, no migrations needed")
+
     task_store = TaskStore()
     await task_store.init()
 
