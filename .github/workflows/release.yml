@@ -7,11 +7,10 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 jobs:
-  build-and-publish:
-    name: Build & publish packages
+  build-and-release:
+    name: Build & attach packages to release
     runs-on: ubuntu-latest
 
     steps:
@@ -23,27 +22,27 @@ jobs:
           python-version: "3.11"
 
       - name: Install build tools
-        run: pip install --upgrade pip build twine
+        run: pip install --upgrade pip build
 
       - name: Build engram-sdk
         run: python -m build packages/sdk --outdir dist/
 
       - name: Build engram-core
-        run: python -m build packages/core --outdir dist/
+        run: |
+          pip install -e packages/core
+          python -m build packages/core --outdir dist/
 
-      - name: Publish to GitHub Packages
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-          TWINE_REPOSITORY_URL: https://pypi.pkg.github.com/${{ github.repository_owner }}/
-        run: twine upload dist/*
-
-      - name: Create GitHub Release
+      - name: Upload packages to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG=${GITHUB_REF#refs/tags/}
-          gh release create "$TAG" \
-            --title "engram $TAG" \
-            --generate-notes \
-            dist/*.whl dist/*.tar.gz
+          # Create release if it doesn't exist yet, otherwise just upload assets
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.whl dist/*.tar.gz --clobber
+          else
+            gh release create "$TAG" \
+              --title "engram $TAG" \
+              --generate-notes \
+              dist/*.whl dist/*.tar.gz
+          fi
