@@ -13,7 +13,7 @@ Claude Code  ──── MCP stdio or SSE ────►  engram server
                                             └── Mobile gateway   (Telegram / WhatsApp)
 ```
 
-> **v0.2** — ArcadeDB replaces Neo4j + Qdrant + Graphiti. One container, no OpenAI key required for embeddings. See [DESIGN.md](DESIGN.md) for the full architecture.
+> **v1.1.0** — Corpus ingestion + architecture enforcement (`engram-sdk[corpus]`), LangChain and LlamaIndex integrations, 93 tests. ArcadeDB backend — one container, no OpenAI key required for embeddings. See [DESIGN.md](DESIGN.md) for the full architecture.
 
 ---
 
@@ -242,6 +242,7 @@ See the complete guide in [docs/claude-code-setup.md](docs/claude-code-setup.md)
 | `packages/api` | REST API and dashboard | FastAPI |
 | `packages/gateway` | Mobile messaging | python-telegram-bot, Evolution API |
 | `packages/learning` | Self-improvement | Reflection, skill extraction, APScheduler |
+| `packages/sdk` | Python SDK — programmatic access, LangChain & LlamaIndex integrations | httpx, pydantic, langchain-core (optional) |
 
 **Infrastructure (default):** one Docker container (ArcadeDB) — no Neo4j, no Graphiti. Vector search uses numpy-accelerated cosine similarity in the Python layer with a 5-minute TTL cache, scaling comfortably to ~100K memories.
 
@@ -540,6 +541,155 @@ Imports every note as a memory, maps `[[wikilinks]]` to graph edges, and maps fo
 
 ---
 
+## Python SDK
+
+Install the SDK to access engram from any Python application or AI framework:
+
+```bash
+pip install engram-sdk                        # core SDK
+pip install 'engram-sdk[langchain]'           # + LangChain memory backend
+pip install 'engram-sdk[llamaindex]'          # + LlamaIndex reader
+pip install 'engram-sdk[all]'                 # all integrations
+```
+
+### Basic usage
+
+```python
+from engram_sdk import EngramClient
+
+with EngramClient(url="http://localhost:8766", api_key="your-key") as client:
+    # Write a memory
+    client.write(
+        "Selected ArcadeDB over Neo4j+Qdrant — single container, multi-model",
+        namespace="org:acme:engineering",
+        memory_type="decision",
+        affects=["database", "infrastructure"],
+        rationale="Eliminates two separate services, no external vector DB",
+    )
+
+    # Search memories
+    results = client.search("database architecture decisions", namespace="org:acme:engineering")
+    for r in results:
+        print(f"[{r.memory_type}] {r.content}")
+```
+
+### LangChain integration
+
+Drop engram in as a memory backend for any LangChain chain or agent:
+
+```python
+from langchain.chains import ConversationChain
+from engram_sdk import EngramClient
+from engram_sdk.integrations.langchain import EngramMemory
+
+client = EngramClient(url="http://localhost:8766", api_key="your-key")
+memory = EngramMemory(client=client, namespace="org:acme", session_id="session-42")
+
+chain = ConversationChain(llm=your_llm, memory=memory)
+chain.run("What database should we use for the user service?")
+# → memories from past sessions automatically injected as context
+```
+
+Install: `pip install 'engram-sdk[langchain]'`
+
+### LlamaIndex integration
+
+Load engram memories as LlamaIndex Documents for RAG pipelines:
+
+```python
+from llama_index.core import VectorStoreIndex
+from engram_sdk import EngramClient
+from engram_sdk.integrations.llamaindex import EngramReader
+
+client = EngramClient(url="http://localhost:8766", api_key="your-key")
+reader = EngramReader(client=client, namespace="org:acme:engineering")
+
+# Load memories as documents and build an index
+documents = reader.load_data(query="authentication decisions", top_k=20)
+index = VectorStoreIndex.from_documents(documents)
+query_engine = index.as_query_engine()
+print(query_engine.query("What auth approach did we choose?"))
+```
+
+Install: `pip install 'engram-sdk[llamaindex]'`
+
+### Async client
+
+All methods are available in async form via `AsyncEngramClient`:
+
+```python
+from engram_sdk import AsyncEngramClient
+
+async with AsyncEngramClient(url="http://localhost:8766", api_key="your-key") as client:
+    results = await client.search("auth decisions", namespace="org:acme")
+    await client.write("JWT is our auth standard", namespace="org:acme", memory_type="decision")
+```
+
+---
+
+## Corpus Ingestion & Architecture Enforcement
+
+engram can ingest a repository of architecture documents (decisions, constraints, facts) and enforce them automatically in CI.
+
+### Register a corpus
+
+```bash
+curl -X POST http://localhost:8766/api/v1/corpus/ \
+  -H "X-API-Key: your-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "architecture-docs",
+    "connector_type": "git_doc",
+    "config": {
+      "repo_url": "https://github.com/acme/architecture",
+      "branch": "main",
+      "namespace": "org:acme:engineering"
+    }
+  }'
+
+# Sync it
+curl -X POST http://localhost:8766/api/v1/corpus/{id}/sync \
+  -H "X-API-Key: your-key"
+```
+
+### Check code against architecture in CI
+
+```python
+from engram_sdk import EngramClient
+
+with EngramClient(url="http://localhost:8766", api_key="your-key") as client:
+    result = client.corpus.check(corpus_id, content=pull_request_diff)
+
+    # SHALL violations = hard failures
+    if result.shall_violations:
+        print(result.format())
+        raise SystemExit(1)   # blocks the merge
+
+    # SHOULD violations = warnings
+    for v in result.should_violations:
+        print(f"Warning: {v.rule}")
+```
+
+**Severity levels:**
+
+| Marker | Level | CI effect |
+|--------|-------|-----------|
+| `SHALL` / `MUST` | Hard constraint | Blocks merge |
+| `MUST NOT` | Hard prohibition | Blocks merge |
+| `SHOULD` | Recommendation | Warning annotation |
+| `MAY` | Suggestion | Informational |
+
+### Add a quality gate to CI
+
+```bash
+# In your CI pipeline
+python -m pytest tools/test_decision_coverage.py -v
+```
+
+This enforces that architecture decisions in engram have `affects[]` and `rationale` populated — catching low-quality memory writes before they accumulate.
+
+---
+
 ## Developer Setup
 
 ```bash
@@ -550,21 +700,24 @@ ENGRAM_CONFIG=engram.yaml ARCADEDB_PASSWORD=... ENGRAM_API_KEY=... ENGRAM_VAULT_
   python -m engram_api.main
 ```
 
-Run the test suite (requires ArcadeDB running):
+Run the test suite:
 
 ```bash
 cd /path/to/engram
+
+# Unit tests — no ArcadeDB required (93 tests)
+.venv/bin/python -m pytest tools/test_learning.py tools/test_api_features.py \
+  tools/test_corpus.py tools/test_subscriptions.py -v
+
+# Architecture decision quality gate
+.venv/bin/python -m pytest tools/test_decision_coverage.py -v
+
+# Integration tests — requires ArcadeDB running
 ARCADEDB_PASSWORD=engram-dev-password \
 ENGRAM_API_KEY=engram-local-dev-key \
 ENGRAM_VAULT_KEY=dev-key-for-local-testing-only \
 ENGRAM_CONFIG=engram.yaml \
-.venv/bin/python -m pytest tools/test_engram.py -v
-
-# Self-learning subsystem tests (no ArcadeDB needed — fully mocked)
-.venv/bin/python -m pytest tools/test_learning.py -v
-
-# Phase 2 tests: knowledge API, read-only keys, runtime key store
-.venv/bin/python -m pytest tools/test_api_features.py -v
+.venv/bin/python -m pytest tools/test_arcadedb.py tools/test_corpus.py -v
 
 # MCP stdio transport tests
 .venv/bin/python -m pytest tools/test_mcp_stdio.py -v
