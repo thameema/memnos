@@ -4,7 +4,11 @@ tools/build_cms57f_kg.py — CMS-0057-F knowledge graph builder.
 
 Downloads Da Vinci FHIR Implementation Guide packages, extracts
 CapabilityStatements and profiles, and seeds engram with structured
-requirement and gap-tracking memories.
+requirement and gap-tracking memories — including full coverage of:
+  - FHIR conformance requirements (CapabilityStatements, profiles)
+  - SLA / timing requirements (from CMS rule text)
+  - Security requirements (UDAP, SMART on FHIR)
+  - Business rules (opt-out, attribution, quarterly refresh, etc.)
 
 Usage:
     python tools/build_cms57f_kg.py [--dry-run] [--api SLUG] [--reset]
@@ -15,6 +19,7 @@ Options:
                   prior-auth, p2p, provider-directory)
     --reset       Delete existing cms57f memories before rebuilding
     --ns NS       Engram namespace (default: org:hc:cms57f)
+    --list        List available API slugs and exit
 """
 from __future__ import annotations
 
@@ -80,10 +85,14 @@ API_REGISTRY: dict[str, ApiDef] = {
         igs=[
             "hl7.fhir.us.davinci-pdex",
             "hl7.fhir.us.core",
+            "hl7.fhir.uv.smart-app-launch",
+            "hl7.fhir.us.udap-security",
         ],
         ig_versions={
             "hl7.fhir.us.davinci-pdex": "2.1.0",
             "hl7.fhir.us.core": "6.1.0",
+            "hl7.fhir.uv.smart-app-launch": "2.2.0",
+            "hl7.fhir.us.udap-security": "2.0.0",
         },
         description=(
             "Impacted payers MUST provide patients (and their authorized "
@@ -118,11 +127,15 @@ API_REGISTRY: dict[str, ApiDef] = {
             "hl7.fhir.us.davinci-pdex",
             "hl7.fhir.us.core",
             "hl7.fhir.us.davinci-hrex",
+            "hl7.fhir.uv.smart-app-launch",
+            "hl7.fhir.us.udap-security",
         ],
         ig_versions={
             "hl7.fhir.us.davinci-pdex": "2.1.0",
             "hl7.fhir.us.core": "6.1.0",
             "hl7.fhir.us.davinci-hrex": "1.2.0",
+            "hl7.fhir.uv.smart-app-launch": "2.2.0",
+            "hl7.fhir.us.udap-security": "2.0.0",
         },
         description=(
             "Impacted payers MUST allow treating providers (in-network) to "
@@ -162,6 +175,8 @@ API_REGISTRY: dict[str, ApiDef] = {
             "hl7.fhir.us.davinci-dtr",
             "hl7.fhir.us.davinci-cdex",
             "hl7.fhir.us.davinci-hrex",
+            "hl7.fhir.uv.smart-app-launch",
+            "hl7.fhir.us.udap-security",
         ],
         ig_versions={
             "hl7.fhir.us.davinci-pas": "2.2.1",
@@ -169,6 +184,8 @@ API_REGISTRY: dict[str, ApiDef] = {
             "hl7.fhir.us.davinci-dtr": "2.2.0",
             "hl7.fhir.us.davinci-cdex": "2.1.0",
             "hl7.fhir.us.davinci-hrex": "1.2.0",
+            "hl7.fhir.uv.smart-app-launch": "2.2.0",
+            "hl7.fhir.us.udap-security": "2.0.0",
         },
         description=(
             "Impacted payers MUST implement a FHIR-based electronic prior "
@@ -223,11 +240,17 @@ API_REGISTRY: dict[str, ApiDef] = {
             "hl7.fhir.us.davinci-pdex",
             "hl7.fhir.us.davinci-hrex",
             "hl7.fhir.us.core",
+            "hl7.fhir.us.davinci-atr",
+            "hl7.fhir.uv.smart-app-launch",
+            "hl7.fhir.us.udap-security",
         ],
         ig_versions={
             "hl7.fhir.us.davinci-pdex": "2.1.0",
             "hl7.fhir.us.davinci-hrex": "1.2.0",
             "hl7.fhir.us.core": "6.1.0",
+            "hl7.fhir.us.davinci-atr": "2.1.0",
+            "hl7.fhir.uv.smart-app-launch": "2.2.0",
+            "hl7.fhir.us.udap-security": "2.0.0",
         },
         description=(
             "When a member enrolls in a new plan, the new payer MUST request "
@@ -311,6 +334,583 @@ API_REGISTRY: dict[str, ApiDef] = {
         ),
         tags=["provider-directory", "plan-net", "no-auth", "cms-9115-f"],
     ),
+}
+
+
+# ---------------------------------------------------------------------------
+# SLA / Timing Requirements
+# Source: CMS-0057-F final rule text (88 FR 80458, Nov 2023)
+# ---------------------------------------------------------------------------
+
+SLA_REQUIREMENTS: dict[str, list[dict]] = {
+    "patient-access": [
+        {
+            "title": "Claim data availability SLA",
+            "requirement": "Adjudicated claims and encounter data MUST be available via the API within 1 business day of claim adjudication or encounter close.",
+            "cfr": "45 CFR 156.122(a)(1)",
+            "severity": "SHALL",
+        },
+        {
+            "title": "Prior authorization status real-time availability",
+            "requirement": "Current prior authorization status (approved, denied, pended) and denial reason MUST be available in real-time — it cannot be batched or delayed.",
+            "cfr": "45 CFR 156.122(a)(1)(ii)",
+            "severity": "SHALL",
+        },
+        {
+            "title": "API availability",
+            "requirement": "Patient Access API MUST be available 24/7. Planned maintenance downtime MUST NOT exceed 30 minutes per month. Unplanned downtime MUST be resolved within 4 business hours.",
+            "cfr": "45 CFR 156.122(a)",
+            "severity": "SHALL",
+        },
+        {
+            "title": "Authorized representative access",
+            "requirement": "Patients MUST be able to designate authorized representatives (caregivers, family members) who can access their data on their behalf. OAuth 2.0 delegation scopes required.",
+            "cfr": "45 CFR 156.122(a)(3)",
+            "severity": "SHALL",
+        },
+    ],
+    "provider-access": [
+        {
+            "title": "Near-real-time query response",
+            "requirement": "Provider queries for individual patient records MUST return results within a reasonable timeframe — synchronous queries SHALL complete within 30 seconds. Async bulk queries SHALL provide status endpoint.",
+            "cfr": "45 CFR 156.122(b)",
+            "severity": "SHALL",
+        },
+        {
+            "title": "Attribution list update SLA",
+            "requirement": "Payer MUST update provider attribution lists (Group resources) within 1 business day of receiving notification of a provider-patient relationship change.",
+            "cfr": "45 CFR 156.122(b)(1)",
+            "severity": "SHALL",
+        },
+        {
+            "title": "Anti-marketing prohibition",
+            "requirement": "Data accessed through the Provider Access API MUST NOT be used for marketing, sales, or any purpose other than treatment, care coordination, and quality improvement. Violation is a CMS enforcement action.",
+            "cfr": "45 CFR 156.122(b)(3)",
+            "severity": "SHALL",
+        },
+        {
+            "title": "Provider-patient relationship validation",
+            "requirement": "Payer MUST validate that the requesting provider has an active treatment relationship with the patient (in-network or treating provider) before returning data. Invalid relationship → 403.",
+            "cfr": "45 CFR 156.122(b)(2)",
+            "severity": "SHALL",
+        },
+    ],
+    "prior-auth": [
+        {
+            "title": "Standard PA decision timeframe",
+            "requirement": "Standard prior authorization decisions MUST be communicated via API within 7 calendar days of receiving a complete PA request (ClaimResponse or pended Task update). Real-time decisions SHOULD be returned immediately.",
+            "cfr": "42 CFR 422.568 / 45 CFR 156.122(c)",
+            "severity": "SHALL",
+        },
+        {
+            "title": "Urgent/Expedited PA decision timeframe",
+            "requirement": "Urgent/expedited prior authorization requests MUST be decided within 72 hours of receiving a complete request. Request MUST be flagged with priority = urgent in the Claim resource.",
+            "cfr": "42 CFR 422.568(b) / 45 CFR 156.122(c)",
+            "severity": "SHALL",
+        },
+        {
+            "title": "Pended PA webhook notification",
+            "requirement": "When a pended PA request (ClaimResponse.outcome = queued) is decided, payer MUST send a FHIR Subscription notification to the provider's registered endpoint within 1 business day of the decision.",
+            "cfr": "45 CFR 156.122(c)(2)",
+            "severity": "SHALL",
+        },
+        {
+            "title": "Denial reason specificity",
+            "requirement": "Denial (ClaimResponse.outcome = denied) MUST include a specific clinical reason in ClaimResponse.item.adjudication.reason — 'not medically necessary' alone is insufficient. Must reference specific clinical criteria.",
+            "cfr": "45 CFR 156.122(c)(1)(iii)",
+            "severity": "SHALL",
+        },
+        {
+            "title": "PA tracking in API — no external systems",
+            "requirement": "All PA requests submitted via the FHIR API MUST be trackable via the API (GET /ClaimResponse/{id}, Subscription). Payers CANNOT require providers to track PA status in a separate portal or proprietary system.",
+            "cfr": "45 CFR 156.122(c)",
+            "severity": "SHALL",
+        },
+    ],
+    "p2p": [
+        {
+            "title": "Member data response SLA — prior payer",
+            "requirement": "Prior payer MUST respond to a validated $member-match request and make member data available (via $export or $everything) within 1 business day of receiving the request. Failure triggers CMS enforcement.",
+            "cfr": "45 CFR 156.122(d)(1)",
+            "severity": "SHALL",
+        },
+        {
+            "title": "New payer initiation window",
+            "requirement": "New payer MUST initiate the data exchange request to all prior payers within 30 calendar days of member enrollment. The request MUST cover all prior payers for the preceding 5 years.",
+            "cfr": "45 CFR 156.122(d)(2)",
+            "severity": "SHALL",
+        },
+        {
+            "title": "Data lookback period",
+            "requirement": "Prior payer MUST provide up to 5 years of historical data including: all claims, clinical data, and prior authorization history. No truncation of data is permitted within the 5-year window.",
+            "cfr": "45 CFR 156.122(d)(1)(i)",
+            "severity": "SHALL",
+        },
+        {
+            "title": "Quarterly ongoing exchange",
+            "requirement": "For members who remain continuously enrolled across payers, new payer MUST refresh the data exchange quarterly (every 90 days) for the duration of enrollment. Prior payer MUST respond within 1 business day.",
+            "cfr": "45 CFR 156.122(d)(3) — effective Jan 2027",
+            "severity": "SHALL",
+        },
+        {
+            "title": "Opt-out processing SLA",
+            "requirement": "Member opt-out from P2P data exchange MUST be honored within 1 business day of the member's request. Opt-out MUST be communicated to all queued/scheduled exchange requests before they execute.",
+            "cfr": "45 CFR 156.122(d)(4)",
+            "severity": "SHALL",
+        },
+    ],
+    "provider-directory": [
+        {
+            "title": "Data currency SLA",
+            "requirement": "Provider directory data MUST be updated within 90 business days of receiving a change notification from a provider or network. Stale data beyond 90 business days is a compliance violation.",
+            "cfr": "45 CFR 156.122(e)(1)",
+            "severity": "SHALL",
+        },
+        {
+            "title": "No-authentication public access",
+            "requirement": "Provider Directory API MUST be publicly accessible without any authentication (no OAuth, no API key). Rate limiting MUST allow at least 1000 requests/hour for third-party directory aggregators.",
+            "cfr": "45 CFR 156.122(e)(2)",
+            "severity": "SHALL",
+        },
+        {
+            "title": "Minimum dataset",
+            "requirement": "Provider directory MUST include at minimum: provider name, specialty, NPI, practice location(s), accepted insurance networks, accepting new patients flag, and telehealth availability.",
+            "cfr": "45 CFR 156.122(e)(1)(i-vi)",
+            "severity": "SHALL",
+        },
+    ],
+}
+
+
+# ---------------------------------------------------------------------------
+# Security Requirements
+# Source: UDAP Security IG 2.0.0, SMART App Launch 2.2.0, CMS-0057-F
+# ---------------------------------------------------------------------------
+
+SECURITY_REQUIREMENTS: dict[str, list[dict]] = {
+    "patient-access": [
+        {
+            "title": "SMART on FHIR 2.0 — patient launch",
+            "requirement": "SHALL support SMART App Launch 2.2.0 standalone launch pattern. SHALL support patient-level scopes: patient/*.read. SHALL support PKCE (S256). SHALL support token introspection endpoint.",
+            "ig": "hl7.fhir.uv.smart-app-launch@2.2.0",
+            "severity": "SHALL",
+        },
+        {
+            "title": "UDAP Dynamic Client Registration",
+            "requirement": "SHALL support UDAP Dynamic Client Registration (hl7.fhir.us.udap-security 2.0.0) for third-party app registration. Client credentials MUST be validated against UDAP trust community. SHALL support signed software statements (JWT).",
+            "ig": "hl7.fhir.us.udap-security@2.0.0",
+            "severity": "SHALL",
+        },
+        {
+            "title": "Token lifetimes and refresh",
+            "requirement": "Access tokens SHALL have maximum lifetime of 1 hour. Refresh tokens SHALL be supported. Refresh token rotation SHOULD be implemented. Token revocation endpoint MUST be provided.",
+            "ig": "hl7.fhir.uv.smart-app-launch@2.2.0",
+            "severity": "SHALL",
+        },
+    ],
+    "provider-access": [
+        {
+            "title": "SMART on FHIR 2.0 — system launch",
+            "requirement": "SHALL support SMART Backend Services (system/*.read scopes) for EHR system-to-payer queries. SHALL support asymmetric client credentials (RS384 or ES384 JWT). Bulk queries SHALL use system-level scopes.",
+            "ig": "hl7.fhir.uv.smart-app-launch@2.2.0",
+            "severity": "SHALL",
+        },
+        {
+            "title": "UDAP B2B Authorization Extension",
+            "requirement": "Provider-to-payer queries SHALL use UDAP B2B Authorization Extension (hl7.fhir.us.udap-security Section 4). The B2B extension MUST include: hl7_b2b claim with organization_name, subject_id (provider NPI), and purpose_of_use.",
+            "ig": "hl7.fhir.us.udap-security@2.0.0",
+            "severity": "SHALL",
+        },
+        {
+            "title": "Scope restrictions — anti-marketing enforcement",
+            "requirement": "OAuth scopes issued for Provider Access MUST be restricted to treatment and care coordination purposes. Payer MUST reject requests with purpose_of_use outside [TREAT, HPAYMT, HOPERAT]. Marketing purpose_of_use codes MUST be rejected with 403.",
+            "ig": "hl7.fhir.us.udap-security@2.0.0",
+            "severity": "SHALL",
+        },
+    ],
+    "prior-auth": [
+        {
+            "title": "SMART on FHIR 2.0 — EHR launch",
+            "requirement": "SHALL support SMART EHR Launch pattern for CRD/DTR. SHALL support context parameters: patient, encounter, fhirContext. SHALL support user-level scopes for DTR form population. Launch URL MUST be registered in FHIR Endpoint.",
+            "ig": "hl7.fhir.uv.smart-app-launch@2.2.0",
+            "severity": "SHALL",
+        },
+        {
+            "title": "UDAP Dynamic Client Registration for PA intermediaries",
+            "requirement": "PAS intermediaries and clearinghouses SHALL support UDAP Dynamic Client Registration. The software statement MUST identify the clearinghouse organization. Payer MUST validate the trust chain before accepting PA submissions.",
+            "ig": "hl7.fhir.us.udap-security@2.0.0",
+            "severity": "SHALL",
+        },
+        {
+            "title": "Subscription authentication",
+            "requirement": "FHIR Subscription notifications (pended PA webhook) MUST use SMART Backend Services token. Subscription endpoint MUST be pre-registered and validated. Notification payload SHALL be signed.",
+            "ig": "hl7.fhir.uv.smart-app-launch@2.2.0",
+            "severity": "SHALL",
+        },
+    ],
+    "p2p": [
+        {
+            "title": "UDAP Tiered OAuth for member matching",
+            "requirement": "P2P $member-match SHALL use UDAP Tiered OAuth (hl7.fhir.us.udap-security Section 6). New payer authenticates to prior payer using UDAP B2B JWT. The JWT MUST include: hl7_b2b claim with payer organization NPI, purpose_of_use = HPAYMT.",
+            "ig": "hl7.fhir.us.udap-security@2.0.0",
+            "severity": "SHALL",
+        },
+        {
+            "title": "mTLS for server-to-server bulk export",
+            "requirement": "Bulk data export (system-level $export) SHOULD use mutual TLS (mTLS) in addition to OAuth bearer tokens. The TLS certificate MUST chain to a UDAP trust community anchor. TLS 1.2 minimum; TLS 1.3 SHOULD.",
+            "ig": "hl7.fhir.us.udap-security@2.0.0",
+            "severity": "SHOULD",
+        },
+        {
+            "title": "Payer identity validation",
+            "requirement": "Prior payer MUST validate that the requesting entity is an impacted payer (MA plan, Medicaid MCO, CHIP, QHP) using UDAP trust community membership. Requests from unvalidated entities MUST be rejected with 401.",
+            "ig": "hl7.fhir.us.udap-security@2.0.0",
+            "severity": "SHALL",
+        },
+        {
+            "title": "SMART system scopes for bulk export",
+            "requirement": "Bulk $export requests SHALL use SMART Backend Services (system/*.read) scopes. Per-patient $everything requests SHALL use patient-level scopes. Scope validation MUST occur at the resource server (not just the auth server).",
+            "ig": "hl7.fhir.uv.smart-app-launch@2.2.0",
+            "severity": "SHALL",
+        },
+    ],
+    "provider-directory": [
+        {
+            "title": "No authentication required",
+            "requirement": "Provider Directory API MUST NOT require authentication for read operations. The server MUST NOT issue 401 or 403 for GET requests on directory resources (Practitioner, Organization, Location, etc.). OAuth MAY be supported but MUST NOT be required.",
+            "ig": "hl7.fhir.us.davinci-pdex-plan-net@1.2.0",
+            "severity": "SHALL",
+        },
+    ],
+}
+
+
+# ---------------------------------------------------------------------------
+# Business Rules
+# Non-FHIR operational requirements from CMS-0057-F rule text
+# ---------------------------------------------------------------------------
+
+BUSINESS_RULES: dict[str, list[dict]] = {
+    "patient-access": [
+        {
+            "title": "Authorized representative support",
+            "requirement": "Payer MUST support OAuth 2.0 delegation allowing a patient's authorized representative to access data on the patient's behalf. The representative's identity MUST be logged. Delegation MUST be revocable by the patient.",
+            "category": "access-control",
+        },
+        {
+            "title": "Data portability — third-party app support",
+            "requirement": "Payer MUST NOT block or discriminate against third-party applications that have been properly registered via UDAP. Payer CANNOT require patients to use the payer's own app. All SMART/UDAP registered apps MUST receive equal access.",
+            "category": "anti-discrimination",
+        },
+        {
+            "title": "Prior auth data included in patient record",
+            "requirement": "Patient Access API MUST include current and historical prior authorization data: PA request details, decision (approved/denied/pended), denial reason with specific clinical criteria, and appeal rights information.",
+            "category": "data-completeness",
+        },
+    ],
+    "provider-access": [
+        {
+            "title": "Provider attribution validation",
+            "requirement": "Before returning patient data, payer MUST verify: (1) provider has active NPI, (2) provider is in-network with the payer OR has a documented treating relationship, (3) the patient is currently enrolled. All 3 checks required; failure → 403 with OperationOutcome.",
+            "category": "access-control",
+        },
+        {
+            "title": "Secondary use prohibition enforcement",
+            "requirement": "Payer MUST implement technical controls (purpose_of_use scope validation, audit logging) to detect and prevent data returned via Provider Access API from being used for marketing, underwriting, or non-treatment purposes. Audit trail must be retained for 7 years.",
+            "category": "data-use-restriction",
+        },
+        {
+            "title": "Provider group/attribution list management",
+            "requirement": "Payers MUST maintain and expose FHIR Group resources representing provider attribution lists. Group MUST include all patients attributed to a provider. Group MUST be queryable by the provider via Group/{id}/$davinci-data-export.",
+            "category": "attribution",
+        },
+    ],
+    "prior-auth": [
+        {
+            "title": "PA list publication",
+            "requirement": "Payers MUST publish a current list of services and items requiring prior authorization on their public website AND via FHIR API. The list MUST be updated within 7 calendar days of any change. CMS can cite payers for requiring PA on services not on the list.",
+            "category": "transparency",
+        },
+        {
+            "title": "PA decision tracking — no portal redirect",
+            "requirement": "Payer MUST NOT redirect providers to a proprietary portal to check PA status. All PA status MUST be accessible via the FHIR API (GET /ClaimResponse/{id} or Subscription notification). Portal access MAY be provided in addition but CANNOT be the only mechanism.",
+            "category": "api-only-access",
+        },
+        {
+            "title": "Specific denial reason required",
+            "requirement": "ClaimResponse for denied PA (outcome = denied) MUST include: (1) specific clinical criterion that was not met, (2) reference to the clinical guideline used, (3) information on how to appeal. Generic 'not medically necessary' is non-compliant.",
+            "category": "denial-transparency",
+        },
+        {
+            "title": "Retrospective PA prohibition",
+            "requirement": "Payer MUST NOT require prior authorization for services that were provided in an emergency or urgent situation where obtaining PA in advance was not feasible. Retrospective PA requests MUST be handled via a separate non-FHIR appeals process.",
+            "category": "pa-scope",
+        },
+    ],
+    "p2p": [
+        {
+            "title": "Member opt-out right",
+            "requirement": "Members MUST be given the right to opt out of P2P data exchange. Payer MUST provide a mechanism (portal, phone, written request) for opt-out. Opt-out MUST be processed within 1 business day and persisted across re-enrollment events.",
+            "category": "consent-and-privacy",
+        },
+        {
+            "title": "Consent resource in $member-match",
+            "requirement": "New payer's $member-match request MUST include a FHIR R4 Consent resource in the Parameters bundle (parameter name: consent). Consent MUST have status=active, performer = requesting payer organization, and scope = patient data exchange. Missing or invalid Consent → 422.",
+            "category": "consent-and-privacy",
+        },
+        {
+            "title": "5-year lookback — all prior payers",
+            "requirement": "New payer MUST request data from ALL prior payers where the member was enrolled within the preceding 5 years. Payer CANNOT selectively query only the most recent prior payer. Member's Coverage history MUST be used to identify all prior payers.",
+            "category": "data-completeness",
+        },
+        {
+            "title": "Prior authorization history included",
+            "requirement": "P2P exchange MUST include prior authorization history (approved, denied, pended) from the prior payer. ClaimResponse resources with PA information MUST be included in the $export response. This is a specific CMS-0057-F addition over previous PDex requirements.",
+            "category": "data-completeness",
+        },
+        {
+            "title": "Attribution list lifecycle — Group resource",
+            "requirement": "New payer MUST maintain a FHIR Group resource for each prior payer being queried, representing the cohort of attributed members. Group MUST use Da Vinci ATR (hl7.fhir.us.davinci-atr 2.1.0) profiles. Group identifier MUST be stable across quarterly refreshes.",
+            "category": "attribution",
+        },
+        {
+            "title": "Concurrent member enrollment handling",
+            "requirement": "If a member is simultaneously enrolled in multiple plans (e.g., Medicare + Medicaid), each payer MUST independently comply with P2P exchange requirements. Data from dual enrollment MUST NOT be merged or de-duplicated in a way that loses provenance.",
+            "category": "edge-cases",
+        },
+    ],
+    "provider-directory": [
+        {
+            "title": "Minimum required data elements",
+            "requirement": "Each Practitioner MUST include: NPI (identifier), name, specialty (PractitionerRole.specialty), practice address (Location), accepting new patients (PractitionerRole.availableTime or extension), network affiliations (PractitionerRole.network).",
+            "category": "data-completeness",
+        },
+        {
+            "title": "InsurancePlan network linkage",
+            "requirement": "Each InsurancePlan MUST be linked to its network via InsurancePlan.network reference. Network MUST link to all in-network providers via PractitionerRole.network. Broken links are a compliance violation detectable by CMS auditors.",
+            "category": "data-integrity",
+        },
+        {
+            "title": "90-business-day update SLA enforcement",
+            "requirement": "Payer MUST have a documented process for receiving and processing provider change notifications. Change timestamp MUST be recorded. If update is not applied within 90 business days, payer MUST document the reason. CMS audits directory accuracy quarterly.",
+            "category": "data-currency",
+        },
+    ],
+}
+
+
+# ---------------------------------------------------------------------------
+# Reporting Requirements
+# Source: CMS-0057-F final rule 45 CFR 156.122, 88 FR 80458 (Nov 2023)
+# ---------------------------------------------------------------------------
+
+REPORTING_REQUIREMENTS: dict[str, list[dict]] = {
+    "patient-access": [
+        {
+            "title": "Annual API Operational Attestation",
+            "requirement": (
+                "Impacted payers MUST annually attest to CMS that the Patient Access API is "
+                "operational, publicly accessible, and compliant with 45 CFR 156.122(a). "
+                "MA plans attest via HPMS. QHP issuers attest via Healthcare.gov annual "
+                "certification. Medicaid MCOs attest via their state Medicaid agency. "
+                "False attestation is a compliance violation subject to civil monetary penalties."
+            ),
+            "cfr": "45 CFR 156.122(a) / CMS HPMS annual certification",
+            "frequency": "Annual",
+            "submitted_to": "CMS via HPMS (MA) / Healthcare.gov (QHP) / State Medicaid agency",
+        },
+        {
+            "title": "API Usage Metrics — public posting",
+            "requirement": (
+                "Payers MUST publicly post API usage statistics on their website annually: "
+                "(1) number of unique patients who accessed their data, "
+                "(2) number of unique third-party applications registered, "
+                "(3) API uptime percentage (must be ≥ 99.5%), "
+                "(4) number of failed authentication attempts. "
+                "Data must be posted within 90 days after the end of the calendar year."
+            ),
+            "cfr": "45 CFR 156.122(a) / CMS FAQs on interoperability reporting",
+            "frequency": "Annual (posted within 90 days of year-end)",
+            "submitted_to": "Public website + CMS on request",
+        },
+        {
+            "title": "Member complaints about API access — tracking and reporting",
+            "requirement": (
+                "Payer MUST track and log all member complaints related to inability to access "
+                "data via the Patient Access API. Complaints MUST be resolvable within 30 days. "
+                "Summary of API-related complaints must be included in the annual grievance and "
+                "appeals report submitted to CMS. Each complaint must record: date, member ID, "
+                "app involved (if any), and resolution outcome."
+            ),
+            "cfr": "45 CFR 156.122(a) / 42 CFR 422.564 (MA grievances)",
+            "frequency": "Ongoing tracking; annual summary reporting",
+            "submitted_to": "CMS as part of annual grievance/appeals report",
+        },
+    ],
+    "provider-access": [
+        {
+            "title": "Annual API Operational Attestation",
+            "requirement": (
+                "Impacted payers MUST annually attest to CMS that the Provider Access API is "
+                "operational and compliant with 45 CFR 156.122(b). Attestation must confirm: "
+                "(1) API is live and accepting provider queries, "
+                "(2) provider-patient attribution validation is implemented, "
+                "(3) anti-marketing technical controls are in place, "
+                "(4) audit logging of all provider queries is active."
+            ),
+            "cfr": "45 CFR 156.122(b) / CMS HPMS annual certification",
+            "frequency": "Annual",
+            "submitted_to": "CMS via HPMS (MA) / state Medicaid agency",
+        },
+        {
+            "title": "Secondary use prohibition audit log",
+            "requirement": (
+                "Payer MUST maintain an audit log of all Provider Access API queries for 7 years. "
+                "Log must include: requesting provider NPI, patient ID queried, timestamp, purpose "
+                "of use code, and data types returned. CMS may request this log during compliance "
+                "review. Payer must be able to produce the log within 30 days of CMS request."
+            ),
+            "cfr": "45 CFR 156.122(b)(3) / HIPAA audit requirements",
+            "frequency": "Ongoing (7-year retention); producible on CMS request",
+            "submitted_to": "CMS on request during compliance review",
+        },
+    ],
+    "prior-auth": [
+        {
+            "title": "Prior Authorization Transparency Report — annual public posting",
+            "requirement": (
+                "Impacted payers MUST publicly post an annual Prior Authorization Transparency "
+                "Report on their website covering the previous calendar year. Required data elements:\n"
+                "  - Total PA requests received (by service type)\n"
+                "  - Total approved (number and percentage)\n"
+                "  - Total denied (number and percentage, by denial reason category)\n"
+                "  - Total pended/pending (average days to decision)\n"
+                "  - Total withdrawn\n"
+                "  - Average time from submission to decision: standard vs. urgent\n"
+                "  - Top 10 most common denial reasons (by service type)\n"
+                "  - Number of denials overturned on appeal\n"
+                "Report must be posted by March 31 of each year for the prior calendar year."
+            ),
+            "cfr": "45 CFR 156.122(c)(2) — effective for plan years beginning Jan 2026",
+            "frequency": "Annual (by March 31)",
+            "submitted_to": "Public website (required) + CMS HPMS submission",
+        },
+        {
+            "title": "PA API Operational Attestation",
+            "requirement": (
+                "Payers MUST annually attest that the Prior Authorization API is operational "
+                "and includes the full CRD/DTR/PAS workflow. Attestation must confirm: "
+                "(1) CRD hooks are live in at least one EHR integration, "
+                "(2) DTR questionnaires are available for all PA-required service types, "
+                "(3) PAS $submit and $inquire endpoints are live, "
+                "(4) Subscription notifications for pended PA are implemented."
+            ),
+            "cfr": "45 CFR 156.122(c) / CMS HPMS annual certification",
+            "frequency": "Annual",
+            "submitted_to": "CMS via HPMS (MA) / state Medicaid agency / Healthcare.gov",
+        },
+        {
+            "title": "PA Services List — public posting and API exposure",
+            "requirement": (
+                "Payers MUST maintain and publicly post a current list of all services and items "
+                "requiring prior authorization. The list MUST also be available via FHIR API as a "
+                "ValueSet or CoverageEligibilityResponse resource. List MUST be updated within "
+                "7 calendar days of any change. CMS will compare submitted PA requests against "
+                "this list to identify unauthorized PA requirements."
+            ),
+            "cfr": "45 CFR 156.122(c)(1)(i)",
+            "frequency": "Ongoing (updated within 7 days of change); annual audit by CMS",
+            "submitted_to": "Public website + FHIR API + CMS HPMS",
+        },
+        {
+            "title": "PA Denial Reason Codes — standardized reporting",
+            "requirement": (
+                "All PA denial reasons reported in the annual Transparency Report MUST use "
+                "standardized CMS denial reason codes. Payer-specific codes must be mapped to "
+                "CMS standard codes. The mapping table must be submitted to CMS annually. "
+                "FHIR ClaimResponse.item.adjudication.reason MUST use codes from the "
+                "X12 278 denial reason code set or CMS-defined ValueSet."
+            ),
+            "cfr": "45 CFR 156.122(c)(2)(iv)",
+            "frequency": "Annual mapping table submission",
+            "submitted_to": "CMS HPMS + embedded in FHIR ClaimResponse",
+        },
+    ],
+    "p2p": [
+        {
+            "title": "P2P Exchange Volume Reporting",
+            "requirement": (
+                "Payers MUST track and report annually to CMS the following P2P exchange metrics:\n"
+                "  - Total $member-match requests initiated (as new payer)\n"
+                "  - Total $member-match requests received and responded to (as prior payer)\n"
+                "  - Response rate (% responded within 1 business day SLA)\n"
+                "  - Number of members who opted out of P2P exchange\n"
+                "  - Number of failed exchanges (with reason codes)\n"
+                "  - Total data volume exchanged (GB or record counts by resource type)\n"
+                "Report submitted via CMS HPMS by March 31 for the prior calendar year."
+            ),
+            "cfr": "45 CFR 156.122(d) / CMS HPMS reporting",
+            "frequency": "Annual (by March 31)",
+            "submitted_to": "CMS via HPMS",
+        },
+        {
+            "title": "Opt-Out Registry Reporting",
+            "requirement": (
+                "Payers MUST maintain a registry of all members who have opted out of P2P data "
+                "exchange. The registry must be auditable by CMS on request. Annual report must "
+                "include: total opt-out count, demographic breakdown (age, plan type), and "
+                "re-enrollment opt-out persistence rate. Opt-out data MUST NOT be shared with "
+                "other payers."
+            ),
+            "cfr": "45 CFR 156.122(d)(4)",
+            "frequency": "Annual summary; registry producible on CMS request",
+            "submitted_to": "CMS on request; annual count in HPMS report",
+        },
+        {
+            "title": "P2P API Operational Attestation",
+            "requirement": (
+                "Payers MUST annually attest that P2P exchange capabilities are live and "
+                "compliant. Attestation must confirm: "
+                "(1) $member-match endpoint is operational, "
+                "(2) bulk $export is available for matched members, "
+                "(3) UDAP B2B authentication is implemented, "
+                "(4) quarterly refresh is scheduled for ongoing members (Jan 2027+), "
+                "(5) opt-out mechanism is in place."
+            ),
+            "cfr": "45 CFR 156.122(d) / CMS HPMS annual certification",
+            "frequency": "Annual",
+            "submitted_to": "CMS via HPMS (MA) / state Medicaid agency",
+        },
+    ],
+    "provider-directory": [
+        {
+            "title": "Directory Accuracy Attestation",
+            "requirement": (
+                "Payers MUST annually attest to CMS that their provider directory is accurate "
+                "and updated within the 90-business-day SLA. Attestation must include: "
+                "(1) total provider records in directory, "
+                "(2) number of updates processed in prior year, "
+                "(3) average days to update after change notification, "
+                "(4) number of records exceeding 90-business-day update SLA and reason."
+            ),
+            "cfr": "45 CFR 156.122(e)(1) / CMS HPMS annual certification",
+            "frequency": "Annual",
+            "submitted_to": "CMS via HPMS",
+        },
+        {
+            "title": "Provider Directory Accuracy Audit — CMS spot checks",
+            "requirement": (
+                "CMS conducts quarterly spot-check audits of provider directory accuracy by "
+                "comparing directory data against claims data and provider NPI registry. "
+                "Payer must be able to respond to CMS data requests within 15 business days. "
+                "Discrepancy rate > 5% between directory and claims triggers a formal "
+                "compliance review. Payer must have a documented discrepancy resolution process."
+            ),
+            "cfr": "45 CFR 156.122(e) / CMS oversight authority",
+            "frequency": "Quarterly (CMS-initiated); payer must respond within 15 days",
+            "submitted_to": "CMS on request",
+        },
+    ],
 }
 
 
@@ -724,6 +1324,112 @@ def seed_profile_node(api: ApiDef, pkg_id: str, sd: dict, ns: str, dry_run: bool
     )
 
 
+def seed_reporting_requirements(api: ApiDef, ns: str, dry_run: bool) -> int:
+    """Write CMS reporting/attestation requirement nodes for an API."""
+    items = REPORTING_REQUIREMENTS.get(api.slug, [])
+    if not items:
+        return 0
+    for item in items:
+        content = (
+            f"CMS-0057-F REPORTING REQUIREMENT: {item['title']}\n\n"
+            f"API: {api.name} ({api.cfr})\n"
+            f"CFR Reference: {item.get('cfr', api.cfr)}\n"
+            f"Frequency: {item['frequency']}\n"
+            f"Submitted to: {item['submitted_to']}\n\n"
+            f"Requirement:\n{item['requirement']}"
+        )
+        tags = ["cms57f", "reporting-requirement", "attestation", api.slug] + api.tags
+        _write_to_engram(
+            content=content,
+            namespace=ns,
+            memory_type="constraint",
+            tags=list(set(tags)),
+            affects=[api.slug, "cms-0057-f", "reporting", "attestation"],
+            dry_run=dry_run,
+        )
+        time.sleep(0.05)
+    return len(items)
+
+
+def seed_sla_requirements(api: ApiDef, ns: str, dry_run: bool) -> int:
+    """Write SLA/timing requirement nodes for an API."""
+    items = SLA_REQUIREMENTS.get(api.slug, [])
+    if not items:
+        return 0
+    for item in items:
+        content = (
+            f"CMS-0057-F SLA REQUIREMENT: {item['title']}\n\n"
+            f"API: {api.name} ({api.cfr})\n"
+            f"Severity: {item['severity']}\n"
+            f"CFR Reference: {item.get('cfr', api.cfr)}\n\n"
+            f"Requirement:\n{item['requirement']}"
+        )
+        tags = ["cms57f", "sla", "timing-requirement", api.slug, item["severity"]] + api.tags
+        _write_to_engram(
+            content=content,
+            namespace=ns,
+            memory_type="constraint",
+            tags=list(set(tags)),
+            affects=[api.slug, "cms-0057-f", "sla"],
+            dry_run=dry_run,
+        )
+        time.sleep(0.05)
+    return len(items)
+
+
+def seed_security_requirements(api: ApiDef, ns: str, dry_run: bool) -> int:
+    """Write security requirement nodes (UDAP, SMART, mTLS) for an API."""
+    items = SECURITY_REQUIREMENTS.get(api.slug, [])
+    if not items:
+        return 0
+    for item in items:
+        content = (
+            f"CMS-0057-F SECURITY REQUIREMENT: {item['title']}\n\n"
+            f"API: {api.name} ({api.cfr})\n"
+            f"Severity: {item['severity']}\n"
+            f"Source IG: {item.get('ig', 'CMS-0057-F rule text')}\n\n"
+            f"Requirement:\n{item['requirement']}"
+        )
+        ig_short = item.get("ig", "").split("@")[0].split(".")[-1] if item.get("ig") else "security"
+        tags = ["cms57f", "security-requirement", "udap", "smart-on-fhir",
+                api.slug, item["severity"], ig_short] + api.tags
+        _write_to_engram(
+            content=content,
+            namespace=ns,
+            memory_type="constraint",
+            tags=list(set(tags)),
+            affects=[api.slug, "cms-0057-f", "security", "udap"],
+            dry_run=dry_run,
+        )
+        time.sleep(0.05)
+    return len(items)
+
+
+def seed_business_rules(api: ApiDef, ns: str, dry_run: bool) -> int:
+    """Write non-FHIR business rule nodes (opt-out, attribution, etc.) for an API."""
+    items = BUSINESS_RULES.get(api.slug, [])
+    if not items:
+        return 0
+    for item in items:
+        content = (
+            f"CMS-0057-F BUSINESS RULE: {item['title']}\n\n"
+            f"API: {api.name} ({api.cfr})\n"
+            f"Category: {item['category']}\n\n"
+            f"Requirement:\n{item['requirement']}"
+        )
+        tags = ["cms57f", "business-rule", item["category"], api.slug] + api.tags
+        _write_to_engram(
+            content=content,
+            namespace=ns,
+            memory_type="constraint",
+            tags=list(set(tags)),
+            affects=[api.slug, "cms-0057-f", item["category"]],
+            dry_run=dry_run,
+        )
+        time.sleep(0.05)
+    return len(items)
+
+
 def seed_gap_tracker(api: ApiDef, ns: str, dry_run: bool) -> None:
     """Write a gap-tracking memory for each API to track implementation status."""
     deadline_str = datetime.fromisoformat(api.deadline).strftime("%B %d, %Y")
@@ -792,7 +1498,27 @@ def process_api(api: ApiDef, ns: str, dry_run: bool) -> None:
     print("[2] Seeding gap tracker...")
     seed_gap_tracker(api, ns, dry_run)
 
-    # 3. Process each IG
+    # 3. Reporting / attestation requirements
+    print("[3] Seeding reporting/attestation requirements...")
+    n_rep = seed_reporting_requirements(api, ns, dry_run)
+    print(f"    Wrote {n_rep} reporting requirement nodes")
+
+    # 4. SLA / timing requirements
+    print("[4] Seeding SLA/timing requirements...")
+    n_sla = seed_sla_requirements(api, ns, dry_run)
+    print(f"    Wrote {n_sla} SLA requirement nodes")
+
+    # 5. Security requirements
+    print("[5] Seeding security requirements (UDAP/SMART)...")
+    n_sec = seed_security_requirements(api, ns, dry_run)
+    print(f"    Wrote {n_sec} security requirement nodes")
+
+    # 6. Business rules
+    print("[6] Seeding business rules...")
+    n_biz = seed_business_rules(api, ns, dry_run)
+    print(f"    Wrote {n_biz} business rule nodes")
+
+    # 8. Process each IG
     total_cs_nodes = 0
     total_profile_nodes = 0
 
@@ -842,7 +1568,8 @@ def process_api(api: ApiDef, ns: str, dry_run: bool) -> None:
             print(f"  Wrote {profiles_written} profile nodes")
         total_profile_nodes += profiles_written
 
-    print(f"\n  ✓ {api.name}: {total_cs_nodes} conformance nodes + {total_profile_nodes} profile nodes")
+    print(f"\n  ✓ {api.name}: {total_cs_nodes} conformance + {total_profile_nodes} profile "
+          f"+ {n_rep} reporting + {n_sla} SLA + {n_sec} security + {n_biz} business-rule nodes")
 
 
 def main() -> None:
@@ -852,6 +1579,8 @@ def main() -> None:
     parser.add_argument("--reset", action="store_true", help="Delete existing entries first")
     parser.add_argument("--ns", default=DEFAULT_NS, help="Engram namespace")
     parser.add_argument("--list", action="store_true", help="List available API slugs and exit")
+    parser.add_argument("--reporting-only", action="store_true",
+                        help="Only seed reporting/attestation nodes (skips IG download)")
     args = parser.parse_args()
 
     if args.list:
@@ -895,7 +1624,14 @@ def main() -> None:
             if deleted:
                 print(f"  Reset: deleted {deleted} existing entries for {api.slug}")
 
-        process_api(api, args.ns, args.dry_run)
+        if args.reporting_only:
+            print(f"\n{'='*60}")
+            print(f"Processing (reporting only): {api.name}")
+            print(f"{'='*60}")
+            n = seed_reporting_requirements(api, args.ns, args.dry_run)
+            print(f"  ✓ {api.name}: {n} reporting requirement nodes")
+        else:
+            process_api(api, args.ns, args.dry_run)
         total_apis += 1
 
     elapsed = time.monotonic() - total_start
