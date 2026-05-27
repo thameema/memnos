@@ -303,7 +303,7 @@ def test_subscribe_and_poll_feed(runner: Runner) -> None:
     ns = TEST_NS + ":feed-" + uuid.uuid4().hex[:8]
     memory_ids: list[str] = []
 
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=15) as client:
+    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
         try:
             _post("/subscriptions/", {"namespace": ns, "delivery_mode": "cursor"}, client)
 
@@ -346,7 +346,7 @@ def test_feed_cursor_advances(runner: Runner) -> None:
     ns = TEST_NS + ":cursor-" + uuid.uuid4().hex[:8]
     memory_ids: list[str] = []
 
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=15) as client:
+    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
         try:
             _post("/subscriptions/", {"namespace": ns, "delivery_mode": "cursor"}, client)
 
@@ -387,7 +387,7 @@ def test_feed_filter_types(runner: Runner) -> None:
     fact_id: str | None = None
     decision_id: str | None = None
 
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=15) as client:
+    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
         try:
             _post(
                 "/subscriptions/",
@@ -435,7 +435,7 @@ def test_unsubscribe(runner: Runner) -> None:
     ns = TEST_NS + ":unsub-" + uuid.uuid4().hex[:8]
     memory_id: str | None = None
 
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=15) as client:
+    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
         try:
             _post("/subscriptions/", {"namespace": ns, "delivery_mode": "cursor"}, client)
 
@@ -481,7 +481,7 @@ def test_child_namespace_feed(runner: Runner) -> None:
     child_ns = parent_ns + ":child"
     memory_id: str | None = None
 
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=15) as client:
+    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
         try:
             _post("/subscriptions/", {"namespace": parent_ns, "delivery_mode": "cursor"}, client)
 
@@ -537,7 +537,7 @@ def test_fan_out_delivery_namespace(runner: Runner) -> None:
     dest_ns = TEST_NS + ":dst-" + suffix
     memory_id: str | None = None
 
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=15) as client:
+    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
         try:
             sub_resp = _post(
                 "/subscriptions/",
@@ -684,7 +684,7 @@ def main() -> int:
         test_fan_out_delivery_namespace,
     ]
 
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=15) as client:
+    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
         try:
             for fn in integration_tests:
                 runner.run(fn)

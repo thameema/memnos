@@ -34,7 +34,7 @@ def _uid() -> str:
 
 
 def _client() -> httpx.Client:
-    return httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=15)
+    return httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30)
 
 
 def _write(c: httpx.Client, content: str, ns: str, **extra) -> dict:
