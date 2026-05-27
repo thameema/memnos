@@ -2180,6 +2180,18 @@ class ArcadeDBClient:
             "member_count": r.get("member_count", 0),
         }
 
+    # ------------------------------------------------------------------
+    # Public wrappers for migration runner
+    # ------------------------------------------------------------------
+
+    async def execute(self, sql: str, params: dict | None = None) -> list[dict]:
+        """Public wrapper for arbitrary SQL queries. Used by migration runner."""
+        return await self._query(sql, params or {})
+
+    async def execute_command(self, sql: str, params: dict | None = None) -> None:
+        """Public wrapper for arbitrary SQL commands. Used by migration runner."""
+        await self._command(sql, params or {})
+
 
 # ---------------------------------------------------------------------------
 # Row → model converters

@@ -870,6 +870,7 @@ def test_vector_search_performance(runner: TestRunner):
 def test_keyword_fallback_search(runner: TestRunner):
     """Keyword fallback search returns relevant memories when no HNSW."""
     ns = TEST_NS + ":kw-test"
+    arcade_command("DELETE FROM Memory WHERE namespace = :ns", {"ns": ns})
     mem_id = uid()
     arcade_command(
         "INSERT INTO Memory SET "
