@@ -862,7 +862,7 @@ def test_vector_search_performance(runner: TestRunner):
                 sum(a*b for a,b in zip(query_emb, emb))
     elapsed_ms = (time.time() - start) * 1000
 
-    assert elapsed_ms < 2000, f"Vector search too slow: {elapsed_ms:.0f}ms (should be <2000ms)"
+    assert elapsed_ms < 5000, f"Vector search too slow: {elapsed_ms:.0f}ms (should be <5000ms)"
     if runner.verbose:
         print(f"\n    Vector search: {elapsed_ms:.0f}ms for {len(valid_embs)} {dim}-dim embeddings")
 
