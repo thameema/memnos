@@ -35,13 +35,17 @@ ask() {
   else
     echo -ne "${CYAN}  ?${NC} ${prompt}: "
   fi
-  read -r input </dev/tty
+  # Read from /dev/tty when run interactively (curl|bash from a human),
+  # or from stdin when piped (agent feeding pre-recorded answers).
+  if [ -t 0 ]; then read -r input </dev/tty; else read -r input; fi
   eval "$varname='${input:-$default}'"
 }
 ask_yn() {
   local varname="$1" prompt="$2" default="${3:-Y}"
   echo -ne "${CYAN}  ?${NC} ${prompt} ${DIM}[${default}]${NC}: "
-  read -r input </dev/tty
+  # Read from /dev/tty when run interactively (curl|bash from a human),
+  # or from stdin when piped (agent feeding pre-recorded answers).
+  if [ -t 0 ]; then read -r input </dev/tty; else read -r input; fi
   input="${input:-$default}"
   [[ "$input" =~ ^[Yy] ]] && eval "$varname=yes" || eval "$varname=no"
 }
