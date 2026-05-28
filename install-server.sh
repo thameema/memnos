@@ -360,10 +360,48 @@ write_env() {
   success ".env written (mode 600)"
 }
 
+# ─── Tear down stale containers from a previous compose project ─────────────
+# If engram-arcadedb / engram / engram-qdrant exist but were started from a
+# different compose project (different directory, different network), they
+# cannot talk to a fresh engram container we start from ENGRAM_SRC — they
+# end up on different docker networks → 'httpx.ConnectError: All connection
+# attempts failed' inside engram. Remove them first; data persists in the
+# bind-mounted DATA_DIR.
+clean_stale_containers() {
+  local expected_net
+  expected_net="$(basename "${ENGRAM_SRC}")_default"
+  local stale=()
+  for c in engram engram-arcadedb engram-qdrant; do
+    docker inspect "$c" >/dev/null 2>&1 || continue
+    local nets
+    nets="$(docker inspect "$c" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null)"
+    # Stale if the container is NOT on the expected ENGRAM_SRC network
+    if ! echo "$nets" | grep -qw "$expected_net"; then
+      stale+=("$c")
+    fi
+  done
+  if [ ${#stale[@]} -gt 0 ]; then
+    step "Removing stale containers from a previous compose project"
+    info "These were started from a different directory and are on a different docker network."
+    info "Data on disk in ${DATA_DIR} is NOT touched — only the container shells are removed."
+    for c in "${stale[@]}"; do
+      info "  removing: $c"
+      docker rm -f "$c" >/dev/null 2>&1 || true
+    done
+    # Also tear down the old compose project if it lived at ~/.engram
+    if [ -f "${HOME}/.engram/docker-compose.yml" ]; then
+      info "  found old ~/.engram/docker-compose.yml — tearing down its project"
+      ( cd "${HOME}/.engram" && $DC down 2>/dev/null || true )
+      mv "${HOME}/.engram/docker-compose.yml" "${HOME}/.engram/docker-compose.yml.OBSOLETE.$(date +%s)" 2>/dev/null || true
+    fi
+  fi
+}
+
 # ─── Pull images, build engram, start services ───────────────────────────────
 start_services() {
   cd "${ENGRAM_SRC}"
   set -a; source .env; set +a
+  clean_stale_containers
 
   # Build the compose command — adds --profile qdrant if user opted in
   local DC_CMD="${DC}"
