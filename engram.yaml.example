@@ -46,8 +46,10 @@ auth:
       #     access: vault_admin     # can also read audit log
 
 arcadedb:
-  host: localhost          # use "arcadedb" inside Docker Compose
-  port: 2480
+  # In Docker Compose, ARCADEDB_HOST is set to "arcadedb" (the service name).
+  # For a non-Docker install, leave ARCADEDB_HOST unset → falls back to localhost.
+  host: ${ARCADEDB_HOST:-localhost}
+  port: ${ARCADEDB_PORT:-2480}
   database: engram
   username: root
   password: ${ARCADEDB_PASSWORD}
