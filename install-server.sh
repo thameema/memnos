@@ -60,6 +60,32 @@ cat <<'BANNER'
 BANNER
 echo -e "${NC}"
 
+# ─── Argument parsing ────────────────────────────────────────────────────────
+# --version <ref>    git ref (tag, branch, or commit) to install. Default:
+#                    resolved at runtime to the latest GitHub release tag,
+#                    falling back to master if the API is unreachable.
+# ENGRAM_REF env var also honoured (--version takes precedence).
+ENGRAM_REF_ARG=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --version) ENGRAM_REF_ARG="$2"; shift 2 ;;
+    --help|-h)
+      cat <<HLP
+  Usage: install-server.sh [--version <ref>]
+
+    --version <ref>   Pin to a specific git ref. Examples:
+                        --version v1.2.0     install release v1.2.0 (stable)
+                        --version master     install bleeding-edge master
+                        --version <sha>      install a specific commit
+
+                      Default: latest published GitHub Release (queried at
+                      install time). Override with ENGRAM_REF env var.
+HLP
+      exit 0 ;;
+    *) shift ;;
+  esac
+done
+
 # ─── Detect prior install and choose upgrade / fresh / abort ─────────────────
 INSTALL_MODE="fresh"   # fresh | upgrade
 detect_existing_install() {
@@ -217,13 +243,39 @@ collect_config() {
 }
 
 # ─── Create directory structure ───────────────────────────────────────────────
+# ─── Resolve which git ref to install (release tag, branch, or commit) ──────
+resolve_ref() {
+  # Priority: --version arg  >  ENGRAM_REF env  >  latest GitHub Release  >  master
+  if [ -n "${ENGRAM_REF_ARG}" ]; then
+    ENGRAM_REF="${ENGRAM_REF_ARG}"
+    info "Pinning to ref from --version: ${BOLD}${ENGRAM_REF}${NC}"
+    return
+  fi
+  if [ -n "${ENGRAM_REF:-}" ]; then
+    info "Pinning to ref from ENGRAM_REF env: ${BOLD}${ENGRAM_REF}${NC}"
+    return
+  fi
+  info "Looking up latest engram release on GitHub..."
+  local tag
+  tag="$(curl -fsSL --max-time 8 https://api.github.com/repos/thameema/engram/releases/latest 2>/dev/null \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || true)"
+  if [ -n "${tag}" ]; then
+    ENGRAM_REF="${tag}"
+    info "Latest release: ${BOLD}${ENGRAM_REF}${NC} (override with --version master for bleeding-edge)"
+  else
+    ENGRAM_REF="master"
+    warn "Could not query GitHub Releases API — falling back to ${BOLD}master${NC} branch."
+  fi
+}
+
 # ─── Resolve source tree (clone if not running from one) ─────────────────────
 resolve_source() {
   step "Resolving engram source"
+  resolve_ref
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-./install-server.sh}")" 2>/dev/null && pwd || echo "")"
   if [ -f "${SCRIPT_DIR}/docker-compose.yml" ] && [ -f "${SCRIPT_DIR}/docker/Dockerfile" ]; then
     ENGRAM_SRC="${SCRIPT_DIR}"
-    info "Using local source at ${ENGRAM_SRC}"
+    info "Using local source at ${ENGRAM_SRC} (ignoring --version because running from a clone)"
     return
   fi
 
@@ -231,14 +283,14 @@ resolve_source() {
   ENGRAM_SRC="${HOME}/.engram-src"
   command -v git &>/dev/null || die "git not found. Install git, or run this script from an engram source clone."
   if [ -d "${ENGRAM_SRC}/.git" ]; then
-    info "Updating engram source at ${ENGRAM_SRC}..."
-    ( cd "${ENGRAM_SRC}" && git fetch --depth 1 origin master 2>/dev/null \
-        && git reset --hard origin/master >/dev/null 2>&1 ) \
-      || warn "git update failed — using existing checkout"
+    info "Updating engram source at ${ENGRAM_SRC} → ${ENGRAM_REF}..."
+    ( cd "${ENGRAM_SRC}" && git fetch --depth 1 origin "${ENGRAM_REF}" 2>/dev/null \
+        && git reset --hard FETCH_HEAD >/dev/null 2>&1 ) \
+      || warn "git update to ${ENGRAM_REF} failed — using existing checkout"
   else
-    info "Cloning engram source to ${ENGRAM_SRC}..."
-    git clone --depth 1 https://github.com/thameema/engram.git "${ENGRAM_SRC}" 2>&1 | tail -2 \
-      || die "git clone failed."
+    info "Cloning engram@${ENGRAM_REF} to ${ENGRAM_SRC}..."
+    git clone --depth 1 --branch "${ENGRAM_REF}" https://github.com/thameema/engram.git "${ENGRAM_SRC}" 2>&1 | tail -2 \
+      || die "git clone failed for ref '${ENGRAM_REF}'. Check the ref exists: https://github.com/thameema/engram/releases"
   fi
   [ -f "${ENGRAM_SRC}/docker-compose.yml" ] || die "Clone is missing docker-compose.yml — repo layout changed?"
 

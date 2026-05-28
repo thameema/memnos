@@ -78,6 +78,28 @@ The installer will:
 - Create `~/.engram/` with your config and credentials
 - Optionally wire engram into Claude Code's MCP servers automatically
 
+### Choosing a version (stable vs bleeding-edge)
+
+By default the installer pulls **the latest published GitHub Release** — this is the recommended path for most users. To pin a specific version or track `master`:
+
+```bash
+# Pin to a specific release (recommended for production)
+curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh \
+  | bash -s -- --version v1.2.0
+
+# Track master (bleeding-edge — gets unreleased fixes and unreleased breakage)
+curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh \
+  | bash -s -- --version master
+
+# Pin a specific commit
+curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh \
+  | bash -s -- --version 808acc7
+```
+
+Available versions: [github.com/thameema/engram/releases](https://github.com/thameema/engram/releases)
+
+The same `--version` flag works on `install-server.sh` and is preserved when you re-run the installer in upgrade mode — so running the installer again later with `--version v1.3.0` will upgrade your install to that release.
+
 ### Windows
 
 Open **PowerShell as Administrator** and run:

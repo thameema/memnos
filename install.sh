@@ -76,12 +76,20 @@ while [[ $# -gt 0 ]]; do
     --client) MODE="client"; shift ;;
     --both)   MODE="both";   shift ;;
     --help|-h)
-      echo "  Usage: ./install.sh [--server|--client|--both]"
-      echo ""
-      echo "  --server   Install engram server (Docker: ArcadeDB + API)"
-      echo "  --client   Install Claude Code hooks for an existing engram server"
-      echo "  --both     Install server + client on this machine (default for local installs)"
-      echo ""
+      cat <<HLP
+  Usage: ./install.sh [--server|--client|--both] [--version <ref>]
+
+    --server          Install engram server (Docker: ArcadeDB + API)
+    --client          Install Claude Code hooks for an existing engram server
+    --both            Install server + client on this machine
+    --version <ref>   Pin engram to a specific git ref (passed to install-server.sh).
+                      Examples:
+                        --version v1.2.0     install release v1.2.0 (stable, recommended)
+                        --version master     install bleeding-edge master
+                      Default: latest published GitHub Release.
+
+  Releases:  https://github.com/thameema/engram/releases
+HLP
       exit 0 ;;
     *) EXTRA_ARGS+=("$1"); shift ;;
   esac
