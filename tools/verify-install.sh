@@ -114,34 +114,60 @@ fi
 # ─── 4. API auth — Bearer enforced, X-API-Key rejected ───────────────────────
 hdr "4. API authentication"
 
-# 4a. No auth → 401
-CODE=$(curl -s -o /dev/null -w "%{http_code}" "${ENGRAM_API}/api/v1/admin/health" 2>/dev/null)
-if [[ "$CODE" == "401" ]]; then
-  pass "no-auth request returns 401 (auth enforced)"
-elif [[ "$CODE" == "200" ]]; then
-  warn "no-auth request returns 200 (engram.yaml open_mode: true — auth disabled)"
-else
-  fail "no-auth request returns $CODE (expected 401 or 200)"
+# Read open_mode from engram.yaml so the test knows what's expected
+OPEN_MODE="unknown"
+if [[ -f "${YAML_FILE}" ]]; then
+  if grep -qE "^\s+open_mode:\s*true\b" "${YAML_FILE}"; then
+    OPEN_MODE="true"
+  elif grep -qE "^\s+open_mode:\s*false\b" "${YAML_FILE}"; then
+    OPEN_MODE="false"
+  fi
+fi
+note "engram.yaml open_mode = ${OPEN_MODE}"
+if [[ "$OPEN_MODE" == "true" ]]; then
+  note "  (full / single-user mode — auth bypassed by design, safe on localhost-only laptop)"
+elif [[ "$OPEN_MODE" == "false" ]]; then
+  note "  (server-only mode — Bearer auth ENFORCED, safe for shared / network / VM)"
 fi
 
-# 4b. Bearer → 200
-CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-  "${ENGRAM_API}/api/v1/admin/health" \
-  -H "Authorization: Bearer ${ENGRAM_KEY}" 2>/dev/null)
-[[ "$CODE" == "200" ]] && pass "Bearer auth → 200" || fail "Bearer auth → $CODE (API broken or wrong key)"
-
-# 4c. X-API-Key → 401 (proves we're using Bearer-only API)
-CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-  "${ENGRAM_API}/api/v1/admin/health" \
-  -H "X-API-Key: ${ENGRAM_KEY}" 2>/dev/null)
-if [[ "$CODE" == "401" ]]; then
-  pass "X-API-Key correctly REJECTED (proves Bearer is required, not optional)"
-elif [[ "$CODE" == "200" ]]; then
-  warn "X-API-Key accepted — but only because engram.yaml open_mode=true bypasses ALL auth checks."
-  warn "  (engram never validates X-API-Key; the request would have succeeded with no header too.)"
-  warn "  Set open_mode: false in ~/.engram/engram.yaml to enforce Bearer auth."
+# 4a. No auth
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "${ENGRAM_API}/api/v1/admin/namespaces" 2>/dev/null)
+if [[ "$OPEN_MODE" == "false" ]]; then
+  [[ "$CODE" == "401" ]] && pass "no-auth → 401 (auth correctly enforced)" \
+    || fail "no-auth → $CODE (expected 401 in server-only mode)"
 else
-  warn "X-API-Key returned $CODE"
+  [[ "$CODE" == "200" ]] && pass "no-auth → 200 (open_mode: true bypasses auth by design)" \
+    || warn "no-auth → $CODE (expected 200 in single-user mode)"
+fi
+
+# 4b. Bearer (correct key) → always 200
+CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+  "${ENGRAM_API}/api/v1/admin/namespaces" \
+  -H "Authorization: Bearer ${ENGRAM_KEY}" 2>/dev/null)
+[[ "$CODE" == "200" ]] && pass "Bearer (valid key) → 200" || fail "Bearer (valid) → $CODE — API broken or wrong key"
+
+# 4c. Wrong Bearer key — should reject in server-only mode
+CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+  "${ENGRAM_API}/api/v1/admin/namespaces" \
+  -H "Authorization: Bearer wrong-key-xyz" 2>/dev/null)
+if [[ "$OPEN_MODE" == "false" ]]; then
+  [[ "$CODE" == "401" ]] && pass "Bearer (wrong key) → 401 (auth correctly rejecting invalid keys)" \
+    || fail "Bearer (wrong key) → $CODE (expected 401 in server-only mode)"
+else
+  [[ "$CODE" == "200" ]] && pass "Bearer (wrong key) → 200 (open_mode bypasses key check by design)" \
+    || warn "Bearer (wrong key) → $CODE"
+fi
+
+# 4d. X-API-Key — engram never validates this header; in server-only mode it's
+#     rejected (no Bearer scheme), in single-user mode it's allowed through.
+CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+  "${ENGRAM_API}/api/v1/admin/namespaces" \
+  -H "X-API-Key: ${ENGRAM_KEY}" 2>/dev/null)
+if [[ "$OPEN_MODE" == "false" ]]; then
+  [[ "$CODE" == "401" ]] && pass "X-API-Key → 401 (engram never accepts this header)" \
+    || fail "X-API-Key → $CODE (expected 401 — engram is Bearer-only)"
+else
+  pass "X-API-Key → $CODE (open_mode bypasses auth — header value is not even checked)"
 fi
 
 # ─── 5. Memory write + search roundtrip (proves embeddings work) ─────────────

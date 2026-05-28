@@ -126,9 +126,9 @@ fi
 # ─── Dispatch ─────────────────────────────────────────────────────────────────
 case "$MODE" in
   server)
-    info "Running server installer..."
+    info "Running server installer in 'server-only' mode (Bearer auth ENFORCED)..."
     SERVER_SCRIPT="$(_get_script install-server.sh)"
-    bash "$SERVER_SCRIPT" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
+    bash "$SERVER_SCRIPT" --mode server-only "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
     ;;
 
   client)
@@ -138,9 +138,11 @@ case "$MODE" in
     ;;
 
   both)
-    info "Running server installer..."
+    info "Running server installer in 'full' mode (single-user local — open_mode: true)..."
     SERVER_SCRIPT="$(_get_script install-server.sh)"
-    bash "$SERVER_SCRIPT" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
+    # 'full' mode means server + client on the same laptop → safe to bypass auth
+    # because nothing on the network can reach it.
+    bash "$SERVER_SCRIPT" --mode full "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
 
     echo ""
     echo -e "${BOLD}>>> Installing Claude Code client hooks${NC}"
