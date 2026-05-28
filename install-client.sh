@@ -117,10 +117,20 @@ detect_existing_install() {
   [ -f "$HOME/.git-hooks/post-commit" ] && \
     grep -q "engram" "$HOME/.git-hooks/post-commit" 2>/dev/null && \
     found+=("~/.git-hooks/post-commit (engram-aware)")
+  # Check both MCP registration locations
   if [ -f "$CLAUDE_SETTINGS" ] && \
      python3 -c "import json,sys; d=json.load(open('$CLAUDE_SETTINGS')); sys.exit(0 if 'engram' in d.get('mcpServers',{}) else 1)" 2>/dev/null; then
-    found+=("settings.json: engram MCP already registered")
+    found+=("~/.claude/settings.json: engram MCP registered (legacy location)")
   fi
+  if [ -f "$HOME/.claude.json" ] && \
+     python3 -c "import json,sys; d=json.load(open('$HOME/.claude.json')); sys.exit(0 if 'engram' in d.get('mcpServers',{}) else 1)" 2>/dev/null; then
+    found+=("~/.claude.json: engram MCP registered (Claude Code v2 location)")
+  elif [ -f "$HOME/.claude.json" ]; then
+    found+=("~/.claude.json: exists but engram MCP NOT registered — /mcp will not show engram (this run will fix it)")
+  fi
+  # CLAUDE.md presence
+  [ -f "$HOME/.claude/CLAUDE.md" ] && grep -qE "engram MCP|engram — Persistent" "$HOME/.claude/CLAUDE.md" 2>/dev/null && \
+    found+=("~/.claude/CLAUDE.md: engram section already present")
 
   if [ ${#found[@]} -gt 0 ]; then
     step "Previous engram client install detected"
