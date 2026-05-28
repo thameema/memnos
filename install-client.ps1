@@ -6,7 +6,7 @@
 # Usage:
 #   .\install-client.ps1
 #   .\install-client.ps1 -Server http://host:8766 -Key engram-abc123
-#   .\install-client.ps1 -Server http://localhost:8766 -Key engram-abc123 -Namespace "personal:me"
+#   .\install-client.ps1 -Server http://localhost:8766 -Key engram-abc123 -Namespace "personal:default"
 #
 # Requirements: PowerShell 5.1+ (Windows 10/11 built-in) or PowerShell 7+
 #               Python 3.8+ (for heartbeat daemon)
@@ -78,7 +78,7 @@ if ([string]::IsNullOrWhiteSpace($EngramKey)) {
     throw "API key required. Get it from the server's .env file."
 }
 
-$DefaultNS = if ($Namespace) { $Namespace } else { Read-Input "Default namespace" "personal:me" }
+$DefaultNS = if ($Namespace) { $Namespace } else { Read-Input "Default namespace" "personal:default" }
 
 # ─── Test connection ──────────────────────────────────────────────────────────
 Write-Step "Testing server connection"
@@ -280,7 +280,7 @@ def cfg(key, default=''):
 
 api  = cfg('ENGRAM_API',        'http://localhost:8766')
 akey = cfg('ENGRAM_KEY',        '')
-ns   = cfg('ENGRAM_DEFAULT_NS', 'personal:me')
+ns   = cfg('ENGRAM_DEFAULT_NS', 'personal:default')
 import subprocess
 try:
     root = subprocess.check_output(['git','rev-parse','--show-toplevel'],

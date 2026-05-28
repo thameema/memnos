@@ -11,11 +11,11 @@ auth:
 
   api_keys:
     # Admin key — full read/write access to all namespaces.
-    # user_id must match the client's default namespace prefix
-    # (ENGRAM_DEFAULT_NS in ~/.claude/hooks/engram.env defaults to 'personal:me',
-    # so user_id 'me' auto-creates the matching 'personal:me' namespace).
+    # user_id auto-creates the matching personal:<user_id> namespace,
+    # which clients write to by default (ENGRAM_DEFAULT_NS=personal:default
+    # in ~/.claude/hooks/engram.env). Keep these aligned.
     - key: ${ENGRAM_API_KEY}
-      user_id: me
+      user_id: default
       namespaces: ["*"]
       read_only: false        # default; omit or set false for read-write
       # Fine-grained per-namespace access (optional):

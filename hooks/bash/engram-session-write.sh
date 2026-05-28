@@ -18,7 +18,7 @@ TRANSCRIPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin)
 [[ -z "$CWD" ]] && exit 0
 
 # Namespace resolution
-ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:me}"
+ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:default}"
 REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || echo "")
 if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]]; then
   FILE_NS=$(grep '^namespace=' "$REPO_ROOT/.engram" 2>/dev/null | cut -d= -f2 | tr -d ' ')

@@ -329,7 +329,7 @@ MCP results come back as plain text — read them directly, never spawn agents t
 ### Namespace guide
 | Content type          | Namespace              |
 |-----------------------|------------------------|
-| Personal notes        | personal:me            |
+| Personal notes        | personal:default            |
 | Shared team knowledge | org:myteam             |
 | Project-specific      | project:myproject      |
 ```
@@ -488,7 +488,7 @@ engram ships a built-in secrets vault using AES-256-GCM envelope encryption:
 curl -X POST http://localhost:8766/api/v1/vault/secrets \
   -H "Authorization: Bearer your-key" \
   -H "Content-Type: application/json" \
-  -d '{"key_name": "OPENAI_KEY", "value": "sk-...", "namespace": "personal:me", "note": "OpenAI key for embeddings"}'
+  -d '{"key_name": "OPENAI_KEY", "value": "sk-...", "namespace": "personal:default", "note": "OpenAI key for embeddings"}'
 
 # Or via Claude Code: "Store my OpenAI key in the vault as OPENAI_KEY"
 ```

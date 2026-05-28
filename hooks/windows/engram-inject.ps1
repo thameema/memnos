@@ -32,7 +32,7 @@ $EnvFile = Join-Path $env:USERPROFILE ".claude\hooks\engram.env"
 
 $ENGRAM_API        = "http://localhost:8766"
 $ENGRAM_KEY        = ""
-$ENGRAM_DEFAULT_NS = "personal:me"
+$ENGRAM_DEFAULT_NS = "personal:default"
 $ENGRAM_TOP_K      = 8
 $ENGRAM_MIN_SCORE  = 0.50
 

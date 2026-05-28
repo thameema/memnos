@@ -110,7 +110,7 @@ MCP results come back as plain text — read them directly, never spawn agents t
 ### Namespace guide
 | Content type     | Namespace           |
 |------------------|---------------------|
-| Personal notes   | personal:me         |
+| Personal notes   | personal:default         |
 | Team knowledge   | org:myteam          |
 | Project-specific | project:myproject   |
 ```
@@ -124,7 +124,7 @@ In a Claude Code session:
 ```
 Use memory_write to save:
   content: "engram is working correctly"
-  namespace: "personal:me"
+  namespace: "personal:default"
   tags: ["test"]
 ```
 
@@ -133,7 +133,7 @@ In a new session (to confirm persistence):
 ```
 Use memory_search to find:
   query: "engram working"
-  namespace: "personal:me"
+  namespace: "personal:default"
 ```
 
 The memory persists across sessions.
@@ -145,7 +145,7 @@ The memory persists across sessions.
 ```
 Use spawn_task with:
   prompt: "Search memory for all test entries and summarize what's there"
-  namespace: "personal:me"
+  namespace: "personal:default"
   runtime: "api"
 ```
 
@@ -177,16 +177,16 @@ Store API keys and credentials securely:
 curl -X POST http://localhost:8766/api/v1/vault/secrets \
   -H "Authorization: Bearer your-engram-api-key" \
   -H "Content-Type: application/json" \
-  -d '{"key_name": "GITHUB_TOKEN", "value": "ghp_...", "namespace": "personal:me", "note": "GitHub PAT"}'
+  -d '{"key_name": "GITHUB_TOKEN", "value": "ghp_...", "namespace": "personal:default", "note": "GitHub PAT"}'
 
 # Retrieve a secret
-curl http://localhost:8766/api/v1/vault/secrets/GITHUB_TOKEN?namespace=personal:me \
+curl http://localhost:8766/api/v1/vault/secrets/GITHUB_TOKEN?namespace=personal:default \
   -H "Authorization: Bearer your-engram-api-key"
 ```
 
 Or via Claude Code: `"Store my GitHub token in the vault as GITHUB_TOKEN"`.
 
-All vault access is written to an immutable audit log. See `GET /api/v1/vault/audit?namespace=personal:me`.
+All vault access is written to an immutable audit log. See `GET /api/v1/vault/audit?namespace=personal:default`.
 
 ---
 
@@ -243,7 +243,7 @@ For enterprise team configuration (namespace hierarchy, per-engineer API keys, s
 - The binary takes up to 40s on first start (embedding model loading). Claude Code's stdio timeout is 60s by default.
 
 **`memory_search` returns no results**
-- Check namespace: `org:myteam` won't find results stored under `personal:me`
+- Check namespace: `org:myteam` won't find results stored under `personal:default`
 - Use `namespace="all"` to search everything
 
 **Claude uses Bash/grep instead of memory_search**

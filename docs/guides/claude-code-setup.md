@@ -168,12 +168,12 @@ Call `memory_write` when:
 
 ### End of session
 When the user wraps up or says goodbye, write a session summary:
-`memory_write(content="Session [date]: ...", namespace="personal:me", tags=["session"])`
+`memory_write(content="Session [date]: ...", namespace="personal:default", tags=["session"])`
 
 ### Namespace guide
 | Content type          | Namespace              |
 |-----------------------|------------------------|
-| Personal notes        | personal:me            |
+| Personal notes        | personal:default            |
 | Shared team knowledge | org:myteam             |
 | Project-specific      | project:myproject      |
 | Customer context      | org:myteam:customers:customername |
@@ -252,7 +252,7 @@ The fastest path is the client installer — it writes all hook scripts, patches
                     --key engram-abc123                          # remote server
 ./install-client.sh --server http://localhost:8766 \
                     --key engram-abc123 \
-                    --namespace personal:me                      # with explicit namespace
+                    --namespace personal:default                      # with explicit namespace
 ```
 
 ```powershell
@@ -275,7 +275,7 @@ All hooks read their connection details from a single config file so you only ha
 # ~/.claude/hooks/engram.env
 ENGRAM_API=http://localhost:8766       # change to your remote server if needed
 ENGRAM_KEY=engram-abc123               # your API key
-ENGRAM_DEFAULT_NS=personal:me          # fallback namespace for all projects
+ENGRAM_DEFAULT_NS=personal:default          # fallback namespace for all projects
 ENGRAM_TOP_K=5                         # memories injected per prompt
 ```
 
@@ -310,7 +310,7 @@ The installer creates a `~/.claude/commands/engram.md` slash command. Type `/eng
 engram status
 
 Namespaces
-  • personal:me
+  • personal:default
   • project:my-project
   • org:myteam:engineering
 
@@ -346,7 +346,7 @@ mkdir -p ~/.claude/hooks ~/.git-hooks ~/.claude/commands
 cat > ~/.claude/hooks/engram.env <<'EOF'
 ENGRAM_API=http://localhost:8766
 ENGRAM_KEY=your-engram-api-key
-ENGRAM_DEFAULT_NS=personal:me
+ENGRAM_DEFAULT_NS=personal:default
 ENGRAM_TOP_K=5
 EOF
 ```
@@ -495,7 +495,7 @@ See [enterprise-team-setup.md](enterprise-team-setup.md) for the full team deplo
 - Or move the engram instructions to the project-level `CLAUDE.md` in your working directory.
 
 **memory_search returns no results**
-- Check namespace: `org:myteam` won't find results stored under `personal:me`
+- Check namespace: `org:myteam` won't find results stored under `personal:default`
 - Use `namespace="all"` to search everything: `memory_search(query="...", namespace="all")`
 - Verify memories exist: `curl http://localhost:8766/api/v1/graph/stats?namespace=all -H "Authorization: Bearer your-key"`
 

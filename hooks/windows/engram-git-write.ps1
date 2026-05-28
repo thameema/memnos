@@ -12,7 +12,7 @@ $EnvFile = Join-Path $env:USERPROFILE ".claude\hooks\engram.env"
 
 $ENGRAM_API             = "http://localhost:8766"
 $ENGRAM_KEY             = ""
-$ENGRAM_DEFAULT_NS      = "personal:me"
+$ENGRAM_DEFAULT_NS      = "personal:default"
 $SAVE_INTERVAL_MINUTES  = 10
 
 if (Test-Path $EnvFile) {
