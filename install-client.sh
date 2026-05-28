@@ -176,7 +176,7 @@ collect_config() {
 test_connection() {
   step "Testing server connection"
   if curl -sf --max-time 5 "${ENGRAM_SERVER}/api/v1/admin/health" \
-    -H "X-API-Key: ${ENGRAM_API_KEY}" -o /dev/null 2>/dev/null; then
+    -H "Authorization: Bearer ${ENGRAM_API_KEY}" -o /dev/null 2>/dev/null; then
     success "Connected to engram at ${ENGRAM_SERVER}"
   else
     warn "Could not reach ${ENGRAM_SERVER} — hooks will still be installed."
@@ -261,7 +261,7 @@ QUERY=$(echo "$PROMPT" | head -c 200 | python3 -c \
 # Single call — ns=all: server searches every accessible namespace. 3s hard timeout.
 RESPONSE=$(curl -sf --max-time 3 \
   "$ENGRAM_API/api/v1/memory/search?q=$QUERY&ns=all&top_k=$ENGRAM_TOP_K" \
-  -H "X-API-Key: $ENGRAM_KEY" 2>/dev/null || echo "[]")
+  -H "Authorization: Bearer $ENGRAM_KEY" 2>/dev/null || echo "[]")
 
 CONTEXT=$(echo "$RESPONSE" | python3 -c "
 import sys, json
@@ -460,7 +460,7 @@ def write_memory(content: str, namespace: str, project: str, session_id: str):
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "X-API-Key": ENGRAM_KEY,
+            "Authorization": f"Bearer {ENGRAM_KEY}",
             "X-Engram-Tool": "heartbeat-daemon",
         },
         method="POST",
@@ -605,7 +605,7 @@ print(json.dumps({
 " "$CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION" 2>/dev/null \
   | curl -sf --max-time 4 -X POST "$ENGRAM_API/api/v1/memory/" \
       -H "Content-Type: application/json" \
-      -H "X-API-Key: $ENGRAM_KEY" \
+      -H "Authorization: Bearer $ENGRAM_KEY" \
       -H "X-Engram-Tool: post-tool-hook" \
       -d @- -o /dev/null 2>/dev/null || true
 fi
@@ -701,7 +701,7 @@ print(json.dumps({
 " "$CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION" "$COUNT" 2>/dev/null \
       | curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" \
           -H "Content-Type: application/json" \
-          -H "X-API-Key: $ENGRAM_KEY" \
+          -H "Authorization: Bearer $ENGRAM_KEY" \
           -H "X-Engram-Tool: periodic-autosave" \
           -d @- -o /dev/null 2>/dev/null || true
     ) &
@@ -820,7 +820,7 @@ print(json.dumps({
 " "$CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION" 2>/dev/null \
 | curl -sf --max-time 8 -X POST "$ENGRAM_API/api/v1/memory/" \
     -H "Content-Type: application/json" \
-    -H "X-API-Key: $ENGRAM_KEY" \
+    -H "Authorization: Bearer $ENGRAM_KEY" \
     -H "X-Engram-Tool: precompact-hook" \
     -d @- -o /dev/null 2>/dev/null || true
 
@@ -889,7 +889,7 @@ print(json.dumps({
 " "$GIT_CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION" 2>/dev/null \
 | curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" \
     -H "Content-Type: application/json" \
-    -H "X-API-Key: $ENGRAM_KEY" \
+    -H "Authorization: Bearer $ENGRAM_KEY" \
     -H "X-Engram-Tool: stop-hook" \
     -d @- -o /dev/null 2>/dev/null || true
 
@@ -968,7 +968,7 @@ print(json.dumps({
 " "$RICH_CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION" 2>/dev/null \
 | curl -sf --max-time 8 -X POST "$ENGRAM_API/api/v1/memory/" \
     -H "Content-Type: application/json" \
-    -H "X-API-Key: $ENGRAM_KEY" \
+    -H "Authorization: Bearer $ENGRAM_KEY" \
     -H "X-Engram-Tool: stop-hook-rich" \
     -d @- -o /dev/null 2>/dev/null || true
 
@@ -988,10 +988,13 @@ SESSION
 Run these bash commands, then format the results as shown below.
 
 ```bash
+# Read connection details once
+API=$(grep '^ENGRAM_API=' ~/.claude/hooks/engram.env | cut -d= -f2)
+KEY=$(grep '^ENGRAM_KEY=' ~/.claude/hooks/engram.env | cut -d= -f2)
+AUTH="Authorization: Bearer $KEY"
+
 # 1. All namespaces
-curl -sf "$(grep '^ENGRAM_API=' ~/.claude/hooks/engram.env | cut -d= -f2)/api/v1/admin/namespaces" \
-  -H "X-API-Key: $(grep '^ENGRAM_KEY=' ~/.claude/hooks/engram.env | cut -d= -f2)" \
-  2>/dev/null || echo "[]"
+curl -sf "$API/api/v1/admin/namespaces" -H "$AUTH" 2>/dev/null || echo "[]"
 
 # 2. Current namespace for this project
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
@@ -1003,12 +1006,9 @@ fi
 
 # 3. Recent memories (last 5)
 NS=$(grep '^ENGRAM_DEFAULT_NS=' ~/.claude/hooks/engram.env | cut -d= -f2 | tr -d ' ')
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]] && NS=$(grep '^namespace=' "$REPO_ROOT/.engram" | cut -d= -f2 | tr -d ' ')
-API=$(grep '^ENGRAM_API=' ~/.claude/hooks/engram.env | cut -d= -f2)
-KEY=$(grep '^ENGRAM_KEY=' ~/.claude/hooks/engram.env | cut -d= -f2)
 curl -sf "$API/api/v1/memory/search?q=session+commit+work&ns=$NS&top_k=5" \
-  -H "X-API-Key: $KEY" 2>/dev/null || echo "[]"
+  -H "$AUTH" 2>/dev/null || echo "[]"
 ```
 
 **engram status**
@@ -1086,7 +1086,7 @@ for i, chunk in enumerate(chunks, 1):
         'metadata':    {'project': project, 'chunk': i, 'total': len(chunks), 'source': 'save-command'},
     }).encode()
     req = urllib.request.Request(f'{api}/api/v1/memory/', data=payload,
-        headers={'Content-Type':'application/json','X-API-Key':akey}, method='POST')
+        headers={'Content-Type':'application/json','Authorization':f'Bearer {akey}'}, method='POST')
     r = json.loads(urllib.request.urlopen(req, timeout=5).read())
     print(f'  chunk {i}: {r.get("id","?")[:8]}')
 
@@ -1122,7 +1122,7 @@ content = f'[session-index] {project}' + (f' | {branch}' if branch else '') + \
 payload = json.dumps({'content': content, 'namespace': ns, 'memory_type': 'session',
     'tags': ['session-index', 'manual-save', project]}).encode()
 req = urllib.request.Request(f'{api}/api/v1/memory/', data=payload,
-    headers={'Content-Type':'application/json','X-API-Key':akey}, method='POST')
+    headers={'Content-Type':'application/json','Authorization':f'Bearer {akey}'}, method='POST')
 print('Index:', json.loads(urllib.request.urlopen(req,timeout=5).read()).get('id','?')[:8])
 ```
 
@@ -1188,7 +1188,7 @@ msg,ns,mtype,commit_full,commit_short,branch,author,files,repo=sys.argv[1:10]
 print(json.dumps({'content':msg,'namespace':ns,'memory_type':mtype,'author':author,'tags':['git-commit','auto',repo,mtype],'metadata':{'commit_hash':commit_full,'commit_short':commit_short,'repo':repo,'branch':branch,'author':author,'changed_files':files,'source':'post-commit-hook'},'provenance':{'tool':'engram-git','git_commit':commit_short,'user_id':author,'agent_id':f'git:{repo}:{commit_short}'}}))
 " "$CONTENT" "$ENGRAM_NS" "$MEMORY_TYPE" "$COMMIT_FULL" "$COMMIT_HASH" "$BRANCH" "$COMMIT_AUTHOR" "$CHANGED_FILES" "$REPO_NAME" 2>/dev/null)
 curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" \
-  -H "Content-Type: application/json" -H "X-API-Key: $ENGRAM_KEY" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $ENGRAM_KEY" \
   -H "X-Engram-Tool: engram-git" \
   -d "$PAYLOAD" -o /dev/null 2>/dev/null || true
 LOCAL_HOOK="$(git rev-parse --git-dir 2>/dev/null)/hooks/post-commit.local"
