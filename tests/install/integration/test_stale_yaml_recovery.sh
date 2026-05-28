@@ -17,7 +17,7 @@ sed -i 's|</dev/tty||g' /tmp/install-server.sh
 export HOME=/test-home; mkdir -p "$HOME"
 
 # Phase 1: clean install so we have a clone
-printf '\n\n\n\n\nY\nN\n' | bash /tmp/install-server.sh --version master >/tmp/p1.log 2>&1
+printf '\n\n\n\n\nN\n' | bash /tmp/install-server.sh --version master >/tmp/p1.log 2>&1
 
 # Corrupt engram.yaml into a directory (Docker bind-mount bug simulation)
 rm -f "$HOME/.engram/engram.yaml"

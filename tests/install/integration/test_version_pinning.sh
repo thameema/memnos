@@ -28,27 +28,27 @@ sed -i 's|^  start_services$|  echo "STUB: skip start_services for version-pin t
 
 # A: explicit --version v1.1.0 — clone must land at v1.1.0
 export HOME=/test-home-a; mkdir -p "$HOME"
-printf '\n\n\n\n\nY\nN\n' | bash /tmp/install-server.sh --version v1.1.0 >/tmp/a.log 2>&1 || true
+printf '\n\n\n\n\nN\n' | bash /tmp/install-server.sh --version v1.1.0 >/tmp/a.log 2>&1 || true
 TAG_A=$(cd "$HOME/.engram-src" 2>/dev/null && git describe --tags --exact-match 2>/dev/null || echo "(no clone)")
 echo "A_TAG=$TAG_A"
 grep -q "Pinning to ref from --version: .*v1.1.0" /tmp/a.log && echo "A_REPORTED=yes" || echo "A_REPORTED=no"
 
 # B: ENGRAM_REF env — should honour
 export HOME=/test-home-b; mkdir -p "$HOME"
-ENGRAM_REF=v1.2.0 printf '\n\n\n\n\nY\nN\n' | ENGRAM_REF=v1.2.0 bash /tmp/install-server.sh >/tmp/b.log 2>&1 || true
+ENGRAM_REF=v1.2.0 printf '\n\n\n\n\nN\n' | ENGRAM_REF=v1.2.0 bash /tmp/install-server.sh >/tmp/b.log 2>&1 || true
 TAG_B=$(cd "$HOME/.engram-src" 2>/dev/null && git describe --tags --exact-match 2>/dev/null || echo "(no clone)")
 echo "B_TAG=$TAG_B"
 grep -q "from ENGRAM_REF env" /tmp/b.log && echo "B_REPORTED=yes" || echo "B_REPORTED=no"
 
 # C: bad ref — must fail with clear error
 export HOME=/test-home-c; mkdir -p "$HOME"
-printf '\n\n\n\n\nY\nN\n' | bash /tmp/install-server.sh --version this-ref-does-not-exist-xyz >/tmp/c.log 2>&1 || true
+printf '\n\n\n\n\nN\n' | bash /tmp/install-server.sh --version this-ref-does-not-exist-xyz >/tmp/c.log 2>&1 || true
 echo "C_EXIT=$?"
 grep -q "git clone failed for ref" /tmp/c.log && echo "C_CLEAR_ERR=yes" || echo "C_CLEAR_ERR=no"
 
 # D: no --version, no env — must default to master
 export HOME=/test-home-d; mkdir -p "$HOME"
-printf '\n\n\n\n\nY\nN\n' | bash /tmp/install-server.sh >/tmp/d.log 2>&1 || true
+printf '\n\n\n\n\nN\n' | bash /tmp/install-server.sh >/tmp/d.log 2>&1 || true
 grep -q "Installing from .*master.* (always-current default)" /tmp/d.log && echo "D_DEFAULT_MASTER=yes" || echo "D_DEFAULT_MASTER=no"
 TAG_D=$(cd "$HOME/.engram-src" 2>/dev/null && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 echo "D_BRANCH=$TAG_D"

@@ -22,7 +22,7 @@ export HOME=/test-home; mkdir -p "$HOME"
 #   DATA_DIR (default), ENGRAM_API_KEY (auto), ARCADEDB_PASSWORD (auto),
 #   ANTHROPIC_API_KEY (skip), OPENAI_API_KEY (skip),
 #   USE_LOCAL_EMBED (Y), USE_QDRANT (N)
-printf '\n\n\n\n\nY\nN\n' | bash /tmp/install-server.sh --version master >/tmp/install.log 2>&1
+printf '\n\n\n\n\nN\n' | bash /tmp/install-server.sh --version master >/tmp/install.log 2>&1
 EXIT=$?
 
 # Report findings the parent test can parse.
