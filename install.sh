@@ -146,11 +146,10 @@ case "$MODE" in
     echo -e "${BOLD}>>> Installing Claude Code client hooks${NC}"
 
     # Extract connection info from the .env the server installer just wrote.
-    # install-server.sh writes .env to the source-clone dir (~/.engram-src by
-    # default), or to SCRIPT_DIR when run from a clone.
+    # v1.4+: .env lives at ~/.engram/.env. Pre-v1.4: ~/.engram-src/.env.
     SERVER_URL="http://localhost:8766"
     SERVER_KEY=""
-    for candidate in "${HOME}/.engram-src/.env" "${SCRIPT_DIR:-}/.env" "${HOME}/.engram/.env"; do
+    for candidate in "${HOME}/.engram/.env" "${HOME}/.engram-src/.env" "${SCRIPT_DIR:-}/.env"; do
       if [[ -n "$candidate" && -f "$candidate" ]]; then
         set -a; source "$candidate"; set +a
         SERVER_KEY="${ENGRAM_API_KEY:-}"
