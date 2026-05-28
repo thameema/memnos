@@ -112,7 +112,9 @@ if [[ -z "$MODE" ]]; then
   echo "     -> Best for: developer machines pointing at a remote server."
   echo ""
   echo -ne "${CYAN}  ?${NC} Choose [1/2/3] [1]: "
-  read -r choice </dev/tty
+  # Read from /dev/tty when run interactively (curl|bash from a human),
+  # or from stdin when piped (agent feeding pre-recorded answers).
+  if [ -t 0 ]; then read -r choice </dev/tty; else read -r choice; fi
   choice="${choice:-1}"
 
   case "$choice" in
