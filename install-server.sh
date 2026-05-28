@@ -294,20 +294,28 @@ resolve_source() {
   fi
   [ -f "${ENGRAM_SRC}/docker-compose.yml" ] || die "Clone is missing docker-compose.yml — repo layout changed?"
 
-  # ── engram.yaml: gitignored, so the clone never has it. Copy from the
-  #    committed example. Also defend against Docker auto-creating a
-  #    DIRECTORY at the bind-mount path from a previous failed 'compose up'
-  #    (causes IsADirectoryError: '/app/engram.yaml' in the engram container).
+  # ── engram.yaml: gitignored, so the clone never has it. Always refresh it
+  #    from the committed example on (re)install so users pick up upstream
+  #    fixes to the template (e.g. the ARCADEDB_HOST env-var interpolation
+  #    fix). Back up any existing copy first.
+  #    Also defend against Docker auto-creating a DIRECTORY at the bind-mount
+  #    path from a previous failed 'compose up' (IsADirectoryError).
   if [ -d "${ENGRAM_SRC}/engram.yaml" ]; then
     warn "${ENGRAM_SRC}/engram.yaml is a directory (Docker auto-created it from a failed previous run) — removing"
     rm -rf "${ENGRAM_SRC}/engram.yaml"
   fi
-  if [ ! -f "${ENGRAM_SRC}/engram.yaml" ]; then
-    [ -f "${ENGRAM_SRC}/engram.yaml.example" ] \
-      || die "Neither engram.yaml nor engram.yaml.example found in source — repo layout changed?"
-    cp "${ENGRAM_SRC}/engram.yaml.example" "${ENGRAM_SRC}/engram.yaml"
-    info "Created engram.yaml from engram.yaml.example"
+  [ -f "${ENGRAM_SRC}/engram.yaml.example" ] \
+    || die "Missing engram.yaml.example in source — repo layout changed?"
+  if [ -f "${ENGRAM_SRC}/engram.yaml" ]; then
+    # Back up only if content differs from the template (avoid backup churn)
+    if ! cmp -s "${ENGRAM_SRC}/engram.yaml" "${ENGRAM_SRC}/engram.yaml.example"; then
+      local yaml_backup="${ENGRAM_SRC}/engram.yaml.before-install-$(date +%Y%m%d-%H%M%S)"
+      cp "${ENGRAM_SRC}/engram.yaml" "$yaml_backup"
+      info "Backed up existing engram.yaml → $yaml_backup"
+    fi
   fi
+  cp "${ENGRAM_SRC}/engram.yaml.example" "${ENGRAM_SRC}/engram.yaml"
+  info "engram.yaml refreshed from engram.yaml.example"
 
   # Verify other bind-mount sources are the right type
   for d in agents skills packages docker; do
