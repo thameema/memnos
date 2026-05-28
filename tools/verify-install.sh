@@ -137,7 +137,9 @@ CODE=$(curl -s -o /dev/null -w "%{http_code}" \
 if [[ "$CODE" == "401" ]]; then
   pass "X-API-Key correctly REJECTED (proves Bearer is required, not optional)"
 elif [[ "$CODE" == "200" ]]; then
-  warn "X-API-Key accepted — engram is in open_mode (auth bypassed)"
+  warn "X-API-Key accepted — but only because engram.yaml open_mode=true bypasses ALL auth checks."
+  warn "  (engram never validates X-API-Key; the request would have succeeded with no header too.)"
+  warn "  Set open_mode: false in ~/.engram/engram.yaml to enforce Bearer auth."
 else
   warn "X-API-Key returned $CODE"
 fi
