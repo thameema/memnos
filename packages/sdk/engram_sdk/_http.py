@@ -30,7 +30,7 @@ class _SyncTransport:
     def __init__(self, base_url: str, api_key: str, timeout: float = 30.0) -> None:
         self._client = httpx.Client(
             base_url=base_url,
-            headers={"X-API-Key": api_key},
+            headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout,
         )
 
@@ -65,7 +65,7 @@ class _AsyncTransport:
     def __init__(self, base_url: str, api_key: str, timeout: float = 30.0) -> None:
         self._client = httpx.AsyncClient(
             base_url=base_url,
-            headers={"X-API-Key": api_key},
+            headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout,
         )
 

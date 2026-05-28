@@ -61,7 +61,7 @@ async def handle_corpus_check(
             resp = await http.post(
                 url,
                 json=payload,
-                headers={"X-API-Key": _ENGRAM_API_KEY},
+                headers={"Authorization": f"Bearer {_ENGRAM_API_KEY}"},
             )
             resp.raise_for_status()
             data = resp.json()
@@ -116,7 +116,7 @@ async def handle_corpus_list(client) -> dict:
     url = f"{_ENGRAM_API_BASE}/api/v1/corpus/"
     try:
         async with httpx.AsyncClient(timeout=10) as http:
-            resp = await http.get(url, headers={"X-API-Key": _ENGRAM_API_KEY})
+            resp = await http.get(url, headers={"Authorization": f"Bearer {_ENGRAM_API_KEY}"})
             resp.raise_for_status()
             corpora = resp.json()
     except Exception as exc:

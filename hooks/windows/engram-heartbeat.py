@@ -157,7 +157,7 @@ def write_memory(content: str, namespace: str, project: str, session_id: str):
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "X-API-Key": ENGRAM_KEY,
+            "Authorization": f"Bearer {ENGRAM_KEY}",
             "X-Engram-Tool": "heartbeat-daemon",
         },
         method="POST",

@@ -478,7 +478,7 @@ start_services() {
 
   sleep 2
   if curl -sf "http://localhost:8766/api/v1/admin/health" \
-    -H "X-API-Key: ${ENGRAM_API_KEY}" -o /dev/null 2>/dev/null; then
+    -H "Authorization: Bearer ${ENGRAM_API_KEY}" -o /dev/null 2>/dev/null; then
     success "engram API is healthy"
   else
     warn "API not responding yet — check logs: cd ${ENGRAM_SRC} && ${DC} --env-file ${ENV_FILE} logs engram"

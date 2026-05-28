@@ -14,7 +14,7 @@ _API_KEY = os.environ.get("ENGRAM_API_KEY", "engram-local-dev-key")
 
 
 def _headers() -> dict:
-    return {"X-API-Key": _API_KEY}
+    return {"Authorization": f"Bearer {_API_KEY}"}
 
 
 def _cmd_export(args: argparse.Namespace) -> int:

@@ -102,7 +102,7 @@ print(json.dumps({
 " "$CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION" 2>/dev/null \
 | curl -sf --max-time 8 -X POST "$ENGRAM_API/api/v1/memory/" \
     -H "Content-Type: application/json" \
-    -H "X-API-Key: $ENGRAM_KEY" \
+    -H "Authorization: Bearer $ENGRAM_KEY" \
     -H "X-Engram-Tool: precompact-hook" \
     -d @- -o /dev/null 2>/dev/null || true
 
