@@ -12,8 +12,8 @@
 
 set -euo pipefail
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+BLUE=$'\033[0;34m'; CYAN=$'\033[0;36m'; BOLD=$'\033[1m'; DIM=$'\033[2m'; NC=$'\033[0m'
 
 info()    { echo -e "${CYAN}  -->${NC} $*"; }
 success() { echo -e "${GREEN}  [ok]${NC} $*"; }
@@ -22,16 +22,16 @@ die()     { echo -e "${RED}  [error]${NC} $*" >&2; exit 1; }
 
 # ─── Banner ───────────────────────────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}${BLUE}"
+printf "${BOLD}${BLUE}"
 cat <<'BANNER'
-   ___  ____   ___  ____   ____  __  __
-  / __)(  _ \ / __)(  _ \ / _  \(  \/  )
- ( (__  )   /( (__  )   // /_\ / )    /
-  \___)(_)\_) \___)(____/ \___/ (_/\/\_)
-
-  Persistent memory + multi-agent orchestration for LLM workflows
+   ___   _  _   ___    ___      _    __  __
+  | __| | \| | / __|  | _ \   /_\  |  \/  |
+  | _|  | .` || (_ |  |   /  / _ \ | |\/| |
+  |___| |_|\_| \___|  |_|\_\/_/ \_\|_|  |_|
 BANNER
-echo -e "${NC}"
+printf "${NC}\n"
+echo "  Persistent memory + AI governance for Claude Code and LLM agents"
+echo ""
 
 # ─── Locate sub-scripts ───────────────────────────────────────────────────────
 # When run from a clone: scripts are beside this file.

@@ -1,6 +1,6 @@
 # engram
 
-**Persistent memory and multi-agent orchestration for Claude Code and any MCP-compatible LLM client.**
+**Persistent memory and AI governance for Claude Code and any MCP-compatible LLM client.**
 
 engram gives Claude Code a long-term memory that persists across sessions and the ability to fork parallel background agents — all backed by a single Docker container (ArcadeDB) with no external vector database or graph database required.
 
@@ -56,7 +56,7 @@ Every project decision, code pattern, error you debugged, and architectural choi
 
 **mem0** wins on operational simplicity: one REST call to write, one to search. Best for app developers who need a drop-in memory layer with no infrastructure.
 
-**engram** wins when you need all three things in one self-hosted system: cross-session memory, a temporal knowledge graph, and multi-agent orchestration — with a single ArcadeDB container and no external API key for embeddings.
+**engram** wins when you need all three things in one self-hosted system: cross-session memory, a temporal knowledge graph, and AI governance (decisions, constraints, ADRs) — with a single ArcadeDB container and no external API key for embeddings.
 
 See [docs/enterprise-ai-engineering.md](docs/enterprise-ai-engineering.md) for the enterprise team model, and [docs/enterprise-team-setup.md](docs/enterprise-team-setup.md) for step-by-step team deployment.
 
