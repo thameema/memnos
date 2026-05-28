@@ -48,7 +48,7 @@ sudo ufw enable
 SSH into your server and run the one-command installer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thameema/engram/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh | bash
 ```
 
 The installer will detect Linux and set up Docker, install packages, and create `~/.engram/`.

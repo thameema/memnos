@@ -7,7 +7,7 @@
 #
 # Usage:
 #   ./install-server.sh
-#   curl -fsSL https://raw.githubusercontent.com/thameema/engram/main/install-server.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install-server.sh | bash
 
 set -euo pipefail
 

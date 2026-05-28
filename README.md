@@ -64,10 +64,10 @@ See [docs/enterprise-ai-engineering.md](docs/enterprise-ai-engineering.md) for t
 
 ## Quick Install
 
-**One command (macOS or Linux):**
+### macOS / Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thameema/engram/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh | bash
 ```
 
 The installer will:
@@ -78,11 +78,37 @@ The installer will:
 - Create `~/.engram/` with your config and credentials
 - Optionally wire engram into Claude Code's MCP servers automatically
 
-**Or manually** (if you already have ArcadeDB running):
+### Windows
+
+Open **PowerShell as Administrator** and run:
+
+```powershell
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser   # one-time, allows local scripts
+irm https://raw.githubusercontent.com/thameema/engram/master/install-client.ps1 | iex
+```
+
+> **Requirements:** Windows 10/11, [Docker Desktop](https://www.docker.com/products/docker-desktop/),
+> Python 3.10+ (`winget install Python.Python.3.11`), and
+> [Claude Code for Windows](https://claude.ai/download).
+
+The Windows installer:
+- Downloads the Claude Code automation hooks (`engram-inject.ps1`, `engram-git-write.ps1`, etc.)
+- Installs the heartbeat daemon (`engram-heartbeat.py`)
+- Registers hooks in `%APPDATA%\Claude\claude_desktop_config.json`
+- Points to your engram server (local or remote)
+
+If engram is running on a different machine, pass the server URL and API key:
+
+```powershell
+irm https://raw.githubusercontent.com/thameema/engram/master/install-client.ps1 | iex -Args "-Server http://YOUR_SERVER:8766 -Key YOUR_API_KEY"
+```
+
+### Manual (all platforms)
 
 ```bash
-pip install engram-core engram-mcp-server
-engram start
+git clone https://github.com/thameema/engram.git && cd engram
+pip install -e packages/core -e packages/mcp-server -e packages/api
+docker compose up -d
 ```
 
 See [docs/quickstart.md](docs/quickstart.md) for the full step-by-step guide.
