@@ -38,8 +38,11 @@ ask_yn() {
   input="${input:-$default}"
   [[ "$input" =~ ^[Yy] ]] && eval "$varname=yes" || eval "$varname=no"
 }
-gen_key() { python3 -c "import secrets; print('engram-' + secrets.token_hex(16))" 2>/dev/null || openssl rand -hex 20; }
-gen_pass() { python3 -c "import secrets,string; print(secrets.token_urlsafe(18)[:20])" 2>/dev/null || openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c 20; }
+gen_key()      { python3 -c "import secrets; print('engram-' + secrets.token_hex(16))" 2>/dev/null || openssl rand -hex 20; }
+gen_pass()     { python3 -c "import secrets,string; print(secrets.token_urlsafe(18)[:20])" 2>/dev/null || openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c 20; }
+gen_vault_key(){ python3 -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())" 2>/dev/null || openssl rand -base64 32 | tr -d '\n'; }
+# Cross-platform sed in-place edit (BSD/macOS + GNU/Linux)
+sed_i()        { sed -i.bak "$@" && rm -f "${@: -1}.bak"; }
 
 # ─── Banner ───────────────────────────────────────────────────────────────────
 echo ""
@@ -111,44 +114,52 @@ check_python() {
 collect_config() {
   step "Configuration"
 
-  # Data directory
-  ask DATA_DIR "Data directory (stores ArcadeDB data, config, logs)" "$HOME/.engram"
+  # Data directory (persistent volumes)
+  ask DATA_DIR "Data directory (ArcadeDB, keys.db, learning.db, logs)" "$HOME/.engram"
   DATA_DIR="${DATA_DIR/#\~/$HOME}"
 
-  # Ports
-  ask MCP_PORT  "MCP / SSE port" "8765"
-  ask API_PORT  "REST API port"  "8766"
-  ask DB_PORT   "ArcadeDB HTTP port (set 0 to not expose)" "2480"
-
-  # API key
-  local default_key; default_key="$(gen_key)"
+  # engram API key
   ask ENGRAM_API_KEY "engram API key (blank = auto-generate)" ""
-  [ -z "$ENGRAM_API_KEY" ] && ENGRAM_API_KEY="$default_key" && info "Generated API key: ${BOLD}${ENGRAM_API_KEY}${NC}"
+  [ -z "$ENGRAM_API_KEY" ] && ENGRAM_API_KEY="$(gen_key)" && \
+    info "Generated API key: ${BOLD}${ENGRAM_API_KEY}${NC}"
 
-  # ArcadeDB password
-  local default_pw; default_pw="$(gen_pass)"
+  # ArcadeDB root password
   ask ARCADEDB_PASSWORD "ArcadeDB root password (blank = auto-generate)" ""
-  [ -z "$ARCADEDB_PASSWORD" ] && ARCADEDB_PASSWORD="$default_pw" && info "Generated ArcadeDB password: ${BOLD}${ARCADEDB_PASSWORD}${NC}"
+  [ -z "$ARCADEDB_PASSWORD" ] && ARCADEDB_PASSWORD="$(gen_pass)" && \
+    info "Generated ArcadeDB password: ${BOLD}${ARCADEDB_PASSWORD}${NC}"
+
+  # Vault encryption key — always auto-generated, used to encrypt secrets at rest
+  ENGRAM_VAULT_KEY="$(gen_vault_key)"
+  info "Generated vault encryption key (saved to .env)"
 
   # ─── Optional API keys ────────────────────────────────────────────────────
   echo ""
   echo -e "  ${BOLD}Optional API keys${NC}  ${DIM}(both can be skipped — engram works without them)${NC}"
   echo ""
   echo -e "  ${BOLD}1. Anthropic API key${NC}  — for LLM reflection & skill extraction."
-  echo -e "     ${DIM}If skipped:${NC} engram uses Claude Code's built-in ${BOLD}claude --print${NC} CLI."
+  echo -e "     ${DIM}If skipped:${NC} engram uses Claude Code built-in ${BOLD}claude --print${NC} CLI."
   echo -e "     ${DIM}Recommended:${NC} skip unless you do not have Claude Code installed."
   echo ""
   echo -e "  ${BOLD}2. OpenAI API key${NC}     — for high-quality embeddings (text-embedding-3-small)."
-  echo -e "     ${DIM}If skipped:${NC} engram uses a local embedding model (runs in-container, no API cost)."
+  echo -e "     ${DIM}If skipped:${NC} engram uses a local embedding model (in-container, no API cost)."
   echo -e "     ${DIM}Trade-off:${NC}  local embeddings work well but are less accurate than OpenAI."
   echo ""
-  echo -e "  ${DIM}You can edit ${BOLD}${DATA_DIR}/.env${NC}${DIM} later to add or change keys.${NC}"
+  echo -e "  ${DIM}You can edit ${BOLD}.env${NC}${DIM} later in the source directory to add or change keys.${NC}"
   echo ""
 
   ask ANTHROPIC_API_KEY "Anthropic API key (press Enter to skip)" ""
   ask OPENAI_API_KEY    "OpenAI API key (press Enter to skip)"    ""
 
-  # Summarize what was chosen so the user knows what to expect
+  # ─── Optional Qdrant vector backend ───────────────────────────────────────
+  echo ""
+  echo -e "  ${BOLD}Vector backend${NC}"
+  echo -e "  ${DIM}Default:${NC} ArcadeDB native vectors — works well up to ~100K memories per namespace."
+  echo -e "  ${DIM}Optional:${NC} Qdrant adds HNSW ANN search — recommended for larger namespaces."
+  echo -e "             Adds one extra container (~100 MB). Storage in ${DIM}${DATA_DIR}/qdrant/${NC}."
+  echo ""
+  ask_yn USE_QDRANT "Enable Qdrant?" "N"
+
+  # Summarize
   echo ""
   if [ -n "$ANTHROPIC_API_KEY" ]; then
     info "Reflection: Anthropic API"
@@ -160,164 +171,129 @@ collect_config() {
   else
     info "Embeddings: local model (in-container)"
   fi
+  if [ "$USE_QDRANT" = "yes" ]; then
+    info "Vector backend: ArcadeDB + Qdrant (HNSW ANN)"
+  else
+    info "Vector backend: ArcadeDB only"
+  fi
 }
 
 # ─── Create directory structure ───────────────────────────────────────────────
+# ─── Resolve source tree (clone if not running from one) ─────────────────────
+resolve_source() {
+  step "Resolving engram source"
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-./install-server.sh}")" 2>/dev/null && pwd || echo "")"
+  if [ -f "${SCRIPT_DIR}/docker-compose.yml" ] && [ -f "${SCRIPT_DIR}/docker/Dockerfile" ]; then
+    ENGRAM_SRC="${SCRIPT_DIR}"
+    info "Using local source at ${ENGRAM_SRC}"
+    return
+  fi
+
+  # Standalone (curl|bash) — clone to a stable location next to the data dir
+  ENGRAM_SRC="${HOME}/.engram-src"
+  command -v git &>/dev/null || die "git not found. Install git, or run this script from an engram source clone."
+  if [ -d "${ENGRAM_SRC}/.git" ]; then
+    info "Updating engram source at ${ENGRAM_SRC}..."
+    ( cd "${ENGRAM_SRC}" && git fetch --depth 1 origin master 2>/dev/null \
+        && git reset --hard origin/master >/dev/null 2>&1 ) \
+      || warn "git update failed — using existing checkout"
+  else
+    info "Cloning engram source to ${ENGRAM_SRC}..."
+    git clone --depth 1 https://github.com/thameema/engram.git "${ENGRAM_SRC}" 2>&1 | tail -2 \
+      || die "git clone failed."
+  fi
+  [ -f "${ENGRAM_SRC}/docker-compose.yml" ] || die "Clone is missing docker-compose.yml — repo layout changed?"
+}
+
+# ─── Create persistent data directories ──────────────────────────────────────
 create_dirs() {
-  step "Creating directories at ${DATA_DIR}"
-  mkdir -p "${DATA_DIR}/data/arcadedb" \
-           "${DATA_DIR}/logs"
+  step "Creating data directory at ${DATA_DIR}"
+  mkdir -p "${DATA_DIR}/arcadedb" \
+           "${DATA_DIR}/arcadedb-logs" \
+           "${DATA_DIR}/arcadedb-backups" \
+           "${DATA_DIR}/qdrant"
   chmod 700 "${DATA_DIR}"
   success "Directories ready"
 }
 
-# ─── Write docker-compose.yml ─────────────────────────────────────────────────
-write_compose() {
-  step "Writing docker-compose.yml"
-
-  local DB_PORTS_BLOCK=""
-  if [ "${DB_PORT}" != "0" ]; then
-    DB_PORTS_BLOCK="    ports:
-      - \"${DB_PORT}:2480\""
-  fi
-
-  # Resolve a source tree to build from.
-  # Priority: (1) the script's own dir if it looks like a clone,
-  #           (2) clone the repo to $DATA_DIR/src.
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-./install-server.sh}")" 2>/dev/null && pwd || echo "")"
-  local ENGRAM_SRC=""
-  if [ -f "${SCRIPT_DIR}/packages/core/pyproject.toml" ] && [ -f "${SCRIPT_DIR}/docker/Dockerfile" ]; then
-    ENGRAM_SRC="${SCRIPT_DIR}"
-    info "Using local source at ${ENGRAM_SRC}"
-  else
-    ENGRAM_SRC="${DATA_DIR}/src"
-    command -v git &>/dev/null || die "git not found. Install git, or run this script from an engram source clone."
-    if [ -d "${ENGRAM_SRC}/.git" ]; then
-      info "Updating engram source at ${ENGRAM_SRC}..."
-      ( cd "${ENGRAM_SRC}" && git fetch --depth 1 origin master 2>/dev/null && git reset --hard origin/master >/dev/null 2>&1 ) \
-        || warn "git update failed — using existing checkout"
-    else
-      info "Cloning engram source to ${ENGRAM_SRC}..."
-      git clone --depth 1 https://github.com/thameema/engram.git "${ENGRAM_SRC}" 2>&1 | tail -2 \
-        || die "git clone failed."
-    fi
-    [ -f "${ENGRAM_SRC}/docker/Dockerfile" ] || die "Clone is missing docker/Dockerfile — repository layout changed?"
-  fi
-
-  local ENGRAM_SERVICE="  engram:
-    build:
-      context: ${ENGRAM_SRC}
-      dockerfile: docker/Dockerfile
-    depends_on:
-      arcadedb:
-        condition: service_healthy"
-
-  cat > "${DATA_DIR}/docker-compose.yml" <<COMPOSE
-# engram docker-compose — generated by install-server.sh
-# Edit data directory mounts if you relocate ${DATA_DIR}
-
-services:
-  arcadedb:
-    image: arcadedata/arcadedb:26.5.1
-    container_name: engram-arcadedb
-    environment:
-      ARCADEDB_SERVER_ROOTPASSWORD: \${ARCADEDB_PASSWORD}
-      ARCADEDB_SERVER_PLUGINS: >-
-        com.arcadedb.postgres.PostgreSQLProtocolPlugin,
-        com.arcadedb.redis.RedisProtocolPlugin,
-        com.arcadedb.graphql.GraphQLProtocolPlugin
-      JAVA_OPTS: -Xms512m -Xmx2g
-${DB_PORTS_BLOCK}
-    volumes:
-      - ${DATA_DIR}/data/arcadedb:/home/arcadedb/databases
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:2480/api/v1/ready"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
-    restart: unless-stopped
-
-${ENGRAM_SERVICE}
-    container_name: engram
-    environment:
-      ENGRAM_API_KEY: \${ENGRAM_API_KEY}
-      ARCADEDB_HOST: arcadedb
-      ARCADEDB_PORT: 2480
-      ARCADEDB_USER: root
-      ARCADEDB_PASSWORD: \${ARCADEDB_PASSWORD}
-      ANTHROPIC_API_KEY: \${ANTHROPIC_API_KEY}
-      OPENAI_API_KEY: \${OPENAI_API_KEY}
-    ports:
-      - "${MCP_PORT}:8765"
-      - "${API_PORT}:8766"
-    volumes:
-      - ${DATA_DIR}/logs:/app/logs
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8766/api/v1/admin/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 8
-      start_period: 30s
-    restart: unless-stopped
-COMPOSE
-
-  success "docker-compose.yml → ${DATA_DIR}/docker-compose.yml"
-}
-
-# ─── Write .env ───────────────────────────────────────────────────────────────
+# ─── Write .env from the repo's .env.example, patched with user input ────────
 write_env() {
-  step "Writing .env"
-  cat > "${DATA_DIR}/.env" <<ENV
-# engram environment — generated by install-server.sh on $(date)
-# DO NOT commit this file.
+  step "Writing .env to ${ENGRAM_SRC}/.env"
 
-ENGRAM_API_KEY=${ENGRAM_API_KEY}
-ARCADEDB_PASSWORD=${ARCADEDB_PASSWORD}
+  local ENV_FILE="${ENGRAM_SRC}/.env"
+  if [ -f "${ENGRAM_SRC}/.env.example" ]; then
+    cp "${ENGRAM_SRC}/.env.example" "${ENV_FILE}"
+  else
+    : > "${ENV_FILE}"
+  fi
 
-ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-OPENAI_API_KEY=${OPENAI_API_KEY}
-ENV
-  chmod 600 "${DATA_DIR}/.env"
-  success ".env → ${DATA_DIR}/.env  (mode 600)"
+  # Overwrite required values
+  sed_i "s|^ARCADEDB_PASSWORD=.*|ARCADEDB_PASSWORD=${ARCADEDB_PASSWORD}|"     "${ENV_FILE}"
+  sed_i "s|^ENGRAM_API_KEY=.*|ENGRAM_API_KEY=${ENGRAM_API_KEY}|"              "${ENV_FILE}"
+  sed_i "s|^ENGRAM_VAULT_KEY=.*|ENGRAM_VAULT_KEY=${ENGRAM_VAULT_KEY}|"        "${ENV_FILE}"
+  sed_i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}|"     "${ENV_FILE}"
+  # OPENAI_API_KEY is commented out by default in .env.example — handle both forms
+  sed_i "s|^# OPENAI_API_KEY=.*|OPENAI_API_KEY=${OPENAI_API_KEY}|"            "${ENV_FILE}"
+  sed_i "s|^OPENAI_API_KEY=.*|OPENAI_API_KEY=${OPENAI_API_KEY}|"              "${ENV_FILE}"
+
+  # Append values not in .env.example
+  {
+    echo ""
+    echo "# Set by install-server.sh"
+    echo "ENGRAM_DATA_DIR=${DATA_DIR}"
+    if [ "${USE_QDRANT}" = "yes" ]; then
+      echo "ENGRAM_VECTOR_BACKEND=qdrant"
+    fi
+  } >> "${ENV_FILE}"
+
+  chmod 600 "${ENV_FILE}"
+  success ".env written (mode 600)"
 }
 
-# ─── Pull images and start ────────────────────────────────────────────────────
+# ─── Pull images, build engram, start services ───────────────────────────────
 start_services() {
-  cd "${DATA_DIR}"
+  cd "${ENGRAM_SRC}"
   set -a; source .env; set +a
+
+  # Build the compose command — adds --profile qdrant if user opted in
+  local DC_CMD="${DC}"
+  if [ "${USE_QDRANT}" = "yes" ]; then
+    DC_CMD="${DC} --profile qdrant"
+  fi
 
   step "Pulling ArcadeDB image"
   info "First pull downloads ~250 MB — may take a minute."
   $DC pull arcadedb
 
+  if [ "${USE_QDRANT}" = "yes" ]; then
+    step "Pulling Qdrant image"
+    $DC_CMD pull qdrant
+  fi
+
   step "Building engram image"
   info "First build downloads Python dependencies — typically 3-5 minutes."
   info "You will see progress below. Do not interrupt."
   echo ""
-  # --progress=plain → readable line-by-line output instead of TTY-redrawing UI
-  # No piping through tail — user needs to see this happening.
   $DC build --progress=plain engram
 
   step "Starting services"
-  $DC up -d
+  $DC_CMD up -d
 
   echo ""
   info "Waiting for services to be healthy..."
   local i=0
-  while ! $DC ps 2>/dev/null | grep -q "healthy"; do
+  while ! $DC ps 2>/dev/null | grep -q "engram.*healthy"; do
     sleep 4; i=$((i+1)); echo -ne "\r  Waiting... ${i}s"
-    [ $i -ge 30 ] && break
+    [ $i -ge 45 ] && break
   done
   echo ""
 
-  # Quick health check
   sleep 2
-  if curl -sf "http://localhost:${API_PORT}/api/v1/admin/health" \
+  if curl -sf "http://localhost:8766/api/v1/admin/health" \
     -H "X-API-Key: ${ENGRAM_API_KEY}" -o /dev/null 2>/dev/null; then
     success "engram API is healthy"
   else
-    warn "API not responding yet — check logs: $DC logs engram"
+    warn "API not responding yet — check logs: cd ${ENGRAM_SRC} && ${DC} logs engram"
   fi
 }
 
@@ -336,18 +312,26 @@ print_success() {
     SERVER_HOST="localhost"
   fi
 
-  echo -e "    MCP / SSE endpoint : ${BOLD}http://${SERVER_HOST}:${MCP_PORT}/sse${NC}"
-  echo -e "    REST API            : ${BOLD}http://${SERVER_HOST}:${API_PORT}/api/v1${NC}"
-  echo -e "    API key             : ${YELLOW}${ENGRAM_API_KEY}${NC}"
+  echo -e "    MCP / SSE endpoint : ${BOLD}http://${SERVER_HOST}:8765/sse${NC}"
+  echo -e "    REST API           : ${BOLD}http://${SERVER_HOST}:8766/api/v1${NC}"
+  echo -e "    API key            : ${YELLOW}${ENGRAM_API_KEY}${NC}"
   echo ""
-  echo -e "  ${BOLD}Data directory${NC} : ${DATA_DIR}"
+  echo -e "  ${BOLD}Source directory${NC} : ${ENGRAM_SRC}"
+  echo -e "  ${BOLD}Data directory${NC}   : ${DATA_DIR}"
+  echo ""
+  local UP_CMD="${DC} up -d"
+  local DOWN_CMD="${DC} down"
+  if [ "${USE_QDRANT}" = "yes" ]; then
+    UP_CMD="${DC} --profile qdrant up -d"
+    DOWN_CMD="${DC} --profile qdrant down"
+  fi
   echo -e "  ${BOLD}Manage services${NC}:"
-  echo -e "    cd ${DATA_DIR} && ${DC} logs -f engram  # tail logs"
-  echo -e "    cd ${DATA_DIR} && ${DC} down            # stop"
-  echo -e "    cd ${DATA_DIR} && ${DC} up -d           # start"
+  echo -e "    cd ${ENGRAM_SRC} && ${DC} logs -f engram  # tail logs"
+  echo -e "    cd ${ENGRAM_SRC} && ${DOWN_CMD}            # stop"
+  echo -e "    cd ${ENGRAM_SRC} && ${UP_CMD}           # start"
   echo ""
   echo -e "  ${BOLD}Next step${NC} — install the client hooks on each developer machine:"
-  echo -e "    ${CYAN}./install-client.sh --server http://${SERVER_HOST}:${API_PORT} --key ${ENGRAM_API_KEY}${NC}"
+  echo -e "    ${CYAN}./install-client.sh --server http://${SERVER_HOST}:8766 --key ${ENGRAM_API_KEY}${NC}"
   echo ""
 }
 
@@ -356,8 +340,8 @@ main() {
   check_docker
   check_python
   collect_config
+  resolve_source
   create_dirs
-  write_compose
   write_env
   start_services
   print_success
