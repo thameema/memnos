@@ -294,33 +294,46 @@ resolve_source() {
   fi
   [ -f "${ENGRAM_SRC}/docker-compose.yml" ] || die "Clone is missing docker-compose.yml — repo layout changed?"
 
-  # ── engram.yaml: gitignored, so the clone never has it. Always refresh it
-  #    from the committed example on (re)install so users pick up upstream
-  #    fixes to the template (e.g. the ARCADEDB_HOST env-var interpolation
-  #    fix). Back up any existing copy first.
-  #    Also defend against Docker auto-creating a DIRECTORY at the bind-mount
-  #    path from a previous failed 'compose up' (IsADirectoryError).
-  if [ -d "${ENGRAM_SRC}/engram.yaml" ]; then
-    warn "${ENGRAM_SRC}/engram.yaml is a directory (Docker auto-created it from a failed previous run) — removing"
-    rm -rf "${ENGRAM_SRC}/engram.yaml"
-  fi
+  # engram.yaml + .env now live in the DATA dir (~/.engram), not the source
+  # clone. The source clone stays pure code so it can be wiped + re-cloned
+  # without losing user config or data.
   [ -f "${ENGRAM_SRC}/engram.yaml.example" ] \
     || die "Missing engram.yaml.example in source — repo layout changed?"
-  if [ -f "${ENGRAM_SRC}/engram.yaml" ]; then
-    # Back up only if content differs from the template (avoid backup churn)
-    if ! cmp -s "${ENGRAM_SRC}/engram.yaml" "${ENGRAM_SRC}/engram.yaml.example"; then
-      local yaml_backup="${ENGRAM_SRC}/engram.yaml.before-install-$(date +%Y%m%d-%H%M%S)"
-      cp "${ENGRAM_SRC}/engram.yaml" "$yaml_backup"
-      info "Backed up existing engram.yaml → $yaml_backup"
-    fi
-  fi
-  cp "${ENGRAM_SRC}/engram.yaml.example" "${ENGRAM_SRC}/engram.yaml"
-  info "engram.yaml refreshed from engram.yaml.example"
 
-  # Verify other bind-mount sources are the right type
+  # Also defend against Docker auto-creating a DIRECTORY at the bind-mount
+  # path from a previous failed 'compose up' (IsADirectoryError on next run).
+  for stale in "${ENGRAM_SRC}/engram.yaml" "${DATA_DIR}/engram.yaml"; do
+    if [ -d "$stale" ]; then
+      warn "$stale is a directory (Docker auto-created from a failed previous run) — removing"
+      rm -rf "$stale"
+    fi
+  done
+
+  # Verify other bind-mount sources in the source clone are the right type
   for d in agents skills packages docker; do
     [ -d "${ENGRAM_SRC}/${d}" ] || die "Missing required directory: ${ENGRAM_SRC}/${d}"
   done
+}
+
+# ─── Refresh engram.yaml in the DATA dir from the committed example ──────────
+# Called after create_dirs so DATA_DIR exists. Always pulls the latest template
+# so upstream fixes (e.g. ARCADEDB_HOST interpolation) land on re-install.
+refresh_yaml_config() {
+  step "Writing engram.yaml to ${DATA_DIR}/engram.yaml"
+  local YAML_FILE="${DATA_DIR}/engram.yaml"
+  if [ -f "${YAML_FILE}" ] && ! cmp -s "${YAML_FILE}" "${ENGRAM_SRC}/engram.yaml.example"; then
+    local yaml_backup="${YAML_FILE}.before-install-$(date +%Y%m%d-%H%M%S)"
+    cp "${YAML_FILE}" "$yaml_backup"
+    info "Backed up existing engram.yaml → $yaml_backup"
+  fi
+  cp "${ENGRAM_SRC}/engram.yaml.example" "${YAML_FILE}"
+  success "engram.yaml refreshed from engram.yaml.example"
+
+  # Clean up old in-source copies if they exist (migration from pre-v1.4 layout)
+  if [ -f "${ENGRAM_SRC}/engram.yaml" ] && [ ! -L "${ENGRAM_SRC}/engram.yaml" ]; then
+    info "Removing obsolete ${ENGRAM_SRC}/engram.yaml (now lives in ${DATA_DIR})"
+    rm -f "${ENGRAM_SRC}/engram.yaml"
+  fi
 }
 
 # ─── Create persistent data directories ──────────────────────────────────────
@@ -334,11 +347,18 @@ create_dirs() {
   success "Directories ready"
 }
 
-# ─── Write .env from the repo's .env.example, patched with user input ────────
+# ─── Write .env to the DATA dir, patched with user input ─────────────────────
+# .env lives in the data dir so wiping the source clone never loses secrets.
 write_env() {
-  step "Writing .env to ${ENGRAM_SRC}/.env"
+  local ENV_FILE="${DATA_DIR}/.env"
+  step "Writing .env to ${ENV_FILE}"
 
-  local ENV_FILE="${ENGRAM_SRC}/.env"
+  # Migrate from pre-v1.4 location if needed
+  if [ -f "${ENGRAM_SRC}/.env" ] && [ ! -f "${ENV_FILE}" ]; then
+    info "Migrating .env from ${ENGRAM_SRC}/.env to ${ENV_FILE}"
+    mv "${ENGRAM_SRC}/.env" "${ENV_FILE}"
+  fi
+
   if [ -f "${ENGRAM_SRC}/.env.example" ]; then
     cp "${ENGRAM_SRC}/.env.example" "${ENV_FILE}"
   else
@@ -350,15 +370,17 @@ write_env() {
   sed_i "s|^ENGRAM_API_KEY=.*|ENGRAM_API_KEY=${ENGRAM_API_KEY}|"              "${ENV_FILE}"
   sed_i "s|^ENGRAM_VAULT_KEY=.*|ENGRAM_VAULT_KEY=${ENGRAM_VAULT_KEY}|"        "${ENV_FILE}"
   sed_i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}|"     "${ENV_FILE}"
-  # OPENAI_API_KEY is commented out by default in .env.example — handle both forms
   sed_i "s|^# OPENAI_API_KEY=.*|OPENAI_API_KEY=${OPENAI_API_KEY}|"            "${ENV_FILE}"
   sed_i "s|^OPENAI_API_KEY=.*|OPENAI_API_KEY=${OPENAI_API_KEY}|"              "${ENV_FILE}"
 
-  # Append values not in .env.example
+  # Append values not in .env.example — compose reads these via --env-file.
+  # ENGRAM_CONFIG_FILE is the absolute path to engram.yaml; compose substitutes
+  # it into the volume mount: "${ENGRAM_CONFIG_FILE}:/app/engram.yaml:ro".
   {
     echo ""
     echo "# Set by install-server.sh"
     echo "ENGRAM_DATA_DIR=${DATA_DIR}"
+    echo "ENGRAM_CONFIG_FILE=${DATA_DIR}/engram.yaml"
     if [ "${USE_QDRANT}" = "yes" ]; then
       echo "ENGRAM_VECTOR_BACKEND=qdrant"
     fi
@@ -366,6 +388,12 @@ write_env() {
 
   chmod 600 "${ENV_FILE}"
   success ".env written (mode 600)"
+
+  # Remove obsolete in-source .env if it still exists (post-migration cleanup)
+  if [ -f "${ENGRAM_SRC}/.env" ]; then
+    info "Removing obsolete ${ENGRAM_SRC}/.env (now lives in ${DATA_DIR})"
+    rm -f "${ENGRAM_SRC}/.env"
+  fi
 }
 
 # ─── Tear down stale containers from a previous compose project ─────────────
@@ -406,20 +434,24 @@ clean_stale_containers() {
 }
 
 # ─── Pull images, build engram, start services ───────────────────────────────
+# Compose runs from the source clone (for build context + relative agents/skills
+# mounts) but reads .env from the data dir via --env-file.
 start_services() {
   cd "${ENGRAM_SRC}"
-  set -a; source .env; set +a
+  local ENV_FILE="${DATA_DIR}/.env"
+  set -a; source "${ENV_FILE}"; set +a
   clean_stale_containers
 
-  # Build the compose command — adds --profile qdrant if user opted in
-  local DC_CMD="${DC}"
+  # Compose command with explicit --env-file pointing at the data-dir .env.
+  # Add --profile qdrant when the user opted in.
+  local DC_CMD="${DC} --env-file ${ENV_FILE}"
   if [ "${USE_QDRANT}" = "yes" ]; then
-    DC_CMD="${DC} --profile qdrant"
+    DC_CMD="${DC_CMD} --profile qdrant"
   fi
 
   step "Pulling ArcadeDB image"
   info "First pull downloads ~250 MB — may take a minute."
-  $DC pull arcadedb
+  $DC_CMD pull arcadedb
 
   if [ "${USE_QDRANT}" = "yes" ]; then
     step "Pulling Qdrant image"
@@ -430,7 +462,7 @@ start_services() {
   info "First build downloads Python dependencies — typically 3-5 minutes."
   info "You will see progress below. Do not interrupt."
   echo ""
-  $DC build --progress=plain engram
+  $DC_CMD build --progress=plain engram
 
   step "Starting services"
   $DC_CMD up -d
@@ -438,7 +470,7 @@ start_services() {
   echo ""
   info "Waiting for services to be healthy..."
   local i=0
-  while ! $DC ps 2>/dev/null | grep -q "engram.*healthy"; do
+  while ! $DC_CMD ps 2>/dev/null | grep -q "engram.*healthy"; do
     sleep 4; i=$((i+1)); echo -ne "\r  Waiting... ${i}s"
     [ $i -ge 45 ] && break
   done
@@ -449,7 +481,7 @@ start_services() {
     -H "X-API-Key: ${ENGRAM_API_KEY}" -o /dev/null 2>/dev/null; then
     success "engram API is healthy"
   else
-    warn "API not responding yet — check logs: cd ${ENGRAM_SRC} && ${DC} logs engram"
+    warn "API not responding yet — check logs: cd ${ENGRAM_SRC} && ${DC} --env-file ${ENV_FILE} logs engram"
   fi
 }
 
@@ -472,19 +504,22 @@ print_success() {
   echo -e "    REST API           : ${BOLD}http://${SERVER_HOST}:8766/api/v1${NC}"
   echo -e "    API key            : ${YELLOW}${ENGRAM_API_KEY}${NC}"
   echo ""
-  echo -e "  ${BOLD}Source directory${NC} : ${ENGRAM_SRC}"
-  echo -e "  ${BOLD}Data directory${NC}   : ${DATA_DIR}"
-  echo ""
-  local UP_CMD="${DC} up -d"
-  local DOWN_CMD="${DC} down"
+  echo -e "  ${BOLD}Source directory${NC} : ${ENGRAM_SRC}  ${DIM}(code only — safe to wipe + re-clone)${NC}"
+  echo -e "  ${BOLD}Data directory${NC}   : ${DATA_DIR}  ${DIM}(config + secrets + data — keep this)${NC}"
+  echo -e "    ${DIM}├─ engram.yaml      configuration${NC}"
+  echo -e "    ${DIM}├─ .env             API keys + passwords${NC}"
+  echo -e "    ${DIM}├─ arcadedb/        graph + vector data${NC}"
   if [ "${USE_QDRANT}" = "yes" ]; then
-    UP_CMD="${DC} --profile qdrant up -d"
-    DOWN_CMD="${DC} --profile qdrant down"
+    echo -e "    ${DIM}└─ qdrant/          HNSW ANN index${NC}"
   fi
+  echo ""
+  local PROFILE=""
+  [ "${USE_QDRANT}" = "yes" ] && PROFILE=" --profile qdrant"
+  local DC_FULL="${DC} --env-file ${DATA_DIR}/.env${PROFILE}"
   echo -e "  ${BOLD}Manage services${NC}:"
-  echo -e "    cd ${ENGRAM_SRC} && ${DC} logs -f engram  # tail logs"
-  echo -e "    cd ${ENGRAM_SRC} && ${DOWN_CMD}            # stop"
-  echo -e "    cd ${ENGRAM_SRC} && ${UP_CMD}           # start"
+  echo -e "    cd ${ENGRAM_SRC} && ${DC_FULL} logs -f engram  # tail logs"
+  echo -e "    cd ${ENGRAM_SRC} && ${DC_FULL} down             # stop"
+  echo -e "    cd ${ENGRAM_SRC} && ${DC_FULL} up -d            # start"
   echo ""
   echo -e "  ${BOLD}Next step${NC} — install the client hooks on each developer machine:"
   echo -e "    ${CYAN}./install-client.sh --server http://${SERVER_HOST}:8766 --key ${ENGRAM_API_KEY}${NC}"
@@ -501,17 +536,30 @@ main() {
     # Reuse existing values; do not re-prompt.
     DATA_DIR="$HOME/.engram"
     ENGRAM_SRC="$HOME/.engram-src"
-    [ -f "${ENGRAM_SRC}/.env" ] || die "Upgrade mode but ${ENGRAM_SRC}/.env is missing — switch to fresh install."
-    set -a; source "${ENGRAM_SRC}/.env"; set +a
+    # Pre-v1.4 .env lived at ENGRAM_SRC/.env — migrate transparently.
+    if [ ! -f "${DATA_DIR}/.env" ] && [ -f "${ENGRAM_SRC}/.env" ]; then
+      mkdir -p "${DATA_DIR}"
+      mv "${ENGRAM_SRC}/.env" "${DATA_DIR}/.env"
+      info "Migrated .env from ${ENGRAM_SRC} → ${DATA_DIR}"
+    fi
+    local ENV_FILE="${DATA_DIR}/.env"
+    [ -f "${ENV_FILE}" ] || die "Upgrade mode but ${ENV_FILE} is missing — switch to fresh install."
+    set -a; source "${ENV_FILE}"; set +a
     USE_QDRANT="no"
-    grep -q "^ENGRAM_VECTOR_BACKEND=qdrant" "${ENGRAM_SRC}/.env" && USE_QDRANT="yes"
-    info "Upgrade: preserving $ENGRAM_SRC/.env (keeps your existing keys)."
-    resolve_source   # git pull
-    start_services   # rebuild + restart
+    grep -q "^ENGRAM_VECTOR_BACKEND=qdrant" "${ENV_FILE}" && USE_QDRANT="yes"
+    info "Upgrade: preserving ${ENV_FILE} (keeps your existing keys)."
+    resolve_source       # git pull
+    refresh_yaml_config  # ensure DATA_DIR/engram.yaml exists and is current
+    # Ensure ENGRAM_CONFIG_FILE is set in .env (pre-v1.4 installs didn't have it)
+    if ! grep -q "^ENGRAM_CONFIG_FILE=" "${ENV_FILE}"; then
+      echo "ENGRAM_CONFIG_FILE=${DATA_DIR}/engram.yaml" >> "${ENV_FILE}"
+    fi
+    start_services       # rebuild + restart
   else
     collect_config
     resolve_source
     create_dirs
+    refresh_yaml_config
     write_env
     start_services
   fi
