@@ -257,7 +257,7 @@ Write to the namespace that matches the *audience*, not the topic:
 
 | Content | Namespace |
 |---|---|
-| My personal session notes | personal:me |
+| My personal session notes | personal:default |
 | Architecture decision records (ADRs) | team:architecture |
 | Production incident runbooks | infra:incidents |
 | Payment service patterns | project:payments |
@@ -267,7 +267,7 @@ Write to the namespace that matches the *audience*, not the topic:
 Rule of thumb: who should be able to search this?
 - Whole team → team:architecture or the relevant project namespace
 - DevOps/platform → infra:*
-- Just you → personal:me
+- Just you → personal:default
 
 ### End of session
 Write a brief session summary before closing:

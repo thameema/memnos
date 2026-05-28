@@ -34,7 +34,7 @@ def load_env():
 cfg = load_env()
 ENGRAM_API = cfg.get("ENGRAM_API",        os.environ.get("ENGRAM_API",        "http://localhost:8766"))
 ENGRAM_KEY = cfg.get("ENGRAM_KEY",        os.environ.get("ENGRAM_KEY",        ""))
-DEFAULT_NS = cfg.get("ENGRAM_DEFAULT_NS", os.environ.get("ENGRAM_DEFAULT_NS", "personal:me"))
+DEFAULT_NS = cfg.get("ENGRAM_DEFAULT_NS", os.environ.get("ENGRAM_DEFAULT_NS", "personal:default"))
 INTERVAL   = int(cfg.get("ENGRAM_HEARTBEAT_MINUTES", "10")) * 60
 
 # ── PID file — one daemon per machine ────────────────────────────────────────

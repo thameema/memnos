@@ -1793,12 +1793,12 @@ claude
 # Inside a Claude Code session:
 Use the memory_write tool to save this:
   content: "The hc-env-provisioner SP uses ABAC conditions to restrict role assignments"
-  namespace: "personal:me"
+  namespace: "personal:default"
   tags: ["azure", "iam"]
 
 Now use memory_search to find it:
   query: "azure service principal"
-  namespace: "personal:me"
+  namespace: "personal:default"
 ```
 
 ### Spawn a background task
@@ -1807,7 +1807,7 @@ Now use memory_search to find it:
 # Inside a Claude Code session:
 Use spawn_task to:
   prompt: "Search memory for all Azure IAM decisions and write a one-page summary"
-  namespace: "personal:me"
+  namespace: "personal:default"
   runtime: "api"
 
 # Get the task ID, then:

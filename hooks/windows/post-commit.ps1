@@ -27,7 +27,7 @@ $EnvFile = Join-Path $HOME ".claude\hooks\engram.env"
 
 $ENGRAM_API        = "http://localhost:8766"
 $ENGRAM_KEY        = "engram-local-dev-key"
-$ENGRAM_DEFAULT_NS = "personal:me"
+$ENGRAM_DEFAULT_NS = "personal:default"
 
 if (Test-Path $EnvFile) {
     foreach ($line in (Get-Content $EnvFile)) {

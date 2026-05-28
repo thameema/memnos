@@ -22,7 +22,7 @@ SESSION=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); p
 [[ -z "$SESSION" ]] && exit 0
 
 # ── Namespace resolution ──────────────────────────────────────────────────────
-ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:me}"
+ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:default}"
 if [[ -n "$CWD" ]]; then
   REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || echo "")
   if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]]; then

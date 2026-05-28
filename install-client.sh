@@ -7,7 +7,7 @@
 # Usage:
 #   ./install-client.sh
 #   ./install-client.sh --server http://host:8766 --key engram-abc123
-#   ./install-client.sh --server http://localhost:8766 --key engram-abc123 --namespace personal:me
+#   ./install-client.sh --server http://localhost:8766 --key engram-abc123 --namespace personal:default
 #
 # Supports: macOS, Linux, WSL (Windows Subsystem for Linux)
 # For native Windows (PowerShell): use install-client.ps1 instead.
@@ -168,7 +168,7 @@ collect_config() {
   if [ -n "$ARG_NS" ]; then
     DEFAULT_NS="$ARG_NS"
   else
-    ask DEFAULT_NS "Default namespace" "personal:me"
+    ask DEFAULT_NS "Default namespace" "personal:default"
   fi
 }
 
@@ -345,7 +345,7 @@ def load_env():
 cfg = load_env()
 ENGRAM_API = cfg.get("ENGRAM_API",        os.environ.get("ENGRAM_API",        "http://localhost:8766"))
 ENGRAM_KEY = cfg.get("ENGRAM_KEY",        os.environ.get("ENGRAM_KEY",        ""))
-DEFAULT_NS = cfg.get("ENGRAM_DEFAULT_NS", os.environ.get("ENGRAM_DEFAULT_NS", "personal:me"))
+DEFAULT_NS = cfg.get("ENGRAM_DEFAULT_NS", os.environ.get("ENGRAM_DEFAULT_NS", "personal:default"))
 INTERVAL   = int(cfg.get("ENGRAM_HEARTBEAT_MINUTES", "10")) * 60
 
 # ── PID file — one daemon per machine ────────────────────────────────────────
@@ -573,7 +573,7 @@ SESSION=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); p
 [[ -z "$SESSION" ]] && exit 0
 
 # ── Namespace resolution ──────────────────────────────────────────────────────
-ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:me}"
+ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:default}"
 if [[ -n "$CWD" ]]; then
   REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || echo "")
   if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]]; then
@@ -738,7 +738,7 @@ TRANSCRIPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin)
 command -v claude &>/dev/null || exit 0
 
 # Namespace resolution
-ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:me}"
+ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:default}"
 REPO_ROOT=$(git -C "${CWD:-.}" rev-parse --show-toplevel 2>/dev/null || echo "")
 if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]]; then
   FILE_NS=$(grep '^namespace=' "$REPO_ROOT/.engram" 2>/dev/null | cut -d= -f2 | tr -d ' ')
@@ -851,7 +851,7 @@ TRANSCRIPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin)
 [[ -z "$CWD" ]] && exit 0
 
 # Namespace resolution
-ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:me}"
+ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:default}"
 REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || echo "")
 if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]]; then
   FILE_NS=$(grep '^namespace=' "$REPO_ROOT/.engram" 2>/dev/null | cut -d= -f2 | tr -d ' ')
@@ -1058,7 +1058,7 @@ def cfg(key, default=''):
 
 api  = cfg('ENGRAM_API',        'http://localhost:8766')
 akey = cfg('ENGRAM_KEY',        '')
-ns   = cfg('ENGRAM_DEFAULT_NS', 'personal:me')
+ns   = cfg('ENGRAM_DEFAULT_NS', 'personal:default')
 try:
     root = subprocess.check_output(['git','rev-parse','--show-toplevel'],
         stderr=subprocess.DEVNULL, text=True).strip()
@@ -1106,7 +1106,7 @@ def cfg(key, default=''):
 
 api  = cfg('ENGRAM_API',        'http://localhost:8766')
 akey = cfg('ENGRAM_KEY',        '')
-ns   = cfg('ENGRAM_DEFAULT_NS', 'personal:me')
+ns   = cfg('ENGRAM_DEFAULT_NS', 'personal:default')
 project = os.path.basename(subprocess.run(['git','rev-parse','--show-toplevel'],
     capture_output=True,text=True).stdout.strip() or os.getcwd())
 branch  = subprocess.run(['git','rev-parse','--abbrev-ref','HEAD'],
@@ -1164,7 +1164,7 @@ ENGRAM_KEY="${ENGRAM_KEY:-}"
 if ! curl -sf --max-time 2 "$ENGRAM_API/api/v1/admin/health" -o /dev/null 2>/dev/null; then exit 0; fi
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 REPO_NAME=$(basename "$REPO_ROOT")
-ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:me}"
+ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:default}"
 ENGRAM_NS="${ENGRAM_NS_OVERRIDE:-$ENGRAM_NS}"
 if [[ -f "$REPO_ROOT/.engram" ]]; then
   FILE_NS=$(grep '^namespace=' "$REPO_ROOT/.engram" 2>/dev/null | cut -d= -f2 | tr -d ' ')
@@ -1353,7 +1353,7 @@ MCP server (registered in this settings.json) plus session hooks.
 
 - Call `memory_search` immediately when the user mentions a project, customer, or topic that might have prior context — do not start with file searches.
 - Save with `memory_write` mid-session whenever a decision, outcome, or non-obvious learning happens. Do not wait for end-of-session.
-- Default namespace: `personal:me`. Override per-project by placing `namespace=project:myname` in a `.engram` file at the repo root.
+- Default namespace: `personal:default`. Override per-project by placing `namespace=project:myname` in a `.engram` file at the repo root.
 
 ### Configuration
 
