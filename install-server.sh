@@ -11,6 +11,10 @@
 
 set -euo pipefail
 
+# ─── Capture all output to a timestamped log file ────────────────────────────
+LOG_FILE="/tmp/engram-install-server-$(date +%Y%m%d-%H%M%S).log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
 # ─── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
@@ -55,6 +59,40 @@ cat <<'BANNER'
   Server Installer
 BANNER
 echo -e "${NC}"
+
+# ─── Detect prior install and choose upgrade / fresh / abort ─────────────────
+INSTALL_MODE="fresh"   # fresh | upgrade
+detect_existing_install() {
+  local src_clone="$HOME/.engram-src"
+  local data_dir="$HOME/.engram"
+  local found=()
+
+  [ -d "${src_clone}/.git" ] && found+=("source clone:  ${src_clone}")
+  [ -f "${src_clone}/.env" ] && found+=("config:         ${src_clone}/.env")
+  [ -d "${data_dir}" ] && found+=("data directory: ${data_dir}")
+
+  local containers
+  containers="$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^engram(-arcadedb|-qdrant)?$' || true)"
+  [ -n "$containers" ] && found+=("docker containers: $(echo "$containers" | tr '\n' ' ')")
+
+  [ ${#found[@]} -eq 0 ] && return 0
+
+  step "Previous engram install detected"
+  for item in "${found[@]}"; do
+    echo "    - $item"
+  done
+  echo ""
+  echo -e "  ${BOLD}1) Upgrade${NC}     — git pull source, rebuild image, restart. Keeps data + .env."
+  echo -e "  ${BOLD}2) Fresh install${NC} — wipe .env (NOT data dir), reconfigure from scratch."
+  echo -e "  ${BOLD}3) Abort${NC}       — leave everything as-is."
+  echo ""
+  ask CHOICE "Choose [1/2/3]" "1"
+  case "$CHOICE" in
+    1) INSTALL_MODE="upgrade"; info "Mode: upgrade (preserve config and data)" ;;
+    2) INSTALL_MODE="fresh";   info "Mode: fresh install (data dir preserved, .env rewritten)" ;;
+    *) die "Aborted by user. Existing install left untouched." ;;
+  esac
+}
 
 # ─── OS / arch detection ──────────────────────────────────────────────────────
 detect_os() {
@@ -339,12 +377,30 @@ main() {
   detect_os
   check_docker
   check_python
-  collect_config
-  resolve_source
-  create_dirs
-  write_env
-  start_services
+  detect_existing_install
+
+  if [ "$INSTALL_MODE" = "upgrade" ]; then
+    # Reuse existing values; do not re-prompt.
+    DATA_DIR="$HOME/.engram"
+    ENGRAM_SRC="$HOME/.engram-src"
+    [ -f "${ENGRAM_SRC}/.env" ] || die "Upgrade mode but ${ENGRAM_SRC}/.env is missing — switch to fresh install."
+    set -a; source "${ENGRAM_SRC}/.env"; set +a
+    USE_QDRANT="no"
+    grep -q "^ENGRAM_VECTOR_BACKEND=qdrant" "${ENGRAM_SRC}/.env" && USE_QDRANT="yes"
+    info "Upgrade: preserving $ENGRAM_SRC/.env (keeps your existing keys)."
+    resolve_source   # git pull
+    start_services   # rebuild + restart
+  else
+    collect_config
+    resolve_source
+    create_dirs
+    write_env
+    start_services
+  fi
+
   print_success
+  echo ""
+  echo -e "  ${DIM}Install log saved to ${BOLD}${LOG_FILE}${NC}"
 }
 
 main "$@"

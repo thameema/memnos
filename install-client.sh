@@ -14,6 +14,10 @@
 
 set -euo pipefail
 
+# ─── Capture all output to a timestamped log file ────────────────────────────
+LOG_FILE="/tmp/engram-install-client-$(date +%Y%m%d-%H%M%S).log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
 # ─── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
@@ -85,17 +89,50 @@ detect_os() {
 # ─── Check Claude Code is installed ───────────────────────────────────────────
 check_claude_code() {
   step "Checking Claude Code"
-  if [ -f "$HOME/.claude/settings.json" ]; then
-    CLAUDE_SETTINGS="$HOME/.claude/settings.json"
-    success "Claude Code found: $CLAUDE_SETTINGS"
-  else
-    warn "~/.claude/settings.json not found."
-    warn "Install Claude Code first: https://claude.ai/code"
-    warn "Continuing anyway — hooks will be installed but not registered."
-    CLAUDE_SETTINGS=""
-  fi
   CLAUDE_HOOKS_DIR="$HOME/.claude/hooks"
   CLAUDE_COMMANDS_DIR="$HOME/.claude/commands"
+  CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+
+  if [ -f "$CLAUDE_SETTINGS" ]; then
+    success "Claude Code settings found: $CLAUDE_SETTINGS"
+  else
+    if [ ! -d "$HOME/.claude" ]; then
+      warn "~/.claude/ not found — Claude Code may not be installed yet."
+      warn "Install Claude Code first: https://claude.ai/code"
+    fi
+    info "Creating empty $CLAUDE_SETTINGS so hooks + MCP server can be registered."
+    mkdir -p "$HOME/.claude"
+    echo '{}' > "$CLAUDE_SETTINGS"
+  fi
+}
+
+# ─── Detect any previous engram client install ───────────────────────────────
+detect_existing_install() {
+  local found=()
+  for f in engram.env engram-inject.sh engram-heartbeat.py \
+           engram-git-write.sh engram-precompact.sh engram-session-write.sh; do
+    [ -f "$CLAUDE_HOOKS_DIR/$f" ] && found+=("hooks/$f")
+  done
+  [ -f "$CLAUDE_COMMANDS_DIR/engram.md" ] && found+=("commands/engram.md")
+  [ -f "$HOME/.git-hooks/post-commit" ] && \
+    grep -q "engram" "$HOME/.git-hooks/post-commit" 2>/dev/null && \
+    found+=("~/.git-hooks/post-commit (engram-aware)")
+  if [ -f "$CLAUDE_SETTINGS" ] && \
+     python3 -c "import json,sys; d=json.load(open('$CLAUDE_SETTINGS')); sys.exit(0 if 'engram' in d.get('mcpServers',{}) else 1)" 2>/dev/null; then
+    found+=("settings.json: engram MCP already registered")
+  fi
+
+  if [ ${#found[@]} -gt 0 ]; then
+    step "Previous engram client install detected"
+    for item in "${found[@]}"; do
+      echo "    - $item"
+    done
+    echo ""
+    ask_yn DO_REINSTALL "Overwrite existing files and re-register?" "Y"
+    if [ "$DO_REINSTALL" != "yes" ]; then
+      die "Aborted by user. Existing install left untouched."
+    fi
+  fi
 }
 
 # ─── Collect config ───────────────────────────────────────────────────────────
@@ -1154,15 +1191,37 @@ GITHOOK
   success "git config --global core.hooksPath $git_hooks_dir"
 }
 
-# ─── Patch Claude Code settings.json ─────────────────────────────────────────
+# ─── Derive MCP/SSE URL from the API server URL ──────────────────────────────
+# API runs on :8766, MCP/SSE on :8765 in the default compose. If the user provided
+# an explicit ENGRAM_MCP_URL via env, honour it.
+mcp_url_from_server() {
+  if [ -n "${ENGRAM_MCP_URL:-}" ]; then
+    echo "$ENGRAM_MCP_URL"
+    return
+  fi
+  local url="${ENGRAM_SERVER%/}"
+  # Replace :8766 → :8765 if present, else assume the user is fronting MCP on the same host
+  if [[ "$url" == *:8766* ]]; then
+    url="${url/:8766/:8765}"
+  fi
+  echo "${url}/sse"
+}
+
+# ─── Patch Claude Code settings.json (hooks + MCP server) ────────────────────
 patch_settings() {
-  step "Registering hooks in Claude Code"
+  step "Registering hooks + engram MCP server in Claude Code"
   [ -z "$CLAUDE_SETTINGS" ] && warn "settings.json not found — skipping." && return 0
+
+  # Backup before mutating
+  local backup="${CLAUDE_SETTINGS}.before-engram-$(date +%Y%m%d-%H%M%S)"
+  cp "$CLAUDE_SETTINGS" "$backup"
+  info "Backed up settings.json → $backup"
 
   local inject_cmd="$CLAUDE_HOOKS_DIR/engram-inject.sh"
   local precompact_cmd="$CLAUDE_HOOKS_DIR/engram-precompact.sh"
   local gitwrite_cmd="$CLAUDE_HOOKS_DIR/engram-git-write.sh"
   local session_cmd="$CLAUDE_HOOKS_DIR/engram-session-write.sh"
+  local mcp_url; mcp_url="$(mcp_url_from_server)"
 
   python3 - <<PYEOF
 import json, os, sys
@@ -1172,13 +1231,15 @@ inject_cmd     = "$inject_cmd"
 precompact_cmd = "$precompact_cmd"
 gitwrite_cmd   = "$gitwrite_cmd"
 session_cmd    = "$session_cmd"
+mcp_url        = "$mcp_url"
+api_key        = "$ENGRAM_API_KEY"
 
 try:
     with open(settings_file) as f:
         settings = json.load(f)
 except Exception as e:
-    print(f"  [warn] Could not read {settings_file}: {e}")
-    sys.exit(0)
+    print(f"  [warn] Could not read {settings_file}: {e}; starting fresh")
+    settings = {}
 
 settings.setdefault("hooks", {})
 
@@ -1206,12 +1267,72 @@ stops = settings["hooks"].setdefault("Stop", [{"hooks": []}])
 if not cmd_registered(stops, session_cmd):
     stops[0]["hooks"].append({"type":"command","command":session_cmd,"timeout":8,"async":True})
 
+# Register engram MCP server (always update so re-runs pick up new keys/URLs)
+mcps = settings.setdefault("mcpServers", {})
+mcps["engram"] = {
+    "type": "sse",
+    "url": mcp_url,
+    "headers": {
+        "Authorization": f"Bearer {api_key}"
+    }
+}
+
 with open(settings_file, "w") as f:
     json.dump(settings, f, indent=2)
     f.write("\n")
 
 print(f"  [ok] 4 hooks registered in {settings_file}")
+print(f"  [ok] engram MCP server registered: {mcp_url}")
 PYEOF
+}
+
+# ─── Patch ~/.claude/CLAUDE.md with an engram usage section ──────────────────
+patch_claude_md() {
+  step "Updating ~/.claude/CLAUDE.md"
+  local CLAUDE_MD="$HOME/.claude/CLAUDE.md"
+
+  if [ -f "$CLAUDE_MD" ] && grep -qE "^## engram\b|engram MCP|engram — Persistent" "$CLAUDE_MD"; then
+    info "CLAUDE.md already has an engram section — leaving it alone."
+    return 0
+  fi
+
+  if [ -f "$CLAUDE_MD" ]; then
+    local backup="${CLAUDE_MD}.before-engram-$(date +%Y%m%d-%H%M%S)"
+    cp "$CLAUDE_MD" "$backup"
+    info "Backed up CLAUDE.md → $backup"
+  else
+    mkdir -p "$HOME/.claude"
+    touch "$CLAUDE_MD"
+  fi
+
+  cat >> "$CLAUDE_MD" <<'ENGRAM_MD'
+
+## engram — Persistent Memory MCP
+
+engram provides persistent memory across Claude Code sessions via the `engram`
+MCP server (registered in this settings.json) plus session hooks.
+
+### Memory tools (preferred over Bash grep/find for knowledge recall)
+
+| Tool | Purpose |
+|------|---------|
+| `memory_search(query)` | Search memories across all namespaces you have access to. Use this first whenever a question references prior work, decisions, or topics. |
+| `memory_write(content, namespace, tags)` | Save new knowledge worth remembering (decisions, blockers, patterns). |
+| `memory_delete(memory_id)` | Remove stale entries. |
+
+### When to use
+
+- Call `memory_search` immediately when the user mentions a project, customer, or topic that might have prior context — do not start with file searches.
+- Save with `memory_write` mid-session whenever a decision, outcome, or non-obvious learning happens. Do not wait for end-of-session.
+- Default namespace: `personal:me`. Override per-project by placing `namespace=project:myname` in a `.engram` file at the repo root.
+
+### Configuration
+
+- Hooks config: `~/.claude/hooks/engram.env`
+- Manual save: `/engram save` slash command (in Claude Code)
+- Manage the server: `cd ~/.engram-src && docker compose [up -d | down | logs]`
+ENGRAM_MD
+  success "engram section appended to $CLAUDE_MD"
 }
 
 # ─── Success ──────────────────────────────────────────────────────────────────
@@ -1252,12 +1373,16 @@ print_success() {
 main() {
   detect_os
   check_claude_code
+  detect_existing_install
   collect_config
   test_connection
   install_hooks
   install_git_hook
   patch_settings
+  patch_claude_md
   print_success
+  echo ""
+  echo -e "  ${DIM}Install log saved to ${BOLD}${LOG_FILE}${NC}"
 }
 
 main "$@"
