@@ -22,7 +22,13 @@ pass()  { echo "  ${GREEN}✓${NC} $*"; PASS=$((PASS+1)); }
 fail()  { echo "  ${RED}✗${NC} $*"; FAIL=$((FAIL+1)); }
 warn()  { echo "  ${YELLOW}!${NC} $*"; WARN=$((WARN+1)); }
 skip()  { echo "  ${DIM}-${NC} $* ${DIM}(skipped)${NC}"; }
+note()  { echo "  ${DIM}·${NC} $*"; }
 hdr()   { echo ""; echo "${BOLD}═══ $* ═══${NC}"; }
+
+# Track WHY we failed so the remediation footer points at the right fix
+DIM_MISMATCH=0
+HOOKS_HAVE_XAPI=0
+CONTAINER_UNHEALTHY=0
 
 DATA_DIR="${ENGRAM_DATA_DIR:-$HOME/.engram}"
 SRC_DIR="${ENGRAM_SRC_DIR:-$HOME/.engram-src}"
@@ -214,11 +220,31 @@ except Exception:
     if [[ "$HIT_COUNT" -ge 1 ]]; then
       pass "search returned $HIT_COUNT result(s) for the test memory → embeddings working"
     else
-      ERR=$(echo "$SEARCH_RESP" | head -c 200)
-      if echo "$ERR" | grep -qi "sentence-transformers"; then
+      ERR=$(echo "$SEARCH_RESP" | head -c 500)
+      if echo "$ERR" | grep -qiE "Vector dimension|expected dim:|got [0-9]+"; then
+        DIM_MISMATCH=1
+        # Parse the dims out of the error if possible
+        EXPECTED_DIM=$(echo "$ERR" | grep -oE "expected dim: [0-9]+" | head -1 | grep -oE "[0-9]+")
+        GOT_DIM=$(echo "$ERR" | grep -oE "got [0-9]+" | head -1 | grep -oE "[0-9]+")
+        fail "EMBEDDING DIMENSION MISMATCH (expected ${EXPECTED_DIM:-?}, got ${GOT_DIM:-?})"
+        echo "        Your data directory was indexed with a DIFFERENT embedding model"
+        echo "        than the one engram is currently configured to use:"
+        echo "          • ${EXPECTED_DIM:-?} = stored vectors (likely local all-MiniLM-L6-v2 = 384)"
+        echo "          • ${GOT_DIM:-?} = current query (likely OpenAI text-embedding-3-small = 1536)"
+        echo "        This happens when you switch ENGRAM_EMBED_MODE between installs WITHOUT"
+        echo "        re-embedding existing memories. To recover:"
+        echo "          A) Run the re-embed tool (local→OpenAI only):"
+        echo "                python3 ~/.engram-src/tools/reembed.py"
+        echo "          B) OR nuke + restart (LOSES ALL MEMORIES):"
+        echo "                docker rm -f engram engram-arcadedb engram-qdrant"
+        echo "                rm -rf ~/.engram/arcadedb ~/.engram/qdrant"
+        echo "                cd ~/.engram-src && docker compose --env-file ~/.engram/.env up -d"
+      elif echo "$ERR" | grep -qi "sentence-transformers"; then
         fail "search failed: local embeddings (sentence-transformers) NOT installed in engram image"
+        echo "        Fix: rebuild with ENGRAM_EMBED_MODE=local in ~/.engram/.env, then:"
+        echo "          cd ~/.engram-src && docker compose --env-file ~/.engram/.env build engram --no-cache"
       elif echo "$ERR" | grep -qi "embedding"; then
-        fail "search failed: $(echo "$ERR" | head -c 150)"
+        fail "search failed: $(echo "$ERR" | head -c 200)"
       else
         fail "search returned 0 hits. Response: $ERR"
       fi
@@ -319,6 +345,7 @@ done
 
 # Hooks use Bearer (not X-API-Key)
 if grep -rq "X-API-Key" "$HOME/.claude/hooks/" 2>/dev/null; then
+  HOOKS_HAVE_XAPI=1
   fail "X-API-Key still present in installed hooks (re-run install-client.sh to fix)"
 else
   pass "no X-API-Key in installed hooks (auth is Bearer everywhere)"
@@ -350,9 +377,41 @@ if [[ $FAIL -eq 0 ]]; then
 else
   echo "${RED}${BOLD}✗ ${FAIL} check(s) failed.${NC} Review the output above."
   echo ""
-  echo "Common fixes:"
-  echo "  • Hooks have X-API-Key → re-run: curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install-client.sh | bash -s -- --server http://localhost:8766 --key \$(grep '^ENGRAM_API_KEY=' ~/.engram/.env | cut -d= -f2)"
-  echo "  • Containers unhealthy   → cd ~/.engram-src && docker compose --env-file ~/.engram/.env logs engram"
-  echo "  • engram crash-looping   → bash ~/.engram-src/tools/verify-install.sh --skip-write && docker logs engram --tail 50"
+  echo "${BOLD}Targeted fixes for THIS failure:${NC}"
+
+  if [[ $DIM_MISMATCH -eq 1 ]]; then
+    echo "  ${RED}• EMBEDDING DIMENSION MISMATCH${NC} — your data dir holds vectors of one"
+    echo "    dimension, but engram is now configured to produce a different one."
+    echo "    This happens when ENGRAM_EMBED_MODE was changed between installs."
+    echo ""
+    echo "    To recover, pick ONE of these:"
+    echo ""
+    echo "    A) ${BOLD}Re-embed existing memories${NC} (preserves data; LOCAL → OpenAI only):"
+    echo "         OPENAI_API_KEY=\$(grep ^OPENAI_API_KEY= ~/.engram/.env | cut -d= -f2) \\"
+    echo "         ARCADEDB_PASSWORD=\$(grep ^ARCADEDB_PASSWORD= ~/.engram/.env | cut -d= -f2) \\"
+    echo "           python3 ~/.engram-src/tools/reembed.py"
+    echo ""
+    echo "    B) ${BOLD}Revert ENGRAM_EMBED_MODE${NC} in ~/.engram/.env to the value that"
+    echo "       MATCHES your existing vectors, then restart engram:"
+    echo "         docker restart engram"
+    echo ""
+    echo "    C) ${BOLD}Nuke and reinstall${NC} (DELETES all existing memories):"
+    echo "         docker rm -f engram engram-arcadedb engram-qdrant 2>/dev/null"
+    echo "         rm -rf ~/.engram/arcadedb ~/.engram/qdrant"
+    echo "         cd ~/.engram-src && docker compose --env-file ~/.engram/.env up -d"
+  fi
+
+  if [[ $HOOKS_HAVE_XAPI -eq 1 ]]; then
+    echo "  • ${BOLD}Hooks contain X-API-Key${NC} — re-run client install:"
+    echo "      curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install-client.sh \\"
+    echo "        | bash -s -- --server http://localhost:8766 \\"
+    echo "          --key \$(grep '^ENGRAM_API_KEY=' ~/.engram/.env | cut -d= -f2)"
+  fi
+
+  if [[ $DIM_MISMATCH -eq 0 && $HOOKS_HAVE_XAPI -eq 0 ]]; then
+    # Generic fallbacks when the specific cause isn't pinpointed above
+    echo "  • Containers unhealthy   → cd ~/.engram-src && docker compose --env-file ~/.engram/.env logs engram"
+    echo "  • engram crash-looping   → docker logs engram --tail 50"
+  fi
   exit 1
 fi
