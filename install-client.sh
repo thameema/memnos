@@ -1207,15 +1207,27 @@ mcp_url_from_server() {
   echo "${url}/sse"
 }
 
-# ─── Patch Claude Code settings.json (hooks + MCP server) ────────────────────
+# ─── Patch Claude Code settings.json (hooks) + ~/.claude.json (MCP server) ──
 patch_settings() {
   step "Registering hooks + engram MCP server in Claude Code"
   [ -z "$CLAUDE_SETTINGS" ] && warn "settings.json not found — skipping." && return 0
 
-  # Backup before mutating
+  # Backup settings.json before mutating
   local backup="${CLAUDE_SETTINGS}.before-engram-$(date +%Y%m%d-%H%M%S)"
   cp "$CLAUDE_SETTINGS" "$backup"
   info "Backed up settings.json → $backup"
+
+  # Also backup ~/.claude.json if it exists — that is where Claude Code v2.x
+  # reads MCP servers from (settings.json mcpServers is legacy/duplicate).
+  local CLAUDE_JSON="$HOME/.claude.json"
+  if [ -f "$CLAUDE_JSON" ]; then
+    local cjbackup="${CLAUDE_JSON}.before-engram-$(date +%Y%m%d-%H%M%S)"
+    cp "$CLAUDE_JSON" "$cjbackup"
+    info "Backed up ~/.claude.json → $cjbackup"
+  else
+    info "Creating empty ~/.claude.json so MCP server can be registered."
+    echo '{}' > "$CLAUDE_JSON"
+  fi
 
   local inject_cmd="$CLAUDE_HOOKS_DIR/engram-inject.sh"
   local precompact_cmd="$CLAUDE_HOOKS_DIR/engram-precompact.sh"
@@ -1227,6 +1239,7 @@ patch_settings() {
 import json, os, sys
 
 settings_file  = "$CLAUDE_SETTINGS"
+claude_json    = "$CLAUDE_JSON"
 inject_cmd     = "$inject_cmd"
 precompact_cmd = "$precompact_cmd"
 gitwrite_cmd   = "$gitwrite_cmd"
@@ -1234,6 +1247,7 @@ session_cmd    = "$session_cmd"
 mcp_url        = "$mcp_url"
 api_key        = "$ENGRAM_API_KEY"
 
+# ─── settings.json — hooks ──────────────────────────────────────────────────
 try:
     with open(settings_file) as f:
         settings = json.load(f)
@@ -1247,42 +1261,47 @@ def cmd_registered(hook_list, cmd):
     return any(h.get("command","") == cmd
                for entry in hook_list for h in entry.get("hooks",[]))
 
-# UserPromptSubmit — inject
 ups = settings["hooks"].setdefault("UserPromptSubmit", [{"hooks": []}])
 if not cmd_registered(ups, inject_cmd):
     ups[0]["hooks"].insert(0, {"type":"command","command":inject_cmd,"timeout":8})
 
-# PreCompact — precompact (async so it never delays the compact)
 pcs = settings["hooks"].setdefault("PreCompact", [{"hooks": []}])
 if not cmd_registered(pcs, precompact_cmd):
     pcs[0]["hooks"].append({"type":"command","command":precompact_cmd,"timeout":30,"async":True})
 
-# PostToolUse — git-write (async, fires on every tool call)
 ptus = settings["hooks"].setdefault("PostToolUse", [{"hooks": []}])
 if not cmd_registered(ptus, gitwrite_cmd):
     ptus[0]["hooks"].append({"type":"command","command":gitwrite_cmd,"timeout":6,"async":True})
 
-# Stop — session-write
 stops = settings["hooks"].setdefault("Stop", [{"hooks": []}])
 if not cmd_registered(stops, session_cmd):
     stops[0]["hooks"].append({"type":"command","command":session_cmd,"timeout":8,"async":True})
 
-# Register engram MCP server (always update so re-runs pick up new keys/URLs)
-mcps = settings.setdefault("mcpServers", {})
-mcps["engram"] = {
+# Also write mcpServers into settings.json for older Claude Code versions
+mcp_entry = {
     "type": "sse",
     "url": mcp_url,
-    "headers": {
-        "Authorization": f"Bearer {api_key}"
-    }
+    "headers": {"Authorization": f"Bearer {api_key}"}
 }
+settings.setdefault("mcpServers", {})["engram"] = mcp_entry
 
 with open(settings_file, "w") as f:
-    json.dump(settings, f, indent=2)
-    f.write("\n")
-
+    json.dump(settings, f, indent=2); f.write("\n")
 print(f"  [ok] 4 hooks registered in {settings_file}")
-print(f"  [ok] engram MCP server registered: {mcp_url}")
+
+# ─── ~/.claude.json — MCP server (the canonical location for Claude Code v2) ─
+try:
+    with open(claude_json) as f:
+        cj = json.load(f)
+except Exception as e:
+    print(f"  [warn] Could not read {claude_json}: {e}; starting with empty object")
+    cj = {}
+
+cj.setdefault("mcpServers", {})["engram"] = mcp_entry
+
+with open(claude_json, "w") as f:
+    json.dump(cj, f, indent=2); f.write("\n")
+print(f"  [ok] engram MCP server registered in {claude_json}: {mcp_url}")
 PYEOF
 }
 
