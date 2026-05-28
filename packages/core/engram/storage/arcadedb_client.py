@@ -1262,7 +1262,7 @@ class ArcadeDBClient:
                 f"LET m = IN('MENTIONS') "
                 f"UNWIND m "
                 f"WHERE 1=1 {superseded_clause} "
-                f"LIMIT :topK"
+                f"LIMIT {top_k}"
             )
             try:
                 rows = await self._query(
@@ -1271,7 +1271,6 @@ class ArcadeDBClient:
                         "names": entity_names,
                         "ns": ns_filter,
                         "ns_prefix": f"{ns_filter}:%",
-                        "topK": top_k,
                         **as_of_params,
                     },
                 )
@@ -1291,11 +1290,11 @@ class ArcadeDBClient:
             sql = (
                 f"SELECT * FROM Memory "
                 f"WHERE content LIKE :pattern {ns_sql} {superseded_sql} "
-                f"LIMIT :topK"
+                f"LIMIT {top_k}"
             )
             # Build keyword pattern from first few words of query
             first_word = query.strip().split()[0] if query.strip() else query
-            params: dict = {"pattern": f"%{first_word}%", "topK": top_k, **as_of_params}
+            params: dict = {"pattern": f"%{first_word}%", **as_of_params}
             if ns_filter != "all":
                 params["ns"] = ns_filter
                 params["ns_prefix"] = f"{ns_filter}:%"
@@ -1375,8 +1374,7 @@ class ArcadeDBClient:
             for i, kw in enumerate(keywords):
                 params[f"kw{i}"] = f"%{kw}%"
         where = "WHERE " + " AND ".join(where_parts) if where_parts else ""
-        sql = f"SELECT * FROM Memory {where} ORDER BY created_at DESC LIMIT :topK"
-        params["topK"] = candidate_limit
+        sql = f"SELECT * FROM Memory {where} ORDER BY created_at DESC LIMIT {candidate_limit}"
         rows = await self._query(sql, params)
 
         if not rows:
@@ -1495,16 +1493,16 @@ class ArcadeDBClient:
         ns_filter = base_ns if base_ns not in ("all", "", "*") else None
         if ns_filter:
             rows = await self._query(
-                "SELECT namespace, count(*) AS cnt FROM Memory "
-                "WHERE namespace = :ns OR namespace LIKE :prefix "
-                "GROUP BY namespace ORDER BY cnt DESC LIMIT :limit",
-                {"ns": ns_filter, "prefix": f"{ns_filter}:%", "limit": limit},
+                f"SELECT namespace, count(*) AS cnt FROM Memory "
+                f"WHERE namespace = :ns OR namespace LIKE :prefix "
+                f"GROUP BY namespace ORDER BY cnt DESC LIMIT {limit}",
+                {"ns": ns_filter, "prefix": f"{ns_filter}:%"},
             )
         else:
             rows = await self._query(
-                "SELECT namespace, count(*) AS cnt FROM Memory "
-                "GROUP BY namespace ORDER BY cnt DESC LIMIT :limit",
-                {"limit": limit},
+                f"SELECT namespace, count(*) AS cnt FROM Memory "
+                f"GROUP BY namespace ORDER BY cnt DESC LIMIT {limit}",
+                {},
             )
         return {str(r.get("namespace", "")): int(r.get("cnt", 0)) for r in rows if r.get("namespace")}
 
@@ -1514,33 +1512,34 @@ class ArcadeDBClient:
 
         if ns_filter:
             mem_rows = await self._query(
-                "SELECT id, content, namespace, created_at, superseded_at, tags "
-                "FROM Memory WHERE (namespace = :ns OR namespace LIKE :prefix) "
-                "AND superseded_at IS NULL LIMIT :lim",
-                {"ns": ns_filter, "prefix": f"{ns_filter}:%", "lim": limit},
+                f"SELECT id, content, namespace, created_at, superseded_at, tags "
+                f"FROM Memory WHERE (namespace = :ns OR namespace LIKE :prefix) "
+                f"AND superseded_at IS NULL LIMIT {limit}",
+                {"ns": ns_filter, "prefix": f"{ns_filter}:%"},
             )
         else:
             mem_rows = await self._query(
-                "SELECT id, content, namespace, created_at, superseded_at, tags "
-                "FROM Memory WHERE superseded_at IS NULL LIMIT :lim",
-                {"lim": limit},
+                f"SELECT id, content, namespace, created_at, superseded_at, tags "
+                f"FROM Memory WHERE superseded_at IS NULL LIMIT {limit}",
+                {},
             )
 
         # Edge query — ArcadeDB uses @out.id / @in.id for edge endpoint properties
         edge_rows: list[dict] = []
+        edge_limit = limit * 3
         try:
             if ns_filter:
                 edge_rows = await self._query(
-                    "SELECT @out.id AS src_id, @in.id AS tgt_id, @type AS rel_type "
-                    "FROM MENTIONS WHERE @out.namespace = :ns OR @out.namespace LIKE :prefix "
-                    "LIMIT :lim",
-                    {"ns": ns_filter, "prefix": f"{ns_filter}:%", "lim": limit * 3},
+                    f"SELECT @out.id AS src_id, @in.id AS tgt_id, @type AS rel_type "
+                    f"FROM MENTIONS WHERE @out.namespace = :ns OR @out.namespace LIKE :prefix "
+                    f"LIMIT {edge_limit}",
+                    {"ns": ns_filter, "prefix": f"{ns_filter}:%"},
                 )
             else:
                 edge_rows = await self._query(
-                    "SELECT @out.id AS src_id, @in.id AS tgt_id, @type AS rel_type "
-                    "FROM MENTIONS LIMIT :lim",
-                    {"lim": limit * 3},
+                    f"SELECT @out.id AS src_id, @in.id AS tgt_id, @type AS rel_type "
+                    f"FROM MENTIONS LIMIT {edge_limit}",
+                    {},
                 )
         except Exception:
             pass
@@ -1752,15 +1751,15 @@ class ArcadeDBClient:
         ns_filter = namespace if namespace not in ("all", "", "*") else None
         if ns_filter:
             rows = await self._query(
-                "SELECT * FROM VaultAuditLog "
-                "WHERE namespace = :ns OR namespace LIKE :prefix "
-                "ORDER BY accessed_at DESC LIMIT :lim",
-                {"ns": ns_filter, "prefix": f"{ns_filter}:%", "lim": limit},
+                f"SELECT * FROM VaultAuditLog "
+                f"WHERE namespace = :ns OR namespace LIKE :prefix "
+                f"ORDER BY accessed_at DESC LIMIT {limit}",
+                {"ns": ns_filter, "prefix": f"{ns_filter}:%"},
             )
         else:
             rows = await self._query(
-                "SELECT * FROM VaultAuditLog ORDER BY accessed_at DESC LIMIT :lim",
-                {"lim": limit},
+                f"SELECT * FROM VaultAuditLog ORDER BY accessed_at DESC LIMIT {limit}",
+                {},
             )
         return rows
 
@@ -1777,7 +1776,6 @@ class ArcadeDBClient:
         placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
         params = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
         params["now_dt"] = now_ms()
-        params["limit"] = limit
         rows = await self._query(
             f"SELECT * FROM Memory "
             f"WHERE review_by IS NOT NULL "
@@ -1785,7 +1783,7 @@ class ArcadeDBClient:
             f"AND superseded_at IS NULL "
             f"AND status = 'active' "
             f"AND namespace IN [{placeholders}] "
-            f"ORDER BY review_by ASC LIMIT :limit",
+            f"ORDER BY review_by ASC LIMIT {limit}",
             params,
         )
         return [_row_to_memory(r) for r in rows]
@@ -1803,14 +1801,13 @@ class ArcadeDBClient:
         placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
         params: dict = {f"ns{i}": ns for i, ns in enumerate(ns_list)}
         params["policy"] = policy
-        params["limit"] = limit
         rows = await self._query(
             f"SELECT * FROM Memory "
             f"WHERE decay_policy = :policy "
             f"AND status = 'active' "
             f"AND superseded_at IS NULL "
             f"AND namespace IN [{placeholders}] "
-            f"LIMIT :limit",
+            f"LIMIT {limit}",
             params,
         )
         return [_row_to_memory(r) for r in rows]
@@ -1917,13 +1914,12 @@ class ArcadeDBClient:
             "ns": namespace,
             "ns_prefix": namespace + ":%",
             "last_seen": to_epoch_ms(last_seen),
-            "limit": limit,
         }
         rows = await self._query(
-            "SELECT * FROM Memory "
-            "WHERE created_at > :last_seen "
-            "AND (namespace = :ns OR namespace LIKE :ns_prefix) "
-            "ORDER BY created_at ASC LIMIT :limit",
+            f"SELECT * FROM Memory "
+            f"WHERE created_at > :last_seen "
+            f"AND (namespace = :ns OR namespace LIKE :ns_prefix) "
+            f"ORDER BY created_at ASC LIMIT {limit}",
             params,
         )
         memories = [_row_to_memory(r) for r in rows]
