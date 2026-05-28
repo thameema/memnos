@@ -70,11 +70,14 @@ ENGRAM_REF_ARG=""
 #   server-only (default) — secure: open_mode: false → Bearer auth enforced
 #   full                  — convenient: open_mode: true → no auth needed
 #                           (only safe on a single-user local laptop)
+# DEPLOY_MODE_EXPLICIT lets upgrade-mode auto-preserve the user's existing
+# open_mode setting when --mode was NOT passed.
 DEPLOY_MODE="server-only"
+DEPLOY_MODE_EXPLICIT=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) ENGRAM_REF_ARG="$2"; shift 2 ;;
-    --mode)    DEPLOY_MODE="$2"; shift 2 ;;
+    --mode)    DEPLOY_MODE="$2"; DEPLOY_MODE_EXPLICIT=1; shift 2 ;;
     --help|-h)
       cat <<HLP
   Usage: install-server.sh [--version <ref>] [--mode <full|server-only>]
@@ -128,16 +131,82 @@ detect_existing_install() {
     echo "    - $item"
   done
   echo ""
-  echo -e "  ${BOLD}1) Upgrade${NC}     — git pull source, rebuild image, restart. Keeps data + .env."
-  echo -e "  ${BOLD}2) Fresh install${NC} — wipe .env (NOT data dir), reconfigure from scratch."
-  echo -e "  ${BOLD}3) Abort${NC}       — leave everything as-is."
+  echo -e "  ${BOLD}1) Upgrade${NC}      — git pull source, rebuild image, restart."
+  echo -e "                  ${DIM}Keeps everything: .env, engram.yaml, memories, vault key, open_mode.${NC}"
+  echo -e "                  ${DIM}No prompts. Use this for routine version updates.${NC}"
+  echo ""
+  echo -e "  ${BOLD}2) Fresh install${NC} — ${RED}DELETES all stored memories${NC} and reconfigures from scratch."
+  echo -e "                  ${DIM}Wipes ~/.engram/{arcadedb, qdrant, .env, engram.yaml}.${NC}"
+  echo -e "                  ${DIM}Source clone (~/.engram-src) is kept. Requires explicit 'yes'.${NC}"
+  echo ""
+  echo -e "  ${BOLD}3) Abort${NC}        — leave everything as-is."
   echo ""
   ask CHOICE "Choose [1/2/3]" "1"
   case "$CHOICE" in
     1) INSTALL_MODE="upgrade"; info "Mode: upgrade (preserve config and data)" ;;
-    2) INSTALL_MODE="fresh";   info "Mode: fresh install (data dir preserved, .env rewritten)" ;;
+    2) INSTALL_MODE="fresh"
+       confirm_fresh_wipe_or_abort
+       info "Mode: fresh install (data wiped, full reconfigure)" ;;
     *) die "Aborted by user. Existing install left untouched." ;;
   esac
+}
+
+# ─── Fresh-install destructive confirmation ─────────────────────────────────
+# Called only when the user picks Fresh and the data dir has real content.
+# Default answer is 'abort'; the user must type the literal string 'yes' to
+# proceed. After confirmation, wipe arcadedb/qdrant data + config files so
+# the upcoming collect_config / write_env runs against a truly clean slate.
+confirm_fresh_wipe_or_abort() {
+  local data_dir="$HOME/.engram"
+  local has_memories=0
+
+  # "Real content" = arcadedb directory has files in it.
+  if [ -d "${data_dir}/arcadedb" ] && \
+     find "${data_dir}/arcadedb" -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
+    has_memories=1
+  fi
+
+  # If nothing to lose, no confirmation needed — silently proceed.
+  if [ "$has_memories" -eq 0 ] && [ ! -f "${data_dir}/.env" ]; then
+    return 0
+  fi
+
+  echo ""
+  echo -e "${RED}${BOLD}┌─────────────────────────────────────────────────────────────────────┐${NC}"
+  echo -e "${RED}${BOLD}│  ⚠  FRESH INSTALL — DESTRUCTIVE OPERATION                          ⚠  │${NC}"
+  echo -e "${RED}${BOLD}└─────────────────────────────────────────────────────────────────────┘${NC}"
+  echo ""
+  echo -e "  Fresh install will ${BOLD}${RED}PERMANENTLY DELETE${NC} the following:"
+  echo ""
+  [ "$has_memories" -eq 1 ] && \
+    echo -e "    ${RED}•${NC} ${data_dir}/arcadedb/    ${DIM}— all stored memories + vectors${NC}"
+  [ -d "${data_dir}/qdrant" ] && \
+    echo -e "    ${RED}•${NC} ${data_dir}/qdrant/      ${DIM}— Qdrant HNSW index${NC}"
+  [ -f "${data_dir}/.env" ] && \
+    echo -e "    ${RED}•${NC} ${data_dir}/.env         ${DIM}— ENGRAM_API_KEY, ARCADEDB_PASSWORD, ENGRAM_VAULT_KEY${NC}"
+  [ -f "${data_dir}/engram.yaml" ] && \
+    echo -e "    ${RED}•${NC} ${data_dir}/engram.yaml  ${DIM}— configuration (open_mode, embeddings)${NC}"
+  echo ""
+  echo -e "  ${BOLD}This cannot be undone.${NC} If you only want to update engram software,"
+  echo -e "  cancel this prompt and pick ${BOLD}1) Upgrade${NC} on the previous menu instead."
+  echo ""
+  echo -ne "${RED}${BOLD}  ?${NC} Type ${BOLD}yes${NC} to confirm wipe (any other input aborts) ${DIM}[default: abort]${NC}: "
+  read -r ans </dev/tty
+  if [ "$ans" != "yes" ]; then
+    die "Fresh install aborted — your data was NOT touched."
+  fi
+
+  # Stop containers so they release file locks before we rm -rf
+  info "Stopping engram containers..."
+  docker rm -f engram engram-arcadedb engram-qdrant >/dev/null 2>&1 || true
+
+  info "Wiping ${data_dir}/{arcadedb, qdrant, .env, engram.yaml}..."
+  rm -rf "${data_dir}/arcadedb" "${data_dir}/qdrant"
+  rm -f  "${data_dir}/.env"     "${data_dir}/engram.yaml"
+  # Also drop any obsolete files from older installs
+  rm -f  "${data_dir}/keys.db" "${data_dir}/learning.db" "${data_dir}/tasks.db" 2>/dev/null || true
+
+  success "Data directory wiped. Proceeding with fresh configuration."
 }
 
 # ─── OS / arch detection ──────────────────────────────────────────────────────
@@ -611,7 +680,8 @@ main() {
   detect_existing_install
 
   if [ "$INSTALL_MODE" = "upgrade" ]; then
-    # Reuse existing values; do not re-prompt.
+    # ── Upgrade: non-destructive. Reuse .env, preserve existing engram.yaml
+    #             (including open_mode), only update source code + rebuild image.
     DATA_DIR="$HOME/.engram"
     ENGRAM_SRC="$HOME/.engram-src"
     # Pre-v1.4 .env lived at ENGRAM_SRC/.env — migrate transparently.
@@ -621,19 +691,34 @@ main() {
       info "Migrated .env from ${ENGRAM_SRC} → ${DATA_DIR}"
     fi
     local ENV_FILE="${DATA_DIR}/.env"
-    [ -f "${ENV_FILE}" ] || die "Upgrade mode but ${ENV_FILE} is missing — switch to fresh install."
+    [ -f "${ENV_FILE}" ] || die "Upgrade mode but ${ENV_FILE} is missing — pick 'Fresh install' instead."
     set -a; source "${ENV_FILE}"; set +a
     USE_QDRANT="no"
     grep -q "^ENGRAM_VECTOR_BACKEND=qdrant" "${ENV_FILE}" && USE_QDRANT="yes"
-    info "Upgrade: preserving ${ENV_FILE} (keeps your existing keys)."
-    resolve_source       # git pull
-    refresh_yaml_config  # ensure DATA_DIR/engram.yaml exists and is current
+
+    # Auto-detect the existing open_mode so we don't accidentally flip it
+    # when refresh_yaml_config runs. User can override with --mode.
+    if [ "${DEPLOY_MODE_EXPLICIT}" -eq 0 ] && [ -f "${DATA_DIR}/engram.yaml" ]; then
+      if grep -qE "^\s+open_mode:\s+true\b" "${DATA_DIR}/engram.yaml"; then
+        DEPLOY_MODE="full"
+      else
+        DEPLOY_MODE="server-only"
+      fi
+      info "Upgrade: detected existing deploy mode = ${BOLD}${DEPLOY_MODE}${NC} (pass --mode to override)"
+    fi
+
+    info "Upgrade: preserving ${ENV_FILE} — no re-prompts, no key changes."
+    resolve_source       # git pull source
+    refresh_yaml_config  # refresh from updated template, preserve open_mode
     # Ensure ENGRAM_CONFIG_FILE is set in .env (pre-v1.4 installs didn't have it)
     if ! grep -q "^ENGRAM_CONFIG_FILE=" "${ENV_FILE}"; then
       echo "ENGRAM_CONFIG_FILE=${DATA_DIR}/engram.yaml" >> "${ENV_FILE}"
     fi
-    start_services       # rebuild + restart
+    start_services       # rebuild image, restart containers
   else
+    # ── Fresh: detect_existing_install already ran confirm_fresh_wipe_or_abort
+    #          (which deleted ~/.engram/{arcadedb,qdrant,.env,engram.yaml}
+    #          when there was anything to lose). Now run a clean configure.
     collect_config
     resolve_source
     create_dirs
