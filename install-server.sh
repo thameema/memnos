@@ -205,14 +205,36 @@ collect_config() {
   echo -e "     ${DIM}Recommended:${NC} skip unless you do not have Claude Code installed."
   echo ""
   echo -e "  ${BOLD}2. OpenAI API key${NC}     — for high-quality embeddings (text-embedding-3-small)."
-  echo -e "     ${DIM}If skipped:${NC} engram uses a local embedding model (in-container, no API cost)."
-  echo -e "     ${DIM}Trade-off:${NC}  local embeddings work well but are less accurate than OpenAI."
+  echo -e "     ${DIM}If skipped:${NC} you must choose a local embedding backend below."
   echo ""
-  echo -e "  ${DIM}You can edit ${BOLD}.env${NC}${DIM} later in the source directory to add or change keys.${NC}"
+  echo -e "  ${DIM}You can edit ${BOLD}~/.engram/.env${NC}${DIM} later to add or change keys.${NC}"
   echo ""
 
   ask ANTHROPIC_API_KEY "Anthropic API key (press Enter to skip)" ""
   ask OPENAI_API_KEY    "OpenAI API key (press Enter to skip)"    ""
+
+  # If user skipped OpenAI, they MUST opt in to local embeddings (or search will
+  # be permanently broken). Local embeddings add ~2 GB to the Docker image.
+  ENGRAM_EMBED_MODE="online"
+  if [ -z "${OPENAI_API_KEY}" ]; then
+    echo ""
+    echo -e "  ${BOLD}Embeddings backend (required — engram needs one)${NC}"
+    echo -e "  You skipped the OpenAI key, so engram needs a local model to do semantic search."
+    echo ""
+    echo -e "  ${BOLD}Local embeddings:${NC} sentence-transformers + torch, baked into the engram image."
+    echo -e "     ${YELLOW}Disk cost:${NC}  ${BOLD}~2 GB added to the Docker image${NC} (one-time download during build)."
+    echo -e "     ${DIM}Runtime:${NC}    runs in-container, no API cost, fully offline."
+    echo -e "     ${DIM}Quality:${NC}    decent (all-MiniLM-L6-v2, 384-dim). Less accurate than OpenAI."
+    echo -e "     ${DIM}Build time:${NC} adds ~3-5 minutes to the first 'docker compose build'."
+    echo ""
+    ask_yn USE_LOCAL_EMBED "Install local embeddings now? (recommended when no OpenAI key)" "Y"
+    if [ "${USE_LOCAL_EMBED}" = "yes" ]; then
+      ENGRAM_EMBED_MODE="local"
+    else
+      warn "No embedding backend selected — semantic search will return errors until you"
+      warn "either add OPENAI_API_KEY to ~/.engram/.env or rebuild with ENGRAM_EMBED_MODE=local."
+    fi
+  fi
 
   # ─── Optional Qdrant vector backend ───────────────────────────────────────
   echo ""
@@ -232,8 +254,10 @@ collect_config() {
   fi
   if [ -n "$OPENAI_API_KEY" ]; then
     info "Embeddings: OpenAI (text-embedding-3-small)"
+  elif [ "${ENGRAM_EMBED_MODE:-online}" = "local" ]; then
+    info "Embeddings: local model baked into image (sentence-transformers, +2 GB)"
   else
-    info "Embeddings: local model (in-container)"
+    warn "Embeddings: NONE configured — semantic search will error out"
   fi
   if [ "$USE_QDRANT" = "yes" ]; then
     info "Vector backend: ArcadeDB + Qdrant (HNSW ANN)"
@@ -372,6 +396,7 @@ write_env() {
   sed_i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}|"     "${ENV_FILE}"
   sed_i "s|^# OPENAI_API_KEY=.*|OPENAI_API_KEY=${OPENAI_API_KEY}|"            "${ENV_FILE}"
   sed_i "s|^OPENAI_API_KEY=.*|OPENAI_API_KEY=${OPENAI_API_KEY}|"              "${ENV_FILE}"
+  sed_i "s|^ENGRAM_EMBED_MODE=.*|ENGRAM_EMBED_MODE=${ENGRAM_EMBED_MODE:-online}|" "${ENV_FILE}"
 
   # Append values not in .env.example — compose reads these via --env-file.
   # ENGRAM_CONFIG_FILE is the absolute path to engram.yaml; compose substitutes

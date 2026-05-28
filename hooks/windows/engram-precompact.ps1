@@ -137,7 +137,7 @@ try {
         -Method Post `
         -Headers @{
             "Content-Type"    = "application/json"
-            "X-API-Key"       = $ENGRAM_KEY
+            "Authorization" = "Bearer $ENGRAM_KEY"
             "X-Engram-Tool"   = "precompact-hook"
         } `
         -Body ([System.Text.Encoding]::UTF8.GetBytes($payload)) `

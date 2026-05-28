@@ -96,7 +96,7 @@ if ($ToolName -eq "Bash" -and $Cmd -match "git commit") {
         $null = Invoke-RestMethod `
             -Uri "$ENGRAM_API/api/v1/memory/" `
             -Method Post `
-            -Headers @{ "Content-Type" = "application/json"; "X-API-Key" = $ENGRAM_KEY; "X-Engram-Tool" = "post-tool-hook" } `
+            -Headers @{ "Content-Type" = "application/json"; "Authorization" = "Bearer $ENGRAM_KEY"; "X-Engram-Tool" = "post-tool-hook" } `
             -Body ([System.Text.Encoding]::UTF8.GetBytes($payload)) `
             -TimeoutSec 4
     } catch { }
@@ -181,7 +181,7 @@ if ($Elapsed -ge ($SAVE_INTERVAL_MINUTES * 60)) {
                 $null = Invoke-RestMethod `
                     -Uri "$engramApi/api/v1/memory/" `
                     -Method Post `
-                    -Headers @{ "Content-Type" = "application/json"; "X-API-Key" = $engramKey; "X-Engram-Tool" = "periodic-autosave" } `
+                    -Headers @{ "Content-Type" = "application/json"; "Authorization" = "Bearer $engramKey"; "X-Engram-Tool" = "periodic-autosave" } `
                     -Body ([System.Text.Encoding]::UTF8.GetBytes($payload)) `
                     -TimeoutSec 5
             } catch { }

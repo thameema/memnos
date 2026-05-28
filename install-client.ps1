@@ -84,7 +84,7 @@ $DefaultNS = if ($Namespace) { $Namespace } else { Read-Input "Default namespace
 Write-Step "Testing server connection"
 try {
     $null = Invoke-RestMethod "$EngramServer/api/v1/admin/health" `
-        -Headers @{"X-API-Key" = $EngramKey} -TimeoutSec 5
+        -Headers @{"Authorization" = "Bearer $EngramKey"} -TimeoutSec 5
     Write-Success "Connected to engram at $EngramServer"
 } catch {
     Write-Warn "Could not reach $EngramServer — hooks will still be installed."
@@ -219,7 +219,7 @@ $API = (Get-Content "$env:USERPROFILE\.claude\hooks\engram.env" | Where-Object {
 $NS  = (Get-Content "$env:USERPROFILE\.claude\hooks\engram.env" | Where-Object { $_ -match '^ENGRAM_DEFAULT_NS=' }) -replace '^ENGRAM_DEFAULT_NS=',''
 
 # All namespaces
-try { $ns_list = Invoke-RestMethod "$API/api/v1/admin/namespaces" -Headers @{"X-API-Key"=$KEY} } catch { $ns_list = @() }
+try { $ns_list = Invoke-RestMethod "$API/api/v1/admin/namespaces" -Headers @{"Authorization" = "Bearer $KEY"} } catch { $ns_list = @() }
 $ns_list | ForEach-Object { $_.name }
 
 # Current namespace
@@ -230,7 +230,7 @@ if ($repoRoot -and (Test-Path (Join-Path $repoRoot ".engram"))) {
 } else { "source:default"; $NS }
 
 # Recent memories
-$search = Invoke-RestMethod "$API/api/v1/memory/search?q=session+commit+work&ns=$NS&top_k=5" -Headers @{"X-API-Key"=$KEY}
+$search = Invoke-RestMethod "$API/api/v1/memory/search?q=session+commit+work&ns=$NS&top_k=5" -Headers @{"Authorization" = "Bearer $KEY"}
 $search | ForEach-Object { "[$($_.memory_type)] $([math]::Round($_.score,2)) — $($_.content.Substring(0,[math]::Min(120,$_.content.Length)))" }
 ```
 
@@ -308,7 +308,7 @@ for i, chunk in enumerate(chunks, 1):
         'metadata':    {'project': project, 'chunk': i, 'total': len(chunks), 'source': 'save-command'},
     }).encode()
     req = urllib.request.Request(f'{api}/api/v1/memory/', data=payload,
-        headers={'Content-Type':'application/json','X-API-Key':akey}, method='POST')
+        headers={'Content-Type':'application/json','Authorization': f'Bearer {akey}'}, method='POST')
     r = json.loads(urllib.request.urlopen(req, timeout=5).read())
     print(f'  chunk {i}: {r.get("id","?")[:8]}')
 
@@ -322,7 +322,7 @@ content = f'[session-index] PROJECT | BRANCH — BRIEF_SUMMARY | chunks: N_CHUNK
 payload = json.dumps({'content': content, 'namespace': ns, 'memory_type': 'session',
     'tags': ['session-index', 'manual-save', project]}).encode()
 req = urllib.request.Request(f'{api}/api/v1/memory/', data=payload,
-    headers={'Content-Type':'application/json','X-API-Key':akey}, method='POST')
+    headers={'Content-Type':'application/json','Authorization': f'Bearer {akey}'}, method='POST')
 print('Index:', json.loads(urllib.request.urlopen(req,timeout=5).read()).get('id','?')[:8])
 ```
 
