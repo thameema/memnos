@@ -84,14 +84,29 @@ The installer:
 
 **Required (auto-generated if you press Enter):**
 - Data directory — defaults to `~/.engram/`
-- engram API key, ArcadeDB password (both auto-generated as strong random tokens)
+- engram API key, ArcadeDB password, vault encryption key — all auto-generated as strong random tokens
 
-**Optional API keys — both can be skipped:**
-- **Anthropic API key** → only needed if you want engram to use the Anthropic API directly for reflection/skill extraction. If skipped, engram uses Claude Code's built-in `claude --print` CLI (the recommended path if you have Claude Code installed).
-- **OpenAI API key** → only needed for high-quality embeddings via `text-embedding-3-small`. If skipped, you must opt in to local embeddings below.
+**Anthropic API key — optional:**
+- Only needed if you want engram to call the Anthropic API directly for reflection/skill extraction.
+- If skipped, engram uses Claude Code's built-in `claude --print` CLI (the recommended path if you have Claude Code installed).
 
-**Local embeddings prompt (only shown if OpenAI key was skipped):**
-- "Install local embeddings now?" → **adds ~2 GB to the engram Docker image** (sentence-transformers + torch baked in), runs fully offline, no API cost. Recommended when no OpenAI key.
+**Embeddings backend — pick carefully, the choice is mostly permanent.**
+
+The installer shows a red warning before this prompt. Choosing OpenAI = paste your key, choosing Local = press Enter (skip OpenAI key).
+
+| | **Local** (sentence-transformers all-MiniLM-L6-v2) | **OpenAI** (text-embedding-3-small) |
+|---|---|---|
+| Vector dim | 384 | 1536 |
+| Lifetime cost | $0 | ~$0.02 per 1M tokens — pennies/month for personal use |
+| Privacy | 100% offline | every memory's text sent to OpenAI |
+| Disk weight | +2 GB on engram image | none |
+| Build time impact | +3-5 min | none |
+| Quality | ~80% of OpenAI on relevance benchmarks | best |
+| Pick if | privacy-sensitive, offline, free | heavy use, want best relevance, ok with cloud |
+
+> ⚠️ **Switching backends later is expensive and not always scripted.**
+> Different models produce vectors in incompatible spaces — every existing memory must be re-encoded, and search breaks until the migration finishes.
+> The repo ships `tools/reembed.py` for **local → OpenAI** only. Other transitions (OpenAI → local, local-model-A → local-model-B) require a custom migration script. **Decide now based on your real use case** — don't pick local "just to try" if you'll have 100K memories you can't reach with a script.
 
 **Qdrant prompt:**
 - Default off — ArcadeDB native vectors handle up to ~100K memories per namespace fine.

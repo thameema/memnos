@@ -17,7 +17,7 @@ sed -i 's|</dev/tty||g' /tmp/install-server.sh
 export HOME=/test-home; mkdir -p "$HOME"
 
 # Inputs: defaults, skip both API keys, opt-in to local embeddings (Y), opt-in to Qdrant (Y)
-printf '\n\n\n\n\nY\nY\n' | bash /tmp/install-server.sh --version master >/tmp/install.log 2>&1
+printf '\n\n\n\n\nY\n' | bash /tmp/install-server.sh --version master >/tmp/install.log 2>&1
 
 echo "QDRANT_IN_ENV=$(grep -q '^ENGRAM_VECTOR_BACKEND=qdrant' "$HOME/.engram/.env" && echo yes || echo no)"
 grep -q -- "--profile qdrant" /tmp/install.log && echo "PROFILE_USED=yes" || echo "PROFILE_USED=no"
