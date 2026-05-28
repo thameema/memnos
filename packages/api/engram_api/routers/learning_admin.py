@@ -426,7 +426,7 @@ const BASE = window.location.origin;
 let NS = '', KEY = '';
 
 function apiHeaders() {
-  return {'Content-Type':'application/json','X-API-Key': KEY};
+  return {'Content-Type':'application/json','Authorization': 'Bearer ' + KEY};
 }
 
 async function apiFetch(path, opts={}) {

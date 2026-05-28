@@ -56,7 +56,7 @@ QUERY=$(echo "$PROMPT" | head -c 200 | python3 -c \
 # Single call — no health pre-check, no namespace routing. 3s hard timeout.
 RESPONSE=$(curl -sf --max-time 3 \
   "$ENGRAM_API/api/v1/memory/search?q=$QUERY&ns=all&top_k=$ENGRAM_TOP_K" \
-  -H "X-API-Key: $ENGRAM_KEY" 2>/dev/null || echo "[]")
+  -H "Authorization: Bearer $ENGRAM_KEY" 2>/dev/null || echo "[]")
 
 CONTEXT=$(echo "$RESPONSE" | python3 -c "
 import sys, json

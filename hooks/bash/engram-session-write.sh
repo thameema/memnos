@@ -56,7 +56,7 @@ print(json.dumps({
 " "$GIT_CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION" 2>/dev/null \
 | curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" \
     -H "Content-Type: application/json" \
-    -H "X-API-Key: $ENGRAM_KEY" \
+    -H "Authorization: Bearer $ENGRAM_KEY" \
     -H "X-Engram-Tool: stop-hook" \
     -d @- -o /dev/null 2>/dev/null || true
 
@@ -135,7 +135,7 @@ print(json.dumps({
 " "$RICH_CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION" 2>/dev/null \
 | curl -sf --max-time 8 -X POST "$ENGRAM_API/api/v1/memory/" \
     -H "Content-Type: application/json" \
-    -H "X-API-Key: $ENGRAM_KEY" \
+    -H "Authorization: Bearer $ENGRAM_KEY" \
     -H "X-Engram-Tool: stop-hook-rich" \
     -d @- -o /dev/null 2>/dev/null || true
 

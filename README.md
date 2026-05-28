@@ -377,7 +377,7 @@ docker compose restart engram
 
 ```bash
 curl -s "http://localhost:8766/api/v1/memory/search?q=test&ns=all" \
-  -H "X-API-Key: your-key" | python3 -m json.tool | head -20
+  -H "Authorization: Bearer your-key" | python3 -m json.tool | head -20
 ```
 
 Response time should drop from ~200 ms to ~10 ms on a warm query after enabling Qdrant.
@@ -683,7 +683,7 @@ engram can ingest a repository of architecture documents (decisions, constraints
 
 ```bash
 curl -X POST http://localhost:8766/api/v1/corpus/ \
-  -H "X-API-Key: your-key" \
+  -H "Authorization: Bearer your-key" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "architecture-docs",
@@ -697,7 +697,7 @@ curl -X POST http://localhost:8766/api/v1/corpus/ \
 
 # Sync it
 curl -X POST http://localhost:8766/api/v1/corpus/{id}/sync \
-  -H "X-API-Key: your-key"
+  -H "Authorization: Bearer your-key"
 ```
 
 ### Check code against architecture in CI
