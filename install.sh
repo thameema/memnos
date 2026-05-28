@@ -53,11 +53,15 @@ _get_script() {
   fi
 
   # Download to a temp file
-  local tmp; tmp="$(mktemp /tmp/engram-XXXXXX.sh)"
+  # NOTE: X placeholders must be at the END of the template — required by BSD mktemp on macOS.
+  local tmp
+  tmp="$(mktemp /tmp/engram.XXXXXX 2>/dev/null)" || \
+    die "Could not create temp file in /tmp (mktemp failed)."
   if curl -fsSL "${GITHUB_RAW}/${name}" -o "$tmp" 2>/dev/null; then
     chmod +x "$tmp"
     echo "$tmp"
   else
+    rm -f "$tmp"
     die "Could not find or download ${name}. Run from the engram source directory or check your internet connection."
   fi
 }
