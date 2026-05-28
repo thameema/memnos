@@ -30,8 +30,9 @@ grep -q "Mode: upgrade" /tmp/p2.log && echo "P2_UPGRADE_MODE=yes" || echo "P2_UP
 # Upgrade must NOT re-prompt for DATA_DIR
 grep -q "Data directory (" /tmp/p2.log && echo "P2_REPROMPTED=yes" || echo "P2_REPROMPTED=no"
 
-# Phase 3: re-run, choose Fresh (option 2)
-printf '2\n\n\n\n\n\nN\n' | bash /tmp/install-server.sh --version master >/tmp/p3.log 2>&1
+# Phase 3: re-run, choose Fresh (option 2). Fresh now requires typing 'yes' to
+# confirm the destructive wipe, then takes 5 config defaults + Qdrant=N.
+printf '2\nyes\n\n\n\n\n\nN\n' | bash /tmp/install-server.sh --version master >/tmp/p3.log 2>&1
 echo "P3_EXIT=$?"
 grep -q "Mode: fresh install" /tmp/p3.log && echo "P3_FRESH_MODE=yes" || echo "P3_FRESH_MODE=no"
 grep -q "Data directory" /tmp/p3.log && echo "P3_REPROMPTED=yes" || echo "P3_REPROMPTED=no"
