@@ -14,8 +14,11 @@ assert_file "$YAML"
 # Extract host/port/password from the arcadedb: section specifically — there
 # are other 'host:' lines in the file (server, gateway, etc).
 ARC_BLOCK="$(python3 - "$YAML" <<'PY'
-import sys, yaml, pathlib
-# Use awk-style: read line by line, track which top-level section we're in.
+import sys, pathlib
+# Read line by line, track which top-level section we are in.
+# Intentionally NOT using PyYAML: engram.yaml has bash-style env-var
+# interpolation that PyYAML rejects, and GitHub Actions ubuntu runner
+# does not ship PyYAML by default.
 lines = pathlib.Path(sys.argv[1]).read_text().splitlines()
 in_arc = False
 out = []
