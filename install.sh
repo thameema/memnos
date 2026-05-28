@@ -8,7 +8,7 @@
 #   ./install.sh --server      # server only
 #   ./install.sh --client      # client hooks only (points to existing/remote server)
 #   ./install.sh --both        # server + client on this machine
-#   curl -fsSL https://raw.githubusercontent.com/thameema/engram/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh | bash
 
 set -euo pipefail
 
@@ -41,7 +41,7 @@ if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
 fi
 
-GITHUB_RAW="https://raw.githubusercontent.com/thameema/engram/main"
+GITHUB_RAW="https://raw.githubusercontent.com/thameema/engram/master"
 
 _get_script() {
   local name="$1"   # install-server.sh or install-client.sh
@@ -87,19 +87,19 @@ done
 if [[ -z "$MODE" ]]; then
   echo "  What would you like to install?"
   echo ""
-  echo "  ${BOLD}1) Full install (server + client)${NC}"
-  echo "     → Run engram server here AND install Claude Code hooks on this machine."
-  echo "     → Best for: local laptop / single-developer setup."
+  echo -e "  ${BOLD}1) Full install (server + client)${NC}"
+  echo "     -> Run engram server here AND install Claude Code hooks on this machine."
+  echo "     -> Best for: local laptop / single-developer setup."
   echo ""
-  echo "  ${BOLD}2) Server only${NC}"
-  echo "     → Install engram server (Docker). Share the API URL + key with team members."
-  echo "     → Best for: dedicated VM or shared server."
+  echo -e "  ${BOLD}2) Server only${NC}"
+  echo "     -> Install engram server (Docker). Share the API URL + key with team members."
+  echo "     -> Best for: dedicated VM or shared server."
   echo ""
-  echo "  ${BOLD}3) Client only${NC}"
-  echo "     → Install Claude Code hooks only. Connects to an existing engram server."
-  echo "     → Best for: developer machines pointing at a remote server."
+  echo -e "  ${BOLD}3) Client only${NC}"
+  echo "     -> Install Claude Code hooks only. Connects to an existing engram server."
+  echo "     -> Best for: developer machines pointing at a remote server."
   echo ""
-  echo -ne "${CYAN}  ?${NC} Choose [1/2/3] ${DIM}[1]${NC}: "
+  echo -ne "${CYAN}  ?${NC} Choose [1/2/3] [1]: "
   read -r choice </dev/tty
   choice="${choice:-1}"
 

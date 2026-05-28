@@ -129,7 +129,7 @@ function Install-HookFile {
         Copy-Item $src $dest -Force
         Write-Success "$Description`: $dest"
     } else {
-        $url = "https://raw.githubusercontent.com/thameema/engram/main/hooks/windows/$FileName"
+        $url = "https://raw.githubusercontent.com/thameema/engram/master/hooks/windows/$FileName"
         try {
             Invoke-WebRequest $url -OutFile $dest -UseBasicParsing -TimeoutSec 15
             Write-Success "$Description (downloaded): $dest"
@@ -161,7 +161,7 @@ if (Test-Path $HeartbeatSrc) {
     Copy-Item $HeartbeatSrc $HeartbeatDest -Force
     Write-Success "Heartbeat daemon: $HeartbeatDest"
 } else {
-    $url = "https://raw.githubusercontent.com/thameema/engram/main/hooks/windows/engram-heartbeat.py"
+    $url = "https://raw.githubusercontent.com/thameema/engram/master/hooks/windows/engram-heartbeat.py"
     try {
         Invoke-WebRequest $url -OutFile $HeartbeatDest -UseBasicParsing -TimeoutSec 15
         Write-Success "Heartbeat daemon (downloaded): $HeartbeatDest"
