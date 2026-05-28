@@ -66,12 +66,18 @@ echo -e "${NC}"
 #                    falling back to master if the API is unreachable.
 # ENGRAM_REF env var also honoured (--version takes precedence).
 ENGRAM_REF_ARG=""
+# Deployment mode controls security defaults in engram.yaml:
+#   server-only (default) — secure: open_mode: false → Bearer auth enforced
+#   full                  — convenient: open_mode: true → no auth needed
+#                           (only safe on a single-user local laptop)
+DEPLOY_MODE="server-only"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) ENGRAM_REF_ARG="$2"; shift 2 ;;
+    --mode)    DEPLOY_MODE="$2"; shift 2 ;;
     --help|-h)
       cat <<HLP
-  Usage: install-server.sh [--version <ref>]
+  Usage: install-server.sh [--version <ref>] [--mode <full|server-only>]
 
     --version <ref>   Pin to a specific git ref. Examples:
                         --version v1.4.0     install frozen release v1.4.0
@@ -80,11 +86,25 @@ while [[ $# -gt 0 ]]; do
 
                       Default: master (always-current). Override with the
                       ENGRAM_REF env var if you cannot pass arguments.
+
+    --mode <m>        Deployment mode — controls auth defaults:
+                        server-only (default) — open_mode: false
+                                                 (Bearer auth enforced;
+                                                 use for shared / remote / VM)
+                        full                  — open_mode: true
+                                                 (auth bypassed; use only for
+                                                 single-user local laptop)
 HLP
       exit 0 ;;
     *) shift ;;
   esac
 done
+
+# Validate DEPLOY_MODE
+case "$DEPLOY_MODE" in
+  full|server-only) ;;
+  *) echo "error: --mode must be 'full' or 'server-only', got: $DEPLOY_MODE" >&2; exit 2 ;;
+esac
 
 # ─── Detect prior install and choose upgrade / fresh / abort ─────────────────
 INSTALL_MODE="fresh"   # fresh | upgrade
@@ -373,7 +393,18 @@ refresh_yaml_config() {
     info "Backed up existing engram.yaml → $yaml_backup"
   fi
   cp "${ENGRAM_SRC}/engram.yaml.example" "${YAML_FILE}"
-  success "engram.yaml refreshed from engram.yaml.example"
+
+  # Patch open_mode based on deployment mode (idempotent — works regardless of
+  # what the example file currently defaults to):
+  #   server-only → false (auth enforced — safe for shared / remote / VM)
+  #   full        → true  (auth bypassed — convenient for single-user local)
+  if [ "${DEPLOY_MODE}" = "server-only" ]; then
+    sed_i "s|^  open_mode: true|  open_mode: false|" "${YAML_FILE}"
+    success "engram.yaml refreshed (mode=server-only, open_mode=false — Bearer auth ENFORCED)"
+  else
+    sed_i "s|^  open_mode: false|  open_mode: true|" "${YAML_FILE}"
+    success "engram.yaml refreshed (mode=full, open_mode=true — auth bypassed for single-user local use)"
+  fi
 
   # Clean up old in-source copies if they exist (migration from pre-v1.4 layout)
   if [ -f "${ENGRAM_SRC}/engram.yaml" ] && [ ! -L "${ENGRAM_SRC}/engram.yaml" ]; then
