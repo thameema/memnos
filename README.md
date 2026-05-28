@@ -58,7 +58,7 @@ Every project decision, code pattern, error you debugged, and architectural choi
 
 **engram** wins when you need all three things in one self-hosted system: cross-session memory, a temporal knowledge graph, and AI governance (decisions, constraints, ADRs) — with a single ArcadeDB container and no external API key for embeddings.
 
-See [docs/enterprise-ai-engineering.md](docs/enterprise-ai-engineering.md) for the enterprise team model, and [docs/enterprise-team-setup.md](docs/enterprise-team-setup.md) for step-by-step team deployment.
+See [docs/guides/enterprise-ai-engineering.md](docs/guides/enterprise-ai-engineering.md) for the enterprise team model, and [docs/guides/enterprise-team-setup.md](docs/guides/enterprise-team-setup.md) for step-by-step team deployment.
 
 ---
 
@@ -111,7 +111,7 @@ pip install -e packages/core -e packages/mcp-server -e packages/api
 docker compose up -d
 ```
 
-See [docs/quickstart.md](docs/quickstart.md) for the full step-by-step guide.
+See [docs/guides/quickstart.md](docs/guides/quickstart.md) for the full step-by-step guide.
 
 ---
 
@@ -227,7 +227,7 @@ MCP results come back as plain text — read them directly, never spawn agents t
 | Project-specific      | project:myproject      |
 ```
 
-See the complete guide in [docs/claude-code-setup.md](docs/claude-code-setup.md).
+See the complete guide in [docs/guides/claude-code-setup.md](docs/guides/claude-code-setup.md).
 
 ---
 
@@ -482,8 +482,8 @@ If your organisation runs AI-assisted engineering at scale — architects, devel
 
 With engram, the institutional knowledge accumulated by each role becomes immediately available to every team member's Claude Code session, including new hires on day one.
 
-Read the guide: [docs/enterprise-ai-engineering.md](docs/enterprise-ai-engineering.md)
-Step-by-step setup: [docs/enterprise-team-setup.md](docs/enterprise-team-setup.md)
+Read the guide: [docs/guides/enterprise-ai-engineering.md](docs/guides/enterprise-ai-engineering.md)
+Step-by-step setup: [docs/guides/enterprise-team-setup.md](docs/guides/enterprise-team-setup.md)
 
 ---
 
@@ -498,7 +498,7 @@ Your phone ──► engram server ──► LLM (Anthropic API)
 
 The gateway shares the same namespaces as your Claude Code sessions. Memories written from Claude Code are searchable from your phone and vice versa.
 
-See [docs/gateway.md](docs/gateway.md) for full setup and troubleshooting.
+See [docs/guides/gateway.md](docs/guides/gateway.md) for full setup and troubleshooting.
 
 ---
 
@@ -563,7 +563,7 @@ python3 tools/migrate_obsidian.py \
   --api-key your-engram-api-key
 ```
 
-Imports every note as a memory, maps `[[wikilinks]]` to graph edges, and maps folder structure to sub-namespaces. Run `--dry-run` first to preview. See [docs/obsidian-migration.md](docs/obsidian-migration.md).
+Imports every note as a memory, maps `[[wikilinks]]` to graph edges, and maps folder structure to sub-namespaces. Run `--dry-run` first to preview. See [docs/guides/obsidian-migration.md](docs/guides/obsidian-migration.md).
 
 ---
 
@@ -749,7 +749,7 @@ ENGRAM_CONFIG=engram.yaml \
 .venv/bin/python -m pytest tools/test_mcp_stdio.py -v
 ```
 
-See [docs/quickstart.md](docs/quickstart.md) for the full guide.
+See [docs/guides/quickstart.md](docs/guides/quickstart.md) for the full guide.
 
 ---
 
