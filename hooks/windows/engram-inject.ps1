@@ -69,7 +69,7 @@ if ([string]::IsNullOrWhiteSpace($Prompt)) { exit 0 }
 # ── Check engram health ───────────────────────────────────────────────────────
 try {
     $HealthUrl = "$ENGRAM_API/api/v1/admin/health"
-    $Headers   = @{ "X-API-Key" = $ENGRAM_KEY }
+    $Headers   = @{ "Authorization" = "Bearer $ENGRAM_KEY" }
     $null = Invoke-RestMethod -Uri $HealthUrl -Headers $Headers `
         -Method Get -TimeoutSec 2 -ErrorAction Stop
 } catch {
@@ -133,7 +133,7 @@ if ([string]::IsNullOrWhiteSpace($QueryEnc)) { exit 0 }
 try {
     # Use ns=all — server searches every namespace the key can access
     $SearchUrl = "$ENGRAM_API/api/v1/memory/search?q=$QueryEnc&ns=all&top_k=$ENGRAM_TOP_K"
-    $Headers   = @{ "X-API-Key" = $ENGRAM_KEY }
+    $Headers   = @{ "Authorization" = "Bearer $ENGRAM_KEY" }
     $Response  = Invoke-RestMethod -Uri $SearchUrl -Headers $Headers `
         -Method Get -TimeoutSec 5 -ErrorAction Stop
 } catch {

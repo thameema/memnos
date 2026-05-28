@@ -49,7 +49,7 @@ if ([string]::IsNullOrWhiteSpace($Cwd)) { exit 0 }
 # ── Check engram health ───────────────────────────────────────────────────────
 try {
     $HealthUrl = "$ENGRAM_API/api/v1/admin/health"
-    $Headers   = @{ "X-API-Key" = $ENGRAM_KEY }
+    $Headers   = @{ "Authorization" = "Bearer $ENGRAM_KEY" }
     $null = Invoke-RestMethod -Uri $HealthUrl -Headers $Headers `
         -Method Get -TimeoutSec 2 -ErrorAction Stop
 } catch {
@@ -134,7 +134,7 @@ try {
     $PostUrl = "$ENGRAM_API/api/v1/memory/"
     $Headers = @{
         "Content-Type" = "application/json"
-        "X-API-Key"    = $ENGRAM_KEY
+        "Authorization" = "Bearer $ENGRAM_KEY"
     }
     $null = Invoke-RestMethod -Uri $PostUrl -Headers $Headers `
         -Method Post -Body $PayloadJson -TimeoutSec 5 -ErrorAction Stop
