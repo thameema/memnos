@@ -24,10 +24,10 @@ die()     { echo -e "${RED}  [error]${NC} $*" >&2; exit 1; }
 echo ""
 printf "${BOLD}${BLUE}"
 cat <<'BANNER'
-   ___   _  _   ___    ___      _    __  __
-  | __| | \| | / __|  | _ \   /_\  |  \/  |
-  | _|  | .` || (_ |  |   /  / _ \ | |\/| |
-  |___| |_|\_| \___|  |_|\_\/_/ \_\|_|  |_|
+   ___    _  _    ___   ___     _     __  __
+  | __|  | \| |  / __| | _ \   /_\   |  \/  |
+  | _|   | .` | | (_ | |   /  / _ \  | |\/| |
+  |___|  |_|\_| \____| |_|\_\ /_/ \_ |_|  |_|
 BANNER
 printf "${NC}\n"
 echo "  Persistent memory + AI governance for Claude Code and LLM agents"
