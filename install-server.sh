@@ -74,12 +74,12 @@ while [[ $# -gt 0 ]]; do
   Usage: install-server.sh [--version <ref>]
 
     --version <ref>   Pin to a specific git ref. Examples:
-                        --version v1.2.0     install release v1.2.0 (stable)
-                        --version master     install bleeding-edge master
+                        --version v1.4.0     install frozen release v1.4.0
+                        --version master     install latest master (default)
                         --version <sha>      install a specific commit
 
-                      Default: latest published GitHub Release (queried at
-                      install time). Override with ENGRAM_REF env var.
+                      Default: master (always-current). Override with the
+                      ENGRAM_REF env var if you cannot pass arguments.
 HLP
       exit 0 ;;
     *) shift ;;
@@ -268,8 +268,12 @@ collect_config() {
 
 # ─── Create directory structure ───────────────────────────────────────────────
 # ─── Resolve which git ref to install (release tag, branch, or commit) ──────
+# Default is master (always-current). Users who want a frozen release must
+# pass --version <tag> explicitly. This avoids the situation where a user's
+# default install lags behind master by N commits while we accumulate fixes
+# between releases.
 resolve_ref() {
-  # Priority: --version arg  >  ENGRAM_REF env  >  latest GitHub Release  >  master
+  # Priority: --version arg  >  ENGRAM_REF env  >  master
   if [ -n "${ENGRAM_REF_ARG}" ]; then
     ENGRAM_REF="${ENGRAM_REF_ARG}"
     info "Pinning to ref from --version: ${BOLD}${ENGRAM_REF}${NC}"
@@ -279,17 +283,9 @@ resolve_ref() {
     info "Pinning to ref from ENGRAM_REF env: ${BOLD}${ENGRAM_REF}${NC}"
     return
   fi
-  info "Looking up latest engram release on GitHub..."
-  local tag
-  tag="$(curl -fsSL --max-time 8 https://api.github.com/repos/thameema/engram/releases/latest 2>/dev/null \
-    | python3 -c "import json,sys; print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || true)"
-  if [ -n "${tag}" ]; then
-    ENGRAM_REF="${tag}"
-    info "Latest release: ${BOLD}${ENGRAM_REF}${NC} (override with --version master for bleeding-edge)"
-  else
-    ENGRAM_REF="master"
-    warn "Could not query GitHub Releases API — falling back to ${BOLD}master${NC} branch."
-  fi
+  ENGRAM_REF="master"
+  info "Installing from ${BOLD}master${NC} (always-current default)."
+  info "For a frozen release, pass --version v1.x.y (see https://github.com/thameema/engram/releases)."
 }
 
 # ─── Resolve source tree (clone if not running from one) ─────────────────────

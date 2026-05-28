@@ -84,9 +84,9 @@ while [[ $# -gt 0 ]]; do
     --both            Install server + client on this machine
     --version <ref>   Pin engram to a specific git ref (passed to install-server.sh).
                       Examples:
-                        --version v1.2.0     install release v1.2.0 (stable, recommended)
-                        --version master     install bleeding-edge master
-                      Default: latest published GitHub Release.
+                        --version v1.4.0     install frozen release v1.4.0
+                        --version master     install latest master (default)
+                      Default: master (always-current).
 
   Releases:  https://github.com/thameema/engram/releases
 HLP

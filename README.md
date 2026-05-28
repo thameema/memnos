@@ -70,35 +70,86 @@ See [docs/guides/enterprise-ai-engineering.md](docs/guides/enterprise-ai-enginee
 curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh | bash
 ```
 
-The installer will:
-- Check Docker, Python 3.11+, and curl are installed
-- Prompt for your Anthropic API key and generate secure credentials
-- Pull the ArcadeDB Docker image and start it
-- Install the Python packages and register `engram-mcp-stdio` in your PATH
-- Create `~/.engram/` with your config and credentials
-- Optionally wire engram into Claude Code's MCP servers automatically
+The installer:
+- Verifies Docker and Python 3.11+ are available
+- Clones the engram source to `~/.engram-src/` (code only — safe to wipe + re-clone)
+- Asks for **optional** Anthropic and OpenAI API keys (you can skip both — see below)
+- Auto-generates `ENGRAM_API_KEY`, `ARCADEDB_PASSWORD`, and `ENGRAM_VAULT_KEY`
+- Writes `~/.engram/.env` and `~/.engram/engram.yaml` (config + secrets — persistent)
+- Builds the engram Docker image and starts the stack (arcadedb + engram, optionally qdrant)
+- Installs Claude Code hooks + slash command + MCP registration (when "Full install" is chosen)
+- Saves an install log at `/tmp/engram-install-*.log` for diagnostics
 
-### Choosing a version (stable vs bleeding-edge)
+### What the installer prompts for
 
-By default the installer pulls **the latest published GitHub Release** — this is the recommended path for most users. To pin a specific version or track `master`:
+**Required (auto-generated if you press Enter):**
+- Data directory — defaults to `~/.engram/`
+- engram API key, ArcadeDB password (both auto-generated as strong random tokens)
+
+**Optional API keys — both can be skipped:**
+- **Anthropic API key** → only needed if you want engram to use the Anthropic API directly for reflection/skill extraction. If skipped, engram uses Claude Code's built-in `claude --print` CLI (the recommended path if you have Claude Code installed).
+- **OpenAI API key** → only needed for high-quality embeddings via `text-embedding-3-small`. If skipped, you must opt in to local embeddings below.
+
+**Local embeddings prompt (only shown if OpenAI key was skipped):**
+- "Install local embeddings now?" → **adds ~2 GB to the engram Docker image** (sentence-transformers + torch baked in), runs fully offline, no API cost. Recommended when no OpenAI key.
+
+**Qdrant prompt:**
+- Default off — ArcadeDB native vectors handle up to ~100K memories per namespace fine.
+- Enable if you expect larger namespaces (HNSW ANN search).
+
+### Verifying your install
 
 ```bash
-# Pin to a specific release (recommended for production)
-curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh \
-  | bash -s -- --version v1.2.0
+bash ~/.engram-src/tools/verify-install.sh
+```
 
-# Track master (bleeding-edge — gets unreleased fixes and unreleased breakage)
+Runs 9 sections of checks — file layout, configuration, container health, API auth, memory write+search roundtrip (proves embeddings work), namespaces, corpus, MCP/SSE, Claude Code wiring. Exit 0 means everything works; exit 1 prints remediation hints. Add `--skip-write` for a read-only check.
+
+### File layout after install
+
+| Path | What | Stability |
+|---|---|---|
+| `~/.engram-src/` | git clone (code) | Wipeable — re-clone with installer |
+| `~/.engram/.env` | secrets (API keys, vault key, ArcadeDB password) | Persistent, mode 600 |
+| `~/.engram/engram.yaml` | user-editable configuration | Persistent |
+| `~/.engram/arcadedb/` | graph + vector data | Persistent |
+| `~/.engram/qdrant/` | HNSW ANN index (when enabled) | Persistent |
+| `~/.claude/hooks/engram*.sh` | Claude Code hooks | Persistent |
+| `~/.claude.json` | Claude Code MCP config (entry added under `mcpServers.engram`) | Persistent |
+
+### Choosing a version (default vs frozen release)
+
+**The default `curl|bash` install pulls from `master`** — the always-current branch. Every commit that lands on master goes out to new installs immediately. Re-running the installer on top of an existing install does a `git pull` of master.
+
+To pin a frozen release instead (e.g. for production deployments), pass `--version`:
+
+```bash
+# Pin to a frozen release tag
 curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh \
-  | bash -s -- --version master
+  | bash -s -- --version v1.4.0
 
 # Pin a specific commit
 curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh \
-  | bash -s -- --version 808acc7
+  | bash -s -- --version <sha>
+
+# Explicitly request master (same as default)
+curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh \
+  | bash -s -- --version master
 ```
 
-Available versions: [github.com/thameema/engram/releases](https://github.com/thameema/engram/releases)
+Available release tags: [github.com/thameema/engram/releases](https://github.com/thameema/engram/releases). Releases use semver — minor bumps (v1.x.0) ship new features, patch bumps (v1.x.y) ship fixes.
 
-The same `--version` flag works on `install-server.sh` and is preserved when you re-run the installer in upgrade mode — so running the installer again later with `--version v1.3.0` will upgrade your install to that release.
+The `--version` flag is honoured on every re-run, so passing `--version v1.5.0` later upgrades your install to that exact release. Re-running with no flag refreshes from master.
+
+### Re-running the installer
+
+The installer detects an existing install and offers three modes:
+
+| Mode | What it does |
+|---|---|
+| **1) Upgrade** | `git pull` source, rebuild image, restart. **Keeps your `.env` and data.** Recommended for routine updates. |
+| **2) Fresh** | Re-prompt all configuration, rewrite `.env`. **Data directory left untouched** (no memory loss). |
+| **3) Abort** | Exit, leave everything as-is. |
 
 ### Windows
 
@@ -129,7 +180,6 @@ irm https://raw.githubusercontent.com/thameema/engram/master/install-client.ps1 
 
 ```bash
 git clone https://github.com/thameema/engram.git && cd engram
-pip install -e packages/core -e packages/mcp-server -e packages/api
 docker compose up -d
 ```
 
@@ -139,19 +189,39 @@ See [docs/guides/quickstart.md](docs/guides/quickstart.md) for the full step-by-
 
 ## Starting the stack
 
-### Docker Compose (recommended)
+### Docker Compose (recommended for development)
+
+The installer handles this for you. If you want to run compose manually from a clone, the config layout is:
 
 ```bash
 git clone https://github.com/thameema/engram.git && cd engram
-cp engram.yaml.example engram.yaml
-# Edit engram.yaml — set ENGRAM_API_KEY, ARCADEDB_PASSWORD, ENGRAM_VAULT_KEY, ANTHROPIC_API_KEY
 
-docker compose up -d
+# Config and secrets live in ~/.engram/, NOT in the source clone.
+# The installer normally writes these for you; for manual setup:
+mkdir -p ~/.engram
+cp .env.example ~/.engram/.env
+# Then EDIT ~/.engram/.env and set at minimum:
+#   ENGRAM_API_KEY       (any strong random string)
+#   ARCADEDB_PASSWORD    (any strong random string)
+#   ENGRAM_VAULT_KEY     (`python3 -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`)
+#   ENGRAM_EMBED_MODE    (`local` if you want offline embeddings, `online` for OpenAI)
+#   ENGRAM_DATA_DIR=$HOME/.engram
+#   ENGRAM_CONFIG_FILE=$HOME/.engram/engram.yaml
+chmod 600 ~/.engram/.env
+
+cp engram.yaml.example ~/.engram/engram.yaml
+
+docker compose --env-file ~/.engram/.env up -d --build
 
 # Watch until ready
-docker compose logs -f engram
-# Look for: "MCP SSE server ready on :8765" and "engram API ready on :8766"
+docker compose --env-file ~/.engram/.env logs -f engram
+# Look for: "Uvicorn running on http://0.0.0.0:8766" and "ArcadeDB ready"
 ```
+
+> **Note:** all secrets come from `~/.engram/.env` via env-var interpolation
+> (`engram.yaml` references `${ARCADEDB_PASSWORD}`, `${ENGRAM_API_KEY}`, etc).
+> The `.env` file MUST live in `~/.engram/` so `docker compose --env-file` can
+> find it and bind-mount the right `engram.yaml` into the container.
 
 ### Manual (dev mode)
 

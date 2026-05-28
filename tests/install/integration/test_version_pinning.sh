@@ -46,10 +46,12 @@ printf '\n\n\n\n\nY\nN\n' | bash /tmp/install-server.sh --version this-ref-does-
 echo "C_EXIT=$?"
 grep -q "git clone failed for ref" /tmp/c.log && echo "C_CLEAR_ERR=yes" || echo "C_CLEAR_ERR=no"
 
-# D: no --version, no env — must resolve from GitHub API
+# D: no --version, no env — must default to master
 export HOME=/test-home-d; mkdir -p "$HOME"
 printf '\n\n\n\n\nY\nN\n' | bash /tmp/install-server.sh >/tmp/d.log 2>&1 || true
-grep -q "Looking up latest engram release" /tmp/d.log && echo "D_API_QUERY=yes" || echo "D_API_QUERY=no"
+grep -q "Installing from .*master.* (always-current default)" /tmp/d.log && echo "D_DEFAULT_MASTER=yes" || echo "D_DEFAULT_MASTER=no"
+TAG_D=$(cd "$HOME/.engram-src" 2>/dev/null && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+echo "D_BRANCH=$TAG_D"
 SCENARIO
 
 OUT="$(docker_run_scenario "$SCRIPT" 2>&1)"
@@ -60,7 +62,7 @@ assert_eq "$(get A_REPORTED)" "yes" "installer reports --version pin"
 assert_eq "$(get B_TAG)" "v1.2.0" "ENGRAM_REF env pins clone to that tag"
 assert_eq "$(get B_REPORTED)" "yes" "installer reports ENGRAM_REF env pin"
 assert_eq "$(get C_CLEAR_ERR)" "yes" "bad ref produces clear error"
-assert_eq "$(get D_API_QUERY)" "yes" "no flag → queries GitHub Releases API"
+assert_eq "$(get D_DEFAULT_MASTER)" "yes" "no flag → defaults to master (always-current)"
 
 echo ""
 echo "PASSES=$PASSES FAILS=$FAILS WARNS=$WARNS"
