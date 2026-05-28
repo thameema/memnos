@@ -130,19 +130,36 @@ collect_config() {
   ask ARCADEDB_PASSWORD "ArcadeDB root password (blank = auto-generate)" ""
   [ -z "$ARCADEDB_PASSWORD" ] && ARCADEDB_PASSWORD="$default_pw" && info "Generated ArcadeDB password: ${BOLD}${ARCADEDB_PASSWORD}${NC}"
 
-  # LLM provider
+  # ─── Optional API keys ────────────────────────────────────────────────────
   echo ""
-  echo -e "  ${BOLD}LLM provider${NC} (used for reflection and skill extraction)"
-  echo "  1) Anthropic — claude-sonnet-4-6 (recommended)"
-  echo "  2) OpenAI — gpt-4o"
-  echo "  3) Skip (vector/graph memory only)"
-  ask LLM_CHOICE "Choose [1/2/3]" "1"
+  echo -e "  ${BOLD}Optional API keys${NC}  ${DIM}(both can be skipped — engram works without them)${NC}"
+  echo ""
+  echo -e "  ${BOLD}1. Anthropic API key${NC}  — for LLM reflection & skill extraction."
+  echo -e "     ${DIM}If skipped:${NC} engram uses Claude Code's built-in ${BOLD}claude --print${NC} CLI."
+  echo -e "     ${DIM}Recommended:${NC} skip unless you do not have Claude Code installed."
+  echo ""
+  echo -e "  ${BOLD}2. OpenAI API key${NC}     — for high-quality embeddings (text-embedding-3-small)."
+  echo -e "     ${DIM}If skipped:${NC} engram uses a local embedding model (runs in-container, no API cost)."
+  echo -e "     ${DIM}Trade-off:${NC}  local embeddings work well but are less accurate than OpenAI."
+  echo ""
+  echo -e "  ${DIM}You can edit ${BOLD}${DATA_DIR}/.env${NC}${DIM} later to add or change keys.${NC}"
+  echo ""
 
-  case "${LLM_CHOICE}" in
-    2) LLM_PROVIDER="openai";    ask OPENAI_API_KEY  "OpenAI API key"    ""; ANTHROPIC_API_KEY="" ;;
-    3) LLM_PROVIDER="none";      OPENAI_API_KEY="";  ANTHROPIC_API_KEY="" ;;
-    *) LLM_PROVIDER="anthropic"; ask ANTHROPIC_API_KEY "Anthropic API key" ""; OPENAI_API_KEY="" ;;
-  esac
+  ask ANTHROPIC_API_KEY "Anthropic API key (press Enter to skip)" ""
+  ask OPENAI_API_KEY    "OpenAI API key (press Enter to skip)"    ""
+
+  # Summarize what was chosen so the user knows what to expect
+  echo ""
+  if [ -n "$ANTHROPIC_API_KEY" ]; then
+    info "Reflection: Anthropic API"
+  else
+    info "Reflection: Claude Code built-in (${BOLD}claude --print${NC})"
+  fi
+  if [ -n "$OPENAI_API_KEY" ]; then
+    info "Embeddings: OpenAI (text-embedding-3-small)"
+  else
+    info "Embeddings: local model (in-container)"
+  fi
 }
 
 # ─── Create directory structure ───────────────────────────────────────────────
@@ -267,11 +284,24 @@ ENV
 
 # ─── Pull images and start ────────────────────────────────────────────────────
 start_services() {
-  step "Pulling images and starting services"
   cd "${DATA_DIR}"
   set -a; source .env; set +a
-  $DC pull arcadedb 2>&1 | tail -1
-  $DC up -d --build 2>&1 | tail -5
+
+  step "Pulling ArcadeDB image"
+  info "First pull downloads ~250 MB — may take a minute."
+  $DC pull arcadedb
+
+  step "Building engram image"
+  info "First build downloads Python dependencies — typically 3-5 minutes."
+  info "You will see progress below. Do not interrupt."
+  echo ""
+  # --progress=plain → readable line-by-line output instead of TTY-redrawing UI
+  # No piping through tail — user needs to see this happening.
+  $DC build --progress=plain engram
+
+  step "Starting services"
+  $DC up -d
+
   echo ""
   info "Waiting for services to be healthy..."
   local i=0
