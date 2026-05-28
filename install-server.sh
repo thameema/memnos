@@ -45,10 +45,10 @@ gen_pass() { python3 -c "import secrets,string; print(secrets.token_urlsafe(18)[
 echo ""
 echo -e "${BOLD}${BLUE}"
 cat <<'BANNER'
-   ___  ____   ___  ____   ____  __  __
-  / __)(  _ \ / __)(  _ \ / _  \(  \/  )
- ( (__  )   /( (__  )   // /_\ / )    /
-  \___)(_)\_) \___)(____/ \___/ (_/\/\_)
+   ___    _  _    ___   ___     _     __  __
+  | __|  | \| |  / __| | _ \   /_\   |  \/  |
+  | _|   | .` | | (_ | |   /  / _ \  | |\/| |
+  |___|  |_|\_| \____| |_|\_\ /_/ \_ |_|  |_|
   Server Installer
 BANNER
 echo -e "${NC}"

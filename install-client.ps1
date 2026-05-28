@@ -42,10 +42,10 @@ function Read-YN {
 
 # ─── Banner ───────────────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "   ___  ____   ___  ____   ____  __  __ " -ForegroundColor Blue
-Write-Host "  / __)(  _ \ / __)(  _ \ / _  \(  \/  )" -ForegroundColor Blue
-Write-Host " ( (__  )   /( (__  )   // /_\ / )    / " -ForegroundColor Blue
-Write-Host "  \___)(_)\_) \___)(____/ \___/ (_/\/\_) " -ForegroundColor Blue
+Write-Host "   ___    _  _    ___   ___     _     __  __" -ForegroundColor Blue
+Write-Host "  | __|  | \| |  / __| | _ \   /_\   |  \/  |" -ForegroundColor Blue
+Write-Host "  | _|   | .`` | | (_ | |   /  / _ \  | |\/| |" -ForegroundColor Blue
+Write-Host "  |___|  |_|\_| \____| |_|\_\ /_/ \_ |_|  |_|" -ForegroundColor Blue
 Write-Host "  Client Installer  (Claude Code hooks)" -ForegroundColor Blue
 Write-Host ""
 
