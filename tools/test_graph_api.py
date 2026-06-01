@@ -102,8 +102,8 @@ def _search_result(created_at):
 
 class TestGraphQuery(unittest.IsolatedAsyncioTestCase):
     async def test_returns_list_from_client(self):
-        from engram_api.routers.graph import graph_query
-        from engram_api.schemas import GraphQueryRequest
+        from memnos_api.routers.graph import graph_query
+        from memnos_api.schemas import GraphQueryRequest
         client = MagicMock()
         client.query_graph = AsyncMock(return_value=[{"id": "1", "name": "Alice"}])
         req = GraphQueryRequest(cypher="SELECT FROM Entity", namespace="ns1")
@@ -112,8 +112,8 @@ class TestGraphQuery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["name"], "Alice")
 
     async def test_none_result_returns_empty_list(self):
-        from engram_api.routers.graph import graph_query
-        from engram_api.schemas import GraphQueryRequest
+        from memnos_api.routers.graph import graph_query
+        from memnos_api.schemas import GraphQueryRequest
         client = MagicMock()
         client.query_graph = AsyncMock(return_value=None)
         req = GraphQueryRequest(cypher="SELECT FROM Entity", namespace="ns1")
@@ -121,8 +121,8 @@ class TestGraphQuery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, [])
 
     async def test_datetime_in_results_converted_to_iso(self):
-        from engram_api.routers.graph import graph_query
-        from engram_api.schemas import GraphQueryRequest
+        from memnos_api.routers.graph import graph_query
+        from memnos_api.schemas import GraphQueryRequest
         dt = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
         client = MagicMock()
         client.query_graph = AsyncMock(return_value=[{"created_at": dt, "name": "Alice"}])
@@ -132,8 +132,8 @@ class TestGraphQuery(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2025-06-01", result[0]["created_at"])
 
     async def test_params_forwarded_to_client(self):
-        from engram_api.routers.graph import graph_query
-        from engram_api.schemas import GraphQueryRequest
+        from memnos_api.routers.graph import graph_query
+        from memnos_api.schemas import GraphQueryRequest
         client = MagicMock()
         client.query_graph = AsyncMock(return_value=[])
         req = GraphQueryRequest(cypher="SELECT FROM Entity WHERE name = :n", namespace="ns1", params={"n": "Alice"})
@@ -143,8 +143,8 @@ class TestGraphQuery(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_500_on_exception(self):
-        from engram_api.routers.graph import graph_query
-        from engram_api.schemas import GraphQueryRequest
+        from memnos_api.routers.graph import graph_query
+        from memnos_api.schemas import GraphQueryRequest
         from fastapi import HTTPException
         client = MagicMock()
         client.query_graph = AsyncMock(side_effect=RuntimeError("db error"))
@@ -154,8 +154,8 @@ class TestGraphQuery(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 500)
 
     async def test_empty_list_returned_as_is(self):
-        from engram_api.routers.graph import graph_query
-        from engram_api.schemas import GraphQueryRequest
+        from memnos_api.routers.graph import graph_query
+        from memnos_api.schemas import GraphQueryRequest
         client = MagicMock()
         client.query_graph = AsyncMock(return_value=[])
         req = GraphQueryRequest(cypher="SELECT FROM Entity LIMIT 0", namespace="ns1")
@@ -169,7 +169,7 @@ class TestGraphQuery(unittest.IsolatedAsyncioTestCase):
 
 class TestGetEntity(unittest.IsolatedAsyncioTestCase):
     async def test_returns_entity_and_relations(self):
-        from engram_api.routers.graph import get_entity
+        from memnos_api.routers.graph import get_entity
         entity = _entity("Alice")
         graph = _graph([_relation()])
         client = MagicMock()
@@ -183,7 +183,7 @@ class TestGetEntity(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["relations"]), 1)
 
     async def test_404_when_entity_not_found(self):
-        from engram_api.routers.graph import get_entity
+        from memnos_api.routers.graph import get_entity
         from fastapi import HTTPException
         client = MagicMock()
         client.get_entity = AsyncMock(return_value=None)
@@ -195,7 +195,7 @@ class TestGetEntity(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Ghost", ctx.exception.detail)
 
     async def test_500_on_exception(self):
-        from engram_api.routers.graph import get_entity
+        from memnos_api.routers.graph import get_entity
         from fastapi import HTTPException
         client = MagicMock()
         client.get_entity = AsyncMock(side_effect=RuntimeError("db crash"))
@@ -206,7 +206,7 @@ class TestGetEntity(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 500)
 
     async def test_relation_fields_serialised(self):
-        from engram_api.routers.graph import get_entity
+        from memnos_api.routers.graph import get_entity
         rel = _relation()
         rel.relation_type = "DEPENDS_ON"
         rel.weight = 0.9
@@ -220,7 +220,7 @@ class TestGetEntity(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(r["weight"], 0.9)
 
     async def test_empty_relations_when_graph_has_none(self):
-        from engram_api.routers.graph import get_entity
+        from memnos_api.routers.graph import get_entity
         client = MagicMock()
         client.get_entity = AsyncMock(return_value=_entity())
         client.get_related = AsyncMock(return_value=_graph([]))
@@ -229,7 +229,7 @@ class TestGetEntity(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["relations"], [])
 
     async def test_related_returns_list_directly(self):
-        from engram_api.routers.graph import get_entity
+        from memnos_api.routers.graph import get_entity
         client = MagicMock()
         client.get_entity = AsyncMock(return_value=_entity())
         client.get_related = AsyncMock(return_value=[_relation()])   # list, not Graph obj
@@ -238,7 +238,7 @@ class TestGetEntity(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["relations"]), 1)
 
     async def test_depth_passed_to_client(self):
-        from engram_api.routers.graph import get_entity
+        from memnos_api.routers.graph import get_entity
         client = MagicMock()
         client.get_entity = AsyncMock(return_value=_entity())
         client.get_related = AsyncMock(return_value=_graph())
@@ -253,8 +253,8 @@ class TestGetEntity(unittest.IsolatedAsyncioTestCase):
 
 class TestAddFact(unittest.IsolatedAsyncioTestCase):
     async def test_fields_forwarded_to_client(self):
-        from engram_api.routers.graph import add_fact
-        from engram_api.schemas import FactRequest
+        from memnos_api.routers.graph import add_fact
+        from memnos_api.schemas import FactRequest
         client = MagicMock()
         client.add_fact = AsyncMock(return_value=_fact())
         req = FactRequest(subject="Alice", predicate="uses", object="Python", namespace="ns1")
@@ -264,8 +264,8 @@ class TestAddFact(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_fact_object_serialised(self):
-        from engram_api.routers.graph import add_fact
-        from engram_api.schemas import FactRequest
+        from memnos_api.routers.graph import add_fact
+        from memnos_api.schemas import FactRequest
         client = MagicMock()
         client.add_fact = AsyncMock(return_value=_fact("f-1", "Alice", "uses", "Python"))
         req = FactRequest(subject="Alice", predicate="uses", object="Python", namespace="ns1")
@@ -276,8 +276,8 @@ class TestAddFact(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["id"], "f-1")
 
     async def test_dict_return_passed_through(self):
-        from engram_api.routers.graph import add_fact
-        from engram_api.schemas import FactRequest
+        from memnos_api.routers.graph import add_fact
+        from memnos_api.schemas import FactRequest
         client = MagicMock()
         client.add_fact = AsyncMock(return_value={"id": "f-2", "subject": "Bob", "predicate": "knows", "object": "Alice", "namespace": "ns1"})
         req = FactRequest(subject="Bob", predicate="knows", object="Alice", namespace="ns1")
@@ -286,8 +286,8 @@ class TestAddFact(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["subject"], "Bob")
 
     async def test_500_on_exception(self):
-        from engram_api.routers.graph import add_fact
-        from engram_api.schemas import FactRequest
+        from memnos_api.routers.graph import add_fact
+        from memnos_api.schemas import FactRequest
         from fastapi import HTTPException
         client = MagicMock()
         client.add_fact = AsyncMock(side_effect=RuntimeError("insert failed"))
@@ -297,8 +297,8 @@ class TestAddFact(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 500)
 
     async def test_datetime_valid_from_converted_to_iso(self):
-        from engram_api.routers.graph import add_fact
-        from engram_api.schemas import FactRequest
+        from memnos_api.routers.graph import add_fact
+        from memnos_api.schemas import FactRequest
         f = _fact()
         f.valid_from = datetime(2025, 3, 15, tzinfo=timezone.utc)
         client = MagicMock()
@@ -327,7 +327,7 @@ class TestBuildDateHistogram(unittest.TestCase):
         return r
 
     def test_counts_within_30_days(self):
-        from engram_api.routers.viz import _build_date_histogram
+        from memnos_api.routers.viz import _build_date_histogram
         today = datetime.now(timezone.utc).date()
         results = [self._result_with_date(today) for _ in range(3)]
         hist = _build_date_histogram(results)
@@ -335,27 +335,27 @@ class TestBuildDateHistogram(unittest.TestCase):
         self.assertEqual(total, 3)
 
     def test_ignores_entries_older_than_30_days(self):
-        from engram_api.routers.viz import _build_date_histogram
+        from memnos_api.routers.viz import _build_date_histogram
         old_date = datetime.now(timezone.utc).date() - timedelta(days=31)
         results = [self._result_with_date(old_date)]
         hist = _build_date_histogram(results)
         self.assertEqual(sum(e["count"] for e in hist), 0)
 
     def test_handles_none_created_at(self):
-        from engram_api.routers.viz import _build_date_histogram
+        from memnos_api.routers.viz import _build_date_histogram
         results = [self._result_with_date(None)]
         hist = _build_date_histogram(results)  # should not raise
         self.assertEqual(sum(e["count"] for e in hist), 0)
 
     def test_handles_iso_string_date(self):
-        from engram_api.routers.viz import _build_date_histogram
+        from memnos_api.routers.viz import _build_date_histogram
         today = datetime.now(timezone.utc).date()
         results = [self._result_with_date(f"{today.isoformat()}T00:00:00")]
         hist = _build_date_histogram(results)
         self.assertEqual(sum(e["count"] for e in hist), 1)
 
     def test_multiple_dates_sorted(self):
-        from engram_api.routers.viz import _build_date_histogram
+        from memnos_api.routers.viz import _build_date_histogram
         today = datetime.now(timezone.utc).date()
         yesterday = today - timedelta(days=1)
         results = [self._result_with_date(today), self._result_with_date(yesterday)]
@@ -364,11 +364,11 @@ class TestBuildDateHistogram(unittest.TestCase):
         self.assertEqual(dates, sorted(dates))
 
     def test_empty_input_returns_empty_list(self):
-        from engram_api.routers.viz import _build_date_histogram
+        from memnos_api.routers.viz import _build_date_histogram
         self.assertEqual(_build_date_histogram([]), [])
 
     def test_result_with_no_memory_attr_skipped(self):
-        from engram_api.routers.viz import _build_date_histogram
+        from memnos_api.routers.viz import _build_date_histogram
         r = MagicMock()
         r.memory = None
         hist = _build_date_histogram([r])
@@ -392,14 +392,14 @@ class TestGraphStats(unittest.IsolatedAsyncioTestCase):
         return c
 
     async def test_all_expected_keys_present(self):
-        from engram_api.routers.viz import graph_stats
+        from memnos_api.routers.viz import graph_stats
         client = self._make_client()
         result = await graph_stats(namespace="all", user_id="u1", _key_entry=_key_entry(), client=client)
         for key in ("node_count", "edge_count", "memory_count", "namespace_distribution", "top_tags", "recent_activity"):
             self.assertIn(key, result)
 
     async def test_memory_and_edge_counts(self):
-        from engram_api.routers.viz import graph_stats
+        from memnos_api.routers.viz import graph_stats
         client = self._make_client(memories=7, edges=14)
         result = await graph_stats(namespace="all", user_id="u1", _key_entry=_key_entry(), client=client)
         self.assertEqual(result["node_count"], 7)
@@ -407,14 +407,14 @@ class TestGraphStats(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["memory_count"], 7)
 
     async def test_namespace_distribution_sorted_descending(self):
-        from engram_api.routers.viz import graph_stats
+        from memnos_api.routers.viz import graph_stats
         client = self._make_client(ns_dist={"ns1": 2, "ns2": 10, "ns3": 5})
         result = await graph_stats(namespace="all", user_id="u1", _key_entry=_key_entry(), client=client)
         counts = [e["count"] for e in result["namespace_distribution"]]
         self.assertEqual(counts, sorted(counts, reverse=True))
 
     async def test_graceful_fallback_when_stats_raises(self):
-        from engram_api.routers.viz import graph_stats
+        from memnos_api.routers.viz import graph_stats
         client = MagicMock()
         client.stats = AsyncMock(side_effect=RuntimeError("arcadedb down"))
         client.search = AsyncMock(return_value=[])
@@ -424,7 +424,7 @@ class TestGraphStats(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["edge_count"], 0)
 
     async def test_recent_activity_built_from_search(self):
-        from engram_api.routers.viz import graph_stats
+        from memnos_api.routers.viz import graph_stats
         today = datetime.now(timezone.utc).date()
         sr = _search_result(datetime(today.year, today.month, today.day, tzinfo=timezone.utc))
         client = self._make_client(search_results=[sr])
@@ -433,7 +433,7 @@ class TestGraphStats(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(total, 1)
 
     async def test_top_tags_extracted(self):
-        from engram_api.routers.viz import graph_stats
+        from memnos_api.routers.viz import graph_stats
         tag_rows = [{"tags": ["incident", "critical"], "cnt": 5}]
         client = self._make_client(tag_rows=tag_rows)
         result = await graph_stats(namespace="all", user_id="u1", _key_entry=_key_entry(), client=client)
@@ -442,7 +442,7 @@ class TestGraphStats(unittest.IsolatedAsyncioTestCase):
         self.assertIn("critical", tag_names)
 
     async def test_empty_search_returns_empty_recent_activity(self):
-        from engram_api.routers.viz import graph_stats
+        from memnos_api.routers.viz import graph_stats
         client = self._make_client(search_results=[])
         result = await graph_stats(namespace="all", user_id="u1", _key_entry=_key_entry(), client=client)
         self.assertEqual(result["recent_activity"], [])
@@ -454,7 +454,7 @@ class TestGraphStats(unittest.IsolatedAsyncioTestCase):
 
 class TestGraphVisualize(unittest.IsolatedAsyncioTestCase):
     async def test_returns_data_from_client(self):
-        from engram_api.routers.viz import graph_visualize
+        from memnos_api.routers.viz import graph_visualize
         data = {"nodes": [{"id": "n1"}], "edges": [], "truncated": False}
         client = MagicMock()
         client.visualize = AsyncMock(return_value=data)
@@ -464,7 +464,7 @@ class TestGraphVisualize(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["truncated"])
 
     async def test_limit_passed_to_client(self):
-        from engram_api.routers.viz import graph_visualize
+        from memnos_api.routers.viz import graph_visualize
         client = MagicMock()
         client.visualize = AsyncMock(return_value={"nodes": [], "edges": [], "truncated": False})
         await graph_visualize(namespace="ns1", limit=42, user_id="u1",
@@ -472,7 +472,7 @@ class TestGraphVisualize(unittest.IsolatedAsyncioTestCase):
         client.visualize.assert_awaited_once_with(namespace="ns1", limit=42)
 
     async def test_empty_fallback_on_exception(self):
-        from engram_api.routers.viz import graph_visualize
+        from memnos_api.routers.viz import graph_visualize
         client = MagicMock()
         client.visualize = AsyncMock(side_effect=RuntimeError("arcadedb unavailable"))
         result = await graph_visualize(namespace="ns1", limit=150, user_id="u1",
@@ -482,7 +482,7 @@ class TestGraphVisualize(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["truncated"])
 
     async def test_namespace_passed_to_client(self):
-        from engram_api.routers.viz import graph_visualize
+        from memnos_api.routers.viz import graph_visualize
         client = MagicMock()
         client.visualize = AsyncMock(return_value={"nodes": [], "edges": [], "truncated": False})
         await graph_visualize(namespace="org:acme", limit=100, user_id="u1",

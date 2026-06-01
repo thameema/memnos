@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 sys.path.insert(0, _REPO_ROOT + "/packages/core")
 
-from engram.models import (
+from memnos.models import (
     DecayPolicy,
     MemoryEntry,
     MemoryStatus,
@@ -77,7 +77,7 @@ class TestGetFanoutSubscribers(unittest.IsolatedAsyncioTestCase):
 
 
 # ---------------------------------------------------------------------------
-# _fanout_memory in EngramClient
+# _fanout_memory in MemnosClient
 # ---------------------------------------------------------------------------
 
 def _make_memory(
@@ -93,14 +93,14 @@ def _make_memory(
 
 
 def _make_client_with_arcadedb(arcadedb):
-    """Build a minimal EngramClient-like object with the _fanout_memory method."""
+    """Build a minimal MemnosClient-like object with the _fanout_memory method."""
     # Import here to get the actual _fanout_memory method
-    from engram.client import EngramClient
-    client = object.__new__(EngramClient)
+    from memnos.client import MemnosClient
+    client = object.__new__(MemnosClient)
     client._arcadedb = arcadedb
     # Bind the method
     import types
-    client._fanout_memory = types.MethodType(EngramClient._fanout_memory, client)
+    client._fanout_memory = types.MethodType(MemnosClient._fanout_memory, client)
     return client
 
 
@@ -190,8 +190,8 @@ class TestSubscribeDeliveryNamespace(unittest.IsolatedAsyncioTestCase):
         db = MagicMock()
         db.upsert_subscription = AsyncMock(return_value="sub-001")
 
-        from engram.client import EngramClient
-        client = object.__new__(EngramClient)
+        from memnos.client import MemnosClient
+        client = object.__new__(MemnosClient)
         client._arcadedb = db
         client._started = True
         client._config = MagicMock()
@@ -213,8 +213,8 @@ class TestSubscribeDeliveryNamespace(unittest.IsolatedAsyncioTestCase):
         db = MagicMock()
         db.upsert_subscription = AsyncMock(return_value="sub-001")
 
-        from engram.client import EngramClient
-        client = object.__new__(EngramClient)
+        from memnos.client import MemnosClient
+        client = object.__new__(MemnosClient)
         client._arcadedb = db
         client._started = True
         import types

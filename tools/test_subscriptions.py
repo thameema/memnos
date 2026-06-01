@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-test_subscriptions.py — Tests for engram's subscription / pub-sub layer.
+test_subscriptions.py — Tests for memnos's subscription / pub-sub layer.
 
 Part A — Unit tests for ImmediateSubscriptionBus (no API, no runner fixture)
     These exercise the in-process event bus directly: registration, unregistration,
     namespace-prefix matching, filter_types matching, fan-out to multiple subscribers,
     and the module-level singleton functions.
 
-Part B — Integration tests (require a live engram API; use runner fixture)
+Part B — Integration tests (require a live memnos API; use runner fixture)
     These exercise the full subscription stack:
       - POST /subscriptions/  to subscribe
       - GET  /subscriptions/{ns}/feed  for cursor-based polling
@@ -47,8 +47,8 @@ except ImportError:
     print("[error] Missing package: httpx  (pip install httpx)", file=sys.stderr)
     sys.exit(1)
 
-ENGRAM_API = os.environ.get("ENGRAM_API", "http://localhost:8766")
-ENGRAM_KEY = os.environ.get("ENGRAM_KEY", "engram-local-dev-key")
+MEMNOS_API = os.environ.get("MEMNOS_API", "http://localhost:8766")
+MEMNOS_KEY = os.environ.get("MEMNOS_KEY", "memnos-local-dev-key")
 
 TEST_NS = f"test:subscriptions:{uuid.uuid4().hex[:8]}"
 
@@ -66,19 +66,19 @@ def now_iso() -> str:
 
 
 def _post(path: str, body: dict, client: httpx.Client) -> dict:
-    r = client.post(f"{ENGRAM_API}/api/v1{path}", json=body)
+    r = client.post(f"{MEMNOS_API}/api/v1{path}", json=body)
     r.raise_for_status()
     return r.json()
 
 
 def _get(path: str, params: dict, client: httpx.Client) -> dict:
-    r = client.get(f"{ENGRAM_API}/api/v1{path}", params=params)
+    r = client.get(f"{MEMNOS_API}/api/v1{path}", params=params)
     r.raise_for_status()
     return r.json()
 
 
 def _delete(path: str, client: httpx.Client) -> None:
-    r = client.delete(f"{ENGRAM_API}/api/v1{path}")
+    r = client.delete(f"{MEMNOS_API}/api/v1{path}")
     r.raise_for_status()
 
 
@@ -160,7 +160,7 @@ class Runner:
 # ===========================================================================
 
 def test_bus_register_creates_queue() -> None:
-    from engram.subscription_bus import ImmediateSubscriptionBus
+    from memnos.subscription_bus import ImmediateSubscriptionBus
     bus = ImmediateSubscriptionBus()
     q = bus.register("agent-1", "org:test")
     assert isinstance(q, asyncio.Queue)
@@ -168,7 +168,7 @@ def test_bus_register_creates_queue() -> None:
 
 
 def test_bus_unregister_removes_queue() -> None:
-    from engram.subscription_bus import ImmediateSubscriptionBus
+    from memnos.subscription_bus import ImmediateSubscriptionBus
     bus = ImmediateSubscriptionBus()
     bus.register("agent-1", "org:test")
     bus.unregister("agent-1", "org:test")
@@ -176,7 +176,7 @@ def test_bus_unregister_removes_queue() -> None:
 
 
 def test_bus_publish_exact_namespace() -> None:
-    from engram.subscription_bus import ImmediateSubscriptionBus
+    from memnos.subscription_bus import ImmediateSubscriptionBus
     bus = ImmediateSubscriptionBus()
     bus.register("agent-1", "org:acme")
     event = {"memory": {"memory_type": "fact", "tags": []}, "content": "hello"}
@@ -189,7 +189,7 @@ def test_bus_publish_exact_namespace() -> None:
 
 
 def test_bus_publish_prefix_namespace() -> None:
-    from engram.subscription_bus import ImmediateSubscriptionBus
+    from memnos.subscription_bus import ImmediateSubscriptionBus
     bus = ImmediateSubscriptionBus()
     bus.register("agent-1", "org:acme")
     bus.register("agent-2", "org:other")
@@ -203,7 +203,7 @@ def test_bus_publish_prefix_namespace() -> None:
 
 
 def test_bus_publish_no_match() -> None:
-    from engram.subscription_bus import ImmediateSubscriptionBus
+    from memnos.subscription_bus import ImmediateSubscriptionBus
     bus = ImmediateSubscriptionBus()
     bus.register("agent-1", "org:acme")
     event = {"memory": {"memory_type": "fact", "tags": []}}
@@ -212,7 +212,7 @@ def test_bus_publish_no_match() -> None:
 
 
 def test_bus_filter_types_memory_type() -> None:
-    from engram.subscription_bus import ImmediateSubscriptionBus
+    from memnos.subscription_bus import ImmediateSubscriptionBus
     bus = ImmediateSubscriptionBus()
     bus.register("agent-1", "org:acme", filter_types=["decision"])
     q = bus._queues[("agent-1", "org:acme")][0]
@@ -227,7 +227,7 @@ def test_bus_filter_types_memory_type() -> None:
 
 
 def test_bus_filter_types_tag_match() -> None:
-    from engram.subscription_bus import ImmediateSubscriptionBus
+    from memnos.subscription_bus import ImmediateSubscriptionBus
     bus = ImmediateSubscriptionBus()
     bus.register("agent-1", "org:acme", filter_types=["urgent"])
     q = bus._queues[("agent-1", "org:acme")][0]
@@ -242,7 +242,7 @@ def test_bus_filter_types_tag_match() -> None:
 
 
 def test_bus_empty_filter_accepts_all() -> None:
-    from engram.subscription_bus import ImmediateSubscriptionBus
+    from memnos.subscription_bus import ImmediateSubscriptionBus
     bus = ImmediateSubscriptionBus()
     bus.register("agent-1", "org:acme", filter_types=[])
     q = bus._queues[("agent-1", "org:acme")][0]
@@ -254,7 +254,7 @@ def test_bus_empty_filter_accepts_all() -> None:
 
 
 def test_bus_multiple_subscribers_same_namespace() -> None:
-    from engram.subscription_bus import ImmediateSubscriptionBus
+    from memnos.subscription_bus import ImmediateSubscriptionBus
     bus = ImmediateSubscriptionBus()
     bus.register("agent-1", "org:acme")
     bus.register("agent-2", "org:acme")
@@ -264,14 +264,14 @@ def test_bus_multiple_subscribers_same_namespace() -> None:
 
 
 def test_bus_publish_empty_bus() -> None:
-    from engram.subscription_bus import ImmediateSubscriptionBus
+    from memnos.subscription_bus import ImmediateSubscriptionBus
     bus = ImmediateSubscriptionBus()
     delivered = bus.publish("org:acme", {"memory": {"memory_type": "fact", "tags": []}})
     assert delivered == 0
 
 
 def test_bus_module_singleton() -> None:
-    from engram.subscription_bus import (
+    from memnos.subscription_bus import (
         publish,
         register,
         subscriber_count,
@@ -303,7 +303,7 @@ def test_subscribe_and_poll_feed(runner: Runner) -> None:
     ns = TEST_NS + ":feed-" + uuid.uuid4().hex[:8]
     memory_ids: list[str] = []
 
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=30) as client:
         try:
             _post("/subscriptions/", {"namespace": ns, "delivery_mode": "cursor"}, client)
 
@@ -336,7 +336,7 @@ def test_subscribe_and_poll_feed(runner: Runner) -> None:
                 pass
             for mid in memory_ids:
                 try:
-                    client.delete(f"{ENGRAM_API}/api/v1/memory/{mid}")
+                    client.delete(f"{MEMNOS_API}/api/v1/memory/{mid}")
                 except Exception:
                     pass
 
@@ -346,7 +346,7 @@ def test_feed_cursor_advances(runner: Runner) -> None:
     ns = TEST_NS + ":cursor-" + uuid.uuid4().hex[:8]
     memory_ids: list[str] = []
 
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=30) as client:
         try:
             _post("/subscriptions/", {"namespace": ns, "delivery_mode": "cursor"}, client)
 
@@ -376,7 +376,7 @@ def test_feed_cursor_advances(runner: Runner) -> None:
                 pass
             for mid in memory_ids:
                 try:
-                    client.delete(f"{ENGRAM_API}/api/v1/memory/{mid}")
+                    client.delete(f"{MEMNOS_API}/api/v1/memory/{mid}")
                 except Exception:
                     pass
 
@@ -387,7 +387,7 @@ def test_feed_filter_types(runner: Runner) -> None:
     fact_id: str | None = None
     decision_id: str | None = None
 
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=30) as client:
         try:
             _post(
                 "/subscriptions/",
@@ -425,7 +425,7 @@ def test_feed_filter_types(runner: Runner) -> None:
             for mid in [fact_id, decision_id]:
                 if mid:
                     try:
-                        client.delete(f"{ENGRAM_API}/api/v1/memory/{mid}")
+                        client.delete(f"{MEMNOS_API}/api/v1/memory/{mid}")
                     except Exception:
                         pass
 
@@ -435,7 +435,7 @@ def test_unsubscribe(runner: Runner) -> None:
     ns = TEST_NS + ":unsub-" + uuid.uuid4().hex[:8]
     memory_id: str | None = None
 
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=30) as client:
         try:
             _post("/subscriptions/", {"namespace": ns, "delivery_mode": "cursor"}, client)
 
@@ -443,15 +443,15 @@ def test_unsubscribe(runner: Runner) -> None:
             memory_id = mem["id"]
             time.sleep(0.3)
 
-            r = client.delete(f"{ENGRAM_API}/api/v1/subscriptions/{ns}",
-                              headers={"X-API-Key": ENGRAM_KEY})
+            r = client.delete(f"{MEMNOS_API}/api/v1/subscriptions/{ns}",
+                              headers={"X-API-Key": MEMNOS_KEY})
             assert r.status_code == 204, (
                 f"DELETE /subscriptions/{{ns}} expected 204, got {r.status_code}: {r.text}"
             )
 
             feed_r = client.get(
-                f"{ENGRAM_API}/api/v1/subscriptions/{ns}/feed",
-                headers={"X-API-Key": ENGRAM_KEY},
+                f"{MEMNOS_API}/api/v1/subscriptions/{ns}/feed",
+                headers={"X-API-Key": MEMNOS_KEY},
             )
             assert feed_r.status_code in (200, 404), (
                 f"unexpected status after unsubscribe: {feed_r.status_code}"
@@ -468,8 +468,8 @@ def test_unsubscribe(runner: Runner) -> None:
         finally:
             if memory_id:
                 try:
-                    client.delete(f"{ENGRAM_API}/api/v1/memory/{memory_id}",
-                                  headers={"X-API-Key": ENGRAM_KEY})
+                    client.delete(f"{MEMNOS_API}/api/v1/memory/{memory_id}",
+                                  headers={"X-API-Key": MEMNOS_KEY})
                 except Exception:
                     pass
 
@@ -481,7 +481,7 @@ def test_child_namespace_feed(runner: Runner) -> None:
     child_ns = parent_ns + ":child"
     memory_id: str | None = None
 
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=30) as client:
         try:
             _post("/subscriptions/", {"namespace": parent_ns, "delivery_mode": "cursor"}, client)
 
@@ -510,8 +510,8 @@ def test_child_namespace_feed(runner: Runner) -> None:
                 pass
             if memory_id:
                 try:
-                    client.delete(f"{ENGRAM_API}/api/v1/memory/{memory_id}",
-                                  headers={"X-API-Key": ENGRAM_KEY})
+                    client.delete(f"{MEMNOS_API}/api/v1/memory/{memory_id}",
+                                  headers={"X-API-Key": MEMNOS_KEY})
                 except Exception:
                     pass
 
@@ -521,7 +521,7 @@ def test_immediate_bus_publish_on_write(runner: Runner) -> None:
 
     This test requires the test process to share the same OS process as the API server
     so both sides see the same module-level _bus singleton. When running against a
-    separate engram API server process (the normal case), the bus objects are distinct
+    separate memnos API server process (the normal case), the bus objects are distinct
     and no event arrives — the test is therefore skipped rather than failed.
     """
     pytest.skip(
@@ -537,7 +537,7 @@ def test_fan_out_delivery_namespace(runner: Runner) -> None:
     dest_ns = TEST_NS + ":dst-" + suffix
     memory_id: str | None = None
 
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=30) as client:
         try:
             sub_resp = _post(
                 "/subscriptions/",
@@ -566,8 +566,8 @@ def test_fan_out_delivery_namespace(runner: Runner) -> None:
             time.sleep(1.0)
 
             search_r = client.get(
-                f"{ENGRAM_API}/api/v1/memory/search",
-                headers={"X-API-Key": ENGRAM_KEY},
+                f"{MEMNOS_API}/api/v1/memory/search",
+                headers={"X-API-Key": MEMNOS_KEY},
                 params={"q": written_content, "ns": dest_ns, "top_k": 10},
             )
 
@@ -604,8 +604,8 @@ def test_fan_out_delivery_namespace(runner: Runner) -> None:
                     pass
             if memory_id:
                 try:
-                    client.delete(f"{ENGRAM_API}/api/v1/memory/{memory_id}",
-                                  headers={"X-API-Key": ENGRAM_KEY})
+                    client.delete(f"{MEMNOS_API}/api/v1/memory/{memory_id}",
+                                  headers={"X-API-Key": MEMNOS_KEY})
                 except Exception:
                     pass
 
@@ -620,8 +620,8 @@ def _cleanup_all(client: httpx.Client) -> None:
     ]:
         try:
             search_r = client.get(
-                f"{ENGRAM_API}/api/v1/memory/search",
-                headers={"X-API-Key": ENGRAM_KEY},
+                f"{MEMNOS_API}/api/v1/memory/search",
+                headers={"X-API-Key": MEMNOS_KEY},
                 params={"q": "test", "ns": TEST_NS, "top_k": 50},
             )
             if search_r.status_code == 200:
@@ -631,8 +631,8 @@ def _cleanup_all(client: httpx.Client) -> None:
                     mid = (r.get("memory") or r).get("id")
                     if mid:
                         try:
-                            client.delete(f"{ENGRAM_API}/api/v1/memory/{mid}",
-                                          headers={"X-API-Key": ENGRAM_KEY})
+                            client.delete(f"{MEMNOS_API}/api/v1/memory/{mid}",
+                                          headers={"X-API-Key": MEMNOS_KEY})
                         except Exception:
                             pass
         except Exception:
@@ -640,7 +640,7 @@ def _cleanup_all(client: httpx.Client) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="engram subscription tests")
+    parser = argparse.ArgumentParser(description="memnos subscription tests")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--test", metavar="NAME", help="run one test by name")
     parser.add_argument(
@@ -653,14 +653,14 @@ def main() -> int:
     try:
         with httpx.Client(timeout=4) as c:
             r = c.get(
-                f"{ENGRAM_API}/api/v1/admin/health",
-                headers={"X-API-Key": ENGRAM_KEY},
+                f"{MEMNOS_API}/api/v1/admin/health",
+                headers={"X-API-Key": MEMNOS_KEY},
             )
             if r.status_code != 200:
-                print(f"[error] engram health check failed: {r.status_code}", file=sys.stderr)
+                print(f"[error] memnos health check failed: {r.status_code}", file=sys.stderr)
                 return 1
     except Exception as e:
-        print(f"[error] Cannot reach engram at {ENGRAM_API}: {e}", file=sys.stderr)
+        print(f"[error] Cannot reach memnos at {MEMNOS_API}: {e}", file=sys.stderr)
         return 1
 
     runner = Runner(
@@ -669,8 +669,8 @@ def main() -> int:
         skip_webhook=args.skip_webhook,
     )
 
-    print("engram Subscription Tests")
-    print(f"API: {ENGRAM_API}   namespace: {TEST_NS}")
+    print("memnos Subscription Tests")
+    print(f"API: {MEMNOS_API}   namespace: {TEST_NS}")
     print("=" * 70)
     print()
 
@@ -684,7 +684,7 @@ def main() -> int:
         test_fan_out_delivery_namespace,
     ]
 
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=30) as client:
         try:
             for fn in integration_tests:
                 runner.run(fn)

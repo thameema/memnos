@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# engram installer — orchestrator
+# memnos installer — orchestrator
 #
 # Delegates to install-server.sh and/or install-client.sh based on user choice.
 #
@@ -8,7 +8,7 @@
 #   ./install.sh --server      # server only
 #   ./install.sh --client      # client hooks only (points to existing/remote server)
 #   ./install.sh --both        # server + client on this machine
-#   curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/thameema/memnos/master/install.sh | bash
 
 set -euo pipefail
 
@@ -41,7 +41,7 @@ if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
 fi
 
-GITHUB_RAW="https://raw.githubusercontent.com/thameema/engram/master"
+GITHUB_RAW="https://raw.githubusercontent.com/thameema/memnos/master"
 
 _get_script() {
   local name="$1"   # install-server.sh or install-client.sh
@@ -55,14 +55,14 @@ _get_script() {
   # Download to a temp file
   # NOTE: X placeholders must be at the END of the template — required by BSD mktemp on macOS.
   local tmp
-  tmp="$(mktemp /tmp/engram.XXXXXX 2>/dev/null)" || \
+  tmp="$(mktemp /tmp/memnos.XXXXXX 2>/dev/null)" || \
     die "Could not create temp file in /tmp (mktemp failed)."
   if curl -fsSL "${GITHUB_RAW}/${name}" -o "$tmp" 2>/dev/null; then
     chmod +x "$tmp"
     echo "$tmp"
   else
     rm -f "$tmp"
-    die "Could not find or download ${name}. Run from the engram source directory or check your internet connection."
+    die "Could not find or download ${name}. Run from the memnos source directory or check your internet connection."
   fi
 }
 
@@ -79,16 +79,16 @@ while [[ $# -gt 0 ]]; do
       cat <<HLP
   Usage: ./install.sh [--server|--client|--both] [--version <ref>]
 
-    --server          Install engram server (Docker: ArcadeDB + API)
-    --client          Install Claude Code hooks for an existing engram server
+    --server          Install memnos server (Docker: ArcadeDB + API)
+    --client          Install Claude Code hooks for an existing memnos server
     --both            Install server + client on this machine
-    --version <ref>   Pin engram to a specific git ref (passed to install-server.sh).
+    --version <ref>   Pin memnos to a specific git ref (passed to install-server.sh).
                       Examples:
                         --version v1.4.0     install frozen release v1.4.0
                         --version master     install latest master (default)
                       Default: master (always-current).
 
-  Releases:  https://github.com/thameema/engram/releases
+  Releases:  https://github.com/thameema/memnos/releases
 HLP
       exit 0 ;;
     *) EXTRA_ARGS+=("$1"); shift ;;
@@ -100,15 +100,15 @@ if [[ -z "$MODE" ]]; then
   echo "  What would you like to install?"
   echo ""
   echo -e "  ${BOLD}1) Full install (server + client)${NC}"
-  echo "     -> Run engram server here AND install Claude Code hooks on this machine."
+  echo "     -> Run memnos server here AND install Claude Code hooks on this machine."
   echo "     -> Best for: local laptop / single-developer setup."
   echo ""
   echo -e "  ${BOLD}2) Server only${NC}"
-  echo "     -> Install engram server (Docker). Share the API URL + key with team members."
+  echo "     -> Install memnos server (Docker). Share the API URL + key with team members."
   echo "     -> Best for: dedicated VM or shared server."
   echo ""
   echo -e "  ${BOLD}3) Client only${NC}"
-  echo "     -> Install Claude Code hooks only. Connects to an existing engram server."
+  echo "     -> Install Claude Code hooks only. Connects to an existing memnos server."
   echo "     -> Best for: developer machines pointing at a remote server."
   echo ""
   echo -ne "${CYAN}  ?${NC} Choose [1/2/3] [1]: "
@@ -150,13 +150,13 @@ case "$MODE" in
     echo -e "${BOLD}>>> Installing Claude Code client hooks${NC}"
 
     # Extract connection info from the .env the server installer just wrote.
-    # v1.4+: .env lives at ~/.engram/.env. Pre-v1.4: ~/.engram-src/.env.
+    # v1.4+: .env lives at ~/.memnos/.env. Pre-v1.4: ~/.memnos-src/.env.
     SERVER_URL="http://localhost:8766"
     SERVER_KEY=""
-    for candidate in "${HOME}/.engram/.env" "${HOME}/.engram-src/.env" "${SCRIPT_DIR:-}/.env"; do
+    for candidate in "${HOME}/.memnos/.env" "${HOME}/.memnos-src/.env" "${SCRIPT_DIR:-}/.env"; do
       if [[ -n "$candidate" && -f "$candidate" ]]; then
         set -a; source "$candidate"; set +a
-        SERVER_KEY="${ENGRAM_API_KEY:-}"
+        SERVER_KEY="${MEMNOS_API_KEY:-}"
         [[ -n "$SERVER_KEY" ]] && break
       fi
     done

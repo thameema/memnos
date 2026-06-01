@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 test_decision_coverage.py — Validate that projects have decisions and constraints
-stored as graph vertices in engram.
+stored as graph vertices in memnos.
 
 This test answers: "Does each major project have its architectural decisions and
 constraints captured in the right memory types, with enough quality to be useful
@@ -25,7 +25,7 @@ Usage:
     python3 tools/test_decision_coverage.py
     python3 tools/test_decision_coverage.py --verbose
     python3 tools/test_decision_coverage.py --test project_namespaces_have_decisions
-    python3 tools/test_decision_coverage.py --namespace org:engram
+    python3 tools/test_decision_coverage.py --namespace org:memnos
 """
 
 from __future__ import annotations
@@ -48,9 +48,9 @@ except ImportError:
     sys.exit(1)
 
 ARCADEDB_URL = os.environ.get("ARCADEDB_URL", "http://localhost:2480")
-ENGRAM_API   = os.environ.get("ENGRAM_API",   "http://localhost:8766")
-ENGRAM_KEY   = os.environ.get("ENGRAM_KEY",   "engram-local-dev-key")
-DB_NAME      = "engram"
+MEMNOS_API   = os.environ.get("MEMNOS_API",   "http://localhost:8766")
+MEMNOS_KEY   = os.environ.get("MEMNOS_KEY",   "memnos-local-dev-key")
+DB_NAME      = "memnos"
 
 # Namespaces and minimum required decision+constraint counts.
 # Expand this dict as projects add their ADRs.
@@ -59,9 +59,9 @@ DB_NAME      = "engram"
 # rationale populated. Ratchet this up as you backfill existing memories.
 # Set to 0.0 during bootstrapping; raise to 1.0 once all decisions are enriched.
 PROJECT_NAMESPACES: dict[str, dict] = {
-    "org:engram": {
+    "org:memnos": {
         "min_decisions":   3,   # ArcadeDB choice, hook pipeline, namespace routing, etc.
-        "min_constraints": 0,   # constraints not yet written for engram itself
+        "min_constraints": 0,   # constraints not yet written for memnos itself
         "key_components":  ["arcadedb", "hooks", "vault", "mcp"],
         "min_quality_pct": 1.0,
     },
@@ -78,7 +78,7 @@ PROJECT_NAMESPACES: dict[str, dict] = {
 # ---------------------------------------------------------------------------
 
 def _auth() -> dict:
-    pw = os.environ.get("ARCADEDB_PASSWORD", "engram-dev-password")
+    pw = os.environ.get("ARCADEDB_PASSWORD", "memnos-dev-password")
     creds = base64.b64encode(f"root:{pw}".encode()).decode()
     return {"Authorization": f"Basic {creds}", "Content-Type": "application/json"}
 
@@ -107,11 +107,11 @@ def arcade_command(sql: str, params: dict | None = None) -> list[dict]:
     return resp.json().get("result", [])
 
 
-def engram_post(path: str, body: dict) -> dict:
+def memnos_post(path: str, body: dict) -> dict:
     resp = httpx.post(
-        f"{ENGRAM_API}{path}",
+        f"{MEMNOS_API}{path}",
         content=json.dumps(body),
-        headers={"Content-Type": "application/json", "X-API-Key": ENGRAM_KEY},
+        headers={"Content-Type": "application/json", "X-API-Key": MEMNOS_KEY},
         timeout=15.0,
     )
     resp.raise_for_status()
@@ -666,7 +666,7 @@ ALL_TESTS: list[tuple[str, Callable]] = [
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Decision and constraint coverage tests for engram"
+        description="Decision and constraint coverage tests for memnos"
     )
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--test", metavar="NAME", help="Run only this test")
@@ -680,9 +680,9 @@ def main() -> None:
 
     runner = Runner(verbose=args.verbose)
 
-    print("\nengram Decision & Constraint Coverage Tests")
+    print("\nmemnos Decision & Constraint Coverage Tests")
     print(f"DB:  {ARCADEDB_URL}/{DB_NAME}")
-    print(f"API: {ENGRAM_API}")
+    print(f"API: {MEMNOS_API}")
     print(f"Namespaces under test: {list(PROJECT_NAMESPACES.keys())}")
     print("=" * 70)
 

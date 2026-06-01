@@ -4,13 +4,13 @@ tools/test_provenance.py — Integration tests for memory provenance auto-fill.
 Verifies that every memory write is stamped with the correct chain-of-custody
 fields and that those fields survive the round-trip back through search results.
 
-Requires a live engram API (uses runner fixture from conftest.py — skipped
+Requires a live memnos API (uses runner fixture from conftest.py — skipped
 automatically when the API is not reachable).
 
 Coverage:
   1. user_id auto-filled from API key
-  2. tool auto-filled from X-Engram-Tool header
-  3. agent_id auto-filled from X-Engram-Agent-Id header
+  2. tool auto-filled from X-Memnos-Tool header
+  3. agent_id auto-filled from X-Memnos-Agent-Id header
   4. git_commit auto-filled by server (env var or git CLI)
   5. caller-supplied provenance takes precedence over server defaults
   6. provenance survives round-trip through GET /memory/{id}
@@ -25,8 +25,8 @@ import uuid
 import httpx
 import pytest
 
-ENGRAM_API = os.environ.get("ENGRAM_API_URL", "http://127.0.0.1:8766")
-ENGRAM_KEY = os.environ.get("ENGRAM_API_KEY", "engram-local-dev-key")
+MEMNOS_API = os.environ.get("MEMNOS_API_URL", "http://127.0.0.1:8766")
+MEMNOS_KEY = os.environ.get("MEMNOS_API_KEY", "memnos-local-dev-key")
 TEST_NS = "test:provenance:integ"
 
 
@@ -36,7 +36,7 @@ def _uid() -> str:
 
 def _write(client: httpx.Client, content: str, ns: str, **headers) -> dict:
     r = client.post(
-        f"{ENGRAM_API}/api/v1/memory/",
+        f"{MEMNOS_API}/api/v1/memory/",
         json={"content": content, "namespace": ns, "memory_type": "fact"},
         headers=headers,
     )
@@ -45,14 +45,14 @@ def _write(client: httpx.Client, content: str, ns: str, **headers) -> dict:
 
 
 def _get(client: httpx.Client, memory_id: str, ns: str) -> dict:
-    r = client.get(f"{ENGRAM_API}/api/v1/memory/{memory_id}", params={"ns": ns})
+    r = client.get(f"{MEMNOS_API}/api/v1/memory/{memory_id}", params={"ns": ns})
     assert r.status_code == 200, f"GET failed: {r.status_code} {r.text}"
     return r.json()
 
 
 def _search(client: httpx.Client, query: str, ns: str) -> list[dict]:
     r = client.get(
-        f"{ENGRAM_API}/api/v1/memory/search",
+        f"{MEMNOS_API}/api/v1/memory/search",
         params={"q": query, "ns": ns, "top_k": 5},
     )
     assert r.status_code == 200, f"Search failed: {r.status_code} {r.text}"
@@ -60,7 +60,7 @@ def _search(client: httpx.Client, query: str, ns: str) -> list[dict]:
 
 
 def _delete(client: httpx.Client, memory_id: str, ns: str) -> None:
-    client.delete(f"{ENGRAM_API}/api/v1/memory/{memory_id}", params={"ns": ns})
+    client.delete(f"{MEMNOS_API}/api/v1/memory/{memory_id}", params={"ns": ns})
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +70,7 @@ def _delete(client: httpx.Client, memory_id: str, ns: str) -> None:
 def test_user_id_auto_filled_from_api_key(runner) -> None:
     """user_id is populated from the API key even when not supplied by caller."""
     ns = f"{TEST_NS}:{_uid()}"
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=10) as c:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=10) as c:
         mem = _write(c, "provenance user_id auto-fill test", ns)
         mid = mem["id"]
         try:
@@ -84,11 +84,11 @@ def test_user_id_auto_filled_from_api_key(runner) -> None:
 
 
 def test_tool_header_populates_provenance(runner) -> None:
-    """X-Engram-Tool header is stored in provenance.tool."""
+    """X-Memnos-Tool header is stored in provenance.tool."""
     ns = f"{TEST_NS}:{_uid()}"
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=10) as c:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=10) as c:
         mem = _write(c, "provenance tool header test", ns,
-                     **{"X-Engram-Tool": "pytest-provenance-test"})
+                     **{"X-Memnos-Tool": "pytest-provenance-test"})
         mid = mem["id"]
         try:
             full = _get(c, mid, ns)
@@ -101,12 +101,12 @@ def test_tool_header_populates_provenance(runner) -> None:
 
 
 def test_agent_id_header_populates_provenance(runner) -> None:
-    """X-Engram-Agent-Id header is stored in provenance.agent_id."""
+    """X-Memnos-Agent-Id header is stored in provenance.agent_id."""
     ns = f"{TEST_NS}:{_uid()}"
     agent_id = f"test-agent-{_uid()}"
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=10) as c:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=10) as c:
         mem = _write(c, "provenance agent_id header test", ns,
-                     **{"X-Engram-Agent-Id": agent_id})
+                     **{"X-Memnos-Agent-Id": agent_id})
         mid = mem["id"]
         try:
             full = _get(c, mid, ns)
@@ -121,7 +121,7 @@ def test_agent_id_header_populates_provenance(runner) -> None:
 def test_git_commit_auto_filled_by_server(runner) -> None:
     """git_commit is populated by the server (env var or git CLI) when not supplied."""
     ns = f"{TEST_NS}:{_uid()}"
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=10) as c:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=10) as c:
         mem = _write(c, "provenance git_commit auto-fill test", ns)
         mid = mem["id"]
         try:
@@ -140,9 +140,9 @@ def test_git_commit_auto_filled_by_server(runner) -> None:
 def test_caller_supplied_provenance_takes_precedence(runner) -> None:
     """Explicitly supplied provenance fields are not overwritten by server defaults."""
     ns = f"{TEST_NS}:{_uid()}"
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=10) as c:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=10) as c:
         r = c.post(
-            f"{ENGRAM_API}/api/v1/memory/",
+            f"{MEMNOS_API}/api/v1/memory/",
             json={
                 "content": "provenance caller override test",
                 "namespace": ns,
@@ -173,9 +173,9 @@ def test_caller_supplied_provenance_takes_precedence(runner) -> None:
 def test_provenance_survives_round_trip_via_get(runner) -> None:
     """Provenance written on POST is returned intact on GET /memory/{id}."""
     ns = f"{TEST_NS}:{_uid()}"
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=10) as c:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=10) as c:
         mem = _write(c, "provenance round-trip test", ns,
-                     **{"X-Engram-Tool": "round-trip-tool"})
+                     **{"X-Memnos-Tool": "round-trip-tool"})
         mid = mem["id"]
         try:
             full = _get(c, mid, ns)
@@ -192,8 +192,8 @@ def test_provenance_present_in_search_results(runner) -> None:
     """Provenance is included in /memory/search results, not stripped."""
     ns = f"{TEST_NS}:{_uid()}"
     marker = f"provenance-search-marker-{_uid()}"
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=10) as c:
-        mem = _write(c, marker, ns, **{"X-Engram-Tool": "search-test-tool"})
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=10) as c:
+        mem = _write(c, marker, ns, **{"X-Memnos-Tool": "search-test-tool"})
         mid = mem["id"]
         try:
             results = _search(c, marker, ns)
@@ -213,7 +213,7 @@ def test_all_provenance_fields_present_in_response(runner) -> None:
     """Every provenance field from the model is present in the API response."""
     ns = f"{TEST_NS}:{_uid()}"
     expected_fields = {"user_id", "tool", "agent_id", "git_commit", "jira_ticket", "team"}
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=10) as c:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=10) as c:
         mem = _write(c, "provenance field completeness test", ns)
         mid = mem["id"]
         try:

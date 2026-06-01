@@ -42,7 +42,7 @@ sys.path.insert(0, _REPO_ROOT + "/packages/api")
 
 class TestImmediateSubscriptionBus(unittest.TestCase):
     def setUp(self):
-        from engram.subscription_bus import ImmediateSubscriptionBus
+        from memnos.subscription_bus import ImmediateSubscriptionBus
         self.bus = ImmediateSubscriptionBus()
 
     def _event(self, namespace="ns1", mtype="fact", tags=None):
@@ -140,10 +140,10 @@ class TestImmediateSubscriptionBus(unittest.TestCase):
 
 class TestModuleLevelBus(unittest.TestCase):
     def test_register_returns_queue(self):
-        from engram import subscription_bus
+        from memnos import subscription_bus
         # Use a fresh bus to avoid state from other tests
         orig = subscription_bus._bus
-        from engram.subscription_bus import ImmediateSubscriptionBus
+        from memnos.subscription_bus import ImmediateSubscriptionBus
         subscription_bus._bus = ImmediateSubscriptionBus()
         try:
             q = subscription_bus.register("u1", "test:ns")
@@ -153,9 +153,9 @@ class TestModuleLevelBus(unittest.TestCase):
             subscription_bus._bus = orig
 
     def test_publish_delivers_via_singleton(self):
-        from engram import subscription_bus
+        from memnos import subscription_bus
         orig = subscription_bus._bus
-        from engram.subscription_bus import ImmediateSubscriptionBus
+        from memnos.subscription_bus import ImmediateSubscriptionBus
         subscription_bus._bus = ImmediateSubscriptionBus()
         try:
             q = subscription_bus.register("u1", "test:ns")
@@ -171,7 +171,7 @@ class TestModuleLevelBus(unittest.TestCase):
 
 class TestDispatchImmediate(unittest.IsolatedAsyncioTestCase):
     def _make_memory(self, mtype="fact", tags=None):
-        from engram.models import MemoryEntry, MemoryType
+        from memnos.models import MemoryEntry, MemoryType
         m = MagicMock(spec=MemoryEntry)
         m.id = "mem-1"
         m.content = "test"
@@ -183,15 +183,15 @@ class TestDispatchImmediate(unittest.IsolatedAsyncioTestCase):
         return m
 
     async def test_calls_publish_with_correct_payload(self):
-        from engram.client import EngramClient
-        from engram.subscription_bus import ImmediateSubscriptionBus
+        from memnos.client import MemnosClient
+        from memnos.subscription_bus import ImmediateSubscriptionBus
         bus = ImmediateSubscriptionBus()
         q = bus.register("sub1", "ns1")
 
-        client = EngramClient.__new__(EngramClient)
+        client = MemnosClient.__new__(MemnosClient)
         mem = self._make_memory()
 
-        with patch("engram.subscription_bus._bus", bus):
+        with patch("memnos.subscription_bus._bus", bus):
             await client._dispatch_immediate(mem, "ns1")
 
         self.assertEqual(q.qsize(), 1)
@@ -201,53 +201,53 @@ class TestDispatchImmediate(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event["memory"]["id"], "mem-1")
 
     async def test_noop_when_no_subscribers(self):
-        from engram.client import EngramClient
-        from engram.subscription_bus import ImmediateSubscriptionBus
+        from memnos.client import MemnosClient
+        from memnos.subscription_bus import ImmediateSubscriptionBus
         bus = ImmediateSubscriptionBus()
 
-        client = EngramClient.__new__(EngramClient)
+        client = MemnosClient.__new__(MemnosClient)
         mem = self._make_memory()
 
-        with patch("engram.subscription_bus._bus", bus):
+        with patch("memnos.subscription_bus._bus", bus):
             await client._dispatch_immediate(mem, "ns1")  # should not raise
 
     async def test_memory_type_in_payload(self):
-        from engram.client import EngramClient
-        from engram.models import MemoryEntry, MemoryType
-        from engram.subscription_bus import ImmediateSubscriptionBus
+        from memnos.client import MemnosClient
+        from memnos.models import MemoryEntry, MemoryType
+        from memnos.subscription_bus import ImmediateSubscriptionBus
         bus = ImmediateSubscriptionBus()
         q = bus.register("s1", "ns1")
         mem = self._make_memory()
         mem.memory_type = MemoryType.incident
 
-        client = EngramClient.__new__(EngramClient)
-        with patch("engram.subscription_bus._bus", bus):
+        client = MemnosClient.__new__(MemnosClient)
+        with patch("memnos.subscription_bus._bus", bus):
             await client._dispatch_immediate(mem, "ns1")
 
         event = q.get_nowait()
         self.assertEqual(event["memory"]["memory_type"], "incident")
 
     async def test_tags_in_payload(self):
-        from engram.client import EngramClient
-        from engram.subscription_bus import ImmediateSubscriptionBus
+        from memnos.client import MemnosClient
+        from memnos.subscription_bus import ImmediateSubscriptionBus
         bus = ImmediateSubscriptionBus()
         q = bus.register("s1", "ns1")
         mem = self._make_memory(tags=["critical", "prod"])
 
-        client = EngramClient.__new__(EngramClient)
-        with patch("engram.subscription_bus._bus", bus):
+        client = MemnosClient.__new__(MemnosClient)
+        with patch("memnos.subscription_bus._bus", bus):
             await client._dispatch_immediate(mem, "ns1")
 
         event = q.get_nowait()
         self.assertIn("critical", event["memory"]["tags"])
 
     async def test_nonfatal_when_publish_raises(self):
-        from engram.client import EngramClient
-        client = EngramClient.__new__(EngramClient)
+        from memnos.client import MemnosClient
+        client = MemnosClient.__new__(MemnosClient)
         mem = self._make_memory()
 
-        with patch("engram.client.EngramClient._dispatch_immediate", wraps=client._dispatch_immediate):
-            with patch("engram.subscription_bus.publish", side_effect=RuntimeError("boom")):
+        with patch("memnos.client.MemnosClient._dispatch_immediate", wraps=client._dispatch_immediate):
+            with patch("memnos.subscription_bus.publish", side_effect=RuntimeError("boom")):
                 await client._dispatch_immediate(mem, "ns1")  # no raise
 
 
@@ -269,7 +269,7 @@ class TestStreamNamespace(unittest.IsolatedAsyncioTestCase):
         return c
 
     async def test_returns_501_when_sse_starlette_missing(self):
-        from engram_api.routers.subscriptions import stream_namespace
+        from memnos_api.routers.subscriptions import stream_namespace
         client = self._make_client()
 
         with patch.dict("sys.modules", {"sse_starlette": None, "sse_starlette.sse": None}):
@@ -283,8 +283,8 @@ class TestStreamNamespace(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status_code, 501)
 
     async def test_connected_event_first_in_stream(self):
-        from engram_api.routers.subscriptions import stream_namespace
-        from engram.subscription_bus import ImmediateSubscriptionBus
+        from memnos_api.routers.subscriptions import stream_namespace
+        from memnos.subscription_bus import ImmediateSubscriptionBus
 
         bus = ImmediateSubscriptionBus()
         events_yielded = []
@@ -299,7 +299,7 @@ class TestStreamNamespace(unittest.IsolatedAsyncioTestCase):
                     if len(events_yielded) >= 1:
                         break
 
-        with patch("engram.subscription_bus._bus", bus):
+        with patch("memnos.subscription_bus._bus", bus):
             with patch("sse_starlette.sse.EventSourceResponse", FakeEventSourceResponse):
                 resp = await stream_namespace(
                     ns="ns1", subscriber_id="sub1",
@@ -311,8 +311,8 @@ class TestStreamNamespace(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events_yielded[0]["event"], "connected")
 
     async def test_registers_and_unregisters_queue(self):
-        from engram_api.routers.subscriptions import stream_namespace
-        from engram.subscription_bus import ImmediateSubscriptionBus
+        from memnos_api.routers.subscriptions import stream_namespace
+        from memnos.subscription_bus import ImmediateSubscriptionBus
 
         bus = ImmediateSubscriptionBus()
 
@@ -326,7 +326,7 @@ class TestStreamNamespace(unittest.IsolatedAsyncioTestCase):
                 # Explicitly close the async generator so its finally block runs
                 await self._gen.aclose()
 
-        with patch("engram.subscription_bus._bus", bus):
+        with patch("memnos.subscription_bus._bus", bus):
             with patch("sse_starlette.sse.EventSourceResponse", StopAfterConnected):
                 resp = await stream_namespace(
                     ns="ns1", subscriber_id="sub1",
@@ -338,8 +338,8 @@ class TestStreamNamespace(unittest.IsolatedAsyncioTestCase):
 
     async def test_delivers_memory_event_from_queue(self):
         import json
-        from engram_api.routers.subscriptions import stream_namespace
-        from engram.subscription_bus import ImmediateSubscriptionBus
+        from memnos_api.routers.subscriptions import stream_namespace
+        from memnos.subscription_bus import ImmediateSubscriptionBus
 
         bus = ImmediateSubscriptionBus()
         events_yielded = []
@@ -354,7 +354,7 @@ class TestStreamNamespace(unittest.IsolatedAsyncioTestCase):
                     if len(events_yielded) >= n:
                         break
 
-        with patch("engram.subscription_bus._bus", bus):
+        with patch("memnos.subscription_bus._bus", bus):
             with patch("sse_starlette.sse.EventSourceResponse", Collector):
                 resp = await stream_namespace(
                     ns="ns1", subscriber_id="sub1",
@@ -374,8 +374,8 @@ class TestStreamNamespace(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["memory"]["id"], "m1")
 
     async def test_filter_types_loaded_from_subscription_record(self):
-        from engram_api.routers.subscriptions import stream_namespace
-        from engram.subscription_bus import ImmediateSubscriptionBus
+        from memnos_api.routers.subscriptions import stream_namespace
+        from memnos.subscription_bus import ImmediateSubscriptionBus
         import json
 
         bus = ImmediateSubscriptionBus()
@@ -396,7 +396,7 @@ class TestStreamNamespace(unittest.IsolatedAsyncioTestCase):
                     if len(events_yielded) >= n:
                         break
 
-        with patch("engram.subscription_bus._bus", bus):
+        with patch("memnos.subscription_bus._bus", bus):
             with patch("sse_starlette.sse.EventSourceResponse", Collector):
                 resp = await stream_namespace(
                     ns="ns1", subscriber_id="sub1",

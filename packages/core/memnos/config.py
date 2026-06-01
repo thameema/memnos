@@ -1,0 +1,377 @@
+"""
+memnos.config — Configuration loading via YAML + env-var expansion.
+
+Load order:
+  1. Read memnos.yaml (or the path passed to MemnosConfig.from_yaml)
+  2. Expand ${VAR} and ${VAR:-default} references against os.environ
+  3. Construct Pydantic models — extra env overrides via MEMNOS__ prefix are NOT
+     applied here (keep it simple; use ${VAR} in the YAML instead).
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import logging
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
+
+_ENV_RE = re.compile(r"\$\{([^}]+)\}")
+
+
+def _expand_env(value: Any) -> Any:
+    """Recursively expand ${VAR} and ${VAR:-default} references in strings."""
+    if isinstance(value, str):
+        def _replace(m: re.Match) -> str:
+            expr = m.group(1)
+            if ":-" in expr:
+                var, default = expr.split(":-", 1)
+            else:
+                var, default = expr, ""
+            result = os.environ.get(var.strip(), default)
+            if not result and not default:
+                logger.warning("Environment variable %r referenced in config but not set", var.strip())
+            return result
+        return _ENV_RE.sub(_replace, value)
+    if isinstance(value, dict):
+        return {k: _expand_env(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand_env(item) for item in value]
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Sub-configs
+# ---------------------------------------------------------------------------
+
+class ServerConfig(BaseModel):
+    host: str = "0.0.0.0"
+    mcp_port: int = 8765
+    api_port: int = 8766
+    log_level: str = "INFO"
+
+
+class ArcadeDBConfig(BaseModel):
+    host: str = "localhost"
+    port: int = 2480
+    database: str = "memnos"
+    username: str = "root"
+    password: str = "memnos"
+
+
+class EmbeddingsConfig(BaseModel):
+    provider: str = "openai"                          # "openai" | "voyage" | "local"
+    model: str = "text-embedding-3-small"             # 1536-dim; no local packages needed
+    api_key: str = ""                                 # optional — SDK reads *_API_KEY from env
+    base_url: str = ""                                # override for OpenAI-compatible endpoints
+    dimensions: int = 0                               # 0 = model default (text-embedding-3-* only)
+
+
+class ApiRuntimeConfig(BaseModel):
+    provider: str = "anthropic"
+    model: str = "claude-sonnet-4-6"
+    api_key: str = ""
+
+
+class OpenRouterConfig(BaseModel):
+    model: str = "anthropic/claude-sonnet-4-6"
+    api_key: str = ""
+
+
+class RuntimeConfig(BaseModel):
+    default: str = "api"  # "api" | "claude-code" | "openrouter"
+    max_concurrent_workers: int = 5
+    worker_timeout_s: int = 300
+    api: ApiRuntimeConfig = Field(default_factory=ApiRuntimeConfig)
+    openrouter: OpenRouterConfig = Field(default_factory=OpenRouterConfig)
+
+
+class NamespaceDefinition(BaseModel):
+    owners: list[str] = Field(default_factory=list)
+    readers: list[str] = Field(default_factory=list)
+    writers: list[str] = Field(default_factory=list)
+
+
+class NamespaceConfig(BaseModel):
+    default: str = "personal:default"
+    definitions: dict[str, NamespaceDefinition] = Field(default_factory=dict)
+
+    @classmethod
+    def _parse_definitions(cls, raw: dict) -> dict[str, NamespaceDefinition]:
+        result: dict[str, NamespaceDefinition] = {}
+        for name, defn in raw.items():
+            if isinstance(defn, dict):
+                result[name] = NamespaceDefinition(**defn)
+            else:
+                result[name] = NamespaceDefinition()
+        return result
+
+
+class NamespaceAccess(BaseModel):
+    """Per-namespace access level for an API key."""
+    namespace: str
+    access: str = "read_write"   # "read_only" | "read_write"
+
+
+class VaultNamespaceAccess(BaseModel):
+    """Per-namespace vault permission for an API key."""
+    namespace: str
+    access: str = "vault_read"   # "vault_read" | "vault_write" | "vault_admin"
+
+
+class ApiKeyEntry(BaseModel):
+    key: str
+    user_id: str = "default"
+    # Simple list of namespace patterns ("*" = all) retained for backward
+    # compatibility; use namespace_access for fine-grained ACL.
+    namespaces: list[str] = Field(default_factory=lambda: ["*"])
+    namespace_access: list[NamespaceAccess] = Field(default_factory=list)
+    # Vault-specific ACL — independent of memory namespace access.
+    # Keys with "*" in namespaces automatically get vault_admin everywhere.
+    vault_namespaces: list[VaultNamespaceAccess] = Field(default_factory=list)
+    # Top-level shorthand: when True the key may only perform read operations.
+    # Takes precedence over namespace_access for write/delete operations.
+    read_only: bool = False
+
+
+class AuthConfig(BaseModel):
+    api_keys: list[ApiKeyEntry] = Field(default_factory=list)
+    # open_mode: bypass all auth — safe for local single-user installs only.
+    # Never enable this when the API is exposed to a network.
+    open_mode: bool = False
+
+
+class VaultKMSConfig(BaseModel):
+    """KMS provider for the vault Key Encryption Key (KEK)."""
+    provider: str = "local"      # "local" | "azure_keyvault" | "aws_kms"
+    key_url: str = ""            # Azure Key Vault key URL or AWS KMS key ARN
+
+
+class VaultConfig(BaseModel):
+    """Secrets vault configuration."""
+    enabled: bool = True
+    kms: VaultKMSConfig = Field(default_factory=VaultKMSConfig)
+    # Base64-encoded 32-byte key for local mode (dev).  In production use kms.
+    # Can also be set via MEMNOS_VAULT_KEY env var.
+    fallback_key: str = ""
+    audit_log: bool = True
+    # Scan every memory_write for credential patterns and redact them.
+    detect_in_memory: bool = True
+
+
+class LLMExtractionConfig(BaseModel):
+    """Config for the async LLM-enriched relationship extraction job (3.3)."""
+    enabled: bool = False              # opt-in — each write triggers one LLM call
+    provider: str = "anthropic"        # "anthropic" | "openai"
+    model: str = ""                    # "" = auto (haiku for anthropic, gpt-4o-mini for openai)
+    api_key: str = ""                  # overrides env var when set
+    base_url: str = ""                 # OpenAI-compatible endpoint override
+    max_tokens: int = 512
+    confidence_threshold: float = 0.6  # discard edges below this score
+
+
+class EpisodicConfig(BaseModel):
+    enabled: bool = True
+    retention_days: int = 365
+
+
+class ReflectionConfig(BaseModel):
+    enabled: bool = True
+    schedule: str = "0 2 * * *"
+    trigger_on_correction: bool = True
+    min_episodes_per_run: int = 5
+    lookback_days: int = 7
+    model: str = "claude-haiku-4-5-20251001"
+
+
+class SkillExtractionConfig(BaseModel):
+    enabled: bool = True
+    quality_threshold: float = 0.8
+    similarity_threshold: float = 0.92
+
+
+class HeuristicDecayConfig(BaseModel):
+    enabled: bool = True
+    schedule: str = "0 3 * * 0"
+    inactive_days_before_decay: int = 30
+    decay_rate: float = 0.9
+
+
+class QualityRoutingConfig(BaseModel):
+    enabled: bool = True
+    min_samples: int = 10
+    quality_threshold: float = 0.6
+
+
+class LearningConfig(BaseModel):
+    enabled: bool = True
+    episodic: EpisodicConfig = Field(default_factory=EpisodicConfig)
+    reflection: ReflectionConfig = Field(default_factory=ReflectionConfig)
+    skill_extraction: SkillExtractionConfig = Field(default_factory=SkillExtractionConfig)
+    heuristic_decay: HeuristicDecayConfig = Field(default_factory=HeuristicDecayConfig)
+    quality_routing: QualityRoutingConfig = Field(default_factory=QualityRoutingConfig)
+
+
+# ---------------------------------------------------------------------------
+# Gateway config
+# ---------------------------------------------------------------------------
+
+class TelegramConfig(BaseModel):
+    enabled: bool = False
+    bot_token: str = ""
+    allowed_users: list[int] = Field(default_factory=list)
+    default_namespace: str = "personal:default"
+
+
+class WhatsAppConfig(BaseModel):
+    enabled: bool = False
+    evolution_api_url: str = "http://localhost:8080"
+    evolution_api_key: str = ""
+    default_namespace: str = "personal:default"
+    allowed_phones: list[str] = Field(default_factory=list)
+
+
+class GatewayConfig(BaseModel):
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
+
+
+# ---------------------------------------------------------------------------
+# Top-level config
+# ---------------------------------------------------------------------------
+
+class MemnosConfig(BaseModel):
+    server: ServerConfig = Field(default_factory=ServerConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
+    arcadedb: ArcadeDBConfig = Field(default_factory=ArcadeDBConfig)
+    embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    namespaces: NamespaceConfig = Field(default_factory=NamespaceConfig)
+    learning: LearningConfig = Field(default_factory=LearningConfig)
+    vault: VaultConfig = Field(default_factory=VaultConfig)
+    gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    llm_extraction: LLMExtractionConfig = Field(default_factory=LLMExtractionConfig)
+
+    # ---------------------------------------------------------------------------
+    # Factory
+    # ---------------------------------------------------------------------------
+
+    @classmethod
+    def from_yaml(cls, path: str | Path = "memnos.yaml") -> "MemnosConfig":
+        """Load configuration from a YAML file with ${VAR} env-var expansion."""
+        config_path = Path(path)
+        if not config_path.exists():
+            logger.warning(
+                "Config file %s not found — using defaults. "
+                "Copy memnos.yaml.example to memnos.yaml to customise.",
+                config_path,
+            )
+            return cls()
+
+        with config_path.open("r", encoding="utf-8") as fh:
+            raw: dict = yaml.safe_load(fh) or {}
+
+        raw = _expand_env(raw)
+
+        kwargs: dict[str, Any] = {}
+
+        if "server" in raw:
+            kwargs["server"] = ServerConfig(**raw["server"])
+
+        if "auth" in raw:
+            auth_raw = dict(raw["auth"])
+            keys_raw = auth_raw.pop("api_keys", [])
+            parsed_keys = []
+            for k in keys_raw:
+                if isinstance(k, dict):
+                    k = dict(k)
+                    na_raw = k.pop("namespace_access", [])
+                    vna_raw = k.pop("vault_namespaces", [])
+                    entry = ApiKeyEntry(**k)
+                    entry.namespace_access = [
+                        NamespaceAccess(**na) if isinstance(na, dict) else na
+                        for na in na_raw
+                    ]
+                    entry.vault_namespaces = [
+                        VaultNamespaceAccess(**vna) if isinstance(vna, dict) else vna
+                        for vna in vna_raw
+                    ]
+                    parsed_keys.append(entry)
+                else:
+                    parsed_keys.append(ApiKeyEntry(key=k))
+            kwargs["auth"] = AuthConfig(
+                api_keys=parsed_keys,
+                open_mode=bool(auth_raw.get("open_mode", False)),
+            )
+
+        if "arcadedb" in raw:
+            kwargs["arcadedb"] = ArcadeDBConfig(**raw["arcadedb"])
+
+        if "embeddings" in raw:
+            kwargs["embeddings"] = EmbeddingsConfig(**raw["embeddings"])
+
+        if "runtime" in raw:
+            rt = dict(raw["runtime"])
+            api_raw = rt.pop("api", {})
+            or_raw = rt.pop("openrouter", {})
+            kwargs["runtime"] = RuntimeConfig(
+                **rt,
+                api=ApiRuntimeConfig(**api_raw) if api_raw else ApiRuntimeConfig(),
+                openrouter=OpenRouterConfig(**or_raw) if or_raw else OpenRouterConfig(),
+            )
+
+        if "namespaces" in raw:
+            ns_raw = dict(raw["namespaces"])
+            defs_raw = ns_raw.pop("definitions", {})
+            parsed_defs = NamespaceConfig._parse_definitions(defs_raw)
+            kwargs["namespaces"] = NamespaceConfig(definitions=parsed_defs, **ns_raw)
+
+        if "learning" in raw:
+            lr = dict(raw["learning"])
+            episodic_raw = lr.pop("episodic", {})
+            reflection_raw = lr.pop("reflection", {})
+            skill_raw = lr.pop("skill_extraction", {})
+            decay_raw = lr.pop("heuristic_decay", {})
+            routing_raw = lr.pop("quality_routing", {})
+            lr.pop("feedback", None)
+            kwargs["learning"] = LearningConfig(
+                **lr,
+                episodic=EpisodicConfig(**episodic_raw) if episodic_raw else EpisodicConfig(),
+                reflection=ReflectionConfig(**reflection_raw) if reflection_raw else ReflectionConfig(),
+                skill_extraction=SkillExtractionConfig(**skill_raw) if skill_raw else SkillExtractionConfig(),
+                heuristic_decay=HeuristicDecayConfig(**decay_raw) if decay_raw else HeuristicDecayConfig(),
+                quality_routing=QualityRoutingConfig(**routing_raw) if routing_raw else QualityRoutingConfig(),
+            )
+
+        if "vault" in raw:
+            v = dict(raw["vault"])
+            kms_raw = v.pop("kms", {})
+            kwargs["vault"] = VaultConfig(
+                kms=VaultKMSConfig(**kms_raw) if kms_raw else VaultKMSConfig(),
+                **v,
+            )
+
+        if "gateway" in raw:
+            gw = dict(raw["gateway"])
+            tg_raw = gw.pop("telegram", {})
+            wa_raw = gw.pop("whatsapp", {})
+            # allowed_users may come as list of strings from YAML env-expansion
+            if tg_raw and "allowed_users" in tg_raw:
+                tg_raw["allowed_users"] = [
+                    int(u) for u in (tg_raw["allowed_users"] or []) if str(u).strip()
+                ]
+            kwargs["gateway"] = GatewayConfig(
+                telegram=TelegramConfig(**tg_raw) if tg_raw else TelegramConfig(),
+                whatsapp=WhatsAppConfig(**wa_raw) if wa_raw else WhatsAppConfig(),
+            )
+
+        if "llm_extraction" in raw:
+            kwargs["llm_extraction"] = LLMExtractionConfig(**raw["llm_extraction"])
+
+        logger.debug("Loaded memnos config from %s", config_path)
+        return cls(**kwargs)

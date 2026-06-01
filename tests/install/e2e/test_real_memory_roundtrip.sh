@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # E2E: write a memory via POST, then find it via the search endpoint.
-# Proves that local embeddings work end-to-end (engram image was built with
-# ENGRAM_EMBED_MODE=local, sentence-transformers installed, and search indexes).
+# Proves that local embeddings work end-to-end (memnos image was built with
+# MEMNOS_EMBED_MODE=local, sentence-transformers installed, and search indexes).
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT}/lib/assert.sh"
@@ -17,7 +17,7 @@ fi
 
 KEY="$(e2e_key)"
 NS="e2e-test-$(date +%s%N)"
-CONTENT="E2E test marker: the quick brown engram jumps over the lazy database. $(date +%s%N)"
+CONTENT="E2E test marker: the quick brown memnos jumps over the lazy database. $(date +%s%N)"
 
 # Write
 WRITE=$(curl -s -X POST "${E2E_API}/api/v1/memory/" \
@@ -33,7 +33,7 @@ sleep 2
 
 # Search by semantically-close query
 SEARCH=$(curl -s -G "${E2E_API}/api/v1/memory/search" \
-  --data-urlencode "q=quick brown engram lazy database" \
+  --data-urlencode "q=quick brown memnos lazy database" \
   --data-urlencode "ns=${NS}" \
   --data-urlencode "top_k=3" \
   -H "Authorization: Bearer ${KEY}")

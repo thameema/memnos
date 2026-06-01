@@ -1,5 +1,5 @@
 """
-test_learning.py — Comprehensive tests for engram's self-learning subsystem.
+test_learning.py — Comprehensive tests for memnos's self-learning subsystem.
 
 Tests cover all five mechanisms:
   1. Episodic memory store (save / retrieve / query)
@@ -17,8 +17,8 @@ Reflection/extraction tests mock the Anthropic API.
 
 Usage
 -----
-cd /path/to/engram
-ENGRAM_CONFIG=engram.yaml .venv/bin/python -m pytest tools/test_learning.py -v
+cd /path/to/memnos
+MEMNOS_CONFIG=memnos.yaml .venv/bin/python -m pytest tools/test_learning.py -v
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def tmp_db(tmp_path):
 
 
 def _episode(namespace="personal:test", outcome="SUCCESS", quality=None, tags=None, agent=None):
-    from engram_learning.models import EpisodicRecord, Outcome
+    from memnos_learning.models import EpisodicRecord, Outcome
     return EpisodicRecord(
         task_id="task-" + datetime.now().strftime("%f"),
         namespace=namespace,
@@ -72,7 +72,7 @@ def _episode(namespace="personal:test", outcome="SUCCESS", quality=None, tags=No
 
 
 def _heuristic(namespace="personal:test", rule="Always cite sources", confidence=0.8):
-    from engram_learning.models import Heuristic
+    from memnos_learning.models import Heuristic
     return Heuristic(
         namespace=namespace,
         rule=rule,
@@ -89,7 +89,7 @@ def _heuristic(namespace="personal:test", rule="Always cite sources", confidence
 class TestEpisodeStore:
     @pytest.mark.asyncio
     async def test_save_and_get(self, tmp_db):
-        from engram_learning.episode_store import EpisodeStore
+        from memnos_learning.episode_store import EpisodeStore
 
         store = EpisodeStore(db_path=tmp_db)
         await store.init()
@@ -104,7 +104,7 @@ class TestEpisodeStore:
 
     @pytest.mark.asyncio
     async def test_get_by_task_id(self, tmp_db):
-        from engram_learning.episode_store import EpisodeStore
+        from memnos_learning.episode_store import EpisodeStore
 
         store = EpisodeStore(db_path=tmp_db)
         await store.init()
@@ -117,7 +117,7 @@ class TestEpisodeStore:
 
     @pytest.mark.asyncio
     async def test_get_recent_filters_by_namespace(self, tmp_db):
-        from engram_learning.episode_store import EpisodeStore
+        from memnos_learning.episode_store import EpisodeStore
 
         store = EpisodeStore(db_path=tmp_db)
         await store.init()
@@ -132,8 +132,8 @@ class TestEpisodeStore:
 
     @pytest.mark.asyncio
     async def test_update_outcome(self, tmp_db):
-        from engram_learning.episode_store import EpisodeStore
-        from engram_learning.models import Outcome
+        from memnos_learning.episode_store import EpisodeStore
+        from memnos_learning.models import Outcome
 
         store = EpisodeStore(db_path=tmp_db)
         await store.init()
@@ -148,7 +148,7 @@ class TestEpisodeStore:
 
     @pytest.mark.asyncio
     async def test_get_active_namespaces(self, tmp_db):
-        from engram_learning.episode_store import EpisodeStore
+        from memnos_learning.episode_store import EpisodeStore
 
         store = EpisodeStore(db_path=tmp_db)
         await store.init()
@@ -162,7 +162,7 @@ class TestEpisodeStore:
 
     @pytest.mark.asyncio
     async def test_get_active_namespaces_empty(self, tmp_db):
-        from engram_learning.episode_store import EpisodeStore
+        from memnos_learning.episode_store import EpisodeStore
 
         store = EpisodeStore(db_path=tmp_db)
         await store.init()
@@ -178,7 +178,7 @@ class TestEpisodeStore:
 class TestHeuristicStore:
     @pytest.mark.asyncio
     async def test_add_and_get_all(self, tmp_db):
-        from engram_learning.heuristic_store import HeuristicStore
+        from memnos_learning.heuristic_store import HeuristicStore
 
         store = HeuristicStore(db_path=tmp_db)
         await store.init()
@@ -191,8 +191,8 @@ class TestHeuristicStore:
 
     @pytest.mark.asyncio
     async def test_search_by_tags(self, tmp_db):
-        from engram_learning.heuristic_store import HeuristicStore
-        from engram_learning.models import Heuristic
+        from memnos_learning.heuristic_store import HeuristicStore
+        from memnos_learning.models import Heuristic
 
         store = HeuristicStore(db_path=tmp_db)
         await store.init()
@@ -211,7 +211,7 @@ class TestHeuristicStore:
 
     @pytest.mark.asyncio
     async def test_update_confidence(self, tmp_db):
-        from engram_learning.heuristic_store import HeuristicStore
+        from memnos_learning.heuristic_store import HeuristicStore
 
         store = HeuristicStore(db_path=tmp_db)
         await store.init()
@@ -224,7 +224,7 @@ class TestHeuristicStore:
 
     @pytest.mark.asyncio
     async def test_confidence_clamped_to_one(self, tmp_db):
-        from engram_learning.heuristic_store import HeuristicStore
+        from memnos_learning.heuristic_store import HeuristicStore
 
         store = HeuristicStore(db_path=tmp_db)
         await store.init()
@@ -237,7 +237,7 @@ class TestHeuristicStore:
 
     @pytest.mark.asyncio
     async def test_delete(self, tmp_db):
-        from engram_learning.heuristic_store import HeuristicStore
+        from memnos_learning.heuristic_store import HeuristicStore
 
         store = HeuristicStore(db_path=tmp_db)
         await store.init()
@@ -250,7 +250,7 @@ class TestHeuristicStore:
 
     @pytest.mark.asyncio
     async def test_namespace_isolation(self, tmp_db):
-        from engram_learning.heuristic_store import HeuristicStore
+        from memnos_learning.heuristic_store import HeuristicStore
 
         store = HeuristicStore(db_path=tmp_db)
         await store.init()
@@ -270,8 +270,8 @@ class TestHeuristicStore:
 class TestSkillStore:
     @pytest.mark.asyncio
     async def test_add_and_get_all(self, tmp_db):
-        from engram_learning.skill_store import SkillStore
-        from engram_learning.models import SkillTemplate
+        from memnos_learning.skill_store import SkillStore
+        from memnos_learning.models import SkillTemplate
 
         store = SkillStore(db_path=tmp_db)
         await store.init()
@@ -290,8 +290,8 @@ class TestSkillStore:
 
     @pytest.mark.asyncio
     async def test_find_match_above_threshold(self, tmp_db):
-        from engram_learning.skill_store import SkillStore
-        from engram_learning.models import SkillTemplate
+        from memnos_learning.skill_store import SkillStore
+        from memnos_learning.models import SkillTemplate
 
         store = SkillStore(db_path=tmp_db)
         await store.init()
@@ -311,8 +311,8 @@ class TestSkillStore:
 
     @pytest.mark.asyncio
     async def test_find_match_below_threshold(self, tmp_db):
-        from engram_learning.skill_store import SkillStore
-        from engram_learning.models import SkillTemplate
+        from memnos_learning.skill_store import SkillStore
+        from memnos_learning.models import SkillTemplate
 
         store = SkillStore(db_path=tmp_db)
         await store.init()
@@ -330,8 +330,8 @@ class TestSkillStore:
 
     @pytest.mark.asyncio
     async def test_increment_use_updates_count(self, tmp_db):
-        from engram_learning.skill_store import SkillStore
-        from engram_learning.models import SkillTemplate
+        from memnos_learning.skill_store import SkillStore
+        from memnos_learning.models import SkillTemplate
 
         store = SkillStore(db_path=tmp_db)
         await store.init()
@@ -361,9 +361,9 @@ class TestReflectionService:
     @pytest.mark.asyncio
     async def test_reflection_skipped_with_few_failures(self, tmp_db):
         """Reflection should not run when fewer than 2 failure/correction episodes."""
-        from engram_learning.episode_store import EpisodeStore
-        from engram_learning.heuristic_store import HeuristicStore
-        from engram_learning.reflection import ReflectionService
+        from memnos_learning.episode_store import EpisodeStore
+        from memnos_learning.heuristic_store import HeuristicStore
+        from memnos_learning.reflection import ReflectionService
 
         ep_store = EpisodeStore(db_path=tmp_db)
         await ep_store.init()
@@ -379,10 +379,10 @@ class TestReflectionService:
 
     @pytest.mark.asyncio
     async def test_reflection_adds_new_heuristics(self, tmp_db):
-        from engram_learning.episode_store import EpisodeStore
-        from engram_learning.heuristic_store import HeuristicStore
-        from engram_learning.models import Outcome
-        from engram_learning.reflection import ReflectionService
+        from memnos_learning.episode_store import EpisodeStore
+        from memnos_learning.heuristic_store import HeuristicStore
+        from memnos_learning.models import Outcome
+        from memnos_learning.reflection import ReflectionService
 
         ep_store = EpisodeStore(db_path=tmp_db)
         await ep_store.init()
@@ -412,10 +412,10 @@ class TestReflectionService:
 
     @pytest.mark.asyncio
     async def test_reflection_syncs_to_arcadedb(self, tmp_db):
-        """Reflection should write new heuristics to ArcadeDB when engram_client is provided."""
-        from engram_learning.episode_store import EpisodeStore
-        from engram_learning.heuristic_store import HeuristicStore
-        from engram_learning.reflection import ReflectionService
+        """Reflection should write new heuristics to ArcadeDB when memnos_client is provided."""
+        from memnos_learning.episode_store import EpisodeStore
+        from memnos_learning.heuristic_store import HeuristicStore
+        from memnos_learning.reflection import ReflectionService
 
         ep_store = EpisodeStore(db_path=tmp_db)
         await ep_store.init()
@@ -429,7 +429,7 @@ class TestReflectionService:
         )
         mock_client = AsyncMock()
 
-        svc = ReflectionService("key", "model", ep_store, h_store, "personal:test", engram_client=mock_client)
+        svc = ReflectionService("key", "model", ep_store, h_store, "personal:test", memnos_client=mock_client)
         with patch.object(svc._client.messages, "create", new_callable=AsyncMock, return_value=mock_response):
             await svc.run(lookback_days=7)
 
@@ -440,9 +440,9 @@ class TestReflectionService:
 
     @pytest.mark.asyncio
     async def test_reflection_updates_confidence(self, tmp_db):
-        from engram_learning.episode_store import EpisodeStore
-        from engram_learning.heuristic_store import HeuristicStore
-        from engram_learning.reflection import ReflectionService
+        from memnos_learning.episode_store import EpisodeStore
+        from memnos_learning.heuristic_store import HeuristicStore
+        from memnos_learning.reflection import ReflectionService
 
         ep_store = EpisodeStore(db_path=tmp_db)
         await ep_store.init()
@@ -467,9 +467,9 @@ class TestReflectionService:
     @pytest.mark.asyncio
     async def test_reflection_handles_invalid_llm_json(self, tmp_db):
         """Should not crash when LLM returns invalid JSON."""
-        from engram_learning.episode_store import EpisodeStore
-        from engram_learning.heuristic_store import HeuristicStore
-        from engram_learning.reflection import ReflectionService
+        from memnos_learning.episode_store import EpisodeStore
+        from memnos_learning.heuristic_store import HeuristicStore
+        from memnos_learning.reflection import ReflectionService
 
         ep_store = EpisodeStore(db_path=tmp_db)
         await ep_store.init()
@@ -493,8 +493,8 @@ class TestReflectionService:
 class TestSkillExtractor:
     @pytest.mark.asyncio
     async def test_extraction_skipped_for_low_quality(self, tmp_db):
-        from engram_learning.extractor import SkillExtractor
-        from engram_learning.skill_store import SkillStore
+        from memnos_learning.extractor import SkillExtractor
+        from memnos_learning.skill_store import SkillStore
 
         skill_store = SkillStore(db_path=tmp_db)
         await skill_store.init()
@@ -507,8 +507,8 @@ class TestSkillExtractor:
 
     @pytest.mark.asyncio
     async def test_extraction_skipped_for_failures(self, tmp_db):
-        from engram_learning.extractor import SkillExtractor
-        from engram_learning.skill_store import SkillStore
+        from memnos_learning.extractor import SkillExtractor
+        from memnos_learning.skill_store import SkillStore
 
         skill_store = SkillStore(db_path=tmp_db)
         await skill_store.init()
@@ -521,8 +521,8 @@ class TestSkillExtractor:
 
     @pytest.mark.asyncio
     async def test_extraction_saves_template(self, tmp_db):
-        from engram_learning.extractor import SkillExtractor
-        from engram_learning.skill_store import SkillStore
+        from memnos_learning.extractor import SkillExtractor
+        from memnos_learning.skill_store import SkillStore
 
         skill_store = SkillStore(db_path=tmp_db)
         await skill_store.init()
@@ -547,13 +547,13 @@ class TestSkillExtractor:
 
     @pytest.mark.asyncio
     async def test_extraction_syncs_to_arcadedb(self, tmp_db):
-        from engram_learning.extractor import SkillExtractor
-        from engram_learning.skill_store import SkillStore
+        from memnos_learning.extractor import SkillExtractor
+        from memnos_learning.skill_store import SkillStore
 
         skill_store = SkillStore(db_path=tmp_db)
         await skill_store.init()
         mock_client = AsyncMock()
-        extractor = SkillExtractor("key", "model", skill_store, engram_client=mock_client)
+        extractor = SkillExtractor("key", "model", skill_store, memnos_client=mock_client)
 
         ep = _episode(quality=0.9, outcome="SUCCESS")
         mock_resp_data = {
@@ -576,9 +576,9 @@ class TestSkillExtractor:
     @pytest.mark.asyncio
     async def test_extraction_reuses_existing_template(self, tmp_db):
         """When a matching template already exists, should increment use count, not create new."""
-        from engram_learning.extractor import SkillExtractor
-        from engram_learning.skill_store import SkillStore
-        from engram_learning.models import SkillTemplate
+        from memnos_learning.extractor import SkillExtractor
+        from memnos_learning.skill_store import SkillStore
+        from memnos_learning.models import SkillTemplate
 
         skill_store = SkillStore(db_path=tmp_db)
         await skill_store.init()
@@ -612,7 +612,7 @@ class TestSkillExtractor:
 class TestQualityStore:
     @pytest.mark.asyncio
     async def test_update_and_retrieve(self, tmp_db):
-        from engram_learning.quality_store import QualityStore
+        from memnos_learning.quality_store import QualityStore
 
         store = QualityStore(db_path=tmp_db)
         await store.init()
@@ -625,7 +625,7 @@ class TestQualityStore:
 
     @pytest.mark.asyncio
     async def test_running_average(self, tmp_db):
-        from engram_learning.quality_store import QualityStore
+        from memnos_learning.quality_store import QualityStore
 
         store = QualityStore(db_path=tmp_db)
         await store.init()
@@ -638,7 +638,7 @@ class TestQualityStore:
 
     @pytest.mark.asyncio
     async def test_get_best_agent_insufficient_samples(self, tmp_db):
-        from engram_learning.quality_store import QualityStore
+        from memnos_learning.quality_store import QualityStore
 
         store = QualityStore(db_path=tmp_db)
         await store.init()
@@ -650,7 +650,7 @@ class TestQualityStore:
 
     @pytest.mark.asyncio
     async def test_get_best_agent_picks_highest_quality(self, tmp_db):
-        from engram_learning.quality_store import QualityStore
+        from memnos_learning.quality_store import QualityStore
 
         store = QualityStore(db_path=tmp_db)
         await store.init()
@@ -664,7 +664,7 @@ class TestQualityStore:
 
     @pytest.mark.asyncio
     async def test_failure_rate_penalises_agent(self, tmp_db):
-        from engram_learning.quality_store import QualityStore
+        from memnos_learning.quality_store import QualityStore
 
         store = QualityStore(db_path=tmp_db)
         await store.init()
@@ -682,7 +682,7 @@ class TestQualityStore:
 
 class TestFeedbackDetection:
     def test_detects_explicit_correction(self):
-        from engram_learning.feedback import detect_correction
+        from memnos_learning.feedback import detect_correction
 
         corrections = [
             "No, that's wrong",
@@ -695,7 +695,7 @@ class TestFeedbackDetection:
             assert detect_correction(text), f"Expected correction: {text!r}"
 
     def test_does_not_flag_normal_messages(self):
-        from engram_learning.feedback import detect_correction
+        from memnos_learning.feedback import detect_correction
 
         normal = [
             "Thanks, that was helpful",
@@ -708,10 +708,10 @@ class TestFeedbackDetection:
 
     @pytest.mark.asyncio
     async def test_record_correction_marks_episode_corrected(self, tmp_db):
-        from engram_learning.feedback import FeedbackService
-        from engram_learning.episode_store import EpisodeStore
-        from engram_learning.quality_store import QualityStore
-        from engram_learning.models import Outcome
+        from memnos_learning.feedback import FeedbackService
+        from memnos_learning.episode_store import EpisodeStore
+        from memnos_learning.quality_store import QualityStore
+        from memnos_learning.models import Outcome
 
         ep_store = EpisodeStore(db_path=tmp_db)
         await ep_store.init()
@@ -729,10 +729,10 @@ class TestFeedbackDetection:
 
     @pytest.mark.asyncio
     async def test_record_explicit_positive_feedback(self, tmp_db):
-        from engram_learning.feedback import FeedbackService
-        from engram_learning.episode_store import EpisodeStore
-        from engram_learning.quality_store import QualityStore
-        from engram_learning.models import Outcome
+        from memnos_learning.feedback import FeedbackService
+        from memnos_learning.episode_store import EpisodeStore
+        from memnos_learning.quality_store import QualityStore
+        from memnos_learning.models import Outcome
 
         ep_store = EpisodeStore(db_path=tmp_db)
         await ep_store.init()
@@ -750,9 +750,9 @@ class TestFeedbackDetection:
 
     @pytest.mark.asyncio
     async def test_record_negative_feedback_triggers_reflection(self, tmp_db):
-        from engram_learning.feedback import FeedbackService
-        from engram_learning.episode_store import EpisodeStore
-        from engram_learning.quality_store import QualityStore
+        from memnos_learning.feedback import FeedbackService
+        from memnos_learning.episode_store import EpisodeStore
+        from memnos_learning.quality_store import QualityStore
 
         ep_store = EpisodeStore(db_path=tmp_db)
         await ep_store.init()
@@ -775,8 +775,8 @@ class TestFeedbackDetection:
 class TestMultiNamespaceScheduler:
     @pytest.mark.asyncio
     async def test_reflection_runs_for_all_active_namespaces(self, tmp_db):
-        from engram_learning.episode_store import EpisodeStore
-        from engram_learning.scheduler import LearningScheduler
+        from memnos_learning.episode_store import EpisodeStore
+        from memnos_learning.scheduler import LearningScheduler
 
         ep_store = EpisodeStore(db_path=tmp_db)
         await ep_store.init()
@@ -826,8 +826,8 @@ class TestMultiNamespaceScheduler:
 
     @pytest.mark.asyncio
     async def test_decay_runs_for_all_active_namespaces(self, tmp_db):
-        from engram_learning.episode_store import EpisodeStore
-        from engram_learning.scheduler import LearningScheduler
+        from memnos_learning.episode_store import EpisodeStore
+        from memnos_learning.scheduler import LearningScheduler
 
         ep_store = EpisodeStore(db_path=tmp_db)
         await ep_store.init()
@@ -873,8 +873,8 @@ class TestMCPHandlers:
         mock_store.get_all = AsyncMock(return_value=[])
         mock_store.search = AsyncMock(return_value=[])
 
-        with patch("engram_learning.heuristic_store.HeuristicStore", return_value=mock_store):
-            from engram_mcp.tools.orchestrator_tools import handle_get_heuristics
+        with patch("memnos_learning.heuristic_store.HeuristicStore", return_value=mock_store):
+            from memnos_mcp.tools.orchestrator_tools import handle_get_heuristics
             result = await handle_get_heuristics(namespace="ns:test")
 
         assert "heuristics" in result
@@ -885,15 +885,15 @@ class TestMCPHandlers:
     @pytest.mark.asyncio
     async def test_handle_add_heuristic_creates_heuristic_object(self, tmp_db):
         """handle_add_heuristic must create a Heuristic dataclass and call store.add(heuristic)."""
-        from engram_learning.heuristic_store import HeuristicStore
-        from engram_learning.models import Heuristic
+        from memnos_learning.heuristic_store import HeuristicStore
+        from memnos_learning.models import Heuristic
 
         real_store = HeuristicStore(db_path=tmp_db)
         await real_store.init()
 
-        with patch("engram_learning.heuristic_store.HeuristicStore", return_value=real_store):
+        with patch("memnos_learning.heuristic_store.HeuristicStore", return_value=real_store):
             real_store.init = AsyncMock()
-            from engram_mcp.tools.orchestrator_tools import handle_add_heuristic
+            from memnos_mcp.tools.orchestrator_tools import handle_add_heuristic
             result = await handle_add_heuristic(
                 namespace="ns:test",
                 rule="Always verify before deleting",
@@ -920,11 +920,11 @@ class TestMCPHandlers:
         mock_h_store = AsyncMock()
         mock_h_store.init = AsyncMock()
 
-        with patch("engram_learning.episode_store.EpisodeStore", return_value=mock_ep_store), \
-             patch("engram_learning.heuristic_store.HeuristicStore", return_value=mock_h_store), \
-             patch("engram_learning.reflection.ReflectionService", return_value=mock_service), \
+        with patch("memnos_learning.episode_store.EpisodeStore", return_value=mock_ep_store), \
+             patch("memnos_learning.heuristic_store.HeuristicStore", return_value=mock_h_store), \
+             patch("memnos_learning.reflection.ReflectionService", return_value=mock_service), \
              patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-            from engram_mcp.tools.orchestrator_tools import handle_trigger_reflection
+            from memnos_mcp.tools.orchestrator_tools import handle_trigger_reflection
             result = await handle_trigger_reflection(namespace="ns:test", lookback_days=3)
 
         assert result["triggered"] is True
@@ -932,14 +932,14 @@ class TestMCPHandlers:
 
     @pytest.mark.asyncio
     async def test_handle_trigger_reflection_returns_false_on_import_error(self):
-        """handle_trigger_reflection must return triggered=False if engram_learning missing."""
-        from engram_mcp.tools.orchestrator_tools import handle_trigger_reflection
+        """handle_trigger_reflection must return triggered=False if memnos_learning missing."""
+        from memnos_mcp.tools.orchestrator_tools import handle_trigger_reflection
 
         with patch.dict("sys.modules", {
-            "engram_learning": None,
-            "engram_learning.episode_store": None,
-            "engram_learning.heuristic_store": None,
-            "engram_learning.reflection": None,
+            "memnos_learning": None,
+            "memnos_learning.episode_store": None,
+            "memnos_learning.heuristic_store": None,
+            "memnos_learning.reflection": None,
         }):
             result = await handle_trigger_reflection(namespace="ns:test")
 
@@ -956,8 +956,8 @@ class TestOrchestratorLearningWiring:
     @pytest.mark.asyncio
     async def test_skill_extractor_called_after_success(self, tmp_db):
         """After a successful task, SkillExtractor.maybe_extract() should be invoked."""
-        from engram_learning.extractor import SkillExtractor
-        from engram_learning.skill_store import SkillStore
+        from memnos_learning.extractor import SkillExtractor
+        from memnos_learning.skill_store import SkillStore
 
         ep = _episode(quality=0.9, outcome="SUCCESS")
         skill_store = SkillStore(db_path=tmp_db)

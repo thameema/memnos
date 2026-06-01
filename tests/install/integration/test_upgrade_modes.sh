@@ -17,14 +17,14 @@ export HOME=/test-home; mkdir -p "$HOME"
 
 # Phase 1: fresh install
 printf '\n\n\n\n\nN\n' | bash /tmp/install-server.sh --version master >/tmp/p1.log 2>&1
-OLD_KEY=$(grep "^ENGRAM_API_KEY=" "$HOME/.engram/.env" | cut -d= -f2)
+OLD_KEY=$(grep "^MEMNOS_API_KEY=" "$HOME/.memnos/.env" | cut -d= -f2)
 echo "P1_EXIT=$?"
 echo "P1_KEY_LEN=${#OLD_KEY}"
 
 # Phase 2: re-run, choose Upgrade
 printf '1\n' | bash /tmp/install-server.sh --version master >/tmp/p2.log 2>&1
 echo "P2_EXIT=$?"
-NEW_KEY=$(grep "^ENGRAM_API_KEY=" "$HOME/.engram/.env" | cut -d= -f2)
+NEW_KEY=$(grep "^MEMNOS_API_KEY=" "$HOME/.memnos/.env" | cut -d= -f2)
 [ "$OLD_KEY" = "$NEW_KEY" ] && echo "P2_KEY_PRESERVED=yes" || echo "P2_KEY_PRESERVED=no"
 grep -q "Mode: upgrade" /tmp/p2.log && echo "P2_UPGRADE_MODE=yes" || echo "P2_UPGRADE_MODE=no"
 # Upgrade must NOT re-prompt for DATA_DIR

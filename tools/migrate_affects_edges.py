@@ -14,12 +14,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "packages/core"))
 
-from engram.storage.arcadedb_client import ArcadeDBClient
-from engram.models import Entity
+from memnos.storage.arcadedb_client import ArcadeDBClient
+from memnos.models import Entity
 
 ARCADEDB_HOST = os.environ.get("ARCADEDB_HOST", "localhost")
 ARCADEDB_PORT = int(os.environ.get("ARCADEDB_PORT", 2480))
-ARCADEDB_PASSWORD = os.environ.get("ARCADEDB_PASSWORD", "engram-dev-password")
+ARCADEDB_PASSWORD = os.environ.get("ARCADEDB_PASSWORD", "memnos-dev-password")
 
 
 async def main():
@@ -27,7 +27,7 @@ async def main():
         host=ARCADEDB_HOST,
         port=ARCADEDB_PORT,
         password=ARCADEDB_PASSWORD,
-        database="engram",
+        database="memnos",
     )
     await client.init()
 

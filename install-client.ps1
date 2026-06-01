@@ -1,12 +1,12 @@
-# engram client installer for Windows (PowerShell)
+# memnos client installer for Windows (PowerShell)
 #
 # Installs Claude Code automation hooks on Windows.
-# Works whether engram runs locally or on a remote server.
+# Works whether memnos runs locally or on a remote server.
 #
 # Usage:
 #   .\install-client.ps1
-#   .\install-client.ps1 -Server http://host:8766 -Key engram-abc123
-#   .\install-client.ps1 -Server http://localhost:8766 -Key engram-abc123 -Namespace "personal:default"
+#   .\install-client.ps1 -Server http://host:8766 -Key memnos-abc123
+#   .\install-client.ps1 -Server http://localhost:8766 -Key memnos-abc123 -Namespace "personal:default"
 #
 # Requirements: PowerShell 5.1+ (Windows 10/11 built-in) or PowerShell 7+
 #               Python 3.8+ (for heartbeat daemon)
@@ -68,13 +68,13 @@ if (Test-Path $SettingsFile) {
 }
 
 # ─── Collect config ───────────────────────────────────────────────────────────
-Write-Step "engram connection"
+Write-Step "memnos connection"
 
-$EngramServer = if ($Server) { $Server } else { Read-Input "engram server URL" "http://localhost:8766" }
-$EngramServer = $EngramServer.TrimEnd("/")
+$MemnosServer = if ($Server) { $Server } else { Read-Input "memnos server URL" "http://localhost:8766" }
+$MemnosServer = $MemnosServer.TrimEnd("/")
 
-$EngramKey = if ($Key) { $Key } else { Read-Input "engram API key" }
-if ([string]::IsNullOrWhiteSpace($EngramKey)) {
+$MemnosKey = if ($Key) { $Key } else { Read-Input "memnos API key" }
+if ([string]::IsNullOrWhiteSpace($MemnosKey)) {
     throw "API key required. Get it from the server's .env file."
 }
 
@@ -83,11 +83,11 @@ $DefaultNS = if ($Namespace) { $Namespace } else { Read-Input "Default namespace
 # ─── Test connection ──────────────────────────────────────────────────────────
 Write-Step "Testing server connection"
 try {
-    $null = Invoke-RestMethod "$EngramServer/api/v1/admin/health" `
-        -Headers @{"Authorization" = "Bearer $EngramKey"} -TimeoutSec 5
-    Write-Success "Connected to engram at $EngramServer"
+    $null = Invoke-RestMethod "$MemnosServer/api/v1/admin/health" `
+        -Headers @{"Authorization" = "Bearer $MemnosKey"} -TimeoutSec 5
+    Write-Success "Connected to memnos at $MemnosServer"
 } catch {
-    Write-Warn "Could not reach $EngramServer — hooks will still be installed."
+    Write-Warn "Could not reach $MemnosServer — hooks will still be installed."
     Write-Warn "Hooks fail silently when server is unreachable."
 }
 
@@ -98,20 +98,20 @@ Write-Step "Creating directories"
 }
 Write-Success "Directories ready"
 
-# ─── Write engram.env ─────────────────────────────────────────────────────────
+# ─── Write memnos.env ─────────────────────────────────────────────────────────
 Write-Step "Writing hook config"
 $EnvLines = @(
-    "# engram hook config — edit to change server, key, namespace, or tuning.",
-    "ENGRAM_API=$EngramServer",
-    "ENGRAM_KEY=$EngramKey",
-    "ENGRAM_DEFAULT_NS=$DefaultNS",
-    "ENGRAM_TOP_K=8",
-    "ENGRAM_MIN_SCORE=0.50",
-    "ENGRAM_AUTOSAVE_MINUTES=10",
-    "ENGRAM_HEARTBEAT_MINUTES=10",
+    "# memnos hook config — edit to change server, key, namespace, or tuning.",
+    "MEMNOS_API=$MemnosServer",
+    "MEMNOS_KEY=$MemnosKey",
+    "MEMNOS_DEFAULT_NS=$DefaultNS",
+    "MEMNOS_TOP_K=8",
+    "MEMNOS_MIN_SCORE=0.50",
+    "MEMNOS_AUTOSAVE_MINUTES=10",
+    "MEMNOS_HEARTBEAT_MINUTES=10",
     "# LLM summaries use claude --print (no API key needed)"
 )
-$EnvFile = Join-Path $HooksDir "engram.env"
+$EnvFile = Join-Path $HooksDir "memnos.env"
 $EnvLines | Set-Content -Path $EnvFile -Encoding UTF8
 Write-Success "Config: $EnvFile"
 
@@ -129,7 +129,7 @@ function Install-HookFile {
         Copy-Item $src $dest -Force
         Write-Success "$Description`: $dest"
     } else {
-        $url = "https://raw.githubusercontent.com/thameema/engram/master/hooks/windows/$FileName"
+        $url = "https://raw.githubusercontent.com/thameema/memnos/master/hooks/windows/$FileName"
         try {
             Invoke-WebRequest $url -OutFile $dest -UseBasicParsing -TimeoutSec 15
             Write-Success "$Description (downloaded): $dest"
@@ -140,33 +140,33 @@ function Install-HookFile {
 }
 
 # PowerShell hook scripts
-Install-HookFile "engram-inject.ps1"       "Inject hook (UserPromptSubmit)"
-Install-HookFile "engram-session-write.ps1" "Session hook (Stop)"
-Install-HookFile "engram-precompact.ps1"   "PreCompact hook"
-Install-HookFile "engram-git-write.ps1"    "Git+periodic hook (PostToolUse)"
+Install-HookFile "memnos-inject.ps1"       "Inject hook (UserPromptSubmit)"
+Install-HookFile "memnos-session-write.ps1" "Session hook (Stop)"
+Install-HookFile "memnos-precompact.ps1"   "PreCompact hook"
+Install-HookFile "memnos-git-write.ps1"    "Git+periodic hook (PostToolUse)"
 
 # ─── Install heartbeat daemon (cross-platform Python) ─────────────────────────
 Write-Step "Installing heartbeat daemon"
 
-$HeartbeatSrc  = Join-Path $ScriptDir "hooks\windows\engram-heartbeat.py"
-$HeartbeatDest = Join-Path $HooksDir "engram-heartbeat.py"
+$HeartbeatSrc  = Join-Path $ScriptDir "hooks\windows\memnos-heartbeat.py"
+$HeartbeatDest = Join-Path $HooksDir "memnos-heartbeat.py"
 
 # Try to copy from repo first; fall back to downloading
 if (!(Test-Path $HeartbeatSrc)) {
     # Also try root of repo (shared file)
-    $HeartbeatSrc = Join-Path $ScriptDir "engram-heartbeat.py"
+    $HeartbeatSrc = Join-Path $ScriptDir "memnos-heartbeat.py"
 }
 
 if (Test-Path $HeartbeatSrc) {
     Copy-Item $HeartbeatSrc $HeartbeatDest -Force
     Write-Success "Heartbeat daemon: $HeartbeatDest"
 } else {
-    $url = "https://raw.githubusercontent.com/thameema/engram/master/hooks/windows/engram-heartbeat.py"
+    $url = "https://raw.githubusercontent.com/thameema/memnos/master/hooks/windows/memnos-heartbeat.py"
     try {
         Invoke-WebRequest $url -OutFile $HeartbeatDest -UseBasicParsing -TimeoutSec 15
         Write-Success "Heartbeat daemon (downloaded): $HeartbeatDest"
     } catch {
-        Write-Warn "Could not install engram-heartbeat.py — periodic saves will not work on abrupt exits."
+        Write-Warn "Could not install memnos-heartbeat.py — periodic saves will not work on abrupt exits."
         Write-Warn "Download manually from $url"
     }
 }
@@ -202,21 +202,21 @@ Set-Content -Path $WrapperDest -Value $WrapperContent -Encoding ASCII
 git config --global core.hooksPath $GitHooksDir
 Write-Success "git config --global core.hooksPath $GitHooksDir"
 
-# ─── Install /engram slash command ────────────────────────────────────────────
-Write-Step "Installing /engram slash command"
+# ─── Install /memnos slash command ────────────────────────────────────────────
+Write-Step "Installing /memnos slash command"
 $SlashCmd = @'
-# /engram [save|status|ns:<namespace>]
+# /memnos [save|status|ns:<namespace>]
 
 ---
 
-## /engram status
+## /memnos status
 
 Run these commands immediately and format results as shown.
 
 ```powershell
-$KEY = (Get-Content "$env:USERPROFILE\.claude\hooks\engram.env" | Where-Object { $_ -match '^ENGRAM_KEY=' }) -replace '^ENGRAM_KEY=',''
-$API = (Get-Content "$env:USERPROFILE\.claude\hooks\engram.env" | Where-Object { $_ -match '^ENGRAM_API=' }) -replace '^ENGRAM_API=',''
-$NS  = (Get-Content "$env:USERPROFILE\.claude\hooks\engram.env" | Where-Object { $_ -match '^ENGRAM_DEFAULT_NS=' }) -replace '^ENGRAM_DEFAULT_NS=',''
+$KEY = (Get-Content "$env:USERPROFILE\.claude\hooks\memnos.env" | Where-Object { $_ -match '^MEMNOS_KEY=' }) -replace '^MEMNOS_KEY=',''
+$API = (Get-Content "$env:USERPROFILE\.claude\hooks\memnos.env" | Where-Object { $_ -match '^MEMNOS_API=' }) -replace '^MEMNOS_API=',''
+$NS  = (Get-Content "$env:USERPROFILE\.claude\hooks\memnos.env" | Where-Object { $_ -match '^MEMNOS_DEFAULT_NS=' }) -replace '^MEMNOS_DEFAULT_NS=',''
 
 # All namespaces
 try { $ns_list = Invoke-RestMethod "$API/api/v1/admin/namespaces" -Headers @{"Authorization" = "Bearer $KEY"} } catch { $ns_list = @() }
@@ -224,8 +224,8 @@ $ns_list | ForEach-Object { $_.name }
 
 # Current namespace
 $repoRoot = git rev-parse --show-toplevel 2>$null
-if ($repoRoot -and (Test-Path (Join-Path $repoRoot ".engram"))) {
-    $line = Get-Content (Join-Path $repoRoot ".engram") | Where-Object { $_ -match '^namespace=' }
+if ($repoRoot -and (Test-Path (Join-Path $repoRoot ".memnos"))) {
+    $line = Get-Content (Join-Path $repoRoot ".memnos") | Where-Object { $_ -match '^namespace=' }
     "source:file"; ($line -split '=',2)[1]
 } else { "source:default"; $NS }
 
@@ -234,17 +234,17 @@ $search = Invoke-RestMethod "$API/api/v1/memory/search?q=session+commit+work&ns=
 $search | ForEach-Object { "[$($_.memory_type)] $([math]::Round($_.score,2)) — $($_.content.Substring(0,[math]::Min(120,$_.content.Length)))" }
 ```
 
-**engram status**
+**memnos status**
 - **Namespaces** — bullet list
-- **Active namespace** — name + how resolved (.engram file / default)
-  If $ARGUMENTS contains `ns:something`: show `"namespace=something" | Set-Content .engram`
+- **Active namespace** — name + how resolved (.memnos file / default)
+  If $ARGUMENTS contains `ns:something`: show `"namespace=something" | Set-Content .memnos`
 - **Recent memories** — up to 5 as: `[type] score — first 120 chars`
 
 ---
 
-## /engram save
+## /memnos save
 
-Persist this entire session to engram as raw, searchable chunks.
+Persist this entire session to memnos as raw, searchable chunks.
 
 **Use the conversation in your current context window. Do NOT read transcript files.**
 Write content as-is — do NOT summarize or compress. Cover the full session chronologically.
@@ -254,12 +254,12 @@ Do NOT stop early — every task, finding, decision, error, and fix must be capt
 
 **1. Read config:**
 ```powershell
-$KEY = (Get-Content "$env:USERPROFILE\.claude\hooks\engram.env" | Where-Object { $_ -match '^ENGRAM_KEY=' }) -replace '^ENGRAM_KEY=',''
-$API = (Get-Content "$env:USERPROFILE\.claude\hooks\engram.env" | Where-Object { $_ -match '^ENGRAM_API=' }) -replace '^ENGRAM_API=',''
-$NS  = (Get-Content "$env:USERPROFILE\.claude\hooks\engram.env" | Where-Object { $_ -match '^ENGRAM_DEFAULT_NS=' }) -replace '^ENGRAM_DEFAULT_NS=',''
+$KEY = (Get-Content "$env:USERPROFILE\.claude\hooks\memnos.env" | Where-Object { $_ -match '^MEMNOS_KEY=' }) -replace '^MEMNOS_KEY=',''
+$API = (Get-Content "$env:USERPROFILE\.claude\hooks\memnos.env" | Where-Object { $_ -match '^MEMNOS_API=' }) -replace '^MEMNOS_API=',''
+$NS  = (Get-Content "$env:USERPROFILE\.claude\hooks\memnos.env" | Where-Object { $_ -match '^MEMNOS_DEFAULT_NS=' }) -replace '^MEMNOS_DEFAULT_NS=',''
 $repoRoot = git rev-parse --show-toplevel 2>$null
-if ($repoRoot -and (Test-Path (Join-Path $repoRoot ".engram"))) {
-    $NS = ((Get-Content (Join-Path $repoRoot ".engram") | Where-Object { $_ -match '^namespace=' }) -split '=',2)[1]
+if ($repoRoot -and (Test-Path (Join-Path $repoRoot ".memnos"))) {
+    $NS = ((Get-Content (Join-Path $repoRoot ".memnos") | Where-Object { $_ -match '^namespace=' }) -split '=',2)[1]
 }
 $PROJECT = Split-Path (git rev-parse --show-toplevel 2>$null) -Leaf
 $BRANCH  = git rev-parse --abbrev-ref HEAD 2>$null
@@ -272,20 +272,20 @@ import json, urllib.request, os
 
 def cfg(key, default=''):
     try:
-        env_path = os.path.join(os.environ['USERPROFILE'], '.claude', 'hooks', 'engram.env')
+        env_path = os.path.join(os.environ['USERPROFILE'], '.claude', 'hooks', 'memnos.env')
         for line in open(env_path).read().splitlines():
             if line.startswith(key + '='): return line.split('=', 1)[1].strip()
     except: pass
     return default
 
-api  = cfg('ENGRAM_API',        'http://localhost:8766')
-akey = cfg('ENGRAM_KEY',        '')
-ns   = cfg('ENGRAM_DEFAULT_NS', 'personal:default')
+api  = cfg('MEMNOS_API',        'http://localhost:8766')
+akey = cfg('MEMNOS_KEY',        '')
+ns   = cfg('MEMNOS_DEFAULT_NS', 'personal:default')
 import subprocess
 try:
     root = subprocess.check_output(['git','rev-parse','--show-toplevel'],
         stderr=subprocess.DEVNULL, text=True).strip()
-    for line in open(f'{root}/.engram').read().splitlines():
+    for line in open(f'{root}/.memnos').read().splitlines():
         if line.startswith('namespace='): ns = line.split('=',1)[1].strip()
 except: pass
 project = os.path.basename(subprocess.run(['git','rev-parse','--show-toplevel'],
@@ -330,17 +330,17 @@ print('Index:', json.loads(urllib.request.urlopen(req,timeout=5).read()).get('id
 
 ---
 
-## /engram ns:<namespace>
+## /memnos ns:<namespace>
 
 To set a permanent namespace for a project:
 ```powershell
-"namespace=<namespace>" | Set-Content .engram
+"namespace=<namespace>" | Set-Content .memnos
 ```
-Then confirm with `/engram status` that the new namespace is active.
+Then confirm with `/memnos status` that the new namespace is active.
 '@
-$SlashFile = Join-Path $CommandsDir "engram.md"
+$SlashFile = Join-Path $CommandsDir "memnos.md"
 Set-Content -Path $SlashFile -Value $SlashCmd -Encoding UTF8
-Write-Success "Slash command /engram: $SlashFile"
+Write-Success "Slash command /memnos: $SlashFile"
 
 # ─── Patch Claude Code settings.json ─────────────────────────────────────────
 Write-Step "Registering hooks in Claude Code"
@@ -349,10 +349,10 @@ if ($SettingsFile -and (Test-Path $SettingsFile)) {
     try {
         $settings = Get-Content $SettingsFile -Raw | ConvertFrom-Json
 
-        $injectCmd     = "powershell.exe -NonInteractive -NoProfile -File `"$(Join-Path $HooksDir 'engram-inject.ps1')`""
-        $precompactCmd = "powershell.exe -NonInteractive -NoProfile -File `"$(Join-Path $HooksDir 'engram-precompact.ps1')`""
-        $gitwriteCmd   = "powershell.exe -NonInteractive -NoProfile -File `"$(Join-Path $HooksDir 'engram-git-write.ps1')`""
-        $sessionCmd    = "powershell.exe -NonInteractive -NoProfile -File `"$(Join-Path $HooksDir 'engram-session-write.ps1')`""
+        $injectCmd     = "powershell.exe -NonInteractive -NoProfile -File `"$(Join-Path $HooksDir 'memnos-inject.ps1')`""
+        $precompactCmd = "powershell.exe -NonInteractive -NoProfile -File `"$(Join-Path $HooksDir 'memnos-precompact.ps1')`""
+        $gitwriteCmd   = "powershell.exe -NonInteractive -NoProfile -File `"$(Join-Path $HooksDir 'memnos-git-write.ps1')`""
+        $sessionCmd    = "powershell.exe -NonInteractive -NoProfile -File `"$(Join-Path $HooksDir 'memnos-session-write.ps1')`""
 
         if (-not $settings.hooks) {
             $settings | Add-Member -NotePropertyName hooks -NotePropertyValue ([PSCustomObject]@{})
@@ -421,18 +421,18 @@ if ($SettingsFile -and (Test-Path $SettingsFile)) {
 # ─── Done ─────────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Green
-Write-Host "  engram client hooks installed!" -ForegroundColor Green
+Write-Host "  memnos client hooks installed!" -ForegroundColor Green
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Green
 Write-Host ""
 Write-Host "  What was installed:" -ForegroundColor White
-Write-Host "    $HooksDir\engram.env                — config (server, key, namespace)"
-Write-Host "    $HooksDir\engram-inject.ps1         — context injection (UserPromptSubmit)"
-Write-Host "    $HooksDir\engram-heartbeat.py       — background daemon (abrupt-exit safety)"
-Write-Host "    $HooksDir\engram-git-write.ps1      — git commits + periodic save (PostToolUse)"
-Write-Host "    $HooksDir\engram-precompact.ps1     — save before context compact (PreCompact)"
-Write-Host "    $HooksDir\engram-session-write.ps1  — session summary on exit (Stop)"
+Write-Host "    $HooksDir\memnos.env                — config (server, key, namespace)"
+Write-Host "    $HooksDir\memnos-inject.ps1         — context injection (UserPromptSubmit)"
+Write-Host "    $HooksDir\memnos-heartbeat.py       — background daemon (abrupt-exit safety)"
+Write-Host "    $HooksDir\memnos-git-write.ps1      — git commits + periodic save (PostToolUse)"
+Write-Host "    $HooksDir\memnos-precompact.ps1     — save before context compact (PreCompact)"
+Write-Host "    $HooksDir\memnos-session-write.ps1  — session summary on exit (Stop)"
 Write-Host "    $GitHooksDir\post-commit.ps1        — commit memory on every git commit"
-Write-Host "    $CommandsDir\engram.md              — /engram slash command"
+Write-Host "    $CommandsDir\memnos.md              — /memnos slash command"
 Write-Host ""
 Write-Host "  Hook pipeline:" -ForegroundColor White
 Write-Host "    UserPromptSubmit → inject context"
@@ -441,12 +441,12 @@ Write-Host "    PreCompact       → save before context window compact"
 Write-Host "    Stop             → full session summary on exit"
 Write-Host "    Heartbeat daemon → safety net for Ctrl+C / power loss (every 10min)"
 Write-Host ""
-Write-Host "  Server    : $EngramServer" -ForegroundColor Cyan
+Write-Host "  Server    : $MemnosServer" -ForegroundColor Cyan
 Write-Host "  Namespace : $DefaultNS"   -ForegroundColor Cyan
 Write-Host "  LLM summaries: via claude --print (built-in)" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Per-project namespace:" -ForegroundColor White
-Write-Host '    "namespace=project:myname" | Set-Content .engram'
+Write-Host '    "namespace=project:myname" | Set-Content .memnos'
 Write-Host ""
 Write-Host "  Restart Claude Code (quit and reopen) to activate." -ForegroundColor Yellow
 Write-Host ""

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# engram test-suite runner.
+# memnos test-suite runner.
 #
 # Usage:
 #   bash tests/install/run.sh [LAYER] [FILTER]

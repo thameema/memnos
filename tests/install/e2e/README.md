@@ -1,14 +1,14 @@
 # Layer 3 — real-Docker E2E tests
 
-These tests bring up an **actual engram stack** (no mocks) and exercise the
+These tests bring up an **actual memnos stack** (no mocks) and exercise the
 real API + MCP endpoints. They are slow on first run (3-5 min to build the
-engram image) and require Docker on the host.
+memnos image) and require Docker on the host.
 
 Isolation from any existing dev install:
-- Project name: `engram-e2e` (not `engram`)
+- Project name: `memnos-e2e` (not `memnos`)
 - Ports: 18765 / 18766 / 12480
-- Data dir: `/tmp/engram-e2e-data`
-- Source clone: `/tmp/engram-e2e-src`
+- Data dir: `/tmp/memnos-e2e-data`
+- Source clone: `/tmp/memnos-e2e-src`
 
 Run:
 ```bash
@@ -20,8 +20,8 @@ Subsequent tests in the same run reuse the existing healthy stack.
 
 To tear it down manually:
 ```bash
-( cd /tmp/engram-e2e-src && \
-  docker compose --project-name engram-e2e \
-    --env-file /tmp/engram-e2e-data/.env down -v )
-rm -rf /tmp/engram-e2e-{src,data}
+( cd /tmp/memnos-e2e-src && \
+  docker compose --project-name memnos-e2e \
+    --env-file /tmp/memnos-e2e-data/.env down -v )
+rm -rf /tmp/memnos-e2e-{src,data}
 ```

@@ -2,19 +2,19 @@
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
-# ─── Root meta-package: engram-ai ─────────────────────────────────────────────
-# Installs all engram components in one shot:
-#   pip install engram-ai
+# ─── Root meta-package: memnos ─────────────────────────────────────────────
+# Installs all memnos components in one shot:
+#   pip install memnos
 [project]
-name = "engram-ai"
+name = "memnos"
 version = "0.1.0"
-description = "engram — persistent memory and multi-agent orchestration for LLM workflows"
+description = "memnos — persistent memory and multi-agent orchestration for LLM workflows"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 
 authors = [
-  { name = "engram contributors" },
+  { name = "memnos contributors" },
 ]
 
 keywords = [
@@ -42,18 +42,18 @@ classifiers = [
 
 # Pull in all sub-packages
 dependencies = [
-  "engram-core>=0.1.0",
-  "engram-mcp-server>=0.1.0",
-  "engram-orchestrator>=0.1.0",
-  "engram-api>=0.1.0",
-  "engram-learning>=0.1.0",
-  "engram-gateway>=0.1.0",
+  "memnos-core>=0.1.0",
+  "memnos-mcp-server>=0.1.0",
+  "memnos-orchestrator>=0.1.0",
+  "memnos-api>=0.1.0",
+  "memnos-learning>=0.1.0",
+  "memnos-gateway>=0.1.0",
 ]
 
 [project.optional-dependencies]
 # All extras rolled up
 all = [
-  "engram-ai[local-embeddings,dev]",
+  "memnos[local-embeddings,dev]",
 ]
 
 # Free local embeddings (no OpenAI key needed)
@@ -76,16 +76,16 @@ dev = [
 ]
 
 [project.urls]
-Homepage    = "https://github.com/yourusername/engram"
-Repository  = "https://github.com/yourusername/engram"
-Issues      = "https://github.com/yourusername/engram/issues"
-Changelog   = "https://github.com/yourusername/engram/blob/main/CHANGELOG.md"
+Homepage    = "https://github.com/yourusername/memnos"
+Repository  = "https://github.com/yourusername/memnos"
+Issues      = "https://github.com/yourusername/memnos/issues"
+Changelog   = "https://github.com/yourusername/memnos/blob/main/CHANGELOG.md"
 
 [project.scripts]
-# The main CLI entry point — delegates to the engram bash script
+# The main CLI entry point — delegates to the memnos bash script
 # Real start/stop/status is handled by the installed shell script
-# This shim allows `python -m engram` usage
-engram-ai = "engram_api.main:main"
+# This shim allows `python -m memnos` usage
+memnos = "memnos_api.main:main"
 
 # ─── Tool configuration ───────────────────────────────────────────────────────
 
@@ -138,7 +138,7 @@ ignore = [
 "**/migrations/**" = ["ALL"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["engram", "engram_mcp", "engram_orchestrator", "engram_api", "engram_learning", "engram_gateway"]
+known-first-party = ["memnos", "memnos_mcp", "memnos_orchestrator", "memnos_api", "memnos_learning", "memnos_gateway"]
 
 # ─── Mypy ─────────────────────────────────────────────────────────────────────
 
@@ -175,7 +175,7 @@ addopts = "--tb=short -q"
 # ─── Coverage ─────────────────────────────────────────────────────────────────
 
 [tool.coverage.run]
-source   = ["engram", "engram_mcp", "engram_orchestrator", "engram_api", "engram_learning", "engram_gateway"]
+source   = ["memnos", "memnos_mcp", "memnos_orchestrator", "memnos_api", "memnos_learning", "memnos_gateway"]
 omit     = ["*/tests/*", "*/migrations/*", "*/conftest.py"]
 branch   = true
 

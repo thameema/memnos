@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-migrate_obsidian.py — Migrate an Obsidian vault into the engram REST API.
+migrate_obsidian.py — Migrate an Obsidian vault into the memnos REST API.
 
 Usage:
     python migrate_obsidian.py --vault /path/to/vault --namespace obsidian:my-vault --api-key <key>
@@ -143,7 +143,7 @@ def note_namespace(vault_root: Path, note_path: Path, base_namespace: str) -> st
 # ---------------------------------------------------------------------------
 
 
-class EngramClient:
+class MemnosClient:
     def __init__(self, base_url: str, api_key: str, dry_run: bool = False):
         self.base_url = base_url.rstrip("/")
         self.headers = {
@@ -268,8 +268,8 @@ def migrate(args: argparse.Namespace) -> None:
         print(f"[error] Vault directory not found: {vault}", file=sys.stderr)
         sys.exit(1)
 
-    client = EngramClient(
-        base_url=args.engram_url,
+    client = MemnosClient(
+        base_url=args.memnos_url,
         api_key=args.api_key,
         dry_run=args.dry_run,
     )
@@ -288,7 +288,7 @@ def migrate(args: argparse.Namespace) -> None:
 
     print(f"Migrating {total} notes from {vault}")
     print(f"  Namespace : {args.namespace}")
-    print(f"  Target    : {args.engram_url}")
+    print(f"  Target    : {args.memnos_url}")
     print()
 
     # title (lowercase) → memory_id
@@ -405,12 +405,12 @@ def migrate(args: argparse.Namespace) -> None:
     if first_id and first_id != "dry-run-id":
         print(
             f"  curl -s -H 'Authorization: Bearer {args.api_key}' \\\n"
-            f"       {args.engram_url}/api/v1/memory/{first_id} | python3 -m json.tool"
+            f"       {args.memnos_url}/api/v1/memory/{first_id} | python3 -m json.tool"
         )
     else:
         print(
             f"  curl -s -H 'Authorization: Bearer {args.api_key}' \\\n"
-            f"       '{args.engram_url}/api/v1/memory/?namespace={args.namespace}&limit=5' | python3 -m json.tool"
+            f"       '{args.memnos_url}/api/v1/memory/?namespace={args.namespace}&limit=5' | python3 -m json.tool"
         )
     print()
 
@@ -423,7 +423,7 @@ def migrate(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="migrate_obsidian",
-        description="Migrate an Obsidian vault into the engram REST API.",
+        description="Migrate an Obsidian vault into the memnos REST API.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -439,21 +439,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Base namespace for imported notes, e.g. obsidian:my-vault.",
     )
     parser.add_argument(
-        "--engram-url",
+        "--memnos-url",
         default="http://localhost:8766",
         metavar="URL",
-        help="engram API base URL (default: http://localhost:8766).",
+        help="memnos API base URL (default: http://localhost:8766).",
     )
     parser.add_argument(
         "--api-key",
         required=True,
         metavar="KEY",
-        help="Bearer API key for engram authentication.",
+        help="Bearer API key for memnos authentication.",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Parse vault and report without writing to engram.",
+        help="Parse vault and report without writing to memnos.",
     )
     parser.add_argument(
         "--batch-size",

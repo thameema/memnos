@@ -1,9 +1,9 @@
 """
-engram MCP stdio transport test suite.
+memnos MCP stdio transport test suite.
 
 What this suite covers
 ----------------------
-- Process start: engram-mcp-stdio spawns without crashing
+- Process start: memnos-mcp-stdio spawns without crashing
 - JSON-RPC initialize handshake: response includes capabilities.tools
 - tools/list: response includes at least memory_write and memory_search
 - tools/call memory_write: returns a valid id and no JSON-RPC error
@@ -16,18 +16,18 @@ Each message is a single JSON object terminated by a newline.
 
 Binary
 ------
-{_REPO_ROOT}/.venv/bin/engram-mcp-stdio
+{_REPO_ROOT}/.venv/bin/memnos-mcp-stdio
 
 Config
 ------
-{_REPO_ROOT}/engram.yaml
+{_REPO_ROOT}/memnos.yaml
 
 Required environment variables
 -------------------------------
-ARCADEDB_PASSWORD=engram-dev-password
-ENGRAM_API_KEY=engram-local-dev-key
-ENGRAM_VAULT_KEY=dev-key-for-local-testing-only
-ENGRAM_CONFIG={_REPO_ROOT}/engram.yaml
+ARCADEDB_PASSWORD=memnos-dev-password
+MEMNOS_API_KEY=memnos-local-dev-key
+MEMNOS_VAULT_KEY=dev-key-for-local-testing-only
+MEMNOS_CONFIG={_REPO_ROOT}/memnos.yaml
 
 Run
 ---
@@ -51,19 +51,19 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = Path(__file__).parent.parent
-_BINARY = str(Path(_REPO_ROOT) / ".venv/bin/engram-mcp-stdio")
-_CONFIG = str(Path(_REPO_ROOT) / "engram.yaml")
+_BINARY = str(Path(_REPO_ROOT) / ".venv/bin/memnos-mcp-stdio")
+_CONFIG = str(Path(_REPO_ROOT) / "memnos.yaml")
 _STARTUP_TIMEOUT_S = 45      # seconds to wait for the process to be ready
 _RPC_TIMEOUT_S = 30          # seconds to wait for a single RPC response
 _TEST_NS = f"test:mcp-stdio:{uuid.uuid4().hex[:8]}"
 
 _ENV = {
     **os.environ,
-    "ARCADEDB_PASSWORD": os.environ.get("ARCADEDB_PASSWORD", "engram-dev-password"),
-    "ENGRAM_API_KEY": os.environ.get("ENGRAM_API_KEY", "engram-local-dev-key"),
-    "ENGRAM_VAULT_KEY": os.environ.get("ENGRAM_VAULT_KEY", "dev-key-for-local-testing-only"),
-    "ENGRAM_CONFIG": _CONFIG,
-    "ENGRAM_LOG_LEVEL": "WARNING",   # reduce stderr noise during tests
+    "ARCADEDB_PASSWORD": os.environ.get("ARCADEDB_PASSWORD", "memnos-dev-password"),
+    "MEMNOS_API_KEY": os.environ.get("MEMNOS_API_KEY", "memnos-local-dev-key"),
+    "MEMNOS_VAULT_KEY": os.environ.get("MEMNOS_VAULT_KEY", "dev-key-for-local-testing-only"),
+    "MEMNOS_CONFIG": _CONFIG,
+    "MEMNOS_LOG_LEVEL": "WARNING",   # reduce stderr noise during tests
 }
 
 
@@ -125,9 +125,9 @@ def _rpc(proc: subprocess.Popen, method: str, params: dict | None = None, msg_id
 
 @pytest.fixture(scope="module")
 def mcp_proc():
-    """Spawn engram-mcp-stdio, yield the Popen object, kill on teardown."""
+    """Spawn memnos-mcp-stdio, yield the Popen object, kill on teardown."""
     if not os.path.isfile(_BINARY):
-        pytest.skip(f"engram-mcp-stdio binary not found at {_BINARY}")
+        pytest.skip(f"memnos-mcp-stdio binary not found at {_BINARY}")
 
     import select as _sel
     import threading
@@ -155,7 +155,7 @@ def mcp_proc():
         if proc.poll() is not None:
             _t.join(timeout=2)
             pytest.fail(
-                f"engram-mcp-stdio exited unexpectedly (code {proc.returncode}).\n"
+                f"memnos-mcp-stdio exited unexpectedly (code {proc.returncode}).\n"
                 f"stderr:\n" + "\n".join(stderr_lines[-30:])
             )
         if any("MCP server ready" in l or "stdio transport" in l for l in stderr_lines):
@@ -164,7 +164,7 @@ def mcp_proc():
     else:
         # Timed out — check if process is still running
         if proc.poll() is not None:
-            pytest.fail(f"engram-mcp-stdio exited (code {proc.returncode}): {chr(10).join(stderr_lines[-20:])}")
+            pytest.fail(f"memnos-mcp-stdio exited (code {proc.returncode}): {chr(10).join(stderr_lines[-20:])}")
         # Process running but never printed ready — proceed anyway
 
     yield proc
@@ -231,7 +231,7 @@ class TestMcpStdioTransport:
             params={
                 "name": "memory_write",
                 "arguments": {
-                    "content": "MCP stdio test: engram write round-trip check",
+                    "content": "MCP stdio test: memnos write round-trip check",
                     "namespace": _TEST_NS,
                     "tags": ["mcp-test"],
                 },
@@ -270,7 +270,7 @@ class TestMcpStdioTransport:
             params={
                 "name": "memory_search",
                 "arguments": {
-                    "query": "engram write round-trip check",
+                    "query": "memnos write round-trip check",
                     "namespace": _TEST_NS,
                     "top_k": 5,
                 },

@@ -6,7 +6,7 @@ labels: enhancement
 
 ## Problem / motivation
 
-<!-- What are you trying to do that engram doesn't support today? -->
+<!-- What are you trying to do that memnos doesn't support today? -->
 
 ## Proposed solution
 

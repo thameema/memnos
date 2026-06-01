@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# engram client installer
+# memnos client installer
 #
 # Installs Claude Code automation hooks on the current machine.
-# Works whether engram runs locally or on a remote server.
+# Works whether memnos runs locally or on a remote server.
 #
 # Usage:
 #   ./install-client.sh
-#   ./install-client.sh --server http://host:8766 --key engram-abc123
-#   ./install-client.sh --server http://localhost:8766 --key engram-abc123 --namespace personal:default
+#   ./install-client.sh --server http://host:8766 --key memnos-abc123
+#   ./install-client.sh --server http://localhost:8766 --key memnos-abc123 --namespace personal:default
 #
 # Supports: macOS, Linux, WSL (Windows Subsystem for Linux)
 # For native Windows (PowerShell): use install-client.ps1 instead.
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 # ─── Capture all output to a timestamped log file ────────────────────────────
-LOG_FILE="/tmp/engram-install-client-$(date +%Y%m%d-%H%M%S).log"
+LOG_FILE="/tmp/memnos-install-client-$(date +%Y%m%d-%H%M%S).log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
@@ -110,34 +110,34 @@ check_claude_code() {
   fi
 }
 
-# ─── Detect any previous engram client install ───────────────────────────────
+# ─── Detect any previous memnos client install ───────────────────────────────
 detect_existing_install() {
   local found=()
-  for f in engram.env engram-inject.sh engram-heartbeat.py \
-           engram-git-write.sh engram-precompact.sh engram-session-write.sh; do
+  for f in memnos.env memnos-inject.sh memnos-heartbeat.py \
+           memnos-git-write.sh memnos-precompact.sh memnos-session-write.sh; do
     [ -f "$CLAUDE_HOOKS_DIR/$f" ] && found+=("hooks/$f")
   done
-  [ -f "$CLAUDE_COMMANDS_DIR/engram.md" ] && found+=("commands/engram.md")
+  [ -f "$CLAUDE_COMMANDS_DIR/memnos.md" ] && found+=("commands/memnos.md")
   [ -f "$HOME/.git-hooks/post-commit" ] && \
-    grep -q "engram" "$HOME/.git-hooks/post-commit" 2>/dev/null && \
-    found+=("~/.git-hooks/post-commit (engram-aware)")
+    grep -q "memnos" "$HOME/.git-hooks/post-commit" 2>/dev/null && \
+    found+=("~/.git-hooks/post-commit (memnos-aware)")
   # Check both MCP registration locations
   if [ -f "$CLAUDE_SETTINGS" ] && \
-     python3 -c "import json,sys; d=json.load(open('$CLAUDE_SETTINGS')); sys.exit(0 if 'engram' in d.get('mcpServers',{}) else 1)" 2>/dev/null; then
-    found+=("~/.claude/settings.json: engram MCP registered (legacy location)")
+     python3 -c "import json,sys; d=json.load(open('$CLAUDE_SETTINGS')); sys.exit(0 if 'memnos' in d.get('mcpServers',{}) else 1)" 2>/dev/null; then
+    found+=("~/.claude/settings.json: memnos MCP registered (legacy location)")
   fi
   if [ -f "$HOME/.claude.json" ] && \
-     python3 -c "import json,sys; d=json.load(open('$HOME/.claude.json')); sys.exit(0 if 'engram' in d.get('mcpServers',{}) else 1)" 2>/dev/null; then
-    found+=("~/.claude.json: engram MCP registered (Claude Code v2 location)")
+     python3 -c "import json,sys; d=json.load(open('$HOME/.claude.json')); sys.exit(0 if 'memnos' in d.get('mcpServers',{}) else 1)" 2>/dev/null; then
+    found+=("~/.claude.json: memnos MCP registered (Claude Code v2 location)")
   elif [ -f "$HOME/.claude.json" ]; then
-    found+=("~/.claude.json: exists but engram MCP NOT registered — /mcp will not show engram (this run will fix it)")
+    found+=("~/.claude.json: exists but memnos MCP NOT registered — /mcp will not show memnos (this run will fix it)")
   fi
   # CLAUDE.md presence
-  [ -f "$HOME/.claude/CLAUDE.md" ] && grep -qE "engram MCP|engram — Persistent" "$HOME/.claude/CLAUDE.md" 2>/dev/null && \
-    found+=("~/.claude/CLAUDE.md: engram section already present")
+  [ -f "$HOME/.claude/CLAUDE.md" ] && grep -qE "memnos MCP|memnos — Persistent" "$HOME/.claude/CLAUDE.md" 2>/dev/null && \
+    found+=("~/.claude/CLAUDE.md: memnos section already present")
 
   if [ ${#found[@]} -gt 0 ]; then
-    step "Previous engram client install detected"
+    step "Previous memnos client install detected"
     for item in "${found[@]}"; do
       echo "    - $item"
     done
@@ -151,22 +151,22 @@ detect_existing_install() {
 
 # ─── Collect config ───────────────────────────────────────────────────────────
 collect_config() {
-  step "engram connection"
+  step "memnos connection"
 
   if [ -n "$ARG_SERVER" ]; then
-    ENGRAM_SERVER="$ARG_SERVER"
-    info "Server: $ENGRAM_SERVER (from --server)"
+    MEMNOS_SERVER="$ARG_SERVER"
+    info "Server: $MEMNOS_SERVER (from --server)"
   else
-    ask ENGRAM_SERVER "engram server URL" "http://localhost:8766"
+    ask MEMNOS_SERVER "memnos server URL" "http://localhost:8766"
   fi
-  ENGRAM_SERVER="${ENGRAM_SERVER%/}"
+  MEMNOS_SERVER="${MEMNOS_SERVER%/}"
 
   if [ -n "$ARG_KEY" ]; then
-    ENGRAM_API_KEY="$ARG_KEY"
+    MEMNOS_API_KEY="$ARG_KEY"
     info "API key: provided via --key"
   else
-    ask ENGRAM_API_KEY "engram API key" ""
-    [ -z "$ENGRAM_API_KEY" ] && die "API key required. Get it from the server's .env file or admin."
+    ask MEMNOS_API_KEY "memnos API key" ""
+    [ -z "$MEMNOS_API_KEY" ] && die "API key required. Get it from the server's .env file or admin."
   fi
 
   if [ -n "$ARG_NS" ]; then
@@ -179,11 +179,11 @@ collect_config() {
 # ─── Test server connectivity ─────────────────────────────────────────────────
 test_connection() {
   step "Testing server connection"
-  if curl -sf --max-time 5 "${ENGRAM_SERVER}/api/v1/admin/health" \
-    -H "Authorization: Bearer ${ENGRAM_API_KEY}" -o /dev/null 2>/dev/null; then
-    success "Connected to engram at ${ENGRAM_SERVER}"
+  if curl -sf --max-time 5 "${MEMNOS_SERVER}/api/v1/admin/health" \
+    -H "Authorization: Bearer ${MEMNOS_API_KEY}" -o /dev/null 2>/dev/null; then
+    success "Connected to memnos at ${MEMNOS_SERVER}"
   else
-    warn "Could not reach ${ENGRAM_SERVER} — hooks will still be installed."
+    warn "Could not reach ${MEMNOS_SERVER} — hooks will still be installed."
     warn "Hooks fail silently when the server is unreachable, so this is safe."
   fi
 }
@@ -194,38 +194,38 @@ install_hooks() {
 
   mkdir -p "$CLAUDE_HOOKS_DIR" "$CLAUDE_COMMANDS_DIR"
 
-  # ── engram.env config file ─────────────────────────────────────────────────
-  cat > "$CLAUDE_HOOKS_DIR/engram.env" <<ENV
-# engram hook config — edit to change server, API key, namespace, or tuning.
-ENGRAM_API=${ENGRAM_SERVER}
-ENGRAM_KEY=${ENGRAM_API_KEY}
-ENGRAM_DEFAULT_NS=${DEFAULT_NS}
-ENGRAM_TOP_K=8
-ENGRAM_MIN_SCORE=0.50
-ENGRAM_AUTOSAVE_MINUTES=10
-ENGRAM_HEARTBEAT_MINUTES=10
+  # ── memnos.env config file ─────────────────────────────────────────────────
+  cat > "$CLAUDE_HOOKS_DIR/memnos.env" <<ENV
+# memnos hook config — edit to change server, API key, namespace, or tuning.
+MEMNOS_API=${MEMNOS_SERVER}
+MEMNOS_KEY=${MEMNOS_API_KEY}
+MEMNOS_DEFAULT_NS=${DEFAULT_NS}
+MEMNOS_TOP_K=8
+MEMNOS_MIN_SCORE=0.50
+MEMNOS_AUTOSAVE_MINUTES=10
+MEMNOS_HEARTBEAT_MINUTES=10
 # LLM summaries use claude --print (no API key needed)
 ENV
-  success "Config: $CLAUDE_HOOKS_DIR/engram.env"
+  success "Config: $CLAUDE_HOOKS_DIR/memnos.env"
 
   # ── inject hook (UserPromptSubmit) ─────────────────────────────────────────
-  cat > "$CLAUDE_HOOKS_DIR/engram-inject.sh" <<'INJECT'
+  cat > "$CLAUDE_HOOKS_DIR/memnos-inject.sh" <<'INJECT'
 #!/usr/bin/env bash
-# UserPromptSubmit hook — injects relevant engram memories before every prompt.
+# UserPromptSubmit hook — injects relevant memnos memories before every prompt.
 # Searches ns=all so results come from every namespace the key can access.
 set -euo pipefail
 
 HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-[ -f "$HOOKS_DIR/engram.env" ] && source "$HOOKS_DIR/engram.env"
+[ -f "$HOOKS_DIR/memnos.env" ] && source "$HOOKS_DIR/memnos.env"
 
 # Launch the background heartbeat daemon (cross-platform: Mac/Linux/Windows)
 # It runs once per machine, handles abrupt exits via transcript scanning.
-python3 "$HOOKS_DIR/engram-heartbeat.py" 2>/dev/null &
+python3 "$HOOKS_DIR/memnos-heartbeat.py" 2>/dev/null &
 
-ENGRAM_API="${ENGRAM_API:-http://localhost:8766}"
-ENGRAM_KEY="${ENGRAM_KEY:-}"
-ENGRAM_TOP_K="${ENGRAM_TOP_K:-8}"
-ENGRAM_MIN_SCORE="${ENGRAM_MIN_SCORE:-0.50}"
+MEMNOS_API="${MEMNOS_API:-http://localhost:8766}"
+MEMNOS_KEY="${MEMNOS_KEY:-}"
+MEMNOS_TOP_K="${MEMNOS_TOP_K:-8}"
+MEMNOS_MIN_SCORE="${MEMNOS_MIN_SCORE:-0.50}"
 
 INPUT=$(cat)
 PROMPT=$(echo "$INPUT" | python3 -c \
@@ -255,7 +255,7 @@ for pattern, label in PATTERNS:
         found.append(label)
 if found:
     types = ', '.join(found)
-    print(f'[vault-alert] Potential secret in prompt ({types}) — save to engram vault before use: vault_secret_set(key_name=\"<name>\", value=\"<value>\", namespace=\"...\")')
+    print(f'[vault-alert] Potential secret in prompt ({types}) — save to memnos vault before use: vault_secret_set(key_name=\"<name>\", value=\"<value>\", namespace=\"...\")')
 " 2>/dev/null || echo "")
 
 QUERY=$(echo "$PROMPT" | head -c 200 | python3 -c \
@@ -264,12 +264,12 @@ QUERY=$(echo "$PROMPT" | head -c 200 | python3 -c \
 
 # Single call — ns=all: server searches every accessible namespace. 3s hard timeout.
 RESPONSE=$(curl -sf --max-time 3 \
-  "$ENGRAM_API/api/v1/memory/search?q=$QUERY&ns=all&top_k=$ENGRAM_TOP_K" \
-  -H "Authorization: Bearer $ENGRAM_KEY" 2>/dev/null || echo "[]")
+  "$MEMNOS_API/api/v1/memory/search?q=$QUERY&ns=all&top_k=$MEMNOS_TOP_K" \
+  -H "Authorization: Bearer $MEMNOS_KEY" 2>/dev/null || echo "[]")
 
 CONTEXT=$(echo "$RESPONSE" | python3 -c "
 import sys, json
-MIN_SCORE = float('$ENGRAM_MIN_SCORE')
+MIN_SCORE = float('$MEMNOS_MIN_SCORE')
 try:
     data = json.load(sys.stdin)
 except Exception:
@@ -278,7 +278,7 @@ results = data if isinstance(data, list) else data.get('results', [])
 results = [r for r in results if isinstance(r.get('score'), float) and r['score'] >= MIN_SCORE]
 if not results:
     sys.exit(0)
-lines = ['[engram context]']
+lines = ['[memnos context]']
 for r in results:
     mem = r.get('memory', r)
     mtype = mem.get('memory_type', 'fact')
@@ -291,7 +291,7 @@ if len(lines) <= 1:
 print('\n'.join(lines))
 " 2>/dev/null || echo "")
 
-# Merge engram context and vault alert — either or both may be present
+# Merge memnos context and vault alert — either or both may be present
 if [[ -n "$CONTEXT" && -n "$VAULT_ALERT" ]]; then
   FULL_CONTEXT="$CONTEXT
 $VAULT_ALERT"
@@ -308,19 +308,19 @@ import json, sys
 print(json.dumps({'hookSpecificOutput':{'hookEventName':'UserPromptSubmit','additionalContext':sys.argv[1]}}))
 " "$FULL_CONTEXT"
 INJECT
-  chmod +x "$CLAUDE_HOOKS_DIR/engram-inject.sh"
-  success "Inject hook: $CLAUDE_HOOKS_DIR/engram-inject.sh"
+  chmod +x "$CLAUDE_HOOKS_DIR/memnos-inject.sh"
+  success "Inject hook: $CLAUDE_HOOKS_DIR/memnos-inject.sh"
 
   # ── heartbeat daemon (cross-platform Python) ───────────────────────────────
-  cat > "$CLAUDE_HOOKS_DIR/engram-heartbeat.py" <<'HEARTBEAT'
+  cat > "$CLAUDE_HOOKS_DIR/memnos-heartbeat.py" <<'HEARTBEAT'
 #!/usr/bin/env python3
 """
-engram-heartbeat.py — cross-platform background daemon (Mac / Linux / Windows).
+memnos-heartbeat.py — cross-platform background daemon (Mac / Linux / Windows).
 
 Launched once per machine by the UserPromptSubmit hook. Uses a PID file so only
 one instance ever runs. Every 10 minutes it scans all Claude Code transcript files
 modified recently, generates a session summary via Claude Haiku, and writes it to
-engram. This is the safety net for Ctrl+C, power loss, kill -9, and abrupt exits —
+memnos. This is the safety net for Ctrl+C, power loss, kill -9, and abrupt exits —
 the transcript is always on disk even when the session dies, so this daemon catches
 everything the in-process hooks miss.
 """
@@ -334,10 +334,10 @@ import sys
 import time
 import urllib.request
 
-# ── Config (read from engram.env if present) ─────────────────────────────────
+# ── Config (read from memnos.env if present) ─────────────────────────────────
 def load_env():
     env = {}
-    env_path = pathlib.Path(__file__).parent / "engram.env"
+    env_path = pathlib.Path(__file__).parent / "memnos.env"
     if env_path.exists():
         for line in env_path.read_text().splitlines():
             line = line.strip()
@@ -347,15 +347,15 @@ def load_env():
     return env
 
 cfg = load_env()
-ENGRAM_API = cfg.get("ENGRAM_API",        os.environ.get("ENGRAM_API",        "http://localhost:8766"))
-ENGRAM_KEY = cfg.get("ENGRAM_KEY",        os.environ.get("ENGRAM_KEY",        ""))
-DEFAULT_NS = cfg.get("ENGRAM_DEFAULT_NS", os.environ.get("ENGRAM_DEFAULT_NS", "personal:default"))
-INTERVAL   = int(cfg.get("ENGRAM_HEARTBEAT_MINUTES", "10")) * 60
+MEMNOS_API = cfg.get("MEMNOS_API",        os.environ.get("MEMNOS_API",        "http://localhost:8766"))
+MEMNOS_KEY = cfg.get("MEMNOS_KEY",        os.environ.get("MEMNOS_KEY",        ""))
+DEFAULT_NS = cfg.get("MEMNOS_DEFAULT_NS", os.environ.get("MEMNOS_DEFAULT_NS", "personal:default"))
+INTERVAL   = int(cfg.get("MEMNOS_HEARTBEAT_MINUTES", "10")) * 60
 
 # ── PID file — one daemon per machine ────────────────────────────────────────
 TMP       = pathlib.Path(os.environ.get("TEMP", "/tmp"))
-PID_FILE  = TMP / "engram_heartbeat.pid"
-MARK_FILE = TMP / "engram_heartbeat_marker"
+PID_FILE  = TMP / "memnos_heartbeat.pid"
+MARK_FILE = TMP / "memnos_heartbeat_marker"
 
 def already_running() -> bool:
     if not PID_FILE.exists():
@@ -447,9 +447,9 @@ def summarise(turns: list, project: str, branch: str) -> str:
     except Exception:
         return ""
 
-# ── Write memory to engram ────────────────────────────────────────────────────
+# ── Write memory to memnos ────────────────────────────────────────────────────
 def write_memory(content: str, namespace: str, project: str, session_id: str):
-    if not ENGRAM_KEY:
+    if not MEMNOS_KEY:
         return
     payload = json.dumps({
         "content": content,
@@ -457,15 +457,15 @@ def write_memory(content: str, namespace: str, project: str, session_id: str):
         "memory_type": "session",
         "tags": ["session-summary", "heartbeat", "auto", project],
         "metadata": {"session_id": session_id, "project": project, "source": "heartbeat-daemon"},
-        "provenance": {"tool": "engram-heartbeat-daemon", "agent_id": session_id},
+        "provenance": {"tool": "memnos-heartbeat-daemon", "agent_id": session_id},
     }).encode()
     req = urllib.request.Request(
-        f"{ENGRAM_API}/api/v1/memory/",
+        f"{MEMNOS_API}/api/v1/memory/",
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {ENGRAM_KEY}",
-            "X-Engram-Tool": "heartbeat-daemon",
+            "Authorization": f"Bearer {MEMNOS_KEY}",
+            "X-Memnos-Tool": "heartbeat-daemon",
         },
         method="POST",
     )
@@ -497,9 +497,9 @@ def process_transcript(transcript: pathlib.Path):
         pass
 
     ns = DEFAULT_NS
-    engram_file = pathlib.Path(cwd) / ".engram"
-    if engram_file.exists():
-        for line in engram_file.read_text().splitlines():
+    memnos_file = pathlib.Path(cwd) / ".memnos"
+    if memnos_file.exists():
+        for line in memnos_file.read_text().splitlines():
             if line.startswith("namespace="):
                 ns = line.split("=", 1)[1].strip()
                 break
@@ -548,23 +548,23 @@ def main():
 if __name__ == "__main__":
     main()
 HEARTBEAT
-  chmod +x "$CLAUDE_HOOKS_DIR/engram-heartbeat.py"
-  success "Heartbeat daemon: $CLAUDE_HOOKS_DIR/engram-heartbeat.py"
+  chmod +x "$CLAUDE_HOOKS_DIR/memnos-heartbeat.py"
+  success "Heartbeat daemon: $CLAUDE_HOOKS_DIR/memnos-heartbeat.py"
 
   # ── git-write hook (PostToolUse) ───────────────────────────────────────────
-  cat > "$CLAUDE_HOOKS_DIR/engram-git-write.sh" <<'GITWRITE'
+  cat > "$CLAUDE_HOOKS_DIR/memnos-git-write.sh" <<'GITWRITE'
 #!/usr/bin/env bash
 # PostToolUse hook — two jobs:
-# 1. Git commits: written to engram immediately (real-time cross-session visibility)
+# 1. Git commits: written to memnos immediately (real-time cross-session visibility)
 # 2. Periodic auto-save: every 10 minutes of tool activity, background session save
 #    Uses `claude --print` for summaries — no separate API key required.
 set -euo pipefail
 
 HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-[ -f "$HOOKS_DIR/engram.env" ] && source "$HOOKS_DIR/engram.env"
+[ -f "$HOOKS_DIR/memnos.env" ] && source "$HOOKS_DIR/memnos.env"
 
-ENGRAM_API="${ENGRAM_API:-http://localhost:8766}"
-ENGRAM_KEY="${ENGRAM_KEY:-}"
+MEMNOS_API="${MEMNOS_API:-http://localhost:8766}"
+MEMNOS_KEY="${MEMNOS_KEY:-}"
 
 INPUT=$(cat)
 
@@ -577,12 +577,12 @@ SESSION=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); p
 [[ -z "$SESSION" ]] && exit 0
 
 # ── Namespace resolution ──────────────────────────────────────────────────────
-ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:default}"
+MEMNOS_NS="${MEMNOS_DEFAULT_NS:-personal:default}"
 if [[ -n "$CWD" ]]; then
   REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || echo "")
-  if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]]; then
-    FILE_NS=$(grep '^namespace=' "$REPO_ROOT/.engram" 2>/dev/null | cut -d= -f2 | tr -d ' ')
-    [[ -n "$FILE_NS" ]] && ENGRAM_NS="$FILE_NS"
+  if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.memnos" ]]; then
+    FILE_NS=$(grep '^namespace=' "$REPO_ROOT/.memnos" 2>/dev/null | cut -d= -f2 | tr -d ' ')
+    [[ -n "$FILE_NS" ]] && MEMNOS_NS="$FILE_NS"
   fi
 fi
 
@@ -606,22 +606,22 @@ print(json.dumps({
     'metadata':    {'session_id': session, 'project': project, 'source': 'post-tool-hook'},
     'provenance':  {'tool': 'claude-code-post-tool-hook', 'agent_id': session},
 }))
-" "$CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION" 2>/dev/null \
-  | curl -sf --max-time 4 -X POST "$ENGRAM_API/api/v1/memory/" \
+" "$CONTENT" "$MEMNOS_NS" "$PROJECT" "$SESSION" 2>/dev/null \
+  | curl -sf --max-time 4 -X POST "$MEMNOS_API/api/v1/memory/" \
       -H "Content-Type: application/json" \
-      -H "Authorization: Bearer $ENGRAM_KEY" \
-      -H "X-Engram-Tool: post-tool-hook" \
+      -H "Authorization: Bearer $MEMNOS_KEY" \
+      -H "X-Memnos-Tool: post-tool-hook" \
       -d @- -o /dev/null 2>/dev/null || true
 fi
 
 # ── Job 2: time-based auto-save every N minutes ───────────────────────────────
-COUNTER_FILE="/tmp/engram_counter_${SESSION}"
+COUNTER_FILE="/tmp/memnos_counter_${SESSION}"
 COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo 0)
 COUNT=$((COUNT + 1))
 echo "$COUNT" > "$COUNTER_FILE"
 
-SAVE_INTERVAL_MINUTES="${ENGRAM_AUTOSAVE_MINUTES:-10}"
-LAST_SAVE_FILE="/tmp/engram_lastsave_${SESSION}"
+SAVE_INTERVAL_MINUTES="${MEMNOS_AUTOSAVE_MINUTES:-10}"
+LAST_SAVE_FILE="/tmp/memnos_lastsave_${SESSION}"
 LAST_SAVE=$(cat "$LAST_SAVE_FILE" 2>/dev/null || echo 0)
 NOW=$(date +%s)
 ELAPSED=$(( NOW - LAST_SAVE ))
@@ -702,11 +702,11 @@ print(json.dumps({
     'metadata':    {'session_id': session, 'project': project, 'elapsed_minutes': int(count), 'source': 'periodic-autosave'},
     'provenance':  {'tool': 'periodic-autosave', 'agent_id': session},
 }))
-" "$CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION" "$COUNT" 2>/dev/null \
-      | curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" \
+" "$CONTENT" "$MEMNOS_NS" "$PROJECT" "$SESSION" "$COUNT" 2>/dev/null \
+      | curl -sf --max-time 5 -X POST "$MEMNOS_API/api/v1/memory/" \
           -H "Content-Type: application/json" \
-          -H "Authorization: Bearer $ENGRAM_KEY" \
-          -H "X-Engram-Tool: periodic-autosave" \
+          -H "Authorization: Bearer $MEMNOS_KEY" \
+          -H "X-Memnos-Tool: periodic-autosave" \
           -d @- -o /dev/null 2>/dev/null || true
     ) &
     disown
@@ -715,21 +715,21 @@ fi
 
 exit 0
 GITWRITE
-  chmod +x "$CLAUDE_HOOKS_DIR/engram-git-write.sh"
-  success "Git+periodic hook: $CLAUDE_HOOKS_DIR/engram-git-write.sh"
+  chmod +x "$CLAUDE_HOOKS_DIR/memnos-git-write.sh"
+  success "Git+periodic hook: $CLAUDE_HOOKS_DIR/memnos-git-write.sh"
 
   # ── precompact hook (PreCompact) ───────────────────────────────────────────
-  cat > "$CLAUDE_HOOKS_DIR/engram-precompact.sh" <<'PRECOMPACT'
+  cat > "$CLAUDE_HOOKS_DIR/memnos-precompact.sh" <<'PRECOMPACT'
 #!/usr/bin/env bash
-# PreCompact hook — saves session state to engram before Claude Code compacts context.
+# PreCompact hook — saves session state to memnos before Claude Code compacts context.
 # Uses `claude --print` for LLM summarization — no separate API key required.
 set -euo pipefail
 
 HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-[ -f "$HOOKS_DIR/engram.env" ] && source "$HOOKS_DIR/engram.env"
+[ -f "$HOOKS_DIR/memnos.env" ] && source "$HOOKS_DIR/memnos.env"
 
-ENGRAM_API="${ENGRAM_API:-http://localhost:8766}"
-ENGRAM_KEY="${ENGRAM_KEY:-}"
+MEMNOS_API="${MEMNOS_API:-http://localhost:8766}"
+MEMNOS_KEY="${MEMNOS_KEY:-}"
 
 INPUT=$(cat)
 CWD=$(echo        "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd',''))"          2>/dev/null || echo "")
@@ -742,11 +742,11 @@ TRANSCRIPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin)
 command -v claude &>/dev/null || exit 0
 
 # Namespace resolution
-ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:default}"
+MEMNOS_NS="${MEMNOS_DEFAULT_NS:-personal:default}"
 REPO_ROOT=$(git -C "${CWD:-.}" rev-parse --show-toplevel 2>/dev/null || echo "")
-if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]]; then
-  FILE_NS=$(grep '^namespace=' "$REPO_ROOT/.engram" 2>/dev/null | cut -d= -f2 | tr -d ' ')
-  [[ -n "$FILE_NS" ]] && ENGRAM_NS="$FILE_NS"
+if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.memnos" ]]; then
+  FILE_NS=$(grep '^namespace=' "$REPO_ROOT/.memnos" 2>/dev/null | cut -d= -f2 | tr -d ' ')
+  [[ -n "$FILE_NS" ]] && MEMNOS_NS="$FILE_NS"
 fi
 
 PROJECT=$(basename "${CWD:-unknown}")
@@ -819,33 +819,33 @@ print(json.dumps({
     'memory_type': 'session',
     'tags':        ['session-summary', 'auto-compact', 'real-time', project],
     'metadata':    {'session_id': session, 'project': project, 'source': 'pre-compact-hook'},
-    'provenance':  {'tool': 'engram-precompact-hook', 'agent_id': session},
+    'provenance':  {'tool': 'memnos-precompact-hook', 'agent_id': session},
 }))
-" "$CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION" 2>/dev/null \
-| curl -sf --max-time 8 -X POST "$ENGRAM_API/api/v1/memory/" \
+" "$CONTENT" "$MEMNOS_NS" "$PROJECT" "$SESSION" 2>/dev/null \
+| curl -sf --max-time 8 -X POST "$MEMNOS_API/api/v1/memory/" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $ENGRAM_KEY" \
-    -H "X-Engram-Tool: precompact-hook" \
+    -H "Authorization: Bearer $MEMNOS_KEY" \
+    -H "X-Memnos-Tool: precompact-hook" \
     -d @- -o /dev/null 2>/dev/null || true
 
 exit 0
 PRECOMPACT
-  chmod +x "$CLAUDE_HOOKS_DIR/engram-precompact.sh"
-  success "PreCompact hook: $CLAUDE_HOOKS_DIR/engram-precompact.sh"
+  chmod +x "$CLAUDE_HOOKS_DIR/memnos-precompact.sh"
+  success "PreCompact hook: $CLAUDE_HOOKS_DIR/memnos-precompact.sh"
 
   # ── session-write hook (Stop) ──────────────────────────────────────────────
-  cat > "$CLAUDE_HOOKS_DIR/engram-session-write.sh" <<'SESSION'
+  cat > "$CLAUDE_HOOKS_DIR/memnos-session-write.sh" <<'SESSION'
 #!/usr/bin/env bash
-# Stop hook — writes session state to engram at the end of every Claude Code session.
+# Stop hook — writes session state to memnos at the end of every Claude Code session.
 # Stage A: sparse git metadata (always runs, fast).
 # Stage B: LLM summary via `claude --print` (no API key — uses existing Claude Code auth).
 set -euo pipefail
 
 HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-[ -f "$HOOKS_DIR/engram.env" ] && source "$HOOKS_DIR/engram.env"
+[ -f "$HOOKS_DIR/memnos.env" ] && source "$HOOKS_DIR/memnos.env"
 
-ENGRAM_API="${ENGRAM_API:-http://localhost:8766}"
-ENGRAM_KEY="${ENGRAM_KEY:-}"
+MEMNOS_API="${MEMNOS_API:-http://localhost:8766}"
+MEMNOS_KEY="${MEMNOS_KEY:-}"
 
 INPUT=$(cat)
 CWD=$(echo        "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd',''))"          2>/dev/null || echo "")
@@ -855,11 +855,11 @@ TRANSCRIPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin)
 [[ -z "$CWD" ]] && exit 0
 
 # Namespace resolution
-ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:default}"
+MEMNOS_NS="${MEMNOS_DEFAULT_NS:-personal:default}"
 REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || echo "")
-if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]]; then
-  FILE_NS=$(grep '^namespace=' "$REPO_ROOT/.engram" 2>/dev/null | cut -d= -f2 | tr -d ' ')
-  [[ -n "$FILE_NS" ]] && ENGRAM_NS="$FILE_NS"
+if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.memnos" ]]; then
+  FILE_NS=$(grep '^namespace=' "$REPO_ROOT/.memnos" 2>/dev/null | cut -d= -f2 | tr -d ' ')
+  [[ -n "$FILE_NS" ]] && MEMNOS_NS="$FILE_NS"
 fi
 
 PROJECT=$(basename "$CWD")
@@ -890,11 +890,11 @@ print(json.dumps({
     'metadata':    {'session_id': session_id, 'project': project, 'source': 'stop-hook'},
     'provenance':  {'tool': 'claude-code-stop-hook', 'agent_id': session_id},
 }))
-" "$GIT_CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION" 2>/dev/null \
-| curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" \
+" "$GIT_CONTENT" "$MEMNOS_NS" "$PROJECT" "$SESSION" 2>/dev/null \
+| curl -sf --max-time 5 -X POST "$MEMNOS_API/api/v1/memory/" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $ENGRAM_KEY" \
-    -H "X-Engram-Tool: stop-hook" \
+    -H "Authorization: Bearer $MEMNOS_KEY" \
+    -H "X-Memnos-Tool: stop-hook" \
     -d @- -o /dev/null 2>/dev/null || true
 
 # ── Stage B: LLM summary via claude --print (no separate API key needed) ──────
@@ -969,32 +969,32 @@ print(json.dumps({
     'metadata':    {'session_id': session, 'project': project, 'source': 'stop-hook-rich'},
     'provenance':  {'tool': 'claude-code-stop-hook', 'agent_id': session},
 }))
-" "$RICH_CONTENT" "$ENGRAM_NS" "$PROJECT" "$SESSION" 2>/dev/null \
-| curl -sf --max-time 8 -X POST "$ENGRAM_API/api/v1/memory/" \
+" "$RICH_CONTENT" "$MEMNOS_NS" "$PROJECT" "$SESSION" 2>/dev/null \
+| curl -sf --max-time 8 -X POST "$MEMNOS_API/api/v1/memory/" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $ENGRAM_KEY" \
-    -H "X-Engram-Tool: stop-hook-rich" \
+    -H "Authorization: Bearer $MEMNOS_KEY" \
+    -H "X-Memnos-Tool: stop-hook-rich" \
     -d @- -o /dev/null 2>/dev/null || true
 
 exit 0
 SESSION
-  chmod +x "$CLAUDE_HOOKS_DIR/engram-session-write.sh"
-  success "Session hook: $CLAUDE_HOOKS_DIR/engram-session-write.sh"
+  chmod +x "$CLAUDE_HOOKS_DIR/memnos-session-write.sh"
+  success "Session hook: $CLAUDE_HOOKS_DIR/memnos-session-write.sh"
 
   # ── slash command ──────────────────────────────────────────────────────────
-  cat > "$CLAUDE_COMMANDS_DIR/engram.md" <<'CMD'
-# /engram [save|status|ns:<namespace>]
+  cat > "$CLAUDE_COMMANDS_DIR/memnos.md" <<'CMD'
+# /memnos [save|status|ns:<namespace>]
 
 ---
 
-## /engram status
+## /memnos status
 
 Run these bash commands, then format the results as shown below.
 
 ```bash
 # Read connection details once
-API=$(grep '^ENGRAM_API=' ~/.claude/hooks/engram.env | cut -d= -f2)
-KEY=$(grep '^ENGRAM_KEY=' ~/.claude/hooks/engram.env | cut -d= -f2)
+API=$(grep '^MEMNOS_API=' ~/.claude/hooks/memnos.env | cut -d= -f2)
+KEY=$(grep '^MEMNOS_KEY=' ~/.claude/hooks/memnos.env | cut -d= -f2)
 AUTH="Authorization: Bearer $KEY"
 
 # 1. All namespaces
@@ -1002,33 +1002,33 @@ curl -sf "$API/api/v1/admin/namespaces" -H "$AUTH" 2>/dev/null || echo "[]"
 
 # 2. Current namespace for this project
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
-if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]]; then
-  echo "source:file"; grep '^namespace=' "$REPO_ROOT/.engram" | cut -d= -f2
+if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.memnos" ]]; then
+  echo "source:file"; grep '^namespace=' "$REPO_ROOT/.memnos" | cut -d= -f2
 else
-  echo "source:default"; grep '^ENGRAM_DEFAULT_NS=' ~/.claude/hooks/engram.env | cut -d= -f2 | tr -d ' '
+  echo "source:default"; grep '^MEMNOS_DEFAULT_NS=' ~/.claude/hooks/memnos.env | cut -d= -f2 | tr -d ' '
 fi
 
 # 3. Recent memories (last 5)
-NS=$(grep '^ENGRAM_DEFAULT_NS=' ~/.claude/hooks/engram.env | cut -d= -f2 | tr -d ' ')
-[[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]] && NS=$(grep '^namespace=' "$REPO_ROOT/.engram" | cut -d= -f2 | tr -d ' ')
+NS=$(grep '^MEMNOS_DEFAULT_NS=' ~/.claude/hooks/memnos.env | cut -d= -f2 | tr -d ' ')
+[[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.memnos" ]] && NS=$(grep '^namespace=' "$REPO_ROOT/.memnos" | cut -d= -f2 | tr -d ' ')
 curl -sf "$API/api/v1/memory/search?q=session+commit+work&ns=$NS&top_k=5" \
   -H "$AUTH" 2>/dev/null || echo "[]"
 ```
 
-**engram status**
+**memnos status**
 
 **Namespaces** — bullet list of all namespace names
 
-**Current namespace** — name + how resolved (.engram file / env default).
-If $ARGUMENTS contains `ns:something`, show: `echo 'namespace=something' > .engram`
+**Current namespace** — name + how resolved (.memnos file / env default).
+If $ARGUMENTS contains `ns:something`, show: `echo 'namespace=something' > .memnos`
 
 **Recent memories** — up to 5 as: `[type] score — first 120 chars`
 
 ---
 
-## /engram save
+## /memnos save
 
-Persist this entire session to engram as raw, searchable chunks.
+Persist this entire session to memnos as raw, searchable chunks.
 
 **Use the conversation in your current context window. Do NOT read transcript files.**
 Write content as-is — do NOT summarize or compress. Cover the full session chronologically.
@@ -1038,11 +1038,11 @@ Do NOT stop early — every task, finding, decision, error, and fix must be capt
 
 **1. Read config:**
 ```bash
-KEY=$(grep '^ENGRAM_KEY=' ~/.claude/hooks/engram.env | cut -d= -f2)
-API=$(grep '^ENGRAM_API=' ~/.claude/hooks/engram.env | cut -d= -f2)
-NS=$(grep '^ENGRAM_DEFAULT_NS=' ~/.claude/hooks/engram.env | cut -d= -f2)
+KEY=$(grep '^MEMNOS_KEY=' ~/.claude/hooks/memnos.env | cut -d= -f2)
+API=$(grep '^MEMNOS_API=' ~/.claude/hooks/memnos.env | cut -d= -f2)
+NS=$(grep '^MEMNOS_DEFAULT_NS=' ~/.claude/hooks/memnos.env | cut -d= -f2)
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
-[[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.engram" ]] && NS=$(grep '^namespace=' "$REPO_ROOT/.engram" | cut -d= -f2 | tr -d ' ')
+[[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.memnos" ]] && NS=$(grep '^namespace=' "$REPO_ROOT/.memnos" | cut -d= -f2 | tr -d ' ')
 PROJECT=$(basename "${REPO_ROOT:-$(pwd)}")
 BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 echo "NS=$NS  PROJECT=$PROJECT  BRANCH=$BRANCH"
@@ -1055,18 +1055,18 @@ import json, urllib.request, os, subprocess
 
 def cfg(key, default=''):
     try:
-        for line in open(os.path.expanduser('~/.claude/hooks/engram.env')).read().splitlines():
+        for line in open(os.path.expanduser('~/.claude/hooks/memnos.env')).read().splitlines():
             if line.startswith(key + '='): return line.split('=', 1)[1].strip()
     except: pass
     return default
 
-api  = cfg('ENGRAM_API',        'http://localhost:8766')
-akey = cfg('ENGRAM_KEY',        '')
-ns   = cfg('ENGRAM_DEFAULT_NS', 'personal:default')
+api  = cfg('MEMNOS_API',        'http://localhost:8766')
+akey = cfg('MEMNOS_KEY',        '')
+ns   = cfg('MEMNOS_DEFAULT_NS', 'personal:default')
 try:
     root = subprocess.check_output(['git','rev-parse','--show-toplevel'],
         stderr=subprocess.DEVNULL, text=True).strip()
-    for line in open(f'{root}/.engram').read().splitlines():
+    for line in open(f'{root}/.memnos').read().splitlines():
         if line.startswith('namespace='): ns = line.split('=',1)[1].strip()
 except: pass
 project = os.path.basename(
@@ -1103,14 +1103,14 @@ import json, urllib.request, os, subprocess
 
 def cfg(key, default=''):
     try:
-        for line in open(os.path.expanduser('~/.claude/hooks/engram.env')).read().splitlines():
+        for line in open(os.path.expanduser('~/.claude/hooks/memnos.env')).read().splitlines():
             if line.startswith(key + '='): return line.split('=', 1)[1].strip()
     except: pass
     return default
 
-api  = cfg('ENGRAM_API',        'http://localhost:8766')
-akey = cfg('ENGRAM_KEY',        '')
-ns   = cfg('ENGRAM_DEFAULT_NS', 'personal:default')
+api  = cfg('MEMNOS_API',        'http://localhost:8766')
+akey = cfg('MEMNOS_KEY',        '')
+ns   = cfg('MEMNOS_DEFAULT_NS', 'personal:default')
 project = os.path.basename(subprocess.run(['git','rev-parse','--show-toplevel'],
     capture_output=True,text=True).stdout.strip() or os.getcwd())
 branch  = subprocess.run(['git','rev-parse','--abbrev-ref','HEAD'],
@@ -1134,15 +1134,15 @@ print('Index:', json.loads(urllib.request.urlopen(req,timeout=5).read()).get('id
 
 ---
 
-## /engram ns:<namespace>
+## /memnos ns:<namespace>
 
 To set a permanent namespace for a project:
 ```bash
-echo 'namespace=<namespace>' > .engram
+echo 'namespace=<namespace>' > .memnos
 ```
-Then confirm with `/engram status` that the new namespace is active.
+Then confirm with `/memnos status` that the new namespace is active.
 CMD
-  success "Slash command /engram: $CLAUDE_COMMANDS_DIR/engram.md"
+  success "Slash command /memnos: $CLAUDE_COMMANDS_DIR/memnos.md"
 }
 
 # ─── Install global git hook ───────────────────────────────────────────────────
@@ -1159,20 +1159,20 @@ install_git_hook() {
 
   cat > "$git_hooks_dir/post-commit" <<'GITHOOK'
 #!/usr/bin/env bash
-# Global git post-commit hook — writes every commit to engram.
+# Global git post-commit hook — writes every commit to memnos.
 set -euo pipefail
-HOOKS_CONFIG="$HOME/.claude/hooks/engram.env"
+HOOKS_CONFIG="$HOME/.claude/hooks/memnos.env"
 [ -f "$HOOKS_CONFIG" ] && source "$HOOKS_CONFIG"
-ENGRAM_API="${ENGRAM_API:-http://localhost:8766}"
-ENGRAM_KEY="${ENGRAM_KEY:-}"
-if ! curl -sf --max-time 2 "$ENGRAM_API/api/v1/admin/health" -o /dev/null 2>/dev/null; then exit 0; fi
+MEMNOS_API="${MEMNOS_API:-http://localhost:8766}"
+MEMNOS_KEY="${MEMNOS_KEY:-}"
+if ! curl -sf --max-time 2 "$MEMNOS_API/api/v1/admin/health" -o /dev/null 2>/dev/null; then exit 0; fi
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 REPO_NAME=$(basename "$REPO_ROOT")
-ENGRAM_NS="${ENGRAM_DEFAULT_NS:-personal:default}"
-ENGRAM_NS="${ENGRAM_NS_OVERRIDE:-$ENGRAM_NS}"
-if [[ -f "$REPO_ROOT/.engram" ]]; then
-  FILE_NS=$(grep '^namespace=' "$REPO_ROOT/.engram" 2>/dev/null | cut -d= -f2 | tr -d ' ')
-  [[ -n "$FILE_NS" ]] && ENGRAM_NS="$FILE_NS"
+MEMNOS_NS="${MEMNOS_DEFAULT_NS:-personal:default}"
+MEMNOS_NS="${MEMNOS_NS_OVERRIDE:-$MEMNOS_NS}"
+if [[ -f "$REPO_ROOT/.memnos" ]]; then
+  FILE_NS=$(grep '^namespace=' "$REPO_ROOT/.memnos" 2>/dev/null | cut -d= -f2 | tr -d ' ')
+  [[ -n "$FILE_NS" ]] && MEMNOS_NS="$FILE_NS"
 fi
 COMMIT_HASH=$(git rev-parse --short HEAD)
 COMMIT_FULL=$(git rev-parse HEAD)
@@ -1183,17 +1183,17 @@ BRANCH=$(git rev-parse --abbrev-ref HEAD)
 MEMORY_TYPE="fact"
 echo "$COMMIT_MSG" | grep -qiE '^(feat|feature|refactor|arch):' && MEMORY_TYPE="decision"
 echo "$COMMIT_MSG" | grep -qiE '^(fix|hotfix|bug):' && MEMORY_TYPE="incident" || true
-CONTENT="[engram-commit] $COMMIT_MSG
+CONTENT="[memnos-commit] $COMMIT_MSG
 repo: $REPO_NAME | commit: $COMMIT_HASH | branch: $BRANCH | author: $COMMIT_AUTHOR
 files: $CHANGED_FILES"
 PAYLOAD=$(python3 -c "
 import json,sys
 msg,ns,mtype,commit_full,commit_short,branch,author,files,repo=sys.argv[1:10]
-print(json.dumps({'content':msg,'namespace':ns,'memory_type':mtype,'author':author,'tags':['git-commit','auto',repo,mtype],'metadata':{'commit_hash':commit_full,'commit_short':commit_short,'repo':repo,'branch':branch,'author':author,'changed_files':files,'source':'post-commit-hook'},'provenance':{'tool':'engram-git','git_commit':commit_short,'user_id':author,'agent_id':f'git:{repo}:{commit_short}'}}))
-" "$CONTENT" "$ENGRAM_NS" "$MEMORY_TYPE" "$COMMIT_FULL" "$COMMIT_HASH" "$BRANCH" "$COMMIT_AUTHOR" "$CHANGED_FILES" "$REPO_NAME" 2>/dev/null)
-curl -sf --max-time 5 -X POST "$ENGRAM_API/api/v1/memory/" \
-  -H "Content-Type: application/json" -H "Authorization: Bearer $ENGRAM_KEY" \
-  -H "X-Engram-Tool: engram-git" \
+print(json.dumps({'content':msg,'namespace':ns,'memory_type':mtype,'author':author,'tags':['git-commit','auto',repo,mtype],'metadata':{'commit_hash':commit_full,'commit_short':commit_short,'repo':repo,'branch':branch,'author':author,'changed_files':files,'source':'post-commit-hook'},'provenance':{'tool':'memnos-git','git_commit':commit_short,'user_id':author,'agent_id':f'git:{repo}:{commit_short}'}}))
+" "$CONTENT" "$MEMNOS_NS" "$MEMORY_TYPE" "$COMMIT_FULL" "$COMMIT_HASH" "$BRANCH" "$COMMIT_AUTHOR" "$CHANGED_FILES" "$REPO_NAME" 2>/dev/null)
+curl -sf --max-time 5 -X POST "$MEMNOS_API/api/v1/memory/" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $MEMNOS_KEY" \
+  -H "X-Memnos-Tool: memnos-git" \
   -d "$PAYLOAD" -o /dev/null 2>/dev/null || true
 LOCAL_HOOK="$(git rev-parse --git-dir 2>/dev/null)/hooks/post-commit.local"
 [[ -x "$LOCAL_HOOK" ]] && exec "$LOCAL_HOOK" "$@"
@@ -1207,13 +1207,13 @@ GITHOOK
 
 # ─── Derive MCP/SSE URL from the API server URL ──────────────────────────────
 # API runs on :8766, MCP/SSE on :8765 in the default compose. If the user provided
-# an explicit ENGRAM_MCP_URL via env, honour it.
+# an explicit MEMNOS_MCP_URL via env, honour it.
 mcp_url_from_server() {
-  if [ -n "${ENGRAM_MCP_URL:-}" ]; then
-    echo "$ENGRAM_MCP_URL"
+  if [ -n "${MEMNOS_MCP_URL:-}" ]; then
+    echo "$MEMNOS_MCP_URL"
     return
   fi
-  local url="${ENGRAM_SERVER%/}"
+  local url="${MEMNOS_SERVER%/}"
   # Replace :8766 → :8765 if present, else assume the user is fronting MCP on the same host
   if [[ "$url" == *:8766* ]]; then
     url="${url/:8766/:8765}"
@@ -1223,11 +1223,11 @@ mcp_url_from_server() {
 
 # ─── Patch Claude Code settings.json (hooks) + ~/.claude.json (MCP server) ──
 patch_settings() {
-  step "Registering hooks + engram MCP server in Claude Code"
+  step "Registering hooks + memnos MCP server in Claude Code"
   [ -z "$CLAUDE_SETTINGS" ] && warn "settings.json not found — skipping." && return 0
 
   # Backup settings.json before mutating
-  local backup="${CLAUDE_SETTINGS}.before-engram-$(date +%Y%m%d-%H%M%S)"
+  local backup="${CLAUDE_SETTINGS}.before-memnos-$(date +%Y%m%d-%H%M%S)"
   cp "$CLAUDE_SETTINGS" "$backup"
   info "Backed up settings.json → $backup"
 
@@ -1235,7 +1235,7 @@ patch_settings() {
   # reads MCP servers from (settings.json mcpServers is legacy/duplicate).
   local CLAUDE_JSON="$HOME/.claude.json"
   if [ -f "$CLAUDE_JSON" ]; then
-    local cjbackup="${CLAUDE_JSON}.before-engram-$(date +%Y%m%d-%H%M%S)"
+    local cjbackup="${CLAUDE_JSON}.before-memnos-$(date +%Y%m%d-%H%M%S)"
     cp "$CLAUDE_JSON" "$cjbackup"
     info "Backed up ~/.claude.json → $cjbackup"
   else
@@ -1243,10 +1243,10 @@ patch_settings() {
     echo '{}' > "$CLAUDE_JSON"
   fi
 
-  local inject_cmd="$CLAUDE_HOOKS_DIR/engram-inject.sh"
-  local precompact_cmd="$CLAUDE_HOOKS_DIR/engram-precompact.sh"
-  local gitwrite_cmd="$CLAUDE_HOOKS_DIR/engram-git-write.sh"
-  local session_cmd="$CLAUDE_HOOKS_DIR/engram-session-write.sh"
+  local inject_cmd="$CLAUDE_HOOKS_DIR/memnos-inject.sh"
+  local precompact_cmd="$CLAUDE_HOOKS_DIR/memnos-precompact.sh"
+  local gitwrite_cmd="$CLAUDE_HOOKS_DIR/memnos-git-write.sh"
+  local session_cmd="$CLAUDE_HOOKS_DIR/memnos-session-write.sh"
   local mcp_url; mcp_url="$(mcp_url_from_server)"
 
   python3 - <<PYEOF
@@ -1259,7 +1259,7 @@ precompact_cmd = "$precompact_cmd"
 gitwrite_cmd   = "$gitwrite_cmd"
 session_cmd    = "$session_cmd"
 mcp_url        = "$mcp_url"
-api_key        = "$ENGRAM_API_KEY"
+api_key        = "$MEMNOS_API_KEY"
 
 # ─── settings.json — hooks ──────────────────────────────────────────────────
 try:
@@ -1297,7 +1297,7 @@ mcp_entry = {
     "url": mcp_url,
     "headers": {"Authorization": f"Bearer {api_key}"}
 }
-settings.setdefault("mcpServers", {})["engram"] = mcp_entry
+settings.setdefault("mcpServers", {})["memnos"] = mcp_entry
 
 with open(settings_file, "w") as f:
     json.dump(settings, f, indent=2); f.write("\n")
@@ -1311,26 +1311,26 @@ except Exception as e:
     print(f"  [warn] Could not read {claude_json}: {e}; starting with empty object")
     cj = {}
 
-cj.setdefault("mcpServers", {})["engram"] = mcp_entry
+cj.setdefault("mcpServers", {})["memnos"] = mcp_entry
 
 with open(claude_json, "w") as f:
     json.dump(cj, f, indent=2); f.write("\n")
-print(f"  [ok] engram MCP server registered in {claude_json}: {mcp_url}")
+print(f"  [ok] memnos MCP server registered in {claude_json}: {mcp_url}")
 PYEOF
 }
 
-# ─── Patch ~/.claude/CLAUDE.md with an engram usage section ──────────────────
+# ─── Patch ~/.claude/CLAUDE.md with an memnos usage section ──────────────────
 patch_claude_md() {
   step "Updating ~/.claude/CLAUDE.md"
   local CLAUDE_MD="$HOME/.claude/CLAUDE.md"
 
-  if [ -f "$CLAUDE_MD" ] && grep -qE "^## engram\b|engram MCP|engram — Persistent" "$CLAUDE_MD"; then
-    info "CLAUDE.md already has an engram section — leaving it alone."
+  if [ -f "$CLAUDE_MD" ] && grep -qE "^## memnos\b|memnos MCP|memnos — Persistent" "$CLAUDE_MD"; then
+    info "CLAUDE.md already has an memnos section — leaving it alone."
     return 0
   fi
 
   if [ -f "$CLAUDE_MD" ]; then
-    local backup="${CLAUDE_MD}.before-engram-$(date +%Y%m%d-%H%M%S)"
+    local backup="${CLAUDE_MD}.before-memnos-$(date +%Y%m%d-%H%M%S)"
     cp "$CLAUDE_MD" "$backup"
     info "Backed up CLAUDE.md → $backup"
   else
@@ -1338,11 +1338,11 @@ patch_claude_md() {
     touch "$CLAUDE_MD"
   fi
 
-  cat >> "$CLAUDE_MD" <<'ENGRAM_MD'
+  cat >> "$CLAUDE_MD" <<'MEMNOS_MD'
 
-## engram — Persistent Memory MCP
+## memnos — Persistent Memory MCP
 
-engram provides persistent memory across Claude Code sessions via the `engram`
+memnos provides persistent memory across Claude Code sessions via the `memnos`
 MCP server (registered in this settings.json) plus session hooks.
 
 ### Memory tools (preferred over Bash grep/find for knowledge recall)
@@ -1357,47 +1357,47 @@ MCP server (registered in this settings.json) plus session hooks.
 
 - Call `memory_search` immediately when the user mentions a project, customer, or topic that might have prior context — do not start with file searches.
 - Save with `memory_write` mid-session whenever a decision, outcome, or non-obvious learning happens. Do not wait for end-of-session.
-- Default namespace: `personal:default`. Override per-project by placing `namespace=project:myname` in a `.engram` file at the repo root.
+- Default namespace: `personal:default`. Override per-project by placing `namespace=project:myname` in a `.memnos` file at the repo root.
 
 ### Configuration
 
-- Hooks config: `~/.claude/hooks/engram.env`
-- Manual save: `/engram save` slash command (in Claude Code)
-- Manage the server: `cd ~/.engram-src && docker compose [up -d | down | logs]`
-ENGRAM_MD
-  success "engram section appended to $CLAUDE_MD"
+- Hooks config: `~/.claude/hooks/memnos.env`
+- Manual save: `/memnos save` slash command (in Claude Code)
+- Manage the server: `cd ~/.memnos-src && docker compose [up -d | down | logs]`
+MEMNOS_MD
+  success "memnos section appended to $CLAUDE_MD"
 }
 
 # ─── Success ──────────────────────────────────────────────────────────────────
 print_success() {
   echo ""
   echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "${BOLD}${GREEN}  engram client hooks installed!${NC}"
+  echo -e "${BOLD}${GREEN}  memnos client hooks installed!${NC}"
   echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
   echo -e "  ${BOLD}What was installed:${NC}"
-  echo -e "    ${DIM}~/.claude/hooks/engram.env${NC}               — config (server, key, namespace)"
-  echo -e "    ${DIM}~/.claude/hooks/engram-inject.sh${NC}         — context injection (UserPromptSubmit)"
-  echo -e "    ${DIM}~/.claude/hooks/engram-heartbeat.py${NC}      — background daemon (abrupt-exit safety)"
-  echo -e "    ${DIM}~/.claude/hooks/engram-git-write.sh${NC}      — git commits + periodic save (PostToolUse)"
-  echo -e "    ${DIM}~/.claude/hooks/engram-precompact.sh${NC}     — save before context compact (PreCompact)"
-  echo -e "    ${DIM}~/.claude/hooks/engram-session-write.sh${NC}  — session summary on exit (Stop)"
+  echo -e "    ${DIM}~/.claude/hooks/memnos.env${NC}               — config (server, key, namespace)"
+  echo -e "    ${DIM}~/.claude/hooks/memnos-inject.sh${NC}         — context injection (UserPromptSubmit)"
+  echo -e "    ${DIM}~/.claude/hooks/memnos-heartbeat.py${NC}      — background daemon (abrupt-exit safety)"
+  echo -e "    ${DIM}~/.claude/hooks/memnos-git-write.sh${NC}      — git commits + periodic save (PostToolUse)"
+  echo -e "    ${DIM}~/.claude/hooks/memnos-precompact.sh${NC}     — save before context compact (PreCompact)"
+  echo -e "    ${DIM}~/.claude/hooks/memnos-session-write.sh${NC}  — session summary on exit (Stop)"
   echo -e "    ${DIM}~/.git-hooks/post-commit${NC}                 — commit memory on every git commit"
-  echo -e "    ${DIM}~/.claude/commands/engram.md${NC}             — /engram slash command"
+  echo -e "    ${DIM}~/.claude/commands/memnos.md${NC}             — /memnos slash command"
   echo ""
   echo -e "  ${BOLD}Hook pipeline:${NC}"
   echo -e "    UserPromptSubmit → inject context"
-  echo -e "    PostToolUse      → capture git commits, periodic auto-save (every ${DIM}${ENGRAM_AUTOSAVE_MINUTES:-10}min${NC})"
+  echo -e "    PostToolUse      → capture git commits, periodic auto-save (every ${DIM}${MEMNOS_AUTOSAVE_MINUTES:-10}min${NC})"
   echo -e "    PreCompact       → save before context window compact"
   echo -e "    Stop             → full session summary on exit"
-  echo -e "    Heartbeat daemon → safety net for Ctrl+C / power loss (every ${DIM}${ENGRAM_HEARTBEAT_MINUTES:-10}min${NC})"
+  echo -e "    Heartbeat daemon → safety net for Ctrl+C / power loss (every ${DIM}${MEMNOS_HEARTBEAT_MINUTES:-10}min${NC})"
   echo ""
-  echo -e "  ${BOLD}Server${NC}    : ${ENGRAM_SERVER}"
+  echo -e "  ${BOLD}Server${NC}    : ${MEMNOS_SERVER}"
   echo -e "  ${BOLD}Namespace${NC} : ${DEFAULT_NS}"
   echo -e "  ${BOLD}LLM summaries${NC}: via claude --print (built-in)"
   echo ""
-  echo -e "  ${BOLD}Per-project namespace:${NC}  echo 'namespace=project:myname' > /path/to/repo/.engram"
-  echo -e "  ${BOLD}Manual save:${NC}            /engram save  (in Claude Code)"
+  echo -e "  ${BOLD}Per-project namespace:${NC}  echo 'namespace=project:myname' > /path/to/repo/.memnos"
+  echo -e "  ${BOLD}Manual save:${NC}            /memnos save  (in Claude Code)"
   echo ""
   echo -e "  ${BOLD}Restart Claude Code${NC} (quit and reopen) to activate the hooks."
   echo ""

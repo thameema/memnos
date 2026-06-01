@@ -82,43 +82,43 @@ sys.path.insert(0, _REPO_ROOT + "/packages/api")
 
 class TestCreateVectorBackend(unittest.TestCase):
     def test_no_env_returns_none(self):
-        env = {k: v for k, v in os.environ.items() if k != "ENGRAM_VECTOR_BACKEND"}
+        env = {k: v for k, v in os.environ.items() if k != "MEMNOS_VECTOR_BACKEND"}
         with patch.dict(os.environ, env, clear=True):
-            from engram.storage.vector_backend import create_vector_backend
+            from memnos.storage.vector_backend import create_vector_backend
             result = create_vector_backend(1536)
             self.assertIsNone(result)
 
     def test_arcadedb_explicit_returns_none(self):
-        with patch.dict(os.environ, {"ENGRAM_VECTOR_BACKEND": "arcadedb"}):
-            from engram.storage.vector_backend import create_vector_backend
+        with patch.dict(os.environ, {"MEMNOS_VECTOR_BACKEND": "arcadedb"}):
+            from memnos.storage.vector_backend import create_vector_backend
             result = create_vector_backend(384)
             self.assertIsNone(result)
 
     def test_unknown_backend_returns_none(self):
-        with patch.dict(os.environ, {"ENGRAM_VECTOR_BACKEND": "pinecone"}):
-            from engram.storage.vector_backend import create_vector_backend
+        with patch.dict(os.environ, {"MEMNOS_VECTOR_BACKEND": "pinecone"}):
+            from memnos.storage.vector_backend import create_vector_backend
             result = create_vector_backend(384)
             self.assertIsNone(result)
 
     def test_qdrant_backend_returned(self):
         with patch.dict(os.environ, {
-            "ENGRAM_VECTOR_BACKEND": "qdrant",
-            "ENGRAM_QDRANT_URL": "http://custom:6333",
-            "ENGRAM_QDRANT_COLLECTION": "test_col",
+            "MEMNOS_VECTOR_BACKEND": "qdrant",
+            "MEMNOS_QDRANT_URL": "http://custom:6333",
+            "MEMNOS_QDRANT_COLLECTION": "test_col",
         }):
-            from engram.storage.vector_backend import create_vector_backend
+            from memnos.storage.vector_backend import create_vector_backend
             result = create_vector_backend(768)
-            from engram.storage.qdrant_backend import QdrantVectorBackend
+            from memnos.storage.qdrant_backend import QdrantVectorBackend
             self.assertIsInstance(result, QdrantVectorBackend)
 
     def test_qdrant_url_from_env(self):
         with patch.dict(os.environ, {
-            "ENGRAM_VECTOR_BACKEND": "qdrant",
-            "ENGRAM_QDRANT_URL": "http://custom-qdrant:6333",
-            "ENGRAM_QDRANT_COLLECTION": "my_col",
+            "MEMNOS_VECTOR_BACKEND": "qdrant",
+            "MEMNOS_QDRANT_URL": "http://custom-qdrant:6333",
+            "MEMNOS_QDRANT_COLLECTION": "my_col",
         }):
-            from engram.storage.vector_backend import create_vector_backend
-            from engram.storage.qdrant_backend import QdrantVectorBackend
+            from memnos.storage.vector_backend import create_vector_backend
+            from memnos.storage.qdrant_backend import QdrantVectorBackend
             result = create_vector_backend(512)
             self.assertIsInstance(result, QdrantVectorBackend)
             self.assertEqual(result._url, "http://custom-qdrant:6333")
@@ -151,7 +151,7 @@ def _make_mock_async_qdrant_client():
 
 
 def _make_backend(vector_dim=384):
-    from engram.storage.qdrant_backend import QdrantVectorBackend
+    from memnos.storage.qdrant_backend import QdrantVectorBackend
     return QdrantVectorBackend(
         url="http://localhost:6333",
         collection="test_memories",
@@ -299,7 +299,7 @@ class TestQdrantVectorBackend(unittest.IsolatedAsyncioTestCase):
         self.assertIs(result, mock_client)
 
     async def test_missing_qdrant_client_raises_import_error(self):
-        from engram.storage.qdrant_backend import QdrantVectorBackend
+        from memnos.storage.qdrant_backend import QdrantVectorBackend
         backend = QdrantVectorBackend(url="http://x", collection="c", vector_dim=4)
         # Temporarily hide qdrant_client
         saved = sys.modules.pop("qdrant_client", None)
@@ -316,13 +316,13 @@ class TestQdrantVectorBackend(unittest.IsolatedAsyncioTestCase):
 
 
 # ---------------------------------------------------------------------------
-# EngramClient._vector_search routing
+# MemnosClient._vector_search routing
 # ---------------------------------------------------------------------------
 
-class TestEngramClientVectorSearchRouting(unittest.IsolatedAsyncioTestCase):
+class TestMemnosClientVectorSearchRouting(unittest.IsolatedAsyncioTestCase):
     def _make_client(self):
-        from engram.models import MemoryEntry, MemoryType, SearchResult
-        from engram.client import EngramClient
+        from memnos.models import MemoryEntry, MemoryType, SearchResult
+        from memnos.client import MemnosClient
 
         cfg = MagicMock()
         cfg.embeddings = MagicMock()
@@ -337,12 +337,12 @@ class TestEngramClientVectorSearchRouting(unittest.IsolatedAsyncioTestCase):
             memory_type=MemoryType.fact,
         )
 
-        with patch("engram.client.get_embedder"), \
-             patch("engram.client.ArcadeDBClient"), \
-             patch("engram.client.get_extractor"), \
-             patch("engram.client.get_vault_client"), \
-             patch("engram.client.create_vector_backend", return_value=None):
-            client = EngramClient(cfg)
+        with patch("memnos.client.get_embedder"), \
+             patch("memnos.client.ArcadeDBClient"), \
+             patch("memnos.client.get_extractor"), \
+             patch("memnos.client.get_vault_client"), \
+             patch("memnos.client.create_vector_backend", return_value=None):
+            client = MemnosClient(cfg)
 
         client._embedder = MagicMock()
         client._embedder.embed = AsyncMock(return_value=[0.1] * 384)

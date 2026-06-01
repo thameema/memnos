@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-test_corpus.py — Tests for engram's corpus ingestion and architecture enforcement feature.
+test_corpus.py — Tests for memnos's corpus ingestion and architecture enforcement feature.
 
 Part A — Unit tests (no API, no runner fixture)
     - Severity detection regex: SHALL / MUST NOT / SHOULD / MAY / None
@@ -12,7 +12,7 @@ Part A — Unit tests (no API, no runner fixture)
     - CheckResult helpers: shall_violations, should_violations, format()
     - SDK model parsing: _parse_corpus, _parse_check
 
-Part B — Integration tests (require a live engram API; use runner fixture)
+Part B — Integration tests (require a live memnos API; use runner fixture)
     - POST /corpus/        — register a corpus, get 201 response
     - GET  /corpus/        — list all corpora
     - GET  /corpus/{id}    — get a specific corpus
@@ -55,8 +55,8 @@ except ImportError:
     print("[error] Missing package: httpx  (pip install httpx)", file=sys.stderr)
     sys.exit(1)
 
-ENGRAM_API = os.environ.get("ENGRAM_API", "http://localhost:8766")
-ENGRAM_KEY = os.environ.get("ENGRAM_KEY", "engram-local-dev-key")
+MEMNOS_API = os.environ.get("MEMNOS_API", "http://localhost:8766")
+MEMNOS_KEY = os.environ.get("MEMNOS_KEY", "memnos-local-dev-key")
 
 TEST_NS = f"test:corpus:{uuid.uuid4().hex[:8]}"
 
@@ -70,7 +70,7 @@ def uid() -> str:
 
 def _delete_corpus(corpus_id: str, client: httpx.Client) -> None:
     try:
-        client.delete(f"{ENGRAM_API}/api/v1/corpus/{corpus_id}")
+        client.delete(f"{MEMNOS_API}/api/v1/corpus/{corpus_id}")
     except Exception:
         pass
 
@@ -134,7 +134,7 @@ class Runner:
 # --- severity detection ---
 
 def test_severity_shall() -> None:
-    from engram.corpus.extractor import _severity
+    from memnos.corpus.extractor import _severity
     assert _severity("The service SHALL validate the JWT token.") == "SHALL"
     assert _severity("Authentication MUST be enforced on all endpoints.") == "SHALL"
     assert _severity("REQUIRED field: patient ID.") == "SHALL"
@@ -142,28 +142,28 @@ def test_severity_shall() -> None:
 
 
 def test_severity_must_not() -> None:
-    from engram.corpus.extractor import _severity
+    from memnos.corpus.extractor import _severity
     # MUST NOT and SHALL NOT map to SHALL severity (highest)
     assert _severity("Services MUST NOT cache OAuth tokens in plain text.") == "SHALL"
     assert _severity("The API SHALL NOT expose internal stack traces.") == "SHALL"
 
 
 def test_severity_should() -> None:
-    from engram.corpus.extractor import _severity
+    from memnos.corpus.extractor import _severity
     assert _severity("All responses SHOULD include a correlation ID.") == "SHOULD"
     assert _severity("Using HTTPS is RECOMMENDED for all environments.") == "SHOULD"
     assert _severity("Direct DB access is NOT RECOMMENDED from service layers.") == "SHOULD"
 
 
 def test_severity_may() -> None:
-    from engram.corpus.extractor import _severity
+    from memnos.corpus.extractor import _severity
     assert _severity("Callers MAY omit the X-Request-ID header.") == "MAY"
     assert _severity("Pagination is OPTIONAL for small result sets.") == "MAY"
     assert _severity("Clients CAN cache responses up to max-age seconds.") == "MAY"
 
 
 def test_severity_none() -> None:
-    from engram.corpus.extractor import _severity
+    from memnos.corpus.extractor import _severity
     assert _severity("This service handles patient data.") is None
     assert _severity("The endpoint accepts JSON payloads.") is None
     assert _severity("") is None
@@ -172,7 +172,7 @@ def test_severity_none() -> None:
 # --- section parsing ---
 
 def test_parse_sections_preamble_only() -> None:
-    from engram.corpus.extractor import _parse_sections
+    from memnos.corpus.extractor import _parse_sections
     sections = _parse_sections("No headings here.\nJust a plain paragraph.")
     assert len(sections) == 1
     assert sections[0].heading == "__preamble__"
@@ -180,7 +180,7 @@ def test_parse_sections_preamble_only() -> None:
 
 
 def test_parse_sections_splits_on_headings() -> None:
-    from engram.corpus.extractor import _parse_sections
+    from memnos.corpus.extractor import _parse_sections
     text = dedent("""\
         Preamble line.
         ## Overview
@@ -197,7 +197,7 @@ def test_parse_sections_splits_on_headings() -> None:
 
 
 def test_parse_sections_heading_level() -> None:
-    from engram.corpus.extractor import _parse_sections
+    from memnos.corpus.extractor import _parse_sections
     sections = _parse_sections("# H1\n## H2\n### H3")
     levels = [s.level for s in sections]
     assert levels == [0, 1, 2, 3]
@@ -206,7 +206,7 @@ def test_parse_sections_heading_level() -> None:
 # --- file extraction ---
 
 def test_extract_file_yields_constraint_for_shall() -> None:
-    from engram.corpus.extractor import extract_file
+    from memnos.corpus.extractor import extract_file
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "arch.md"
         p.write_text(
@@ -223,7 +223,7 @@ def test_extract_file_yields_constraint_for_shall() -> None:
 
 
 def test_extract_file_must_not_label() -> None:
-    from engram.corpus.extractor import extract_file
+    from memnos.corpus.extractor import extract_file
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "security.md"
         p.write_text(
@@ -237,7 +237,7 @@ def test_extract_file_must_not_label() -> None:
 
 
 def test_extract_file_decision_section() -> None:
-    from engram.corpus.extractor import extract_file
+    from memnos.corpus.extractor import extract_file
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "design.md"
         p.write_text(
@@ -251,7 +251,7 @@ def test_extract_file_decision_section() -> None:
 
 
 def test_extract_file_skips_short_sentences() -> None:
-    from engram.corpus.extractor import extract_file
+    from memnos.corpus.extractor import extract_file
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "short.md"
         p.write_text("## Notes\nOK.\nYes.\nSHALL work.\n")
@@ -262,7 +262,7 @@ def test_extract_file_skips_short_sentences() -> None:
 
 
 def test_extract_file_metadata_fields() -> None:
-    from engram.corpus.extractor import extract_file
+    from memnos.corpus.extractor import extract_file
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "meta.md"
         p.write_text(
@@ -280,7 +280,7 @@ def test_extract_file_metadata_fields() -> None:
 
 
 def test_extract_corpus_walks_directory() -> None:
-    from engram.corpus.extractor import extract_corpus
+    from memnos.corpus.extractor import extract_corpus
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         (root / "a.md").write_text(
@@ -300,7 +300,7 @@ def test_extract_corpus_walks_directory() -> None:
 # --- connector registry ---
 
 def test_connector_registry_returns_git_doc() -> None:
-    from engram.corpus.connectors import REGISTRY, ConnectorType, GitDocConnector, get_connector
+    from memnos.corpus.connectors import REGISTRY, ConnectorType, GitDocConnector, get_connector
     assert ConnectorType.GIT_DOC in REGISTRY
     connector = get_connector(
         ConnectorType.GIT_DOC,
@@ -312,7 +312,7 @@ def test_connector_registry_returns_git_doc() -> None:
 
 
 def test_connector_registry_unknown_type_raises() -> None:
-    from engram.corpus.connectors import get_connector
+    from memnos.corpus.connectors import get_connector
     try:
         get_connector("nonexistent-type", corpus_id="x", namespace="y", source_path="/z")
         assert False, "Expected ValueError"
@@ -321,7 +321,7 @@ def test_connector_registry_unknown_type_raises() -> None:
 
 
 def test_git_doc_connector_extract_from_temp_dir() -> None:
-    from engram.corpus.connectors import get_connector, ConnectorType
+    from memnos.corpus.connectors import get_connector, ConnectorType
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "spec.md"
         p.write_text(
@@ -348,8 +348,8 @@ def test_git_doc_connector_extract_from_temp_dir() -> None:
 # --- CorpusStore CRUD ---
 
 def test_corpus_store_create_and_get() -> None:
-    from engram.corpus.store import CorpusStore
-    from engram.models import Corpus
+    from memnos.corpus.store import CorpusStore
+    from memnos.models import Corpus
 
     async def _run():
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -379,8 +379,8 @@ def test_corpus_store_create_and_get() -> None:
 
 
 def test_corpus_store_list_all() -> None:
-    from engram.corpus.store import CorpusStore
-    from engram.models import Corpus
+    from memnos.corpus.store import CorpusStore
+    from memnos.models import Corpus
 
     async def _run():
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -405,8 +405,8 @@ def test_corpus_store_list_all() -> None:
 
 
 def test_corpus_store_delete() -> None:
-    from engram.corpus.store import CorpusStore
-    from engram.models import Corpus
+    from memnos.corpus.store import CorpusStore
+    from memnos.models import Corpus
 
     async def _run():
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -433,8 +433,8 @@ def test_corpus_store_delete() -> None:
 
 
 def test_corpus_store_update_sync_state() -> None:
-    from engram.corpus.store import CorpusStore
-    from engram.models import Corpus
+    from memnos.corpus.store import CorpusStore
+    from memnos.models import Corpus
 
     async def _run():
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -465,8 +465,8 @@ def test_corpus_store_update_sync_state() -> None:
 
 
 def test_corpus_store_update_sync_state_error() -> None:
-    from engram.corpus.store import CorpusStore
-    from engram.models import Corpus
+    from memnos.corpus.store import CorpusStore
+    from memnos.models import Corpus
 
     async def _run():
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -496,7 +496,7 @@ def test_corpus_store_update_sync_state_error() -> None:
 # --- CheckResult helpers ---
 
 def test_check_result_shall_violations() -> None:
-    from engram_sdk.models import CheckResult, ConstraintHit
+    from memnos_sdk.models import CheckResult, ConstraintHit
     result = CheckResult(
         corpus_id="c1",
         namespace="ns",
@@ -513,7 +513,7 @@ def test_check_result_shall_violations() -> None:
 
 
 def test_check_result_should_violations() -> None:
-    from engram_sdk.models import CheckResult, ConstraintHit
+    from memnos_sdk.models import CheckResult, ConstraintHit
     result = CheckResult(
         corpus_id="c1",
         namespace="ns",
@@ -529,14 +529,14 @@ def test_check_result_should_violations() -> None:
 
 
 def test_check_result_empty_returns_no_violations() -> None:
-    from engram_sdk.models import CheckResult
+    from memnos_sdk.models import CheckResult
     result = CheckResult(corpus_id="c1", namespace="ns", constraints=[])
     assert result.shall_violations == []
     assert result.should_violations == []
 
 
 def test_check_result_format_empty() -> None:
-    from engram_sdk.models import CheckResult
+    from memnos_sdk.models import CheckResult
     result = CheckResult(corpus_id="corpus-123", namespace="ns", constraints=[])
     fmt = result.format()
     assert "corpus-123" in fmt
@@ -544,7 +544,7 @@ def test_check_result_format_empty() -> None:
 
 
 def test_check_result_format_with_constraints() -> None:
-    from engram_sdk.models import CheckResult, ConstraintHit
+    from memnos_sdk.models import CheckResult, ConstraintHit
     result = CheckResult(
         corpus_id="c1",
         namespace="test:ns",
@@ -569,8 +569,8 @@ def test_check_result_format_with_constraints() -> None:
 # --- SDK model parsing ---
 
 def test_sdk_parse_corpus_dict() -> None:
-    from engram_sdk.corpus import _parse_corpus
-    from engram_sdk.models import CorpusStatus
+    from memnos_sdk.corpus import _parse_corpus
+    from memnos_sdk.models import CorpusStatus
     data = {
         "id": "abc123",
         "name": "test-corpus",
@@ -597,7 +597,7 @@ def test_sdk_parse_corpus_dict() -> None:
 
 
 def test_sdk_parse_check_dict() -> None:
-    from engram_sdk.corpus import _parse_check
+    from memnos_sdk.corpus import _parse_check
     data = {
         "corpus_id": "c1",
         "namespace": "org:test",
@@ -630,8 +630,8 @@ def test_sdk_parse_check_dict() -> None:
 
 
 def test_sdk_parse_corpus_missing_optional_fields() -> None:
-    from engram_sdk.corpus import _parse_corpus
-    from engram_sdk.models import CorpusStatus
+    from memnos_sdk.corpus import _parse_corpus
+    from memnos_sdk.models import CorpusStatus
     data = {
         "id": "min-id",
         "name": "minimal",
@@ -653,10 +653,10 @@ def test_sdk_parse_corpus_missing_optional_fields() -> None:
 def test_corpus_register(runner: Runner) -> None:
     """POST /corpus/ creates a corpus record and returns 201."""
     corpus_id: str | None = None
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=30) as client:
         try:
             r = client.post(
-                f"{ENGRAM_API}/api/v1/corpus/",
+                f"{MEMNOS_API}/api/v1/corpus/",
                 json={
                     "name": f"test-corpus-{uid()}",
                     "source_path": "/tmp/nonexistent-docs",
@@ -685,10 +685,10 @@ def test_corpus_register(runner: Runner) -> None:
 def test_corpus_list(runner: Runner) -> None:
     """GET /corpus/ returns a list that includes the registered corpus."""
     corpus_id: str | None = None
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=30) as client:
         try:
             create_r = client.post(
-                f"{ENGRAM_API}/api/v1/corpus/",
+                f"{MEMNOS_API}/api/v1/corpus/",
                 json={
                     "name": f"list-test-{uid()}",
                     "source_path": "/tmp/list-test-docs",
@@ -699,7 +699,7 @@ def test_corpus_list(runner: Runner) -> None:
             assert create_r.status_code == 201
             corpus_id = create_r.json()["id"]
 
-            list_r = client.get(f"{ENGRAM_API}/api/v1/corpus/")
+            list_r = client.get(f"{MEMNOS_API}/api/v1/corpus/")
             assert list_r.status_code == 200
             items = list_r.json()
             assert isinstance(items, list), f"expected list, got {type(items)}"
@@ -715,11 +715,11 @@ def test_corpus_list(runner: Runner) -> None:
 def test_corpus_get(runner: Runner) -> None:
     """GET /corpus/{id} returns the correct corpus record."""
     corpus_id: str | None = None
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=30) as client:
         try:
             name = f"get-test-{uid()}"
             create_r = client.post(
-                f"{ENGRAM_API}/api/v1/corpus/",
+                f"{MEMNOS_API}/api/v1/corpus/",
                 json={
                     "name": name,
                     "source_path": "/tmp/get-test-docs",
@@ -730,7 +730,7 @@ def test_corpus_get(runner: Runner) -> None:
             assert create_r.status_code == 201
             corpus_id = create_r.json()["id"]
 
-            get_r = client.get(f"{ENGRAM_API}/api/v1/corpus/{corpus_id}")
+            get_r = client.get(f"{MEMNOS_API}/api/v1/corpus/{corpus_id}")
             assert get_r.status_code == 200
             body = get_r.json()
             assert body["id"] == corpus_id
@@ -745,8 +745,8 @@ def test_corpus_get(runner: Runner) -> None:
 
 def test_corpus_get_not_found(runner: Runner) -> None:
     """GET /corpus/nonexistent returns 404."""
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
-        r = client.get(f"{ENGRAM_API}/api/v1/corpus/nonexistent-id-{uid()}")
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=30) as client:
+        r = client.get(f"{MEMNOS_API}/api/v1/corpus/nonexistent-id-{uid()}")
         assert r.status_code == 404, (
             f"expected 404 for unknown corpus, got {r.status_code}: {r.text}"
         )
@@ -755,10 +755,10 @@ def test_corpus_get_not_found(runner: Runner) -> None:
 def test_corpus_sync_trigger(runner: Runner) -> None:
     """POST /corpus/{id}/sync returns 200 and marks corpus for re-sync."""
     corpus_id: str | None = None
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=30) as client:
         try:
             create_r = client.post(
-                f"{ENGRAM_API}/api/v1/corpus/",
+                f"{MEMNOS_API}/api/v1/corpus/",
                 json={
                     "name": f"sync-test-{uid()}",
                     "source_path": "/tmp/sync-docs",
@@ -771,7 +771,7 @@ def test_corpus_sync_trigger(runner: Runner) -> None:
             # Wait briefly then trigger sync; server may still be in initial sync
             time.sleep(0.5)
 
-            sync_r = client.post(f"{ENGRAM_API}/api/v1/corpus/{corpus_id}/sync", json={})
+            sync_r = client.post(f"{MEMNOS_API}/api/v1/corpus/{corpus_id}/sync", json={})
             # 200 = sync triggered; 409 = already syncing (both acceptable)
             assert sync_r.status_code in (200, 409), (
                 f"unexpected sync status: {sync_r.status_code}: {sync_r.text}"
@@ -786,10 +786,10 @@ def test_corpus_sync_trigger(runner: Runner) -> None:
 def test_corpus_check_not_ready_returns_409(runner: Runner) -> None:
     """POST /corpus/{id}/check on a non-ready corpus returns 409."""
     corpus_id: str | None = None
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=30) as client:
         try:
             create_r = client.post(
-                f"{ENGRAM_API}/api/v1/corpus/",
+                f"{MEMNOS_API}/api/v1/corpus/",
                 json={
                     "name": f"check-not-ready-{uid()}",
                     "source_path": "/tmp/definitely-does-not-exist-" + uid(),
@@ -802,7 +802,7 @@ def test_corpus_check_not_ready_returns_409(runner: Runner) -> None:
             # Wait a moment so the background sync settles to "error" (path doesn't exist)
             time.sleep(1.5)
 
-            body = client.get(f"{ENGRAM_API}/api/v1/corpus/{corpus_id}").json()
+            body = client.get(f"{MEMNOS_API}/api/v1/corpus/{corpus_id}").json()
             if body["status"] not in ("error", "pending"):
                 pytest.skip(
                     f"corpus settled to unexpected status {body['status']!r} — "
@@ -810,7 +810,7 @@ def test_corpus_check_not_ready_returns_409(runner: Runner) -> None:
                 )
 
             check_r = client.post(
-                f"{ENGRAM_API}/api/v1/corpus/{corpus_id}/check",
+                f"{MEMNOS_API}/api/v1/corpus/{corpus_id}/check",
                 json={"code": "public class Foo {}", "context": "test"},
             )
             assert check_r.status_code == 409, (
@@ -826,9 +826,9 @@ def test_corpus_check_not_ready_returns_409(runner: Runner) -> None:
 
 def test_corpus_delete(runner: Runner) -> None:
     """DELETE /corpus/{id} returns 204; subsequent GET returns 404."""
-    with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30) as client:
+    with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=30) as client:
         create_r = client.post(
-            f"{ENGRAM_API}/api/v1/corpus/",
+            f"{MEMNOS_API}/api/v1/corpus/",
             json={
                 "name": f"delete-test-{uid()}",
                 "source_path": "/tmp/delete-docs",
@@ -838,12 +838,12 @@ def test_corpus_delete(runner: Runner) -> None:
         assert create_r.status_code == 201
         corpus_id = create_r.json()["id"]
 
-        del_r = client.delete(f"{ENGRAM_API}/api/v1/corpus/{corpus_id}")
+        del_r = client.delete(f"{MEMNOS_API}/api/v1/corpus/{corpus_id}")
         assert del_r.status_code == 204, (
             f"expected 204, got {del_r.status_code}: {del_r.text}"
         )
 
-        get_r = client.get(f"{ENGRAM_API}/api/v1/corpus/{corpus_id}")
+        get_r = client.get(f"{MEMNOS_API}/api/v1/corpus/{corpus_id}")
         assert get_r.status_code == 404, (
             f"expected 404 after delete, got {get_r.status_code}: {get_r.text}"
         )
@@ -855,14 +855,14 @@ def test_corpus_delete(runner: Runner) -> None:
 def test_sdk_corpus_register_and_list(runner: Runner) -> None:
     """SDK SyncCorpusClient.register() + list() round-trip."""
     try:
-        from engram_sdk import EngramClient
-        from engram_sdk.models import CorpusStatus
+        from memnos_sdk import MemnosClient
+        from memnos_sdk.models import CorpusStatus
     except ImportError as e:
-        pytest.skip(f"engram_sdk not installed: {e}")
+        pytest.skip(f"memnos_sdk not installed: {e}")
 
     corpus_id: str | None = None
     try:
-        with EngramClient(url=ENGRAM_API, api_key=ENGRAM_KEY) as client:
+        with MemnosClient(url=MEMNOS_API, api_key=MEMNOS_KEY) as client:
             name = f"sdk-corpus-{uid()}"
             info = client.corpus.register(
                 name=name,
@@ -886,7 +886,7 @@ def test_sdk_corpus_register_and_list(runner: Runner) -> None:
                 print(f"\n    SDK corpus_id={corpus_id}  status={info.status.value}")
     finally:
         if corpus_id:
-            with httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=10) as client:
+            with httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=10) as client:
                 _delete_corpus(corpus_id, client)
 
 
@@ -940,14 +940,14 @@ class UnitRunner:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="engram corpus tests")
+    parser = argparse.ArgumentParser(description="memnos corpus tests")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--test", metavar="NAME", help="run one integration test by name")
     parser.add_argument("--skip-integration", action="store_true",
                         help="run unit tests only")
     args = parser.parse_args()
 
-    print("engram Corpus Tests")
+    print("memnos Corpus Tests")
     print("=" * 70)
     print()
 
@@ -996,25 +996,25 @@ def main() -> int:
 
     print()
     print("Part B — Integration tests")
-    print(f"API: {ENGRAM_API}   namespace: {TEST_NS}")
+    print(f"API: {MEMNOS_API}   namespace: {TEST_NS}")
     print("-" * 40)
 
     try:
         with httpx.Client(timeout=4) as c:
             r = c.get(
-                f"{ENGRAM_API}/api/v1/admin/health",
-                headers={"X-API-Key": ENGRAM_KEY},
+                f"{MEMNOS_API}/api/v1/admin/health",
+                headers={"X-API-Key": MEMNOS_KEY},
             )
             if r.status_code != 200:
                 print(
-                    f"[skip] engram not healthy ({r.status_code}) — "
+                    f"[skip] memnos not healthy ({r.status_code}) — "
                     "integration tests skipped (use --skip-integration to suppress this)",
                     file=sys.stderr,
                 )
                 return unit_runner.summarise()
     except Exception as e:
         print(
-            f"[skip] Cannot reach engram at {ENGRAM_API}: {e} — "
+            f"[skip] Cannot reach memnos at {MEMNOS_API}: {e} — "
             "integration tests skipped",
             file=sys.stderr,
         )

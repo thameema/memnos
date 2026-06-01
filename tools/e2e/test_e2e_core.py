@@ -26,7 +26,7 @@ class TestHealth:
 
 class TestMemoryWriteAndSearch:
     def test_write_returns_memory_id(self, e2e_client, ns):
-        mem = write_memory(e2e_client, "engram stores memories in ArcadeDB", ns)
+        mem = write_memory(e2e_client, "memnos stores memories in ArcadeDB", ns)
         assert "id" in mem
         assert len(mem["id"]) > 0
 

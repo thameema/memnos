@@ -28,24 +28,24 @@ sys.path.insert(0, _REPO_ROOT + "/packages/core")
 
 class TestSubscriptionModel(unittest.TestCase):
     def test_default_delivery_mode_is_cursor(self):
-        from engram.models import Subscription
+        from memnos.models import Subscription
         sub = Subscription(subscriber_id="u1", namespace="ns1")
         self.assertEqual(sub.delivery_mode, "cursor")
 
     def test_default_webhook_url_is_empty(self):
-        from engram.models import Subscription
+        from memnos.models import Subscription
         sub = Subscription(subscriber_id="u1", namespace="ns1")
         self.assertEqual(sub.webhook_url, "")
 
     def test_webhook_mode_stored(self):
-        from engram.models import Subscription
+        from memnos.models import Subscription
         sub = Subscription(subscriber_id="u1", namespace="ns1",
                            delivery_mode="webhook", webhook_url="https://example.com/hook")
         self.assertEqual(sub.delivery_mode, "webhook")
         self.assertEqual(sub.webhook_url, "https://example.com/hook")
 
     def test_immediate_mode_stored(self):
-        from engram.models import Subscription
+        from memnos.models import Subscription
         sub = Subscription(subscriber_id="u1", namespace="ns1", delivery_mode="immediate")
         self.assertEqual(sub.delivery_mode, "immediate")
 
@@ -56,9 +56,9 @@ class TestSubscriptionModel(unittest.TestCase):
 
 class TestClientSubscribe(unittest.IsolatedAsyncioTestCase):
     async def test_subscribe_passes_delivery_mode_and_webhook(self):
-        from engram.client import EngramClient
-        from engram.models import Subscription
-        client = EngramClient.__new__(EngramClient)
+        from memnos.client import MemnosClient
+        from memnos.models import Subscription
+        client = MemnosClient.__new__(MemnosClient)
         client._started = True
         client._arcadedb = AsyncMock()
         client._arcadedb.upsert_subscription = AsyncMock(return_value="sub-id")
@@ -74,9 +74,9 @@ class TestClientSubscribe(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(called_sub.webhook_url, "https://hooks.example.com/memory")
 
     async def test_subscribe_cursor_default(self):
-        from engram.client import EngramClient
-        from engram.models import Subscription
-        client = EngramClient.__new__(EngramClient)
+        from memnos.client import MemnosClient
+        from memnos.models import Subscription
+        client = MemnosClient.__new__(MemnosClient)
         client._started = True
         client._arcadedb = AsyncMock()
         client._arcadedb.upsert_subscription = AsyncMock(return_value="sub-id")
@@ -94,7 +94,7 @@ class TestClientSubscribe(unittest.IsolatedAsyncioTestCase):
 
 class TestDispatchWebhooks(unittest.IsolatedAsyncioTestCase):
     def _make_memory(self, memory_type="fact", tags=None):
-        from engram.models import MemoryEntry, MemoryType
+        from memnos.models import MemoryEntry, MemoryType
         m = MagicMock(spec=MemoryEntry)
         m.id = "mem-1"
         m.content = "test content"
@@ -107,8 +107,8 @@ class TestDispatchWebhooks(unittest.IsolatedAsyncioTestCase):
         return m
 
     async def test_no_op_when_no_webhook_subscribers(self):
-        from engram.client import EngramClient
-        client = EngramClient.__new__(EngramClient)
+        from memnos.client import MemnosClient
+        client = MemnosClient.__new__(MemnosClient)
         client._arcadedb = AsyncMock()
         client._arcadedb.get_webhook_subscriptions = AsyncMock(return_value=[])
         memory = self._make_memory()
@@ -116,8 +116,8 @@ class TestDispatchWebhooks(unittest.IsolatedAsyncioTestCase):
         client._arcadedb.get_webhook_subscriptions.assert_awaited_once_with("ns1")
 
     async def test_dispatches_post_to_webhook(self):
-        from engram.client import EngramClient
-        client = EngramClient.__new__(EngramClient)
+        from memnos.client import MemnosClient
+        client = MemnosClient.__new__(MemnosClient)
         client._arcadedb = AsyncMock()
         client._arcadedb.get_webhook_subscriptions = AsyncMock(return_value=[
             {"subscriber_id": "u1", "webhook_url": "https://hooks.example.com/mem", "filter_types": []},
@@ -143,8 +143,8 @@ class TestDispatchWebhooks(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["memory"]["id"], "mem-1")
 
     async def test_filter_types_applied_before_dispatch(self):
-        from engram.client import EngramClient
-        client = EngramClient.__new__(EngramClient)
+        from memnos.client import MemnosClient
+        client = MemnosClient.__new__(MemnosClient)
         client._arcadedb = AsyncMock()
         client._arcadedb.get_webhook_subscriptions = AsyncMock(return_value=[
             {"subscriber_id": "u1", "webhook_url": "https://h.com/hook", "filter_types": ["decision"]},
@@ -162,8 +162,8 @@ class TestDispatchWebhooks(unittest.IsolatedAsyncioTestCase):
         mock_http_client.post.assert_not_awaited()
 
     async def test_filter_types_tag_match_dispatches(self):
-        from engram.client import EngramClient
-        client = EngramClient.__new__(EngramClient)
+        from memnos.client import MemnosClient
+        client = MemnosClient.__new__(MemnosClient)
         client._arcadedb = AsyncMock()
         client._arcadedb.get_webhook_subscriptions = AsyncMock(return_value=[
             {"subscriber_id": "u1", "webhook_url": "https://h.com/hook", "filter_types": ["important"]},
@@ -184,8 +184,8 @@ class TestDispatchWebhooks(unittest.IsolatedAsyncioTestCase):
         mock_http_client.post.assert_awaited_once()
 
     async def test_webhook_failure_is_nonfatal(self):
-        from engram.client import EngramClient
-        client = EngramClient.__new__(EngramClient)
+        from memnos.client import MemnosClient
+        client = MemnosClient.__new__(MemnosClient)
         client._arcadedb = AsyncMock()
         client._arcadedb.get_webhook_subscriptions = AsyncMock(return_value=[
             {"subscriber_id": "u1", "webhook_url": "https://down.example.com/hook", "filter_types": []},
@@ -202,8 +202,8 @@ class TestDispatchWebhooks(unittest.IsolatedAsyncioTestCase):
             import asyncio; await asyncio.sleep(0)
 
     async def test_httpx_missing_logs_warning(self):
-        from engram.client import EngramClient
-        client = EngramClient.__new__(EngramClient)
+        from memnos.client import MemnosClient
+        client = MemnosClient.__new__(MemnosClient)
         client._arcadedb = AsyncMock()
         client._arcadedb.get_webhook_subscriptions = AsyncMock(return_value=[
             {"subscriber_id": "u1", "webhook_url": "https://h.com/hook", "filter_types": []},
@@ -221,14 +221,14 @@ class TestDispatchWebhooks(unittest.IsolatedAsyncioTestCase):
 class TestSubscribeRequestModel(unittest.TestCase):
     def test_defaults(self):
         sys.path.insert(0, _REPO_ROOT + "/packages/api")
-        from engram_api.routers.subscriptions import SubscribeRequest
+        from memnos_api.routers.subscriptions import SubscribeRequest
         req = SubscribeRequest(namespace="ns1")
         self.assertEqual(req.delivery_mode, "cursor")
         self.assertEqual(req.webhook_url, "")
 
     def test_webhook_mode(self):
         sys.path.insert(0, _REPO_ROOT + "/packages/api")
-        from engram_api.routers.subscriptions import SubscribeRequest
+        from memnos_api.routers.subscriptions import SubscribeRequest
         req = SubscribeRequest(
             namespace="ns1",
             delivery_mode="webhook",

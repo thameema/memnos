@@ -1,10 +1,10 @@
-# engram for Enterprise AI Engineering Teams
+# memnos for Enterprise AI Engineering Teams
 
 ## The problem this document addresses
 
 AI coding assistants — Claude Code, Cursor, GitHub Copilot — are powerful individually but blind collectively. Each session starts from zero. Each engineer has their own context. When a senior architect makes a critical design decision at 10am, the junior developer asking Claude Code the same question at 2pm gets a different answer. Nobody learns from each other's AI-assisted discoveries. The team gets ten times the output of one engineer, but not one tenth the collective intelligence of ten engineers.
 
-This document explains how engram changes that — and how it compares to the most common current workaround, which is using Obsidian or Markdown vaults as a manual memory layer.
+This document explains how memnos changes that — and how it compares to the most common current workaround, which is using Obsidian or Markdown vaults as a manual memory layer.
 
 ---
 
@@ -32,9 +32,9 @@ This works. It is better than nothing. But it has fundamental limitations at tea
 
 ---
 
-## engram vs Obsidian: direct comparison
+## memnos vs Obsidian: direct comparison
 
-| Capability | Obsidian + CLAUDE.md | engram |
+| Capability | Obsidian + CLAUDE.md | memnos |
 |------------|---------------------|--------|
 | **Memory persistence** | Manual — engineer writes notes | Automatic — every session writes to memory |
 | **Retrieval** | File read at session start | Semantic + graph search, most relevant context surfaced automatically |
@@ -54,7 +54,7 @@ This works. It is better than nothing. But it has fundamental limitations at tea
 
 Obsidian is a **notebook you manage**. You are the librarian. You decide what gets stored, how it is organised, and what gets loaded into context.
 
-engram is a **living knowledge graph the team builds together**. The AI is also a contributor. Every engineering decision, every debugging session, every architectural choice is captured automatically, cross-referenced, and made available to every engineer and every AI session without anyone having to curate it.
+memnos is a **living knowledge graph the team builds together**. The AI is also a contributor. Every engineering decision, every debugging session, every architectural choice is captured automatically, cross-referenced, and made available to every engineer and every AI session without anyone having to curate it.
 
 ---
 
@@ -62,10 +62,10 @@ engram is a **living knowledge graph the team builds together**. The AI is also 
 
 Consider a software engineering team of 20 people. Without shared AI memory, you have 20 parallel AI sessions with no connection between them. The architect's context never reaches the developer. The QA engineer's test failure patterns never surface in the developer's next session. The DevOps team's infrastructure discoveries are invisible to everyone else.
 
-With engram, the team operates as a single connected knowledge organism:
+With memnos, the team operates as a single connected knowledge organism:
 
 ```
-                        engram knowledge graph
+                        memnos knowledge graph
                         ┌─────────────────────────────────┐
 Architect ─────────────►│  architecture:decisions          │◄──────── reads
 Developer ─────────────►│  project:payments:patterns       │◄──────── reads
@@ -84,7 +84,7 @@ Every role is both a contributor and a consumer of the shared knowledge graph. W
 
 ---
 
-## How each role uses engram
+## How each role uses memnos
 
 ### Architects
 
@@ -225,7 +225,7 @@ Claude Code calls memory_search("kubernetes api deployment graceful")
 **What they get on day one:**
 - All of the above — automatically
 
-A new engineer joins the team. They clone the repo, set up engram, and connect to the shared engram server. Their Claude Code sessions immediately have access to:
+A new engineer joins the team. They clone the repo, set up memnos, and connect to the shared memnos server. Their Claude Code sessions immediately have access to:
 - Every architectural decision ever recorded
 - Every production incident and its resolution
 - Every gotcha, footgun, and hard-won lesson
@@ -252,7 +252,7 @@ Architect ──► Architecture doc (written by human, read by human)
              New hire learns about the constraint
 ```
 
-With engram, knowledge flows in real time:
+With memnos, knowledge flows in real time:
 
 ```
 Architect writes ADR → immediately searchable by all team members' Claude Code sessions
@@ -273,7 +273,7 @@ All of the above happens without any human routing the knowledge.
 
 ## Namespace architecture for enterprise teams
 
-engram namespaces are hierarchical strings separated by colons. Design them to match your org structure:
+memnos namespaces are hierarchical strings separated by colons. Design them to match your org structure:
 
 ```yaml
 # Suggested namespace hierarchy for an engineering org
@@ -298,7 +298,7 @@ personal:bob                 # Bob's private memory
 team:onboarding              # knowledge useful for new hires
 ```
 
-In `engram.yaml`, API keys map to namespaces:
+In `memnos.yaml`, API keys map to namespaces:
 
 ```yaml
 auth:
@@ -357,7 +357,7 @@ One explicit instruction re-routes that single write while the session default s
 Add a routing table to your vault's `CLAUDE.md` so Claude decides automatically:
 
 ```markdown
-## engram Namespace Routing
+## memnos Namespace Routing
 
 When calling memory_write, choose the namespace as follows:
 
@@ -401,7 +401,7 @@ The key insight: you do not need a namespace per document — you need a namespa
 
 ### How the `STARTS WITH` rule changes search scope
 
-When you search `org:acme`, engram returns results from every sub-namespace. When you search `org:acme:engineering:pa`, you get only PA-specific content. This lets you start broad and narrow down:
+When you search `org:acme`, memnos returns results from every sub-namespace. When you search `org:acme:engineering:pa`, you get only PA-specific content. This lets you start broad and narrow down:
 
 ```
 Broad search (everything in your org):
@@ -436,11 +436,11 @@ The namespace is stateless between tool calls — you can mix namespaces freely 
 
 ## Practical setup for an AI engineering team
 
-### Step 1 — Shared engram server
+### Step 1 — Shared memnos server
 
-Run a single engram server accessible to the whole team. See [remote-deployment.md](remote-deployment.md) for VPS and Tailscale options, and [enterprise-team-setup.md](enterprise-team-setup.md) for the step-by-step deployment guide.
+Run a single memnos server accessible to the whole team. See [remote-deployment.md](remote-deployment.md) for VPS and Tailscale options, and [enterprise-team-setup.md](enterprise-team-setup.md) for the step-by-step deployment guide.
 
-For a small team (under 20 engineers), a single VPS with 4 GB RAM is sufficient. ArcadeDB is the memory-hungry component (it handles graph, vector, and storage in one JVM process); the engram Python server itself is lightweight.
+For a small team (under 20 engineers), a single VPS with 4 GB RAM is sufficient. ArcadeDB is the memory-hungry component (it handles graph, vector, and storage in one JVM process); the memnos Python server itself is lightweight.
 
 ### Step 2 — Per-engineer API keys
 
@@ -449,9 +449,9 @@ Give each engineer their own API key with appropriate namespace access. They add
 ```json
 {
   "mcpServers": {
-    "engram": {
+    "memnos": {
       "type": "sse",
-      "url": "https://engram.yourcompany.com/sse",
+      "url": "https://memnos.yourcompany.com/sse",
       "headers": {
         "Authorization": "Bearer <their-personal-key>"
       }
@@ -474,7 +474,7 @@ When a new engineer joins:
 
 ### Step 5 — Team rituals
 
-Make engram part of your engineering workflow:
+Make memnos part of your engineering workflow:
 
 - **After architecture decisions:** architect writes the ADR to `team:architecture` via `memory_write`
 - **After production incidents:** on-call writes the root cause and resolution to `infra:incidents`
@@ -486,7 +486,7 @@ Make engram part of your engineering workflow:
 
 ## What this looks like in practice
 
-Here is a week in the life of an AI-assisted engineering team using engram.
+Here is a week in the life of an AI-assisted engineering team using memnos.
 
 **Monday morning — architect plans a new microservice:**
 ```
@@ -578,7 +578,7 @@ Review API key permissions quarterly. Remove keys for team members who have left
 
 ### Namespace isolation
 
-Do not put production credentials or sensitive customer context in engram. If you need to reference a customer constraint, describe the constraint, not the customer's data.
+Do not put production credentials or sensitive customer context in memnos. If you need to reference a customer constraint, describe the constraint, not the customer's data.
 
 ```
 Good: "Customer in the financial sector requires all data to stay in EU regions.
@@ -591,13 +591,13 @@ Bad:  "Acme Bank (contact: john@acmebank.com, contract #A-44291) requires EU dat
 
 ## Summary
 
-The difference between an AI-assisted team using Obsidian vaults and one using engram is the difference between a team where each engineer carries their own notebook and a team that shares a living, searchable, self-improving institutional brain.
+The difference between an AI-assisted team using Obsidian vaults and one using memnos is the difference between a team where each engineer carries their own notebook and a team that shares a living, searchable, self-improving institutional brain.
 
-Obsidian makes one engineer more productive. engram makes the whole team smarter together — and makes each new hire immediately as context-rich as a senior engineer.
+Obsidian makes one engineer more productive. memnos makes the whole team smarter together — and makes each new hire immediately as context-rich as a senior engineer.
 
 The knowledge a senior architect accumulated over three years does not walk out the door when they go on holiday. The lesson a developer learned from a 4am production incident surfaces automatically the next time anyone touches that code. The QA engineer's hard-won understanding of edge cases becomes a real-time guardrail for every developer on the team.
 
-That is the enterprise value of engram: **it turns individual AI-assisted work into collective intelligence.**
+That is the enterprise value of memnos: **it turns individual AI-assisted work into collective intelligence.**
 
 ---
 

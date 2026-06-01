@@ -1,10 +1,10 @@
-# Migrating from Obsidian to engram
+# Migrating from Obsidian to memnos
 
-This guide walks through importing your existing Obsidian vaults into the engram knowledge graph so you can immediately start using engram with all of your accumulated notes, decisions, and context.
+This guide walks through importing your existing Obsidian vaults into the memnos knowledge graph so you can immediately start using memnos with all of your accumulated notes, decisions, and context.
 
 ## What gets migrated
 
-| Obsidian | engram |
+| Obsidian | memnos |
 |----------|--------|
 | Markdown note | Memory entry (content + tags) |
 | YAML frontmatter tags | Memory tags |
@@ -14,7 +14,7 @@ This guide walks through importing your existing Obsidian vaults into the engram
 | Frontmatter `title` / `date` | Memory metadata |
 
 **What is not migrated:**
-- Images and attachments (skipped — engram stores text)
+- Images and attachments (skipped — memnos stores text)
 - Canvas files (`.canvas`)
 - Plugins and themes (`.obsidian/` folder is skipped automatically)
 - Embedded file content (`![[file.png]]`)
@@ -37,7 +37,7 @@ The script uses only these two packages and the Python standard library.
 python3 tools/migrate_obsidian.py \
   --vault ~/vaults/my-vault \
   --namespace obsidian:my-vault \
-  --api-key your-engram-api-key
+  --api-key your-memnos-api-key
 ```
 
 This migrates every `.md` file in the vault into the `obsidian:my-vault` namespace (with sub-namespaces per folder), then creates graph edges for all `[[wikilinks]]`.
@@ -46,7 +46,7 @@ This migrates every `.md` file in the vault into the `obsidian:my-vault` namespa
 
 ## Namespace mapping
 
-The script maps your vault's folder hierarchy to engram namespaces automatically:
+The script maps your vault's folder hierarchy to memnos namespaces automatically:
 
 ```
 ~/vaults/my-vault/
@@ -116,7 +116,7 @@ python3 tools/migrate_obsidian.py \
 Output:
 ```
 Found 847 notes in /Users/you/vaults/my-vault
-DRY RUN — no writes to engram
+DRY RUN — no writes to memnos
 
 Parsed 847 notes
 Top tags: project(142), meeting(89), decision(67), architecture(45), todo(38)...
@@ -130,8 +130,8 @@ Total wikilinks: 2,341
 ```
 --vault         Path to Obsidian vault directory (required)
 --namespace     Target base namespace, e.g. obsidian:my-vault (required)
---api-key       engram API key (required)
---engram-url    engram REST API URL (default: http://localhost:8766)
+--api-key       memnos API key (required)
+--memnos-url    memnos REST API URL (default: http://localhost:8766)
 --dry-run       Parse and report without writing anything
 --batch-size    Notes to write per batch before a short pause (default: 10)
 --folder        Only migrate notes under this subfolder (e.g. "projects")
@@ -181,7 +181,7 @@ Use memory_search to find: "your most distinctive note title or concept"
 in namespace: "obsidian:my-vault"
 ```
 
-Or use the engram dashboard at `http://localhost:8766/dashboard` — switch the namespace to `obsidian:my-vault` to see your notes in the knowledge graph visualization.
+Or use the memnos dashboard at `http://localhost:8766/dashboard` — switch the namespace to `obsidian:my-vault` to see your notes in the knowledge graph visualization.
 
 Or with curl:
 ```bash
@@ -195,12 +195,12 @@ curl -s \
 
 ## After migration: integrating with your workflow
 
-Once your vault is in engram, you do not need to maintain Obsidian as a separate system. Going forward:
+Once your vault is in memnos, you do not need to maintain Obsidian as a separate system. Going forward:
 
-1. **Write to engram directly from Claude Code** using `memory_write` instead of switching to Obsidian to take notes
-2. **Search engram instead of Obsidian search** — engram's semantic search finds relevant context even when you don't use the exact words from the note
-3. **Let engram capture automatically** — decisions, patterns, and discoveries from your Claude Code sessions are stored without any manual action
-4. **Keep Obsidian for personal writing** if you prefer its editor — just run the migration script periodically to sync new notes into engram:
+1. **Write to memnos directly from Claude Code** using `memory_write` instead of switching to Obsidian to take notes
+2. **Search memnos instead of Obsidian search** — memnos's semantic search finds relevant context even when you don't use the exact words from the note
+3. **Let memnos capture automatically** — decisions, patterns, and discoveries from your Claude Code sessions are stored without any manual action
+4. **Keep Obsidian for personal writing** if you prefer its editor — just run the migration script periodically to sync new notes into memnos:
 
 ```bash
 # Sync new notes added since last migration (safe to re-run — duplicate content
@@ -218,18 +218,18 @@ python3 tools/migrate_obsidian.py \
 
 **"Connection refused" when running the script**
 
-engram is not running. Start it with `engram start` and wait for the health check to pass.
+memnos is not running. Start it with `memnos start` and wait for the health check to pass.
 
 **HTTP 401 Unauthorized**
 
-Check your `--api-key` matches the key in `engram.yaml` under `auth.api_keys`.
+Check your `--api-key` matches the key in `memnos.yaml` under `auth.api_keys`.
 
 **Many notes failing with HTTP 500**
 
 Usually a Qdrant dimension mismatch from a previous embedding model. Run:
 ```bash
-curl -X DELETE http://localhost:6333/collections/engram_vectors
-engram restart
+curl -X DELETE http://localhost:6333/collections/memnos_vectors
+memnos restart
 ```
 Then re-run the migration.
 

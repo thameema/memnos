@@ -26,7 +26,7 @@ sys.path.insert(0, _REPO_ROOT + "/packages/mcp-server")
 sys.path.insert(0, _REPO_ROOT + "/packages/api")
 sys.path.insert(0, _REPO_ROOT + "/packages/core")
 
-from engram_mcp.skill_packs import (
+from memnos_mcp.skill_packs import (
     WebhookHandler,
     SkillPackEntry,
     _load_pack_file,
@@ -125,7 +125,7 @@ class TestLoadSkillPacksDirectory(unittest.TestCase):
     def test_env_var_used_as_default_dir(self):
         with TemporaryDirectory() as tmp:
             _write_pack(Path(tmp), "w.yaml", VALID_YAML)
-            with patch.dict("os.environ", {"ENGRAM_SKILL_PACKS_DIR": tmp}):
+            with patch.dict("os.environ", {"MEMNOS_SKILL_PACKS_DIR": tmp}):
                 entries = load_skill_packs()
             self.assertEqual(len(entries), 1)
 
@@ -384,14 +384,14 @@ class TestCallWebhookHandler(unittest.IsolatedAsyncioTestCase):
 
 class TestServerDispatchSkillPacks(unittest.IsolatedAsyncioTestCase):
     async def test_dispatch_routes_to_skill_pack(self):
-        import engram_mcp.server as srv
+        import memnos_mcp.server as srv
 
         handler = WebhookHandler(url="https://example.com")
         orig_handlers = dict(srv._SKILL_PACK_HANDLERS)
         srv._SKILL_PACK_HANDLERS["external_tool"] = handler
 
         try:
-            with patch("engram_mcp.skill_packs.call_webhook_handler", new=AsyncMock(return_value="hello from pack")) as mock_call:
+            with patch("memnos_mcp.skill_packs.call_webhook_handler", new=AsyncMock(return_value="hello from pack")) as mock_call:
                 result = await srv._dispatch("external_tool", {"x": 1}, MagicMock(), MagicMock())
             mock_call.assert_awaited_once_with(handler, "external_tool", {"x": 1})
             from mcp.types import TextContent
@@ -401,7 +401,7 @@ class TestServerDispatchSkillPacks(unittest.IsolatedAsyncioTestCase):
             srv._SKILL_PACK_HANDLERS.update(orig_handlers)
 
     async def test_dispatch_unknown_tool_raises(self):
-        import engram_mcp.server as srv
+        import memnos_mcp.server as srv
 
         with self.assertRaises(ValueError) as ctx:
             await srv._dispatch("totally_unknown_xyz", {}, MagicMock(), MagicMock())

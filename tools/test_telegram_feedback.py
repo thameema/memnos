@@ -89,19 +89,19 @@ def _build_telegram_stubs() -> None:
 
 _build_telegram_stubs()
 
-# Stub engram_gateway.telegram.formatter (must be stubbed before the real package loads)
-formatter_mod = types.ModuleType("engram_gateway.telegram.formatter")
+# Stub memnos_gateway.telegram.formatter (must be stubbed before the real package loads)
+formatter_mod = types.ModuleType("memnos_gateway.telegram.formatter")
 formatter_mod.format_result = lambda text, max_len=4096: text
 formatter_mod.format_search_results = lambda results: "results"
 formatter_mod.format_task_status = lambda *a, **kw: "status"
-sys.modules["engram_gateway.telegram.formatter"] = formatter_mod
+sys.modules["memnos_gateway.telegram.formatter"] = formatter_mod
 
 # Add gateway package to path so real bot.py is importable
 _GW_PATH = _REPO_ROOT + "/packages/gateway"
 if _GW_PATH not in sys.path:
     sys.path.insert(0, _GW_PATH)
 
-from engram_gateway.telegram.bot import TelegramGateway, _FB_UP, _FB_DOWN  # noqa: E402
+from memnos_gateway.telegram.bot import TelegramGateway, _FB_UP, _FB_DOWN  # noqa: E402
 
 
 def _make_gateway() -> TelegramGateway:
@@ -160,9 +160,9 @@ class TestFeedbackCallback(unittest.IsolatedAsyncioTestCase):
         ctx = MagicMock()
 
         # Stub out FeedbackService import to unavailable
-        with patch.dict("sys.modules", {"engram_learning.feedback": None,
-                                         "engram_learning.episode_store": None,
-                                         "engram_learning.quality_store": None}):
+        with patch.dict("sys.modules", {"memnos_learning.feedback": None,
+                                         "memnos_learning.episode_store": None,
+                                         "memnos_learning.quality_store": None}):
             await gw.handle_feedback_callback(update, ctx)
 
         update.callback_query.answer.assert_awaited_once()
@@ -179,9 +179,9 @@ class TestFeedbackCallback(unittest.IsolatedAsyncioTestCase):
         update = _make_callback_update(f"{_FB_DOWN}:task-002", msg_text="another result")
         ctx = MagicMock()
 
-        with patch.dict("sys.modules", {"engram_learning.feedback": None,
-                                         "engram_learning.episode_store": None,
-                                         "engram_learning.quality_store": None}):
+        with patch.dict("sys.modules", {"memnos_learning.feedback": None,
+                                         "memnos_learning.episode_store": None,
+                                         "memnos_learning.quality_store": None}):
             await gw.handle_feedback_callback(update, ctx)
 
         update.callback_query.answer.assert_awaited_once()
@@ -194,9 +194,9 @@ class TestFeedbackCallback(unittest.IsolatedAsyncioTestCase):
         update = _make_callback_update(f"{_FB_UP}:task-999")
         ctx = MagicMock()
 
-        with patch.dict("sys.modules", {"engram_learning.feedback": None,
-                                         "engram_learning.episode_store": None,
-                                         "engram_learning.quality_store": None}):
+        with patch.dict("sys.modules", {"memnos_learning.feedback": None,
+                                         "memnos_learning.episode_store": None,
+                                         "memnos_learning.quality_store": None}):
             await gw.handle_feedback_callback(update, ctx)
 
         # client.add should have been called as the fallback
@@ -210,9 +210,9 @@ class TestFeedbackCallback(unittest.IsolatedAsyncioTestCase):
         update = _make_callback_update(f"{_FB_DOWN}:task-888")
         ctx = MagicMock()
 
-        with patch.dict("sys.modules", {"engram_learning.feedback": None,
-                                         "engram_learning.episode_store": None,
-                                         "engram_learning.quality_store": None}):
+        with patch.dict("sys.modules", {"memnos_learning.feedback": None,
+                                         "memnos_learning.episode_store": None,
+                                         "memnos_learning.quality_store": None}):
             await gw.handle_feedback_callback(update, ctx)
 
         gw.client.add.assert_awaited_once()
@@ -254,7 +254,7 @@ class TestInlineKeyboardInHandleMessage(unittest.IsolatedAsyncioTestCase):
 
         # Build a minimal fake update/message
         msg = MagicMock()
-        msg.text = "hello engram"
+        msg.text = "hello memnos"
         working_msg = MagicMock()
         working_msg.edit_text = AsyncMock()
         msg.reply_text = AsyncMock(return_value=working_msg)

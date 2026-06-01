@@ -30,7 +30,7 @@ labels: bug
 
 - OS: 
 - Python version: `python --version`
-- engram version / commit: `git rev-parse --short HEAD`
+- memnos version / commit: `git rev-parse --short HEAD`
 - Transport: stdio / SSE
 - ArcadeDB version: (from `docker compose ps`)
 

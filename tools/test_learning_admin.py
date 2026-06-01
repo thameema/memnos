@@ -7,7 +7,7 @@ Tests cover:
 - delete_heuristic: calls store.delete
 - recent_episodes: returns sorted by created_at desc
 - trigger_reflection: 503 when API key missing
-- graceful degradation when engram_learning not installed
+- graceful degradation when memnos_learning not installed
 - _require_learning raises 503 when store unavailable
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ from fastapi import HTTPException
 
 
 # ---------------------------------------------------------------------------
-# Stubs for engram_learning models (not installed in test env)
+# Stubs for memnos_learning models (not installed in test env)
 # ---------------------------------------------------------------------------
 
 class _Outcome:
@@ -94,7 +94,7 @@ def _make_mock_episode_store(episodes=None):
 
 class TestRequireLearning(unittest.TestCase):
     def test_raises_503_when_import_fails(self):
-        import engram_api.routers.learning_admin as la
+        import memnos_api.routers.learning_admin as la
         with patch.object(la, "_get_heuristic_store", return_value=None):
             with self.assertRaises(HTTPException) as ctx:
                 la._require_learning()
@@ -107,7 +107,7 @@ class TestRequireLearning(unittest.TestCase):
 
 class TestLearningStats(unittest.IsolatedAsyncioTestCase):
     async def _call(self, ns="test:ns", h_store=None, e_store=None):
-        import engram_api.routers.learning_admin as la
+        import memnos_api.routers.learning_admin as la
         from unittest.mock import patch as _patch
 
         h = h_store or _make_mock_heuristic_store()
@@ -116,7 +116,7 @@ class TestLearningStats(unittest.IsolatedAsyncioTestCase):
         key_entry = MagicMock()
         with _patch.object(la, "_get_heuristic_store", return_value=h), \
              _patch.object(la, "_get_episode_store", return_value=e), \
-             _patch("engram_api.routers.learning_admin.check_namespace_access", new=AsyncMock()):
+             _patch("memnos_api.routers.learning_admin.check_namespace_access", new=AsyncMock()):
             return await la.learning_stats(ns=ns, key_entry=key_entry)
 
     async def test_heuristic_count(self):
@@ -185,13 +185,13 @@ class TestLearningStats(unittest.IsolatedAsyncioTestCase):
 
 class TestListHeuristics(unittest.IsolatedAsyncioTestCase):
     async def _call(self, heuristics, ns="test:ns", limit=50):
-        import engram_api.routers.learning_admin as la
+        import memnos_api.routers.learning_admin as la
         from unittest.mock import patch as _patch
 
         store = _make_mock_heuristic_store(heuristics)
         key_entry = MagicMock()
         with _patch.object(la, "_require_learning", return_value=store), \
-             _patch("engram_api.routers.learning_admin.check_namespace_access", new=AsyncMock()):
+             _patch("memnos_api.routers.learning_admin.check_namespace_access", new=AsyncMock()):
             return await la.list_heuristics(ns=ns, limit=limit, key_entry=key_entry)
 
     async def test_returns_heuristics(self):
@@ -226,13 +226,13 @@ class TestListHeuristics(unittest.IsolatedAsyncioTestCase):
 
 class TestDeleteHeuristic(unittest.IsolatedAsyncioTestCase):
     async def test_calls_store_delete(self):
-        import engram_api.routers.learning_admin as la
+        import memnos_api.routers.learning_admin as la
         from unittest.mock import patch as _patch
 
         store = _make_mock_heuristic_store()
         key_entry = MagicMock()
         with _patch.object(la, "_require_learning", return_value=store), \
-             _patch("engram_api.routers.learning_admin.check_namespace_access", new=AsyncMock()):
+             _patch("memnos_api.routers.learning_admin.check_namespace_access", new=AsyncMock()):
             result = await la.delete_heuristic("heuristic-123", ns="test:ns", key_entry=key_entry)
 
         store.delete.assert_awaited_once_with("heuristic-123")
@@ -245,13 +245,13 @@ class TestDeleteHeuristic(unittest.IsolatedAsyncioTestCase):
 
 class TestRecentEpisodes(unittest.IsolatedAsyncioTestCase):
     async def _call(self, episodes, ns="test:ns", days=7, limit=50):
-        import engram_api.routers.learning_admin as la
+        import memnos_api.routers.learning_admin as la
         from unittest.mock import patch as _patch
 
         store = _make_mock_episode_store(episodes)
         key_entry = MagicMock()
         with _patch.object(la, "_get_episode_store", return_value=store), \
-             _patch("engram_api.routers.learning_admin.check_namespace_access", new=AsyncMock()):
+             _patch("memnos_api.routers.learning_admin.check_namespace_access", new=AsyncMock()):
             return await la.recent_episodes(ns=ns, days=days, limit=limit, key_entry=key_entry)
 
     async def test_returns_episodes(self):
@@ -283,12 +283,12 @@ class TestRecentEpisodes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result), 5)
 
     async def test_503_when_learning_not_installed(self):
-        import engram_api.routers.learning_admin as la
+        import memnos_api.routers.learning_admin as la
         from unittest.mock import patch as _patch
 
         key_entry = MagicMock()
         with _patch.object(la, "_get_episode_store", return_value=None), \
-             _patch("engram_api.routers.learning_admin.check_namespace_access", new=AsyncMock()):
+             _patch("memnos_api.routers.learning_admin.check_namespace_access", new=AsyncMock()):
             with self.assertRaises(HTTPException) as ctx:
                 await la.recent_episodes(ns="ns", days=7, limit=10, key_entry=key_entry)
             self.assertEqual(ctx.exception.status_code, 503)
@@ -300,49 +300,49 @@ class TestRecentEpisodes(unittest.IsolatedAsyncioTestCase):
 
 class TestTriggerReflection(unittest.IsolatedAsyncioTestCase):
     async def test_503_when_no_api_key(self):
-        import engram_api.routers.learning_admin as la
+        import memnos_api.routers.learning_admin as la
         from unittest.mock import patch as _patch
         import os
 
         req = la.ReflectRequest(namespace="test:ns", lookback_days=7)
         key_entry = MagicMock()
 
-        with _patch("engram_api.routers.learning_admin.check_namespace_access", new=AsyncMock()), \
+        with _patch("memnos_api.routers.learning_admin.check_namespace_access", new=AsyncMock()), \
              _patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
             with self.assertRaises(HTTPException) as ctx:
                 await la.trigger_reflection(req=req, key_entry=key_entry)
             self.assertEqual(ctx.exception.status_code, 503)
 
     async def test_503_when_placeholder_api_key(self):
-        import engram_api.routers.learning_admin as la
+        import memnos_api.routers.learning_admin as la
         from unittest.mock import patch as _patch
         import os
 
         req = la.ReflectRequest(namespace="test:ns")
         key_entry = MagicMock()
 
-        with _patch("engram_api.routers.learning_admin.check_namespace_access", new=AsyncMock()), \
+        with _patch("memnos_api.routers.learning_admin.check_namespace_access", new=AsyncMock()), \
              _patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-placeholder-xxx"}):
             with self.assertRaises(HTTPException) as ctx:
                 await la.trigger_reflection(req=req, key_entry=key_entry)
             self.assertEqual(ctx.exception.status_code, 503)
 
     async def test_503_when_learning_not_installed(self):
-        import engram_api.routers.learning_admin as la
+        import memnos_api.routers.learning_admin as la
         from unittest.mock import patch as _patch
         import os
 
         req = la.ReflectRequest(namespace="test:ns")
         key_entry = MagicMock()
 
-        # Remove engram_learning from sys.modules so the imports in trigger_reflection
+        # Remove memnos_learning from sys.modules so the imports in trigger_reflection
         # raise ImportError (setting to None makes Python raise ImportError on from-import)
         hidden = {
-            "engram_learning.episode_store": None,
-            "engram_learning.heuristic_store": None,
-            "engram_learning.reflection": None,
+            "memnos_learning.episode_store": None,
+            "memnos_learning.heuristic_store": None,
+            "memnos_learning.reflection": None,
         }
-        with _patch("engram_api.routers.learning_admin.check_namespace_access", new=AsyncMock()), \
+        with _patch("memnos_api.routers.learning_admin.check_namespace_access", new=AsyncMock()), \
              _patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-real-key-here"}), \
              _patch.dict(sys.modules, hidden):
             with self.assertRaises(HTTPException) as ctx:
@@ -356,10 +356,10 @@ class TestTriggerReflection(unittest.IsolatedAsyncioTestCase):
 
 class TestLearningDashboard(unittest.IsolatedAsyncioTestCase):
     async def test_returns_html(self):
-        import engram_api.routers.learning_admin as la
+        import memnos_api.routers.learning_admin as la
         resp = await la.learning_dashboard()
         self.assertIn("text/html", resp.media_type)
-        self.assertIn("engram", resp.body.decode())
+        self.assertIn("memnos", resp.body.decode())
 
 
 if __name__ == "__main__":

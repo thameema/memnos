@@ -12,7 +12,7 @@ case "$*" in
   *--version*)         echo "Docker 99.0.0 (test stub)" ;;
   *info*)              echo "Server Version: stub"; exit 0 ;;
   *"compose version"*) echo "Docker Compose v2.99.0 (test stub)" ;;
-  *" ps"*)             echo "NAME STATUS engram healthy" ;;
+  *" ps"*)             echo "NAME STATUS memnos healthy" ;;
   *) : ;;
 esac
 exit 0

@@ -3,13 +3,13 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "engram-learning"
+name = "memnos-learning"
 version = "0.1.0"
-description = "engram self-learning — reflection, skill extraction, episodic memory"
+description = "memnos self-learning — reflection, skill extraction, episodic memory"
 requires-python = ">=3.11"
 dependencies = [
-    "engram-core",
-    "engram-orchestrator",
+    "memnos-core",
+    "memnos-orchestrator",
     "anthropic>=0.30",
     "aiosqlite>=0.20",
     "apscheduler>=3.10",
@@ -17,4 +17,4 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["engram_learning*"]
+include = ["memnos_learning*"]

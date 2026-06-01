@@ -1,0 +1,93 @@
+server:
+  host: 0.0.0.0
+  mcp_port: 8765
+  api_port: 8766
+  log_level: INFO
+
+auth:
+  open_mode: true   # local dev — no API key required; set to false when exposing to a network
+  api_keys:
+    - key: ${MEMNOS_API_KEY}
+      user_id: default
+      namespaces: ["*"]
+
+arcadedb:
+  host: ${ARCADEDB_HOST:-localhost}
+  port: ${ARCADEDB_PORT:-2480}
+  database: memnos
+  username: root
+  password: ${ARCADEDB_PASSWORD}
+
+# ─── Embeddings ──────────────────────────────────────────────────────────────
+# Controlled by MEMNOS_EMBED_MODE in .env:
+#
+#   MEMNOS_EMBED_MODE=online  (default)
+#     Calls OpenAI text-embedding-3-small via API.
+#     Requires OPENAI_API_KEY.  Docker image stays lean (~200 MB).
+#     Cost: ~$0.02 per million tokens — negligible for normal memory volumes.
+#
+#   MEMNOS_EMBED_MODE=local
+#     Runs sentence-transformers on-device — fully offline, no API key.
+#     Docker image is ~2 GB larger (torch + CUDA + spaCy installed at build time).
+#     Rebuild required after switching: docker-compose up memnos --build -d
+#
+# Advanced overrides (when MEMNOS_EMBED_MODE=online):
+#   - Switch to Voyage AI: set provider: voyage  + VOYAGE_API_KEY
+#   - Use any OpenAI-compatible endpoint (Ollama, Mistral, etc.):
+#       base_url: http://localhost:11434/v1
+#       model: nomic-embed-text
+#
+embeddings:
+  provider: ${MEMNOS_EMBED_MODE:-auto}     # auto: picks from available API keys automatically
+                                           # openai → OPENAI_API_KEY | openrouter → OPENROUTER_API_KEY
+                                           # voyage → VOYAGE_API_KEY | local → sentence-transformers
+  model: text-embedding-3-small            # used by openai/openrouter; ignored for local/voyage
+  api_key: ${OPENAI_API_KEY:-}             # only needed if provider is explicitly set to openai
+  # base_url: ""                           # optional: override for OpenAI-compatible endpoints
+  # dimensions: 0                          # optional: reduce output dims (text-embedding-3-* only)
+
+runtime:
+  default: api
+  max_concurrent_workers: 5
+  worker_timeout_s: 300
+  api:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    api_key: ${ANTHROPIC_API_KEY}
+  openrouter:
+    model: anthropic/claude-sonnet-4-6
+    api_key: ${OPENROUTER_API_KEY}
+
+namespaces:
+  default: personal:default
+  definitions:
+    personal:default:
+      owners: [default]
+    # HC shared vault — sub-namespaces inherit (e.g. org:acme:projects:p2p)
+    org:acme:
+      owners: [default]
+    # HC private vault — customer data, pricing, strategy
+    org:acme:private:
+      owners: [default]
+
+vault:
+  enabled: true
+  detect_in_memory: true
+  audit_log: true
+  kms:
+    provider: local
+
+gateway:
+  telegram:
+    enabled: ${TELEGRAM_ENABLED:-false}    # set TELEGRAM_ENABLED=true in .env to activate
+    bot_token: ${TELEGRAM_BOT_TOKEN:-}
+    allowed_users: []                       # populated from TELEGRAM_ALLOWED_USERS at startup
+    default_namespace: org:acme
+  whatsapp:
+    enabled: false                          # enable manually after Evolution API is running
+    evolution_api_url: http://localhost:8080
+    evolution_api_key: ${EVOLUTION_API_KEY:-}
+    default_namespace: org:acme
+
+learning:
+  enabled: false

@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "engram": {
+    "memnos": {
       "url": "http://localhost:8765/sse"
     }
   }

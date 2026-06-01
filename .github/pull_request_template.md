@@ -26,6 +26,6 @@ python -m pytest tools/test_learning.py -v
 - [ ] All existing tests pass (`pytest tools/test_learning.py tools/test_api_features.py`)
 - [ ] New code has tests where meaningful
 - [ ] Docstrings / comments updated if behaviour changed
-- [ ] `engram.yaml.example` updated if config schema changed
+- [ ] `memnos.yaml.example` updated if config schema changed
 - [ ] `README.md` or relevant `docs/` file updated if user-facing behaviour changed
 - [ ] No credentials, customer names, or Acme Health–specific data included

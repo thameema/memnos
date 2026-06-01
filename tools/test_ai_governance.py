@@ -13,7 +13,7 @@ Tests:
 Run standalone:
     python3 tools/test_ai_governance.py [--verbose] [--test <name>]
 
-Run via pytest (requires live engram API):
+Run via pytest (requires live memnos API):
     python -m pytest tools/test_ai_governance.py -v
 """
 from __future__ import annotations
@@ -28,18 +28,18 @@ from typing import Callable
 
 import httpx
 
-ENGRAM_API = os.environ.get("ENGRAM_API_URL", "http://127.0.0.1:8766")
-ENGRAM_KEY = os.environ.get("ENGRAM_API_KEY", "engram-local-dev-key")
+MEMNOS_API = os.environ.get("MEMNOS_API_URL", "http://127.0.0.1:8766")
+MEMNOS_KEY = os.environ.get("MEMNOS_API_KEY", "memnos-local-dev-key")
 ARCADEDB_HOST = os.environ.get("ARCADEDB_HOST", "localhost")
-ARCADEDB_PASS = os.environ.get("ARCADEDB_PASSWORD", "engram-dev-password")
+ARCADEDB_PASS = os.environ.get("ARCADEDB_PASSWORD", "memnos-dev-password")
 _RUN = uuid.uuid4().hex[:8]
 TEST_NS = f"test:gov:{_RUN}"
 
 
 def api(method: str, path: str, **kwargs):
     with httpx.Client(timeout=30) as c:
-        r = c.request(method, f"{ENGRAM_API}{path}",
-                      headers={"X-API-Key": ENGRAM_KEY, "Content-Type": "application/json"},
+        r = c.request(method, f"{MEMNOS_API}{path}",
+                      headers={"X-API-Key": MEMNOS_KEY, "Content-Type": "application/json"},
                       **kwargs)
     assert r.status_code < 500, f"Server error {r.status_code}: {r.text[:300]}"
     return r
@@ -64,7 +64,7 @@ def search(q: str, ns: str, top_k: int = 10) -> list[dict]:
 def arcade_query(sql: str, params: dict | None = None) -> list[dict]:
     """Query ArcadeDB directly to verify graph state."""
     r = httpx.post(
-        f"http://{ARCADEDB_HOST}:2480/api/v1/query/engram",
+        f"http://{ARCADEDB_HOST}:2480/api/v1/query/memnos",
         auth=("root", ARCADEDB_PASS),
         json={"language": "sql", "command": sql, **({"params": params} if params else {})},
         timeout=10,
@@ -230,9 +230,9 @@ def test_affects_graph_edge_exists(runner: Runner) -> None:
 def test_superseded_constraint_excluded(runner: Runner) -> None:
     """After deleting a constraint, it must NOT appear in active search results.
 
-    engram soft-deletes via the DELETE endpoint (hard-purge from vector + graph
+    memnos soft-deletes via the DELETE endpoint (hard-purge from vector + graph
     stores). This tests the filter path: a removed memory is absent from results.
-    Note: engram auto-supersedes only when the contradiction detector fires
+    Note: memnos auto-supersedes only when the contradiction detector fires
     (negation_detected / opposite_polarity). Explicit removal uses DELETE.
     """
     ns = f"{TEST_NS}:superseded"
@@ -409,26 +409,26 @@ def test_quality_gate_affects_rationale_pytest(runner) -> None:
 # ===========================================================================
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="engram AI Governance Tests")
+    parser = argparse.ArgumentParser(description="memnos AI Governance Tests")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--test", "-t", metavar="NAME", help="Run a single test by name")
     args = parser.parse_args()
 
     try:
         with httpx.Client(timeout=5) as c:
-            r = c.get(f"{ENGRAM_API}/api/v1/admin/health",
-                      headers={"X-API-Key": ENGRAM_KEY})
+            r = c.get(f"{MEMNOS_API}/api/v1/admin/health",
+                      headers={"X-API-Key": MEMNOS_KEY})
             if r.status_code != 200:
-                print(f"[error] engram API not healthy ({r.status_code})", file=sys.stderr)
+                print(f"[error] memnos API not healthy ({r.status_code})", file=sys.stderr)
                 return 1
     except Exception as e:
-        print(f"[error] Cannot reach engram at {ENGRAM_API}: {e}", file=sys.stderr)
+        print(f"[error] Cannot reach memnos at {MEMNOS_API}: {e}", file=sys.stderr)
         return 1
 
     runner = Runner(verbose=args.verbose, only=args.test)
 
-    print("engram AI Governance Tests")
-    print(f"API: {ENGRAM_API}   namespace: {TEST_NS}")
+    print("memnos AI Governance Tests")
+    print(f"API: {MEMNOS_API}   namespace: {TEST_NS}")
     print("=" * 70)
     print()
 

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# engram server installer
+# memnos server installer
 #
-# Installs the engram server (ArcadeDB + engram API) using Docker.
-# Run this on the machine that will HOST engram — could be a laptop,
+# Installs the memnos server (ArcadeDB + memnos API) using Docker.
+# Run this on the machine that will HOST memnos — could be a laptop,
 # a VM, or a remote server.
 #
 # Usage:
 #   ./install-server.sh
-#   curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install-server.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/thameema/memnos/master/install-server.sh | bash
 
 set -euo pipefail
 
 # ─── Capture all output to a timestamped log file ────────────────────────────
-LOG_FILE="/tmp/engram-install-server-$(date +%Y%m%d-%H%M%S).log"
+LOG_FILE="/tmp/memnos-install-server-$(date +%Y%m%d-%H%M%S).log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ ask_yn() {
   input="${input:-$default}"
   [[ "$input" =~ ^[Yy] ]] && eval "$varname=yes" || eval "$varname=no"
 }
-gen_key()      { python3 -c "import secrets; print('engram-' + secrets.token_hex(16))" 2>/dev/null || openssl rand -hex 20; }
+gen_key()      { python3 -c "import secrets; print('memnos-' + secrets.token_hex(16))" 2>/dev/null || openssl rand -hex 20; }
 gen_pass()     { python3 -c "import secrets,string; print(secrets.token_urlsafe(18)[:20])" 2>/dev/null || openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c 20; }
 gen_vault_key(){ python3 -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())" 2>/dev/null || openssl rand -base64 32 | tr -d '\n'; }
 # Cross-platform sed in-place edit (BSD/macOS + GNU/Linux)
@@ -68,9 +68,9 @@ echo -e "${NC}"
 # --version <ref>    git ref (tag, branch, or commit) to install. Default:
 #                    resolved at runtime to the latest GitHub release tag,
 #                    falling back to master if the API is unreachable.
-# ENGRAM_REF env var also honoured (--version takes precedence).
-ENGRAM_REF_ARG=""
-# Deployment mode controls security defaults in engram.yaml:
+# MEMNOS_REF env var also honoured (--version takes precedence).
+MEMNOS_REF_ARG=""
+# Deployment mode controls security defaults in memnos.yaml:
 #   server-only (default) — secure: open_mode: false → Bearer auth enforced
 #   full                  — convenient: open_mode: true → no auth needed
 #                           (only safe on a single-user local laptop)
@@ -80,7 +80,7 @@ DEPLOY_MODE="server-only"
 DEPLOY_MODE_EXPLICIT=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --version) ENGRAM_REF_ARG="$2"; shift 2 ;;
+    --version) MEMNOS_REF_ARG="$2"; shift 2 ;;
     --mode)    DEPLOY_MODE="$2"; DEPLOY_MODE_EXPLICIT=1; shift 2 ;;
     --help|-h)
       cat <<HLP
@@ -92,7 +92,7 @@ while [[ $# -gt 0 ]]; do
                         --version <sha>      install a specific commit
 
                       Default: master (always-current). Override with the
-                      ENGRAM_REF env var if you cannot pass arguments.
+                      MEMNOS_REF env var if you cannot pass arguments.
 
     --mode <m>        Deployment mode — controls auth defaults:
                         server-only (default) — open_mode: false
@@ -116,8 +116,8 @@ esac
 # ─── Detect prior install and choose upgrade / fresh / abort ─────────────────
 INSTALL_MODE="fresh"   # fresh | upgrade
 detect_existing_install() {
-  local src_clone="$HOME/.engram-src"
-  local data_dir="$HOME/.engram"
+  local src_clone="$HOME/.memnos-src"
+  local data_dir="$HOME/.memnos"
   local found=()
 
   [ -d "${src_clone}/.git" ] && found+=("source clone:  ${src_clone}")
@@ -125,23 +125,23 @@ detect_existing_install() {
   [ -d "${data_dir}" ] && found+=("data directory: ${data_dir}")
 
   local containers
-  containers="$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^engram(-arcadedb|-qdrant)?$' || true)"
+  containers="$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^memnos(-arcadedb|-qdrant)?$' || true)"
   [ -n "$containers" ] && found+=("docker containers: $(echo "$containers" | tr '\n' ' ')")
 
   [ ${#found[@]} -eq 0 ] && return 0
 
-  step "Previous engram install detected"
+  step "Previous memnos install detected"
   for item in "${found[@]}"; do
     echo "    - $item"
   done
   echo ""
   echo -e "  ${BOLD}1) Upgrade${NC}      — git pull source, rebuild image, restart."
-  echo -e "                  ${DIM}Keeps everything: .env, engram.yaml, memories, vault key, open_mode.${NC}"
+  echo -e "                  ${DIM}Keeps everything: .env, memnos.yaml, memories, vault key, open_mode.${NC}"
   echo -e "                  ${DIM}No prompts. Use this for routine version updates.${NC}"
   echo ""
   echo -e "  ${BOLD}2) Fresh install${NC} — ${RED}DELETES all stored memories${NC} and reconfigures from scratch."
-  echo -e "                  ${DIM}Wipes ~/.engram/{arcadedb, qdrant, .env, engram.yaml}.${NC}"
-  echo -e "                  ${DIM}Source clone (~/.engram-src) is kept. Requires explicit 'yes'.${NC}"
+  echo -e "                  ${DIM}Wipes ~/.memnos/{arcadedb, qdrant, .env, memnos.yaml}.${NC}"
+  echo -e "                  ${DIM}Source clone (~/.memnos-src) is kept. Requires explicit 'yes'.${NC}"
   echo ""
   echo -e "  ${BOLD}3) Abort${NC}        — leave everything as-is."
   echo ""
@@ -161,7 +161,7 @@ detect_existing_install() {
 # proceed. After confirmation, wipe arcadedb/qdrant data + config files so
 # the upcoming collect_config / write_env runs against a truly clean slate.
 confirm_fresh_wipe_or_abort() {
-  local data_dir="$HOME/.engram"
+  local data_dir="$HOME/.memnos"
   local has_memories=0
 
   # "Real content" = arcadedb directory has files in it.
@@ -187,11 +187,11 @@ confirm_fresh_wipe_or_abort() {
   [ -d "${data_dir}/qdrant" ] && \
     echo -e "    ${RED}•${NC} ${data_dir}/qdrant/      ${DIM}— Qdrant HNSW index${NC}"
   [ -f "${data_dir}/.env" ] && \
-    echo -e "    ${RED}•${NC} ${data_dir}/.env         ${DIM}— ENGRAM_API_KEY, ARCADEDB_PASSWORD, ENGRAM_VAULT_KEY${NC}"
-  [ -f "${data_dir}/engram.yaml" ] && \
-    echo -e "    ${RED}•${NC} ${data_dir}/engram.yaml  ${DIM}— configuration (open_mode, embeddings)${NC}"
+    echo -e "    ${RED}•${NC} ${data_dir}/.env         ${DIM}— MEMNOS_API_KEY, ARCADEDB_PASSWORD, MEMNOS_VAULT_KEY${NC}"
+  [ -f "${data_dir}/memnos.yaml" ] && \
+    echo -e "    ${RED}•${NC} ${data_dir}/memnos.yaml  ${DIM}— configuration (open_mode, embeddings)${NC}"
   echo ""
-  echo -e "  ${BOLD}This cannot be undone.${NC} If you only want to update engram software,"
+  echo -e "  ${BOLD}This cannot be undone.${NC} If you only want to update memnos software,"
   echo -e "  cancel this prompt and pick ${BOLD}1) Upgrade${NC} on the previous menu instead."
   echo ""
   echo -ne "${RED}${BOLD}  ?${NC} Type ${BOLD}yes${NC} to confirm wipe (any other input aborts) ${DIM}[default: abort]${NC}: "
@@ -203,12 +203,12 @@ confirm_fresh_wipe_or_abort() {
   fi
 
   # Stop containers so they release file locks before we rm -rf
-  info "Stopping engram containers..."
-  docker rm -f engram engram-arcadedb engram-qdrant >/dev/null 2>&1 || true
+  info "Stopping memnos containers..."
+  docker rm -f memnos memnos-arcadedb memnos-qdrant >/dev/null 2>&1 || true
 
-  info "Wiping ${data_dir}/{arcadedb, qdrant, .env, engram.yaml}..."
+  info "Wiping ${data_dir}/{arcadedb, qdrant, .env, memnos.yaml}..."
   rm -rf "${data_dir}/arcadedb" "${data_dir}/qdrant"
-  rm -f  "${data_dir}/.env"     "${data_dir}/engram.yaml"
+  rm -f  "${data_dir}/.env"     "${data_dir}/memnos.yaml"
   # Also drop any obsolete files from older installs
   rm -f  "${data_dir}/keys.db" "${data_dir}/learning.db" "${data_dir}/tasks.db" 2>/dev/null || true
 
@@ -223,7 +223,7 @@ detect_os() {
     Linux)
       if grep -qi microsoft /proc/version 2>/dev/null; then OS="wsl"
       else OS="linux"; fi ;;
-    *) die "Unsupported OS: $(uname -s). engram server requires macOS, Linux, or WSL." ;;
+    *) die "Unsupported OS: $(uname -s). memnos server requires macOS, Linux, or WSL." ;;
   esac
   info "Detected: ${OS} (${ARCH})"
 }
@@ -274,13 +274,13 @@ collect_config() {
   step "Configuration"
 
   # Data directory (persistent volumes)
-  ask DATA_DIR "Data directory (ArcadeDB, keys.db, learning.db, logs)" "$HOME/.engram"
+  ask DATA_DIR "Data directory (ArcadeDB, keys.db, learning.db, logs)" "$HOME/.memnos"
   DATA_DIR="${DATA_DIR/#\~/$HOME}"
 
-  # engram API key
-  ask ENGRAM_API_KEY "engram API key (blank = auto-generate)" ""
-  [ -z "$ENGRAM_API_KEY" ] && ENGRAM_API_KEY="$(gen_key)" && \
-    info "Generated API key: ${BOLD}${ENGRAM_API_KEY}${NC}"
+  # memnos API key
+  ask MEMNOS_API_KEY "memnos API key (blank = auto-generate)" ""
+  [ -z "$MEMNOS_API_KEY" ] && MEMNOS_API_KEY="$(gen_key)" && \
+    info "Generated API key: ${BOLD}${MEMNOS_API_KEY}${NC}"
 
   # ArcadeDB root password
   ask ARCADEDB_PASSWORD "ArcadeDB root password (blank = auto-generate)" ""
@@ -288,14 +288,14 @@ collect_config() {
     info "Generated ArcadeDB password: ${BOLD}${ARCADEDB_PASSWORD}${NC}"
 
   # Vault encryption key — always auto-generated, used to encrypt secrets at rest
-  ENGRAM_VAULT_KEY="$(gen_vault_key)"
+  MEMNOS_VAULT_KEY="$(gen_vault_key)"
   info "Generated vault encryption key (saved to .env)"
 
   # ─── Anthropic key (independent of embeddings) ───────────────────────────
   echo ""
   echo -e "  ${BOLD}Anthropic API key${NC}  ${DIM}(optional)${NC}"
   echo -e "     For LLM reflection & skill extraction."
-  echo -e "     ${DIM}If skipped:${NC} engram uses Claude Code built-in ${BOLD}claude --print${NC} CLI."
+  echo -e "     ${DIM}If skipped:${NC} memnos uses Claude Code built-in ${BOLD}claude --print${NC} CLI."
   echo -e "     ${DIM}Recommended:${NC} skip if you have Claude Code installed (most users)."
   echo ""
   ask ANTHROPIC_API_KEY "Anthropic API key (press Enter to skip)" ""
@@ -306,7 +306,7 @@ collect_config() {
   echo -e "${RED}${BOLD}│  ⚠  EMBEDDING BACKEND — PICK CAREFULLY, MOSTLY PERMANENT          ⚠  │${NC}"
   echo -e "${RED}${BOLD}└─────────────────────────────────────────────────────────────────────┘${NC}"
   echo ""
-  echo -e "  engram writes a vector for every memory you save. Different embedding"
+  echo -e "  memnos writes a vector for every memory you save. Different embedding"
   echo -e "  models produce ${BOLD}different dimensions${NC} (384 vs 1536) and live in"
   echo -e "  ${BOLD}incompatible vector spaces${NC} — vectors from one model cannot be"
   echo -e "  compared to vectors from another. Switching backend later requires:"
@@ -322,7 +322,7 @@ collect_config() {
   echo -e "  ${BOLD}A) Local embeddings${NC}  ${DIM}(sentence-transformers all-MiniLM-L6-v2, 384-dim)${NC}"
   echo -e "     ${GREEN}Cost:${NC}     \$0 forever. No API calls. No data leaves your machine."
   echo -e "     ${GREEN}Privacy:${NC}  100% offline — ideal for legal / medical / regulated content."
-  echo -e "     ${YELLOW}Disk:${NC}     ${BOLD}+2 GB${NC} baked into engram Docker image."
+  echo -e "     ${YELLOW}Disk:${NC}     ${BOLD}+2 GB${NC} baked into memnos Docker image."
   echo -e "     ${YELLOW}Build:${NC}    adds 3-5 min to first 'docker compose build'."
   echo -e "     ${DIM}Quality:${NC}  ~80% of OpenAI on relevance benchmarks. Good for personal use."
   echo ""
@@ -342,16 +342,16 @@ collect_config() {
   echo -e "     ${DIM}•${NC} Privacy-sensitive content / offline / no API costs → ${BOLD}Local${NC}"
   echo -e "     ${DIM}•${NC} Light personal use, undecided → ${BOLD}Local${NC} (zero risk, switch later if needed)"
   echo ""
-  echo -e "  ${DIM}Migration path (local → OpenAI later):${NC} python3 ~/.engram-src/tools/reembed.py"
+  echo -e "  ${DIM}Migration path (local → OpenAI later):${NC} python3 ~/.memnos-src/tools/reembed.py"
   echo ""
 
   ask OPENAI_API_KEY "OpenAI API key (paste to use OpenAI embeddings, or press Enter to use Local)" ""
 
-  ENGRAM_EMBED_MODE="online"
+  MEMNOS_EMBED_MODE="online"
   if [ -z "${OPENAI_API_KEY}" ]; then
     echo ""
-    info "Using ${BOLD}local embeddings${NC} — engram image build will add ~2 GB for sentence-transformers + torch."
-    ENGRAM_EMBED_MODE="local"
+    info "Using ${BOLD}local embeddings${NC} — memnos image build will add ~2 GB for sentence-transformers + torch."
+    MEMNOS_EMBED_MODE="local"
   else
     info "Using ${BOLD}OpenAI embeddings${NC} (text-embedding-3-small, 1536-dim)."
     info "Memory text will be sent to OpenAI for vector encoding."
@@ -375,7 +375,7 @@ collect_config() {
   fi
   if [ -n "$OPENAI_API_KEY" ]; then
     info "Embeddings: OpenAI (text-embedding-3-small)"
-  elif [ "${ENGRAM_EMBED_MODE:-online}" = "local" ]; then
+  elif [ "${MEMNOS_EMBED_MODE:-online}" = "local" ]; then
     info "Embeddings: local model baked into image (sentence-transformers, +2 GB)"
   else
     warn "Embeddings: NONE configured — semantic search will error out"
@@ -394,56 +394,56 @@ collect_config() {
 # default install lags behind master by N commits while we accumulate fixes
 # between releases.
 resolve_ref() {
-  # Priority: --version arg  >  ENGRAM_REF env  >  master
-  if [ -n "${ENGRAM_REF_ARG}" ]; then
-    ENGRAM_REF="${ENGRAM_REF_ARG}"
-    info "Pinning to ref from --version: ${BOLD}${ENGRAM_REF}${NC}"
+  # Priority: --version arg  >  MEMNOS_REF env  >  master
+  if [ -n "${MEMNOS_REF_ARG}" ]; then
+    MEMNOS_REF="${MEMNOS_REF_ARG}"
+    info "Pinning to ref from --version: ${BOLD}${MEMNOS_REF}${NC}"
     return
   fi
-  if [ -n "${ENGRAM_REF:-}" ]; then
-    info "Pinning to ref from ENGRAM_REF env: ${BOLD}${ENGRAM_REF}${NC}"
+  if [ -n "${MEMNOS_REF:-}" ]; then
+    info "Pinning to ref from MEMNOS_REF env: ${BOLD}${MEMNOS_REF}${NC}"
     return
   fi
-  ENGRAM_REF="master"
+  MEMNOS_REF="master"
   info "Installing from ${BOLD}master${NC} (always-current default)."
-  info "For a frozen release, pass --version v1.x.y (see https://github.com/thameema/engram/releases)."
+  info "For a frozen release, pass --version v1.x.y (see https://github.com/thameema/memnos/releases)."
 }
 
 # ─── Resolve source tree (clone if not running from one) ─────────────────────
 resolve_source() {
-  step "Resolving engram source"
+  step "Resolving memnos source"
   resolve_ref
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-./install-server.sh}")" 2>/dev/null && pwd || echo "")"
   if [ -f "${SCRIPT_DIR}/docker-compose.yml" ] && [ -f "${SCRIPT_DIR}/docker/Dockerfile" ]; then
-    ENGRAM_SRC="${SCRIPT_DIR}"
-    info "Using local source at ${ENGRAM_SRC} (ignoring --version because running from a clone)"
+    MEMNOS_SRC="${SCRIPT_DIR}"
+    info "Using local source at ${MEMNOS_SRC} (ignoring --version because running from a clone)"
     return
   fi
 
   # Standalone (curl|bash) — clone to a stable location next to the data dir
-  ENGRAM_SRC="${HOME}/.engram-src"
-  command -v git &>/dev/null || die "git not found. Install git, or run this script from an engram source clone."
-  if [ -d "${ENGRAM_SRC}/.git" ]; then
-    info "Updating engram source at ${ENGRAM_SRC} → ${ENGRAM_REF}..."
-    ( cd "${ENGRAM_SRC}" && git fetch --depth 1 origin "${ENGRAM_REF}" 2>/dev/null \
+  MEMNOS_SRC="${HOME}/.memnos-src"
+  command -v git &>/dev/null || die "git not found. Install git, or run this script from an memnos source clone."
+  if [ -d "${MEMNOS_SRC}/.git" ]; then
+    info "Updating memnos source at ${MEMNOS_SRC} → ${MEMNOS_REF}..."
+    ( cd "${MEMNOS_SRC}" && git fetch --depth 1 origin "${MEMNOS_REF}" 2>/dev/null \
         && git reset --hard FETCH_HEAD >/dev/null 2>&1 ) \
-      || warn "git update to ${ENGRAM_REF} failed — using existing checkout"
+      || warn "git update to ${MEMNOS_REF} failed — using existing checkout"
   else
-    info "Cloning engram@${ENGRAM_REF} to ${ENGRAM_SRC}..."
-    git clone --depth 1 --branch "${ENGRAM_REF}" https://github.com/thameema/engram.git "${ENGRAM_SRC}" 2>&1 | tail -2 \
-      || die "git clone failed for ref '${ENGRAM_REF}'. Check the ref exists: https://github.com/thameema/engram/releases"
+    info "Cloning memnos@${MEMNOS_REF} to ${MEMNOS_SRC}..."
+    git clone --depth 1 --branch "${MEMNOS_REF}" https://github.com/thameema/memnos.git "${MEMNOS_SRC}" 2>&1 | tail -2 \
+      || die "git clone failed for ref '${MEMNOS_REF}'. Check the ref exists: https://github.com/thameema/memnos/releases"
   fi
-  [ -f "${ENGRAM_SRC}/docker-compose.yml" ] || die "Clone is missing docker-compose.yml — repo layout changed?"
+  [ -f "${MEMNOS_SRC}/docker-compose.yml" ] || die "Clone is missing docker-compose.yml — repo layout changed?"
 
-  # engram.yaml + .env now live in the DATA dir (~/.engram), not the source
+  # memnos.yaml + .env now live in the DATA dir (~/.memnos), not the source
   # clone. The source clone stays pure code so it can be wiped + re-cloned
   # without losing user config or data.
-  [ -f "${ENGRAM_SRC}/engram.yaml.example" ] \
-    || die "Missing engram.yaml.example in source — repo layout changed?"
+  [ -f "${MEMNOS_SRC}/memnos.yaml.example" ] \
+    || die "Missing memnos.yaml.example in source — repo layout changed?"
 
   # Also defend against Docker auto-creating a DIRECTORY at the bind-mount
   # path from a previous failed 'compose up' (IsADirectoryError on next run).
-  for stale in "${ENGRAM_SRC}/engram.yaml" "${DATA_DIR}/engram.yaml"; do
+  for stale in "${MEMNOS_SRC}/memnos.yaml" "${DATA_DIR}/memnos.yaml"; do
     if [ -d "$stale" ]; then
       warn "$stale is a directory (Docker auto-created from a failed previous run) — removing"
       rm -rf "$stale"
@@ -452,22 +452,22 @@ resolve_source() {
 
   # Verify other bind-mount sources in the source clone are the right type
   for d in agents skills packages docker; do
-    [ -d "${ENGRAM_SRC}/${d}" ] || die "Missing required directory: ${ENGRAM_SRC}/${d}"
+    [ -d "${MEMNOS_SRC}/${d}" ] || die "Missing required directory: ${MEMNOS_SRC}/${d}"
   done
 }
 
-# ─── Refresh engram.yaml in the DATA dir from the committed example ──────────
+# ─── Refresh memnos.yaml in the DATA dir from the committed example ──────────
 # Called after create_dirs so DATA_DIR exists. Always pulls the latest template
 # so upstream fixes (e.g. ARCADEDB_HOST interpolation) land on re-install.
 refresh_yaml_config() {
-  step "Writing engram.yaml to ${DATA_DIR}/engram.yaml"
-  local YAML_FILE="${DATA_DIR}/engram.yaml"
-  if [ -f "${YAML_FILE}" ] && ! cmp -s "${YAML_FILE}" "${ENGRAM_SRC}/engram.yaml.example"; then
+  step "Writing memnos.yaml to ${DATA_DIR}/memnos.yaml"
+  local YAML_FILE="${DATA_DIR}/memnos.yaml"
+  if [ -f "${YAML_FILE}" ] && ! cmp -s "${YAML_FILE}" "${MEMNOS_SRC}/memnos.yaml.example"; then
     local yaml_backup="${YAML_FILE}.before-install-$(date +%Y%m%d-%H%M%S)"
     cp "${YAML_FILE}" "$yaml_backup"
-    info "Backed up existing engram.yaml → $yaml_backup"
+    info "Backed up existing memnos.yaml → $yaml_backup"
   fi
-  cp "${ENGRAM_SRC}/engram.yaml.example" "${YAML_FILE}"
+  cp "${MEMNOS_SRC}/memnos.yaml.example" "${YAML_FILE}"
 
   # Patch open_mode based on deployment mode (idempotent — works regardless of
   # what the example file currently defaults to):
@@ -475,16 +475,16 @@ refresh_yaml_config() {
   #   full        → true  (auth bypassed — convenient for single-user local)
   if [ "${DEPLOY_MODE}" = "server-only" ]; then
     sed_i "s|^  open_mode: true|  open_mode: false|" "${YAML_FILE}"
-    success "engram.yaml refreshed (mode=server-only, open_mode=false — Bearer auth ENFORCED)"
+    success "memnos.yaml refreshed (mode=server-only, open_mode=false — Bearer auth ENFORCED)"
   else
     sed_i "s|^  open_mode: false|  open_mode: true|" "${YAML_FILE}"
-    success "engram.yaml refreshed (mode=full, open_mode=true — auth bypassed for single-user local use)"
+    success "memnos.yaml refreshed (mode=full, open_mode=true — auth bypassed for single-user local use)"
   fi
 
   # Clean up old in-source copies if they exist (migration from pre-v1.4 layout)
-  if [ -f "${ENGRAM_SRC}/engram.yaml" ] && [ ! -L "${ENGRAM_SRC}/engram.yaml" ]; then
-    info "Removing obsolete ${ENGRAM_SRC}/engram.yaml (now lives in ${DATA_DIR})"
-    rm -f "${ENGRAM_SRC}/engram.yaml"
+  if [ -f "${MEMNOS_SRC}/memnos.yaml" ] && [ ! -L "${MEMNOS_SRC}/memnos.yaml" ]; then
+    info "Removing obsolete ${MEMNOS_SRC}/memnos.yaml (now lives in ${DATA_DIR})"
+    rm -f "${MEMNOS_SRC}/memnos.yaml"
   fi
 }
 
@@ -506,36 +506,36 @@ write_env() {
   step "Writing .env to ${ENV_FILE}"
 
   # Migrate from pre-v1.4 location if needed
-  if [ -f "${ENGRAM_SRC}/.env" ] && [ ! -f "${ENV_FILE}" ]; then
-    info "Migrating .env from ${ENGRAM_SRC}/.env to ${ENV_FILE}"
-    mv "${ENGRAM_SRC}/.env" "${ENV_FILE}"
+  if [ -f "${MEMNOS_SRC}/.env" ] && [ ! -f "${ENV_FILE}" ]; then
+    info "Migrating .env from ${MEMNOS_SRC}/.env to ${ENV_FILE}"
+    mv "${MEMNOS_SRC}/.env" "${ENV_FILE}"
   fi
 
-  if [ -f "${ENGRAM_SRC}/.env.example" ]; then
-    cp "${ENGRAM_SRC}/.env.example" "${ENV_FILE}"
+  if [ -f "${MEMNOS_SRC}/.env.example" ]; then
+    cp "${MEMNOS_SRC}/.env.example" "${ENV_FILE}"
   else
     : > "${ENV_FILE}"
   fi
 
   # Overwrite required values
   sed_i "s|^ARCADEDB_PASSWORD=.*|ARCADEDB_PASSWORD=${ARCADEDB_PASSWORD}|"     "${ENV_FILE}"
-  sed_i "s|^ENGRAM_API_KEY=.*|ENGRAM_API_KEY=${ENGRAM_API_KEY}|"              "${ENV_FILE}"
-  sed_i "s|^ENGRAM_VAULT_KEY=.*|ENGRAM_VAULT_KEY=${ENGRAM_VAULT_KEY}|"        "${ENV_FILE}"
+  sed_i "s|^MEMNOS_API_KEY=.*|MEMNOS_API_KEY=${MEMNOS_API_KEY}|"              "${ENV_FILE}"
+  sed_i "s|^MEMNOS_VAULT_KEY=.*|MEMNOS_VAULT_KEY=${MEMNOS_VAULT_KEY}|"        "${ENV_FILE}"
   sed_i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}|"     "${ENV_FILE}"
   sed_i "s|^# OPENAI_API_KEY=.*|OPENAI_API_KEY=${OPENAI_API_KEY}|"            "${ENV_FILE}"
   sed_i "s|^OPENAI_API_KEY=.*|OPENAI_API_KEY=${OPENAI_API_KEY}|"              "${ENV_FILE}"
-  sed_i "s|^ENGRAM_EMBED_MODE=.*|ENGRAM_EMBED_MODE=${ENGRAM_EMBED_MODE:-online}|" "${ENV_FILE}"
+  sed_i "s|^MEMNOS_EMBED_MODE=.*|MEMNOS_EMBED_MODE=${MEMNOS_EMBED_MODE:-online}|" "${ENV_FILE}"
 
   # Append values not in .env.example — compose reads these via --env-file.
-  # ENGRAM_CONFIG_FILE is the absolute path to engram.yaml; compose substitutes
-  # it into the volume mount: "${ENGRAM_CONFIG_FILE}:/app/engram.yaml:ro".
+  # MEMNOS_CONFIG_FILE is the absolute path to memnos.yaml; compose substitutes
+  # it into the volume mount: "${MEMNOS_CONFIG_FILE}:/app/memnos.yaml:ro".
   {
     echo ""
     echo "# Set by install-server.sh"
-    echo "ENGRAM_DATA_DIR=${DATA_DIR}"
-    echo "ENGRAM_CONFIG_FILE=${DATA_DIR}/engram.yaml"
+    echo "MEMNOS_DATA_DIR=${DATA_DIR}"
+    echo "MEMNOS_CONFIG_FILE=${DATA_DIR}/memnos.yaml"
     if [ "${USE_QDRANT}" = "yes" ]; then
-      echo "ENGRAM_VECTOR_BACKEND=qdrant"
+      echo "MEMNOS_VECTOR_BACKEND=qdrant"
     fi
   } >> "${ENV_FILE}"
 
@@ -543,28 +543,28 @@ write_env() {
   success ".env written (mode 600)"
 
   # Remove obsolete in-source .env if it still exists (post-migration cleanup)
-  if [ -f "${ENGRAM_SRC}/.env" ]; then
-    info "Removing obsolete ${ENGRAM_SRC}/.env (now lives in ${DATA_DIR})"
-    rm -f "${ENGRAM_SRC}/.env"
+  if [ -f "${MEMNOS_SRC}/.env" ]; then
+    info "Removing obsolete ${MEMNOS_SRC}/.env (now lives in ${DATA_DIR})"
+    rm -f "${MEMNOS_SRC}/.env"
   fi
 }
 
 # ─── Tear down stale containers from a previous compose project ─────────────
-# If engram-arcadedb / engram / engram-qdrant exist but were started from a
+# If memnos-arcadedb / memnos / memnos-qdrant exist but were started from a
 # different compose project (different directory, different network), they
-# cannot talk to a fresh engram container we start from ENGRAM_SRC — they
+# cannot talk to a fresh memnos container we start from MEMNOS_SRC — they
 # end up on different docker networks → 'httpx.ConnectError: All connection
-# attempts failed' inside engram. Remove them first; data persists in the
+# attempts failed' inside memnos. Remove them first; data persists in the
 # bind-mounted DATA_DIR.
 clean_stale_containers() {
   local expected_net
-  expected_net="$(basename "${ENGRAM_SRC}")_default"
+  expected_net="$(basename "${MEMNOS_SRC}")_default"
   local stale=()
-  for c in engram engram-arcadedb engram-qdrant; do
+  for c in memnos memnos-arcadedb memnos-qdrant; do
     docker inspect "$c" >/dev/null 2>&1 || continue
     local nets
     nets="$(docker inspect "$c" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null)"
-    # Stale if the container is NOT on the expected ENGRAM_SRC network
+    # Stale if the container is NOT on the expected MEMNOS_SRC network
     if ! echo "$nets" | grep -qw "$expected_net"; then
       stale+=("$c")
     fi
@@ -577,20 +577,20 @@ clean_stale_containers() {
       info "  removing: $c"
       docker rm -f "$c" >/dev/null 2>&1 || true
     done
-    # Also tear down the old compose project if it lived at ~/.engram
-    if [ -f "${HOME}/.engram/docker-compose.yml" ]; then
-      info "  found old ~/.engram/docker-compose.yml — tearing down its project"
-      ( cd "${HOME}/.engram" && $DC down 2>/dev/null || true )
-      mv "${HOME}/.engram/docker-compose.yml" "${HOME}/.engram/docker-compose.yml.OBSOLETE.$(date +%s)" 2>/dev/null || true
+    # Also tear down the old compose project if it lived at ~/.memnos
+    if [ -f "${HOME}/.memnos/docker-compose.yml" ]; then
+      info "  found old ~/.memnos/docker-compose.yml — tearing down its project"
+      ( cd "${HOME}/.memnos" && $DC down 2>/dev/null || true )
+      mv "${HOME}/.memnos/docker-compose.yml" "${HOME}/.memnos/docker-compose.yml.OBSOLETE.$(date +%s)" 2>/dev/null || true
     fi
   fi
 }
 
-# ─── Pull images, build engram, start services ───────────────────────────────
+# ─── Pull images, build memnos, start services ───────────────────────────────
 # Compose runs from the source clone (for build context + relative agents/skills
 # mounts) but reads .env from the data dir via --env-file.
 start_services() {
-  cd "${ENGRAM_SRC}"
+  cd "${MEMNOS_SRC}"
   local ENV_FILE="${DATA_DIR}/.env"
   set -a; source "${ENV_FILE}"; set +a
   clean_stale_containers
@@ -611,11 +611,11 @@ start_services() {
     $DC_CMD pull qdrant
   fi
 
-  step "Building engram image"
+  step "Building memnos image"
   info "First build downloads Python dependencies — typically 3-5 minutes."
   info "You will see progress below. Do not interrupt."
   echo ""
-  $DC_CMD build --progress=plain engram
+  $DC_CMD build --progress=plain memnos
 
   step "Starting services"
   $DC_CMD up -d
@@ -623,7 +623,7 @@ start_services() {
   echo ""
   info "Waiting for services to be healthy..."
   local i=0
-  while ! $DC_CMD ps 2>/dev/null | grep -q "engram.*healthy"; do
+  while ! $DC_CMD ps 2>/dev/null | grep -q "memnos.*healthy"; do
     sleep 4; i=$((i+1)); echo -ne "\r  Waiting... ${i}s"
     [ $i -ge 45 ] && break
   done
@@ -631,10 +631,10 @@ start_services() {
 
   sleep 2
   if curl -sf "http://localhost:8766/api/v1/admin/health" \
-    -H "Authorization: Bearer ${ENGRAM_API_KEY}" -o /dev/null 2>/dev/null; then
-    success "engram API is healthy"
+    -H "Authorization: Bearer ${MEMNOS_API_KEY}" -o /dev/null 2>/dev/null; then
+    success "memnos API is healthy"
   else
-    warn "API not responding yet — check logs: cd ${ENGRAM_SRC} && ${DC} --env-file ${ENV_FILE} logs engram"
+    warn "API not responding yet — check logs: cd ${MEMNOS_SRC} && ${DC} --env-file ${ENV_FILE} logs memnos"
   fi
 }
 
@@ -642,7 +642,7 @@ start_services() {
 print_success() {
   echo ""
   echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "${BOLD}${GREEN}  engram server installed!${NC}"
+  echo -e "${BOLD}${GREEN}  memnos server installed!${NC}"
   echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
   echo -e "  ${BOLD}Connection details${NC} (share with clients running install-client.sh):"
@@ -655,11 +655,11 @@ print_success() {
 
   echo -e "    MCP / SSE endpoint : ${BOLD}http://${SERVER_HOST}:8765/sse${NC}"
   echo -e "    REST API           : ${BOLD}http://${SERVER_HOST}:8766/api/v1${NC}"
-  echo -e "    API key            : ${YELLOW}${ENGRAM_API_KEY}${NC}"
+  echo -e "    API key            : ${YELLOW}${MEMNOS_API_KEY}${NC}"
   echo ""
-  echo -e "  ${BOLD}Source directory${NC} : ${ENGRAM_SRC}  ${DIM}(code only — safe to wipe + re-clone)${NC}"
+  echo -e "  ${BOLD}Source directory${NC} : ${MEMNOS_SRC}  ${DIM}(code only — safe to wipe + re-clone)${NC}"
   echo -e "  ${BOLD}Data directory${NC}   : ${DATA_DIR}  ${DIM}(config + secrets + data — keep this)${NC}"
-  echo -e "    ${DIM}├─ engram.yaml      configuration${NC}"
+  echo -e "    ${DIM}├─ memnos.yaml      configuration${NC}"
   echo -e "    ${DIM}├─ .env             API keys + passwords${NC}"
   echo -e "    ${DIM}├─ arcadedb/        graph + vector data${NC}"
   if [ "${USE_QDRANT}" = "yes" ]; then
@@ -670,12 +670,12 @@ print_success() {
   [ "${USE_QDRANT}" = "yes" ] && PROFILE=" --profile qdrant"
   local DC_FULL="${DC} --env-file ${DATA_DIR}/.env${PROFILE}"
   echo -e "  ${BOLD}Manage services${NC}:"
-  echo -e "    cd ${ENGRAM_SRC} && ${DC_FULL} logs -f engram  # tail logs"
-  echo -e "    cd ${ENGRAM_SRC} && ${DC_FULL} down             # stop"
-  echo -e "    cd ${ENGRAM_SRC} && ${DC_FULL} up -d            # start"
+  echo -e "    cd ${MEMNOS_SRC} && ${DC_FULL} logs -f memnos  # tail logs"
+  echo -e "    cd ${MEMNOS_SRC} && ${DC_FULL} down             # stop"
+  echo -e "    cd ${MEMNOS_SRC} && ${DC_FULL} up -d            # start"
   echo ""
   echo -e "  ${BOLD}Next step${NC} — install the client hooks on each developer machine:"
-  echo -e "    ${CYAN}./install-client.sh --server http://${SERVER_HOST}:8766 --key ${ENGRAM_API_KEY}${NC}"
+  echo -e "    ${CYAN}./install-client.sh --server http://${SERVER_HOST}:8766 --key ${MEMNOS_API_KEY}${NC}"
   echo ""
 }
 
@@ -686,26 +686,26 @@ main() {
   detect_existing_install
 
   if [ "$INSTALL_MODE" = "upgrade" ]; then
-    # ── Upgrade: non-destructive. Reuse .env, preserve existing engram.yaml
+    # ── Upgrade: non-destructive. Reuse .env, preserve existing memnos.yaml
     #             (including open_mode), only update source code + rebuild image.
-    DATA_DIR="$HOME/.engram"
-    ENGRAM_SRC="$HOME/.engram-src"
-    # Pre-v1.4 .env lived at ENGRAM_SRC/.env — migrate transparently.
-    if [ ! -f "${DATA_DIR}/.env" ] && [ -f "${ENGRAM_SRC}/.env" ]; then
+    DATA_DIR="$HOME/.memnos"
+    MEMNOS_SRC="$HOME/.memnos-src"
+    # Pre-v1.4 .env lived at MEMNOS_SRC/.env — migrate transparently.
+    if [ ! -f "${DATA_DIR}/.env" ] && [ -f "${MEMNOS_SRC}/.env" ]; then
       mkdir -p "${DATA_DIR}"
-      mv "${ENGRAM_SRC}/.env" "${DATA_DIR}/.env"
-      info "Migrated .env from ${ENGRAM_SRC} → ${DATA_DIR}"
+      mv "${MEMNOS_SRC}/.env" "${DATA_DIR}/.env"
+      info "Migrated .env from ${MEMNOS_SRC} → ${DATA_DIR}"
     fi
     local ENV_FILE="${DATA_DIR}/.env"
     [ -f "${ENV_FILE}" ] || die "Upgrade mode but ${ENV_FILE} is missing — pick 'Fresh install' instead."
     set -a; source "${ENV_FILE}"; set +a
     USE_QDRANT="no"
-    grep -q "^ENGRAM_VECTOR_BACKEND=qdrant" "${ENV_FILE}" && USE_QDRANT="yes"
+    grep -q "^MEMNOS_VECTOR_BACKEND=qdrant" "${ENV_FILE}" && USE_QDRANT="yes"
 
     # Auto-detect the existing open_mode so we don't accidentally flip it
     # when refresh_yaml_config runs. User can override with --mode.
-    if [ "${DEPLOY_MODE_EXPLICIT}" -eq 0 ] && [ -f "${DATA_DIR}/engram.yaml" ]; then
-      if grep -qE "^\s+open_mode:\s+true\b" "${DATA_DIR}/engram.yaml"; then
+    if [ "${DEPLOY_MODE_EXPLICIT}" -eq 0 ] && [ -f "${DATA_DIR}/memnos.yaml" ]; then
+      if grep -qE "^\s+open_mode:\s+true\b" "${DATA_DIR}/memnos.yaml"; then
         DEPLOY_MODE="full"
       else
         DEPLOY_MODE="server-only"
@@ -716,14 +716,14 @@ main() {
     info "Upgrade: preserving ${ENV_FILE} — no re-prompts, no key changes."
     resolve_source       # git pull source
     refresh_yaml_config  # refresh from updated template, preserve open_mode
-    # Ensure ENGRAM_CONFIG_FILE is set in .env (pre-v1.4 installs didn't have it)
-    if ! grep -q "^ENGRAM_CONFIG_FILE=" "${ENV_FILE}"; then
-      echo "ENGRAM_CONFIG_FILE=${DATA_DIR}/engram.yaml" >> "${ENV_FILE}"
+    # Ensure MEMNOS_CONFIG_FILE is set in .env (pre-v1.4 installs didn't have it)
+    if ! grep -q "^MEMNOS_CONFIG_FILE=" "${ENV_FILE}"; then
+      echo "MEMNOS_CONFIG_FILE=${DATA_DIR}/memnos.yaml" >> "${ENV_FILE}"
     fi
     start_services       # rebuild image, restart containers
   else
     # ── Fresh: detect_existing_install already ran confirm_fresh_wipe_or_abort
-    #          (which deleted ~/.engram/{arcadedb,qdrant,.env,engram.yaml}
+    #          (which deleted ~/.memnos/{arcadedb,qdrant,.env,memnos.yaml}
     #          when there was anything to lose). Now run a clean configure.
     collect_config
     resolve_source

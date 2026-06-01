@@ -1,6 +1,6 @@
 #!/usr/bin/env python3.10
 """
-test_arcadedb.py — Comprehensive ArcadeDB integration test for engram.
+test_arcadedb.py — Comprehensive ArcadeDB integration test for memnos.
 
 Tests every vertex type, edge type, search mode, and persistence scenario.
 Run iteratively until all tests pass.
@@ -33,7 +33,7 @@ except ImportError as e:
     sys.exit(1)
 
 ARCADEDB_URL = "http://localhost:2480"
-DB_NAME = "engram"
+DB_NAME = "memnos"
 EMBED_MODEL = "text-embedding-3-small"
 VECTOR_DIM = 1536
 TEST_NS = "test:arcadedb:integration"
@@ -43,7 +43,7 @@ TEST_NS = "test:arcadedb:integration"
 # ---------------------------------------------------------------------------
 
 def _auth_header() -> dict:
-    password = os.environ.get("ARCADEDB_PASSWORD", "engram-dev-password")
+    password = os.environ.get("ARCADEDB_PASSWORD", "memnos-dev-password")
     creds = base64.b64encode(f"root:{password}".encode()).decode()
     return {"Authorization": f"Basic {creds}", "Content-Type": "application/json"}
 
@@ -1230,7 +1230,7 @@ def main():
 
     runner = TestRunner(verbose=args.verbose)
 
-    print(f"\nengram ArcadeDB Integration Tests")
+    print(f"\nmemnos ArcadeDB Integration Tests")
     print(f"DB: {ARCADEDB_URL}/{DB_NAME}")
     print(f"Test namespace: {TEST_NS}")
     print("=" * 70)

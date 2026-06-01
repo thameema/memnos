@@ -27,7 +27,7 @@ class TestCommunityResult(unittest.TestCase):
     """Tests for the CommunityResult dataclass."""
 
     def setUp(self):
-        from engram.community.detector import CommunityResult
+        from memnos.community.detector import CommunityResult
         self.CommunityResult = CommunityResult
 
     def test_fields_accessible(self):
@@ -74,7 +74,7 @@ class TestGetEntityCooccurrences(unittest.IsolatedAsyncioTestCase):
     """Tests for ArcadeDBClient.get_entity_cooccurrences."""
 
     def _make_client(self):
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         client = ArcadeDBClient.__new__(ArcadeDBClient)
         client._query = AsyncMock()
         client._command = AsyncMock()
@@ -87,7 +87,7 @@ class TestGetEntityCooccurrences(unittest.IsolatedAsyncioTestCase):
             {"memory_id": "m1", "entity_name": "python"},
             {"memory_id": "m1", "entity_name": "fhir"},
         ]
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         pairs = await ArcadeDBClient.get_entity_cooccurrences(client, "org:acme")
         self.assertEqual(len(pairs), 1)
         pair_set = {frozenset(p) for p in pairs}
@@ -100,7 +100,7 @@ class TestGetEntityCooccurrences(unittest.IsolatedAsyncioTestCase):
             {"memory_id": "m1", "entity_name": "python"},
             {"memory_id": "m2", "entity_name": "fhir"},
         ]
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         pairs = await ArcadeDBClient.get_entity_cooccurrences(client, "org:acme")
         self.assertEqual(pairs, [])
 
@@ -112,7 +112,7 @@ class TestGetEntityCooccurrences(unittest.IsolatedAsyncioTestCase):
             {"memory_id": "m1", "entity_name": "python"},
             {"memory_id": "m1", "entity_name": "fhir"},
         ]
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         pairs = await ArcadeDBClient.get_entity_cooccurrences(client, "org:acme")
         # After dedup: {python, fhir} → 1 pair
         self.assertEqual(len(pairs), 1)
@@ -121,7 +121,7 @@ class TestGetEntityCooccurrences(unittest.IsolatedAsyncioTestCase):
     async def test_wildcard_namespace_uses_no_filter(self):
         client = self._make_client()
         client._query.return_value = []
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         await ArcadeDBClient.get_entity_cooccurrences(client, "*")
         # The no-filter query should NOT include :ns parameter
         call_args = client._query.call_args
@@ -137,14 +137,14 @@ class TestUpsertCommunity(unittest.IsolatedAsyncioTestCase):
     """Tests for ArcadeDBClient.upsert_community."""
 
     def _make_client(self):
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         client = ArcadeDBClient.__new__(ArcadeDBClient)
         client._query = AsyncMock()
         client._command = AsyncMock()
         return client
 
     def _make_community(self, cid="abc123"):
-        from engram.models import Community
+        from memnos.models import Community
         return Community(
             id=cid,
             label="alpha / beta",
@@ -158,7 +158,7 @@ class TestUpsertCommunity(unittest.IsolatedAsyncioTestCase):
         client = self._make_client()
         # UPDATE returns count=0 → triggers INSERT
         client._command.return_value = [{"count": 0}]
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         community = self._make_community()
         cid = await ArcadeDBClient.upsert_community(client, community)
         self.assertEqual(cid, community.id)
@@ -171,7 +171,7 @@ class TestUpsertCommunity(unittest.IsolatedAsyncioTestCase):
         client = self._make_client()
         # UPDATE returns count=1 → skip INSERT
         client._command.return_value = [{"count": 1}]
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         community = self._make_community()
         cid = await ArcadeDBClient.upsert_community(client, community)
         self.assertEqual(cid, community.id)
@@ -183,7 +183,7 @@ class TestUpsertCommunity(unittest.IsolatedAsyncioTestCase):
     async def test_returns_community_id(self):
         client = self._make_client()
         client._command.return_value = [{"count": 1}]
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         community = self._make_community("my-unique-id")
         result = await ArcadeDBClient.upsert_community(client, community)
         self.assertEqual(result, "my-unique-id")
@@ -197,14 +197,14 @@ class TestCreateBelongsToEdge(unittest.IsolatedAsyncioTestCase):
     """Tests for ArcadeDBClient.create_belongs_to_edge."""
 
     def _make_client(self):
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         client = ArcadeDBClient.__new__(ArcadeDBClient)
         client._command = AsyncMock()
         return client
 
     async def test_calls_command_with_correct_sql(self):
         client = self._make_client()
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         await ArcadeDBClient.create_belongs_to_edge(client, "python", "cid123", "org:acme")
         client._command.assert_called_once()
         sql = client._command.call_args[0][0]
@@ -217,7 +217,7 @@ class TestCreateBelongsToEdge(unittest.IsolatedAsyncioTestCase):
     async def test_non_fatal_on_db_error(self):
         client = self._make_client()
         client._command.side_effect = Exception("ArcadeDB connection refused")
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         # Should NOT raise
         try:
             await ArcadeDBClient.create_belongs_to_edge(client, "alpha", "cid", "ns")
@@ -233,7 +233,7 @@ class TestListCommunities(unittest.IsolatedAsyncioTestCase):
     """Tests for ArcadeDBClient.list_communities."""
 
     def _make_client(self):
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         client = ArcadeDBClient.__new__(ArcadeDBClient)
         client._query = AsyncMock()
         return client
@@ -250,7 +250,7 @@ class TestListCommunities(unittest.IsolatedAsyncioTestCase):
                 "detected_at": "2026-01-01T00:00:00",
             }
         ]
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         result = await ArcadeDBClient.list_communities(client, "org:acme")
         self.assertEqual(len(result), 1)
         c = result[0]
@@ -260,7 +260,7 @@ class TestListCommunities(unittest.IsolatedAsyncioTestCase):
     async def test_wildcard_namespace_no_filter(self):
         client = self._make_client()
         client._query.return_value = []
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         await ArcadeDBClient.list_communities(client, "*")
         sql = client._query.call_args[0][0]
         self.assertNotIn(":ns", sql)
@@ -270,7 +270,7 @@ class TestListCommunities(unittest.IsolatedAsyncioTestCase):
     async def test_empty_result_returns_empty_list(self):
         client = self._make_client()
         client._query.return_value = []
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         result = await ArcadeDBClient.list_communities(client, "org:acme")
         self.assertEqual(result, [])
 
@@ -283,7 +283,7 @@ class TestGetEntityCommunity(unittest.IsolatedAsyncioTestCase):
     """Tests for ArcadeDBClient.get_entity_community."""
 
     def _make_client(self):
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         client = ArcadeDBClient.__new__(ArcadeDBClient)
         client._query = AsyncMock()
         return client
@@ -298,7 +298,7 @@ class TestGetEntityCommunity(unittest.IsolatedAsyncioTestCase):
                 "member_count": 2,
             }
         ]
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         result = await ArcadeDBClient.get_entity_community(client, "python", "org:acme")
         self.assertIsNotNone(result)
         self.assertEqual(result["id"], "cid123")
@@ -307,14 +307,14 @@ class TestGetEntityCommunity(unittest.IsolatedAsyncioTestCase):
     async def test_returns_none_when_entity_has_no_community(self):
         client = self._make_client()
         client._query.return_value = []
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         result = await ArcadeDBClient.get_entity_community(client, "unknown-entity", "org:acme")
         self.assertIsNone(result)
 
     async def test_lowercases_entity_name(self):
         client = self._make_client()
         client._query.return_value = []
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         await ArcadeDBClient.get_entity_community(client, "Python", "org:acme")
         params = client._query.call_args[0][1]
         self.assertEqual(params["ename"], "python")
@@ -325,7 +325,7 @@ class TestGetEntityCommunity(unittest.IsolatedAsyncioTestCase):
 # ---------------------------------------------------------------------------
 
 class TestDetectCommunities(unittest.IsolatedAsyncioTestCase):
-    """Tests for detect_communities() in engram.community.detector."""
+    """Tests for detect_communities() in memnos.community.detector."""
 
     def _make_db_client(self, pairs=None, upsert_raises=False):
         client = MagicMock()
@@ -344,7 +344,7 @@ class TestDetectCommunities(unittest.IsolatedAsyncioTestCase):
             ("epsilon", "zeta"),
         ]
         client = self._make_db_client(pairs=pairs)
-        from engram.community.detector import detect_communities, CommunityResult
+        from memnos.community.detector import detect_communities, CommunityResult
         results = await detect_communities(client, "org:acme", persist=False)
         self.assertIsInstance(results, list)
         for r in results:
@@ -355,7 +355,7 @@ class TestDetectCommunities(unittest.IsolatedAsyncioTestCase):
         # But if min_size=3 it should be filtered
         pairs = [("alpha", "beta")]
         client = self._make_db_client(pairs=pairs)
-        from engram.community.detector import detect_communities
+        from memnos.community.detector import detect_communities
         results = await detect_communities(client, "org:acme", min_size=3, persist=False)
         # alpha+beta community has only 2 members — below min_size=3
         self.assertEqual(results, [])
@@ -370,7 +370,7 @@ class TestDetectCommunities(unittest.IsolatedAsyncioTestCase):
             ("alpha", "gamma"),
         ]
         client = self._make_db_client(pairs=pairs)
-        from engram.community.detector import detect_communities
+        from memnos.community.detector import detect_communities
         results1 = await detect_communities(client, "org:acme", persist=False)
         client2 = self._make_db_client(pairs=pairs)
         results2 = await detect_communities(client2, "org:acme", persist=False)
@@ -389,7 +389,7 @@ class TestDetectCommunities(unittest.IsolatedAsyncioTestCase):
             ("beta", "gamma"),
         ]
         client = self._make_db_client(pairs=pairs)
-        from engram.community.detector import detect_communities
+        from memnos.community.detector import detect_communities
         results = await detect_communities(client, "org:acme", persist=False)
         self.assertTrue(len(results) > 0)
         label = results[0].label
@@ -403,7 +403,7 @@ class TestDetectCommunities(unittest.IsolatedAsyncioTestCase):
             ("beta", "gamma"),
         ]
         client = self._make_db_client(pairs=pairs)
-        from engram.community.detector import detect_communities
+        from memnos.community.detector import detect_communities
         results = await detect_communities(client, "org:acme", persist=True)
         if results:
             client.upsert_community.assert_called()
@@ -415,7 +415,7 @@ class TestDetectCommunities(unittest.IsolatedAsyncioTestCase):
             ("beta", "gamma"),
         ]
         client = self._make_db_client(pairs=pairs)
-        from engram.community.detector import detect_communities
+        from memnos.community.detector import detect_communities
         await detect_communities(client, "org:acme", persist=False)
         client.upsert_community.assert_not_called()
 
@@ -432,7 +432,7 @@ class TestDetectCommunities(unittest.IsolatedAsyncioTestCase):
         with patch("builtins.__import__", side_effect=fake_import):
             # Re-import detect_communities so the lazy import runs inside the patch
             import importlib
-            import engram.community.detector as det_module
+            import memnos.community.detector as det_module
             importlib.reload(det_module)
             results = await det_module.detect_communities(client, "org:acme", persist=False)
             self.assertEqual(results, [])
@@ -447,7 +447,7 @@ class TestDetectCommunities(unittest.IsolatedAsyncioTestCase):
         ]
         # upsert_community raises
         client = self._make_db_client(pairs=pairs, upsert_raises=True)
-        from engram.community.detector import detect_communities
+        from memnos.community.detector import detect_communities
         results = await detect_communities(client, "org:acme", persist=True)
         # Results should still be returned despite DB errors
         self.assertIsInstance(results, list)
@@ -464,7 +464,7 @@ class TestCommunityArcadeDBSchema(unittest.TestCase):
 
     def _get_schema_commands(self):
         """Extract the schema_cmds list from _init_schema source."""
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         import inspect
         src = inspect.getsource(ArcadeDBClient._init_schema)
         return src
@@ -492,12 +492,12 @@ class TestCommunityMCPTool(unittest.TestCase):
     """Tests for the community_search MCP tool definition and handler."""
 
     def test_community_search_tool_present_in_server_tools_list(self):
-        from engram_mcp.server import TOOLS
+        from memnos_mcp.server import TOOLS
         tool_names = [t.name for t in TOOLS]
         self.assertIn("community_search", tool_names)
 
     def test_community_search_tool_has_correct_schema(self):
-        from engram_mcp.server import TOOLS
+        from memnos_mcp.server import TOOLS
         tool = next(t for t in TOOLS if t.name == "community_search")
         props = tool.inputSchema["properties"]
         self.assertIn("entity", props)
@@ -523,7 +523,7 @@ class TestCommunityMCPHandler(unittest.IsolatedAsyncioTestCase):
             "member_count": 3,
         }
         client = self._make_client(community=community)
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
         result = await _dispatch(
             "community_search",
             {"entity": "Python", "namespace": "org:acme"},
@@ -538,7 +538,7 @@ class TestCommunityMCPHandler(unittest.IsolatedAsyncioTestCase):
 
     async def test_handler_returns_no_community_message_when_get_entity_community_returns_none(self):
         client = self._make_client(community=None)
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
         result = await _dispatch(
             "community_search",
             {"entity": "unknown-entity", "namespace": "org:acme"},
@@ -548,7 +548,7 @@ class TestCommunityMCPHandler(unittest.IsolatedAsyncioTestCase):
         from mcp.types import TextContent
         text = result[0].text
         self.assertIn("No community found", text)
-        self.assertIn("engram-community detect", text)
+        self.assertIn("memnos-community detect", text)
 
 
 # ---------------------------------------------------------------------------
@@ -559,7 +559,7 @@ class TestCommunityAPIEndpoint(unittest.IsolatedAsyncioTestCase):
     """Tests for GET /knowledge/communities FastAPI endpoint."""
 
     async def test_get_communities_calls_list_communities_with_correct_namespace(self):
-        from engram_api.routers.knowledge import get_communities
+        from memnos_api.routers.knowledge import get_communities
 
         mock_client = MagicMock()
         mock_client._arcadedb = MagicMock()
@@ -567,7 +567,7 @@ class TestCommunityAPIEndpoint(unittest.IsolatedAsyncioTestCase):
 
         mock_key_entry = MagicMock()
 
-        with patch("engram_api.routers.knowledge.check_namespace_access", new=AsyncMock()) as mock_check:
+        with patch("memnos_api.routers.knowledge.check_namespace_access", new=AsyncMock()) as mock_check:
             result = await get_communities(
                 ns="org:acme",
                 user_id="test-user",
@@ -577,7 +577,7 @@ class TestCommunityAPIEndpoint(unittest.IsolatedAsyncioTestCase):
         mock_client._arcadedb.list_communities.assert_called_once_with("org:acme")
 
     async def test_returns_dict_with_communities_count_namespace_keys(self):
-        from engram_api.routers.knowledge import get_communities
+        from memnos_api.routers.knowledge import get_communities
 
         fake_communities = [
             {"id": "c1", "label": "python / fhir", "namespace": "org:acme",
@@ -588,7 +588,7 @@ class TestCommunityAPIEndpoint(unittest.IsolatedAsyncioTestCase):
         mock_client._arcadedb.list_communities = AsyncMock(return_value=fake_communities)
         mock_key_entry = MagicMock()
 
-        with patch("engram_api.routers.knowledge.check_namespace_access", new=AsyncMock()):
+        with patch("memnos_api.routers.knowledge.check_namespace_access", new=AsyncMock()):
             result = await get_communities(
                 ns="org:acme",
                 user_id="test-user",
@@ -602,7 +602,7 @@ class TestCommunityAPIEndpoint(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["namespace"], "org:acme")
 
     async def test_check_namespace_access_called(self):
-        from engram_api.routers.knowledge import get_communities
+        from memnos_api.routers.knowledge import get_communities
 
         mock_client = MagicMock()
         mock_client._arcadedb = MagicMock()
@@ -610,11 +610,11 @@ class TestCommunityAPIEndpoint(unittest.IsolatedAsyncioTestCase):
         mock_key_entry = MagicMock()
 
         with patch(
-            "engram_api.routers.knowledge.check_namespace_access",
+            "memnos_api.routers.knowledge.check_namespace_access",
             new_callable=lambda: lambda: AsyncMock(),
         ) as mock_check_factory:
             mock_check = AsyncMock()
-            with patch("engram_api.routers.knowledge.check_namespace_access", mock_check):
+            with patch("memnos_api.routers.knowledge.check_namespace_access", mock_check):
                 await get_communities(
                     ns="org:acme",
                     user_id="test-user",
@@ -633,9 +633,9 @@ if __name__ == "__main__":
 
 
 # ---------------------------------------------------------------------------
-# Part C — Integration tests (require live ArcadeDB + engram API)
+# Part C — Integration tests (require live ArcadeDB + memnos API)
 # Uses the pytest runner fixture from conftest.py; skipped automatically
-# when the engram API is not reachable.
+# when the memnos API is not reachable.
 # ---------------------------------------------------------------------------
 
 import base64
@@ -646,14 +646,14 @@ import uuid
 import pytest
 
 _ARCADEDB_URL = "http://localhost:2480"
-_DB_NAME = "engram"
-_ENGRAM_API = os.environ.get("ENGRAM_API_URL", "http://127.0.0.1:8766")
-_ENGRAM_KEY = os.environ.get("ENGRAM_API_KEY", "engram-local-dev-key")
+_DB_NAME = "memnos"
+_MEMNOS_API = os.environ.get("MEMNOS_API_URL", "http://127.0.0.1:8766")
+_MEMNOS_KEY = os.environ.get("MEMNOS_API_KEY", "memnos-local-dev-key")
 _TEST_COMM_NS_BASE = "test:community:integ"
 
 
 def _adb_auth() -> dict:
-    pw = os.environ.get("ARCADEDB_PASSWORD", "engram-dev-password")
+    pw = os.environ.get("ARCADEDB_PASSWORD", "memnos-dev-password")
     creds = base64.b64encode(f"root:{pw}".encode()).decode()
     return {"Authorization": f"Basic {creds}", "Content-Type": "application/json"}
 
@@ -756,10 +756,10 @@ def _cleanup_ns(ns: str) -> None:
 
 
 async def _run_detect(ns: str):
-    from engram.storage.arcadedb_client import ArcadeDBClient
-    from engram.community.detector import detect_communities
+    from memnos.storage.arcadedb_client import ArcadeDBClient
+    from memnos.community.detector import detect_communities
 
-    pw = os.environ.get("ARCADEDB_PASSWORD", "engram-dev-password")
+    pw = os.environ.get("ARCADEDB_PASSWORD", "memnos-dev-password")
     client = ArcadeDBClient(
         host="localhost",
         port=2480,
@@ -830,8 +830,8 @@ async def test_communities_api_endpoint(runner) -> None:
         results = await _run_detect(ns)
         assert results, "No communities detected — cannot test API endpoint"
 
-        with _httpx.Client(headers={"X-API-Key": _ENGRAM_KEY}, timeout=10) as client:
-            r = client.get(f"{_ENGRAM_API}/api/v1/knowledge/communities", params={"ns": ns})
+        with _httpx.Client(headers={"X-API-Key": _MEMNOS_KEY}, timeout=10) as client:
+            r = client.get(f"{_MEMNOS_API}/api/v1/knowledge/communities", params={"ns": ns})
         assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
         body = r.json()
         assert body["namespace"] == ns

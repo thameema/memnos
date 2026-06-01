@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, _REPO_ROOT + "/packages/core")
 
-from engram.cli.git_hooks import (
+from memnos.cli.git_hooks import (
     _is_incident_branch,
     _parse_rca_content,
     _INCIDENT_BRANCH_PATTERNS,
@@ -166,7 +166,7 @@ class TestCmdPostMergeIncident(unittest.TestCase):
             return 0
 
         with patch("subprocess.check_output", side_effect=_make_check_output(outputs)), \
-             patch("engram.cli.git_hooks._post_memory", side_effect=fake_post):
+             patch("memnos.cli.git_hooks._post_memory", side_effect=fake_post):
             import asyncio
             # cmd_post_merge_incident calls asyncio.run internally
             rc = cmd_post_merge_incident(args)

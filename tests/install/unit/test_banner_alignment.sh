@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unit: the ENGRAM banner in install.sh, install-server.sh, install-client.sh,
+# Unit: the MEMNOS banner in install.sh, install-server.sh, install-client.sh,
 # and install-client.ps1 must all have 4 rows of identical character width.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

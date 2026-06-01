@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-engram smoke test — end-to-end verification of the engram REST API.
+memnos smoke test — end-to-end verification of the memnos REST API.
 
 Usage:
     python smoke_test.py --api-key <key>
-    python smoke_test.py --api-key <key> --engram-url http://localhost:8766
+    python smoke_test.py --api-key <key> --memnos-url http://localhost:8766
     python smoke_test.py --api-key <key> --skip-task --no-cleanup
 """
 
@@ -422,13 +422,13 @@ def cleanup_memories(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="engram end-to-end smoke test",
+        description="memnos end-to-end smoke test",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--engram-url",
+        "--memnos-url",
         default="http://localhost:8766",
-        help="Base URL of the engram server (default: http://localhost:8766)",
+        help="Base URL of the memnos server (default: http://localhost:8766)",
     )
     parser.add_argument(
         "--api-key",
@@ -454,11 +454,11 @@ def main() -> int:
     timestamp = int(time.time())
     namespace = f"smoke-test:{timestamp}"
 
-    s = _session(args.engram_url, args.api_key)
+    s = _session(args.memnos_url, args.api_key)
 
     print()
-    print(bold("engram smoke test"))
-    print(f"  Server   : {args.engram_url}")
+    print(bold("memnos smoke test"))
+    print(f"  Server   : {args.memnos_url}")
     print(f"  Namespace: {namespace}")
     print()
 
@@ -478,7 +478,7 @@ def main() -> int:
     mem1_id = test_write_memory(
         s, n,
         label="Write memory",
-        content="engram smoke test: authentication uses JWT tokens with 24h expiry",
+        content="memnos smoke test: authentication uses JWT tokens with 24h expiry",
         namespace=namespace,
         tags=["test", "auth"],
     )
@@ -498,7 +498,7 @@ def main() -> int:
     mem2_id = test_write_memory(
         s, n,
         label="Write second memory",
-        content="engram smoke test: the refresh token is stored in Redis",
+        content="memnos smoke test: the refresh token is stored in Redis",
         namespace=namespace,
         tags=["test", "redis"],
     )

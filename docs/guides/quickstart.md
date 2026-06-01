@@ -1,4 +1,4 @@
-# engram Quickstart
+# memnos Quickstart
 
 ## Prerequisites
 
@@ -6,22 +6,22 @@
 - Python 3.11+
 - An Anthropic API key (for multi-agent tasks and reflection; **not** required for memory/search)
 
-> **No OpenAI key required.** engram uses `all-MiniLM-L6-v2` (sentence-transformers) for embeddings by default — it runs locally on CPU and requires no API key. OpenAI embeddings are available as an optional alternative.
+> **No OpenAI key required.** memnos uses `all-MiniLM-L6-v2` (sentence-transformers) for embeddings by default — it runs locally on CPU and requires no API key. OpenAI embeddings are available as an optional alternative.
 
 ---
 
 ## 1. Clone and configure
 
 ```bash
-git clone https://github.com/thameema/engram.git
-cd engram
+git clone https://github.com/thameema/memnos.git
+cd memnos
 
-cp engram.yaml.example engram.yaml
-# Edit engram.yaml and set the following environment variables, or export them:
+cp memnos.yaml.example memnos.yaml
+# Edit memnos.yaml and set the following environment variables, or export them:
 #
 #   ARCADEDB_PASSWORD   — ArcadeDB root password (choose any strong password)
-#   ENGRAM_API_KEY      — API key for engram's REST/MCP endpoints (generate one: openssl rand -hex 32)
-#   ENGRAM_VAULT_KEY    — 32-byte key for vault encryption (generate: python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")
+#   MEMNOS_API_KEY      — API key for memnos's REST/MCP endpoints (generate one: openssl rand -hex 32)
+#   MEMNOS_VAULT_KEY    — 32-byte key for vault encryption (generate: python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")
 #   ANTHROPIC_API_KEY   — Only needed for multi-agent tasks and nightly reflection
 ```
 
@@ -33,13 +33,13 @@ cp engram.yaml.example engram.yaml
 docker compose up -d
 
 # Watch logs until ready (usually 30–60s for first start)
-docker compose logs -f engram
+docker compose logs -f memnos
 # Look for:
-#   "engram API ready on :8766"
+#   "memnos API ready on :8766"
 #   "MCP SSE server ready on :8765"
 ```
 
-ArcadeDB starts on port 2480. The engram Python server starts on ports 8765 (MCP) and 8766 (API/dashboard).
+ArcadeDB starts on port 2480. The memnos Python server starts on ports 8765 (MCP) and 8766 (API/dashboard).
 
 ---
 
@@ -49,10 +49,10 @@ Choose one of two transport modes:
 
 ### Option A — stdio (recommended for local use)
 
-The stdio transport requires no persistent HTTP server. Claude Code spawns `engram-mcp-stdio` on demand.
+The stdio transport requires no persistent HTTP server. Claude Code spawns `memnos-mcp-stdio` on demand.
 
 ```bash
-which engram-mcp-stdio   # confirm it is in PATH after pip install
+which memnos-mcp-stdio   # confirm it is in PATH after pip install
 ```
 
 Add to **`~/.claude.json`**:
@@ -60,14 +60,14 @@ Add to **`~/.claude.json`**:
 ```json
 {
   "mcpServers": {
-    "engram": {
+    "memnos": {
       "type": "stdio",
-      "command": "/Users/yourname/.venv/bin/engram-mcp-stdio",
+      "command": "/Users/yourname/.venv/bin/memnos-mcp-stdio",
       "env": {
-        "ENGRAM_CONFIG": "/Users/yourname/engram/engram.yaml",
+        "MEMNOS_CONFIG": "/Users/yourname/memnos/memnos.yaml",
         "ARCADEDB_PASSWORD": "your-arcadedb-password",
-        "ENGRAM_API_KEY": "your-engram-api-key",
-        "ENGRAM_VAULT_KEY": "your-vault-key",
+        "MEMNOS_API_KEY": "your-memnos-api-key",
+        "MEMNOS_VAULT_KEY": "your-vault-key",
         "ANTHROPIC_API_KEY": "sk-ant-..."
       }
     }
@@ -80,27 +80,27 @@ Add to **`~/.claude.json`**:
 ```json
 {
   "mcpServers": {
-    "engram": {
+    "memnos": {
       "type": "sse",
       "url": "http://localhost:8765/sse",
       "headers": {
-        "Authorization": "Bearer your-engram-api-key"
+        "Authorization": "Bearer your-memnos-api-key"
       }
     }
   }
 }
 ```
 
-Fully restart Claude Code (quit and reopen), then run `/mcp` — you should see `engram  ✓ connected  · 18 tools`.
+Fully restart Claude Code (quit and reopen), then run `/mcp` — you should see `memnos  ✓ connected  · 18 tools`.
 
 ---
 
 ## 4. Add CLAUDE.md instructions
 
-Add to **`~/.claude/CLAUDE.md`** so Claude uses engram automatically:
+Add to **`~/.claude/CLAUDE.md`** so Claude uses memnos automatically:
 
 ```markdown
-## Memory System — engram MCP
+## Memory System — memnos MCP
 
 ALWAYS call `memory_search` first when asked about past decisions, prior context, or anything previously remembered.
 ALWAYS call `memory_write` when a key technical decision is made, or the user says "remember this".
@@ -123,7 +123,7 @@ In a Claude Code session:
 
 ```
 Use memory_write to save:
-  content: "engram is working correctly"
+  content: "memnos is working correctly"
   namespace: "personal:default"
   tags: ["test"]
 ```
@@ -132,7 +132,7 @@ In a new session (to confirm persistence):
 
 ```
 Use memory_search to find:
-  query: "engram working"
+  query: "memnos working"
   namespace: "personal:default"
 ```
 
@@ -175,13 +175,13 @@ Store API keys and credentials securely:
 ```bash
 # Store a secret
 curl -X POST http://localhost:8766/api/v1/vault/secrets \
-  -H "Authorization: Bearer your-engram-api-key" \
+  -H "Authorization: Bearer your-memnos-api-key" \
   -H "Content-Type: application/json" \
   -d '{"key_name": "GITHUB_TOKEN", "value": "ghp_...", "namespace": "personal:default", "note": "GitHub PAT"}'
 
 # Retrieve a secret
 curl http://localhost:8766/api/v1/vault/secrets/GITHUB_TOKEN?namespace=personal:default \
-  -H "Authorization: Bearer your-engram-api-key"
+  -H "Authorization: Bearer your-memnos-api-key"
 ```
 
 Or via Claude Code: `"Store my GitHub token in the vault as GITHUB_TOKEN"`.
@@ -194,7 +194,7 @@ All vault access is written to an immutable audit log. See `GET /api/v1/vault/au
 
 1. Create a bot via [@BotFather](https://t.me/BotFather) — copy the token
 2. Find your Telegram user ID (send `/start` to [@userinfobot](https://t.me/userinfobot))
-3. Edit `engram.yaml`:
+3. Edit `memnos.yaml`:
    ```yaml
    gateway:
      telegram:
@@ -202,9 +202,9 @@ All vault access is written to an immutable audit log. See `GET /api/v1/vault/au
        bot_token: ${TELEGRAM_BOT_TOKEN}
        allowed_users: [your-numeric-user-id]
    ```
-4. Set `TELEGRAM_BOT_TOKEN` and restart: `docker compose restart engram`
+4. Set `TELEGRAM_BOT_TOKEN` and restart: `docker compose restart memnos`
 
-Send a message to your bot — engram will respond.
+Send a message to your bot — memnos will respond.
 
 ---
 
@@ -214,7 +214,7 @@ Send a message to your bot — engram will respond.
 python3 tools/migrate_obsidian.py \
   --vault ~/path/to/your/vault \
   --namespace obsidian:my-vault \
-  --api-key your-engram-api-key
+  --api-key your-memnos-api-key
 ```
 
 See [obsidian-migration.md](obsidian-migration.md) for the full guide.
@@ -231,15 +231,15 @@ For enterprise team configuration (namespace hierarchy, per-engineer API keys, s
 
 ## Troubleshooting
 
-**`/mcp` shows engram as disconnected (SSE mode)**
+**`/mcp` shows memnos as disconnected (SSE mode)**
 - Is the server running? `curl http://localhost:8765/health`
 - Did you fully restart Claude Code?
 - Is the API key in `~/.claude.json` correct?
 
-**`/mcp` shows engram as disconnected (stdio mode)**
-- Does the binary exist? `ls -la $(which engram-mcp-stdio)`
-- Can it run? `ENGRAM_CONFIG=engram.yaml ARCADEDB_PASSWORD=... engram-mcp-stdio` (should start without error)
-- Check `ENGRAM_CONFIG` points to an absolute path — relative paths may fail when Claude spawns the process
+**`/mcp` shows memnos as disconnected (stdio mode)**
+- Does the binary exist? `ls -la $(which memnos-mcp-stdio)`
+- Can it run? `MEMNOS_CONFIG=memnos.yaml ARCADEDB_PASSWORD=... memnos-mcp-stdio` (should start without error)
+- Check `MEMNOS_CONFIG` points to an absolute path — relative paths may fail when Claude spawns the process
 - The binary takes up to 40s on first start (embedding model loading). Claude Code's stdio timeout is 60s by default.
 
 **`memory_search` returns no results**
@@ -248,4 +248,4 @@ For enterprise team configuration (namespace hierarchy, per-engineer API keys, s
 
 **Claude uses Bash/grep instead of memory_search**
 - CLAUDE.md instructions aren't loaded. Run `Read ~/.claude/CLAUDE.md` at session start.
-- Or add the engram instructions to the project-level `CLAUDE.md` in your working directory.
+- Or add the memnos instructions to the project-level `CLAUDE.md` in your working directory.

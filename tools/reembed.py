@@ -27,13 +27,13 @@ except ImportError as e:
     sys.exit(1)
 
 ARCADEDB_URL = "http://localhost:2480"
-DB_NAME = "engram"
+DB_NAME = "memnos"
 VECTOR_DIM = 1536  # OpenAI text-embedding-3-small
 EMBED_MODEL = "text-embedding-3-small"
 
 
 def _auth_header() -> dict:
-    password = os.environ.get("ARCADEDB_PASSWORD", "engram-dev-password")
+    password = os.environ.get("ARCADEDB_PASSWORD", "memnos-dev-password")
     creds = base64.b64encode(f"root:{password}".encode()).decode()
     return {"Authorization": f"Basic {creds}", "Content-Type": "application/json"}
 
@@ -69,7 +69,7 @@ def arcade_command(sql: str, params: dict | None = None) -> list[dict]:
 def get_openai_key() -> str:
     key = os.environ.get("OPENAI_API_KEY", "")
     if not key:
-        # Try loading from .env in engram repo
+        # Try loading from .env in memnos repo
         env_path = Path(__file__).parent.parent / ".env"
         if env_path.exists():
             for line in env_path.read_text().splitlines():
