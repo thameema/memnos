@@ -204,7 +204,7 @@
       How memnos compares to<br /><span class="gradient-text">other memory tools</span>
     </h1>
     <p class="text-gray-400 text-lg leading-relaxed max-w-3xl mx-auto">
-      Memory for AI agents is a crowded space. Here's what makes memnos different — and why it matters for engineering teams at scale. The short version: memnos is the only memory tool built for organizations, not individuals.
+      Memory for AI agents is a growing space. Here's how memnos fits in — and what makes it different for developers and engineering teams. The short version: memnos is self-hosted, MCP-native, and ships as a single Docker container with no external database or API key required.
     </p>
   </div>
 </section>
@@ -233,17 +233,19 @@
               <th style="min-width:85px;">Zep</th>
               <th style="min-width:85px;">Graphiti</th>
               <th style="min-width:100px;">Letta / MemGPT</th>
+              <th style="min-width:100px;">LangMem</th>
               <th style="min-width:110px;">Obsidian+Claude</th>
               <th style="min-width:110px;">ChatGPT Memory</th>
             </tr>
           </thead>
           <tbody>
             <!-- Memory Layer -->
-            <tr class="section-header"><td colspan="8">Memory Layer</td></tr>
+            <tr class="section-header"><td colspan="9">Memory Layer</td></tr>
             <tr>
               <td>Multi-agent shared memory</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-yellow">~</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-yellow">~</span></td>
@@ -253,6 +255,7 @@
             <tr>
               <td>Temporal memory (as_of queries)</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
@@ -269,6 +272,7 @@
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
               <td>7 typed memory kinds</td>
@@ -276,6 +280,7 @@
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-yellow">~</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
@@ -289,12 +294,14 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
             </tr>
             <!-- Governance -->
-            <tr class="section-header"><td colspan="8">Governance &amp; Security</td></tr>
+            <tr class="section-header"><td colspan="9">Governance &amp; Security</td></tr>
             <tr>
               <td>Complete audit trail with provenance</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
@@ -309,12 +316,14 @@
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-yellow">~</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
               <td>Encrypted secret vault</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
@@ -331,17 +340,30 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
             </tr>
             <!-- Infrastructure -->
-            <tr class="section-header"><td colspan="8">Infrastructure &amp; Integration</td></tr>
+            <tr class="section-header"><td colspan="9">Infrastructure &amp; Integration</td></tr>
             <tr>
-              <td>Self-hostable, 100% local</td>
+              <td>Single container, zero external DB</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-yellow">~</span></td>
+              <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>MCP-native (works with any MCP client)</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
@@ -353,25 +375,28 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
-              <td>Multi-model support</td>
+              <td>Multi-model / multi-LLM support</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
-              <td>Export / import portability</td>
+              <td>Python SDK for agent frameworks</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
-              <td><span class="check-yellow">~</span></td>
-              <td><span class="check-yellow">~</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
@@ -379,6 +404,7 @@
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span></td>
+              <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-red">&#10007;</span></td>
@@ -489,6 +515,68 @@
           <p class="text-xs text-purple-400 font-medium mb-1 uppercase tracking-wide">Architecture enforcement</p>
           <p class="text-sm text-gray-400">Zep has no concept of typed constraint nodes, corpus ingestion, or CI pipeline enforcement. It cannot check a PR diff against your architecture documentation.</p>
         </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── VS LANGMEM ─────────────────────────────────────────────────── -->
+<section id="vs-langmem" class="relative z-10 py-20 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <h2 class="text-3xl font-bold text-white mb-4">memnos vs LangMem</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">LangMem is LangChain's long-term memory toolkit for LangGraph agents. memnos is a standalone MCP-native memory server. They solve overlapping problems with different trade-offs.</p>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-8 mb-10">
+      <div class="vs-card">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-9 h-9 bg-gray-500/10 border border-gray-500/20 rounded-xl flex items-center justify-center">
+            <span class="text-gray-400 text-sm font-bold">LM</span>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">LangMem</h3>
+            <p class="text-xs text-gray-500">Long-term memory for LangGraph agents</p>
+          </div>
+        </div>
+        <ul class="space-y-2 text-sm text-gray-400">
+          <li class="flex items-start gap-2"><span class="text-green-500 mt-0.5">&#10003;</span>Deep LangGraph/LangChain integration — native to the ecosystem</li>
+          <li class="flex items-start gap-2"><span class="text-green-500 mt-0.5">&#10003;</span>Episodic, semantic, and procedural memory types</li>
+          <li class="flex items-start gap-2"><span class="text-green-500 mt-0.5">&#10003;</span>Open source, MIT licensed</li>
+          <li class="flex items-start gap-2"><span class="text-green-500 mt-0.5">&#10003;</span>Active development by the LangChain team</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Requires an external database (Postgres, SQLite, or other LangGraph-compatible store)</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Python / LangChain ecosystem only</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>No MCP interface — cannot be used with Claude Code, Cursor, or non-Python clients</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>No encrypted vault, no audit trail, no architecture enforcement</li>
+        </ul>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-9 h-9 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center">
+            <svg width="16" height="16" viewBox="0 0 28 28" fill="none"><rect x="4" y="17" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.8"/><rect x="4" y="11" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.9"/><rect x="4" y="5" width="20" height="5" rx="2.5" fill="#a78bfa"/></svg>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">memnos</h3>
+            <p class="text-xs text-gray-500">MCP-native memory for any LLM client</p>
+          </div>
+        </div>
+        <ul class="space-y-2 text-sm text-gray-400">
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Works with Claude Code, Cursor, and any MCP-compatible client</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Single Docker container — no external database to provision</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Can be used as a LangMem drop-in via <code class="text-xs bg-purple-900/30 px-1 rounded">memnos-sdk[langchain]</code></li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Knowledge graph traversal — not just vector search</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Encrypted vault, audit trail, namespace ACLs</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Architecture enforcement — corpus checks in CI</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Not tied to any single agent framework</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="gradient-border">
+      <div class="gradient-border-inner px-8 py-5 rounded-2xl">
+        <p class="text-gray-300 text-sm leading-relaxed text-center"><strong class="text-white">When to pick LangMem:</strong> you are already on LangGraph, your stack is Python, and you are comfortable managing a Postgres (or similar) database. LangMem integrates tightly with LangGraph's execution model.</p>
+        <p class="text-gray-300 text-sm leading-relaxed text-center mt-3"><strong class="text-white">When to pick memnos:</strong> you use Claude Code, Cursor, or any MCP client. You want memory to work across frameworks — LangChain, LlamaIndex, or direct API — without managing a separate database. One container, no database, no extra API key.</p>
       </div>
     </div>
   </div>
