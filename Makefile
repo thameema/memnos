@@ -77,19 +77,19 @@ dev: ## Start dev stack (Neo4j + Qdrant) — no Python server
 .PHONY: dev-full
 dev-full: ## Start full dev stack including memnos server container
 	$(call section,Starting full dev stack)
-	$(DOCKER_COMPOSE) up -d
+	$(DOCKER_COMPOSE) --profile qdrant up -d
 	@echo ""
 	@echo -e "  $(GREEN)[ok]$(NC) Full stack started."
 
 .PHONY: dev-stop
 dev-stop: ## Stop dev Docker stack
-	$(DOCKER_COMPOSE) down
+	$(DOCKER_COMPOSE) --profile qdrant down
 
 .PHONY: dev-reset
 dev-reset: ## Stop dev stack and wipe all volumes (CAUTION: deletes data)
-	@echo "WARNING: This will delete all Neo4j and Qdrant data. Press Ctrl-C to abort."
+	@echo "WARNING: This will delete all memnos data. Press Ctrl-C to abort."
 	@sleep 3
-	$(DOCKER_COMPOSE) down -v
+	$(DOCKER_COMPOSE) --profile qdrant down -v
 	@echo -e "  $(GREEN)[ok]$(NC) Volumes removed."
 
 # ─── Testing ──────────────────────────────────────────────────────────────────
