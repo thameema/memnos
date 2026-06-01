@@ -9,8 +9,7 @@ Claude Code  ──── MCP stdio or SSE ────►  memnos server
                                             ├── Knowledge graph  (ArcadeDB — graph + vector search)
                                             ├── Encrypted vault  (AES-256-GCM envelope encryption)
                                             ├── Multi-agent orchestrator
-                                            ├── Self-learning    (reflection + heuristics)
-                                            └── Mobile gateway   (Telegram / WhatsApp)
+                                            └── Self-learning    (reflection + heuristics)
 ```
 
 > **v1.1.0** — Corpus ingestion + architecture enforcement (`memnos-sdk[corpus]`), LangChain and LlamaIndex integrations, 93 tests. ArcadeDB backend — one container, no OpenAI key required for embeddings. See [DESIGN.md](DESIGN.md) for the full architecture.
@@ -19,61 +18,39 @@ Claude Code  ──── MCP stdio or SSE ────►  memnos server
 
 ## Why memnos?
 
-Most AI engineering teams already use **LangChain** for execution plumbing and **LangSmith** for tracing. Neither solves the memory problem.
+Claude Code and similar AI coding tools forget everything when you close the session. Every conversation starts from zero — past decisions, project context, architectural choices, and lessons learned are gone.
 
-```
-Your App
-  └── LangChain / LangGraph   — execution: chains, agents, tool calls (stateless per run)
-        └── LangSmith          — observability: traces, evals, prompt management (read-only replay)
-              └── memnos        — memory: persists WHY across sessions, agents, and teams
-```
+memnos is a self-hosted memory layer that sits alongside these tools. It stores what matters across sessions, across agents, and across your team — and injects it back into context automatically when it is relevant.
 
-**LangChain** connects your LLM to tools. Every run starts fresh — no memory of what was decided last session, last week, or last year.
+**You do not need to build your own infrastructure.** One Docker container handles the knowledge graph, vector search, encrypted vault, and multi-agent coordination. No external database, no cloud account, no API key required beyond what you already have.
 
-**LangSmith** records what happened. It's a trace store and eval harness, not writable persistent memory. You can replay a trace; you can't inject a past decision into a future agent prompt.
+### What memnos does
 
-**mem0 / Zep** store user-level memories for chatbots and assistants. They don't solve cross-agent coordination, architecture enforcement, or governance for engineering teams.
+- Remembers decisions, patterns, and context across Claude Code sessions
+- Shares memory across parallel background agents running simultaneously
+- Enforces architecture constraints — written once, injected automatically into every future agent
+- Stores secrets with AES-256-GCM encryption and an immutable audit log
+- Runs entirely on your machine or your server — your data never leaves
+- Integrates with LangChain, LlamaIndex, and other agent frameworks via the Python SDK
+- Works with any MCP-compatible client, not just Claude Code
 
-**memnos** is the missing layer: persistent, governed, searchable institutional memory — shared across all your agents, all your sessions, all your team.
+### What memnos does not do
+
+- It is not an agent execution framework — it does not orchestrate tool calls or build chains
+- It is not an observability or tracing platform
+- It is not a managed cloud service — there is no hosted version
+- It is not a replacement for your LLM — it stores and retrieves context; the LLM reasons
+- Default ArcadeDB vector search scales to ~100K memories; use the optional Qdrant backend for larger corpora
 
 ### The four gaps memnos closes
 
 **Code review with persistent context.** Your code review agent starts cold on every PR. Without memnos, the agent reviewing PR #200 doesn't know the architectural decision from PR #15, or the production incident it caused. memnos carries the full institutional context of your codebase into every review.
 
-**Cross-agent coordination.** When a code reviewer, test writer, and deploy agent run in parallel, Agent B doesn't know what Agent A decided 10 minutes ago. LangGraph tracks state within a single run — it resets when the run ends. memnos is the shared layer across independent concurrent agents.
+**Cross-agent coordination.** When a code reviewer, test writer, and deploy agent run in parallel, Agent B doesn't know what Agent A decided 10 minutes ago. memnos is the shared memory layer across all independent concurrent agents — visible to all of them simultaneously.
 
 **Architecture constraint enforcement.** Rules live in system prompts — manually maintained, forgotten across sessions, invisible to new agents. memnos auto-injects stored constraints into every future search result across your entire agent fleet. Write once, enforced everywhere.
 
 **Knowledge retention across the org.** When a senior engineer documents a decision in a meeting, no agent ever sees it. memnos is the bridge — decisions, incidents, patterns, and constraints written once are queryable by every agent, forever.
-
----
-
-## How memnos compares
-
-| Capability | LangSmith | mem0 | Zep / Graphiti | **memnos** |
-|---|---|---|---|---|
-| **Primary purpose** | Observability / tracing | Cross-session user memory | Conversational memory | Persistent institutional memory |
-| **Cross-session memory** | ❌ | ✅ SaaS | ✅ partial | ✅ |
-| **Cross-agent shared memory** | ❌ | ❌ | ❌ | ✅ |
-| **Architecture constraint injection** | ❌ | ❌ | ❌ | ✅ |
-| **Audit trail (agent, tool, commit, ticket)** | ✅ traces | ❌ | ❌ | ✅ |
-| **Self-hosted, open-source** | ❌ | ❌ paid | ✅ partial | ✅ |
-| **Knowledge graph traversal** | ❌ | ❌ | ✅ Graphiti | ✅ |
-| **Temporal model (as_of, decay, review_by)** | ❌ | ❌ | partial | ✅ |
-| **Namespace ACL (team / tenant isolation)** | ❌ | ❌ | ❌ | ✅ |
-| **HIPAA-safe self-hosting** | ❌ | ❌ | ❌ | ✅ |
-
-> **One sentence:** LangChain gives agents hands and feet. LangSmith records what they did. memnos is the only thing that makes them remember *why* — persistently, searchably, across agents, across sessions, with governance built in.
-
-### Where each tool wins
-
-**LangSmith** wins on observability — traces, eval datasets, and prompt management. memnos is not a trace store; use LangSmith alongside memnos for full-stack visibility.
-
-**mem0** wins on drop-in simplicity — one REST call to write, one to search. Best for adding user-scoped memory to a chatbot. Not designed for multi-agent engineering teams.
-
-**Zep / Graphiti** wins on conversational memory with graph extraction. Best for session-scoped dialogue. Not designed for cross-agent coordination or governance.
-
-**memnos** wins when you need self-hosted persistent memory with governance: cross-session state, cross-agent coordination, architecture enforcement, and namespace ACL — all in one Docker container, no external API key required.
 
 See [docs/guides/enterprise-ai-engineering.md](docs/guides/enterprise-ai-engineering.md) for the enterprise team model, and [docs/guides/enterprise-team-setup.md](docs/guides/enterprise-team-setup.md) for step-by-step team deployment.
 
@@ -390,7 +367,6 @@ See the complete guide in [docs/guides/claude-code-setup.md](docs/guides/claude-
 | `packages/mcp-server` | MCP tools for Claude Code | MCP Python SDK, FastAPI (SSE + stdio) |
 | `packages/orchestrator` | Multi-agent task forking | asyncio, Anthropic SDK |
 | `packages/api` | REST API and dashboard | FastAPI |
-| `packages/gateway` | Mobile messaging | python-telegram-bot, Evolution API |
 | `packages/learning` | Self-improvement | Reflection, skill extraction, APScheduler |
 | `packages/sdk` | Python SDK — programmatic access, LangChain & LlamaIndex integrations | httpx, pydantic, langchain-core (optional) |
 
@@ -610,19 +586,6 @@ Read the guide: [docs/guides/enterprise-ai-engineering.md](docs/guides/enterpris
 Step-by-step setup: [docs/guides/enterprise-team-setup.md](docs/guides/enterprise-team-setup.md)
 
 ---
-
-## Mobile gateway (Telegram & WhatsApp)
-
-The gateway lets you query your memory and run agent tasks from your phone:
-
-```
-Your phone ──► memnos server ──► LLM (Anthropic API)
-              └──► knowledge graph (shared with Claude Code)
-```
-
-The gateway shares the same namespaces as your Claude Code sessions. Memories written from Claude Code are searchable from your phone and vice versa.
-
-See [docs/guides/gateway.md](docs/guides/gateway.md) for full setup and troubleshooting.
 
 ---
 
@@ -887,7 +850,7 @@ memnos is MIT-licensed and actively welcomes contributions.
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR
 
 **What we need most:**
-- **Integrations** — new MCP tools, gateway adapters (Discord, Slack, SMS)
+- **Integrations** — new MCP tools, agent framework adapters (AutoGen, CrewAI, Semantic Kernel)
 - **KMS backends** — improve Azure Key Vault and AWS KMS vault providers
 - **Embedding backends** — Cohere, voyage-ai, local Ollama alternatives
 - **Learning algorithms** — better reflection prompts, smarter heuristic decay
