@@ -6,7 +6,7 @@ build/
 .venv/
 venv/
 .env
-engram.yaml
+memnos.yaml
 *.log
 .DS_Store
 .idea/
