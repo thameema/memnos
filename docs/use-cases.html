@@ -635,6 +635,96 @@ correlation IDs in all log entries.
   </div>
 </section>
 
+<!-- ── TOP 5 CODING AGENT PAIN POINTS ──────────────────────────────── -->
+<section id="pain-points" class="relative z-10 py-24 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-14">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Unsolved Problems</span>
+      <h2 class="text-4xl font-bold text-white mt-3 mb-4">The top 5 problems with AI coding agents — and how memnos fixes them</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Claude Code, Cursor, GitHub Copilot, and similar tools have fundamentally changed how developers work. But they all share the same infrastructure gaps. memnos was built to close them.</p>
+    </div>
+
+    <div class="space-y-6">
+
+      <!-- Pain point 1: Context window exhaustion -->
+      <div class="glass rounded-2xl p-8">
+        <div class="flex items-start gap-6">
+          <div class="flex-shrink-0 w-12 h-12 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-center text-red-400 font-bold text-lg">1</div>
+          <div class="flex-1">
+            <h3 class="text-white font-bold text-xl mb-2">Context window exhaustion — and the hidden cost of going over</h3>
+            <p class="text-gray-400 text-sm leading-relaxed mb-4">Long sessions fill up the context window. When you hit the limit, coding agents either stop working, silently discard earlier context, or — on plans like Claude Code Max — trigger extra usage charges even when you still have weekly allocation remaining. The 1M token context window is a premium feature that bills separately from your monthly plan. Most developers discover this at the worst possible moment, mid-task.</p>
+            <div class="bg-purple-900/20 border border-purple-500/20 rounded-xl p-4">
+              <p class="text-purple-300 text-sm font-medium mb-1">How memnos fixes it</p>
+              <p class="text-gray-400 text-sm leading-relaxed">The auto-compact hook monitors <code class="text-xs bg-purple-900/30 px-1 rounded">input_tokens</code> in the session transcript before every prompt. When context reaches 85% (configurable), Claude is instructed to run <code class="text-xs bg-purple-900/30 px-1 rounded">/compact</code> before responding. Compaction writes a session summary to memnos — so nothing is lost — then resets the context window. Enable at install time with one prompt.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pain point 2: Sessions start blank -->
+      <div class="glass rounded-2xl p-8">
+        <div class="flex items-start gap-6">
+          <div class="flex-shrink-0 w-12 h-12 bg-orange-500/10 border border-orange-500/20 rounded-xl flex items-center justify-center text-orange-400 font-bold text-lg">2</div>
+          <div class="flex-1">
+            <h3 class="text-white font-bold text-xl mb-2">Every new session starts blank</h3>
+            <p class="text-gray-400 text-sm leading-relaxed mb-4">Close Claude Code and reopen it tomorrow. The agent has no memory of what you decided yesterday, which library you chose, why you rejected an approach, or what the naming conventions in your project are. You re-explain the same context every session. Every session. This is the single most common frustration reported by teams that use AI coding tools daily.</p>
+            <div class="bg-purple-900/20 border border-purple-500/20 rounded-xl p-4">
+              <p class="text-purple-300 text-sm font-medium mb-1">How memnos fixes it</p>
+              <p class="text-gray-400 text-sm leading-relaxed">The <code class="text-xs bg-purple-900/30 px-1 rounded">memory_search</code> injection hook retrieves the 8 most relevant memories automatically before every prompt. No commands to type. The agent already knows your architectural decisions, project conventions, and prior work — from the first message of every session.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pain point 3: Parallel agents are blind to each other -->
+      <div class="glass rounded-2xl p-8">
+        <div class="flex items-start gap-6">
+          <div class="flex-shrink-0 w-12 h-12 bg-yellow-500/10 border border-yellow-500/20 rounded-xl flex items-center justify-center text-yellow-400 font-bold text-lg">3</div>
+          <div class="flex-1">
+            <h3 class="text-white font-bold text-xl mb-2">Running 8 windows to do 8 tasks — and none of them talk to each other</h3>
+            <p class="text-gray-400 text-sm leading-relaxed mb-4">Developers open multiple Claude Code windows to parallelize work. But each window is isolated — it has no idea what the others are doing. Agent A might choose Postgres while Agent B chooses SQLite for the same service. Agent C might refactor a function that Agent D is currently depending on. Without a shared memory layer, parallel agents create more problems than they solve.</p>
+            <div class="bg-purple-900/20 border border-purple-500/20 rounded-xl p-4">
+              <p class="text-purple-300 text-sm font-medium mb-1">How memnos fixes it</p>
+              <p class="text-gray-400 text-sm leading-relaxed">All agents share the same memnos namespace. When Agent A writes a decision, Agent B sees it in the next memory injection — within seconds. Use <code class="text-xs bg-purple-900/30 px-1 rounded">spawn_task</code> to fan out work to background agents and retrieve results, or let multiple windows share a live namespace. One source of truth, all agents synchronized.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pain point 4: Secrets scattered everywhere -->
+      <div class="glass rounded-2xl p-8">
+        <div class="flex items-start gap-6">
+          <div class="flex-shrink-0 w-12 h-12 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-center text-red-400 font-bold text-lg">4</div>
+          <div class="flex-1">
+            <h3 class="text-white font-bold text-xl mb-2">API keys and secrets leaking into chat history</h3>
+            <p class="text-gray-400 text-sm leading-relaxed mb-4">Developers paste API keys, database passwords, and credentials directly into Claude Code prompts because it is the fastest way to give the agent what it needs. Those secrets now live in the transcript — a plaintext JSONL file on disk, visible to any process that reads it. Some end up in CLAUDE.md files committed to version control. Some get summarized into compaction blobs and persist indefinitely.</p>
+            <div class="bg-purple-900/20 border border-purple-500/20 rounded-xl p-4">
+              <p class="text-purple-300 text-sm font-medium mb-1">How memnos fixes it</p>
+              <p class="text-gray-400 text-sm leading-relaxed">The inject hook scans every prompt for credential patterns (API keys, JWTs, PEM keys, AWS access keys) before Claude sees them. Detected credentials trigger an alert to store in the memnos vault instead — AES-256-GCM encrypted, never stored in plaintext, with a full access audit log. The vault is accessible via <code class="text-xs bg-purple-900/30 px-1 rounded">vault_secret_get</code> in any Claude session.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pain point 5: Architecture drift -->
+      <div class="glass rounded-2xl p-8">
+        <div class="flex items-start gap-6">
+          <div class="flex-shrink-0 w-12 h-12 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center text-purple-400 font-bold text-lg">5</div>
+          <div class="flex-1">
+            <h3 class="text-white font-bold text-xl mb-2">AI agents that keep making the same architectural mistakes</h3>
+            <p class="text-gray-400 text-sm leading-relaxed mb-4">You tell Claude "we use snake_case for all Python variables." Next week you repeat it. The week after, same thing. System prompts and CLAUDE.md files are static text — they do not update as decisions evolve, they are invisible to new sessions, and they cannot be queried semantically. Agents drift. They re-introduce patterns you explicitly banned. They propose dependencies you already rejected.</p>
+            <div class="bg-purple-900/20 border border-purple-500/20 rounded-xl p-4">
+              <p class="text-purple-300 text-sm font-medium mb-1">How memnos fixes it</p>
+              <p class="text-gray-400 text-sm leading-relaxed">Architecture constraints stored in memnos are auto-injected by the search hook whenever a relevant prompt is made — no manual inclusion required. The corpus ingestion feature ingests your existing ADRs, RFC documents, and architecture files directly. The CI integration blocks PRs that violate stored MUST/SHALL constraints before they can merge.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
 <!-- ── CTA ──────────────────────────────────────────────────────────── -->
 <section class="relative z-10 py-24 fade-in">
   <div class="max-w-2xl mx-auto px-6 text-center">

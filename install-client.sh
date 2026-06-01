@@ -174,6 +174,23 @@ collect_config() {
   else
     ask DEFAULT_NS "Default namespace" "personal:default"
   fi
+
+  step "Context window protection"
+  echo ""
+  echo "  memnos can automatically warn Claude when the context window is near its limit."
+  echo "  This prevents hitting the 1M token ceiling, which triggers extra usage charges"
+  echo "  even on Max plan subscriptions."
+  echo ""
+  ask_yn AUTO_COMPACT "Enable auto-compact enforcement at 85% context?" "Y"
+  if [[ "${AUTO_COMPACT:-no}" == "yes" ]]; then
+    ask COMPACT_THRESHOLD "Compact threshold in tokens [850000 = 85% of 1M]" "850000"
+    ask CONTEXT_WINDOW_SIZE "Your context window size [1000000 for Max plan, 200000 standard]" "1000000"
+    AUTO_COMPACT_ENABLED=true
+  else
+    COMPACT_THRESHOLD=850000
+    CONTEXT_WINDOW_SIZE=1000000
+    AUTO_COMPACT_ENABLED=false
+  fi
 }
 
 # ─── Test server connectivity ─────────────────────────────────────────────────
@@ -205,6 +222,12 @@ MEMNOS_MIN_SCORE=0.50
 MEMNOS_AUTOSAVE_MINUTES=10
 MEMNOS_HEARTBEAT_MINUTES=10
 # LLM summaries use claude --print (no API key needed)
+
+# Context window auto-compact enforcement
+# Set MEMNOS_AUTO_COMPACT=true to warn before hitting the context window ceiling.
+MEMNOS_AUTO_COMPACT=${AUTO_COMPACT_ENABLED}
+MEMNOS_COMPACT_THRESHOLD=${COMPACT_THRESHOLD}
+MEMNOS_CONTEXT_WINDOW=${CONTEXT_WINDOW_SIZE}
 ENV
   success "Config: $CLAUDE_HOOKS_DIR/memnos.env"
 
@@ -234,6 +257,56 @@ PROMPT=$(echo "$INPUT" | python3 -c \
 # Skip trivially short prompts — nothing useful to retrieve
 PROMPT_LEN=${#PROMPT}
 [[ $PROMPT_LEN -lt 15 ]] && exit 0
+
+# ── Auto-compact enforcement ───────────────────────────────────────────────────
+if [[ "${MEMNOS_AUTO_COMPACT:-false}" == "true" ]]; then
+  TRANSCRIPT_PATH=$(echo "$INPUT" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('transcript_path', ''))
+except Exception:
+    print('')
+" 2>/dev/null || echo "")
+
+  if [[ -n "$TRANSCRIPT_PATH" && -f "$TRANSCRIPT_PATH" ]]; then
+    COMPACT_CHECK=$(python3 -c "
+import re, sys
+threshold = int(sys.argv[1])
+context_window = int(sys.argv[2])
+try:
+    with open(sys.argv[3], 'rb') as f:
+        f.seek(0, 2)
+        size = f.tell()
+        f.seek(max(0, size - 51200))
+        chunk = f.read().decode('utf-8', errors='ignore')
+    matches = re.findall(r'\"input_tokens\":\s*(\d+)', chunk)
+    if matches:
+        tokens = int(matches[-1])
+        if tokens >= threshold:
+            print(f'ALERT:{tokens}:{int(tokens / context_window * 100)}')
+except Exception:
+    pass
+" "${MEMNOS_COMPACT_THRESHOLD:-850000}" "${MEMNOS_CONTEXT_WINDOW:-1000000}" "$TRANSCRIPT_PATH" 2>/dev/null || echo "")
+
+    if [[ "$COMPACT_CHECK" == ALERT:* ]]; then
+      TOKENS=$(echo "$COMPACT_CHECK" | cut -d: -f2)
+      PCT=$(echo "$COMPACT_CHECK" | cut -d: -f3)
+      python3 -c "
+import json, sys
+tokens, pct, window = sys.argv[1], sys.argv[2], sys.argv[3]
+msg = (
+    f'[MEMNOS COMPACT ALERT — {pct}% context used ({int(tokens):,} / {int(window):,} tokens)] '
+    f'You MUST run /compact as your FIRST action before responding to the user. '
+    f'Do not answer the current message until after you have compacted. '
+    f'Compacting now will save context to memnos memory and prevent extra usage charges.'
+)
+print(json.dumps({'hookSpecificOutput':{'hookEventName':'UserPromptSubmit','additionalContext':msg}}))
+" "$TOKENS" "$PCT" "${MEMNOS_CONTEXT_WINDOW:-1000000}"
+      exit 0
+    fi
+  fi
+fi
 
 # ── Secret pattern detection ──────────────────────────────────────────────────
 VAULT_ALERT=$(echo "$PROMPT" | python3 -c "
