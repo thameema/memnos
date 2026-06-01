@@ -13,8 +13,8 @@ Run against a live stack:
     make e2e-up && make e2e-run
 
     # Against the dev stack (quick iteration):
-    ENGRAM_E2E_URL=http://localhost:8766 \
-    ENGRAM_E2E_API_KEY=<your-key> \
+    MEMNOS_E2E_URL=http://localhost:8766 \
+    MEMNOS_E2E_API_KEY=<your-key> \
     python -m pytest tools/e2e/test_e2e_temporal.py -v
 """
 from __future__ import annotations

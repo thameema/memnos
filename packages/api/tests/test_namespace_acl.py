@@ -18,9 +18,9 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from engram.config import ApiKeyEntry, AuthConfig, EngramConfig
+from memnos.config import ApiKeyEntry, AuthConfig, MemnosConfig
 
-from engram_api.auth import (
+from memnos_api.auth import (
     check_namespace_access,
     require_admin_access,
     require_api_key,
@@ -36,9 +36,9 @@ def _make_entry(namespaces: list[str], user_id: str = "test-user") -> ApiKeyEntr
     return ApiKeyEntry(key="test-key", user_id=user_id, namespaces=namespaces)
 
 
-def _make_config(namespaces: list[str]) -> EngramConfig:
+def _make_config(namespaces: list[str]) -> MemnosConfig:
     entry = ApiKeyEntry(key="test-key", user_id="test-user", namespaces=namespaces)
-    return EngramConfig(auth=AuthConfig(api_keys=[entry]))
+    return MemnosConfig(auth=AuthConfig(api_keys=[entry]))
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ class TestRequireAdminAccess:
 def _build_app(key_namespaces: list[str]):
     """Build a minimal FastAPI app wired with a single API key."""
     from fastapi import FastAPI
-    from engram_api.routers import memory, graph, admin
+    from memnos_api.routers import memory, graph, admin
 
     app = FastAPI()
     app.include_router(memory.router)
@@ -174,7 +174,7 @@ def _build_app(key_namespaces: list[str]):
 
     # Minimal mock config & clients on app.state
     entry = ApiKeyEntry(key="test-key", user_id="test-user", namespaces=key_namespaces)
-    config = EngramConfig(auth=AuthConfig(api_keys=[entry]))
+    config = MemnosConfig(auth=AuthConfig(api_keys=[entry]))
 
     mock_client = MagicMock()
     mock_client.add = AsyncMock(side_effect=NotImplementedError("mock"))
@@ -415,7 +415,7 @@ class TestAdminEndpointsACL:
         """Wildcard key can delete an existing namespace."""
         app = _build_app(["*"])
         # Pre-populate a namespace definition so the delete finds it
-        from engram.config import NamespaceDefinition
+        from memnos.config import NamespaceDefinition
         app.state.config.namespaces.definitions["team:engineering"] = NamespaceDefinition()
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.delete("/admin/namespaces/team:engineering", headers=AUTH_HEADER)

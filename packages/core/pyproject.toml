@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "engram-core"
+name = "memnos-core"
 version = "0.2.0"
-description = "engram persistent memory core — ArcadeDB knowledge graph + vector store"
+description = "memnos persistent memory core — ArcadeDB knowledge graph + vector store"
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27",
@@ -19,32 +19,32 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# pip install 'engram-core[local-embeddings]'
-# Adds sentence-transformers + torch (~2 GB). Use provider: local in engram.yaml.
+# pip install 'memnos-core[local-embeddings]'
+# Adds sentence-transformers + torch (~2 GB). Use provider: local in memnos.yaml.
 local-embeddings = [
     "sentence-transformers>=2.7",
     "spacy>=3.7",
 ]
-# pip install 'engram-core[voyage]'
-# Lightweight Voyage AI client. Use provider: voyage in engram.yaml.
+# pip install 'memnos-core[voyage]'
+# Lightweight Voyage AI client. Use provider: voyage in memnos.yaml.
 voyage = ["voyageai>=0.2"]
-# pip install 'engram-core[qdrant]'
-# Enables ENGRAM_VECTOR_BACKEND=qdrant — HNSW ANN search via Qdrant.
+# pip install 'memnos-core[qdrant]'
+# Enables MEMNOS_VECTOR_BACKEND=qdrant — HNSW ANN search via Qdrant.
 qdrant = ["qdrant-client>=1.9"]
-# pip install 'engram-core[community]'
+# pip install 'memnos-core[community]'
 # Adds networkx for Louvain/greedy community detection (Feature 3.4).
 community = ["networkx>=3.0"]
-all = ["engram-core[local-embeddings,voyage,qdrant,community]"]
+all = ["memnos-core[local-embeddings,voyage,qdrant,community]"]
 
 [project.scripts]
-engram-import = "engram.cli.import_cmd:main"
-engram-git = "engram.cli.git_hooks:main"
-engram-decay = "engram.cli.decay_cli:main"
-engram-vault = "engram.cli.vault_cli:main"
-engram-community = "engram.cli.community_cli:main"
-engram-migrate = "engram.cli.migrate_cli:main"
-engram-export = "engram.cli.export_cli:main"
+memnos-import = "memnos.cli.import_cmd:main"
+memnos-git = "memnos.cli.git_hooks:main"
+memnos-decay = "memnos.cli.decay_cli:main"
+memnos-vault = "memnos.cli.vault_cli:main"
+memnos-community = "memnos.cli.community_cli:main"
+memnos-migrate = "memnos.cli.migrate_cli:main"
+memnos-export = "memnos.cli.export_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["engram*"]
+include = ["memnos*"]

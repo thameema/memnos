@@ -1,30 +1,30 @@
 # Gateway Guide — Telegram & WhatsApp
 
-The engram gateway lets you talk to your persistent memory and run agent tasks from your phone using Telegram or WhatsApp. This guide explains how it works, how it relates to Claude Code, and how to set it up.
+The memnos gateway lets you talk to your persistent memory and run agent tasks from your phone using Telegram or WhatsApp. This guide explains how it works, how it relates to Claude Code, and how to set it up.
 
 ---
 
 ## What the gateway is
 
-The gateway is a two-way messaging interface that runs inside the engram server. It receives messages from your phone, runs them through the orchestrator (which uses an LLM), and sends the response back to your phone.
+The gateway is a two-way messaging interface that runs inside the memnos server. It receives messages from your phone, runs them through the orchestrator (which uses an LLM), and sends the response back to your phone.
 
 ```
 Your phone
   │  (Telegram or WhatsApp)
   ▼
-engram server ──► Orchestrator ──► LLM (Anthropic API / OpenRouter)
+memnos server ──► Orchestrator ──► LLM (Anthropic API / OpenRouter)
   │                                     │
   │             ┌───────────────────────┘
   └─◄───────── Response sent back to your phone
 ```
 
-**The gateway talks to the engram server — not to Claude Code on your desktop.**
+**The gateway talks to the memnos server — not to Claude Code on your desktop.**
 
-Claude Code and the gateway are two separate paths into the same engram server:
+Claude Code and the gateway are two separate paths into the same memnos server:
 
 ```
 Claude Code desktop  ──── MCP/SSE ────►┐
-                                        ├──► engram server ──► memory + orchestrator
+                                        ├──► memnos server ──► memory + orchestrator
 Your phone (Telegram/WhatsApp)  ───────►┘
 ```
 
@@ -37,10 +37,10 @@ Both share the same knowledge graph, the same namespaces, and the same orchestra
 Yes, both gateways are fully two-way:
 
 1. You send a message to the bot
-2. engram replies "Working…" immediately so you know it received the message
+2. memnos replies "Working…" immediately so you know it received the message
 3. The orchestrator runs the task (this may take 10–90 seconds depending on complexity)
-4. engram edits the "Working…" message with the result, or sends the full result as a file attachment if it is very long
-5. For long tasks, engram sends "Still thinking…" updates every 45 seconds so you know it hasn't stalled
+4. memnos edits the "Working…" message with the result, or sends the full result as a file attachment if it is very long
+5. For long tasks, memnos sends "Still thinking…" updates every 45 seconds so you know it hasn't stalled
 
 You do not need to wait for the response. Send the task, put your phone down, and the reply arrives when it is done.
 
@@ -50,19 +50,19 @@ You do not need to wait for the response. Send the task, put your phone down, an
 
 This is the most important thing to understand before setting up the gateway.
 
-The engram orchestrator runs tasks in one of three modes:
+The memnos orchestrator runs tasks in one of three modes:
 
 | Mode | How it works | Gateway compatible? |
 |------|-------------|---------------------|
 | `api` | Calls Anthropic or OpenRouter API directly | **Yes** — works everywhere |
 | `openrouter` | Calls OpenRouter API directly | **Yes** — works everywhere |
-| `claude-code` | Runs `claude` CLI as a subprocess | Only if Claude Code is installed **on the same machine as engram** |
+| `claude-code` | Runs `claude` CLI as a subprocess | Only if Claude Code is installed **on the same machine as memnos** |
 
 **The gateway works best in `api` or `openrouter` mode.**
 
-`claude-code` mode requires the `claude` CLI binary to be present on the machine where engram is running. If engram is on a remote server, that means installing Claude Code on the server (possible, but unusual). If engram is running locally on your development machine, `claude-code` mode works fine from the gateway too.
+`claude-code` mode requires the `claude` CLI binary to be present on the machine where memnos is running. If memnos is on a remote server, that means installing Claude Code on the server (possible, but unusual). If memnos is running locally on your development machine, `claude-code` mode works fine from the gateway too.
 
-For most users: set `default_runtime: api` in `engram.yaml` and use your Anthropic key. The gateway will work from anywhere.
+For most users: set `default_runtime: api` in `memnos.yaml` and use your Anthropic key. The gateway will work from anywhere.
 
 ```yaml
 orchestrator:
@@ -76,14 +76,14 @@ orchestrator:
 
 | Scenario | Claude Code MCP tools | Telegram gateway | WhatsApp gateway |
 |----------|----------------------|-----------------|-----------------|
-| engram local, Claude Code desktop | Yes | Yes (api mode) | Yes (api mode) |
-| engram local, claude-code mode | Yes | Yes | Yes |
-| engram on remote server, api mode | Yes (over network) | Yes | Yes |
-| engram on remote server, claude-code mode | Yes | Only if `claude` CLI installed on server | Only if `claude` CLI installed on server |
+| memnos local, Claude Code desktop | Yes | Yes (api mode) | Yes (api mode) |
+| memnos local, claude-code mode | Yes | Yes | Yes |
+| memnos on remote server, api mode | Yes (over network) | Yes | Yes |
+| memnos on remote server, claude-code mode | Yes | Only if `claude` CLI installed on server | Only if `claude` CLI installed on server |
 
-The typical setup for solo developers: engram runs locally, Claude Code connects via MCP, and the gateway uses `api` mode so you can query your memory from your phone.
+The typical setup for solo developers: memnos runs locally, Claude Code connects via MCP, and the gateway uses `api` mode so you can query your memory from your phone.
 
-The typical setup for teams: engram runs on a VPS or cloud VM, everyone connects their Claude Code to it over the network, and the gateway uses `api` mode so all team members can query shared namespaces from their phones.
+The typical setup for teams: memnos runs on a VPS or cloud VM, everyone connects their Claude Code to it over the network, and the gateway uses `api` mode so all team members can query shared namespaces from their phones.
 
 ---
 
@@ -99,7 +99,7 @@ The typical setup for teams: engram runs on a VPS or cloud VM, everyone connects
 
 Send `/start` to `@userinfobot` in Telegram. It replies with your numeric user ID (e.g. `123456789`). This is what you put in `allowed_users` to restrict the bot to yourself.
 
-### 3. Configure engram
+### 3. Configure memnos
 
 In `.env`:
 ```
@@ -107,7 +107,7 @@ TELEGRAM_BOT_TOKEN=7123456789:AAHxYourTokenHere
 TELEGRAM_ALLOWED_USERS=123456789
 ```
 
-In `engram.yaml`:
+In `memnos.yaml`:
 ```yaml
 gateway:
   telegram:
@@ -127,10 +127,10 @@ allowed_users:
 
 If `allowed_users` is empty, the bot accepts messages from anyone. Do not do this on a public server.
 
-### 4. Restart engram
+### 4. Restart memnos
 
 ```bash
-engram restart
+memnos restart
 ```
 
 Open Telegram, find your bot by the username you gave it, and send `/start`.
@@ -159,15 +159,15 @@ What was the last architectural decision I made about the auth service?
 | `/ns` (no args) | Show your current namespace |
 | Any other text | Runs as a task through the orchestrator |
 
-Namespaces set with `/ns` are per-user and per-bot-session. They reset when the bot restarts. Your default namespace comes from `engram.yaml`.
+Namespaces set with `/ns` are per-user and per-bot-session. They reset when the bot restarts. Your default namespace comes from `memnos.yaml`.
 
 ---
 
 ## Long responses
 
-When a response exceeds 4000 characters (Telegram's message limit), engram:
+When a response exceeds 4000 characters (Telegram's message limit), memnos:
 1. Sends the first 4000 characters as an edited message
-2. Attaches the full response as a `.txt` file named `engram_result_<timestamp>.txt`
+2. Attaches the full response as a `.txt` file named `memnos_result_<timestamp>.txt`
 
 For WhatsApp the limit is 3500 characters — same behaviour.
 
@@ -175,7 +175,7 @@ For WhatsApp the limit is 3500 characters — same behaviour.
 
 ## WhatsApp setup
 
-WhatsApp does not have a public bot API. engram uses **Evolution API**, an open-source bridge that connects to WhatsApp via its web protocol. You need to run Evolution API yourself.
+WhatsApp does not have a public bot API. memnos uses **Evolution API**, an open-source bridge that connects to WhatsApp via its web protocol. You need to run Evolution API yourself.
 
 ### 1. Run Evolution API
 
@@ -192,15 +192,15 @@ Open `http://localhost:8080/manager` to access the Evolution API dashboard.
 ### 2. Create an instance and connect WhatsApp
 
 In the Evolution API dashboard:
-1. Create a new instance (e.g. `engram`)
+1. Create a new instance (e.g. `memnos`)
 2. It shows a QR code — scan it with WhatsApp on your phone
 3. After scanning, the instance shows as "connected"
 
 ### 3. Set the webhook
 
-Tell Evolution API to POST incoming messages to engram:
+Tell Evolution API to POST incoming messages to memnos:
 ```bash
-curl -X POST "http://localhost:8080/webhook/set/engram" \
+curl -X POST "http://localhost:8080/webhook/set/memnos" \
   -H "apikey: your-evolution-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -210,32 +210,32 @@ curl -X POST "http://localhost:8080/webhook/set/engram" \
   }'
 ```
 
-Replace `host.docker.internal` with your server IP if engram is not on the same machine as Evolution API.
+Replace `host.docker.internal` with your server IP if memnos is not on the same machine as Evolution API.
 
-### 4. Configure engram
+### 4. Configure memnos
 
-In `engram.yaml`:
+In `memnos.yaml`:
 ```yaml
 gateway:
   whatsapp:
     enabled: true
     evolution_api_url: "http://localhost:8080"
     evolution_api_key: "your-evolution-key"
-    evolution_instance: "engram"
+    evolution_instance: "memnos"
     default_namespace: "personal:default"
     allowed_phones:
       - "15551234567"   # your phone number, digits only, no + or spaces
 ```
 
-If `allowed_phones` is empty, engram responds to all incoming WhatsApp messages. Restrict it to your number on a shared or public server.
+If `allowed_phones` is empty, memnos responds to all incoming WhatsApp messages. Restrict it to your number on a shared or public server.
 
-### 5. Restart engram
+### 5. Restart memnos
 
 ```bash
-engram restart
+memnos restart
 ```
 
-Send a WhatsApp message to the number associated with your Evolution API instance. engram will reply.
+Send a WhatsApp message to the number associated with your Evolution API instance. memnos will reply.
 
 ---
 
@@ -245,7 +245,7 @@ Each Telegram user ID maps to its own namespace by default: `personal:<user_id>`
 
 You can override this:
 - Use `/ns team:backend` in Telegram to switch to a shared namespace for that session
-- Configure `default_namespace: "team:backend"` in `engram.yaml` to make it the default for all users
+- Configure `default_namespace: "team:backend"` in `memnos.yaml` to make it the default for all users
 
 For WhatsApp, the namespace is `personal:<phone_number>` by default.
 
@@ -253,7 +253,7 @@ For WhatsApp, the namespace is `personal:<phone_number>` by default.
 
 ## Using the gateway to query memories written from Claude Code
 
-Because the gateway and Claude Code share the same engram server, you can access anything Claude Code wrote from your phone:
+Because the gateway and Claude Code share the same memnos server, you can access anything Claude Code wrote from your phone:
 
 In a Claude Code session:
 ```
@@ -269,7 +269,7 @@ From Telegram:
 What auth approach did we decide on for the backend?
 ```
 
-engram searches the knowledge graph and returns the stored decision.
+memnos searches the knowledge graph and returns the stored decision.
 
 ---
 
@@ -282,17 +282,17 @@ Telegram: "Audit all memories in project:backend for outdated API endpoints
            and summarize what needs updating"
 ```
 
-engram runs this as an orchestrator task in `api` mode. The result comes back as a Telegram reply, however long it takes.
+memnos runs this as an orchestrator task in `api` mode. The result comes back as a Telegram reply, however long it takes.
 
 For very long-running tasks, you can also ask for the task ID and check it later:
 
 ```
 Telegram: "Run a full audit of project:backend and give me the task ID"
-engram: "Task spawned: task_abc123. I'll run this in the background."
+memnos: "Task spawned: task_abc123. I'll run this in the background."
 
 # later
 Telegram: /task status task_abc123
-engram: "COMPLETED — [full audit result]"
+memnos: "COMPLETED — [full audit result]"
 ```
 
 ---
@@ -302,7 +302,7 @@ engram: "COMPLETED — [full audit result]"
 - **Always set `allowed_users` / `allowed_phones`** unless you want anyone to query your memory
 - Your Telegram bot token and WhatsApp credentials are in `.env` — keep that file private (`chmod 600 .env`)
 - Do not commit `.env` to version control
-- For remote deployments, keep the Evolution API port (8080) firewalled and only accessible from your engram server
+- For remote deployments, keep the Evolution API port (8080) firewalled and only accessible from your memnos server
 - Telegram bot tokens can be revoked and regenerated via `@BotFather` at any time
 
 ---
@@ -311,9 +311,9 @@ engram: "COMPLETED — [full audit result]"
 
 **Bot does not respond to messages**
 
-Check that engram is running and the gateway started:
+Check that memnos is running and the gateway started:
 ```bash
-engram logs
+memnos logs
 # Look for: "Telegram bot started (polling)"
 ```
 
@@ -323,13 +323,13 @@ Your Telegram user ID is not in `allowed_users`. Get your ID from `@userinfobot`
 
 **"Still thinking…" for more than 3 minutes**
 
-The orchestrator task is running but taking a long time. Check the engram logs for errors. You can also check task status with `/task status <id>` if you have the ID.
+The orchestrator task is running but taking a long time. Check the memnos logs for errors. You can also check task status with `/task status <id>` if you have the ID.
 
-**WhatsApp messages arrive but engram does not reply**
+**WhatsApp messages arrive but memnos does not reply**
 
-1. Verify the webhook URL is correct: `http://your-engram-host:8766/webhook/whatsapp`
+1. Verify the webhook URL is correct: `http://your-memnos-host:8766/webhook/whatsapp`
 2. Check that Evolution API is delivering events: look at the Evolution API dashboard
-3. Check engram logs for `WhatsApp webhook received event=`
+3. Check memnos logs for `WhatsApp webhook received event=`
 
 **WhatsApp instance disconnects**
 

@@ -43,7 +43,7 @@ SAMPLE_AGENT = {
 
 class TestYamlToAgent(unittest.TestCase):
     def _call(self, data):
-        from engram_api.routers.agents import _yaml_to_agent
+        from memnos_api.routers.agents import _yaml_to_agent
         return _yaml_to_agent(data)
 
     def test_maps_all_fields(self):
@@ -95,7 +95,7 @@ class TestLoadAgents(unittest.TestCase):
         (d / filename).write_text(content)
 
     def _call(self, agents_dir):
-        from engram_api.routers.agents import _load_agents
+        from memnos_api.routers.agents import _load_agents
         return _load_agents(str(agents_dir))
 
     def test_loads_yaml_files(self):
@@ -159,8 +159,8 @@ def _make_test_client():
     """Create a FastAPI test client with the agents router and a mocked auth dep."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from engram_api.routers.agents import router
-    from engram_api.auth import require_api_key
+    from memnos_api.routers.agents import router
+    from memnos_api.auth import require_api_key
 
     app = FastAPI()
     app.include_router(router, prefix="/api/v1")
@@ -168,7 +168,7 @@ def _make_test_client():
     return TestClient(app, raise_server_exceptions=True)
 
 
-_PATCH_TARGET = "engram_api.routers.agents._get_agents_dir"
+_PATCH_TARGET = "memnos_api.routers.agents._get_agents_dir"
 
 
 class TestAgentsListEndpoint(unittest.TestCase):

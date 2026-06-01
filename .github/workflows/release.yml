@@ -24,10 +24,10 @@ jobs:
       - name: Install build tools
         run: pip install --upgrade pip build
 
-      - name: Build engram-sdk
+      - name: Build memnos-sdk
         run: python -m build packages/sdk --outdir dist/
 
-      - name: Build engram-core
+      - name: Build memnos-core
         run: |
           pip install -e packages/core
           python -m build packages/core --outdir dist/
@@ -42,7 +42,7 @@ jobs:
             gh release upload "$TAG" dist/*.whl dist/*.tar.gz --clobber
           else
             gh release create "$TAG" \
-              --title "engram $TAG" \
+              --title "memnos $TAG" \
               --generate-notes \
               dist/*.whl dist/*.tar.gz
           fi

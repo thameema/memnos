@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# E2E: bring up the real engram stack and verify the /admin/health endpoint
+# E2E: bring up the real memnos stack and verify the /admin/health endpoint
 # returns 200 with Bearer auth and the basic shape we expect.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -7,7 +7,7 @@ source "${ROOT}/lib/assert.sh"
 source "${ROOT}/lib/fixtures.sh"
 source "${ROOT}/lib/e2e_helpers.sh"
 
-describe "real engram stack: /admin/health"
+describe "real memnos stack: /admin/health"
 
 if ! e2e_up; then
   fail "could not bring up e2e stack"
@@ -41,7 +41,7 @@ for line in sys.stdin:
         n_healthy += 1
 print(n_healthy)
 " 2>/dev/null || echo 0)
-[[ "$HEALTHY" -ge 2 ]] && pass "at least 2 containers healthy (engram + arcadedb)" \
+[[ "$HEALTHY" -ge 2 ]] && pass "at least 2 containers healthy (memnos + arcadedb)" \
   || warn "only $HEALTHY containers reported healthy"
 
 echo ""

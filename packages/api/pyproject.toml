@@ -3,14 +3,14 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "engram-api"
+name = "memnos-api"
 version = "0.1.0"
-description = "engram REST API server"
+description = "memnos REST API server"
 requires-python = ">=3.11"
 dependencies = [
-    "engram-core",
-    "engram-orchestrator",
-    "engram-mcp-server",
+    "memnos-core",
+    "memnos-orchestrator",
+    "memnos-mcp-server",
     "fastapi>=0.111",
     "uvicorn[standard]>=0.29",
     "pydantic>=2.0",
@@ -18,7 +18,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["engram_api*"]
+include = ["memnos_api*"]
 
 [project.scripts]
-engram-server = "engram_api.main:main"
+memnos-server = "memnos_api.main:main"

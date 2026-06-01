@@ -74,18 +74,18 @@ def _make_client():
 
 class TestCheckVaultAccess(unittest.IsolatedAsyncioTestCase):
     async def test_wildcard_key_passes_as_vault_admin(self):
-        from engram_api.auth import check_vault_access
+        from memnos_api.auth import check_vault_access
         entry = _make_key_entry(namespaces=["*"])
         await check_vault_access(entry, "org:acme:private", required="vault_admin")  # no raise
 
     async def test_wildcard_key_passes_all_levels(self):
-        from engram_api.auth import check_vault_access
+        from memnos_api.auth import check_vault_access
         entry = _make_key_entry(namespaces=["*"])
         for level in ("vault_read", "vault_write", "vault_admin"):
             await check_vault_access(entry, "any:namespace", required=level)
 
     async def test_exact_namespace_match_with_sufficient_level(self):
-        from engram_api.auth import check_vault_access
+        from memnos_api.auth import check_vault_access
         entry = _make_key_entry(vault_namespaces=[
             _make_vault_ns_entry("org:acme", "vault_write")
         ])
@@ -93,7 +93,7 @@ class TestCheckVaultAccess(unittest.IsolatedAsyncioTestCase):
         await check_vault_access(entry, "org:acme", required="vault_write")
 
     async def test_exact_namespace_insufficient_level_raises_403(self):
-        from engram_api.auth import check_vault_access
+        from memnos_api.auth import check_vault_access
         from fastapi import HTTPException
         entry = _make_key_entry(vault_namespaces=[
             _make_vault_ns_entry("org:acme", "vault_read")
@@ -103,14 +103,14 @@ class TestCheckVaultAccess(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 403)
 
     async def test_prefix_wildcard_covers_child_namespace(self):
-        from engram_api.auth import check_vault_access
+        from memnos_api.auth import check_vault_access
         entry = _make_key_entry(vault_namespaces=[
             _make_vault_ns_entry("org:acme:*", "vault_admin")
         ])
         await check_vault_access(entry, "org:acme:eng", required="vault_write")
 
     async def test_prefix_wildcard_does_not_cover_unrelated_namespace(self):
-        from engram_api.auth import check_vault_access
+        from memnos_api.auth import check_vault_access
         from fastapi import HTTPException
         entry = _make_key_entry(vault_namespaces=[
             _make_vault_ns_entry("org:acme:*", "vault_admin")
@@ -120,7 +120,7 @@ class TestCheckVaultAccess(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 403)
 
     async def test_namespace_not_listed_raises_403(self):
-        from engram_api.auth import check_vault_access
+        from memnos_api.auth import check_vault_access
         from fastapi import HTTPException
         entry = _make_key_entry(vault_namespaces=[])
         with self.assertRaises(HTTPException) as ctx:
@@ -128,7 +128,7 @@ class TestCheckVaultAccess(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 403)
 
     async def test_vault_admin_satisfies_vault_write_and_read(self):
-        from engram_api.auth import check_vault_access
+        from memnos_api.auth import check_vault_access
         entry = _make_key_entry(vault_namespaces=[
             _make_vault_ns_entry("ns1", "vault_admin")
         ])
@@ -137,7 +137,7 @@ class TestCheckVaultAccess(unittest.IsolatedAsyncioTestCase):
         await check_vault_access(entry, "ns1", required="vault_admin")
 
     async def test_universal_ns_wildcard_in_vault_namespaces(self):
-        from engram_api.auth import check_vault_access
+        from memnos_api.auth import check_vault_access
         entry = _make_key_entry(vault_namespaces=[
             _make_vault_ns_entry("*", "vault_admin")
         ])
@@ -150,7 +150,7 @@ class TestCheckVaultAccess(unittest.IsolatedAsyncioTestCase):
 
 class TestSetSecret(unittest.IsolatedAsyncioTestCase):
     async def test_returns_201_response(self):
-        from engram_api.routers.vault import set_secret, SecretSetRequest
+        from memnos_api.routers.vault import set_secret, SecretSetRequest
         req = SecretSetRequest(key_name="MY_KEY", value="s3cr3t", namespace="ns1")
         client = _make_client()
         key_entry = _make_key_entry(namespaces=["*"])
@@ -160,7 +160,7 @@ class TestSetSecret(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["key_name"], "MY_KEY")
 
     async def test_fields_forwarded_to_client(self):
-        from engram_api.routers.vault import set_secret, SecretSetRequest
+        from memnos_api.routers.vault import set_secret, SecretSetRequest
         req = SecretSetRequest(
             key_name="DB_PASS", value="hunter2", namespace="ns1",
             secret_type="password", note="prod db", tags=["db"],
@@ -179,7 +179,7 @@ class TestSetSecret(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kw["created_by"], "alice")
 
     async def test_500_on_unexpected_exception(self):
-        from engram_api.routers.vault import set_secret, SecretSetRequest
+        from memnos_api.routers.vault import set_secret, SecretSetRequest
         from fastapi import HTTPException
         req = SecretSetRequest(key_name="K", value="v", namespace="ns1")
         client = _make_client()
@@ -197,7 +197,7 @@ class TestSetSecret(unittest.IsolatedAsyncioTestCase):
 
 class TestListSecrets(unittest.IsolatedAsyncioTestCase):
     async def test_returns_list(self):
-        from engram_api.routers.vault import list_secrets
+        from memnos_api.routers.vault import list_secrets
         client = _make_client()
         key_entry = _make_key_entry(namespaces=["*"])
 
@@ -206,7 +206,7 @@ class TestListSecrets(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["key_name"], "MY_KEY")
 
     async def test_accessed_by_set_to_user_id(self):
-        from engram_api.routers.vault import list_secrets
+        from memnos_api.routers.vault import list_secrets
         client = _make_client()
         key_entry = _make_key_entry(namespaces=["*"])
 
@@ -214,7 +214,7 @@ class TestListSecrets(unittest.IsolatedAsyncioTestCase):
         client.secret_list.assert_awaited_once_with(namespace="ns1", accessed_by="bob")
 
     async def test_500_on_exception(self):
-        from engram_api.routers.vault import list_secrets
+        from memnos_api.routers.vault import list_secrets
         from fastapi import HTTPException
         client = _make_client()
         client.secret_list = AsyncMock(side_effect=RuntimeError("db error"))
@@ -231,7 +231,7 @@ class TestListSecrets(unittest.IsolatedAsyncioTestCase):
 
 class TestGetSecret(unittest.IsolatedAsyncioTestCase):
     async def test_returns_decrypted_value(self):
-        from engram_api.routers.vault import get_secret
+        from memnos_api.routers.vault import get_secret
         client = _make_client()
         key_entry = _make_key_entry(namespaces=["*"])
 
@@ -244,7 +244,7 @@ class TestGetSecret(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["value"], "s3cr3t")
 
     async def test_accessed_by_passed_to_client(self):
-        from engram_api.routers.vault import get_secret
+        from memnos_api.routers.vault import get_secret
         client = _make_client()
         key_entry = _make_key_entry(namespaces=["*"])
 
@@ -257,7 +257,7 @@ class TestGetSecret(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_404_on_key_error(self):
-        from engram_api.routers.vault import get_secret
+        from memnos_api.routers.vault import get_secret
         from fastapi import HTTPException
         client = _make_client()
         client.secret_get = AsyncMock(side_effect=KeyError("MY_KEY"))
@@ -271,7 +271,7 @@ class TestGetSecret(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_500_on_unexpected_exception(self):
-        from engram_api.routers.vault import get_secret
+        from memnos_api.routers.vault import get_secret
         from fastapi import HTTPException
         client = _make_client()
         client.secret_get = AsyncMock(side_effect=RuntimeError("vault failure"))
@@ -291,7 +291,7 @@ class TestGetSecret(unittest.IsolatedAsyncioTestCase):
 
 class TestRotateSecret(unittest.IsolatedAsyncioTestCase):
     async def test_rotates_with_new_value(self):
-        from engram_api.routers.vault import rotate_secret, SecretRotateRequest
+        from memnos_api.routers.vault import rotate_secret, SecretRotateRequest
         req = SecretRotateRequest(new_value="new_s3cr3t")
         client = _make_client()
         key_entry = _make_key_entry(namespaces=["*"])
@@ -307,7 +307,7 @@ class TestRotateSecret(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["id"], "sec-2")
 
     async def test_500_on_exception(self):
-        from engram_api.routers.vault import rotate_secret, SecretRotateRequest
+        from memnos_api.routers.vault import rotate_secret, SecretRotateRequest
         from fastapi import HTTPException
         req = SecretRotateRequest(new_value="v")
         client = _make_client()
@@ -328,7 +328,7 @@ class TestRotateSecret(unittest.IsolatedAsyncioTestCase):
 
 class TestDeleteSecret(unittest.IsolatedAsyncioTestCase):
     async def test_supersedes_existing_secret(self):
-        from engram_api.routers.vault import delete_secret
+        from memnos_api.routers.vault import delete_secret
         client = _make_client()
         existing = MagicMock()
         existing.id = "sec-1"
@@ -345,7 +345,7 @@ class TestDeleteSecret(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["key_name"], "MY_KEY")
 
     async def test_404_when_secret_not_found(self):
-        from engram_api.routers.vault import delete_secret
+        from memnos_api.routers.vault import delete_secret
         from fastapi import HTTPException
         client = _make_client()
         client._arcadedb.get_secret = AsyncMock(return_value=None)
@@ -360,7 +360,7 @@ class TestDeleteSecret(unittest.IsolatedAsyncioTestCase):
         self.assertIn("MISSING", ctx.exception.detail)
 
     async def test_500_on_unexpected_exception(self):
-        from engram_api.routers.vault import delete_secret
+        from memnos_api.routers.vault import delete_secret
         from fastapi import HTTPException
         client = _make_client()
         client._arcadedb.get_secret = AsyncMock(side_effect=RuntimeError("db crash"))
@@ -374,7 +374,7 @@ class TestDeleteSecret(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 500)
 
     async def test_namespace_returned_in_response(self):
-        from engram_api.routers.vault import delete_secret
+        from memnos_api.routers.vault import delete_secret
         client = _make_client()
         existing = MagicMock(); existing.id = "sec-1"
         client._arcadedb.get_secret = AsyncMock(return_value=existing)
@@ -394,7 +394,7 @@ class TestDeleteSecret(unittest.IsolatedAsyncioTestCase):
 
 class TestGetAuditLog(unittest.IsolatedAsyncioTestCase):
     async def test_returns_audit_entries(self):
-        from engram_api.routers.vault import get_audit_log
+        from memnos_api.routers.vault import get_audit_log
         client = _make_client()
         key_entry = _make_key_entry(namespaces=["*"])
 
@@ -406,7 +406,7 @@ class TestGetAuditLog(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["action"], "set")
 
     async def test_limit_passed_to_client(self):
-        from engram_api.routers.vault import get_audit_log
+        from memnos_api.routers.vault import get_audit_log
         client = _make_client()
         key_entry = _make_key_entry(namespaces=["*"])
 
@@ -417,7 +417,7 @@ class TestGetAuditLog(unittest.IsolatedAsyncioTestCase):
         client.secret_audit.assert_awaited_once_with(namespace="ns1", limit=42)
 
     async def test_500_on_exception(self):
-        from engram_api.routers.vault import get_audit_log
+        from memnos_api.routers.vault import get_audit_log
         from fastapi import HTTPException
         client = _make_client()
         client.secret_audit = AsyncMock(side_effect=RuntimeError("audit db down"))
@@ -431,7 +431,7 @@ class TestGetAuditLog(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 500)
 
     async def test_namespace_passed_to_client(self):
-        from engram_api.routers.vault import get_audit_log
+        from memnos_api.routers.vault import get_audit_log
         client = _make_client()
         key_entry = _make_key_entry(namespaces=["*"])
 

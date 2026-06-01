@@ -4,17 +4,17 @@ services:
 
   arcadedb:
     image: arcadedata/arcadedb:26.5.1
-    container_name: engram-arcadedb
+    container_name: memnos-arcadedb
     ports:
       - "2480:2480"   # HTTP REST + Studio UI
       - "2424:2424"   # binary protocol
     environment:
-      JAVA_OPTS: "-Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:-engram}"
+      JAVA_OPTS: "-Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:-memnos}"
       ARCADEDB_SERVER_PLUGINS: ""
     volumes:
-      - ${ENGRAM_DATA_DIR:-~/.engram}/arcadedb:/home/arcadedb/databases
-      - ${ENGRAM_DATA_DIR:-~/.engram}/arcadedb-logs:/home/arcadedb/log
-      - ${ENGRAM_DATA_DIR:-~/.engram}/arcadedb-backups:/home/arcadedb/backups
+      - ${MEMNOS_DATA_DIR:-~/.memnos}/arcadedb:/home/arcadedb/databases
+      - ${MEMNOS_DATA_DIR:-~/.memnos}/arcadedb-logs:/home/arcadedb/log
+      - ${MEMNOS_DATA_DIR:-~/.memnos}/arcadedb-backups:/home/arcadedb/backups
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:2480/api/v1/ready"]
       interval: 10s
@@ -22,46 +22,46 @@ services:
       retries: 10
       start_period: 20s
 
-  engram:
+  memnos:
     build:
       context: .
       dockerfile: docker/Dockerfile
       args:
-        EMBED_MODE: ${ENGRAM_EMBED_MODE:-auto}     # auto | openai | openrouter | voyage | local
-    container_name: engram
+        EMBED_MODE: ${MEMNOS_EMBED_MODE:-auto}     # auto | openai | openrouter | voyage | local
+    container_name: memnos
     ports:
       - "8765:8765"   # MCP server
       - "8766:8766"   # REST API + dashboard
     environment:
       ARCADEDB_HOST: arcadedb
       ARCADEDB_PORT: 2480
-      ARCADEDB_PASSWORD: ${ARCADEDB_PASSWORD:-engram}
-      ENGRAM_EMBED_MODE: ${ENGRAM_EMBED_MODE:-online}
+      ARCADEDB_PASSWORD: ${ARCADEDB_PASSWORD:-memnos}
+      MEMNOS_EMBED_MODE: ${MEMNOS_EMBED_MODE:-online}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}       # used by the default openai embeddings provider
       VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}       # optional — only needed if provider: voyage
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      ENGRAM_API_KEY: ${ENGRAM_API_KEY}
-      ENGRAM_VAULT_KEY: ${ENGRAM_VAULT_KEY}
-      ENGRAM_GIT_COMMIT: ${ENGRAM_GIT_COMMIT:-}
+      MEMNOS_API_KEY: ${MEMNOS_API_KEY}
+      MEMNOS_VAULT_KEY: ${MEMNOS_VAULT_KEY}
+      MEMNOS_GIT_COMMIT: ${MEMNOS_GIT_COMMIT:-}
       TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-false}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS:-}
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY:-}
-      ENGRAM_CONFIG: /app/engram.yaml
-      # Optional: set ENGRAM_VECTOR_BACKEND=qdrant and uncomment the qdrant service below
+      MEMNOS_CONFIG: /app/memnos.yaml
+      # Optional: set MEMNOS_VECTOR_BACKEND=qdrant and uncomment the qdrant service below
       # to enable HNSW ANN search. Recommended for namespaces > 100K memories.
-      ENGRAM_VECTOR_BACKEND: ${ENGRAM_VECTOR_BACKEND:-}
+      MEMNOS_VECTOR_BACKEND: ${MEMNOS_VECTOR_BACKEND:-}
       QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
       QDRANT_API_KEY: ${QDRANT_API_KEY:-}
     volumes:
-      # engram.yaml lives in the user's data dir (~/.engram by default) so the
-      # source clone (~/.engram-src) can be wiped/re-cloned without losing config.
-      # Fallback to ./engram.yaml only when running compose without an installer.
-      - ${ENGRAM_CONFIG_FILE:-./engram.yaml}:/app/engram.yaml:ro
+      # memnos.yaml lives in the user's data dir (~/.memnos by default) so the
+      # source clone (~/.memnos-src) can be wiped/re-cloned without losing config.
+      # Fallback to ./memnos.yaml only when running compose without an installer.
+      - ${MEMNOS_CONFIG_FILE:-./memnos.yaml}:/app/memnos.yaml:ro
       - ./agents:/app/agents:ro
       - ./skills:/app/skills:ro
-      - ${ENGRAM_DATA_DIR:-~/.engram}:/root/.engram
+      - ${MEMNOS_DATA_DIR:-~/.memnos}:/root/.memnos
     depends_on:
       arcadedb:
         condition: service_healthy
@@ -74,17 +74,17 @@ services:
       start_period: 20s
 
   # ── Optional: Qdrant vector backend ─────────────────────────────────────────
-  # Enabled when ENGRAM_VECTOR_BACKEND=qdrant is set in .env.
+  # Enabled when MEMNOS_VECTOR_BACKEND=qdrant is set in .env.
   # Provides HNSW ANN search across ALL memories, regardless of corpus size.
-  # Required: pip install 'engram-core[qdrant]'  (or rebuild the Docker image)
+  # Required: pip install 'memnos-core[qdrant]'  (or rebuild the Docker image)
   qdrant:
     image: qdrant/qdrant:latest
-    container_name: engram-qdrant
+    container_name: memnos-qdrant
     profiles: ["qdrant"]
     ports:
       - "6333:6333"
     volumes:
-      - ${ENGRAM_DATA_DIR:-~/.engram}/qdrant:/qdrant/storage
+      - ${MEMNOS_DATA_DIR:-~/.memnos}/qdrant:/qdrant/storage
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"]
       interval: 10s
@@ -95,13 +95,13 @@ services:
 
   evolution-api:
     image: atendai/evolution-api:latest
-    container_name: engram-evolution
+    container_name: memnos-evolution
     profiles: ["whatsapp"]
     ports:
       - "8080:8080"
     environment:
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
-      WEBHOOK_GLOBAL_URL: http://engram:8766/webhook/whatsapp
+      WEBHOOK_GLOBAL_URL: http://memnos:8766/webhook/whatsapp
       WEBHOOK_GLOBAL_ENABLED: "true"
       WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS: "false"
     volumes:

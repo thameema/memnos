@@ -36,7 +36,7 @@ BEARER_COUNT=$(grep -rc "Authorization.*Bearer" \
   "${REPO_ROOT}/install-client.sh" \
   "${REPO_ROOT}/install-server.sh" \
   "${REPO_ROOT}/tools/verify-install.sh" \
-  "${REPO_ROOT}/hooks/bash/engram-inject.sh" 2>/dev/null | awk -F: '{s+=$2} END{print s}')
+  "${REPO_ROOT}/hooks/bash/memnos-inject.sh" 2>/dev/null | awk -F: '{s+=$2} END{print s}')
 if [[ "$BEARER_COUNT" -ge 5 ]]; then
   pass "Bearer auth in $BEARER_COUNT places across installers + hooks + verify"
 else

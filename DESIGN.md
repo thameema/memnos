@@ -1,4 +1,4 @@
-# engram — Comprehensive Design Document
+# memnos — Comprehensive Design Document
 
 **Version:** 0.2  
 **Status:** Draft  
@@ -37,9 +37,9 @@
 
 ## 1. Executive Summary
 
-**engram** is an open-source, portable persistent memory and AI governance layer for LLM-based developer and engineering workflows. It solves two fundamental problems: (1) LLM context windows end, losing all learned context; (2) AI agents in engineering teams lack access to organizational decisions, architecture patterns, and domain knowledge — causing hallucinated or off-specification output.
+**memnos** is an open-source, portable persistent memory and AI governance layer for LLM-based developer and engineering workflows. It solves two fundamental problems: (1) LLM context windows end, losing all learned context; (2) AI agents in engineering teams lack access to organizational decisions, architecture patterns, and domain knowledge — causing hallucinated or off-specification output.
 
-engram provides:
+memnos provides:
 
 - **Persistent knowledge graph** backed by **ArcadeDB** — a single Apache 2.0 multi-model database providing graph traversal, vector similarity search, and document storage in one unified query layer
 - **Temporal knowledge model** — all facts carry UTC `created_at` and nullable `superseded_at` timestamps; search combines semantic relevance with recency weighting; older superseded facts remain accessible as history
@@ -50,9 +50,9 @@ engram provides:
 - **Namespace isolation with ACL**: hierarchical `org:team:project` scopes with key-based access control; a single API key can span multiple namespaces
 - **Binary asset references**: diagrams, PDFs, and other binaries are indexed by reference (path + SHA-256 hash + extracted content) — never stored in the graph
 
-**Key design principle:** engram is infrastructure. It never holds LLM API keys on behalf of users. Each user/org supplies their own credentials. engram stores memory and orchestrates — it does not serve as an AI proxy or reseller.
+**Key design principle:** memnos is infrastructure. It never holds LLM API keys on behalf of users. Each user/org supplies their own credentials. memnos stores memory and orchestrates — it does not serve as an AI proxy or reseller.
 
-**AI Governance:** engram can be deployed as the organizational knowledge layer that governs AI agent behavior. Agents query engram before generating code or decisions, ensuring they operate within the bounds of the organization's actual technical decisions, architecture standards, and compliance rules. See [Section 21](#21-ai-governance-positioning).
+**AI Governance:** memnos can be deployed as the organizational knowledge layer that governs AI agent behavior. Agents query memnos before generating code or decisions, ensuring they operate within the bounds of the organization's actual technical decisions, architecture standards, and compliance rules. See [Section 21](#21-ai-governance-positioning).
 
 ---
 
@@ -78,7 +78,7 @@ engram provides:
 
 | # | Non-Goal |
 |---|----------|
-| N1 | Not a replacement for Claude Code — engram augments it |
+| N1 | Not a replacement for Claude Code — memnos augments it |
 | N2 | Not an AI model provider — users supply their own API keys |
 | N3 | Not a general-purpose RAG system — memory is agent-scoped |
 | N4 | Not a hosted SaaS — self-hosted only in v1 |
@@ -100,7 +100,7 @@ engram provides:
             │ MCP (stdio/SSE)     │ Telegram/WA API       │ HTTP/REST
             ▼                     ▼                        ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                          ENGRAM SERVER                                  │
+│                          MEMNOS SERVER                                  │
 │                                                                         │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
 │  │  MCP Server  (FastAPI + SSE, port 8765)                         │   │
@@ -157,7 +157,7 @@ engram provides:
 | Vector DB | Qdrant (separate service) | ArcadeDB built-in HNSW |
 | Entity extraction | Graphiti (LLM call per write, OpenAI required) | spaCy (local NLP, no API key needed) |
 | Hybrid query | Two-system join in application code | Single ArcadeDB query |
-| Docker services | 3 (neo4j + qdrant + engram) | 2 (arcadedb + engram) |
+| Docker services | 3 (neo4j + qdrant + memnos) | 2 (arcadedb + memnos) |
 
 ---
 
@@ -178,10 +178,10 @@ The memory core is a Python library. It wraps ArcadeDB behind a single unified A
 **Key classes:**
 
 ```python
-class EngramClient:
+class MemnosClient:
     """Main entry point for all memory operations."""
 
-    def __init__(self, config: EngramConfig): ...
+    def __init__(self, config: MemnosConfig): ...
 
     async def add(self, content: str, namespace: str,
                   tags: list[str] = None, metadata: dict = None) -> MemoryEntry
@@ -286,7 +286,7 @@ Exposes all memory and orchestration operations as MCP tools. Claude Code connec
 
 | Mode | Protocol | Use case |
 |------|----------|----------|
-| `stdio` | JSON-RPC over stdin/stdout | Local — Claude Code spawns engram as a subprocess |
+| `stdio` | JSON-RPC over stdin/stdout | Local — Claude Code spawns memnos as a subprocess |
 | `sse` | HTTP + Server-Sent Events | Remote — Claude Code connects to `http://server:8765/sse` |
 
 **MCP server implementation:**
@@ -295,7 +295,7 @@ Built on `mcp` Python SDK (official Anthropic MCP SDK). FastAPI handles the SSE 
 
 ```
 packages/mcp-server/
-  engram_mcp/
+  memnos_mcp/
     server.py          # MCP tool registration and main server
     transports/
       stdio.py         # stdio transport handler
@@ -366,7 +366,7 @@ class ApiWorker:
         while True:
             response = await self.client.messages.create(
                 model=self.model,
-                tools=ENGRAM_TOOLS,
+                tools=MEMNOS_TOOLS,
                 messages=messages
             )
             if response.stop_reason == "end_turn":
@@ -392,7 +392,7 @@ def make_worker(config: WorkerConfig) -> BaseWorker:
 
 ### 4.4 Gateway (`packages/gateway`)
 
-The gateway translates messages between messaging platforms (Telegram, WhatsApp) and the engram orchestrator. A user sends a message from their phone; engram processes it and sends a reply.
+The gateway translates messages between messaging platforms (Telegram, WhatsApp) and the memnos orchestrator. A user sends a message from their phone; memnos processes it and sends a reply.
 
 **Telegram gateway:**
 
@@ -412,15 +412,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **WhatsApp gateway:**
 
-Uses **Evolution API** — a Docker-ready REST wrapper around the Baileys Node.js library. engram sends/receives WhatsApp messages via Evolution API's webhook.
+Uses **Evolution API** — a Docker-ready REST wrapper around the Baileys Node.js library. memnos sends/receives WhatsApp messages via Evolution API's webhook.
 
 ```
-engram ──── HTTP ────→ Evolution API container (port 8080)
+memnos ──── HTTP ────→ Evolution API container (port 8080)
                             └── WhatsApp Web protocol (Baileys)
                                       └── WhatsApp servers
 ```
 
-engram registers a webhook on Evolution API. Incoming WhatsApp messages hit the webhook endpoint in engram's gateway, which forwards them to the orchestrator.
+memnos registers a webhook on Evolution API. Incoming WhatsApp messages hit the webhook endpoint in memnos's gateway, which forwards them to the orchestrator.
 
 **Gateway routing table:**
 
@@ -438,7 +438,7 @@ async def whatsapp_webhook(payload: dict):
 
 ### 4.5 REST API (`packages/api`)
 
-FastAPI server exposing engram's memory and orchestration capabilities to non-MCP clients (curl, CI/CD scripts, other tools).
+FastAPI server exposing memnos's memory and orchestration capabilities to non-MCP clients (curl, CI/CD scripts, other tools).
 
 **Base URL:** `http://localhost:8766`
 
@@ -450,7 +450,7 @@ Full spec in Section 7.
 
 ### 5.0 Temporal Properties — First-Class Design
 
-Every node in engram carries two UTC timestamps. This is not optional — it is the foundation of the temporal knowledge model:
+Every node in memnos carries two UTC timestamps. This is not optional — it is the foundation of the temporal knowledge model:
 
 ```
 created_at:    datetime (UTC, immutable)  — when this fact was recorded
@@ -607,11 +607,11 @@ class Session:
 
 ## 6. MCP Tool Definitions
 
-These are the tools Claude Code sees when connected to engram. Each tool maps to an engram core operation.
+These are the tools Claude Code sees when connected to memnos. Each tool maps to an memnos core operation.
 
 ### 6.1 `memory_search`
 
-Search engram's memory (vector + graph hybrid) for content related to a query.
+Search memnos's memory (vector + graph hybrid) for content related to a query.
 
 ```json
 {
@@ -656,7 +656,7 @@ Write a new memory entry.
 ```json
 {
   "name": "memory_write",
-  "description": "Persist a piece of information to engram's long-term memory. The content will be embedded and added to the knowledge graph.",
+  "description": "Persist a piece of information to memnos's long-term memory. The content will be embedded and added to the knowledge graph.",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -744,7 +744,7 @@ Fork a background task. Returns a task ID immediately; the task runs asynchronou
 ```json
 {
   "name": "spawn_task",
-  "description": "Spawn a background worker to complete a subtask. The worker has access to engram memory. Returns task_id. Use get_task_result to retrieve the output.",
+  "description": "Spawn a background worker to complete a subtask. The worker has access to memnos memory. Returns task_id. Use get_task_result to retrieve the output.",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -822,7 +822,7 @@ List active or recent tasks.
 
 **Base URL:** `http://localhost:8766/api/v1`
 
-All endpoints require `Authorization: Bearer <ENGRAM_API_KEY>` header.
+All endpoints require `Authorization: Bearer <MEMNOS_API_KEY>` header.
 
 ### Memory
 
@@ -863,32 +863,32 @@ All endpoints require `Authorization: Bearer <ENGRAM_API_KEY>` header.
 
 ## 8. Runtime Modes
 
-engram supports three worker runtimes. The runtime is configured globally in `engram.yaml` and can be overridden per `spawn_task` call.
+memnos supports three worker runtimes. The runtime is configured globally in `memnos.yaml` and can be overridden per `spawn_task` call.
 
 ### 8.1 `claude-code` Mode
 
 **How it works:**  
-Spawns `claude` CLI subprocesses. Each worker is an isolated Claude Code session with its own context window. Workers write results to engram memory via the MCP connection (the worker also connects to the same engram MCP server).
+Spawns `claude` CLI subprocesses. Each worker is an isolated Claude Code session with its own context window. Workers write results to memnos memory via the MCP connection (the worker also connects to the same memnos MCP server).
 
 **Requirements:**
-- `claude` CLI installed on the machine running engram
+- `claude` CLI installed on the machine running memnos
 - `ANTHROPIC_API_KEY` set (OAuth tokens are not allowed for headless use per Anthropic terms)
 - Or `--dangerously-skip-permissions` flag for fully non-interactive mode
 
 **When to use:**  
-Local desktop mode. Developer runs engram and Claude Code on the same laptop. Best for code editing tasks where Claude Code's file access is needed.
+Local desktop mode. Developer runs memnos and Claude Code on the same laptop. Best for code editing tasks where Claude Code's file access is needed.
 
 **Worker invocation:**
 ```bash
 claude --dangerously-skip-permissions --print -p "TASK PROMPT" \
-  --mcp-config /tmp/engram-worker-mcp.json
+  --mcp-config /tmp/memnos-worker-mcp.json
 ```
 
-**MCP config injected per worker** (`/tmp/engram-worker-mcp.json`):
+**MCP config injected per worker** (`/tmp/memnos-worker-mcp.json`):
 ```json
 {
   "mcpServers": {
-    "engram": {
+    "memnos": {
       "url": "http://localhost:8765/sse",
       "apiKey": "WORKER_SESSION_TOKEN"
     }
@@ -904,7 +904,7 @@ claude --dangerously-skip-permissions --print -p "TASK PROMPT" \
 Runs a Python `asyncio` agent loop calling the Anthropic API directly. No Claude Code CLI required. Fully headless and server-safe.
 
 **Requirements:**
-- `ANTHROPIC_API_KEY` in environment or `engram.yaml`
+- `ANTHROPIC_API_KEY` in environment or `memnos.yaml`
 - Python `anthropic` SDK
 
 **When to use:**  
@@ -920,7 +920,7 @@ async def api_worker_loop(task: str, tools: list, model: str, api_key: str) -> s
         response = await client.messages.create(
             model=model,
             max_tokens=8192,
-            tools=tools,          # engram tools + any task-specific tools
+            tools=tools,          # memnos tools + any task-specific tools
             messages=messages
         )
 
@@ -952,7 +952,7 @@ async def api_worker_loop(task: str, tools: list, model: str, api_key: str) -> s
 Same agent loop as `api` mode but routes to OpenRouter, enabling any supported model (GPT-4o, Gemini, Llama 3, Mistral, etc.) as the worker.
 
 **Requirements:**
-- `OPENROUTER_API_KEY` in environment or `engram.yaml`
+- `OPENROUTER_API_KEY` in environment or `memnos.yaml`
 
 **When to use:**  
 Multi-model routing. Cost optimization (use cheaper models for low-complexity subtasks). Fallback when Anthropic API is unavailable.
@@ -1015,7 +1015,7 @@ org : acme : engineering : backend
 A **single API key can cover multiple namespaces**. This is the enterprise governance primitive: you issue one key per developer and specify exactly which namespaces they can read and write.
 
 ```yaml
-# engram.yaml — auth section
+# memnos.yaml — auth section
 auth:
   api_keys:
     # Engineer Alice — can read all engineering, write only to her team + personal
@@ -1169,7 +1169,7 @@ PENDING ──► PLANNING ──► RUNNING ──► SYNTHESIZING ──► CO
 
 ### 10.5 Teardown
 
-After a task reaches COMPLETE or FAILED, engram:
+After a task reaches COMPLETE or FAILED, memnos:
 1. Kills any running Claude Code subprocesses (SIGTERM, then SIGKILL after 5s)
 2. Cleans up temp MCP config files
 3. Writes task summary to memory
@@ -1184,11 +1184,11 @@ After a task reaches COMPLETE or FAILED, engram:
 **Setup:**
 1. Create a bot via `@BotFather` → get `TELEGRAM_BOT_TOKEN`
 2. Set `TELEGRAM_ALLOWED_USERS` to a comma-separated list of Telegram user IDs (allowlist for security)
-3. engram gateway starts polling or sets up webhook
+3. memnos gateway starts polling or sets up webhook
 
 **Conversation flow:**
 ```
-User (phone) ──[sends message]──► Telegram servers ──► engram gateway
+User (phone) ──[sends message]──► Telegram servers ──► memnos gateway
                                                               │
                                                       namespace = personal:{telegram_user_id}
                                                               │
@@ -1215,7 +1215,7 @@ For long tasks, the gateway sends a "working..." message first, then edits it wi
 
 **Architecture:**
 ```
-engram ─── HTTP ───► Evolution API (Docker, port 8080)
+memnos ─── HTTP ───► Evolution API (Docker, port 8080)
                            │
                     WhatsApp Web protocol
                            │
@@ -1228,22 +1228,22 @@ docker run -d \
   --name evolution-api \
   -p 8080:8080 \
   -e AUTHENTICATION_API_KEY=your-evolution-api-key \
-  -e WEBHOOK_GLOBAL_URL=http://engram:8766/webhook/whatsapp \
+  -e WEBHOOK_GLOBAL_URL=http://memnos:8766/webhook/whatsapp \
   atendai/evolution-api:latest
 ```
 
-After startup, scan a QR code to connect a WhatsApp account. Then engram receives all messages via the webhook.
+After startup, scan a QR code to connect a WhatsApp account. Then memnos receives all messages via the webhook.
 
-**Note:** WhatsApp via Evolution API / Baileys is unofficial (reverse-engineered WhatsApp Web protocol). It works reliably for personal/team use but violates WhatsApp ToS for bulk messaging. engram uses it only for interactive single-user communication, which is low risk in practice.
+**Note:** WhatsApp via Evolution API / Baileys is unofficial (reverse-engineered WhatsApp Web protocol). It works reliably for personal/team use but violates WhatsApp ToS for bulk messaging. memnos uses it only for interactive single-user communication, which is low risk in practice.
 
 ---
 
 ## 12. Configuration Reference
 
-### `engram.yaml`
+### `memnos.yaml`
 
 ```yaml
-# engram.yaml — main configuration file
+# memnos.yaml — main configuration file
 
 server:
   host: 0.0.0.0
@@ -1253,7 +1253,7 @@ server:
 
 auth:
   api_keys:
-    - key: engram-key-CHANGEME
+    - key: memnos-key-CHANGEME
       user_id: default
       namespaces: ["*"]   # * = all namespaces
 
@@ -1266,7 +1266,7 @@ neo4j:
 qdrant:
   host: localhost
   port: 6333
-  collection: engram_memories
+  collection: memnos_memories
 
 embeddings:
   provider: openai               # openai | local
@@ -1314,7 +1314,7 @@ memory:
 
 ### Environment Variables
 
-All secrets should be in environment variables, not in `engram.yaml`. The config supports `${VAR_NAME}` interpolation.
+All secrets should be in environment variables, not in `memnos.yaml`. The config supports `${VAR_NAME}` interpolation.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -1322,10 +1322,10 @@ All secrets should be in environment variables, not in `engram.yaml`. The config
 | `OPENROUTER_API_KEY` | For `openrouter` runtime | OpenRouter API key |
 | `OPENAI_API_KEY` | For OpenAI embeddings | OpenAI API key |
 | `VOYAGE_API_KEY` | For Voyage AI embeddings | Voyage AI API key |
-| `ENGRAM_API_KEY` | Yes | Master API key for MCP/REST auth |
+| `MEMNOS_API_KEY` | Yes | Master API key for MCP/REST auth |
 | `ARCADEDB_PASSWORD` | Yes | ArcadeDB root password |
-| `ENGRAM_VAULT_KEY` | Yes | 32-byte base64 key for vault AES-256-GCM encryption |
-| `ENGRAM_VECTOR_BACKEND` | No | Set to `qdrant` to enable Qdrant HNSW backend |
+| `MEMNOS_VAULT_KEY` | Yes | 32-byte base64 key for vault AES-256-GCM encryption |
+| `MEMNOS_VECTOR_BACKEND` | No | Set to `qdrant` to enable Qdrant HNSW backend |
 | `QDRANT_URL` | When qdrant backend | URL of Qdrant instance (default: `http://localhost:6333`) |
 | `QDRANT_API_KEY` | When qdrant cloud | Qdrant Cloud API key |
 | `TELEGRAM_BOT_TOKEN` | For Telegram gateway | Telegram bot token |
@@ -1336,22 +1336,22 @@ All secrets should be in environment variables, not in `engram.yaml`. The config
 ## 13. Repository Structure
 
 ```
-engram/
+memnos/
 ├── README.md
 ├── DESIGN.md                          ← this document
 ├── LICENSE                            (Apache 2.0)
 ├── pyproject.toml                     (workspace root — installs all sub-packages)
-├── docker-compose.yml                 (two services: arcadedb + engram; qdrant optional)
-├── engram.yaml.example                (copy to engram.yaml, fill secrets)
+├── docker-compose.yml                 (two services: arcadedb + memnos; qdrant optional)
+├── memnos.yaml.example                (copy to memnos.yaml, fill secrets)
 ├── .env.example
 │
 ├── packages/
 │   │
-│   ├── core/                          # Memory core library (engram-core)
+│   ├── core/                          # Memory core library (memnos-core)
 │   │   ├── pyproject.toml
-│   │   ├── engram/
-│   │   │   ├── client.py              # EngramClient — main entry point
-│   │   │   ├── config.py              # EngramConfig + all sub-configs
+│   │   ├── memnos/
+│   │   │   ├── client.py              # MemnosClient — main entry point
+│   │   │   ├── config.py              # MemnosConfig + all sub-configs
 │   │   │   ├── models.py              # MemoryEntry, Entity, Fact, Provenance, enums
 │   │   │   ├── namespace.py           # Namespace routing and ACL
 │   │   │   ├── search.py              # SearchResult model
@@ -1368,12 +1368,12 @@ engram/
 │   │   │   ├── vector/
 │   │   │   │   └── embedder.py        # Embedder factory (OpenAI / Voyage / local)
 │   │   │   └── cli/
-│   │   │       ├── git_hooks.py       # engram-git CLI
-│   │   │       ├── decay_cli.py       # engram-decay CLI
-│   │   │       └── import_cmd.py      # engram-import CLI
+│   │   │       ├── git_hooks.py       # memnos-git CLI
+│   │   │       ├── decay_cli.py       # memnos-decay CLI
+│   │   │       └── import_cmd.py      # memnos-import CLI
 │   │
-│   ├── mcp-server/                    # MCP server — engram-mcp-server
-│   │   ├── engram_mcp/
+│   ├── mcp-server/                    # MCP server — memnos-mcp-server
+│   │   ├── memnos_mcp/
 │   │   │   ├── server.py              # MCP tool registration, dispatch
 │   │   │   ├── skill_packs.py         # External skill pack loader
 │   │   │   ├── tools/
@@ -1386,7 +1386,7 @@ engram/
 │   │   │       └── sse.py             # FastAPI SSE transport
 │   │
 │   ├── orchestrator/                  # Multi-agent orchestrator
-│   │   ├── engram_orchestrator/
+│   │   ├── memnos_orchestrator/
 │   │   │   ├── orchestrator.py        # Orchestrator (plan → run → synthesize)
 │   │   │   ├── planner.py             # LLM-backed task decomposition
 │   │   │   ├── synthesizer.py         # LLM-backed result merge
@@ -1395,8 +1395,8 @@ engram/
 │   │   │   ├── router.py              # AgentRouter (semantic YAML matching)
 │   │   │   └── task_store.py          # SQLite-backed task state
 │   │
-│   ├── api/                           # REST API — engram-api
-│   │   ├── engram_api/
+│   ├── api/                           # REST API — memnos-api
+│   │   ├── memnos_api/
 │   │   │   ├── main.py                # FastAPI app, lifespan, router registration
 │   │   │   ├── schemas.py             # Request/response Pydantic models
 │   │   │   ├── key_store.py           # RuntimeKeyStore (SQLite)
@@ -1413,14 +1413,14 @@ engram/
 │   │   │       └── viz.py             # /viz/*
 │   │
 │   ├── gateway/                       # Telegram + WhatsApp gateway
-│   │   ├── engram_gateway/
+│   │   ├── memnos_gateway/
 │   │   │   ├── telegram/
 │   │   │   │   └── bot.py             # TelegramGateway (polling, inline feedback)
 │   │   │   └── whatsapp/
 │   │   │       └── webhook.py         # FastAPI webhook receiver
 │   │
-│   └── learning/                      # Self-improvement — engram-learning
-│       ├── engram_learning/
+│   └── learning/                      # Self-improvement — memnos-learning
+│       ├── memnos_learning/
 │       │   ├── episode_store.py       # Task episode persistence
 │       │   ├── heuristic_store.py     # Heuristic (rule) persistence
 │       │   ├── quality_store.py       # Per-agent quality scores
@@ -1429,7 +1429,7 @@ engram/
 │       │   └── scheduler.py           # APScheduler-based learning scheduler
 │
 ├── docker/
-│   └── Dockerfile                     # engram server image (EMBED_MODE build arg)
+│   └── Dockerfile                     # memnos server image (EMBED_MODE build arg)
 │
 ├── docs/
 │   ├── quickstart.md
@@ -1452,7 +1452,7 @@ engram/
 
 ## 14. Docker Deployment
 
-engram ships as a **two-service Docker Compose stack**: ArcadeDB + engram. This replaces the previous three-service setup (Neo4j + Qdrant + engram).
+memnos ships as a **two-service Docker Compose stack**: ArcadeDB + memnos. This replaces the previous three-service setup (Neo4j + Qdrant + memnos).
 
 For developers who want the absolute minimum, a **single-container option** bundles both services using supervisord.
 
@@ -1468,7 +1468,7 @@ services:
 
   arcadedb:
     image: arcadedata/arcadedb:latest
-    container_name: engram-arcadedb
+    container_name: memnos-arcadedb
     ports:
       - "2480:2480"   # HTTP API + dashboard
       - "2424:2424"   # binary protocol
@@ -1483,11 +1483,11 @@ services:
       timeout: 5s
       retries: 10
 
-  engram:
+  memnos:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    container_name: engram
+    container_name: memnos
     ports:
       - "8765:8765"   # MCP SSE
       - "8766:8766"   # REST API + dashboard
@@ -1495,27 +1495,27 @@ services:
       ARCADEDB_HOST: arcadedb
       ARCADEDB_PORT: 2480
       ARCADEDB_PASSWORD: ${ARCADEDB_PASSWORD}
-      ENGRAM_API_KEY: ${ENGRAM_API_KEY}
+      MEMNOS_API_KEY: ${MEMNOS_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}   # optional — only for orchestrator
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY:-}
     volumes:
-      - ./engram.yaml:/app/engram.yaml:ro
-      - engram_assets:/app/assets              # asset sync staging area
+      - ./memnos.yaml:/app/memnos.yaml:ro
+      - memnos_assets:/app/assets              # asset sync staging area
     depends_on:
       arcadedb: { condition: service_healthy }
     restart: unless-stopped
 
   evolution-api:                       # optional WhatsApp bridge
     image: atendai/evolution-api:latest
-    container_name: engram-evolution
+    container_name: memnos-evolution
     profiles: ["whatsapp"]             # only starts if --profile whatsapp
     ports:
       - "8080:8080"
     environment:
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
-      WEBHOOK_GLOBAL_URL: http://engram:8766/webhook/whatsapp
+      WEBHOOK_GLOBAL_URL: http://memnos:8766/webhook/whatsapp
       WEBHOOK_GLOBAL_ENABLED: "true"
     volumes:
       - evolution_data:/evolution/instances
@@ -1523,7 +1523,7 @@ services:
 
 volumes:
   arcadedb_data:
-  engram_assets:
+  memnos_assets:
   evolution_data:
 ```
 
@@ -1540,14 +1540,14 @@ RUN apt-get install -y openjdk-21-jre-headless curl
 RUN curl -fsSL https://github.com/ArcadeData/arcadedb/releases/latest/download/arcadedb-latest.tar.gz \
     | tar -xz -C /opt/arcadedb
 
-# Install Python + engram
+# Install Python + memnos
 RUN apt-get install -y python3.12 python3-pip
 COPY . /app
 RUN pip install -e /app/packages/core /app/packages/mcp-server /app/packages/api
 
 # supervisord to run both processes
 RUN apt-get install -y supervisor
-COPY docker/supervisord.conf /etc/supervisor/conf.d/engram.conf
+COPY docker/supervisord.conf /etc/supervisor/conf.d/memnos.conf
 
 EXPOSE 2480 8765 8766
 CMD ["/usr/bin/supervisord", "-n"]
@@ -1560,8 +1560,8 @@ command=/opt/arcadedb/bin/server.sh
 autostart=true
 autorestart=true
 
-[program:engram]
-command=python -m engram_api.main
+[program:memnos]
+command=python -m memnos_api.main
 directory=/app
 autostart=true
 autorestart=true
@@ -1570,13 +1570,13 @@ startsecs=15          # wait for ArcadeDB to be ready
 
 ```bash
 # Build and run single container
-docker build -f docker/Dockerfile.single -t engram:latest .
+docker build -f docker/Dockerfile.single -t memnos:latest .
 docker run -d \
   -p 8765:8765 -p 8766:8766 \
-  -e ENGRAM_API_KEY=your-key \
+  -e MEMNOS_API_KEY=your-key \
   -e ARCADEDB_PASSWORD=your-db-password \
-  -v engram_data:/home/arcadedb/databases \
-  engram:latest
+  -v memnos_data:/home/arcadedb/databases \
+  memnos:latest
 ```
 
 ### `.env.example`
@@ -1584,7 +1584,7 @@ docker run -d \
 ```bash
 # Copy to .env and fill in your values
 ARCADEDB_PASSWORD=change-me-strong-password
-ENGRAM_API_KEY=engram-change-me
+MEMNOS_API_KEY=memnos-change-me
 
 # LLM providers — OPTIONAL
 # Only needed for the orchestrator (task spawning). Not needed for memory.
@@ -1597,7 +1597,7 @@ TELEGRAM_BOT_TOKEN=             # get from @BotFather
 EVOLUTION_API_KEY=              # only needed if WhatsApp profile enabled
 ```
 
-> **Note:** engram no longer requires an OpenAI API key. Embeddings are generated locally using `nomic-embed-text` (via `sentence-transformers`). Entity extraction uses spaCy (local NLP). An LLM API key is only needed if you use the orchestrator to spawn background task workers.
+> **Note:** memnos no longer requires an OpenAI API key. Embeddings are generated locally using `nomic-embed-text` (via `sentence-transformers`). Entity extraction uses spaCy (local NLP). An LLM API key is only needed if you use the orchestrator to spawn background task workers.
 
 ### Start commands
 
@@ -1609,10 +1609,10 @@ docker compose up -d
 docker compose --profile whatsapp up -d
 
 # Single container
-docker run -d -p 8765:8765 -p 8766:8766 --env-file .env engram:latest
+docker run -d -p 8765:8765 -p 8766:8766 --env-file .env memnos:latest
 
 # View logs
-docker compose logs -f engram
+docker compose logs -f memnos
 
 # Stop everything
 docker compose down
@@ -1634,10 +1634,10 @@ docker compose down
 ```nginx
 server {
     listen 443 ssl;
-    server_name engram.yourdomain.com;
+    server_name memnos.yourdomain.com;
 
-    ssl_certificate     /etc/letsencrypt/live/engram.yourdomain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/engram.yourdomain.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/memnos.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/memnos.yourdomain.com/privkey.pem;
 
     location /sse {
         proxy_pass         http://localhost:8765;
@@ -1658,36 +1658,36 @@ server {
 }
 ```
 
-### Claude Code configuration for remote engram
+### Claude Code configuration for remote memnos
 
 On the developer's laptop, edit `~/.claude/settings.json`:
 
 ```json
 {
   "mcpServers": {
-    "engram": {
-      "url": "https://engram.yourdomain.com/sse",
-      "apiKey": "your-ENGRAM_API_KEY"
+    "memnos": {
+      "url": "https://memnos.yourdomain.com/sse",
+      "apiKey": "your-MEMNOS_API_KEY"
     }
   }
 }
 ```
 
-After saving, restart Claude Code. Type `/mcp` to verify the connection. All engram tools will appear in the tool list.
+After saving, restart Claude Code. Type `/mcp` to verify the connection. All memnos tools will appear in the tool list.
 
 ### Local mode (stdio)
 
-For developers who run engram locally and want zero network overhead:
+For developers who run memnos locally and want zero network overhead:
 
 ```json
 {
   "mcpServers": {
-    "engram": {
+    "memnos": {
       "command": "python",
-      "args": ["-m", "engram_mcp.transports.stdio"],
+      "args": ["-m", "memnos_mcp.transports.stdio"],
       "env": {
-        "ENGRAM_API_KEY": "your-key",
-        "ENGRAM_CONFIG": "/path/to/engram.yaml"
+        "MEMNOS_API_KEY": "your-key",
+        "MEMNOS_CONFIG": "/path/to/memnos.yaml"
       }
     }
   }
@@ -1700,26 +1700,26 @@ For developers who run engram locally and want zero network overhead:
 
 ### Anthropic Terms Compliance
 
-| Requirement | engram's position |
+| Requirement | memnos's position |
 |-------------|-------------------|
-| Claude Code CLI requires API key for headless/server use | engram passes `ANTHROPIC_API_KEY` to worker subprocesses. OAuth tokens are never used. |
-| Cannot resell Anthropic API access | engram never holds or proxies API keys. Each user provides their own key in `.env`. |
-| Cannot build a competing product to Claude Code | engram is a memory and orchestration layer. It depends on Claude Code as a component. It does not replicate or replace the Claude Code feature set. |
-| SDK use in CI/CD is permitted | engram orchestrator uses the `anthropic` Python SDK for `api` mode workers. |
+| Claude Code CLI requires API key for headless/server use | memnos passes `ANTHROPIC_API_KEY` to worker subprocesses. OAuth tokens are never used. |
+| Cannot resell Anthropic API access | memnos never holds or proxies API keys. Each user provides their own key in `.env`. |
+| Cannot build a competing product to Claude Code | memnos is a memory and orchestration layer. It depends on Claude Code as a component. It does not replicate or replace the Claude Code feature set. |
+| SDK use in CI/CD is permitted | memnos orchestrator uses the `anthropic` Python SDK for `api` mode workers. |
 
 ### Security Model
 
 **Authentication:**
-- All engram API and MCP access requires a bearer token (`ENGRAM_API_KEY`)
+- All memnos API and MCP access requires a bearer token (`MEMNOS_API_KEY`)
 - Tokens are associated with a user ID and namespace ACL in config
-- No default tokens — operator must set `ENGRAM_API_KEY` on first run
+- No default tokens — operator must set `MEMNOS_API_KEY` on first run
 
 **Secrets:**
 - API keys (Anthropic, OpenAI, etc.) are environment variables, never stored in Neo4j or Qdrant
-- `engram.yaml` supports `${VAR}` interpolation so secrets never appear in config files
+- `memnos.yaml` supports `${VAR}` interpolation so secrets never appear in config files
 
 **Network:**
-- By default engram binds to `0.0.0.0` inside Docker but ports are only exposed on localhost
+- By default memnos binds to `0.0.0.0` inside Docker but ports are only exposed on localhost
 - For remote access, always put behind Nginx + TLS
 - Telegram webhook URL must be HTTPS (Telegram requirement)
 
@@ -1735,7 +1735,7 @@ For developers who run engram locally and want zero network overhead:
 
 - All memory is stored on infrastructure the user operates
 - No data is sent to Anthropic except the actual LLM inference calls (prompts/responses)
-- engram does not log prompt or response content by default (log level INFO shows task IDs only)
+- memnos does not log prompt or response content by default (log level INFO shows task IDs only)
 - Debug logging (`log_level: DEBUG`) logs prompts — should never be used in production
 
 ---
@@ -1750,21 +1750,21 @@ For developers who run engram locally and want zero network overhead:
 # Install uv (recommended) or pip
 
 # Clone the repo
-git clone https://github.com/yourorg/engram.git
-cd engram
+git clone https://github.com/yourorg/memnos.git
+cd memnos
 
 # Copy and fill config
 cp .env.example .env
-# Edit .env — set NEO4J_PASSWORD, ENGRAM_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY
-cp engram.yaml.example engram.yaml
-# Edit engram.yaml if needed (defaults work for local dev)
+# Edit .env — set NEO4J_PASSWORD, MEMNOS_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY
+cp memnos.yaml.example memnos.yaml
+# Edit memnos.yaml if needed (defaults work for local dev)
 ```
 
 ### Start the stack
 
 ```bash
 docker compose up -d
-docker compose logs -f engram   # watch until "MCP server ready on :8765"
+docker compose logs -f memnos   # watch until "MCP server ready on :8765"
 ```
 
 ### Connect Claude Code
@@ -1774,9 +1774,9 @@ docker compose logs -f engram   # watch until "MCP server ready on :8765"
 cat >> ~/.claude/settings.json <<'EOF'
 {
   "mcpServers": {
-    "engram": {
+    "memnos": {
       "url": "http://localhost:8765/sse",
-      "apiKey": "your-ENGRAM_API_KEY"
+      "apiKey": "your-MEMNOS_API_KEY"
     }
   }
 }
@@ -1784,7 +1784,7 @@ EOF
 
 # Start Claude Code and verify
 claude
-/mcp   # should show engram tools
+/mcp   # should show memnos tools
 ```
 
 ### Write and read a memory
@@ -1824,23 +1824,23 @@ Use get_task_result with the task_id and wait: true
 
 | Item | Package | Effort |
 |------|---------|--------|
-| `EngramClient` with Neo4j + Qdrant | `core` | L |
+| `MemnosClient` with Neo4j + Qdrant | `core` | L |
 | Graphiti integration | `core` | M |
 | Qdrant integration + OpenAI embeddings | `core` | M |
 | Namespace routing + basic ACL | `core` | S |
 | MCP server — stdio transport | `mcp-server` | M |
 | MCP tools: memory_search, memory_write, memory_delete | `mcp-server` | S |
-| Docker Compose (neo4j + qdrant + engram) | infra | S |
+| Docker Compose (neo4j + qdrant + memnos) | infra | S |
 | Unit tests | core + mcp | M |
 | README + Claude Code setup guide | docs | S |
 
-**Deliverable:** Developer can connect Claude Code to engram and persist/search memories across sessions.
+**Deliverable:** Developer can connect Claude Code to memnos and persist/search memories across sessions.
 
 ---
 
 ### Phase 2 — Remote Access + REST API
 
-**Goal:** engram runs on a remote server; developer connects from laptop.
+**Goal:** memnos runs on a remote server; developer connects from laptop.
 
 | Item | Package | Effort |
 |------|---------|--------|
@@ -1851,7 +1851,7 @@ Use get_task_result with the task_id and wait: true
 | MCP graph tools (graph_query, get_entity) | `mcp-server` | S |
 | Integration tests | all | M |
 
-**Deliverable:** engram runs on a VPS; Claude Code on laptop connects via SSE.
+**Deliverable:** memnos runs on a VPS; Claude Code on laptop connects via SSE.
 
 ---
 
@@ -1877,7 +1877,7 @@ Use get_task_result with the task_id and wait: true
 
 ### Phase 4 — Mobile Gateway
 
-**Goal:** Interact with engram from phone via Telegram.
+**Goal:** Interact with memnos from phone via Telegram.
 
 | Item | Package | Effort |
 |------|---------|--------|
@@ -1888,7 +1888,7 @@ Use get_task_result with the task_id and wait: true
 | WhatsApp (Evolution API webhook) | `gateway` | L |
 | User identity → namespace mapping | `gateway` | S |
 
-**Deliverable:** Developer sends a message from Telegram; engram runs the task and replies.
+**Deliverable:** Developer sends a message from Telegram; memnos runs the task and replies.
 
 ---
 
@@ -1923,7 +1923,7 @@ Use get_task_result with the task_id and wait: true
 
 ### 19.1 Design Philosophy
 
-engram does not require users to write agents. The system is designed in three tiers so that progressively more sophisticated use requires progressively more user effort — but the zero-effort tier is fully functional for most workflows.
+memnos does not require users to write agents. The system is designed in three tiers so that progressively more sophisticated use requires progressively more user effort — but the zero-effort tier is fully functional for most workflows.
 
 | Tier | What the user does | Code required |
 |------|--------------------|---------------|
@@ -1954,9 +1954,9 @@ User prompt: "Review the platform-infra Terraform and flag any IAM misconfigurat
 ```
 
 Workers have access to:
-- All engram MCP tools (memory, graph, spawn_task)
+- All memnos MCP tools (memory, graph, spawn_task)
 - All registered skills (see §19.5)
-- Any external MCP servers configured in engram.yaml
+- Any external MCP servers configured in memnos.yaml
 
 ---
 
@@ -2018,7 +2018,7 @@ retry_on_failure: 2
 | `name` | string | Yes | Unique identifier. Used in spawn_task `agent:` override. |
 | `version` | string | No | Semantic version for tracking changes. |
 | `description` | string | Yes | Used for semantic matching to incoming tasks. |
-| `model` | string | No | Overrides `runtime.api.model` from engram.yaml. |
+| `model` | string | No | Overrides `runtime.api.model` from memnos.yaml. |
 | `temperature` | float | No | Default 0.5. Lower = more deterministic. |
 | `max_tokens` | int | No | Default 8192. |
 | `system_prompt` | string | Yes | The agent's persona and instructions. |
@@ -2032,7 +2032,7 @@ retry_on_failure: 2
 
 #### Agent discovery and matching
 
-At startup, engram scans `agents/` and embeds each agent's `description` into Qdrant under the `agents` collection. When the orchestrator receives a task, it searches this collection:
+At startup, memnos scans `agents/` and embeds each agent's `description` into Qdrant under the `agents` collection. When the orchestrator receives a task, it searches this collection:
 
 ```python
 async def select_agent(task: str) -> AgentDefinition | None:
@@ -2061,7 +2061,7 @@ spawn_task(
 
 ### 19.4 Community Agent Library
 
-engram ships a library of pre-built agent definitions in `agents/builtin/`. Users can use them as-is, override them locally, or contribute new ones.
+memnos ships a library of pre-built agent definitions in `agents/builtin/`. Users can use them as-is, override them locally, or contribute new ones.
 
 | Agent | File | Purpose |
 |-------|------|---------|
@@ -2082,13 +2082,13 @@ Users add custom agents alongside builtins in the `agents/` directory. Local age
 
 ### 19.5 Skills — Tool Registration
 
-A **skill** is a Python async function registered as an MCP tool. It extends what agents can do beyond the built-in engram tools.
+A **skill** is a Python async function registered as an MCP tool. It extends what agents can do beyond the built-in memnos tools.
 
 #### How skills are registered
 
 ```python
 # skills/azure_cli.py
-from engram.skills import skill
+from memnos.skills import skill
 
 @skill(
     name="az_role_list",
@@ -2113,25 +2113,25 @@ async def az_role_list(scope: str, assignee: str = None) -> list[dict]:
     return json.loads(out)
 ```
 
-Drop this file in `skills/`. On startup, engram imports all `skills/*.py` files and registers decorated functions as MCP tools. No other wiring required.
+Drop this file in `skills/`. On startup, memnos imports all `skills/*.py` files and registers decorated functions as MCP tools. No other wiring required.
 
 #### Skill auto-discovery
 
 ```python
-# engram/skills/loader.py
+# memnos/skills/loader.py
 def load_skills(skills_dir: Path) -> list[SkillDefinition]:
     skills = []
     for path in skills_dir.glob("*.py"):
         module = importlib.import_module(f"skills.{path.stem}")
         for name, fn in inspect.getmembers(module, inspect.isfunction):
-            if hasattr(fn, "_engram_skill"):
-                skills.append(fn._engram_skill)
+            if hasattr(fn, "_memnos_skill"):
+                skills.append(fn._memnos_skill)
     return skills
 ```
 
 #### Built-in skills
 
-engram ships with these skills pre-registered:
+memnos ships with these skills pre-registered:
 
 | Skill | Description |
 |-------|-------------|
@@ -2148,7 +2148,7 @@ engram ships with these skills pre-registered:
 
 #### External MCP skill packs
 
-engram can load any external MCP server as a skill pack. Configure in `engram.yaml`:
+memnos can load any external MCP server as a skill pack. Configure in `memnos.yaml`:
 
 ```yaml
 skill_packs:
@@ -2176,7 +2176,7 @@ All tools from these MCP servers are automatically available to every agent.
 ### 19.6 Repository Structure — Agents and Skills
 
 ```
-engram/
+memnos/
 ├── agents/
 │   ├── builtin/
 │   │   ├── planner.yaml
@@ -2265,7 +2265,7 @@ Two new MCP tools exposed by the MCP server:
 
 ### 20.1 Design Philosophy
 
-Self-learning in engram means **the system improves its future behaviour based on past outcomes**. This is not model fine-tuning — we cannot retrain Claude. Instead, learning happens through four evidence stores in memory:
+Self-learning in memnos means **the system improves its future behaviour based on past outcomes**. This is not model fine-tuning — we cannot retrain Claude. Instead, learning happens through four evidence stores in memory:
 
 | Store | What it holds | Used when |
 |-------|--------------|-----------|
@@ -2501,7 +2501,7 @@ The reflection loop is the core of autonomous self-improvement. It runs on a sch
 #### Trigger conditions
 
 ```yaml
-# engram.yaml
+# memnos.yaml
 learning:
   reflection:
     schedule: "0 2 * * *"          # nightly at 2am (cron)
@@ -2761,7 +2761,7 @@ async def select_best_agent(task: str, namespace: str) -> str:
 ### 20.9 Learning Configuration
 
 ```yaml
-# engram.yaml — learning section
+# memnos.yaml — learning section
 
 learning:
   enabled: true
@@ -2808,7 +2808,7 @@ learning:
 ```json
 {
   "name": "get_heuristics",
-  "description": "Retrieve the current heuristics engram has learned for a namespace.",
+  "description": "Retrieve the current heuristics memnos has learned for a namespace.",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -2826,7 +2826,7 @@ learning:
 ```json
 {
   "name": "add_heuristic",
-  "description": "Manually add a heuristic rule to engram's learning store.",
+  "description": "Manually add a heuristic rule to memnos's learning store.",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -2898,7 +2898,7 @@ learning:
 | `QualityRecord` store + quality routing | `orchestrator` | M |
 | New MCP tools (get_heuristics, add_heuristic, trigger_reflection) | `mcp-server` | S |
 | Neo4j schema additions (Episode, Heuristic, SkillTemplate) | `core` | S |
-| Learning config section in engram.yaml | `core` | S |
+| Learning config section in memnos.yaml | `core` | S |
 | Learning admin dashboard (optional) | `api` | L |
 
 ---
@@ -2906,7 +2906,7 @@ learning:
 ## Updated Repository Structure (Sections 19–20 additions)
 
 ```
-engram/
+memnos/
 ├── agents/
 │   ├── builtin/             (10 pre-built agent YAML definitions)
 │   └── (user agents here)
@@ -2922,7 +2922,7 @@ engram/
 │
 ├── packages/
 │   ├── core/
-│   │   └── engram/
+│   │   └── memnos/
 │   │       ├── agents/
 │   │       │   ├── registry.py        agent discovery + embedding
 │   │       │   └── matcher.py         semantic task→agent matching
@@ -2934,7 +2934,7 @@ engram/
 │   │           └── quality_store.py   CRUD for quality records
 │   │
 │   ├── orchestrator/
-│   │   └── engram_orchestrator/
+│   │   └── memnos_orchestrator/
 │   │       ├── critic.py              CriticWorker
 │   │       ├── router.py              quality-based agent routing
 │   │       └── learning/
@@ -2944,7 +2944,7 @@ engram/
 │   │           └── decay.py           heuristic decay job
 │   │
 │   └── gateway/
-│       └── engram_gateway/
+│       └── memnos_gateway/
 │           └── feedback_handler.py    👍/👎 + correction detection
 ```
 
@@ -2959,7 +2959,7 @@ engram/
 ## 22. Architectural Improvements — Build Status
 
 > Sourced from architecture review 2026-05-23. These are additions to the core design that make
-> engram genuinely useful for the "new engineer touches PaymentService on week one" scenario.
+> memnos genuinely useful for the "new engineer touches PaymentService on week one" scenario.
 
 ### 22.1 Tier 1 — Foundation (Highest Leverage)
 
@@ -2969,7 +2969,7 @@ engram/
 (active/superseded/deprecated/proposed), `author`, `affects: list[str]`, and `rationale`.
 
 On every write with `affects`, AFFECTS edges are created from the Memory vertex to Entity vertices.
-`write_decision()`, `write_constraint()`, `write_incident()` are convenience methods on `EngramClient`.
+`write_decision()`, `write_constraint()`, `write_incident()` are convenience methods on `MemnosClient`.
 
 #### 22.1.2 Constraint Memory Injection ✅ COMPLETE
 
@@ -2994,11 +2994,11 @@ The MCP formatter renders them under `📌 PINNED` with type, affects, author, r
 
 #### 22.1.4 Git Integration ✅ COMPLETE
 
-`engram-git` CLI (entry point: `engram.cli.git_hooks:main`):
-- `engram-git install` — installs a `post-commit` hook into `.git/hooks/`
-- `engram-git post-commit` — writes commit SHA, author, message, files to engram
-- `engram-git pre-review` — given a PR diff, retrieves relevant memories as context
-- `engram-git post-incident-merge` — parses `INCIDENT_ID:`, `ROOT_CAUSE:`, `RESOLUTION:`, `AFFECTED_SERVICES:` fields from incident branch merge commits and writes a typed `memory_type=incident` memory
+`memnos-git` CLI (entry point: `memnos.cli.git_hooks:main`):
+- `memnos-git install` — installs a `post-commit` hook into `.git/hooks/`
+- `memnos-git post-commit` — writes commit SHA, author, message, files to memnos
+- `memnos-git pre-review` — given a PR diff, retrieves relevant memories as context
+- `memnos-git post-incident-merge` — parses `INCIDENT_ID:`, `ROOT_CAUSE:`, `RESOLUTION:`, `AFFECTED_SERVICES:` fields from incident branch merge commits and writes a typed `memory_type=incident` memory
 
 ---
 
@@ -3061,7 +3061,7 @@ Also returns raw counts for dashboard display. Tests: `tools/test_knowledge_heal
 - `review_by` + `memory_review_due` MCP tool — returns stale decisions past their review date
 - `decay_policy` field (`none` / `time_weighted` / `access_weighted`) on `MemoryEntry`
 - Post-search decay: scores multiplied by time/access decay factor before ranking; memories with `decay_policy=none` are unaffected
-- Weekly CLI job: `engram-decay run` (`engram.cli.decay_cli:main`) — processes all active memories with non-none decay policy
+- Weekly CLI job: `memnos-decay run` (`memnos.cli.decay_cli:main`) — processes all active memories with non-none decay policy
 
 ---
 
@@ -3069,31 +3069,31 @@ Also returns raw counts for dashboard display. Tests: `tools/test_knowledge_heal
 
 #### 22.4.1 External MCP Skill Pack Loader
 
-`packages/mcp-server/engram_mcp/skill_packs.py`:
-- Drop a `.yaml` or `.json` file in `ENGRAM_SKILL_PACKS_DIR`
+`packages/mcp-server/memnos_mcp/skill_packs.py`:
+- Drop a `.yaml` or `.json` file in `MEMNOS_SKILL_PACKS_DIR`
 - Server loads all packs at startup and registers their tools alongside built-in MCP tools
 - Only `webhook` handler type supported: incoming MCP calls are forwarded as `POST {"tool": name, "arguments": args}` to the configured URL
 - Name collisions with built-ins are skipped with a warning
 
 #### 22.4.2 Qdrant Vector Backend
 
-`packages/core/engram/storage/qdrant_backend.py` implements the `VectorBackend` ABC:
-- Activated via `ENGRAM_VECTOR_BACKEND=qdrant` in `.env`
+`packages/core/memnos/storage/qdrant_backend.py` implements the `VectorBackend` ABC:
+- Activated via `MEMNOS_VECTOR_BACKEND=qdrant` in `.env`
 - `create_vector_backend()` factory in `vector_backend.py` returns `None` (ArcadeDB default) or `QdrantVectorBackend`
-- Install: `pip install 'engram-core[qdrant]'`
+- Install: `pip install 'memnos-core[qdrant]'`
 - Docker: uncomment the `qdrant` profile service in `docker-compose.yml`
 - Recommended when namespace exceeds ~100K memories; below that the numpy cosine similarity path (<15ms) is sufficient
 
 #### 22.4.3 Learning Admin Dashboard
 
-`packages/api/engram_api/routers/learning_admin.py`:
+`packages/api/memnos_api/routers/learning_admin.py`:
 - `GET /api/v1/learning/dashboard` — inline HTML dashboard
 - `GET /api/v1/learning/stats?ns=<ns>` — heuristic count, episode count (7d), avg quality, success rate, top agents
 - `GET /api/v1/learning/heuristics?ns=<ns>` — sorted by confidence descending
 - `DELETE /api/v1/learning/heuristics/{id}` — delete a heuristic
 - `GET /api/v1/learning/episodes/recent?ns=<ns>` — newest-first, long prompts truncated to 300 chars
 - `POST /api/v1/learning/reflect` — trigger reflection run
-- Graceful 503 degradation if `engram_learning` is not installed
+- Graceful 503 degradation if `memnos_learning` is not installed
 
 ---
 
@@ -3110,7 +3110,7 @@ Also returns raw counts for dashboard display. Tests: `tools/test_knowledge_heal
 
 ## 21. AI Governance Positioning
 
-### 21.1 The Problem engram Solves for Enterprise Engineering Teams
+### 21.1 The Problem memnos Solves for Enterprise Engineering Teams
 
 Traditional engineering teams manage knowledge through disconnected silos:
 
@@ -3126,12 +3126,12 @@ AI agent generates code from 2024 training data ─────┐   │   │  
 
 When AI agents enter the picture, this problem compounds: the agent has no knowledge of the organization's actual decisions, patterns, constraints, or current state. It either hallucinates or produces code that contradicts established choices.
 
-### 21.2 engram as Governance Infrastructure
+### 21.2 memnos as Governance Infrastructure
 
-engram becomes the **single queryable source of organizational truth** that all AI agents must consult before acting:
+memnos becomes the **single queryable source of organizational truth** that all AI agents must consult before acting:
 
 ```
-All decisions, specs, patterns, standards → engram (timestamped, namespace-scoped)
+All decisions, specs, patterns, standards → memnos (timestamped, namespace-scoped)
                          │
               ┌──────────┼──────────┐
               ▼          ▼          ▼
@@ -3143,7 +3143,7 @@ All decisions, specs, patterns, standards → engram (timestamped, namespace-sco
               │          │          │
               └──────────┴──────────┘
                          │
-                 engram memory_search
+                 memnos memory_search
                          │
               [CURRENT] JWT with 24h expiry,
               RS256 signing, refresh token
@@ -3155,7 +3155,7 @@ The developer's AI agent cannot go off-specification because the specification i
 
 ### 21.3 What AI Governance Requires
 
-| Governance Layer | What it does | How engram provides it |
+| Governance Layer | What it does | How memnos provides it |
 |---|---|---|
 | **Knowledge accuracy** | 85%+ correct org facts in the graph | spaCy entity extraction + human writes + quality scoring |
 | **Knowledge freshness** | Agents use current decisions, not stale ones | UTC timestamps + recency weighting + superseded_at |
@@ -3340,4 +3340,4 @@ Two additional MCP tools for asset management:
 
 ---
 
-*End of engram Design Document v0.2*
+*End of memnos Design Document v0.2*

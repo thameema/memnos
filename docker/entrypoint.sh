@@ -1,5 +1,5 @@
 #!/bin/bash
 set -e
 
-echo "Starting engram..."
-exec python -m engram_api.main
+echo "Starting memnos..."
+exec python -m memnos_api.main

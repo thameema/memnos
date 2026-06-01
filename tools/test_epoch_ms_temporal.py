@@ -32,8 +32,8 @@ except ImportError:
     print("[error] pip install httpx", file=sys.stderr)
     sys.exit(1)
 
-ENGRAM_API = os.environ.get("ENGRAM_API", "http://localhost:8766")
-ENGRAM_KEY = os.environ.get("ENGRAM_KEY", "engram-local-dev-key")
+MEMNOS_API = os.environ.get("MEMNOS_API", "http://localhost:8766")
+MEMNOS_KEY = os.environ.get("MEMNOS_KEY", "memnos-local-dev-key")
 TEST_NS = f"test:epoch-ts:{uuid.uuid4().hex[:8]}"
 
 
@@ -42,8 +42,8 @@ TEST_NS = f"test:epoch-ts:{uuid.uuid4().hex[:8]}"
 # ---------------------------------------------------------------------------
 
 def api(method: str, path: str, **kwargs) -> httpx.Response:
-    headers = {"X-API-Key": ENGRAM_KEY, "Content-Type": "application/json"}
-    url = ENGRAM_API.rstrip("/") + path
+    headers = {"X-API-Key": MEMNOS_KEY, "Content-Type": "application/json"}
+    url = MEMNOS_API.rstrip("/") + path
     with httpx.Client(timeout=15) as c:
         return c.request(method, url, headers=headers, **kwargs)
 
@@ -349,8 +349,8 @@ def test_sqlite_episode_store_epoch_ms_roundtrip(runner: Runner):
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "packages", "learning"))
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "packages", "core"))
 
-    from engram_learning.episode_store import EpisodeStore
-    from engram_learning.models import EpisodicRecord, Outcome
+    from memnos_learning.episode_store import EpisodeStore
+    from memnos_learning.models import EpisodicRecord, Outcome
 
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
@@ -417,8 +417,8 @@ def test_sqlite_heuristic_store_new_write_roundtrip(runner: Runner):
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "packages", "learning"))
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "packages", "core"))
 
-    from engram_learning.heuristic_store import HeuristicStore
-    from engram_learning.models import Heuristic
+    from memnos_learning.heuristic_store import HeuristicStore
+    from memnos_learning.models import Heuristic
 
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
@@ -481,8 +481,8 @@ def test_sqlite_task_store_status_update(runner: Runner):
 
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "packages", "orchestrator"))
 
-    from engram_orchestrator.task_store import TaskStore
-    from engram_orchestrator.models import Task, TaskStatus
+    from memnos_orchestrator.task_store import TaskStore
+    from memnos_orchestrator.models import Task, TaskStatus
 
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
@@ -642,19 +642,19 @@ def main() -> int:
 
     try:
         with httpx.Client(timeout=4) as c:
-            r = c.get(f"{ENGRAM_API}/api/v1/admin/health",
-                      headers={"X-API-Key": ENGRAM_KEY})
+            r = c.get(f"{MEMNOS_API}/api/v1/admin/health",
+                      headers={"X-API-Key": MEMNOS_KEY})
             if r.status_code != 200:
-                print(f"[error] engram health check failed: {r.status_code}", file=sys.stderr)
+                print(f"[error] memnos health check failed: {r.status_code}", file=sys.stderr)
                 return 1
     except Exception as e:
-        print(f"[error] Cannot reach engram at {ENGRAM_API}: {e}", file=sys.stderr)
+        print(f"[error] Cannot reach memnos at {MEMNOS_API}: {e}", file=sys.stderr)
         return 1
 
     runner = Runner(verbose=args.verbose, only=args.test)
 
     print("Epoch-ms Temporal Correctness Tests")
-    print(f"API: {ENGRAM_API}   namespace: {TEST_NS}")
+    print(f"API: {MEMNOS_API}   namespace: {TEST_NS}")
     print("=" * 70)
 
     print("\n── Area 1: API timestamp format ─────────────────────────────────────")

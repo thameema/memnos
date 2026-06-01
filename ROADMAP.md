@@ -1,6 +1,6 @@
-# Engram Roadmap
+# Memnos Roadmap
 
-Engram is an open-source persistent memory and AI governance layer for engineering teams. This document describes what we are building, why, and in what order.
+Memnos is an open-source persistent memory and AI governance layer for engineering teams. This document describes what we are building, why, and in what order.
 
 Tiers reflect priority and dependency order, not fixed time boxes. Tier 1 must be substantially complete before Tier 2 delivers full value.
 
@@ -30,7 +30,7 @@ Add `AFFECTS` graph edge: `Memory → Entity` — binds a decision or constraint
 
 **Why it matters**
 
-ADR tooling exists — adr-tools, Log4brains, MADR — but none of it reaches AI agents automatically. `AGENTS.md` files are static text that goes stale and gets forgotten. Engram makes decisions machine-readable and ambient: a constraint written once surfaces automatically when any agent touches the governed code path.
+ADR tooling exists — adr-tools, Log4brains, MADR — but none of it reaches AI agents automatically. `AGENTS.md` files are static text that goes stale and gets forgotten. Memnos makes decisions machine-readable and ambient: a constraint written once surfaces automatically when any agent touches the governed code path.
 
 The Atlan 2026 review of eight memory frameworks found no tool supporting decision records, constraint injection, or AI coding governance. This is unoccupied ground.
 
@@ -46,23 +46,23 @@ No special API call required. No agent-side configuration. Constraints are alway
 
 **Why it matters**
 
-This is the AI governance enforcement layer. Engineering standards, security rules, approved patterns — stored once in engram, enforced on every agent call touching that namespace. The alternative is maintaining `CLAUDE.md` files that drift, get copied inconsistently, and are silently ignored. Engram makes compliance structural rather than documentary.
+This is the AI governance enforcement layer. Engineering standards, security rules, approved patterns — stored once in memnos, enforced on every agent call touching that namespace. The alternative is maintaining `CLAUDE.md` files that drift, get copied inconsistently, and are silently ignored. Memnos makes compliance structural rather than documentary.
 
 ---
 
-### 1.3 Git Hook Integration (`engram-git`)
+### 1.3 Git Hook Integration (`memnos-git`)
 
 **What to build**
 
-A new installable package `engram-git` providing:
+A new installable package `memnos-git` providing:
 
 - `post-commit` hook: extracts commit message and changed files, writes a memory to the project namespace tagged with SHA, author, and file paths
-- `pre-review` hook: given a diff or PR, retrieves all engram memories relevant to changed files and outputs them as context
-- `engram-git install` CLI command to wire hooks into any repo
+- `pre-review` hook: given a diff or PR, retrieves all memnos memories relevant to changed files and outputs them as context
+- `memnos-git install` CLI command to wire hooks into any repo
 
 **Why it matters**
 
-Without this, memory accumulation requires explicit agent action. With it, engram passively learns from the development workflow. Every commit becomes a memory write. Every review surfaces what the team already knows about the changed code. The knowledge graph grows without anyone thinking about it.
+Without this, memory accumulation requires explicit agent action. With it, memnos passively learns from the development workflow. Every commit becomes a memory write. Every review surfaces what the team already knows about the changed code. The knowledge graph grows without anyone thinking about it.
 
 ---
 
@@ -226,7 +226,7 @@ Senior engineers write skill memories once. Every engineer on the team gets coac
 | Incident Intelligence | incident.io (proprietary), Keep (OSS) | No memory graph, no cross-incident learning, not integrated with AI coding agents |
 | Skill Coaching | None | No tool discovers and proactively surfaces AI coding tool capabilities to developers |
 
-### The White Space Engram Occupies
+### The White Space Memnos Occupies
 
 No existing tool combines all five of:
 
@@ -246,8 +246,8 @@ The closest competitor is Zep/Graphiti for temporal graph memory. It targets con
 
 **A web UI for knowledge browsing.** Engineers will not use it. The value is ambient injection into agent context, not a knowledge portal. Build APIs; let others build UIs if they want.
 
-**Fine-grained per-memory ACL.** Namespace-level access control is sufficient for v1. Per-memory ACL adds complexity without meaningful security improvement at the team scale engram targets.
+**Fine-grained per-memory ACL.** Namespace-level access control is sufficient for v1. Per-memory ACL adds complexity without meaningful security improvement at the team scale memnos targets.
 
-**Real-time collaboration.** Engram is an async knowledge store. It is not a live editor or a shared whiteboard.
+**Real-time collaboration.** Memnos is an async knowledge store. It is not a live editor or a shared whiteboard.
 
 **Hosted SaaS.** Self-hosted is the value proposition. Engineering teams do not want their architectural decisions and constraint rules in a third-party cloud. Offer a hosted option only after the self-hosted base is strong.

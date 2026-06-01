@@ -8,7 +8,7 @@ source "${ROOT}/lib/assert.sh"
 source "${ROOT}/lib/fixtures.sh"
 source "${ROOT}/lib/e2e_helpers.sh"
 
-describe "real engram auth enforcement (Bearer required, X-API-Key rejected)"
+describe "real memnos auth enforcement (Bearer required, X-API-Key rejected)"
 
 if ! e2e_up; then
   fail "e2e stack down"
@@ -34,7 +34,7 @@ assert_eq "$CODE" "401" "Bearer (invalid) → 401"
 # 4. X-API-Key header — must be 401 (server is Bearer-only)
 CODE=$(curl -s -o /dev/null -w "%{http_code}" \
   "${E2E_API}/api/v1/admin/namespaces" -H "X-API-Key: ${KEY}")
-assert_eq "$CODE" "401" "X-API-Key (engram never accepts) → 401"
+assert_eq "$CODE" "401" "X-API-Key (memnos never accepts) → 401"
 
 # 5. Bearer without 'Bearer ' prefix — must be 401
 CODE=$(curl -s -o /dev/null -w "%{http_code}" \

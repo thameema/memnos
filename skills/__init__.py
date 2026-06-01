@@ -1,8 +1,8 @@
 """
-engram skills — @skill decorator and auto-discovery.
+memnos skills — @skill decorator and auto-discovery.
 
 Usage:
-    from engram.skills import skill
+    from memnos.skills import skill
 
     @skill(
         name="my_tool",
@@ -15,6 +15,6 @@ Usage:
         return {"result": input.upper()}
 """
 
-from engram.skills.decorator import skill, SkillDefinition
+from memnos.skills.decorator import skill, SkillDefinition
 
 __all__ = ["skill", "SkillDefinition"]

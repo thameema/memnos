@@ -1,6 +1,6 @@
 # Helper for running an install scenario inside a hermetic Debian container.
 # Used by Layer 2 integration tests so each test starts with a clean filesystem,
-# clean settings.json, clean ~/.engram*, and a mocked `docker` binary.
+# clean settings.json, clean ~/.memnos*, and a mocked `docker` binary.
 
 # Run a test scenario script in a fresh container. The scenario script gets
 # REPO_ROOT mounted read-only at /src and a writeable HOME at /test-home.
@@ -9,7 +9,7 @@
 #
 # The scenario script must:
 #   - Be a stand-alone bash script
-#   - Set HOME=/test-home if it needs to interact with ~/.engram* paths
+#   - Set HOME=/test-home if it needs to interact with ~/.memnos* paths
 #   - Print 'PASSES=N FAILS=N WARNS=N' on its last line
 docker_run_scenario() {
   local script="$1"; shift

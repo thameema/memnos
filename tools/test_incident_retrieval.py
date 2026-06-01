@@ -2,7 +2,7 @@
 tools/test_incident_retrieval.py — Tests for automatic past-incident retrieval.
 
 Covers:
-- EngramClient.get_past_incidents(): returns (MemoryEntry, score) pairs
+- MemnosClient.get_past_incidents(): returns (MemoryEntry, score) pairs
 - get_past_incidents(): empty when no similar found
 - get_past_incidents(): respects top_k and threshold passthrough
 - IncidentWebhookResponse: past_incidents enriched with full content
@@ -32,7 +32,7 @@ sys.path.insert(0, _REPO_ROOT + "/packages/mcp-server")
 # ---------------------------------------------------------------------------
 
 def _make_memory(mem_id="mem-1", content="Redis OOM at 3am", severity="CRITICAL"):
-    from engram.models import MemoryEntry, MemoryType
+    from memnos.models import MemoryEntry, MemoryType
     m = MagicMock(spec=MemoryEntry)
     m.id = mem_id
     m.content = content
@@ -47,13 +47,13 @@ def _make_memory(mem_id="mem-1", content="Redis OOM at 3am", severity="CRITICAL"
 
 
 # ---------------------------------------------------------------------------
-# EngramClient.get_past_incidents()
+# MemnosClient.get_past_incidents()
 # ---------------------------------------------------------------------------
 
 class TestGetPastIncidents(unittest.IsolatedAsyncioTestCase):
     async def _make_client(self):
-        from engram.client import EngramClient
-        client = EngramClient.__new__(EngramClient)
+        from memnos.client import MemnosClient
+        client = MemnosClient.__new__(MemnosClient)
         client._started = True
         client._arcadedb = AsyncMock()
         client._embedder = AsyncMock()
@@ -129,8 +129,8 @@ class TestGetPastIncidents(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call_kw.get("exclude_id"), "")
 
     async def test_requires_started(self):
-        from engram.client import EngramClient
-        client = EngramClient.__new__(EngramClient)
+        from memnos.client import MemnosClient
+        client = MemnosClient.__new__(MemnosClient)
         client._started = False
         with self.assertRaises(RuntimeError):
             await client.get_past_incidents("crash", "ns1")
@@ -142,7 +142,7 @@ class TestGetPastIncidents(unittest.IsolatedAsyncioTestCase):
 
 class TestPastIncidentSummary(unittest.TestCase):
     def test_defaults(self):
-        from engram_api.routers.webhooks import PastIncidentSummary
+        from memnos_api.routers.webhooks import PastIncidentSummary
         s = PastIncidentSummary(
             memory_id="m1",
             content="Redis OOM",
@@ -154,7 +154,7 @@ class TestPastIncidentSummary(unittest.TestCase):
         self.assertEqual(s.memory_id, "m1")
 
     def test_resolution_can_be_set(self):
-        from engram_api.routers.webhooks import PastIncidentSummary
+        from memnos_api.routers.webhooks import PastIncidentSummary
         s = PastIncidentSummary(
             memory_id="m1",
             content="crash",
@@ -171,17 +171,17 @@ class TestPastIncidentSummary(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestReceiveIncidentEnriched(unittest.IsolatedAsyncioTestCase):
-    def _make_fastapi_client(self, mock_engram_client):
+    def _make_fastapi_client(self, mock_memnos_client):
         sys.path.insert(0, _REPO_ROOT + "/packages/api")
         from fastapi.testclient import TestClient
-        from engram_api.main import create_app
-        from engram_api.auth import get_client
+        from memnos_api.main import create_app
+        from memnos_api.auth import get_client
         app = create_app()
-        app.dependency_overrides[get_client] = lambda: mock_engram_client
+        app.dependency_overrides[get_client] = lambda: mock_memnos_client
         return TestClient(app, raise_server_exceptions=True)
 
-    def _make_engram_mock(self, similar_pairs=None, past_memories=None):
-        from engram.models import MemoryEntry, MemoryType, MemoryStatus
+    def _make_memnos_mock(self, similar_pairs=None, past_memories=None):
+        from memnos.models import MemoryEntry, MemoryType, MemoryStatus
         mem = MagicMock(spec=MemoryEntry)
         mem.id = "new-incident-id"
         mem.content = "Incident: Redis OOM\nSeverity: CRITICAL"
@@ -211,7 +211,7 @@ class TestReceiveIncidentEnriched(unittest.IsolatedAsyncioTestCase):
         return ec
 
     def test_past_incidents_empty_when_no_similar(self):
-        mock_ec = self._make_engram_mock(similar_pairs=[])
+        mock_ec = self._make_memnos_mock(similar_pairs=[])
         fc = self._make_fastapi_client(mock_ec)
         resp = fc.post("/api/v1/webhooks/incident", json={"title": "Redis OOM", "severity": "CRITICAL"})
         self.assertEqual(resp.status_code, 201)
@@ -220,7 +220,7 @@ class TestReceiveIncidentEnriched(unittest.IsolatedAsyncioTestCase):
 
     def test_past_incidents_populated_with_content(self):
         past_mem = _make_memory("past-1", "Redis OOM last month", "CRITICAL")
-        mock_ec = self._make_engram_mock(
+        mock_ec = self._make_memnos_mock(
             similar_pairs=[("past-1", 0.91)],
             past_memories=[past_mem],
         )
@@ -236,7 +236,7 @@ class TestReceiveIncidentEnriched(unittest.IsolatedAsyncioTestCase):
 
     def test_similar_incidents_backward_compat_ids_still_present(self):
         past_mem = _make_memory("past-2", "Disk full on node", "HIGH")
-        mock_ec = self._make_engram_mock(
+        mock_ec = self._make_memnos_mock(
             similar_pairs=[("past-2", 0.85)],
             past_memories=[past_mem],
         )
@@ -248,7 +248,7 @@ class TestReceiveIncidentEnriched(unittest.IsolatedAsyncioTestCase):
 
     def test_get_memory_none_skips_past_incident_entry(self):
         """If get_memory returns None for a similar id, that entry is silently skipped."""
-        mock_ec = self._make_engram_mock(
+        mock_ec = self._make_memnos_mock(
             similar_pairs=[("missing-id", 0.88)],
             past_memories=[None],
         )
@@ -266,7 +266,7 @@ class TestReceiveIncidentEnriched(unittest.IsolatedAsyncioTestCase):
 
 class TestMCPIncidentContext(unittest.IsolatedAsyncioTestCase):
     async def test_returns_no_similar_message_when_empty(self):
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
         client = MagicMock()
         client.get_past_incidents = AsyncMock(return_value=[])
         result = await _dispatch(
@@ -279,7 +279,7 @@ class TestMCPIncidentContext(unittest.IsolatedAsyncioTestCase):
         self.assertIn("No similar", result[0].text)
 
     async def test_returns_formatted_incidents(self):
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
         mem = _make_memory("past-1", "Redis OOM on prod", "CRITICAL")
         client = MagicMock()
         client.get_past_incidents = AsyncMock(return_value=[(mem, 0.92)])
@@ -295,7 +295,7 @@ class TestMCPIncidentContext(unittest.IsolatedAsyncioTestCase):
         self.assertIn("0.92", text)
 
     async def test_top_k_and_threshold_passed_through(self):
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
         client = MagicMock()
         client.get_past_incidents = AsyncMock(return_value=[])
         await _dispatch(
@@ -312,7 +312,7 @@ class TestMCPIncidentContext(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_multiple_incidents_all_included(self):
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
         m1 = _make_memory("id-1", "Kafka lag spike", "HIGH")
         m2 = _make_memory("id-2", "Kafka consumer restart", "MEDIUM")
         client = MagicMock()
@@ -329,7 +329,7 @@ class TestMCPIncidentContext(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Found 2", text)
 
     async def test_severity_shown_in_output(self):
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
         mem = _make_memory("id-1", "DB deadlock", "CRITICAL")
         client = MagicMock()
         client.get_past_incidents = AsyncMock(return_value=[(mem, 0.88)])
@@ -342,7 +342,7 @@ class TestMCPIncidentContext(unittest.IsolatedAsyncioTestCase):
         self.assertIn("CRITICAL", result[0].text)
 
     async def test_default_top_k_is_5(self):
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
         client = MagicMock()
         client.get_past_incidents = AsyncMock(return_value=[])
         await _dispatch(
@@ -355,7 +355,7 @@ class TestMCPIncidentContext(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call_kw.kwargs["top_k"], 5)
 
     async def test_default_threshold_is_0_75(self):
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
         client = MagicMock()
         client.get_past_incidents = AsyncMock(return_value=[])
         await _dispatch(
@@ -374,12 +374,12 @@ class TestMCPIncidentContext(unittest.IsolatedAsyncioTestCase):
 
 class TestMCPToolList(unittest.TestCase):
     def test_incident_context_in_tool_list(self):
-        from engram_mcp.server import TOOLS
+        from memnos_mcp.server import TOOLS
         names = [t.name for t in TOOLS]
         self.assertIn("incident_context", names)
 
     def test_incident_context_has_required_schema_fields(self):
-        from engram_mcp.server import TOOLS
+        from memnos_mcp.server import TOOLS
         tool = next(t for t in TOOLS if t.name == "incident_context")
         props = tool.inputSchema["properties"]
         self.assertIn("content", props)

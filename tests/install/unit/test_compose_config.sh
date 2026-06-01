@@ -21,14 +21,14 @@ fi
 TMP_ENV="$(mktemp)"
 cat > "$TMP_ENV" <<EOF
 ARCADEDB_PASSWORD=test
-ENGRAM_API_KEY=test
-ENGRAM_VAULT_KEY=test
+MEMNOS_API_KEY=test
+MEMNOS_VAULT_KEY=test
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
-ENGRAM_EMBED_MODE=auto
-ENGRAM_DATA_DIR=/tmp/test
-ENGRAM_CONFIG_FILE=/tmp/test/engram.yaml
-ENGRAM_VECTOR_BACKEND=
+MEMNOS_EMBED_MODE=auto
+MEMNOS_DATA_DIR=/tmp/test
+MEMNOS_CONFIG_FILE=/tmp/test/memnos.yaml
+MEMNOS_VECTOR_BACKEND=
 EOF
 trap 'rm -f "$TMP_ENV"' EXIT
 
@@ -39,12 +39,12 @@ else
   fail "docker compose config failed: $ERR"
 fi
 
-# Verify the compose has the engram + arcadedb services and the qdrant profile.
+# Verify the compose has the memnos + arcadedb services and the qdrant profile.
 CFG="$( cd "$REPO_ROOT" && docker compose --env-file "$TMP_ENV" config 2>/dev/null)"
-echo "$CFG" | grep -q "^  engram:"          && pass "engram service defined"          || fail "engram service missing"
+echo "$CFG" | grep -q "^  memnos:"          && pass "memnos service defined"          || fail "memnos service missing"
 echo "$CFG" | grep -q "^  arcadedb:"        && pass "arcadedb service defined"        || fail "arcadedb service missing"
 echo "$CFG" | grep -q "image: arcadedata/arcadedb" && pass "arcadedb image set"       || fail "arcadedb image not pinned"
-echo "$CFG" | grep -q "dockerfile: docker/Dockerfile" && pass "engram builds from docker/Dockerfile" || fail "wrong dockerfile path"
+echo "$CFG" | grep -q "dockerfile: docker/Dockerfile" && pass "memnos builds from docker/Dockerfile" || fail "wrong dockerfile path"
 
 # qdrant should only appear under the qdrant profile
 if echo "$CFG" | grep -q "^  qdrant:"; then

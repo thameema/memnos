@@ -1,4 +1,4 @@
-# engram — developer Makefile
+# memnos — developer Makefile
 # Usage: make <target>
 
 SHELL := /usr/bin/env bash
@@ -10,7 +10,7 @@ PIP           ?= $(PYTHON) -m pip
 UV            := $(shell command -v uv 2>/dev/null)
 DOCKER_COMPOSE := $(shell docker compose version &>/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
 
-ENGRAM_DIR    ?= $(HOME)/.engram
+MEMNOS_DIR    ?= $(HOME)/.memnos
 PACKAGES       = packages/core packages/mcp-server packages/orchestrator \
                  packages/api packages/learning packages/gateway
 
@@ -37,7 +37,7 @@ endef
 .PHONY: help
 help:  ## Show this help message
 	@echo ""
-	@echo -e "  $(BOLD)engram developer commands$(NC)"
+	@echo -e "  $(BOLD)memnos developer commands$(NC)"
 	@echo ""
 	@awk 'BEGIN {FS = ":.*##"; printf ""} \
 	  /^[a-zA-Z0-9_-]+:.*##/ { printf "  $(CYAN)%-20s$(NC) %s\n", $$1, $$2 } \
@@ -58,8 +58,8 @@ install-dev: ## Install all packages in editable/dev mode
 	@echo -e "  $(GREEN)[ok]$(NC) All packages installed in dev mode."
 
 .PHONY: install
-install: ## Install engram-ai meta-package (production)
-	$(call section,Installing engram-ai)
+install: ## Install memnos meta-package (production)
+	$(call section,Installing memnos)
 	$(INSTALLER) install -e ".[all]"
 
 .PHONY: dev
@@ -72,10 +72,10 @@ dev: ## Start dev stack (Neo4j + Qdrant) — no Python server
 	@echo "  Qdrant:        http://localhost:6333"
 	@echo ""
 	@echo "  Start the Python server separately:"
-	@echo "    engram-server --config engram.yaml"
+	@echo "    memnos-server --config memnos.yaml"
 
 .PHONY: dev-full
-dev-full: ## Start full dev stack including engram server container
+dev-full: ## Start full dev stack including memnos server container
 	$(call section,Starting full dev stack)
 	$(DOCKER_COMPOSE) up -d
 	@echo ""
@@ -96,18 +96,18 @@ dev-reset: ## Stop dev stack and wipe all volumes (CAUTION: deletes data)
 ##@ E2E Testing
 
 # ── E2E test stack config ──────────────────────────────────────────────────
-E2E_PROJECT     := engram-test
-E2E_DATA_DIR    := $(HOME)/.engram-test
+E2E_PROJECT     := memnos-test
+E2E_DATA_DIR    := $(HOME)/.memnos-test
 # Standalone compose file — does NOT inherit from docker-compose.yml, avoids port merging
-# Load .env first (API keys), then .env.test (test overrides). ENGRAM_DATA_DIR via shell env.
-E2E_COMPOSE     := ENGRAM_DATA_DIR=$(E2E_DATA_DIR) \
+# Load .env first (API keys), then .env.test (test overrides). MEMNOS_DATA_DIR via shell env.
+E2E_COMPOSE     := MEMNOS_DATA_DIR=$(E2E_DATA_DIR) \
                    $(DOCKER_COMPOSE) -f docker-compose.e2e.yml \
                    --env-file .env --env-file .env.test -p $(E2E_PROJECT)
 E2E_API_URL     := http://localhost:18766
 E2E_PYTHONPATH  := packages/core:packages/mcp-server:packages/api:packages/orchestrator:packages/learning
 
 .PHONY: e2e-up
-e2e-up: ## Start E2E stack (data ~/.engram-test, ports 12480/18766) — never touches ~/.engram
+e2e-up: ## Start E2E stack (data ~/.memnos-test, ports 12480/18766) — never touches ~/.memnos
 	$(call section,Starting E2E test stack)
 	$(E2E_COMPOSE) up -d --build
 	@echo ""
@@ -115,7 +115,7 @@ e2e-up: ## Start E2E stack (data ~/.engram-test, ports 12480/18766) — never to
 	@echo "  ArcadeDB:  http://localhost:12480  (Studio UI)"
 	@echo "  REST API:  http://localhost:18766"
 	@echo "  MCP:       http://localhost:18765/sse"
-	@echo "  Data dir:  ~/.engram-test"
+	@echo "  Data dir:  ~/.memnos-test"
 	@echo ""
 	@echo "  Waiting for health..."
 	@for i in $$(seq 1 30); do \
@@ -127,17 +127,17 @@ e2e-up: ## Start E2E stack (data ~/.engram-test, ports 12480/18766) — never to
 	echo "  Stack did not become healthy in 60s — check logs: make e2e-logs"; exit 1
 
 .PHONY: e2e-down
-e2e-down: ## Stop and remove the E2E test stack (data in ~/.engram-test is preserved)
+e2e-down: ## Stop and remove the E2E test stack (data in ~/.memnos-test is preserved)
 	$(call section,Stopping E2E test stack)
 	$(E2E_COMPOSE) down
-	@echo -e "  $(GREEN)[ok]$(NC) E2E stack stopped. Data preserved in ~/.engram-test."
+	@echo -e "  $(GREEN)[ok]$(NC) E2E stack stopped. Data preserved in ~/.memnos-test."
 
 .PHONY: e2e-clean
-e2e-clean: ## Stop E2E stack and wipe ~/.engram-test data (full reset)
+e2e-clean: ## Stop E2E stack and wipe ~/.memnos-test data (full reset)
 	$(call section,Wiping E2E test data)
 	$(E2E_COMPOSE) down -v
-	rm -rf $(HOME)/.engram-test
-	@echo -e "  $(GREEN)[ok]$(NC) E2E stack stopped and ~/.engram-test wiped."
+	rm -rf $(HOME)/.memnos-test
+	@echo -e "  $(GREEN)[ok]$(NC) E2E stack stopped and ~/.memnos-test wiped."
 
 .PHONY: e2e-logs
 e2e-logs: ## Tail E2E test stack logs
@@ -146,7 +146,7 @@ e2e-logs: ## Tail E2E test stack logs
 .PHONY: e2e-run
 e2e-run: ## Run E2E tests against an already-running test stack
 	$(call section,Running E2E tests)
-	PYTHONPATH=$(E2E_PYTHONPATH) ENGRAM_E2E_URL=$(E2E_API_URL) \
+	PYTHONPATH=$(E2E_PYTHONPATH) MEMNOS_E2E_URL=$(E2E_API_URL) \
 	  $(PYTHON) -m pytest tools/e2e/ -v --tb=short -p no:flask 2>&1
 
 .PHONY: e2e
@@ -187,7 +187,7 @@ test-cov: ## Run tests with coverage report
 	$(call section,Running tests with coverage)
 	$(PYTHON) -m pytest \
 	  $(patsubst %, %/tests, $(wildcard $(addsuffix /tests, $(PACKAGES)))) \
-	  --cov=engram \
+	  --cov=memnos \
 	  --cov-report=term-missing \
 	  --cov-report=html:htmlcov \
 	  -q
@@ -217,9 +217,9 @@ format: ## Auto-format code with ruff
 mypy: ## Run mypy type checker
 	$(call section,Running mypy)
 	$(PYTHON) -m mypy \
-	  packages/core/engram \
-	  packages/mcp-server/engram_mcp \
-	  packages/orchestrator/engram_orchestrator \
+	  packages/core/memnos \
+	  packages/mcp-server/memnos_mcp \
+	  packages/orchestrator/memnos_orchestrator \
 	  --ignore-missing-imports \
 	  --no-error-summary \
 	  2>&1 | tail -20
@@ -241,7 +241,7 @@ build: ## Build all packages as wheels
 	@echo -e "  $(GREEN)[ok]$(NC) Wheels written to dist/"
 
 .PHONY: build-meta
-build-meta: ## Build root engram-ai meta-package
+build-meta: ## Build root memnos meta-package
 	$(PYTHON) -m build --outdir dist/
 
 .PHONY: publish-test
@@ -256,18 +256,18 @@ publish: build ## Publish to PyPI (production)
 ##@ Docker
 
 .PHONY: docker-build
-docker-build: ## Build the engram Docker image
+docker-build: ## Build the memnos Docker image
 	$(call section,Building Docker image)
-	docker build -t engram:dev -f docker/Dockerfile .
+	docker build -t memnos:dev -f docker/Dockerfile .
 
 .PHONY: docker-build-nc
 docker-build-nc: ## Build Docker image with no cache
-	docker build --no-cache -t engram:dev -f docker/Dockerfile .
+	docker build --no-cache -t memnos:dev -f docker/Dockerfile .
 
 .PHONY: docker-push
 docker-push: ## Push Docker image to registry (set REGISTRY env var)
-	docker tag engram:dev $(REGISTRY)/engram:$(shell git rev-parse --short HEAD)
-	docker push $(REGISTRY)/engram:$(shell git rev-parse --short HEAD)
+	docker tag memnos:dev $(REGISTRY)/memnos:$(shell git rev-parse --short HEAD)
+	docker push $(REGISTRY)/memnos:$(shell git rev-parse --short HEAD)
 
 .PHONY: docker-logs
 docker-logs: ## Tail all Docker container logs
@@ -286,12 +286,12 @@ setup-env: ## Copy .env.example to .env if .env doesn't exist
 	fi
 
 .PHONY: setup-config
-setup-config: ## Copy engram.yaml.example to engram.yaml if not present
-	@if [ ! -f engram.yaml ]; then \
-	  cp engram.yaml.example engram.yaml; \
-	  echo -e "  $(GREEN)[ok]$(NC) Created engram.yaml from example."; \
+setup-config: ## Copy memnos.yaml.example to memnos.yaml if not present
+	@if [ ! -f memnos.yaml ]; then \
+	  cp memnos.yaml.example memnos.yaml; \
+	  echo -e "  $(GREEN)[ok]$(NC) Created memnos.yaml from example."; \
 	else \
-	  echo "  engram.yaml already exists — not overwritten."; \
+	  echo "  memnos.yaml already exists — not overwritten."; \
 	fi
 
 .PHONY: setup
@@ -326,16 +326,16 @@ clean-docker: ## Remove dangling Docker images and stopped containers
 ##@ Utilities
 
 .PHONY: logs
-logs: ## Tail engram server logs
-	@if [ -f "$(ENGRAM_DIR)/logs/engram.log" ]; then \
-	  tail -f "$(ENGRAM_DIR)/logs/engram.log"; \
+logs: ## Tail memnos server logs
+	@if [ -f "$(MEMNOS_DIR)/logs/memnos.log" ]; then \
+	  tail -f "$(MEMNOS_DIR)/logs/memnos.log"; \
 	else \
-	  $(DOCKER_COMPOSE) logs -f engram; \
+	  $(DOCKER_COMPOSE) logs -f memnos; \
 	fi
 
 .PHONY: shell-neo4j
 shell-neo4j: ## Open cypher-shell in Neo4j container
-	docker exec -it engram-neo4j cypher-shell -u neo4j -p "$$(grep NEO4J_PASSWORD .env | cut -d= -f2)"
+	docker exec -it memnos-neo4j cypher-shell -u neo4j -p "$$(grep NEO4J_PASSWORD .env | cut -d= -f2)"
 
 .PHONY: version
 version: ## Show installed package versions

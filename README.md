@@ -1,11 +1,11 @@
-# engram
+# memnos
 
 **Persistent memory and AI governance for Claude Code and any MCP-compatible LLM client.**
 
-engram gives Claude Code a long-term memory that persists across sessions and the ability to fork parallel background agents — all backed by a single Docker container (ArcadeDB) with no external vector database or graph database required.
+memnos gives Claude Code a long-term memory that persists across sessions and the ability to fork parallel background agents — all backed by a single Docker container (ArcadeDB) with no external vector database or graph database required.
 
 ```
-Claude Code  ──── MCP stdio or SSE ────►  engram server
+Claude Code  ──── MCP stdio or SSE ────►  memnos server
                                             ├── Knowledge graph  (ArcadeDB — graph + vector search)
                                             ├── Encrypted vault  (AES-256-GCM envelope encryption)
                                             ├── Multi-agent orchestrator
@@ -13,50 +13,67 @@ Claude Code  ──── MCP stdio or SSE ────►  engram server
                                             └── Mobile gateway   (Telegram / WhatsApp)
 ```
 
-> **v1.1.0** — Corpus ingestion + architecture enforcement (`engram-sdk[corpus]`), LangChain and LlamaIndex integrations, 93 tests. ArcadeDB backend — one container, no OpenAI key required for embeddings. See [DESIGN.md](DESIGN.md) for the full architecture.
+> **v1.1.0** — Corpus ingestion + architecture enforcement (`memnos-sdk[corpus]`), LangChain and LlamaIndex integrations, 93 tests. ArcadeDB backend — one container, no OpenAI key required for embeddings. See [DESIGN.md](DESIGN.md) for the full architecture.
 
 ---
 
-## Why engram?
+## Why memnos?
 
-Claude Code forgets everything when a session ends. engram fixes that.
+Most AI engineering teams already use **LangChain** for execution plumbing and **LangSmith** for tracing. Neither solves the memory problem.
 
-Every project decision, code pattern, error you debugged, and architectural choice lives in a temporal knowledge graph. Next session, engram surfaces it automatically.
+```
+Your App
+  └── LangChain / LangGraph   — execution: chains, agents, tool calls (stateless per run)
+        └── LangSmith          — observability: traces, evals, prompt management (read-only replay)
+              └── memnos        — memory: persists WHY across sessions, agents, and teams
+```
 
-- **Memory across sessions** — facts, decisions, and context persist across months and years
-- **Team knowledge graph** — share memory across your org via namespaces (`org:acme`, `project:backend`, `personal:default`)
-- **Multi-agent tasks** — one command forks N parallel background workers, collects results, tears them down
-- **Encrypted vault** — store API keys and credentials with AES-256-GCM envelope encryption; auto-redacts credentials found in memory writes
-- **Self-improving** — nightly reflection rewrites heuristics from failures; successful patterns become reusable skill templates
-- **Mobile access** — send tasks from Telegram or WhatsApp; engram runs them and replies
-- **No OpenAI key for embeddings** — ships with `all-MiniLM-L6-v2` (sentence-transformers, runs on CPU); OpenAI embeddings are optional
+**LangChain** connects your LLM to tools. Every run starts fresh — no memory of what was decided last session, last week, or last year.
+
+**LangSmith** records what happened. It's a trace store and eval harness, not writable persistent memory. You can replay a trace; you can't inject a past decision into a future agent prompt.
+
+**mem0 / Zep** store user-level memories for chatbots and assistants. They don't solve cross-agent coordination, architecture enforcement, or governance for engineering teams.
+
+**memnos** is the missing layer: persistent, governed, searchable institutional memory — shared across all your agents, all your sessions, all your team.
+
+### The four gaps memnos closes
+
+**Code review with persistent context.** Your code review agent starts cold on every PR. Without memnos, the agent reviewing PR #200 doesn't know the architectural decision from PR #15, or the production incident it caused. memnos carries the full institutional context of your codebase into every review.
+
+**Cross-agent coordination.** When a code reviewer, test writer, and deploy agent run in parallel, Agent B doesn't know what Agent A decided 10 minutes ago. LangGraph tracks state within a single run — it resets when the run ends. memnos is the shared layer across independent concurrent agents.
+
+**Architecture constraint enforcement.** Rules live in system prompts — manually maintained, forgotten across sessions, invisible to new agents. memnos auto-injects stored constraints into every future search result across your entire agent fleet. Write once, enforced everywhere.
+
+**Knowledge retention across the org.** When a senior engineer documents a decision in a meeting, no agent ever sees it. memnos is the bridge — decisions, incidents, patterns, and constraints written once are queryable by every agent, forever.
 
 ---
 
-## How is engram different from Obsidian, Letta, mem0, or Hermes agents?
+## How memnos compares
 
-| | engram | Obsidian vault | Letta (formerly MemGPT) | mem0 |
+| Capability | LangSmith | mem0 | Zep / Graphiti | **memnos** |
 |---|---|---|---|---|
-| **What it is** | Memory + orchestration layer | Manual note vault | Stateful agent framework | Cloud memory API |
-| **Works with Claude Code** | Native MCP (stdio + SSE) | Manual CLAUDE.md file | No direct MCP | API wrapper needed |
-| **Memory capture** | CLAUDE.md-instructed; Claude writes automatically | Manual — you write notes | Sophisticated in-agent memory | API call required |
-| **Knowledge graph** | ArcadeDB (graph + HNSW vector, single container) | No — flat Markdown | Structured in-context store | Flat key-value |
-| **Team sharing** | Real-time shared graph | Git/iCloud sync (async) | No | API-based (cloud) |
-| **Encrypted secrets** | Yes — AES-256-GCM vault + audit log | No | No | No |
-| **Self-improving** | Nightly reflection, heuristic decay | No | No | No |
-| **Multi-agent** | Built-in fork/join, critic loop | No | Agent-in-memory only | No |
-| **Runs locally** | Yes — one Docker container | Yes — plain files | Partial | Cloud-only |
-| **No cloud embeddings** | Yes (local sentence-transformers) | N/A | Depends | No |
+| **Primary purpose** | Observability / tracing | Cross-session user memory | Conversational memory | Persistent institutional memory |
+| **Cross-session memory** | ❌ | ✅ SaaS | ✅ partial | ✅ |
+| **Cross-agent shared memory** | ❌ | ❌ | ❌ | ✅ |
+| **Architecture constraint injection** | ❌ | ❌ | ❌ | ✅ |
+| **Audit trail (agent, tool, commit, ticket)** | ✅ traces | ❌ | ❌ | ✅ |
+| **Self-hosted, open-source** | ❌ | ❌ paid | ✅ partial | ✅ |
+| **Knowledge graph traversal** | ❌ | ❌ | ✅ Graphiti | ✅ |
+| **Temporal model (as_of, decay, review_by)** | ❌ | ❌ | partial | ✅ |
+| **Namespace ACL (team / tenant isolation)** | ❌ | ❌ | ❌ | ✅ |
+| **HIPAA-safe self-hosting** | ❌ | ❌ | ❌ | ✅ |
+
+> **One sentence:** LangChain gives agents hands and feet. LangSmith records what they did. memnos is the only thing that makes them remember *why* — persistently, searchably, across agents, across sessions, with governance built in.
 
 ### Where each tool wins
 
-**Obsidian** wins when you want human-readable, manually curated notes with zero infrastructure. See [Migrating from Obsidian](#migrating-from-obsidian).
+**LangSmith** wins on observability — traces, eval datasets, and prompt management. memnos is not a trace store; use LangSmith alongside memnos for full-stack visibility.
 
-**Letta** has the most architecturally sophisticated approach to in-agent memory — the agent itself manages its memory policies. Best for stateful agents with complex self-directed memory needs.
+**mem0** wins on drop-in simplicity — one REST call to write, one to search. Best for adding user-scoped memory to a chatbot. Not designed for multi-agent engineering teams.
 
-**mem0** wins on operational simplicity: one REST call to write, one to search. Best for app developers who need a drop-in memory layer with no infrastructure.
+**Zep / Graphiti** wins on conversational memory with graph extraction. Best for session-scoped dialogue. Not designed for cross-agent coordination or governance.
 
-**engram** wins when you need all three things in one self-hosted system: cross-session memory, a temporal knowledge graph, and AI governance (decisions, constraints, ADRs) — with a single ArcadeDB container and no external API key for embeddings.
+**memnos** wins when you need self-hosted persistent memory with governance: cross-session state, cross-agent coordination, architecture enforcement, and namespace ACL — all in one Docker container, no external API key required.
 
 See [docs/guides/enterprise-ai-engineering.md](docs/guides/enterprise-ai-engineering.md) for the enterprise team model, and [docs/guides/enterprise-team-setup.md](docs/guides/enterprise-team-setup.md) for step-by-step team deployment.
 
@@ -67,28 +84,28 @@ See [docs/guides/enterprise-ai-engineering.md](docs/guides/enterprise-ai-enginee
 ### macOS / Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/thameema/memnos/master/install.sh | bash
 ```
 
 The installer:
 - Verifies Docker and Python 3.11+ are available
-- Clones the engram source to `~/.engram-src/` (code only — safe to wipe + re-clone)
+- Clones the memnos source to `~/.memnos-src/` (code only — safe to wipe + re-clone)
 - Asks for **optional** Anthropic and OpenAI API keys (you can skip both — see below)
-- Auto-generates `ENGRAM_API_KEY`, `ARCADEDB_PASSWORD`, and `ENGRAM_VAULT_KEY`
-- Writes `~/.engram/.env` and `~/.engram/engram.yaml` (config + secrets — persistent)
-- Builds the engram Docker image and starts the stack (arcadedb + engram, optionally qdrant)
+- Auto-generates `MEMNOS_API_KEY`, `ARCADEDB_PASSWORD`, and `MEMNOS_VAULT_KEY`
+- Writes `~/.memnos/.env` and `~/.memnos/memnos.yaml` (config + secrets — persistent)
+- Builds the memnos Docker image and starts the stack (arcadedb + memnos, optionally qdrant)
 - Installs Claude Code hooks + slash command + MCP registration (when "Full install" is chosen)
-- Saves an install log at `/tmp/engram-install-*.log` for diagnostics
+- Saves an install log at `/tmp/memnos-install-*.log` for diagnostics
 
 ### What the installer prompts for
 
 **Required (auto-generated if you press Enter):**
-- Data directory — defaults to `~/.engram/`
-- engram API key, ArcadeDB password, vault encryption key — all auto-generated as strong random tokens
+- Data directory — defaults to `~/.memnos/`
+- memnos API key, ArcadeDB password, vault encryption key — all auto-generated as strong random tokens
 
 **Anthropic API key — optional:**
-- Only needed if you want engram to call the Anthropic API directly for reflection/skill extraction.
-- If skipped, engram uses Claude Code's built-in `claude --print` CLI (the recommended path if you have Claude Code installed).
+- Only needed if you want memnos to call the Anthropic API directly for reflection/skill extraction.
+- If skipped, memnos uses Claude Code's built-in `claude --print` CLI (the recommended path if you have Claude Code installed).
 
 **Embeddings backend — pick carefully, the choice is mostly permanent.**
 
@@ -99,7 +116,7 @@ The installer shows a red warning before this prompt. Choosing OpenAI = paste yo
 | Vector dim | 384 | 1536 |
 | Lifetime cost | $0 | ~$0.02 per 1M tokens — pennies/month for personal use |
 | Privacy | 100% offline | every memory's text sent to OpenAI |
-| Disk weight | +2 GB on engram image | none |
+| Disk weight | +2 GB on memnos image | none |
 | Build time impact | +3-5 min | none |
 | Quality | ~80% of OpenAI on relevance benchmarks | best |
 | Pick if | privacy-sensitive, offline, free | heavy use, want best relevance, ok with cloud |
@@ -115,7 +132,7 @@ The installer shows a red warning before this prompt. Choosing OpenAI = paste yo
 ### Verifying your install
 
 ```bash
-bash ~/.engram-src/tools/verify-install.sh
+bash ~/.memnos-src/tools/verify-install.sh
 ```
 
 Runs 9 sections of checks — file layout, configuration, container health, API auth, memory write+search roundtrip (proves embeddings work), namespaces, corpus, MCP/SSE, Claude Code wiring. Exit 0 means everything works; exit 1 prints remediation hints. Add `--skip-write` for a read-only check.
@@ -124,13 +141,13 @@ Runs 9 sections of checks — file layout, configuration, container health, API 
 
 | Path | What | Stability |
 |---|---|---|
-| `~/.engram-src/` | git clone (code) | Wipeable — re-clone with installer |
-| `~/.engram/.env` | secrets (API keys, vault key, ArcadeDB password) | Persistent, mode 600 |
-| `~/.engram/engram.yaml` | user-editable configuration | Persistent |
-| `~/.engram/arcadedb/` | graph + vector data | Persistent |
-| `~/.engram/qdrant/` | HNSW ANN index (when enabled) | Persistent |
-| `~/.claude/hooks/engram*.sh` | Claude Code hooks | Persistent |
-| `~/.claude.json` | Claude Code MCP config (entry added under `mcpServers.engram`) | Persistent |
+| `~/.memnos-src/` | git clone (code) | Wipeable — re-clone with installer |
+| `~/.memnos/.env` | secrets (API keys, vault key, ArcadeDB password) | Persistent, mode 600 |
+| `~/.memnos/memnos.yaml` | user-editable configuration | Persistent |
+| `~/.memnos/arcadedb/` | graph + vector data | Persistent |
+| `~/.memnos/qdrant/` | HNSW ANN index (when enabled) | Persistent |
+| `~/.claude/hooks/memnos*.sh` | Claude Code hooks | Persistent |
+| `~/.claude.json` | Claude Code MCP config (entry added under `mcpServers.memnos`) | Persistent |
 
 ### Choosing a version (default vs frozen release)
 
@@ -140,19 +157,19 @@ To pin a frozen release instead (e.g. for production deployments), pass `--versi
 
 ```bash
 # Pin to a frozen release tag
-curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh \
+curl -fsSL https://raw.githubusercontent.com/thameema/memnos/master/install.sh \
   | bash -s -- --version v1.4.0
 
 # Pin a specific commit
-curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh \
+curl -fsSL https://raw.githubusercontent.com/thameema/memnos/master/install.sh \
   | bash -s -- --version <sha>
 
 # Explicitly request master (same as default)
-curl -fsSL https://raw.githubusercontent.com/thameema/engram/master/install.sh \
+curl -fsSL https://raw.githubusercontent.com/thameema/memnos/master/install.sh \
   | bash -s -- --version master
 ```
 
-Available release tags: [github.com/thameema/engram/releases](https://github.com/thameema/engram/releases). Releases use semver — minor bumps (v1.x.0) ship new features, patch bumps (v1.x.y) ship fixes.
+Available release tags: [github.com/thameema/memnos/releases](https://github.com/thameema/memnos/releases). Releases use semver — minor bumps (v1.x.0) ship new features, patch bumps (v1.x.y) ship fixes.
 
 The `--version` flag is honoured on every re-run, so passing `--version v1.5.0` later upgrades your install to that exact release. Re-running with no flag refreshes from master.
 
@@ -172,7 +189,7 @@ Open **PowerShell as Administrator** and run:
 
 ```powershell
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser   # one-time, allows local scripts
-irm https://raw.githubusercontent.com/thameema/engram/master/install-client.ps1 | iex
+irm https://raw.githubusercontent.com/thameema/memnos/master/install-client.ps1 | iex
 ```
 
 > **Requirements:** Windows 10/11, [Docker Desktop](https://www.docker.com/products/docker-desktop/),
@@ -180,21 +197,21 @@ irm https://raw.githubusercontent.com/thameema/engram/master/install-client.ps1 
 > [Claude Code for Windows](https://claude.ai/download).
 
 The Windows installer:
-- Downloads the Claude Code automation hooks (`engram-inject.ps1`, `engram-git-write.ps1`, etc.)
-- Installs the heartbeat daemon (`engram-heartbeat.py`)
+- Downloads the Claude Code automation hooks (`memnos-inject.ps1`, `memnos-git-write.ps1`, etc.)
+- Installs the heartbeat daemon (`memnos-heartbeat.py`)
 - Registers hooks in `%APPDATA%\Claude\claude_desktop_config.json`
-- Points to your engram server (local or remote)
+- Points to your memnos server (local or remote)
 
-If engram is running on a different machine, pass the server URL and API key:
+If memnos is running on a different machine, pass the server URL and API key:
 
 ```powershell
-irm https://raw.githubusercontent.com/thameema/engram/master/install-client.ps1 | iex -Args "-Server http://YOUR_SERVER:8766 -Key YOUR_API_KEY"
+irm https://raw.githubusercontent.com/thameema/memnos/master/install-client.ps1 | iex -Args "-Server http://YOUR_SERVER:8766 -Key YOUR_API_KEY"
 ```
 
 ### Manual (all platforms)
 
 ```bash
-git clone https://github.com/thameema/engram.git && cd engram
+git clone https://github.com/thameema/memnos.git && cd memnos
 docker compose up -d
 ```
 
@@ -209,39 +226,39 @@ See [docs/guides/quickstart.md](docs/guides/quickstart.md) for the full step-by-
 The installer handles this for you. If you want to run compose manually from a clone, the config layout is:
 
 ```bash
-git clone https://github.com/thameema/engram.git && cd engram
+git clone https://github.com/thameema/memnos.git && cd memnos
 
-# Config and secrets live in ~/.engram/, NOT in the source clone.
+# Config and secrets live in ~/.memnos/, NOT in the source clone.
 # The installer normally writes these for you; for manual setup:
-mkdir -p ~/.engram
-cp .env.example ~/.engram/.env
-# Then EDIT ~/.engram/.env and set at minimum:
-#   ENGRAM_API_KEY       (any strong random string)
+mkdir -p ~/.memnos
+cp .env.example ~/.memnos/.env
+# Then EDIT ~/.memnos/.env and set at minimum:
+#   MEMNOS_API_KEY       (any strong random string)
 #   ARCADEDB_PASSWORD    (any strong random string)
-#   ENGRAM_VAULT_KEY     (`python3 -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`)
-#   ENGRAM_EMBED_MODE    (`local` if you want offline embeddings, `online` for OpenAI)
-#   ENGRAM_DATA_DIR=$HOME/.engram
-#   ENGRAM_CONFIG_FILE=$HOME/.engram/engram.yaml
-chmod 600 ~/.engram/.env
+#   MEMNOS_VAULT_KEY     (`python3 -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`)
+#   MEMNOS_EMBED_MODE    (`local` if you want offline embeddings, `online` for OpenAI)
+#   MEMNOS_DATA_DIR=$HOME/.memnos
+#   MEMNOS_CONFIG_FILE=$HOME/.memnos/memnos.yaml
+chmod 600 ~/.memnos/.env
 
-cp engram.yaml.example ~/.engram/engram.yaml
+cp memnos.yaml.example ~/.memnos/memnos.yaml
 
-docker compose --env-file ~/.engram/.env up -d --build
+docker compose --env-file ~/.memnos/.env up -d --build
 
 # Watch until ready
-docker compose --env-file ~/.engram/.env logs -f engram
+docker compose --env-file ~/.memnos/.env logs -f memnos
 # Look for: "Uvicorn running on http://0.0.0.0:8766" and "ArcadeDB ready"
 ```
 
-> **Note:** all secrets come from `~/.engram/.env` via env-var interpolation
-> (`engram.yaml` references `${ARCADEDB_PASSWORD}`, `${ENGRAM_API_KEY}`, etc).
-> The `.env` file MUST live in `~/.engram/` so `docker compose --env-file` can
-> find it and bind-mount the right `engram.yaml` into the container.
+> **Note:** all secrets come from `~/.memnos/.env` via env-var interpolation
+> (`memnos.yaml` references `${ARCADEDB_PASSWORD}`, `${MEMNOS_API_KEY}`, etc).
+> The `.env` file MUST live in `~/.memnos/` so `docker compose --env-file` can
+> find it and bind-mount the right `memnos.yaml` into the container.
 
 ### Manual (dev mode)
 
 ```bash
-git clone https://github.com/thameema/engram.git && cd engram
+git clone https://github.com/thameema/memnos.git && cd memnos
 
 # Start ArcadeDB only
 docker compose up -d arcadedb
@@ -250,37 +267,37 @@ docker compose up -d arcadedb
 pip install -e packages/core -e packages/mcp-server -e packages/api
 
 # Start the server
-ENGRAM_CONFIG=engram.yaml \
+MEMNOS_CONFIG=memnos.yaml \
 ARCADEDB_PASSWORD=your-password \
-ENGRAM_API_KEY=your-api-key \
-ENGRAM_VAULT_KEY=your-vault-key \
+MEMNOS_API_KEY=your-api-key \
+MEMNOS_VAULT_KEY=your-vault-key \
 ANTHROPIC_API_KEY=sk-ant-... \
-engram-server --config engram.yaml
+memnos-server --config memnos.yaml
 ```
 
 ---
 
 ## Connecting to Claude Code
 
-engram connects to Claude Code as an MCP server. Two transports are available:
+memnos connects to Claude Code as an MCP server. Two transports are available:
 
 ### Option A — stdio (recommended for local use)
 
-The stdio transport spawns `engram-mcp-stdio` as a subprocess. No HTTP server needed; Claude Code manages the process lifetime.
+The stdio transport spawns `memnos-mcp-stdio` as a subprocess. No HTTP server needed; Claude Code manages the process lifetime.
 
 Add to **`~/.claude.json`**:
 
 ```json
 {
   "mcpServers": {
-    "engram": {
+    "memnos": {
       "type": "stdio",
-      "command": "/path/to/engram-mcp-stdio",
+      "command": "/path/to/memnos-mcp-stdio",
       "env": {
-        "ENGRAM_CONFIG": "/path/to/engram.yaml",
+        "MEMNOS_CONFIG": "/path/to/memnos.yaml",
         "ARCADEDB_PASSWORD": "your-arcadedb-password",
-        "ENGRAM_API_KEY": "your-engram-api-key",
-        "ENGRAM_VAULT_KEY": "your-vault-key",
+        "MEMNOS_API_KEY": "your-memnos-api-key",
+        "MEMNOS_VAULT_KEY": "your-vault-key",
         "ANTHROPIC_API_KEY": "sk-ant-..."
       }
     }
@@ -288,22 +305,22 @@ Add to **`~/.claude.json`**:
 }
 ```
 
-Find the binary path after installation: `which engram-mcp-stdio`
+Find the binary path after installation: `which memnos-mcp-stdio`
 
 ### Option B — SSE (HTTP, for remote/team servers)
 
-Requires the `engram-server` process to be running separately (see above).
+Requires the `memnos-server` process to be running separately (see above).
 
 Add to **`~/.claude.json`**:
 
 ```json
 {
   "mcpServers": {
-    "engram": {
+    "memnos": {
       "type": "sse",
       "url": "http://localhost:8765/sse",
       "headers": {
-        "Authorization": "Bearer your-engram-api-key"
+        "Authorization": "Bearer your-memnos-api-key"
       }
     }
   }
@@ -312,14 +329,14 @@ Add to **`~/.claude.json`**:
 
 For a team server, replace `localhost:8765` with your shared server URL and issue each team member their own API key.
 
-Fully restart Claude Code (quit and reopen), then run `/mcp` to confirm engram is connected.
+Fully restart Claude Code (quit and reopen), then run `/mcp` to confirm memnos is connected.
 
 ### Step 2 — Add CLAUDE.md instructions
 
 Registering the MCP server makes the tools available — but Claude won't use them automatically without instructions. Add to **`~/.claude/CLAUDE.md`**:
 
 ```markdown
-## Memory System — engram MCP
+## Memory System — memnos MCP
 
 ALWAYS call `memory_search` first when the user asks about past decisions, context, or anything previously remembered.
 ALWAYS call `memory_write` when a key decision is made or the user says "remember this".
@@ -379,15 +396,15 @@ See the complete guide in [docs/guides/claude-code-setup.md](docs/guides/claude-
 
 **Infrastructure (default):** one Docker container (ArcadeDB) — no Neo4j, no Graphiti. Vector search uses numpy-accelerated cosine similarity in the Python layer with a 5-minute TTL cache, scaling comfortably to ~100K memories.
 
-**Optional Qdrant backend:** set `ENGRAM_VECTOR_BACKEND=qdrant` and start the `qdrant` profile to enable HNSW ANN search. See [Enabling Qdrant](#enabling-qdrant-optional) below. Recommended for corpora that will grow beyond ~100K memories or for single users wanting search quality that does not degrade over time.
+**Optional Qdrant backend:** set `MEMNOS_VECTOR_BACKEND=qdrant` and start the `qdrant` profile to enable HNSW ANN search. See [Enabling Qdrant](#enabling-qdrant-optional) below. Recommended for corpora that will grow beyond ~100K memories or for single users wanting search quality that does not degrade over time.
 
 ---
 
 ## Embeddings and the LLM
 
-### How engram uses two separate AI models
+### How memnos uses two separate AI models
 
-engram uses your conversational LLM (Claude, via Anthropic API) for reasoning and your embedding model for semantic search. These are different tasks:
+memnos uses your conversational LLM (Claude, via Anthropic API) for reasoning and your embedding model for semantic search. These are different tasks:
 
 | Task | Model | When |
 |------|-------|------|
@@ -404,7 +421,7 @@ The LLM never does vector search. The embedding model never reasons. Both run ev
 
 Anthropic's Claude models are decoder-only LLMs — they cannot produce the fixed-dimension vectors that semantic search requires. A separate encoder-only model is needed.
 
-engram ships three options:
+memnos ships three options:
 
 | Mode | Model | Cost | Disk | Quality |
 |------|-------|------|------|---------|
@@ -412,13 +429,13 @@ engram ships three options:
 | `local-large` | `BAAI/bge-large-en-v1.5` | Free | ~1.3 GB | Better |
 | `openai` | `text-embedding-3-small` | ~$0.02/1M tokens | None | Best |
 
-Set `ENGRAM_EMBED_MODE` in your `.env` to choose. `auto` uses OpenAI if `OPENAI_API_KEY` is present, otherwise falls back to `all-MiniLM-L6-v2`.
+Set `MEMNOS_EMBED_MODE` in your `.env` to choose. `auto` uses OpenAI if `OPENAI_API_KEY` is present, otherwise falls back to `all-MiniLM-L6-v2`.
 
 ### ⚠️ Embedding model lock-in — read before you start
 
 **You cannot switch embedding models after writing memories without running a migration.**
 
-Every memory stored in engram contains a vector produced by the embedding model that was active at write time. Different models produce different vector dimensions (384 vs 1536) and incompatible vector spaces — a query embedded with model B cannot find memories embedded with model A.
+Every memory stored in memnos contains a vector produced by the embedding model that was active at write time. Different models produce different vector dimensions (384 vs 1536) and incompatible vector spaces — a query embedded with model B cannot find memories embedded with model A.
 
 **If you switch models, all existing memories become invisible to search.**
 
@@ -440,9 +457,9 @@ Qdrant replaces this with an HNSW index that searches all memories in ~3 ms rega
 ### First-time setup
 
 ```bash
-# 1. Install the Qdrant client inside the engram container
+# 1. Install the Qdrant client inside the memnos container
 pip install 'qdrant-client>=1.9'
-# Or rebuild: ENGRAM_EMBED_MODE=... docker compose build engram
+# Or rebuild: MEMNOS_EMBED_MODE=... docker compose build memnos
 
 # 2. Start Qdrant
 docker compose --profile qdrant up -d qdrant
@@ -450,12 +467,12 @@ docker compose --profile qdrant up -d qdrant
 # 3. Backfill your existing memories into Qdrant (run once)
 python3 tools/migrate_to_qdrant.py
 
-# 4. Enable the Qdrant backend — add to ~/.engram/.env or your .env:
-echo "ENGRAM_VECTOR_BACKEND=qdrant" >> .env
+# 4. Enable the Qdrant backend — add to ~/.memnos/.env or your .env:
+echo "MEMNOS_VECTOR_BACKEND=qdrant" >> .env
 echo "QDRANT_URL=http://localhost:6333" >> .env
 
-# 5. Restart engram to pick up the new config
-docker compose restart engram
+# 5. Restart memnos to pick up the new config
+docker compose restart memnos
 ```
 
 ### Verify it's working
@@ -469,19 +486,19 @@ Response time should drop from ~200 ms to ~10 ms on a warm query after enabling 
 
 ### Data directory
 
-Qdrant data is persisted at `~/.engram/qdrant/` (or `$ENGRAM_DATA_DIR/qdrant/`). Include this directory in your backups.
+Qdrant data is persisted at `~/.memnos/qdrant/` (or `$MEMNOS_DATA_DIR/qdrant/`). Include this directory in your backups.
 
 ---
 
 ## Encrypted Vault
 
-engram ships a built-in secrets vault using AES-256-GCM envelope encryption:
+memnos ships a built-in secrets vault using AES-256-GCM envelope encryption:
 
 - Each secret is encrypted with a unique data-encryption key (DEK)
-- The DEK is encrypted with the key-encryption key (KEK) derived from `ENGRAM_VAULT_KEY`
+- The DEK is encrypted with the key-encryption key (KEK) derived from `MEMNOS_VAULT_KEY`
 - The vault stores only ciphertext — plaintext never touches ArcadeDB
 - Every access (set, get, list, rotate) is written to an immutable audit log
-- **Auto-redaction**: if a write to `memory_write` contains a credential pattern (API key, JWT, AWS key, etc.), engram automatically redacts it before storage and logs a warning
+- **Auto-redaction**: if a write to `memory_write` contains a credential pattern (API key, JWT, AWS key, etc.), memnos automatically redacts it before storage and logs a warning
 
 ```bash
 # Store a secret
@@ -493,20 +510,20 @@ curl -X POST http://localhost:8766/api/v1/vault/secrets \
 # Or via Claude Code: "Store my OpenAI key in the vault as OPENAI_KEY"
 ```
 
-For production, switch the KMS provider to Azure Key Vault or AWS KMS in `engram.yaml`.
+For production, switch the KMS provider to Azure Key Vault or AWS KMS in `memnos.yaml`.
 
 ---
 
 ## API Key Management
 
-### YAML keys (static, in `engram.yaml`)
+### YAML keys (static, in `memnos.yaml`)
 
-Keys in `engram.yaml` are loaded at startup. Use these for permanent integrations and team members.
+Keys in `memnos.yaml` are loaded at startup. Use these for permanent integrations and team members.
 
 ```yaml
 auth:
   api_keys:
-    - key: "${ENGRAM_API_KEY}"
+    - key: "${MEMNOS_API_KEY}"
       user_id: admin
       namespaces: ["*"]           # admin: access everything
       read_only: false
@@ -519,7 +536,7 @@ auth:
 
 ### Runtime keys (via dashboard or REST API)
 
-Create, list, and revoke keys without restarting the server. Runtime keys are stored in `~/.engram/keys.db` (SHA-256 hashed; plaintext shown exactly once on creation).
+Create, list, and revoke keys without restarting the server. Runtime keys are stored in `~/.memnos/keys.db` (SHA-256 hashed; plaintext shown exactly once on creation).
 
 **Via the dashboard** — open `/dashboard` and click the **API Keys** tab.
 
@@ -552,7 +569,7 @@ A key with `read_only: true` will receive HTTP 403 on any `memory_write`, `memor
 
 ## Knowledge Graph
 
-When you write a memory, engram automatically:
+When you write a memory, memnos automatically:
 1. Embeds the content with `all-MiniLM-L6-v2` (or OpenAI if configured)
 2. Stores the vector in ArcadeDB alongside the memory record
 3. Extracts named entities with spaCy (no LLM needed)
@@ -573,7 +590,7 @@ You can also query the graph directly:
 
 ## Self-learning
 
-engram improves over time through five mechanisms:
+memnos improves over time through five mechanisms:
 
 1. **Episodic memory** — every task is stored; the planner learns from past approaches
 2. **Feedback loop** — correction detection and thumbs-up/down signals
@@ -585,9 +602,9 @@ engram improves over time through five mechanisms:
 
 ## For enterprise AI engineering teams
 
-If your organisation runs AI-assisted engineering at scale — architects, developers, QA, DevOps all using Claude Code — engram is the shared memory layer that connects them.
+If your organisation runs AI-assisted engineering at scale — architects, developers, QA, DevOps all using Claude Code — memnos is the shared memory layer that connects them.
 
-With engram, the institutional knowledge accumulated by each role becomes immediately available to every team member's Claude Code session, including new hires on day one.
+With memnos, the institutional knowledge accumulated by each role becomes immediately available to every team member's Claude Code session, including new hires on day one.
 
 Read the guide: [docs/guides/enterprise-ai-engineering.md](docs/guides/enterprise-ai-engineering.md)
 Step-by-step setup: [docs/guides/enterprise-team-setup.md](docs/guides/enterprise-team-setup.md)
@@ -599,7 +616,7 @@ Step-by-step setup: [docs/guides/enterprise-team-setup.md](docs/guides/enterpris
 The gateway lets you query your memory and run agent tasks from your phone:
 
 ```
-Your phone ──► engram server ──► LLM (Anthropic API)
+Your phone ──► memnos server ──► LLM (Anthropic API)
               └──► knowledge graph (shared with Claude Code)
 ```
 
@@ -617,14 +634,14 @@ See [docs/guides/gateway.md](docs/guides/gateway.md) for full setup and troubles
 bash tools/backup.sh
 ```
 
-Stops both containers for ~15 seconds, rsyncs `~/.engram/arcadedb/` plus the SQLite sidecars to a timestamped directory, then restarts everything. Keeps the last 7 backups automatically.
+Stops both containers for ~15 seconds, rsyncs `~/.memnos/arcadedb/` plus the SQLite sidecars to a timestamped directory, then restarts everything. Keeps the last 7 backups automatically.
 
 ```bash
 # Backup with record-count verification
 bash tools/backup.sh --verify
 
 # Backup to a custom location (e.g. external drive)
-bash tools/backup.sh /Volumes/External/engram-backups
+bash tools/backup.sh /Volumes/External/memnos-backups
 ```
 
 ### Schedule daily backups
@@ -632,42 +649,42 @@ bash tools/backup.sh /Volumes/External/engram-backups
 Add to your crontab (`crontab -e`):
 
 ```
-0 2 * * * cd ~/git/engram && bash tools/backup.sh >> ~/.engram/backup.log 2>&1
+0 2 * * * cd ~/git/memnos && bash tools/backup.sh >> ~/.memnos/backup.log 2>&1
 ```
 
 ### Restore from a backup
 
 ```bash
 # 1. Stop containers
-docker compose stop engram arcadedb
+docker compose stop memnos arcadedb
 
 # 2. Replace data directory with the backup
 rsync -a --delete \
-  ~/.engram/backups/20260523_203208/arcadedb/ \
-  ~/.engram/arcadedb/
+  ~/.memnos/backups/20260523_203208/arcadedb/ \
+  ~/.memnos/arcadedb/
 
 # 3. Optionally restore SQLite sidecars
-cp ~/.engram/backups/20260523_203208/keys.db ~/.engram/
-cp ~/.engram/backups/20260523_203208/learning.db ~/.engram/
-cp ~/.engram/backups/20260523_203208/tasks.db ~/.engram/
+cp ~/.memnos/backups/20260523_203208/keys.db ~/.memnos/
+cp ~/.memnos/backups/20260523_203208/learning.db ~/.memnos/
+cp ~/.memnos/backups/20260523_203208/tasks.db ~/.memnos/
 
 # 4. Restart
-docker compose start arcadedb engram
+docker compose start arcadedb memnos
 ```
 
-Backups are stored at `~/.engram/backups/<timestamp>/` and include the full ArcadeDB database plus the encrypted vault key store, learning database, and task database.
+Backups are stored at `~/.memnos/backups/<timestamp>/` and include the full ArcadeDB database plus the encrypted vault key store, learning database, and task database.
 
 ---
 
 ## Migrating from Obsidian
 
-Import your entire Obsidian vault into engram in one command:
+Import your entire Obsidian vault into memnos in one command:
 
 ```bash
 python3 tools/migrate_obsidian.py \
   --vault ~/vaults/my-vault \
   --namespace obsidian:my-vault \
-  --api-key your-engram-api-key
+  --api-key your-memnos-api-key
 ```
 
 Imports every note as a memory, maps `[[wikilinks]]` to graph edges, and maps folder structure to sub-namespaces. Run `--dry-run` first to preview. See [docs/guides/obsidian-migration.md](docs/guides/obsidian-migration.md).
@@ -676,21 +693,21 @@ Imports every note as a memory, maps `[[wikilinks]]` to graph edges, and maps fo
 
 ## Python SDK
 
-Install the SDK to access engram from any Python application or AI framework:
+Install the SDK to access memnos from any Python application or AI framework:
 
 ```bash
-pip install engram-sdk                        # core SDK
-pip install 'engram-sdk[langchain]'           # + LangChain memory backend
-pip install 'engram-sdk[llamaindex]'          # + LlamaIndex reader
-pip install 'engram-sdk[all]'                 # all integrations
+pip install memnos-sdk                        # core SDK
+pip install 'memnos-sdk[langchain]'           # + LangChain memory backend
+pip install 'memnos-sdk[llamaindex]'          # + LlamaIndex reader
+pip install 'memnos-sdk[all]'                 # all integrations
 ```
 
 ### Basic usage
 
 ```python
-from engram_sdk import EngramClient
+from memnos_sdk import MemnosClient
 
-with EngramClient(url="http://localhost:8766", api_key="your-key") as client:
+with MemnosClient(url="http://localhost:8766", api_key="your-key") as client:
     # Write a memory
     client.write(
         "Selected ArcadeDB over Neo4j+Qdrant — single container, multi-model",
@@ -708,34 +725,34 @@ with EngramClient(url="http://localhost:8766", api_key="your-key") as client:
 
 ### LangChain integration
 
-Drop engram in as a memory backend for any LangChain chain or agent:
+Drop memnos in as a memory backend for any LangChain chain or agent:
 
 ```python
 from langchain.chains import ConversationChain
-from engram_sdk import EngramClient
-from engram_sdk.integrations.langchain import EngramMemory
+from memnos_sdk import MemnosClient
+from memnos_sdk.integrations.langchain import MemnosMemory
 
-client = EngramClient(url="http://localhost:8766", api_key="your-key")
-memory = EngramMemory(client=client, namespace="org:acme", session_id="session-42")
+client = MemnosClient(url="http://localhost:8766", api_key="your-key")
+memory = MemnosMemory(client=client, namespace="org:acme", session_id="session-42")
 
 chain = ConversationChain(llm=your_llm, memory=memory)
 chain.run("What database should we use for the user service?")
 # → memories from past sessions automatically injected as context
 ```
 
-Install: `pip install 'engram-sdk[langchain]'`
+Install: `pip install 'memnos-sdk[langchain]'`
 
 ### LlamaIndex integration
 
-Load engram memories as LlamaIndex Documents for RAG pipelines:
+Load memnos memories as LlamaIndex Documents for RAG pipelines:
 
 ```python
 from llama_index.core import VectorStoreIndex
-from engram_sdk import EngramClient
-from engram_sdk.integrations.llamaindex import EngramReader
+from memnos_sdk import MemnosClient
+from memnos_sdk.integrations.llamaindex import MemnosReader
 
-client = EngramClient(url="http://localhost:8766", api_key="your-key")
-reader = EngramReader(client=client, namespace="org:acme:engineering")
+client = MemnosClient(url="http://localhost:8766", api_key="your-key")
+reader = MemnosReader(client=client, namespace="org:acme:engineering")
 
 # Load memories as documents and build an index
 documents = reader.load_data(query="authentication decisions", top_k=20)
@@ -744,16 +761,16 @@ query_engine = index.as_query_engine()
 print(query_engine.query("What auth approach did we choose?"))
 ```
 
-Install: `pip install 'engram-sdk[llamaindex]'`
+Install: `pip install 'memnos-sdk[llamaindex]'`
 
 ### Async client
 
-All methods are available in async form via `AsyncEngramClient`:
+All methods are available in async form via `AsyncMemnosClient`:
 
 ```python
-from engram_sdk import AsyncEngramClient
+from memnos_sdk import AsyncMemnosClient
 
-async with AsyncEngramClient(url="http://localhost:8766", api_key="your-key") as client:
+async with AsyncMemnosClient(url="http://localhost:8766", api_key="your-key") as client:
     results = await client.search("auth decisions", namespace="org:acme")
     await client.write("JWT is our auth standard", namespace="org:acme", memory_type="decision")
 ```
@@ -762,7 +779,7 @@ async with AsyncEngramClient(url="http://localhost:8766", api_key="your-key") as
 
 ## Corpus Ingestion & Architecture Enforcement
 
-engram can ingest a repository of architecture documents (decisions, constraints, facts) and enforce them automatically in CI.
+memnos can ingest a repository of architecture documents (decisions, constraints, facts) and enforce them automatically in CI.
 
 ### Register a corpus
 
@@ -788,9 +805,9 @@ curl -X POST http://localhost:8766/api/v1/corpus/{id}/sync \
 ### Check code against architecture in CI
 
 ```python
-from engram_sdk import EngramClient
+from memnos_sdk import MemnosClient
 
-with EngramClient(url="http://localhost:8766", api_key="your-key") as client:
+with MemnosClient(url="http://localhost:8766", api_key="your-key") as client:
     result = client.corpus.check(corpus_id, content=pull_request_diff)
 
     # SHALL violations = hard failures
@@ -819,24 +836,24 @@ with EngramClient(url="http://localhost:8766", api_key="your-key") as client:
 python -m pytest tools/test_decision_coverage.py -v
 ```
 
-This enforces that architecture decisions in engram have `affects[]` and `rationale` populated — catching low-quality memory writes before they accumulate.
+This enforces that architecture decisions in memnos have `affects[]` and `rationale` populated — catching low-quality memory writes before they accumulate.
 
 ---
 
 ## Developer Setup
 
 ```bash
-git clone https://github.com/thameema/engram.git && cd engram
-make setup          # copies engram.yaml.example, installs all packages in dev mode
+git clone https://github.com/thameema/memnos.git && cd memnos
+make setup          # copies memnos.yaml.example, installs all packages in dev mode
 docker compose up -d arcadedb
-ENGRAM_CONFIG=engram.yaml ARCADEDB_PASSWORD=... ENGRAM_API_KEY=... ENGRAM_VAULT_KEY=... \
-  python -m engram_api.main
+MEMNOS_CONFIG=memnos.yaml ARCADEDB_PASSWORD=... MEMNOS_API_KEY=... MEMNOS_VAULT_KEY=... \
+  python -m memnos_api.main
 ```
 
 Run the test suite:
 
 ```bash
-cd /path/to/engram
+cd /path/to/memnos
 
 # Unit tests — no ArcadeDB required (93 tests)
 .venv/bin/python -m pytest tools/test_learning.py tools/test_api_features.py \
@@ -846,10 +863,10 @@ cd /path/to/engram
 .venv/bin/python -m pytest tools/test_decision_coverage.py -v
 
 # Integration tests — requires ArcadeDB running
-ARCADEDB_PASSWORD=engram-dev-password \
-ENGRAM_API_KEY=engram-local-dev-key \
-ENGRAM_VAULT_KEY=dev-key-for-local-testing-only \
-ENGRAM_CONFIG=engram.yaml \
+ARCADEDB_PASSWORD=memnos-dev-password \
+MEMNOS_API_KEY=memnos-local-dev-key \
+MEMNOS_VAULT_KEY=dev-key-for-local-testing-only \
+MEMNOS_CONFIG=memnos.yaml \
 .venv/bin/python -m pytest tools/test_arcadedb.py tools/test_corpus.py -v
 
 # MCP stdio transport tests
@@ -862,10 +879,10 @@ See [docs/guides/quickstart.md](docs/guides/quickstart.md) for the full guide.
 
 ## Contributing
 
-engram is MIT-licensed and actively welcomes contributions.
+memnos is MIT-licensed and actively welcomes contributions.
 
 **Where to start:**
-- Browse [open issues](https://github.com/thameema/engram/issues) — anything tagged `good first issue` is a solid entry point
+- Browse [open issues](https://github.com/thameema/memnos/issues) — anything tagged `good first issue` is a solid entry point
 - Check [DESIGN.md](DESIGN.md) to understand what is planned vs what is built
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR
 
@@ -883,9 +900,9 @@ Before contributing: open an issue, fork and branch from `main`, run tests befor
 
 ## Anthropic terms compliance
 
-- engram uses Anthropic API keys only (not OAuth)
+- memnos uses Anthropic API keys only (not OAuth)
 - Each user provides and pays for their own Anthropic key
-- engram augments Claude Code; it is not a replacement or competing product
+- memnos augments Claude Code; it is not a replacement or competing product
 
 ---
 

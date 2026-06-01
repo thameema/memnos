@@ -12,7 +12,7 @@ Covers:
   H. Import with namespace override
   I. Review-due with realistic review_after dates
 
-Requires a live engram API (runner fixture from conftest.py).
+Requires a live memnos API (runner fixture from conftest.py).
 """
 from __future__ import annotations
 
@@ -25,8 +25,8 @@ import uuid
 import httpx
 import pytest
 
-ENGRAM_API = os.environ.get("ENGRAM_API_URL", "http://127.0.0.1:8766")
-ENGRAM_KEY = os.environ.get("ENGRAM_API_KEY", "engram-local-dev-key")
+MEMNOS_API = os.environ.get("MEMNOS_API_URL", "http://127.0.0.1:8766")
+MEMNOS_KEY = os.environ.get("MEMNOS_API_KEY", "memnos-local-dev-key")
 BASE_NS = "test:missing-cov"
 
 
@@ -35,18 +35,18 @@ def _uid() -> str:
 
 
 def _client() -> httpx.Client:
-    return httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=20)
+    return httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=20)
 
 
 def _write(c: httpx.Client, content: str, ns: str, **extra) -> dict:
     body = {"content": content, "namespace": ns, **extra}
-    r = c.post(f"{ENGRAM_API}/api/v1/memory/", json=body)
+    r = c.post(f"{MEMNOS_API}/api/v1/memory/", json=body)
     assert r.status_code == 201, f"Write failed {r.status_code}: {r.text[:200]}"
     return r.json()
 
 
 def _del(c: httpx.Client, mid: str, ns: str) -> None:
-    c.delete(f"{ENGRAM_API}/api/v1/memory/{mid}", params={"ns": ns})
+    c.delete(f"{MEMNOS_API}/api/v1/memory/{mid}", params={"ns": ns})
 
 
 # ===========================================================================
@@ -57,7 +57,7 @@ def test_task_feedback_positive_accepted(runner) -> None:
     """POST /tasks/feedback with signal=positive returns 204."""
     with _client() as c:
         r = c.post(
-            f"{ENGRAM_API}/api/v1/tasks/feedback",
+            f"{MEMNOS_API}/api/v1/tasks/feedback",
             json={
                 "task_id": f"nonexistent-{_uid()}",
                 "signal": "positive",
@@ -72,7 +72,7 @@ def test_task_feedback_negative_accepted(runner) -> None:
     """POST /tasks/feedback with signal=negative returns 204."""
     with _client() as c:
         r = c.post(
-            f"{ENGRAM_API}/api/v1/tasks/feedback",
+            f"{MEMNOS_API}/api/v1/tasks/feedback",
             json={
                 "task_id": f"nonexistent-{_uid()}",
                 "signal": "negative",
@@ -87,7 +87,7 @@ def test_task_feedback_invalid_signal_rejected(runner) -> None:
     """POST /tasks/feedback with an invalid signal is rejected with 422."""
     with _client() as c:
         r = c.post(
-            f"{ENGRAM_API}/api/v1/tasks/feedback",
+            f"{MEMNOS_API}/api/v1/tasks/feedback",
             json={
                 "task_id": "any-task",
                 "signal": "meh",
@@ -103,7 +103,7 @@ def test_task_feedback_after_real_task(runner) -> None:
     ns = f"{BASE_NS}:feedback:real:{_uid()}"
     with _client() as c:
         r = c.post(
-            f"{ENGRAM_API}/api/v1/tasks/",
+            f"{MEMNOS_API}/api/v1/tasks/",
             json={"prompt": "noop summary task", "namespace": ns, "runtime": "api"},
         )
         if r.status_code not in (200, 201, 202):
@@ -111,7 +111,7 @@ def test_task_feedback_after_real_task(runner) -> None:
         task_id = r.json()["task_id"]
 
         fb = c.post(
-            f"{ENGRAM_API}/api/v1/tasks/feedback",
+            f"{MEMNOS_API}/api/v1/tasks/feedback",
             json={"task_id": task_id, "signal": "positive", "namespace": ns, "comment": ""},
         )
         assert fb.status_code == 204, f"feedback after real task failed: {fb.status_code} {fb.text}"
@@ -133,8 +133,8 @@ def test_auto_supersede_similar_content(runner) -> None:
         mid1, mid2 = m1["id"], m2["id"]
         try:
             # m1 should be superseded; m2 should be active
-            r1 = c.get(f"{ENGRAM_API}/api/v1/memory/{mid1}", params={"ns": ns})
-            r2 = c.get(f"{ENGRAM_API}/api/v1/memory/{mid2}", params={"ns": ns})
+            r1 = c.get(f"{MEMNOS_API}/api/v1/memory/{mid1}", params={"ns": ns})
+            r2 = c.get(f"{MEMNOS_API}/api/v1/memory/{mid2}", params={"ns": ns})
             # m2 must still be active (200)
             assert r2.status_code == 200, f"New memory {mid2} should be 200, got {r2.status_code}"
             # m1 should be superseded (404 when active-only filter applies, or still 200 with superseded status)
@@ -166,7 +166,7 @@ def test_auto_supersede_contradictory_content(runner) -> None:
         time.sleep(0.5)
         mid1, mid2 = m1["id"], m2["id"]
         try:
-            r2 = c.get(f"{ENGRAM_API}/api/v1/memory/{mid2}", params={"ns": ns})
+            r2 = c.get(f"{MEMNOS_API}/api/v1/memory/{mid2}", params={"ns": ns})
             assert r2.status_code == 200, f"New decision {mid2} should be 200, got {r2.status_code}"
             # contradiction_warnings or superseded status should be present in the response
             body = r2.json()
@@ -189,7 +189,7 @@ def test_export_csv_format_valid(runner) -> None:
         mid = mem["id"]
         time.sleep(0.5)
         try:
-            r = c.get(f"{ENGRAM_API}/api/v1/admin/export", params={"ns": ns, "format": "csv"})
+            r = c.get(f"{MEMNOS_API}/api/v1/admin/export", params={"ns": ns, "format": "csv"})
             assert r.status_code == 200, f"CSV export failed: {r.status_code}"
             content_type = r.headers.get("content-type", "")
             assert "csv" in content_type or "text" in content_type, (
@@ -214,7 +214,7 @@ def test_export_csv_content_disposition_header(runner) -> None:
     """CSV export sets Content-Disposition: attachment with a .csv filename."""
     ns = f"{BASE_NS}:csv-hdr:{_uid()}"
     with _client() as c:
-        r = c.get(f"{ENGRAM_API}/api/v1/admin/export", params={"ns": ns, "format": "csv"})
+        r = c.get(f"{MEMNOS_API}/api/v1/admin/export", params={"ns": ns, "format": "csv"})
         assert r.status_code == 200
         cd = r.headers.get("content-disposition", "")
         assert "attachment" in cd, f"Expected attachment in Content-Disposition: {cd!r}"
@@ -228,7 +228,7 @@ def test_export_csv_content_disposition_header(runner) -> None:
 def test_knowledge_communities_returns_expected_shape(runner) -> None:
     """GET /knowledge/communities returns a valid envelope with communities and count."""
     with _client() as c:
-        r = c.get(f"{ENGRAM_API}/api/v1/knowledge/communities", params={"ns": "org:engram"})
+        r = c.get(f"{MEMNOS_API}/api/v1/knowledge/communities", params={"ns": "org:memnos"})
         assert r.status_code == 200, f"communities failed: {r.status_code} {r.text[:200]}"
         body = r.json()
         assert "communities" in body, f"Missing 'communities' key: {list(body.keys())}"
@@ -242,7 +242,7 @@ def test_knowledge_communities_empty_namespace(runner) -> None:
     """Communities for an empty namespace returns count=0."""
     ns = f"{BASE_NS}:communities-empty:{_uid()}"
     with _client() as c:
-        r = c.get(f"{ENGRAM_API}/api/v1/knowledge/communities", params={"ns": ns})
+        r = c.get(f"{MEMNOS_API}/api/v1/knowledge/communities", params={"ns": ns})
         assert r.status_code == 200, f"communities empty ns failed: {r.status_code}"
         body = r.json()
         assert body.get("count", 0) == 0, f"Expected 0 communities, got {body.get('count')}"
@@ -262,7 +262,7 @@ def test_search_filters_by_memory_type(runner) -> None:
         time.sleep(0.5)
         try:
             r = c.get(
-                f"{ENGRAM_API}/api/v1/memory/search",
+                f"{MEMNOS_API}/api/v1/memory/search",
                 params={"q": marker, "ns": ns, "top_k": 10, "memory_type": "decision"},
             )
             assert r.status_code == 200, f"type-filtered search failed: {r.status_code}"
@@ -291,7 +291,7 @@ def test_search_hybrid_mode_returns_results(runner) -> None:
         time.sleep(0.5)
         try:
             r = c.get(
-                f"{ENGRAM_API}/api/v1/memory/search",
+                f"{MEMNOS_API}/api/v1/memory/search",
                 params={"q": marker, "ns": ns, "top_k": 3, "mode": "hybrid"},
             )
             assert r.status_code == 200, f"hybrid search failed: {r.status_code} {r.text[:200]}"
@@ -311,7 +311,7 @@ def test_search_fulltext_mode_returns_results(runner) -> None:
         time.sleep(0.5)
         try:
             r = c.get(
-                f"{ENGRAM_API}/api/v1/memory/search",
+                f"{MEMNOS_API}/api/v1/memory/search",
                 params={"q": marker, "ns": ns, "top_k": 3, "mode": "fulltext"},
             )
             assert r.status_code == 200, f"fulltext search failed: {r.status_code} {r.text[:200]}"
@@ -337,7 +337,7 @@ def test_affects_field_round_trips_via_get(runner) -> None:
         )
         mid = mem["id"]
         try:
-            r = c.get(f"{ENGRAM_API}/api/v1/memory/{mid}", params={"ns": ns})
+            r = c.get(f"{MEMNOS_API}/api/v1/memory/{mid}", params={"ns": ns})
             assert r.status_code == 200
             body = r.json()
             affects = body.get("affects", [])
@@ -363,7 +363,7 @@ def test_affects_field_survives_search(runner) -> None:
         time.sleep(0.5)
         try:
             r = c.get(
-                f"{ENGRAM_API}/api/v1/memory/search",
+                f"{MEMNOS_API}/api/v1/memory/search",
                 params={"q": marker, "ns": ns, "top_k": 5},
             )
             assert r.status_code == 200
@@ -391,7 +391,7 @@ def test_memory_not_visible_across_namespaces(runner) -> None:
         time.sleep(0.5)
         try:
             r = c.get(
-                f"{ENGRAM_API}/api/v1/memory/search",
+                f"{MEMNOS_API}/api/v1/memory/search",
                 params={"q": marker, "ns": ns_b, "top_k": 10},
             )
             assert r.status_code == 200
@@ -412,7 +412,7 @@ def test_get_memory_wrong_namespace_returns_404(runner) -> None:
         mem = _write(c, "namespace 404 test", ns_a)
         mid = mem["id"]
         try:
-            r = c.get(f"{ENGRAM_API}/api/v1/memory/{mid}", params={"ns": ns_b})
+            r = c.get(f"{MEMNOS_API}/api/v1/memory/{mid}", params={"ns": ns_b})
             assert r.status_code == 404, (
                 f"Expected 404 for wrong namespace, got {r.status_code}"
             )
@@ -434,14 +434,14 @@ def test_import_with_namespace_override(runner) -> None:
         time.sleep(0.5)
         try:
             # Export from src
-            r_export = c.get(f"{ENGRAM_API}/api/v1/admin/export", params={"ns": src_ns})
+            r_export = c.get(f"{MEMNOS_API}/api/v1/admin/export", params={"ns": src_ns})
             assert r_export.status_code == 200
             envelope = r_export.json()
             assert envelope["count"] >= 1, f"Expected at least 1 exported memory, got {envelope['count']}"
 
             # Import into dst using ?ns= override
             r_import = c.post(
-                f"{ENGRAM_API}/api/v1/admin/import",
+                f"{MEMNOS_API}/api/v1/admin/import",
                 json=envelope,
                 params={"ns": dst_ns},
             )
@@ -456,7 +456,7 @@ def test_import_with_namespace_override(runner) -> None:
             # Verify content arrived in dst namespace
             time.sleep(0.5)
             r_search = c.get(
-                f"{ENGRAM_API}/api/v1/memory/search",
+                f"{MEMNOS_API}/api/v1/memory/search",
                 params={"q": "import-override-test", "ns": dst_ns, "top_k": 5},
             )
             assert r_search.status_code == 200
@@ -464,7 +464,7 @@ def test_import_with_namespace_override(runner) -> None:
         finally:
             _del(c, orig_id, src_ns)
             r_s = c.get(
-                f"{ENGRAM_API}/api/v1/memory/search",
+                f"{MEMNOS_API}/api/v1/memory/search",
                 params={"q": "import-override-test", "ns": dst_ns, "top_k": 10},
             )
             for m in (r_s.json() if r_s.status_code == 200 else []):
@@ -488,7 +488,7 @@ def test_review_due_excludes_future_dates(runner) -> None:
         )
         mid = mem["id"]
         try:
-            r = c.get(f"{ENGRAM_API}/api/v1/memory/review-due", params={"ns": ns})
+            r = c.get(f"{MEMNOS_API}/api/v1/memory/review-due", params={"ns": ns})
             assert r.status_code == 200
             items = r.json()
             ids = [i["id"] for i in items]
@@ -509,7 +509,7 @@ def test_review_due_includes_overdue_memories(runner) -> None:
         )
         mid = mem["id"]
         try:
-            r = c.get(f"{ENGRAM_API}/api/v1/memory/review-due", params={"ns": ns})
+            r = c.get(f"{MEMNOS_API}/api/v1/memory/review-due", params={"ns": ns})
             assert r.status_code == 200
             items = r.json()
             ids = [i["id"] for i in items]
@@ -529,7 +529,7 @@ def test_tags_field_round_trips_via_get(runner) -> None:
         mem = _write(c, "tagged memory test", ns, tags=["alpha", "beta", "gamma"])
         mid = mem["id"]
         try:
-            r = c.get(f"{ENGRAM_API}/api/v1/memory/{mid}", params={"ns": ns})
+            r = c.get(f"{MEMNOS_API}/api/v1/memory/{mid}", params={"ns": ns})
             assert r.status_code == 200
             body = r.json()
             tags = body.get("tags", [])
@@ -550,7 +550,7 @@ def test_tags_in_search_results(runner) -> None:
         time.sleep(0.5)
         try:
             r = c.get(
-                f"{ENGRAM_API}/api/v1/memory/search",
+                f"{MEMNOS_API}/api/v1/memory/search",
                 params={"q": marker, "ns": ns, "top_k": 5},
             )
             assert r.status_code == 200

@@ -1,11 +1,11 @@
-# engram-sdk
+# memnos-sdk
 
-Python SDK for [engram](https://github.com/thameema/engram) — persistent memory for AI agents.
+Python SDK for [memnos](https://github.com/thameema/memnos) — persistent memory for AI agents.
 
 ```python
-from engram_sdk import EngramClient
+from memnos_sdk import MemnosClient
 
-client = EngramClient(base_url="http://localhost:8766", api_key="your-key")
+client = MemnosClient(base_url="http://localhost:8766", api_key="your-key")
 
 client.write("Chose PostgreSQL for the event store — ACID guarantees required",
              namespace="org:myproject",
@@ -21,15 +21,15 @@ for r in results:
 ## Install
 
 ```bash
-pip install engram-sdk
+pip install memnos-sdk
 ```
 
 With LangChain or LlamaIndex integrations:
 
 ```bash
-pip install "engram-sdk[langchain]"
-pip install "engram-sdk[llamaindex]"
-pip install "engram-sdk[all]"
+pip install "memnos-sdk[langchain]"
+pip install "memnos-sdk[llamaindex]"
+pip install "memnos-sdk[all]"
 ```
 
 Requires Python 3.10+.
@@ -39,11 +39,11 @@ Requires Python 3.10+.
 ### Sync client
 
 ```python
-from engram_sdk import EngramClient
+from memnos_sdk import MemnosClient
 
-client = EngramClient(
+client = MemnosClient(
     base_url="http://localhost:8766",
-    api_key="engram-local-dev-key",
+    api_key="memnos-local-dev-key",
 )
 
 # Write a memory
@@ -73,10 +73,10 @@ client.delete(mem.id)
 
 ```python
 import asyncio
-from engram_sdk import AsyncEngramClient
+from memnos_sdk import AsyncMemnosClient
 
 async def main():
-    async with AsyncEngramClient(base_url="http://localhost:8766", api_key="key") as client:
+    async with AsyncMemnosClient(base_url="http://localhost:8766", api_key="key") as client:
         await client.write("Chose gRPC for inter-service comms", namespace="org:svc",
                            memory_type="decision", affects=["api-gateway"])
         results = await client.search("gRPC decision")
@@ -97,7 +97,7 @@ asyncio.run(main())
 | `session` | Automated session summaries from hooks |
 
 ```python
-from engram_sdk import MemoryType
+from memnos_sdk import MemoryType
 
 client.write("...", namespace="org:x", memory_type=MemoryType.DECISION)
 ```
@@ -107,9 +107,9 @@ client.write("...", namespace="org:x", memory_type=MemoryType.DECISION)
 Register a folder of markdown ADRs/decision docs and query them as constraints:
 
 ```python
-from engram_sdk import EngramClient
+from memnos_sdk import MemnosClient
 
-client = EngramClient(base_url="http://localhost:8766", api_key="key")
+client = MemnosClient(base_url="http://localhost:8766", api_key="key")
 
 # Register a corpus (one-time setup)
 corpus = client.corpus.register(
@@ -133,9 +133,9 @@ for hit in result.violations:
 ```python
 from langchain_openai import ChatOpenAI
 from langchain.chains import ConversationChain
-from engram_sdk.integrations.langchain import EngramMemory
+from memnos_sdk.integrations.langchain import MemnosMemory
 
-memory = EngramMemory(
+memory = MemnosMemory(
     base_url="http://localhost:8766",
     api_key="your-key",
     namespace="org:myproject",
@@ -146,15 +146,15 @@ chain = ConversationChain(llm=ChatOpenAI(), memory=memory)
 response = chain.predict(input="What storage decisions have we made?")
 ```
 
-`EngramMemory` loads the top-k most relevant memories as conversation context and writes new exchanges back to engram automatically.
+`MemnosMemory` loads the top-k most relevant memories as conversation context and writes new exchanges back to memnos automatically.
 
 ## LlamaIndex integration
 
 ```python
 from llama_index.core import VectorStoreIndex
-from engram_sdk.integrations.llamaindex import EngramReader
+from memnos_sdk.integrations.llamaindex import MemnosReader
 
-reader = EngramReader(base_url="http://localhost:8766", api_key="your-key")
+reader = MemnosReader(base_url="http://localhost:8766", api_key="your-key")
 documents = reader.load_data(namespace="org:myproject", query="architecture decisions", top_k=20)
 
 index = VectorStoreIndex.from_documents(documents)
@@ -191,7 +191,7 @@ with open("backup.json") as f:
 ## Error handling
 
 ```python
-from engram_sdk.exceptions import NotFoundError, AuthenticationError, EngramError
+from memnos_sdk.exceptions import NotFoundError, AuthenticationError, MemnosError
 
 try:
     mem = client.get("nonexistent-id")
@@ -199,25 +199,25 @@ except NotFoundError:
     print("Memory not found")
 except AuthenticationError:
     print("Check your API key")
-except EngramError as e:
-    print(f"Engram error: {e}")
+except MemnosError as e:
+    print(f"Memnos error: {e}")
 ```
 
 | Exception | When raised |
 |-----------|-------------|
-| `EngramError` | Base class for all SDK errors |
+| `MemnosError` | Base class for all SDK errors |
 | `AuthenticationError` | Invalid or missing API key |
 | `NotFoundError` | Memory or corpus not found |
 | `ValidationError` | Malformed request (bad namespace, etc.) |
-| `ServerError` | 5xx from the engram server |
+| `ServerError` | 5xx from the memnos server |
 | `ConnectionError` | Server unreachable |
 
 ## Configuration
 
 ```python
-client = EngramClient(
-    base_url="http://localhost:8766",  # or ENGRAM_API env var
-    api_key="your-key",               # or ENGRAM_KEY env var
+client = MemnosClient(
+    base_url="http://localhost:8766",  # or MEMNOS_API env var
+    api_key="your-key",               # or MEMNOS_KEY env var
     timeout=15.0,                     # per-request timeout in seconds
 )
 ```
@@ -226,16 +226,16 @@ Environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ENGRAM_API` | `http://localhost:8766` | Server URL |
-| `ENGRAM_KEY` | — | API key |
+| `MEMNOS_API` | `http://localhost:8766` | Server URL |
+| `MEMNOS_KEY` | — | API key |
 
-## Running engram locally
+## Running memnos locally
 
 ```bash
-git clone https://github.com/thameema/engram
-cd engram
+git clone https://github.com/thameema/memnos
+cd memnos
 docker compose up -d
-# Server is at http://localhost:8766, key: engram-local-dev-key
+# Server is at http://localhost:8766, key: memnos-local-dev-key
 ```
 
 See the [main README](../../README.md) for full setup.

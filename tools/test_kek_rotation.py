@@ -1,5 +1,5 @@
 """
-tools/test_kek_rotation.py — Tests for engram vault rotate-kek.
+tools/test_kek_rotation.py — Tests for memnos vault rotate-kek.
 
 Covers:
 - ArcadeDBClient.list_secrets_with_ciphertext(): returns Secret objects with ciphertext
@@ -47,7 +47,7 @@ def _make_kek(passphrase: str = "test-kek-passphrase") -> bytes:
     return HKDF(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=b"engram-vault-v1",
+        salt=b"memnos-vault-v1",
         info=b"kek",
     ).derive(passphrase.encode())
 
@@ -64,7 +64,7 @@ def _b64dec(s: str) -> bytes:
 def _make_secret(secret_id: str = "s1", key_name: str = "k1",
                  namespace: str = "ns1", value_enc: str = "ve",
                  dek_enc: str = "de") -> "Secret":
-    from engram.models import Secret
+    from memnos.models import Secret
     return Secret(
         id=secret_id,
         key_name=key_name,
@@ -97,7 +97,7 @@ def _decrypt_dek(kek: bytes, dek_enc_b64: str) -> bytes:
 
 class TestListSecretsWithCiphertext(unittest.IsolatedAsyncioTestCase):
     async def test_returns_secret_objects(self):
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         db = ArcadeDBClient.__new__(ArcadeDBClient)
         row = {
             "id": "s1", "key_name": "k1", "note": "", "secret_type": "api_key",
@@ -113,7 +113,7 @@ class TestListSecretsWithCiphertext(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results[0].dek_enc, "de1")
 
     async def test_includes_value_enc_and_dek_enc(self):
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         db = ArcadeDBClient.__new__(ArcadeDBClient)
         row = {
             "id": "s2", "key_name": "k2", "note": "", "secret_type": "token",
@@ -126,7 +126,7 @@ class TestListSecretsWithCiphertext(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results[0].dek_enc, "DEKENC")
 
     async def test_wildcard_namespace_uses_no_filter(self):
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         db = ArcadeDBClient.__new__(ArcadeDBClient)
         db._query = AsyncMock(return_value=[])
         await db.list_secrets_with_ciphertext("*")
@@ -134,7 +134,7 @@ class TestListSecretsWithCiphertext(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(":ns", call_args)
 
     async def test_returns_empty_when_no_secrets(self):
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         db = ArcadeDBClient.__new__(ArcadeDBClient)
         db._query = AsyncMock(return_value=[])
         results = await db.list_secrets_with_ciphertext("ns1")
@@ -143,21 +143,21 @@ class TestListSecretsWithCiphertext(unittest.IsolatedAsyncioTestCase):
 
 class TestUpdateDekEnc(unittest.IsolatedAsyncioTestCase):
     async def test_returns_true_on_success(self):
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         db = ArcadeDBClient.__new__(ArcadeDBClient)
         db._command = AsyncMock(return_value=[{"updated": 1}])
         result = await db.update_dek_enc("s1", "newdekenc", "ns1")
         self.assertTrue(result)
 
     async def test_returns_false_when_no_rows(self):
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         db = ArcadeDBClient.__new__(ArcadeDBClient)
         db._command = AsyncMock(return_value=[])
         result = await db.update_dek_enc("missing", "newdekenc", "ns1")
         self.assertFalse(result)
 
     async def test_passes_correct_params(self):
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         db = ArcadeDBClient.__new__(ArcadeDBClient)
         db._command = AsyncMock(return_value=[{}])
         await db.update_dek_enc("sid123", "newenc", "myns")
@@ -179,7 +179,7 @@ class TestRotateKekLocal(unittest.IsolatedAsyncioTestCase):
         return db
 
     async def test_rotates_all_secrets(self):
-        from engram.vault.vault_client import rotate_kek_local
+        from memnos.vault.vault_client import rotate_kek_local
         old_kek = _make_kek("old")
         dek = os.urandom(32)
         dek_enc = _encrypt_dek(old_kek, dek)
@@ -192,7 +192,7 @@ class TestRotateKekLocal(unittest.IsolatedAsyncioTestCase):
         db.update_dek_enc.assert_awaited_once()
 
     async def test_failed_decrypt_goes_to_failed(self):
-        from engram.vault.vault_client import rotate_kek_local
+        from memnos.vault.vault_client import rotate_kek_local
         # dek_enc is garbage — cannot be decrypted with correct old KEK
         secret = _make_secret(dek_enc=_b64enc(b"not-valid-ciphertext"))
         db = self._make_db([secret])
@@ -202,7 +202,7 @@ class TestRotateKekLocal(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.failed[0][0], "s1")
 
     async def test_dry_run_skips_db_writes(self):
-        from engram.vault.vault_client import rotate_kek_local
+        from memnos.vault.vault_client import rotate_kek_local
         old_kek = _make_kek("old")
         dek = os.urandom(32)
         dek_enc = _encrypt_dek(old_kek, dek)
@@ -215,14 +215,14 @@ class TestRotateKekLocal(unittest.IsolatedAsyncioTestCase):
         db.update_dek_enc.assert_not_awaited()
 
     async def test_empty_secrets_returns_zero(self):
-        from engram.vault.vault_client import rotate_kek_local
+        from memnos.vault.vault_client import rotate_kek_local
         db = self._make_db([])
         result = await rotate_kek_local("old", "new", db, "ns1")
         self.assertEqual(result.rotated, 0)
         self.assertEqual(result.total, 0)
 
     async def test_db_update_failure_captured(self):
-        from engram.vault.vault_client import rotate_kek_local
+        from memnos.vault.vault_client import rotate_kek_local
         old_kek = _make_kek("old")
         dek = os.urandom(32)
         dek_enc = _encrypt_dek(old_kek, dek)
@@ -237,7 +237,7 @@ class TestRotateKekLocal(unittest.IsolatedAsyncioTestCase):
 
     async def test_new_dek_enc_decryptable_with_new_kek(self):
         """The re-encrypted DEK must decrypt correctly under the new KEK."""
-        from engram.vault.vault_client import rotate_kek_local
+        from memnos.vault.vault_client import rotate_kek_local
         old_kek = _make_kek("old-passphrase")
         new_kek = _make_kek("new-passphrase")
         dek = os.urandom(32)
@@ -259,7 +259,7 @@ class TestRotateKekLocal(unittest.IsolatedAsyncioTestCase):
 
     async def test_raw_b64_key_accepted(self):
         """A 32-byte base64 key string is used directly without HKDF."""
-        from engram.vault.vault_client import rotate_kek_local
+        from memnos.vault.vault_client import rotate_kek_local
         old_raw = os.urandom(32)
         new_raw = os.urandom(32)
         old_key_str = _b64enc(old_raw)
@@ -282,7 +282,7 @@ class TestRotateKekLocal(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recovered_dek, dek)
 
     async def test_multiple_secrets_all_rotated(self):
-        from engram.vault.vault_client import rotate_kek_local
+        from memnos.vault.vault_client import rotate_kek_local
         old_kek = _make_kek("old")
         secrets = []
         for i in range(3):
@@ -297,7 +297,7 @@ class TestRotateKekLocal(unittest.IsolatedAsyncioTestCase):
 
     async def test_partial_failure_continues(self):
         """One bad secret should not prevent the others from being rotated."""
-        from engram.vault.vault_client import rotate_kek_local
+        from memnos.vault.vault_client import rotate_kek_local
         old_kek = _make_kek("old")
         good_dek = os.urandom(32)
         good_dek_enc = _encrypt_dek(old_kek, good_dek)
@@ -316,7 +316,7 @@ class TestRotateKekLocal(unittest.IsolatedAsyncioTestCase):
 
 class TestRotationResult(unittest.TestCase):
     def test_total_sums_all_categories(self):
-        from engram.vault.vault_client import RotationResult
+        from memnos.vault.vault_client import RotationResult
         r = RotationResult()
         r.rotated = 5
         r.skipped = 2
@@ -324,7 +324,7 @@ class TestRotationResult(unittest.TestCase):
         self.assertEqual(r.total, 9)
 
     def test_initial_values(self):
-        from engram.vault.vault_client import RotationResult
+        from memnos.vault.vault_client import RotationResult
         r = RotationResult()
         self.assertEqual(r.rotated, 0)
         self.assertEqual(r.skipped, 0)
@@ -338,7 +338,7 @@ class TestRotationResult(unittest.TestCase):
 
 class TestVaultCLIParser(unittest.TestCase):
     def _parser(self):
-        from engram.cli.vault_cli import _build_parser
+        from memnos.cli.vault_cli import _build_parser
         return _build_parser()
 
     def test_rotate_kek_subcommand_exists(self):
@@ -391,35 +391,35 @@ class TestVaultCLIRun(unittest.IsolatedAsyncioTestCase):
         return ns
 
     async def test_returns_1_when_old_key_missing(self):
-        from engram.cli.vault_cli import _run_rotate
+        from memnos.cli.vault_cli import _run_rotate
         args = self._args(old_key="", new_key="new")
         with patch.dict(os.environ, {}, clear=True):
             rc = await _run_rotate(args)
         self.assertEqual(rc, 1)
 
     async def test_returns_1_when_new_key_missing(self):
-        from engram.cli.vault_cli import _run_rotate
+        from memnos.cli.vault_cli import _run_rotate
         args = self._args(old_key="old", new_key="")
         with patch.dict(os.environ, {}, clear=True):
             rc = await _run_rotate(args)
         self.assertEqual(rc, 1)
 
     async def test_returns_1_when_keys_identical(self):
-        from engram.cli.vault_cli import _run_rotate
+        from memnos.cli.vault_cli import _run_rotate
         args = self._args(old_key="same", new_key="same")
         rc = await _run_rotate(args)
         self.assertEqual(rc, 1)
 
     async def test_returns_0_on_success(self):
-        from engram.cli.vault_cli import _run_rotate
-        from engram.vault.vault_client import RotationResult
+        from memnos.cli.vault_cli import _run_rotate
+        from memnos.vault.vault_client import RotationResult
 
         ok_result = RotationResult()
         ok_result.rotated = 3
 
-        with patch("engram.config.EngramConfig.from_yaml", return_value=MagicMock()), \
-             patch("engram.storage.arcadedb_client.ArcadeDBClient") as MockDB, \
-             patch("engram.vault.vault_client.rotate_kek_local", new=AsyncMock(return_value=ok_result)):
+        with patch("memnos.config.MemnosConfig.from_yaml", return_value=MagicMock()), \
+             patch("memnos.storage.arcadedb_client.ArcadeDBClient") as MockDB, \
+             patch("memnos.vault.vault_client.rotate_kek_local", new=AsyncMock(return_value=ok_result)):
             mock_db_instance = AsyncMock()
             MockDB.return_value = mock_db_instance
 
@@ -428,16 +428,16 @@ class TestVaultCLIRun(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rc, 0)
 
     async def test_returns_2_on_partial_failure(self):
-        from engram.cli.vault_cli import _run_rotate
-        from engram.vault.vault_client import RotationResult
+        from memnos.cli.vault_cli import _run_rotate
+        from memnos.vault.vault_client import RotationResult
 
         partial = RotationResult()
         partial.rotated = 2
         partial.failed = [("s1", "decrypt error")]
 
-        with patch("engram.config.EngramConfig.from_yaml", return_value=MagicMock()), \
-             patch("engram.storage.arcadedb_client.ArcadeDBClient") as MockDB, \
-             patch("engram.vault.vault_client.rotate_kek_local", new=AsyncMock(return_value=partial)):
+        with patch("memnos.config.MemnosConfig.from_yaml", return_value=MagicMock()), \
+             patch("memnos.storage.arcadedb_client.ArcadeDBClient") as MockDB, \
+             patch("memnos.vault.vault_client.rotate_kek_local", new=AsyncMock(return_value=partial)):
             mock_db_instance = AsyncMock()
             MockDB.return_value = mock_db_instance
 
@@ -446,14 +446,14 @@ class TestVaultCLIRun(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rc, 2)
 
     async def test_rotate_called_with_dry_run(self):
-        from engram.cli.vault_cli import _run_rotate
-        from engram.vault.vault_client import RotationResult
+        from memnos.cli.vault_cli import _run_rotate
+        from memnos.vault.vault_client import RotationResult
 
         mock_rotate = AsyncMock(return_value=RotationResult())
 
-        with patch("engram.config.EngramConfig.from_yaml", return_value=MagicMock()), \
-             patch("engram.storage.arcadedb_client.ArcadeDBClient") as MockDB, \
-             patch("engram.vault.vault_client.rotate_kek_local", mock_rotate):
+        with patch("memnos.config.MemnosConfig.from_yaml", return_value=MagicMock()), \
+             patch("memnos.storage.arcadedb_client.ArcadeDBClient") as MockDB, \
+             patch("memnos.vault.vault_client.rotate_kek_local", mock_rotate):
             mock_db_instance = AsyncMock()
             MockDB.return_value = mock_db_instance
 
@@ -464,15 +464,15 @@ class TestVaultCLIRun(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(call_kwargs.get("dry_run", False))
 
     async def test_env_var_fallback_for_old_key(self):
-        from engram.cli.vault_cli import _run_rotate
-        from engram.vault.vault_client import RotationResult
+        from memnos.cli.vault_cli import _run_rotate
+        from memnos.vault.vault_client import RotationResult
 
         mock_rotate = AsyncMock(return_value=RotationResult())
 
-        with patch.dict(os.environ, {"ENGRAM_VAULT_KEY": "env-old-key"}), \
-             patch("engram.config.EngramConfig.from_yaml", return_value=MagicMock()), \
-             patch("engram.storage.arcadedb_client.ArcadeDBClient") as MockDB, \
-             patch("engram.vault.vault_client.rotate_kek_local", mock_rotate):
+        with patch.dict(os.environ, {"MEMNOS_VAULT_KEY": "env-old-key"}), \
+             patch("memnos.config.MemnosConfig.from_yaml", return_value=MagicMock()), \
+             patch("memnos.storage.arcadedb_client.ArcadeDBClient") as MockDB, \
+             patch("memnos.vault.vault_client.rotate_kek_local", mock_rotate):
             mock_db_instance = AsyncMock()
             MockDB.return_value = mock_db_instance
 

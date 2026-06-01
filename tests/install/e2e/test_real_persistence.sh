@@ -32,13 +32,13 @@ sleep 1
 e2e_compose up -d >/dev/null 2>&1
 pass "compose down + up completed"
 
-# Wait for engram healthy again
+# Wait for memnos healthy again
 i=0
 while ! curl -sf "${E2E_API}/api/v1/admin/health" -H "Authorization: Bearer ${KEY}" >/dev/null 2>&1; do
   sleep 3; i=$((i+1))
-  [ $i -ge 30 ] && { fail "engram never came back healthy after restart"; echo ""; echo "PASSES=$PASSES FAILS=$FAILS WARNS=$WARNS"; exit 1; }
+  [ $i -ge 30 ] && { fail "memnos never came back healthy after restart"; echo ""; echo "PASSES=$PASSES FAILS=$FAILS WARNS=$WARNS"; exit 1; }
 done
-pass "engram healthy again after restart"
+pass "memnos healthy again after restart"
 
 # Search for the marker
 SEARCH=$(curl -s -G "${E2E_API}/api/v1/memory/search" \

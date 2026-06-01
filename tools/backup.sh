@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
-# backup.sh — Consistent backup of engram ArcadeDB data.
+# backup.sh — Consistent backup of memnos ArcadeDB data.
 #
 # Strategy: brief container stop → rsync → restart.
 # ArcadeDB WAL guarantees the copy is crash-consistent.
 # Total downtime: ~15 seconds.
 #
 # Usage:
-#   tools/backup.sh                            # backup to ~/.engram/backups/<timestamp>
-#   tools/backup.sh /Volumes/External/engram   # backup to custom location
+#   tools/backup.sh                            # backup to ~/.memnos/backups/<timestamp>
+#   tools/backup.sh /Volumes/External/memnos   # backup to custom location
 #   tools/backup.sh --verify                   # backup + verify record count matches
 #
 # Cron (daily at 2am):
-#   0 2 * * * cd ~/git/engram && bash tools/backup.sh >> ~/.engram/backup.log 2>&1
+#   0 2 * * * cd ~/git/memnos && bash tools/backup.sh >> ~/.memnos/backup.log 2>&1
 
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
-DATA_DIR="${ENGRAM_DATA_DIR:-$HOME/.engram}"
+DATA_DIR="${MEMNOS_DATA_DIR:-$HOME/.memnos}"
 BACKUP_ROOT="${1:-$DATA_DIR/backups}"
 KEEP_BACKUPS=7
 COMPOSE_FILE="$(dirname "$0")/../docker-compose.yml"
 ARCADEDB_URL="http://localhost:2480"
-ARCADEDB_AUTH="root:${ARCADEDB_PASSWORD:-engram-dev-password}"
+ARCADEDB_AUTH="root:${ARCADEDB_PASSWORD:-memnos-dev-password}"
 VERIFY=false
 
 [[ "${1:-}" == "--verify" ]] && { VERIFY=true; BACKUP_ROOT="$DATA_DIR/backups"; }
@@ -34,7 +34,7 @@ log() { echo "[$(date '+%H:%M:%S')] $*"; }
 die() { echo "[ERROR] $*" >&2; exit 1; }
 
 arcade_count() {
-    curl -sf "$ARCADEDB_URL/api/v1/query/engram" \
+    curl -sf "$ARCADEDB_URL/api/v1/query/memnos" \
         -H "Authorization: Basic $(printf '%s' "$ARCADEDB_AUTH" | base64)" \
         -H "Content-Type: application/json" \
         -d '{"language":"sql","command":"SELECT count(*) AS cnt FROM Memory"}' \
@@ -45,7 +45,7 @@ arcade_count() {
 [[ -d "$DATA_DIR/arcadedb" ]] || die "ArcadeDB data directory not found: $DATA_DIR/arcadedb"
 mkdir -p "$BACKUP_ROOT"
 
-log "engram backup — $TIMESTAMP"
+log "memnos backup — $TIMESTAMP"
 log "Source : $DATA_DIR/arcadedb"
 log "Target : $BACKUP_DIR"
 
@@ -54,8 +54,8 @@ PRE_COUNT=$(arcade_count)
 log "Memory records before backup: $PRE_COUNT"
 
 # ── Stop containers ───────────────────────────────────────────────────────────
-log "Stopping engram and arcadedb containers..."
-docker compose -f "$COMPOSE_FILE" stop engram arcadedb 2>/dev/null || true
+log "Stopping memnos and arcadedb containers..."
+docker compose -f "$COMPOSE_FILE" stop memnos arcadedb 2>/dev/null || true
 
 # ── Copy data ─────────────────────────────────────────────────────────────────
 log "Copying data..."
@@ -83,7 +83,7 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-docker compose -f "$COMPOSE_FILE" start engram 2>/dev/null || true
+docker compose -f "$COMPOSE_FILE" start memnos 2>/dev/null || true
 
 # ── Verify (optional) ─────────────────────────────────────────────────────────
 if [[ "$VERIFY" == "true" ]]; then

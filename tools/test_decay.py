@@ -20,9 +20,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, _REPO_ROOT + "/packages/core")
 
-from engram.models import DecayPolicy, MemoryEntry, MemoryType, MemoryStatus, SearchResult
-from engram.client import _apply_decay_score, _DECAY_K_TIME, _DECAY_K_ACCESS
-from engram.decay.job import run_decay_job, DecayReport
+from memnos.models import DecayPolicy, MemoryEntry, MemoryType, MemoryStatus, SearchResult
+from memnos.client import _apply_decay_score, _DECAY_K_TIME, _DECAY_K_ACCESS
+from memnos.decay.job import run_decay_job, DecayReport
 
 
 # ---------------------------------------------------------------------------

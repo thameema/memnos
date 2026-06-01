@@ -6,28 +6,28 @@
 #
 # Ports:
 #   ArcadeDB HTTP:  12480  (prod uses 2480)
-#   engram MCP:     18765  (prod uses 8765)
-#   engram REST:    18766  (prod uses 8766)
+#   memnos MCP:     18765  (prod uses 8765)
+#   memnos REST:    18766  (prod uses 8766)
 #
 # Data:
-#   ENGRAM_DATA_DIR must be an absolute path — set by Makefile as $(HOME)/.engram-test
+#   MEMNOS_DATA_DIR must be an absolute path — set by Makefile as $(HOME)/.memnos-test
 #
 # Usage (via Makefile):
-#   make e2e-up    →  ENGRAM_DATA_DIR=~/.engram-test docker compose -f docker-compose.e2e.yml ...
+#   make e2e-up    →  MEMNOS_DATA_DIR=~/.memnos-test docker compose -f docker-compose.e2e.yml ...
 #   make e2e       →  full cycle: up → test → down
 
 services:
 
   arcadedb:
     image: arcadedata/arcadedb:26.5.1
-    container_name: engram-test-arcadedb
+    container_name: memnos-test-arcadedb
     ports:
       - "12480:2480"
     environment:
-      JAVA_OPTS: "-Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:-engram-test}"
+      JAVA_OPTS: "-Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:-memnos-test}"
     volumes:
-      - ${ENGRAM_DATA_DIR}/arcadedb:/home/arcadedb/databases
-      - ${ENGRAM_DATA_DIR}/arcadedb-logs:/home/arcadedb/log
+      - ${MEMNOS_DATA_DIR}/arcadedb:/home/arcadedb/databases
+      - ${MEMNOS_DATA_DIR}/arcadedb-logs:/home/arcadedb/log
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:2480/api/v1/ready"]
       interval: 10s
@@ -35,35 +35,35 @@ services:
       retries: 12
       start_period: 20s
 
-  engram:
+  memnos:
     build:
       context: .
       dockerfile: docker/Dockerfile
       args:
-        EMBED_MODE: ${ENGRAM_EMBED_MODE:-auto}
-    image: engram-test-image
-    container_name: engram-test
+        EMBED_MODE: ${MEMNOS_EMBED_MODE:-auto}
+    image: memnos-test-image
+    container_name: memnos-test
     ports:
       - "18765:8765"
       - "18766:8766"
     environment:
       ARCADEDB_HOST: arcadedb
       ARCADEDB_PORT: 2480
-      ARCADEDB_PASSWORD: ${ARCADEDB_PASSWORD:-engram-test}
-      ENGRAM_EMBED_MODE: ${ENGRAM_EMBED_MODE:-auto}
+      ARCADEDB_PASSWORD: ${ARCADEDB_PASSWORD:-memnos-test}
+      MEMNOS_EMBED_MODE: ${MEMNOS_EMBED_MODE:-auto}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      ENGRAM_API_KEY: ${ENGRAM_API_KEY:-test-api-key-e2e}
-      ENGRAM_VAULT_KEY: ${ENGRAM_VAULT_KEY:-}
+      MEMNOS_API_KEY: ${MEMNOS_API_KEY:-test-api-key-e2e}
+      MEMNOS_VAULT_KEY: ${MEMNOS_VAULT_KEY:-}
       TELEGRAM_ENABLED: "false"
-      ENGRAM_CONFIG: /app/engram.yaml
+      MEMNOS_CONFIG: /app/memnos.yaml
     volumes:
-      - ./engram.yaml:/app/engram.yaml:ro
+      - ./memnos.yaml:/app/memnos.yaml:ro
       - ./agents:/app/agents:ro
       - ./skills:/app/skills:ro
-      - ${ENGRAM_DATA_DIR}:/root/.engram
+      - ${MEMNOS_DATA_DIR}:/root/.memnos
     depends_on:
       arcadedb:
         condition: service_healthy

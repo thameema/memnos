@@ -68,7 +68,7 @@ sys.path.insert(0, _REPO_ROOT + "/packages/core")
 # ---------------------------------------------------------------------------
 
 def _make_config(**kwargs):
-    from engram.config import LLMExtractionConfig
+    from memnos.config import LLMExtractionConfig
     defaults = {
         "enabled": True,
         "provider": "anthropic",
@@ -86,7 +86,7 @@ def _valid_json(relationships: list[dict]) -> str:
 
 
 def _make_memory(content="test content", namespace="ns1"):
-    from engram.models import MemoryEntry, MemoryType
+    from memnos.models import MemoryEntry, MemoryType
     m = MagicMock(spec=MemoryEntry)
     m.id = "mem-1"
     m.content = content
@@ -103,7 +103,7 @@ def _make_memory(content="test content", namespace="ns1"):
 
 class TestLLMExtractorExtract(unittest.IsolatedAsyncioTestCase):
     def _extractor(self, **kwargs):
-        from engram.extraction.llm_extractor import LLMExtractor
+        from memnos.extraction.llm_extractor import LLMExtractor
         return LLMExtractor(_make_config(**kwargs))
 
     async def test_returns_relationships_from_valid_json(self):
@@ -178,7 +178,7 @@ class TestLLMExtractorExtract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results, [])
 
     async def test_returns_empty_when_no_api_key(self):
-        from engram.extraction.llm_extractor import LLMExtractor
+        from memnos.extraction.llm_extractor import LLMExtractor
         ext = LLMExtractor(_make_config(api_key=""))
         with patch.dict(os.environ, {}, clear=True):
             results = await ext.extract("text")
@@ -231,7 +231,7 @@ class TestLLMExtractorExtract(unittest.IsolatedAsyncioTestCase):
 
 class TestResolveProvider(unittest.TestCase):
     def _fresh(self, **kwargs):
-        from engram.extraction.llm_extractor import LLMExtractor
+        from memnos.extraction.llm_extractor import LLMExtractor
         return LLMExtractor(_make_config(**kwargs))
 
     def test_uses_config_api_key(self):
@@ -276,7 +276,7 @@ class TestResolveProvider(unittest.TestCase):
 
 class TestEdgeVocabulary(unittest.TestCase):
     def test_contains_all_expected_types(self):
-        from engram.extraction.llm_extractor import EDGE_VOCABULARY
+        from memnos.extraction.llm_extractor import EDGE_VOCABULARY
         expected = {
             "CHOSE", "PROHIBITS", "WANTS", "DEADLINE", "CAUSES",
             "DEPENDS_ON", "REPLACES", "GOVERNS", "RATIONALE_FOR", "RELATES_TO",
@@ -290,7 +290,7 @@ class TestEdgeVocabulary(unittest.TestCase):
 
 class TestArcadeDBEdgeMethods(unittest.IsolatedAsyncioTestCase):
     def _db(self):
-        from engram.storage.arcadedb_client import ArcadeDBClient
+        from memnos.storage.arcadedb_client import ArcadeDBClient
         db = ArcadeDBClient.__new__(ArcadeDBClient)
         db._command = AsyncMock(return_value=[{}])
         return db
@@ -349,10 +349,10 @@ class TestArcadeDBEdgeMethods(unittest.IsolatedAsyncioTestCase):
 
 class TestDispatchLLMExtraction(unittest.IsolatedAsyncioTestCase):
     def _make_client_with_extractor(self, extract_return=None):
-        from engram.client import EngramClient
-        from engram.extraction.llm_extractor import LLMExtractor, ExtractedRelationship
+        from memnos.client import MemnosClient
+        from memnos.extraction.llm_extractor import LLMExtractor, ExtractedRelationship
 
-        client = EngramClient.__new__(EngramClient)
+        client = MemnosClient.__new__(MemnosClient)
         mock_extractor = MagicMock(spec=LLMExtractor)
         mock_extractor.extract = AsyncMock(return_value=extract_return or [])
         client._llm_extractor = mock_extractor
@@ -364,14 +364,14 @@ class TestDispatchLLMExtraction(unittest.IsolatedAsyncioTestCase):
         return client
 
     async def test_calls_extract_with_memory_content(self):
-        from engram.extraction.llm_extractor import ExtractedRelationship
+        from memnos.extraction.llm_extractor import ExtractedRelationship
         client = self._make_client_with_extractor()
         mem = _make_memory(content="we chose FHIR R4")
         await client._dispatch_llm_extraction(mem, "ns1")
         client._llm_extractor.extract.assert_awaited_once_with("we chose FHIR R4")
 
     async def test_upserts_source_and_target_entities(self):
-        from engram.extraction.llm_extractor import ExtractedRelationship
+        from memnos.extraction.llm_extractor import ExtractedRelationship
         rel = ExtractedRelationship(source="fhir r4", edge_type="CHOSE", target="member-match", confidence=0.9)
         client = self._make_client_with_extractor(extract_return=[rel])
         mem = _make_memory()
@@ -381,7 +381,7 @@ class TestDispatchLLMExtraction(unittest.IsolatedAsyncioTestCase):
         self.assertIn("member-match", upsert_calls)
 
     async def test_creates_entity_edge_for_each_relationship(self):
-        from engram.extraction.llm_extractor import ExtractedRelationship
+        from memnos.extraction.llm_extractor import ExtractedRelationship
         rels = [
             ExtractedRelationship(source="redis", edge_type="PROHIBITS", target="sessions", confidence=0.9),
             ExtractedRelationship(source="x", edge_type="CHOSE", target="y", confidence=0.8),
@@ -392,8 +392,8 @@ class TestDispatchLLMExtraction(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client._arcadedb.create_entity_edge.await_count, 2)
 
     async def test_skips_when_llm_extractor_is_none(self):
-        from engram.client import EngramClient
-        client = EngramClient.__new__(EngramClient)
+        from memnos.client import MemnosClient
+        client = MemnosClient.__new__(MemnosClient)
         client._llm_extractor = None
         client._arcadedb = MagicMock()
         client._arcadedb.upsert_entity = AsyncMock()
@@ -402,9 +402,9 @@ class TestDispatchLLMExtraction(unittest.IsolatedAsyncioTestCase):
         client._arcadedb.upsert_entity.assert_not_called()
 
     async def test_nonfatal_on_extract_exception(self):
-        from engram.client import EngramClient
-        from engram.extraction.llm_extractor import LLMExtractor
-        client = EngramClient.__new__(EngramClient)
+        from memnos.client import MemnosClient
+        from memnos.extraction.llm_extractor import LLMExtractor
+        client = MemnosClient.__new__(MemnosClient)
         client._llm_extractor = MagicMock(spec=LLMExtractor)
         client._llm_extractor.extract = AsyncMock(side_effect=RuntimeError("boom"))
         client._arcadedb = MagicMock()
@@ -412,7 +412,7 @@ class TestDispatchLLMExtraction(unittest.IsolatedAsyncioTestCase):
         await client._dispatch_llm_extraction(mem, "ns1")  # no raise
 
     async def test_nonfatal_on_arcadedb_error(self):
-        from engram.extraction.llm_extractor import ExtractedRelationship
+        from memnos.extraction.llm_extractor import ExtractedRelationship
         rel = ExtractedRelationship(source="a", edge_type="CHOSE", target="b", confidence=0.9)
         client = self._make_client_with_extractor(extract_return=[rel])
         client._arcadedb.upsert_entity = AsyncMock(side_effect=RuntimeError("db down"))
@@ -420,7 +420,7 @@ class TestDispatchLLMExtraction(unittest.IsolatedAsyncioTestCase):
         await client._dispatch_llm_extraction(mem, "ns1")  # no raise
 
     async def test_edge_confidence_passed_through(self):
-        from engram.extraction.llm_extractor import ExtractedRelationship
+        from memnos.extraction.llm_extractor import ExtractedRelationship
         rel = ExtractedRelationship(source="a", edge_type="DEPENDS_ON", target="b", confidence=0.77)
         client = self._make_client_with_extractor(extract_return=[rel])
         mem = _make_memory()
@@ -435,15 +435,15 @@ class TestDispatchLLMExtraction(unittest.IsolatedAsyncioTestCase):
 
 class TestClientAddLLMWiring(unittest.IsolatedAsyncioTestCase):
     def _make_client(self, llm_enabled=True):
-        from engram.client import EngramClient
-        from engram.config import EngramConfig, LLMExtractionConfig, VaultConfig
-        from engram.extraction.llm_extractor import LLMExtractor
+        from memnos.client import MemnosClient
+        from memnos.config import MemnosConfig, LLMExtractionConfig, VaultConfig
+        from memnos.extraction.llm_extractor import LLMExtractor
 
-        cfg = EngramConfig()
+        cfg = MemnosConfig()
         cfg.vault = VaultConfig(enabled=False, detect_in_memory=False)
         cfg.llm_extraction = LLMExtractionConfig(enabled=llm_enabled)
 
-        client = EngramClient.__new__(EngramClient)
+        client = MemnosClient.__new__(MemnosClient)
         client._config = cfg
         client._started = True
         client._arcadedb = MagicMock()
@@ -478,11 +478,11 @@ class TestClientAddLLMWiring(unittest.IsolatedAsyncioTestCase):
             loop = asyncio.get_event_loop()
             return loop.create_task(coro)
 
-        with patch("engram.client.asyncio.ensure_future", side_effect=_fake_ensure_future), \
+        with patch("memnos.client.asyncio.ensure_future", side_effect=_fake_ensure_future), \
              patch.object(client, "_dispatch_webhooks", new=AsyncMock()), \
              patch.object(client, "_dispatch_immediate", new=AsyncMock()), \
              patch.object(client, "_fanout_memory", new=AsyncMock()):
-            with patch("engram.client.get_embedder") as _:
+            with patch("memnos.client.get_embedder") as _:
                 client._embedder = MagicMock()
                 client._embedder.embed = AsyncMock(return_value=[0.0] * 10)
                 await client.add("test content", namespace="ns1")
@@ -495,7 +495,7 @@ class TestClientAddLLMWiring(unittest.IsolatedAsyncioTestCase):
         client = self._make_client(llm_enabled=False)
         captured = []
 
-        with patch("engram.client.asyncio.ensure_future", side_effect=captured.append), \
+        with patch("memnos.client.asyncio.ensure_future", side_effect=captured.append), \
              patch.object(client, "_dispatch_webhooks", new=AsyncMock()), \
              patch.object(client, "_dispatch_immediate", new=AsyncMock()), \
              patch.object(client, "_fanout_memory", new=AsyncMock()):
@@ -512,7 +512,7 @@ class TestClientAddLLMWiring(unittest.IsolatedAsyncioTestCase):
 
 class TestLLMExtractionConfig(unittest.TestCase):
     def test_defaults(self):
-        from engram.config import LLMExtractionConfig
+        from memnos.config import LLMExtractionConfig
         cfg = LLMExtractionConfig()
         self.assertFalse(cfg.enabled)
         self.assertEqual(cfg.provider, "anthropic")
@@ -522,7 +522,7 @@ class TestLLMExtractionConfig(unittest.TestCase):
         self.assertEqual(cfg.model, "")
 
     def test_all_fields_settable(self):
-        from engram.config import LLMExtractionConfig
+        from memnos.config import LLMExtractionConfig
         cfg = LLMExtractionConfig(
             enabled=True,
             provider="openai",
@@ -540,13 +540,13 @@ class TestLLMExtractionConfig(unittest.TestCase):
         self.assertEqual(cfg.max_tokens, 256)
         self.assertAlmostEqual(cfg.confidence_threshold, 0.75)
 
-    def test_engram_config_has_llm_extraction_field(self):
-        from engram.config import EngramConfig
-        cfg = EngramConfig()
+    def test_memnos_config_has_llm_extraction_field(self):
+        from memnos.config import MemnosConfig
+        cfg = MemnosConfig()
         self.assertFalse(cfg.llm_extraction.enabled)
 
     def test_from_yaml_parses_llm_extraction_block(self):
-        from engram.config import EngramConfig
+        from memnos.config import MemnosConfig
         import io
         import yaml
         yaml_text = """
@@ -559,8 +559,8 @@ llm_extraction:
   confidence_threshold: 0.7
 """
         raw = yaml.safe_load(io.StringIO(yaml_text))
-        cfg = EngramConfig(llm_extraction=__import__(
-            "engram.config", fromlist=["LLMExtractionConfig"]
+        cfg = MemnosConfig(llm_extraction=__import__(
+            "memnos.config", fromlist=["LLMExtractionConfig"]
         ).LLMExtractionConfig(**raw["llm_extraction"]))
         self.assertTrue(cfg.llm_extraction.enabled)
         self.assertEqual(cfg.llm_extraction.provider, "openai")
@@ -573,22 +573,22 @@ llm_extraction:
 
 class TestGetLLMExtractorSingleton(unittest.TestCase):
     def setUp(self):
-        from engram.extraction.llm_extractor import reset_llm_extractor
+        from memnos.extraction.llm_extractor import reset_llm_extractor
         reset_llm_extractor()
 
     def tearDown(self):
-        from engram.extraction.llm_extractor import reset_llm_extractor
+        from memnos.extraction.llm_extractor import reset_llm_extractor
         reset_llm_extractor()
 
     def test_returns_same_instance_on_second_call(self):
-        from engram.extraction.llm_extractor import get_llm_extractor
+        from memnos.extraction.llm_extractor import get_llm_extractor
         cfg = _make_config()
         a = get_llm_extractor(cfg)
         b = get_llm_extractor(cfg)
         self.assertIs(a, b)
 
     def test_reset_creates_new_instance(self):
-        from engram.extraction.llm_extractor import get_llm_extractor, reset_llm_extractor
+        from memnos.extraction.llm_extractor import get_llm_extractor, reset_llm_extractor
         cfg = _make_config()
         a = get_llm_extractor(cfg)
         reset_llm_extractor()

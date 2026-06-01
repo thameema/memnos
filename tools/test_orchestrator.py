@@ -31,7 +31,7 @@ sys.path.insert(0, _REPO_ROOT + "/packages/core")
 
 class TestExtractJsonArray(unittest.TestCase):
     def _call(self, text):
-        from engram_orchestrator.planner import _extract_json_array
+        from memnos_orchestrator.planner import _extract_json_array
         return _extract_json_array(text)
 
     def test_clean_json_array(self):
@@ -71,7 +71,7 @@ class TestExtractJsonArray(unittest.TestCase):
 
 class TestPlanner(unittest.IsolatedAsyncioTestCase):
     def _make_planner(self):
-        from engram_orchestrator.planner import Planner
+        from memnos_orchestrator.planner import Planner
         with patch("anthropic.AsyncAnthropic"):
             p = Planner(api_key="test-key", model="claude-haiku-4-5-20251001")
         return p
@@ -158,7 +158,7 @@ class TestPlanner(unittest.IsolatedAsyncioTestCase):
 
 class TestSynthesizer(unittest.IsolatedAsyncioTestCase):
     def _make_synth(self):
-        from engram_orchestrator.synthesizer import Synthesizer
+        from memnos_orchestrator.synthesizer import Synthesizer
         with patch("anthropic.AsyncAnthropic"):
             s = Synthesizer(api_key="test-key", model="claude-haiku-4-5-20251001")
         return s
@@ -211,7 +211,7 @@ class TestSynthesizer(unittest.IsolatedAsyncioTestCase):
 
 class TestCriticWorker(unittest.IsolatedAsyncioTestCase):
     def _make_critic(self):
-        from engram_orchestrator.critic import CriticWorker
+        from memnos_orchestrator.critic import CriticWorker
         with patch("anthropic.AsyncAnthropic"):
             c = CriticWorker(api_key="test-key", model="claude-haiku-4-5-20251001")
         return c
@@ -285,7 +285,7 @@ class TestCriticWorker(unittest.IsolatedAsyncioTestCase):
 
 class TestWorkerPool(unittest.IsolatedAsyncioTestCase):
     def _make_subtasks(self, n):
-        from engram_orchestrator.models import SubTask
+        from memnos_orchestrator.models import SubTask
         return [SubTask(prompt=f"task {i}") for i in range(n)]
 
     def _make_worker(self, result="done", raises=None):
@@ -298,8 +298,8 @@ class TestWorkerPool(unittest.IsolatedAsyncioTestCase):
         return w
 
     async def test_all_succeed(self):
-        from engram_orchestrator.pool import WorkerPool
-        from engram_orchestrator.models import TaskStatus
+        from memnos_orchestrator.pool import WorkerPool
+        from memnos_orchestrator.models import TaskStatus
         pool = WorkerPool(max_concurrent=3)
         subtasks = self._make_subtasks(3)
         results = await pool.run_parallel(subtasks, lambda st: self._make_worker("ok"))
@@ -307,8 +307,8 @@ class TestWorkerPool(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(r.result == "ok" for r in results))
 
     async def test_one_fails_others_complete(self):
-        from engram_orchestrator.pool import WorkerPool
-        from engram_orchestrator.models import TaskStatus
+        from memnos_orchestrator.pool import WorkerPool
+        from memnos_orchestrator.models import TaskStatus
 
         pool = WorkerPool(max_concurrent=5)
         subtasks = self._make_subtasks(3)
@@ -325,7 +325,7 @@ class TestWorkerPool(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(statuses["task 2"], TaskStatus.COMPLETE)
 
     async def test_failed_subtask_has_error_message(self):
-        from engram_orchestrator.pool import WorkerPool
+        from memnos_orchestrator.pool import WorkerPool
         pool = WorkerPool()
         subtasks = self._make_subtasks(1)
         results = await pool.run_parallel(
@@ -334,7 +334,7 @@ class TestWorkerPool(unittest.IsolatedAsyncioTestCase):
         self.assertIn("bad input", results[0].error)
 
     async def test_teardown_called_on_success(self):
-        from engram_orchestrator.pool import WorkerPool
+        from memnos_orchestrator.pool import WorkerPool
         pool = WorkerPool()
         subtasks = self._make_subtasks(1)
         workers = []
@@ -348,7 +348,7 @@ class TestWorkerPool(unittest.IsolatedAsyncioTestCase):
         workers[0].teardown.assert_awaited_once()
 
     async def test_teardown_called_on_failure(self):
-        from engram_orchestrator.pool import WorkerPool
+        from memnos_orchestrator.pool import WorkerPool
         pool = WorkerPool()
         subtasks = self._make_subtasks(1)
         workers = []
@@ -362,7 +362,7 @@ class TestWorkerPool(unittest.IsolatedAsyncioTestCase):
         workers[0].teardown.assert_awaited_once()
 
     async def test_timestamps_set(self):
-        from engram_orchestrator.pool import WorkerPool
+        from memnos_orchestrator.pool import WorkerPool
         pool = WorkerPool()
         subtasks = self._make_subtasks(1)
         results = await pool.run_parallel(subtasks, lambda st: self._make_worker())
@@ -370,7 +370,7 @@ class TestWorkerPool(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(results[0].completed_at)
 
     async def test_semaphore_respected(self):
-        from engram_orchestrator.pool import WorkerPool
+        from memnos_orchestrator.pool import WorkerPool
         pool = WorkerPool(max_concurrent=2)
         subtasks = self._make_subtasks(6)
         results = await pool.run_parallel(subtasks, lambda st: self._make_worker())
@@ -383,28 +383,28 @@ class TestWorkerPool(unittest.IsolatedAsyncioTestCase):
 
 class TestCosineSimiliarity(unittest.TestCase):
     def test_identical_vectors(self):
-        from engram_orchestrator.router import _cosine_similarity
+        from memnos_orchestrator.router import _cosine_similarity
         v = [1.0, 0.0, 0.0]
         self.assertAlmostEqual(_cosine_similarity(v, v), 1.0)
 
     def test_orthogonal_vectors(self):
-        from engram_orchestrator.router import _cosine_similarity
+        from memnos_orchestrator.router import _cosine_similarity
         a, b = [1.0, 0.0], [0.0, 1.0]
         self.assertAlmostEqual(_cosine_similarity(a, b), 0.0)
 
     def test_zero_vector_returns_zero(self):
-        from engram_orchestrator.router import _cosine_similarity
+        from memnos_orchestrator.router import _cosine_similarity
         self.assertEqual(_cosine_similarity([0.0, 0.0], [1.0, 1.0]), 0.0)
 
     def test_antiparallel_vectors(self):
-        from engram_orchestrator.router import _cosine_similarity
+        from memnos_orchestrator.router import _cosine_similarity
         a, b = [1.0, 0.0], [-1.0, 0.0]
         self.assertAlmostEqual(_cosine_similarity(a, b), -1.0)
 
 
 class TestAgentDescriptionText(unittest.TestCase):
     def _call(self, agent):
-        from engram_orchestrator.router import _agent_description_text
+        from memnos_orchestrator.router import _agent_description_text
         return _agent_description_text(agent)
 
     def test_combines_name_and_description(self):
@@ -424,30 +424,30 @@ class TestAgentDescriptionText(unittest.TestCase):
 
 class TestAgentRouterLoadAgent(unittest.TestCase):
     def test_load_agent_from_file(self):
-        from engram_orchestrator.router import AgentRouter
+        from memnos_orchestrator.router import AgentRouter
         with tempfile.TemporaryDirectory() as tmpdir:
             agent_file = Path(tmpdir) / "test-agent.yaml"
             agent_file.write_text("name: test-agent\ndescription: does testing\n")
-            router = AgentRouter(agents_dir=tmpdir, engram_client=MagicMock())
+            router = AgentRouter(agents_dir=tmpdir, memnos_client=MagicMock())
             agent = router.load_agent("test-agent")
         self.assertIsNotNone(agent)
         self.assertEqual(agent["name"], "test-agent")
 
     def test_load_missing_agent_returns_none(self):
-        from engram_orchestrator.router import AgentRouter
+        from memnos_orchestrator.router import AgentRouter
         with tempfile.TemporaryDirectory() as tmpdir:
-            router = AgentRouter(agents_dir=tmpdir, engram_client=MagicMock())
+            router = AgentRouter(agents_dir=tmpdir, memnos_client=MagicMock())
             result = router.load_agent("nonexistent")
         self.assertIsNone(result)
 
     def test_load_agent_nonexistent_dir_returns_none(self):
-        from engram_orchestrator.router import AgentRouter
-        router = AgentRouter(agents_dir="/nonexistent/path", engram_client=MagicMock())
+        from memnos_orchestrator.router import AgentRouter
+        router = AgentRouter(agents_dir="/nonexistent/path", memnos_client=MagicMock())
         self.assertIsNone(router.load_agent("any"))
 
     def test_cached_agent_returned_directly(self):
-        from engram_orchestrator.router import AgentRouter
-        router = AgentRouter(agents_dir="/nonexistent", engram_client=MagicMock())
+        from memnos_orchestrator.router import AgentRouter
+        router = AgentRouter(agents_dir="/nonexistent", memnos_client=MagicMock())
         router._agents_by_name["cached"] = {"name": "cached"}
         result = router.load_agent("cached")
         self.assertEqual(result["name"], "cached")
@@ -455,79 +455,79 @@ class TestAgentRouterLoadAgent(unittest.TestCase):
 
 class TestAgentRouterInit(unittest.IsolatedAsyncioTestCase):
     async def test_init_nonexistent_dir_logs_warning(self):
-        from engram_orchestrator.router import AgentRouter
-        router = AgentRouter(agents_dir="/nonexistent", engram_client=MagicMock())
+        from memnos_orchestrator.router import AgentRouter
+        router = AgentRouter(agents_dir="/nonexistent", memnos_client=MagicMock())
         await router.init()
         self.assertEqual(len(router._agent_embeddings), 0)
 
     async def test_init_loads_yaml_files(self):
-        from engram_orchestrator.router import AgentRouter
+        from memnos_orchestrator.router import AgentRouter
         with tempfile.TemporaryDirectory() as tmpdir:
             Path(tmpdir, "agent-a.yaml").write_text("name: agent-a\ndescription: does A\n")
             Path(tmpdir, "agent-b.yaml").write_text("name: agent-b\ndescription: does B\n")
             mock_client = MagicMock()
             mock_client.embedder = MagicMock()
             mock_client.embedder.embed_batch = AsyncMock(return_value=[[0.1, 0.2], [0.3, 0.4]])
-            router = AgentRouter(agents_dir=tmpdir, engram_client=mock_client)
+            router = AgentRouter(agents_dir=tmpdir, memnos_client=mock_client)
             await router.init()
         self.assertEqual(len(router._agent_embeddings), 2)
         self.assertIn("agent-a", router._agents_by_name)
 
     async def test_init_skips_malformed_yaml(self):
-        from engram_orchestrator.router import AgentRouter
+        from memnos_orchestrator.router import AgentRouter
         with tempfile.TemporaryDirectory() as tmpdir:
             Path(tmpdir, "bad.yaml").write_text("this: {unclosed bracket: [")
             Path(tmpdir, "good.yaml").write_text("name: good-agent\ndescription: works\n")
             mock_client = MagicMock()
             mock_client.embedder = MagicMock()
             mock_client.embedder.embed_batch = AsyncMock(return_value=[[0.1, 0.2]])
-            router = AgentRouter(agents_dir=tmpdir, engram_client=mock_client)
+            router = AgentRouter(agents_dir=tmpdir, memnos_client=mock_client)
             await router.init()
         self.assertEqual(len(router._agent_embeddings), 1)
 
 
 class TestAgentRouterMatch(unittest.IsolatedAsyncioTestCase):
     async def test_match_returns_best_agent_above_threshold(self):
-        from engram_orchestrator.router import AgentRouter
-        router = AgentRouter(agents_dir="/nonexistent", engram_client=MagicMock())
+        from memnos_orchestrator.router import AgentRouter
+        router = AgentRouter(agents_dir="/nonexistent", memnos_client=MagicMock())
         agent = {"name": "coder", "description": "writes code"}
         # Set embedding to a unit vector along axis 0
         router._agent_embeddings = [(agent, [1.0, 0.0, 0.0])]
 
         mock_client = MagicMock()
         mock_client.embedder.embed = AsyncMock(return_value=[1.0, 0.0, 0.0])  # exact match → score 1.0
-        router._engram_client = mock_client
+        router._memnos_client = mock_client
 
         result = await router.match("write some code", "ns")
         self.assertIsNotNone(result)
         self.assertEqual(result["name"], "coder")
 
     async def test_match_returns_none_below_threshold(self):
-        from engram_orchestrator.router import AgentRouter
-        router = AgentRouter(agents_dir="/nonexistent", engram_client=MagicMock())
+        from memnos_orchestrator.router import AgentRouter
+        router = AgentRouter(agents_dir="/nonexistent", memnos_client=MagicMock())
         agent = {"name": "coder"}
         router._agent_embeddings = [(agent, [1.0, 0.0, 0.0])]
 
         mock_client = MagicMock()
         mock_client.embedder.embed = AsyncMock(return_value=[0.0, 1.0, 0.0])  # orthogonal → score 0.0
-        router._engram_client = mock_client
+        router._memnos_client = mock_client
 
         result = await router.match("unrelated task", "ns")
         self.assertIsNone(result)
 
     async def test_match_no_agents_returns_none(self):
-        from engram_orchestrator.router import AgentRouter
-        router = AgentRouter(agents_dir="/nonexistent", engram_client=MagicMock())
+        from memnos_orchestrator.router import AgentRouter
+        router = AgentRouter(agents_dir="/nonexistent", memnos_client=MagicMock())
         result = await router.match("any task", "ns")
         self.assertIsNone(result)
 
     async def test_match_embedding_failure_returns_none(self):
-        from engram_orchestrator.router import AgentRouter
-        router = AgentRouter(agents_dir="/nonexistent", engram_client=MagicMock())
+        from memnos_orchestrator.router import AgentRouter
+        router = AgentRouter(agents_dir="/nonexistent", memnos_client=MagicMock())
         router._agent_embeddings = [({"name": "x"}, [1.0])]
         mock_client = MagicMock()
         mock_client.embedder.embed = AsyncMock(side_effect=RuntimeError("embed failed"))
-        router._engram_client = mock_client
+        router._memnos_client = mock_client
         result = await router.match("task", "ns")
         self.assertIsNone(result)
 
@@ -538,7 +538,7 @@ class TestAgentRouterMatch(unittest.IsolatedAsyncioTestCase):
 
 class TestTagExtractor(unittest.TestCase):
     def _call(self, text):
-        from engram_orchestrator.tag_extractor import extract_tags
+        from memnos_orchestrator.tag_extractor import extract_tags
         return extract_tags(text)
 
     def test_code_tag(self):

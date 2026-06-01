@@ -8,7 +8,7 @@ Or run the full suite (up → test → down):
     make e2e
 
 The test stack runs on ports 18765 (MCP) and 18766 (REST API) with data in
-~/.engram-test — it never touches your production ~/.engram directory.
+~/.memnos-test — it never touches your production ~/.memnos directory.
 
 All tests receive a unique `ns` fixture (e2e:test:<uuid4>) so each test run
 has its own isolated namespace. Memories are cleaned up after the session.
@@ -23,8 +23,8 @@ import httpx
 import pytest
 
 # ── Test stack connection ─────────────────────────────────────────────────────
-E2E_BASE_URL = os.environ.get("ENGRAM_E2E_URL", "http://localhost:18766")
-E2E_API_KEY  = os.environ.get("ENGRAM_E2E_API_KEY", "test-api-key-e2e")
+E2E_BASE_URL = os.environ.get("MEMNOS_E2E_URL", "http://localhost:18766")
+E2E_API_KEY  = os.environ.get("MEMNOS_E2E_API_KEY", "test-api-key-e2e")
 E2E_TIMEOUT  = 30.0
 
 _HEADERS = {"X-API-Key": E2E_API_KEY, "Content-Type": "application/json"}

@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 sys.path.insert(0, _REPO_ROOT + "/packages/core")
 
-from engram.contradiction.detector import (
+from memnos.contradiction.detector import (
     ContradictionWarning,
     _affirmed_phrases,
     _dominant_stance,

@@ -38,7 +38,7 @@ class FakeResult:
 
 
 def make_client(search_results: dict[str, list[FakeResult]] | None = None):
-    """Build a mock engram client with configurable per-namespace search results."""
+    """Build a mock memnos client with configurable per-namespace search results."""
     client = MagicMock()
     search_results = search_results or {}
 
@@ -69,26 +69,26 @@ def make_client(search_results: dict[str, list[FakeResult]] | None = None):
 
 class TestToolCapabilityCatalogs:
     def test_all_tools_present(self):
-        from engram.skill_coach.capabilities import TOOL_CAPABILITY_CATALOGS
+        from memnos.skill_coach.capabilities import TOOL_CAPABILITY_CATALOGS
         assert "claude-code" in TOOL_CAPABILITY_CATALOGS
         assert "gh" in TOOL_CAPABILITY_CATALOGS
         assert "docker" in TOOL_CAPABILITY_CATALOGS
         assert "kubectl" in TOOL_CAPABILITY_CATALOGS
 
     def test_gh_capabilities_count(self):
-        from engram.skill_coach.capabilities import GH_CAPABILITIES
+        from memnos.skill_coach.capabilities import GH_CAPABILITIES
         assert len(GH_CAPABILITIES) >= 5
 
     def test_docker_capabilities_count(self):
-        from engram.skill_coach.capabilities import DOCKER_CAPABILITIES
+        from memnos.skill_coach.capabilities import DOCKER_CAPABILITIES
         assert len(DOCKER_CAPABILITIES) >= 5
 
     def test_kubectl_capabilities_count(self):
-        from engram.skill_coach.capabilities import KUBECTL_CAPABILITIES
+        from memnos.skill_coach.capabilities import KUBECTL_CAPABILITIES
         assert len(KUBECTL_CAPABILITIES) >= 5
 
     def test_each_entry_has_required_fields(self):
-        from engram.skill_coach.capabilities import TOOL_CAPABILITY_CATALOGS
+        from memnos.skill_coach.capabilities import TOOL_CAPABILITY_CATALOGS
         required = {"id", "title", "category", "when_to_use", "example", "content"}
         for tool, caps in TOOL_CAPABILITY_CATALOGS.items():
             for cap in caps:
@@ -96,29 +96,29 @@ class TestToolCapabilityCatalogs:
                 assert not missing, f"{tool}/{cap.get('id')}: missing {missing}"
 
     def test_all_ids_unique_per_catalog(self):
-        from engram.skill_coach.capabilities import TOOL_CAPABILITY_CATALOGS
+        from memnos.skill_coach.capabilities import TOOL_CAPABILITY_CATALOGS
         for tool, caps in TOOL_CAPABILITY_CATALOGS.items():
             ids = [c["id"] for c in caps]
             assert len(ids) == len(set(ids)), f"Duplicate IDs in {tool}: {ids}"
 
     def test_gh_has_pr_and_issue_skills(self):
-        from engram.skill_coach.capabilities import GH_CAPABILITIES
+        from memnos.skill_coach.capabilities import GH_CAPABILITIES
         ids = {c["id"] for c in GH_CAPABILITIES}
         # At least one PR-related and one issue-related
         assert any("pr" in i or "pull" in i for i in ids)
 
     def test_docker_has_build_and_run_skills(self):
-        from engram.skill_coach.capabilities import DOCKER_CAPABILITIES
+        from memnos.skill_coach.capabilities import DOCKER_CAPABILITIES
         ids = {c["id"] for c in DOCKER_CAPABILITIES}
         assert any("build" in i or "run" in i for i in ids)
 
     def test_kubectl_has_apply_and_logs_skills(self):
-        from engram.skill_coach.capabilities import KUBECTL_CAPABILITIES
+        from memnos.skill_coach.capabilities import KUBECTL_CAPABILITIES
         ids = {c["id"] for c in KUBECTL_CAPABILITIES}
         assert any("log" in i or "apply" in i or "get" in i for i in ids)
 
     def test_catalogs_reference_correct_lists(self):
-        from engram.skill_coach.capabilities import (
+        from memnos.skill_coach.capabilities import (
             TOOL_CAPABILITY_CATALOGS,
             CLAUDE_CODE_CAPABILITIES,
             GH_CAPABILITIES,
@@ -140,7 +140,7 @@ class TestSeedToolCapabilities:
         return asyncio.run(coro)
 
     def test_seeds_known_tool(self):
-        from engram.skill_coach.seeder import seed_tool_capabilities
+        from memnos.skill_coach.seeder import seed_tool_capabilities
         client = make_client()
         result = self._run(seed_tool_capabilities(client, "gh"))
         assert "added" in result
@@ -149,15 +149,15 @@ class TestSeedToolCapabilities:
         assert result["added"] + result["updated"] + result["skipped"] > 0
 
     def test_seeds_all_four_tools(self):
-        from engram.skill_coach.seeder import seed_tool_capabilities
-        from engram.skill_coach.capabilities import TOOL_CAPABILITY_CATALOGS
+        from memnos.skill_coach.seeder import seed_tool_capabilities
+        from memnos.skill_coach.capabilities import TOOL_CAPABILITY_CATALOGS
         client = make_client()
         for tool in TOOL_CAPABILITY_CATALOGS:
             result = self._run(seed_tool_capabilities(client, tool))
             assert result["added"] >= 0
 
     def test_uses_correct_namespace(self):
-        from engram.skill_coach.seeder import seed_tool_capabilities
+        from memnos.skill_coach.seeder import seed_tool_capabilities
         client = make_client()
         self._run(seed_tool_capabilities(client, "docker"))
         # All client.add calls should use tool:docker:capabilities namespace
@@ -165,7 +165,7 @@ class TestSeedToolCapabilities:
             assert c.kwargs["namespace"] == "tool:docker:capabilities"
 
     def test_custom_capabilities(self):
-        from engram.skill_coach.seeder import seed_tool_capabilities
+        from memnos.skill_coach.seeder import seed_tool_capabilities
         custom = [{
             "id": "custom-001",
             "title": "Custom Skill",
@@ -183,13 +183,13 @@ class TestSeedToolCapabilities:
         assert call_kwargs["metadata"]["tool"] == "my-tool"
 
     def test_unknown_tool_raises_value_error(self):
-        from engram.skill_coach.seeder import seed_tool_capabilities
+        from memnos.skill_coach.seeder import seed_tool_capabilities
         client = make_client()
         with pytest.raises(ValueError, match="No built-in catalog"):
             self._run(seed_tool_capabilities(client, "unknown-tool-xyz"))
 
     def test_error_message_lists_available_tools(self):
-        from engram.skill_coach.seeder import seed_tool_capabilities
+        from memnos.skill_coach.seeder import seed_tool_capabilities
         client = make_client()
         with pytest.raises(ValueError) as exc_info:
             self._run(seed_tool_capabilities(client, "bad-tool"))
@@ -197,8 +197,8 @@ class TestSeedToolCapabilities:
         assert "gh" in str(exc_info.value)
 
     def test_idempotent_skip_on_same_content(self):
-        from engram.skill_coach.seeder import seed_tool_capabilities
-        from engram.skill_coach.capabilities import GH_CAPABILITIES
+        from memnos.skill_coach.seeder import seed_tool_capabilities
+        from memnos.skill_coach.capabilities import GH_CAPABILITIES
         cap = GH_CAPABILITIES[0]
         content_h = hashlib.sha256(cap["content"].encode()).hexdigest()[:16]
         existing_mem = FakeMemory(
@@ -213,8 +213,8 @@ class TestSeedToolCapabilities:
         assert result["skipped"] >= 1
 
     def test_update_on_changed_content(self):
-        from engram.skill_coach.seeder import seed_tool_capabilities
-        from engram.skill_coach.capabilities import GH_CAPABILITIES
+        from memnos.skill_coach.seeder import seed_tool_capabilities
+        from memnos.skill_coach.capabilities import GH_CAPABILITIES
         cap = GH_CAPABILITIES[0]
         existing_mem = FakeMemory(
             id="existing-1",
@@ -229,21 +229,21 @@ class TestSeedToolCapabilities:
         client.supersede.assert_called()
 
     def test_metadata_includes_tool_field(self):
-        from engram.skill_coach.seeder import seed_tool_capabilities
+        from memnos.skill_coach.seeder import seed_tool_capabilities
         client = make_client()
         self._run(seed_tool_capabilities(client, "kubectl"))
         for c in client.add.call_args_list:
             assert c.kwargs["metadata"]["tool"] == "kubectl"
 
     def test_tags_include_tool_name(self):
-        from engram.skill_coach.seeder import seed_tool_capabilities
+        from memnos.skill_coach.seeder import seed_tool_capabilities
         client = make_client()
         self._run(seed_tool_capabilities(client, "docker"))
         for c in client.add.call_args_list:
             assert "docker" in c.kwargs["tags"]
 
     def test_seed_claude_code_delegates(self):
-        from engram.skill_coach.seeder import seed_claude_code_capabilities
+        from memnos.skill_coach.seeder import seed_claude_code_capabilities
         client = make_client()
         result = asyncio.run(seed_claude_code_capabilities(client))
         assert "added" in result
@@ -266,8 +266,8 @@ class TestSuggestSkillsV2:
         return FakeResult(memory=mem, score=score)
 
     def test_searches_all_catalogs_by_default(self):
-        from engram.skill_coach.suggester import suggest_skills
-        from engram.skill_coach.capabilities import TOOL_CAPABILITY_CATALOGS
+        from memnos.skill_coach.suggester import suggest_skills
+        from memnos.skill_coach.capabilities import TOOL_CAPABILITY_CATALOGS
         search_results = {
             f"tool:{t}:capabilities": [self._make_result(f"{t}-001", f"{t} skill", tool=t)]
             for t in TOOL_CAPABILITY_CATALOGS
@@ -281,7 +281,7 @@ class TestSuggestSkillsV2:
             assert f"tool:{t}:capabilities" in namespaces_searched
 
     def test_tool_filter_restricts_namespace(self):
-        from engram.skill_coach.suggester import suggest_skills
+        from memnos.skill_coach.suggester import suggest_skills
         client = make_client(search_results={
             "tool:gh:capabilities": [self._make_result("gh-001", "gh pr", tool="gh")],
             "tool:kubectl:capabilities": [self._make_result("k-001", "kubectl apply", tool="kubectl")],
@@ -292,7 +292,7 @@ class TestSuggestSkillsV2:
         assert namespaces == {"tool:gh:capabilities"}
 
     def test_explicit_namespaces_param(self):
-        from engram.skill_coach.suggester import suggest_skills
+        from memnos.skill_coach.suggester import suggest_skills
         ns1 = "tool:docker:capabilities"
         ns2 = "tool:kubectl:capabilities"
         client = make_client(search_results={
@@ -304,7 +304,7 @@ class TestSuggestSkillsV2:
         assert namespaces == {ns1, ns2}
 
     def test_include_team_skills_adds_org_namespace(self):
-        from engram.skill_coach.suggester import suggest_skills
+        from memnos.skill_coach.suggester import suggest_skills
         org_ns = "org:myteam:skills"
         client = make_client(search_results={
             org_ns: [self._make_result("team-001", "deploy runbook", tool="team", score=0.9)],
@@ -317,7 +317,7 @@ class TestSuggestSkillsV2:
         assert org_ns in namespaces
 
     def test_include_team_skills_false_skips_org(self):
-        from engram.skill_coach.suggester import suggest_skills
+        from memnos.skill_coach.suggester import suggest_skills
         org_ns = "org:myteam:skills"
         client = make_client()
         self._run(suggest_skills(client, "deploy", tool_filter="gh", include_team_skills=False, org_namespace=org_ns))
@@ -325,7 +325,7 @@ class TestSuggestSkillsV2:
         assert org_ns not in namespaces
 
     def test_deduplication_across_namespaces(self):
-        from engram.skill_coach.suggester import suggest_skills
+        from memnos.skill_coach.suggester import suggest_skills
         same_result = self._make_result("dup-001", "same skill", tool="claude-code")
         client = make_client(search_results={
             "tool:claude-code:capabilities": [same_result],
@@ -338,14 +338,14 @@ class TestSuggestSkillsV2:
         assert len(ids) == len(set(ids)), "Duplicate skill_ids returned"
 
     def test_top_k_limits_results(self):
-        from engram.skill_coach.suggester import suggest_skills
+        from memnos.skill_coach.suggester import suggest_skills
         results = [self._make_result(f"s-{i}", f"skill {i}", score=1.0 - i * 0.1) for i in range(5)]
         client = make_client(search_results={"tool:claude-code:capabilities": results})
         suggestions = self._run(suggest_skills(client, "anything", namespaces=["tool:claude-code:capabilities"], top_k=2))
         assert len(suggestions) <= 2
 
     def test_sorted_by_relevance(self):
-        from engram.skill_coach.suggester import suggest_skills
+        from memnos.skill_coach.suggester import suggest_skills
         results = [
             self._make_result("low", "low score", score=0.3),
             self._make_result("high", "high score", score=0.95),
@@ -357,13 +357,13 @@ class TestSuggestSkillsV2:
         assert scores == sorted(scores, reverse=True)
 
     def test_returns_empty_when_no_results(self):
-        from engram.skill_coach.suggester import suggest_skills
+        from memnos.skill_coach.suggester import suggest_skills
         client = make_client()
         suggestions = self._run(suggest_skills(client, "task", namespaces=["tool:unknown:capabilities"]))
         assert suggestions == []
 
     def test_tool_field_in_suggestion(self):
-        from engram.skill_coach.suggester import suggest_skills
+        from memnos.skill_coach.suggester import suggest_skills
         client = make_client(search_results={
             "tool:docker:capabilities": [self._make_result("d-001", "docker run", tool="docker")],
         })
@@ -371,7 +371,7 @@ class TestSuggestSkillsV2:
         assert suggestions[0]["tool"] == "docker"
 
     def test_missing_namespace_does_not_raise(self):
-        from engram.skill_coach.suggester import suggest_skills
+        from memnos.skill_coach.suggester import suggest_skills
 
         async def _search_raises(query, namespace, **kwargs):
             raise Exception("namespace not found")
@@ -389,7 +389,7 @@ class TestSuggestSkillsV2:
 
 class TestMCPSkillToolDefinitions:
     def _get_tools(self):
-        from engram_mcp.server import TOOLS
+        from memnos_mcp.server import TOOLS
         return {t.name: t for t in TOOLS}
 
     def test_skill_suggest_tool_exists(self):
@@ -454,7 +454,7 @@ class TestMCPSkillHandlers:
         return asyncio.run(coro)
 
     def test_skill_suggest_with_tool_filter(self):
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
 
         async def _test():
             client = make_client(search_results={
@@ -478,7 +478,7 @@ class TestMCPSkillHandlers:
         self._run(_test())
 
     def test_skill_suggest_no_results_message(self):
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
 
         async def _test():
             client = make_client()
@@ -488,7 +488,7 @@ class TestMCPSkillHandlers:
         self._run(_test())
 
     def test_skill_discover_seeds_specific_tool(self):
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
 
         async def _test():
             client = make_client()
@@ -501,8 +501,8 @@ class TestMCPSkillHandlers:
         self._run(_test())
 
     def test_skill_discover_seeds_all_when_no_tool(self):
-        from engram_mcp.server import _dispatch
-        from engram.skill_coach.capabilities import TOOL_CAPABILITY_CATALOGS
+        from memnos_mcp.server import _dispatch
+        from memnos.skill_coach.capabilities import TOOL_CAPABILITY_CATALOGS
 
         async def _test():
             client = make_client()
@@ -517,7 +517,7 @@ class TestMCPSkillHandlers:
         self._run(_test())
 
     def test_skill_author_creates_memory(self):
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
 
         async def _test():
             client = make_client()
@@ -542,7 +542,7 @@ class TestMCPSkillHandlers:
         self._run(_test())
 
     def test_skill_author_generates_stable_skill_id(self):
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
 
         async def _test():
             client = make_client()
@@ -561,7 +561,7 @@ class TestMCPSkillHandlers:
         self._run(_test())
 
     def test_skill_author_content_includes_when_to_use(self):
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
 
         async def _test():
             client = make_client()
@@ -577,7 +577,7 @@ class TestMCPSkillHandlers:
         self._run(_test())
 
     def test_skill_suggest_include_team_skills(self):
-        from engram_mcp.server import _dispatch
+        from memnos_mcp.server import _dispatch
 
         async def _test():
             org_ns = "org:eng:skills"

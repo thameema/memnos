@@ -1,8 +1,8 @@
-# engram for Enterprise Teams — Step-by-Step Setup
+# memnos for Enterprise Teams — Step-by-Step Setup
 
-This guide walks through deploying a shared engram instance for an engineering organisation: one server, per-engineer API keys, namespace hierarchy, and onboarding workflows.
+This guide walks through deploying a shared memnos instance for an engineering organisation: one server, per-engineer API keys, namespace hierarchy, and onboarding workflows.
 
-For the conceptual overview of how enterprise teams use engram — roles, knowledge flow, examples — see [enterprise-ai-engineering.md](enterprise-ai-engineering.md).
+For the conceptual overview of how enterprise teams use memnos — roles, knowledge flow, examples — see [enterprise-ai-engineering.md](enterprise-ai-engineering.md).
 
 ---
 
@@ -11,7 +11,7 @@ For the conceptual overview of how enterprise teams use engram — roles, knowle
 ```
                       ┌─────────────────────────────────┐
 Alice (Architect)─────►                                  │
-Bob (Developer) ──────►   engram server (shared)         │
+Bob (Developer) ──────►   memnos server (shared)         │
 Carol (QA) ───────────►   ArcadeDB (graph + vector)      │
 Dave (DevOps) ────────►   Encrypted vault                │
 New Hire ─────────────►   Namespace ACL                  │
@@ -20,7 +20,7 @@ New Hire ─────────────►   Namespace ACL             
                              │ their own API key + MCP
 ```
 
-Every engineer keeps their own Claude Code installation. They connect to a shared engram server that holds the team's living knowledge graph.
+Every engineer keeps their own Claude Code installation. They connect to a shared memnos server that holds the team's living knowledge graph.
 
 ---
 
@@ -34,7 +34,7 @@ Every engineer keeps their own Claude Code installation. They connect to a share
 | 10–50 engineers | 8 GB | 4 vCPU | 100 GB SSD |
 | 50+ engineers | 16 GB | 8 vCPU | 500 GB SSD |
 
-ArcadeDB is the memory-hungry component. The Python engram server is lightweight.
+ArcadeDB is the memory-hungry component. The Python memnos server is lightweight.
 
 ### Supported platforms
 
@@ -45,28 +45,28 @@ ArcadeDB is the memory-hungry component. The Python engram server is lightweight
 
 ```bash
 # On the server
-git clone https://github.com/thameema/engram.git
-cd engram
+git clone https://github.com/thameema/memnos.git
+cd memnos
 
 # Generate credentials
 export ARCADEDB_PASSWORD=$(openssl rand -hex 24)
-export ENGRAM_API_KEY=$(openssl rand -hex 32)   # admin key — keep this private
-export ENGRAM_VAULT_KEY=$(python3 -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")
+export MEMNOS_API_KEY=$(openssl rand -hex 32)   # admin key — keep this private
+export MEMNOS_VAULT_KEY=$(python3 -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")
 export ANTHROPIC_API_KEY=sk-ant-...              # for reflection jobs and agent tasks
 
 # Save to .env (git-ignored)
 cat > .env << EOF
 ARCADEDB_PASSWORD=${ARCADEDB_PASSWORD}
-ENGRAM_API_KEY=${ENGRAM_API_KEY}
-ENGRAM_VAULT_KEY=${ENGRAM_VAULT_KEY}
+MEMNOS_API_KEY=${MEMNOS_API_KEY}
+MEMNOS_VAULT_KEY=${MEMNOS_VAULT_KEY}
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
 EOF
 
-cp engram.yaml.example engram.yaml
-# Edit engram.yaml to configure team API keys (see Step 2)
+cp memnos.yaml.example memnos.yaml
+# Edit memnos.yaml to configure team API keys (see Step 2)
 
 docker compose up -d
-docker compose logs -f engram   # wait for "MCP SSE server ready on :8765"
+docker compose logs -f memnos   # wait for "MCP SSE server ready on :8765"
 ```
 
 ### TLS (required for non-localhost deployments)
@@ -75,28 +75,28 @@ Put Caddy or Nginx in front of ports 8765 and 8766 with a valid certificate:
 
 ```
 # Caddy example
-engram.yourcompany.com {
+memnos.yourcompany.com {
     reverse_proxy localhost:8765
 }
-engram-api.yourcompany.com {
+memnos-api.yourcompany.com {
     reverse_proxy localhost:8766
 }
 ```
 
-Engineers then use `https://engram.yourcompany.com/sse` in their `~/.claude.json`.
+Engineers then use `https://memnos.yourcompany.com/sse` in their `~/.claude.json`.
 
 ---
 
 ## Step 2 — Configure team namespaces and API keys
 
-Edit `engram.yaml` on the server. Use explicit per-engineer keys with scoped namespace access:
+Edit `memnos.yaml` on the server. Use explicit per-engineer keys with scoped namespace access:
 
 ```yaml
 auth:
   api_keys:
 
     # ── Admin key (platform team only — never distribute) ──
-    - key: "${ENGRAM_API_KEY}"
+    - key: "${MEMNOS_API_KEY}"
       user_id: admin
       namespaces: ["*"]
 
@@ -193,9 +193,9 @@ Each engineer adds the following to their **`~/.claude.json`** on their local ma
 ```json
 {
   "mcpServers": {
-    "engram": {
+    "memnos": {
       "type": "sse",
-      "url": "https://engram.yourcompany.com/sse",
+      "url": "https://memnos.yourcompany.com/sse",
       "headers": {
         "Authorization": "Bearer <their-personal-key>"
       }
@@ -204,21 +204,21 @@ Each engineer adds the following to their **`~/.claude.json`** on their local ma
 }
 ```
 
-Or, if engineers prefer the stdio transport with a local `engram-mcp-stdio` process that connects to the remote ArcadeDB:
+Or, if engineers prefer the stdio transport with a local `memnos-mcp-stdio` process that connects to the remote ArcadeDB:
 
 ```json
 {
   "mcpServers": {
-    "engram": {
+    "memnos": {
       "type": "stdio",
-      "command": "/path/to/engram-mcp-stdio",
+      "command": "/path/to/memnos-mcp-stdio",
       "env": {
-        "ENGRAM_CONFIG": "/path/to/engram.yaml",
-        "ARCADEDB_HOST": "engram.yourcompany.com",
+        "MEMNOS_CONFIG": "/path/to/memnos.yaml",
+        "ARCADEDB_HOST": "memnos.yourcompany.com",
         "ARCADEDB_PORT": "2480",
         "ARCADEDB_PASSWORD": "your-arcadedb-password",
-        "ENGRAM_API_KEY": "their-personal-key",
-        "ENGRAM_VAULT_KEY": "shared-vault-key"
+        "MEMNOS_API_KEY": "their-personal-key",
+        "MEMNOS_VAULT_KEY": "shared-vault-key"
       }
     }
   }
@@ -234,9 +234,9 @@ Or, if engineers prefer the stdio transport with a local `engram-mcp-stdio` proc
 Give every engineer this template for their **`~/.claude/CLAUDE.md`**. Customise the namespace table to match your team's hierarchy:
 
 ```markdown
-## Memory System — engram (Team Server)
+## Memory System — memnos (Team Server)
 
-engram is connected. Use it for all memory and recall. NEVER use Bash grep or file search.
+memnos is connected. Use it for all memory and recall. NEVER use Bash grep or file search.
 
 ### Recall (always do this first)
 Call `memory_search` before answering questions about:
@@ -311,8 +311,8 @@ Namespace access uses **prefix matching**: a search against `project:payments` r
 When a new engineer joins:
 
 1. Generate them a key: `openssl rand -hex 32`
-2. Add it to `engram.yaml` with appropriate namespace access (start with read-heavy: `team:*`, `personal:<name>`, `project:*` read, `project:<name>:*` write)
-3. `docker compose restart engram` to reload the config
+2. Add it to `memnos.yaml` with appropriate namespace access (start with read-heavy: `team:*`, `personal:<name>`, `project:*` read, `project:<name>:*` write)
+3. `docker compose restart memnos` to reload the config
 4. Give them the key and the `~/.claude.json` snippet from Step 3
 5. Share the CLAUDE.md template from Step 4
 
@@ -334,7 +334,7 @@ Have new engineers write their fresh observations into `team:onboarding`. New hi
 
 ## Step 7 — Team rituals
 
-Make engram part of your regular engineering workflow:
+Make memnos part of your regular engineering workflow:
 
 | When | Who | What to write | Namespace |
 |------|-----|---------------|-----------|
@@ -356,13 +356,13 @@ The knowledge graph is a team asset. Back it up daily.
 
 ```bash
 # Backup ArcadeDB data directory
-docker compose exec arcadedb arcadectl backup --output /backup/engram-$(date +%Y%m%d).tar.gz
+docker compose exec arcadedb arcadectl backup --output /backup/memnos-$(date +%Y%m%d).tar.gz
 
 # Or back up the Docker volume directly
 docker run --rm \
-  -v engram_arcadedb-data:/data \
+  -v memnos_arcadedb-data:/data \
   -v /path/to/backups:/backup \
-  alpine tar czf /backup/engram-arcadedb-$(date +%Y%m%d).tar.gz /data
+  alpine tar czf /backup/memnos-arcadedb-$(date +%Y%m%d).tar.gz /data
 ```
 
 Store backups off-machine (S3, Azure Blob, GCS). Test your restore procedure monthly.
@@ -375,7 +375,7 @@ Store backups off-machine (S3, Azure Blob, GCS). Test your restore procedure mon
 - Remove keys for team members who have left (immediately on departure)
 - Rotate keys **annually**
 - Keep the admin key (`namespaces: ["*"]`) only with the platform team lead
-- Enable vault audit log (`vault.audit_log: true` in `engram.yaml`) and review it monthly
+- Enable vault audit log (`vault.audit_log: true` in `memnos.yaml`) and review it monthly
 
 ---
 
@@ -391,15 +391,15 @@ The knowledge graph is for engineering decisions, patterns, and context — not 
 | Codebase gotchas and footguns | Security vulnerabilities with exploit details |
 | Test failure patterns | Credentials or secrets of any kind |
 
-engram will automatically detect and redact credential patterns (API keys, JWTs, AWS keys) from `memory_write` calls, but this is a safety net — not a substitute for team hygiene.
+memnos will automatically detect and redact credential patterns (API keys, JWTs, AWS keys) from `memory_write` calls, but this is a safety net — not a substitute for team hygiene.
 
 ---
 
 ## Troubleshooting
 
 **`/mcp` shows disconnected for some engineers but not others**
-- Check their API key is in `engram.yaml` and the server was restarted after the change
-- Check TLS certificate is valid: `curl -v https://engram.yourcompany.com/sse`
+- Check their API key is in `memnos.yaml` and the server was restarted after the change
+- Check TLS certificate is valid: `curl -v https://memnos.yourcompany.com/sse`
 - Check firewall rules allow the engineer's IP to reach port 8765
 
 **`memory_search` returns results for namespace A but not B**

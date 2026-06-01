@@ -3,7 +3,7 @@
 tools/build_cms57f_kg.py — CMS-0057-F knowledge graph builder.
 
 Downloads Da Vinci FHIR Implementation Guide packages, extracts
-CapabilityStatements and profiles, and seeds engram with structured
+CapabilityStatements and profiles, and seeds memnos with structured
 requirement and gap-tracking memories — including full coverage of:
   - FHIR conformance requirements (CapabilityStatements, profiles)
   - SLA / timing requirements (from CMS rule text)
@@ -14,11 +14,11 @@ Usage:
     python tools/build_cms57f_kg.py [--dry-run] [--api SLUG] [--reset]
 
 Options:
-    --dry-run     Print what would be written without writing to engram
+    --dry-run     Print what would be written without writing to memnos
     --api SLUG    Only process a specific API (patient-access, provider-access,
                   prior-auth, p2p, provider-directory)
     --reset       Delete existing cms57f memories before rebuilding
-    --ns NS       Engram namespace (default: org:hc:cms57f)
+    --ns NS       Memnos namespace (default: org:hc:cms57f)
     --list        List available API slugs and exit
 """
 from __future__ import annotations
@@ -40,13 +40,13 @@ from typing import Any
 # Configuration
 # ---------------------------------------------------------------------------
 
-ENGRAM_API = os.environ.get("ENGRAM_API_URL", "http://127.0.0.1:8766")
-ENGRAM_KEY = os.environ.get("ENGRAM_API_KEY", "engram-local-dev-key")
+MEMNOS_API = os.environ.get("MEMNOS_API_URL", "http://127.0.0.1:8766")
+MEMNOS_KEY = os.environ.get("MEMNOS_API_KEY", "memnos-local-dev-key")
 DEFAULT_NS = "org:hc:cms57f"
 FHIR_PKG_BASE = "https://packages.fhir.org"
 
 # Cache downloaded packages to avoid re-downloading on repeated runs
-PKG_CACHE_DIR = Path.home() / ".engram" / "fhir-packages"
+PKG_CACHE_DIR = Path.home() / ".memnos" / "fhir-packages"
 PKG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -1094,10 +1094,10 @@ def _profile_summary(sd: dict, pkg_id: str, api_slug: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Engram Writer
+# Memnos Writer
 # ---------------------------------------------------------------------------
 
-def _write_to_engram(content: str, namespace: str, memory_type: str,
+def _write_to_memnos(content: str, namespace: str, memory_type: str,
                       tags: list[str], affects: list[str], dry_run: bool) -> str | None:
     if dry_run:
         print(f"    [DRY] {memory_type} | {tags[:3]} | {content[:120]}")
@@ -1112,12 +1112,12 @@ def _write_to_engram(content: str, namespace: str, memory_type: str,
     }).encode()
 
     req = urllib.request.Request(
-        f"{ENGRAM_API}/api/v1/memory/",
+        f"{MEMNOS_API}/api/v1/memory/",
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "X-API-Key": ENGRAM_KEY,
-            "X-Engram-Tool": "cms57f-kg-builder",
+            "X-API-Key": MEMNOS_KEY,
+            "X-Memnos-Tool": "cms57f-kg-builder",
         },
         method="POST",
     )
@@ -1134,8 +1134,8 @@ def _search_and_delete_existing(namespace: str, api_slug: str, dry_run: bool) ->
     """Delete existing cms57f memories for this api to avoid duplicates."""
     if dry_run:
         return 0
-    url = f"{ENGRAM_API}/api/v1/memory/search?q={api_slug}+cms57f&ns={namespace}&top_k=200"
-    req = urllib.request.Request(url, headers={"X-API-Key": ENGRAM_KEY})
+    url = f"{MEMNOS_API}/api/v1/memory/search?q={api_slug}+cms57f&ns={namespace}&top_k=200"
+    req = urllib.request.Request(url, headers={"X-API-Key": MEMNOS_KEY})
     deleted = 0
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -1145,9 +1145,9 @@ def _search_and_delete_existing(namespace: str, api_slug: str, dry_run: bool) ->
             if not mid:
                 continue
             del_req = urllib.request.Request(
-                f"{ENGRAM_API}/api/v1/memory/{mid}?ns={namespace}",
+                f"{MEMNOS_API}/api/v1/memory/{mid}?ns={namespace}",
                 method="DELETE",
-                headers={"X-API-Key": ENGRAM_KEY},
+                headers={"X-API-Key": MEMNOS_KEY},
             )
             try:
                 urllib.request.urlopen(del_req, timeout=10)
@@ -1181,7 +1181,7 @@ def seed_regulatory_node(api: ApiDef, ns: str, dry_run: bool) -> None:
     tags = ["cms57f", "regulatory-requirement", api.slug] + api.tags + (
         ["jan-2027"] if "2027" in api.deadline else ["jan-2026"]
     )
-    _write_to_engram(
+    _write_to_memnos(
         content=content,
         namespace=ns,
         memory_type="constraint",
@@ -1206,7 +1206,7 @@ def seed_ig_node(api: ApiDef, pkg_id: str, ns: str, dry_run: bool) -> None:
         f"{api.cms_section} of CMS-0057-F."
     )
     tags = ["cms57f", "da-vinci", "fhir-ig", api.slug, pkg_id.split(".")[-1]] + api.tags
-    _write_to_engram(
+    _write_to_memnos(
         content=content,
         namespace=ns,
         memory_type="fact",
@@ -1278,7 +1278,7 @@ def seed_cs_requirements(api: ApiDef, pkg_id: str, cs: dict, ns: str, dry_run: b
             tags.append("SHOULD")
         tags += api.tags
 
-        _write_to_engram(
+        _write_to_memnos(
             content=content,
             namespace=ns,
             memory_type="constraint",
@@ -1314,7 +1314,7 @@ def seed_profile_node(api: ApiDef, pkg_id: str, sd: dict, ns: str, dry_run: bool
         pkg_id.split(".")[-1],
     ] + api.tags
 
-    _write_to_engram(
+    _write_to_memnos(
         content=content,
         namespace=ns,
         memory_type="fact",
@@ -1339,7 +1339,7 @@ def seed_reporting_requirements(api: ApiDef, ns: str, dry_run: bool) -> int:
             f"Requirement:\n{item['requirement']}"
         )
         tags = ["cms57f", "reporting-requirement", "attestation", api.slug] + api.tags
-        _write_to_engram(
+        _write_to_memnos(
             content=content,
             namespace=ns,
             memory_type="constraint",
@@ -1365,7 +1365,7 @@ def seed_sla_requirements(api: ApiDef, ns: str, dry_run: bool) -> int:
             f"Requirement:\n{item['requirement']}"
         )
         tags = ["cms57f", "sla", "timing-requirement", api.slug, item["severity"]] + api.tags
-        _write_to_engram(
+        _write_to_memnos(
             content=content,
             namespace=ns,
             memory_type="constraint",
@@ -1393,7 +1393,7 @@ def seed_security_requirements(api: ApiDef, ns: str, dry_run: bool) -> int:
         ig_short = item.get("ig", "").split("@")[0].split(".")[-1] if item.get("ig") else "security"
         tags = ["cms57f", "security-requirement", "udap", "smart-on-fhir",
                 api.slug, item["severity"], ig_short] + api.tags
-        _write_to_engram(
+        _write_to_memnos(
             content=content,
             namespace=ns,
             memory_type="constraint",
@@ -1418,7 +1418,7 @@ def seed_business_rules(api: ApiDef, ns: str, dry_run: bool) -> int:
             f"Requirement:\n{item['requirement']}"
         )
         tags = ["cms57f", "business-rule", item["category"], api.slug] + api.tags
-        _write_to_engram(
+        _write_to_memnos(
             content=content,
             namespace=ns,
             memory_type="constraint",
@@ -1470,7 +1470,7 @@ def seed_gap_tracker(api: ApiDef, ns: str, dry_run: bool) -> None:
         "cms57f", "gap-tracker", api.slug, "compliance-tracking",
     ] + (["jan-2027"] if "2027" in api.deadline else ["jan-2026"])
 
-    _write_to_engram(
+    _write_to_memnos(
         content=content,
         namespace=ns,
         memory_type="decision",
@@ -1573,11 +1573,11 @@ def process_api(api: ApiDef, ns: str, dry_run: bool) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build CMS-0057-F knowledge graph in engram")
+    parser = argparse.ArgumentParser(description="Build CMS-0057-F knowledge graph in memnos")
     parser.add_argument("--dry-run", action="store_true", help="Print without writing")
     parser.add_argument("--api", help="Process a specific API slug only")
     parser.add_argument("--reset", action="store_true", help="Delete existing entries first")
-    parser.add_argument("--ns", default=DEFAULT_NS, help="Engram namespace")
+    parser.add_argument("--ns", default=DEFAULT_NS, help="Memnos namespace")
     parser.add_argument("--list", action="store_true", help="List available API slugs and exit")
     parser.add_argument("--reporting-only", action="store_true",
                         help="Only seed reporting/attestation nodes (skips IG download)")
@@ -1595,18 +1595,18 @@ def main() -> None:
     print(f"APIs      : {args.api or 'all'}")
     print(f"Reset     : {args.reset}")
 
-    # Verify engram is reachable
+    # Verify memnos is reachable
     if not args.dry_run:
         try:
             req = urllib.request.Request(
-                f"{ENGRAM_API}/api/v1/admin/health",
-                headers={"X-API-Key": ENGRAM_KEY},
+                f"{MEMNOS_API}/api/v1/admin/health",
+                headers={"X-API-Key": MEMNOS_KEY},
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
                 health = json.loads(resp.read())
-            print(f"Engram    : {health.get('status')} (arcadedb: {health.get('arcadedb')})")
+            print(f"Memnos    : {health.get('status')} (arcadedb: {health.get('arcadedb')})")
         except Exception as exc:
-            print(f"ERROR: cannot reach engram at {ENGRAM_API}: {exc}", file=sys.stderr)
+            print(f"ERROR: cannot reach memnos at {MEMNOS_API}: {exc}", file=sys.stderr)
             sys.exit(1)
 
     apis_to_process = (

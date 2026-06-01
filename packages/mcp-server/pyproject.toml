@@ -3,12 +3,12 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "engram-mcp-server"
+name = "memnos-mcp-server"
 version = "0.1.0"
-description = "engram MCP server — stdio and SSE transports"
+description = "memnos MCP server — stdio and SSE transports"
 requires-python = ">=3.11"
 dependencies = [
-    "engram-core",
+    "memnos-core",
     "mcp>=1.0",
     "fastapi>=0.111",
     "uvicorn[standard]>=0.29",
@@ -18,8 +18,8 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["engram_mcp*"]
+include = ["memnos_mcp*"]
 
 [project.scripts]
-engram-mcp = "engram_mcp.server:main"
-engram-mcp-stdio = "engram_mcp.transports.stdio:main"
+memnos-mcp = "memnos_mcp.server:main"
+memnos-mcp-stdio = "memnos_mcp.transports.stdio:main"

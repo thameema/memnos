@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Integration: --version flag pins the source clone to that ref, ENGRAM_REF
+# Integration: --version flag pins the source clone to that ref, MEMNOS_REF
 # env var also works, and an invalid ref fails with a clear error.
 #
 # We don't try to fully install old release tags — master's install-server.sh
@@ -13,7 +13,7 @@ source "${ROOT}/lib/assert.sh"
 source "${ROOT}/lib/fixtures.sh"
 source "${ROOT}/lib/docker_test.sh"
 
-describe "--version flag and ENGRAM_REF env"
+describe "--version flag and MEMNOS_REF env"
 
 SCRIPT="$(mktemp)"; trap 'rm -f "$SCRIPT"' EXIT
 cat > "$SCRIPT" <<'SCENARIO'
@@ -29,16 +29,16 @@ sed -i 's|^  start_services$|  echo "STUB: skip start_services for version-pin t
 # A: explicit --version v1.1.0 — clone must land at v1.1.0
 export HOME=/test-home-a; mkdir -p "$HOME"
 printf '\n\n\n\n\nN\n' | bash /tmp/install-server.sh --version v1.1.0 >/tmp/a.log 2>&1 || true
-TAG_A=$(cd "$HOME/.engram-src" 2>/dev/null && git describe --tags --exact-match 2>/dev/null || echo "(no clone)")
+TAG_A=$(cd "$HOME/.memnos-src" 2>/dev/null && git describe --tags --exact-match 2>/dev/null || echo "(no clone)")
 echo "A_TAG=$TAG_A"
 grep -q "Pinning to ref from --version: .*v1.1.0" /tmp/a.log && echo "A_REPORTED=yes" || echo "A_REPORTED=no"
 
-# B: ENGRAM_REF env — should honour
+# B: MEMNOS_REF env — should honour
 export HOME=/test-home-b; mkdir -p "$HOME"
-ENGRAM_REF=v1.2.0 printf '\n\n\n\n\nN\n' | ENGRAM_REF=v1.2.0 bash /tmp/install-server.sh >/tmp/b.log 2>&1 || true
-TAG_B=$(cd "$HOME/.engram-src" 2>/dev/null && git describe --tags --exact-match 2>/dev/null || echo "(no clone)")
+MEMNOS_REF=v1.2.0 printf '\n\n\n\n\nN\n' | MEMNOS_REF=v1.2.0 bash /tmp/install-server.sh >/tmp/b.log 2>&1 || true
+TAG_B=$(cd "$HOME/.memnos-src" 2>/dev/null && git describe --tags --exact-match 2>/dev/null || echo "(no clone)")
 echo "B_TAG=$TAG_B"
-grep -q "from ENGRAM_REF env" /tmp/b.log && echo "B_REPORTED=yes" || echo "B_REPORTED=no"
+grep -q "from MEMNOS_REF env" /tmp/b.log && echo "B_REPORTED=yes" || echo "B_REPORTED=no"
 
 # C: bad ref — must fail with clear error
 export HOME=/test-home-c; mkdir -p "$HOME"
@@ -50,7 +50,7 @@ grep -q "git clone failed for ref" /tmp/c.log && echo "C_CLEAR_ERR=yes" || echo 
 export HOME=/test-home-d; mkdir -p "$HOME"
 printf '\n\n\n\n\nN\n' | bash /tmp/install-server.sh >/tmp/d.log 2>&1 || true
 grep -q "Installing from .*master.* (always-current default)" /tmp/d.log && echo "D_DEFAULT_MASTER=yes" || echo "D_DEFAULT_MASTER=no"
-TAG_D=$(cd "$HOME/.engram-src" 2>/dev/null && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+TAG_D=$(cd "$HOME/.memnos-src" 2>/dev/null && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 echo "D_BRANCH=$TAG_D"
 SCENARIO
 
@@ -59,8 +59,8 @@ get() { echo "$OUT" | grep "^$1=" | cut -d= -f2-; }
 
 assert_eq "$(get A_TAG)" "v1.1.0" "--version v1.1.0 clones at v1.1.0 tag"
 assert_eq "$(get A_REPORTED)" "yes" "installer reports --version pin"
-assert_eq "$(get B_TAG)" "v1.2.0" "ENGRAM_REF env pins clone to that tag"
-assert_eq "$(get B_REPORTED)" "yes" "installer reports ENGRAM_REF env pin"
+assert_eq "$(get B_TAG)" "v1.2.0" "MEMNOS_REF env pins clone to that tag"
+assert_eq "$(get B_REPORTED)" "yes" "installer reports MEMNOS_REF env pin"
 assert_eq "$(get C_CLEAR_ERR)" "yes" "bad ref produces clear error"
 assert_eq "$(get D_DEFAULT_MASTER)" "yes" "no flag → defaults to master (always-current)"
 

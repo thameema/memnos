@@ -2,7 +2,7 @@
 """
 migrate_to_qdrant.py — Backfill all ArcadeDB Memory vectors into Qdrant.
 
-Run this ONCE before enabling ENGRAM_VECTOR_BACKEND=qdrant.
+Run this ONCE before enabling MEMNOS_VECTOR_BACKEND=qdrant.
 If Qdrant already has a point for a memory ID it is silently skipped (idempotent).
 
 Usage:
@@ -46,8 +46,8 @@ except ImportError:
     sys.exit(1)
 
 ARCADEDB_URL = os.environ.get("ARCADEDB_HOST_URL", "http://localhost:2480")
-DB_NAME = "engram"
-COLLECTION = "engram_memories"
+DB_NAME = "memnos"
+COLLECTION = "memnos_memories"
 DEFAULT_QDRANT_URL = "http://localhost:6333"
 
 
@@ -59,7 +59,7 @@ def _arcade_auth() -> dict:
         # Try reading from .env in the repo root
         for candidate in [
             Path(__file__).parent.parent / ".env",
-            Path.home() / ".engram" / ".env",
+            Path.home() / ".memnos" / ".env",
         ]:
             if candidate.exists():
                 for line in candidate.read_text().splitlines():
@@ -69,7 +69,7 @@ def _arcade_auth() -> dict:
             if password:
                 break
     if not password:
-        password = "engram"  # default from docker-compose
+        password = "memnos"  # default from docker-compose
     creds = base64.b64encode(f"root:{password}".encode()).decode()
     return {"Authorization": f"Basic {creds}", "Content-Type": "application/json"}
 
@@ -210,7 +210,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    print("engram → Qdrant backfill migration")
+    print("memnos → Qdrant backfill migration")
     print(f"  ArcadeDB : {ARCADEDB_URL}")
     print(f"  Qdrant   : {args.qdrant_url}")
     print(f"  Dry run  : {args.dry_run}")
@@ -336,10 +336,10 @@ def main() -> None:
     if not args.dry_run:
         print()
         print("Next steps:")
-        print("  1. Add ENGRAM_VECTOR_BACKEND=qdrant to your .env")
+        print("  1. Add MEMNOS_VECTOR_BACKEND=qdrant to your .env")
         print("  2. QDRANT_URL=http://qdrant:6333  (or http://localhost:6333 outside Docker)")
         print("  3. docker compose --profile qdrant up -d  (start/keep Qdrant running)")
-        print("  4. docker compose restart engram           (pick up new config)")
+        print("  4. docker compose restart memnos           (pick up new config)")
         print("  5. Verify: curl 'http://localhost:8766/api/v1/memory/search?q=test&ns=all' -H 'X-API-Key: ...' | python3 -m json.tool")
 
 

@@ -1,10 +1,10 @@
-# Connecting Claude Code to engram
+# Connecting Claude Code to memnos
 
-This guide covers the full setup: registering engram as a Claude Code MCP server, configuring `CLAUDE.md` so Claude uses it, and wiring the zero-touch automation hooks so context is injected and memories are written without any manual action.
+This guide covers the full setup: registering memnos as a Claude Code MCP server, configuring `CLAUDE.md` so Claude uses it, and wiring the zero-touch automation hooks so context is injected and memories are written without any manual action.
 
 ## Prerequisites
 
-- engram server installed and running — see [Installer](#installer) below or [quickstart.md](quickstart.md)
+- memnos server installed and running — see [Installer](#installer) below or [quickstart.md](quickstart.md)
 - Claude Code v2.0+ (CLI or desktop app)
 - macOS, Linux, WSL, or Windows (PowerShell 5.1+)
 
@@ -12,12 +12,12 @@ This guide covers the full setup: registering engram as a Claude Code MCP server
 
 ## Installer
 
-engram ships three installer scripts. Run the one that fits your situation:
+memnos ships three installer scripts. Run the one that fits your situation:
 
 | Script | Platform | What it does |
 |--------|----------|--------------|
 | `install.sh` | macOS / Linux / WSL | **Orchestrator** — interactive menu, calls the scripts below |
-| `install-server.sh` | macOS / Linux / WSL | Installs engram server via Docker (ArcadeDB + API) |
+| `install-server.sh` | macOS / Linux / WSL | Installs memnos server via Docker (ArcadeDB + API) |
 | `install-client.sh` | macOS / Linux / WSL / Git Bash | Installs Claude Code hooks on a developer machine |
 | `install-client.ps1` | Windows (PowerShell 5.1+) | Same as above for Windows |
 
@@ -39,21 +39,21 @@ The orchestrator presents a menu when run without flags:
   What would you like to install?
 
   1) Full install (server + client)
-     → Run engram server here AND install Claude Code hooks on this machine.
+     → Run memnos server here AND install Claude Code hooks on this machine.
   2) Server only
-     → Install engram server (Docker). Share the API URL + key with team members.
+     → Install memnos server (Docker). Share the API URL + key with team members.
   3) Client only
-     → Install Claude Code hooks only. Connects to an existing engram server.
+     → Install Claude Code hooks only. Connects to an existing memnos server.
 ```
 
 ### Windows
 
 ```powershell
-# With server URL and key (e.g. pointing at a remote/shared engram server)
-.\install-client.ps1 -Server http://engram.yourcompany.com:8766 -Key engram-abc123
+# With server URL and key (e.g. pointing at a remote/shared memnos server)
+.\install-client.ps1 -Server http://memnos.yourcompany.com:8766 -Key memnos-abc123
 
 # Local server
-.\install-client.ps1 -Server http://localhost:8766 -Key engram-abc123
+.\install-client.ps1 -Server http://localhost:8766 -Key memnos-abc123
 ```
 
 Requires git for Windows and Claude Code for Windows. The script copies PowerShell hook scripts from `hooks/windows/` and creates a `.bat` wrapper so git can invoke the post-commit hook.
@@ -61,16 +61,16 @@ Requires git for Windows and Claude Code for Windows. The script copies PowerShe
 ### What gets installed
 
 **Server** (`install-server.sh`):
-- `~/.engram/docker-compose.yml` — ArcadeDB + engram API containers
-- `~/.engram/.env` — API key, ArcadeDB password (mode 600)
+- `~/.memnos/docker-compose.yml` — ArcadeDB + memnos API containers
+- `~/.memnos/.env` — API key, ArcadeDB password (mode 600)
 - Pulls images and starts services
 
 **Client** (`install-client.sh` / `install-client.ps1`):
-- `~/.claude/hooks/engram.env` — central config (server URL, API key, default namespace)
-- `~/.claude/hooks/engram-inject.sh` — UserPromptSubmit hook
-- `~/.claude/hooks/engram-session-write.sh` — Stop hook
+- `~/.claude/hooks/memnos.env` — central config (server URL, API key, default namespace)
+- `~/.claude/hooks/memnos-inject.sh` — UserPromptSubmit hook
+- `~/.claude/hooks/memnos-session-write.sh` — Stop hook
 - `~/.git-hooks/post-commit` — global git hook
-- `~/.claude/commands/engram.md` — `/engram` slash command
+- `~/.claude/commands/memnos.md` — `/memnos` slash command
 - Patches `~/.claude/settings.json` to register the hooks
 
 ---
@@ -83,19 +83,19 @@ Two transport modes are available. Choose one:
 
 ### Transport A — stdio (recommended for local use)
 
-The stdio transport is simpler: Claude Code spawns `engram-mcp-stdio` as a subprocess. No HTTP server needs to be running separately; ArcadeDB must still be accessible.
+The stdio transport is simpler: Claude Code spawns `memnos-mcp-stdio` as a subprocess. No HTTP server needs to be running separately; ArcadeDB must still be accessible.
 
 ```json
 {
   "mcpServers": {
-    "engram": {
+    "memnos": {
       "type": "stdio",
-      "command": "/Users/yourname/.venv/bin/engram-mcp-stdio",
+      "command": "/Users/yourname/.venv/bin/memnos-mcp-stdio",
       "env": {
-        "ENGRAM_CONFIG": "/Users/yourname/engram/engram.yaml",
+        "MEMNOS_CONFIG": "/Users/yourname/memnos/memnos.yaml",
         "ARCADEDB_PASSWORD": "your-arcadedb-password",
-        "ENGRAM_API_KEY": "your-engram-api-key",
-        "ENGRAM_VAULT_KEY": "your-vault-key",
+        "MEMNOS_API_KEY": "your-memnos-api-key",
+        "MEMNOS_VAULT_KEY": "your-vault-key",
         "ANTHROPIC_API_KEY": "sk-ant-..."
       }
     }
@@ -103,24 +103,24 @@ The stdio transport is simpler: Claude Code spawns `engram-mcp-stdio` as a subpr
 }
 ```
 
-Find the binary path: `which engram-mcp-stdio`
+Find the binary path: `which memnos-mcp-stdio`
 
-> **Important:** Use **absolute paths** for `command` and `ENGRAM_CONFIG`. Claude Code spawns the process from a different working directory; relative paths will fail silently.
+> **Important:** Use **absolute paths** for `command` and `MEMNOS_CONFIG`. Claude Code spawns the process from a different working directory; relative paths will fail silently.
 
-> **Startup time:** On first invocation, `engram-mcp-stdio` loads the sentence-transformers embedding model (~25–40s). Claude Code's stdio timeout is 60s by default — if your machine is slow, consider setting `ENGRAM_LOG_LEVEL=WARNING` to reduce I/O during startup.
+> **Startup time:** On first invocation, `memnos-mcp-stdio` loads the sentence-transformers embedding model (~25–40s). Claude Code's stdio timeout is 60s by default — if your machine is slow, consider setting `MEMNOS_LOG_LEVEL=WARNING` to reduce I/O during startup.
 
 ### Transport B — SSE (HTTP, for shared/remote servers)
 
-Requires `engram-server` to be running (see [quickstart.md](quickstart.md)). Best for team deployments where all engineers share one server.
+Requires `memnos-server` to be running (see [quickstart.md](quickstart.md)). Best for team deployments where all engineers share one server.
 
 ```json
 {
   "mcpServers": {
-    "engram": {
+    "memnos": {
       "type": "sse",
       "url": "http://localhost:8765/sse",
       "headers": {
-        "Authorization": "Bearer your-engram-api-key"
+        "Authorization": "Bearer your-memnos-api-key"
       }
     }
   }
@@ -137,7 +137,7 @@ After adding either entry: **fully restart Claude Code** (quit and reopen), then
 /mcp
 ```
 
-You should see `engram  ✓ connected  · 18 tools`.
+You should see `memnos  ✓ connected  · 18 tools`.
 
 ---
 
@@ -146,9 +146,9 @@ You should see `engram  ✓ connected  · 18 tools`.
 Registering the MCP server makes the tools *available*, but Claude won't use them automatically without instructions. Add the following to **`~/.claude/CLAUDE.md`**:
 
 ```markdown
-## Memory System — engram MCP
+## Memory System — memnos MCP
 
-engram is connected as an MCP server. Use it for all memory and recall operations.
+memnos is connected as an MCP server. Use it for all memory and recall operations.
 
 ### Recall (MANDATORY — do this before answering from training data)
 ALWAYS call `memory_search` first when the user asks about:
@@ -231,15 +231,15 @@ The dashboard has two main tabs:
 
 The MCP approach above requires Claude to actively call `memory_write`. If Claude skips it, forgets, or a session ends abruptly, memories are lost.
 
-**Zero-touch automation** wires engram directly into Claude Code's lifecycle via shell hooks, so memories are written and injected automatically — no agent action required.
+**Zero-touch automation** wires memnos directly into Claude Code's lifecycle via shell hooks, so memories are written and injected automatically — no agent action required.
 
 Three hooks work together:
 
 | Hook | When it fires | What it does |
 |------|--------------|--------------|
-| **UserPromptSubmit** | Every Claude Code prompt | Queries engram and injects relevant past context |
+| **UserPromptSubmit** | Every Claude Code prompt | Queries memnos and injects relevant past context |
 | **Stop** | Every turn end | Writes a session-state memory (branch, recent commits, CWD) |
-| **git post-commit** | Every `git commit` | Writes the commit to engram (conventional prefix → memory type) |
+| **git post-commit** | Every `git commit` | Writes the commit to memnos (conventional prefix → memory type) |
 
 ### Quick install
 
@@ -249,16 +249,16 @@ The fastest path is the client installer — it writes all hook scripts, patches
 # macOS / Linux / WSL
 ./install-client.sh                                              # local server (localhost:8766)
 ./install-client.sh --server http://eng.example.com:8766 \
-                    --key engram-abc123                          # remote server
+                    --key memnos-abc123                          # remote server
 ./install-client.sh --server http://localhost:8766 \
-                    --key engram-abc123 \
+                    --key memnos-abc123 \
                     --namespace personal:default                      # with explicit namespace
 ```
 
 ```powershell
 # Windows (PowerShell 5.1+)
 .\install-client.ps1
-.\install-client.ps1 -Server http://eng.example.com:8766 -Key engram-abc123
+.\install-client.ps1 -Server http://eng.example.com:8766 -Key memnos-abc123
 ```
 
 The installer asks for anything not supplied as a flag, tests the server connection, and tells you at the end what it installed.
@@ -267,54 +267,54 @@ After running: **restart Claude Code** (quit and reopen). The hooks are active f
 
 ---
 
-### Central config file — `~/.claude/hooks/engram.env`
+### Central config file — `~/.claude/hooks/memnos.env`
 
 All hooks read their connection details from a single config file so you only have one place to update when the server URL or key changes:
 
 ```bash
-# ~/.claude/hooks/engram.env
-ENGRAM_API=http://localhost:8766       # change to your remote server if needed
-ENGRAM_KEY=engram-abc123               # your API key
-ENGRAM_DEFAULT_NS=personal:default          # fallback namespace for all projects
-ENGRAM_TOP_K=5                         # memories injected per prompt
+# ~/.claude/hooks/memnos.env
+MEMNOS_API=http://localhost:8766       # change to your remote server if needed
+MEMNOS_KEY=memnos-abc123               # your API key
+MEMNOS_DEFAULT_NS=personal:default          # fallback namespace for all projects
+MEMNOS_TOP_K=5                         # memories injected per prompt
 ```
 
 Edit this file any time to point hooks at a different server — no need to reinstall.
 
 ---
 
-### Per-project namespace — `.engram` file
+### Per-project namespace — `.memnos` file
 
-Drop a `.engram` file in any repo root to override the default namespace for that project:
+Drop a `.memnos` file in any repo root to override the default namespace for that project:
 
 ```bash
-# in ~/work/my-project/.engram
+# in ~/work/my-project/.memnos
 namespace=project:my-project
 ```
 
 **Namespace resolution order** (highest to lowest priority):
 
-1. `.engram` file in the git repo root
-2. `ENGRAM_NS_OVERRIDE` environment variable
-3. `ENGRAM_DEFAULT_NS` in `~/.claude/hooks/engram.env`
+1. `.memnos` file in the git repo root
+2. `MEMNOS_NS_OVERRIDE` environment variable
+3. `MEMNOS_DEFAULT_NS` in `~/.claude/hooks/memnos.env`
 
 This means every repo can silently route to its own namespace without touching the global config.
 
 ---
 
-### `/engram` slash command
+### `/memnos` slash command
 
-The installer creates a `~/.claude/commands/engram.md` slash command. Type `/engram` in any Claude Code session to see:
+The installer creates a `~/.claude/commands/memnos.md` slash command. Type `/memnos` in any Claude Code session to see:
 
 ```
-engram status
+memnos status
 
 Namespaces
   • personal:default
   • project:my-project
   • org:myteam:engineering
 
-Current namespace — project:my-project  (resolved from .engram file)
+Current namespace — project:my-project  (resolved from .memnos file)
 
 Recent memories
   [fact] 0.91 — session ended | project: my-project | branch: feature/auth-refactor | uncommitted: 3
@@ -322,10 +322,10 @@ Recent memories
   ...
 ```
 
-If you pass a namespace argument (`/engram ns:project:other`), the command also shows how to set it permanently:
+If you pass a namespace argument (`/memnos ns:project:other`), the command also shows how to set it permanently:
 
 ```bash
-echo "namespace=project:other" > .engram
+echo "namespace=project:other" > .memnos
 ```
 
 ---
@@ -340,14 +340,14 @@ If you prefer to install hooks by hand or need to understand what the installer 
 mkdir -p ~/.claude/hooks ~/.git-hooks ~/.claude/commands
 ```
 
-**Step 2 — Write `engram.env`**
+**Step 2 — Write `memnos.env`**
 
 ```bash
-cat > ~/.claude/hooks/engram.env <<'EOF'
-ENGRAM_API=http://localhost:8766
-ENGRAM_KEY=your-engram-api-key
-ENGRAM_DEFAULT_NS=personal:default
-ENGRAM_TOP_K=5
+cat > ~/.claude/hooks/memnos.env <<'EOF'
+MEMNOS_API=http://localhost:8766
+MEMNOS_KEY=your-memnos-api-key
+MEMNOS_DEFAULT_NS=personal:default
+MEMNOS_TOP_K=5
 EOF
 ```
 
@@ -365,7 +365,7 @@ See `install-client.sh` in the repo for the full script content — the installe
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/yourname/.claude/hooks/engram-inject.sh",
+            "command": "/Users/yourname/.claude/hooks/memnos-inject.sh",
             "timeout": 8
           }
         ]
@@ -376,7 +376,7 @@ See `install-client.sh` in the repo for the full script content — the installe
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/yourname/.claude/hooks/engram-session-write.sh",
+            "command": "/Users/yourname/.claude/hooks/memnos-session-write.sh",
             "timeout": 8,
             "async": true
           }
@@ -397,17 +397,17 @@ chmod +x ~/.git-hooks/post-commit
 git config --global core.hooksPath ~/.git-hooks
 ```
 
-> **Per-repo overrides:** create `.git/hooks/post-commit.local` in a specific repo — the global hook calls it automatically after writing to engram.
+> **Per-repo overrides:** create `.git/hooks/post-commit.local` in a specific repo — the global hook calls it automatically after writing to memnos.
 
 ---
 
 ### What each hook writes
 
-**inject hook** (reads): surfaces the 5 most semantically similar past memories as context before every Claude response. Claude sees them as `[engram: relevant past context]` at the top of its input — no extra tool calls needed.
+**inject hook** (reads): surfaces the 5 most semantically similar past memories as context before every Claude response. Claude sees them as `[memnos: relevant past context]` at the top of its input — no extra tool calls needed.
 
 **session hook** (writes): after every turn, records the current branch, recent commits, and CWD so the next session can orient itself without reading git history.
 
-**commit hook** (writes): every `git commit` produces an engram memory tagged `git-commit`. `feat:`/`refactor:` commits become `decision` type; `fix:` commits become `incident` type. These surface automatically when you later ask "why did we change X?" or "what was the fix for Y?".
+**commit hook** (writes): every `git commit` produces an memnos memory tagged `git-commit`. `feat:`/`refactor:` commits become `decision` type; `fix:` commits become `incident` type. These surface automatically when you later ask "why did we change X?" or "what was the fix for Y?".
 
 ### Updated automation table
 
@@ -431,22 +431,22 @@ git config --global core.hooksPath ~/.git-hooks
 
 ```bash
 ./install-server.sh
-# → generates ~/.engram/.env with ENGRAM_API_KEY and ARCADEDB_PASSWORD
-# → starts ArcadeDB + engram API via Docker
+# → generates ~/.memnos/.env with MEMNOS_API_KEY and ARCADEDB_PASSWORD
+# → starts ArcadeDB + memnos API via Docker
 ```
 
-Share the API URL and key from `~/.engram/.env` with each developer.
+Share the API URL and key from `~/.memnos/.env` with each developer.
 
 **Each developer** — run on their own machine:
 
 ```bash
-./install-client.sh --server http://engram.yourcompany.com:8766 --key engram-abc123
+./install-client.sh --server http://memnos.yourcompany.com:8766 --key memnos-abc123
 # → installs hooks, sets their default namespace, restarts Claude Code
 ```
 
 On Windows:
 ```powershell
-.\install-client.ps1 -Server http://engram.yourcompany.com:8766 -Key engram-abc123
+.\install-client.ps1 -Server http://memnos.yourcompany.com:8766 -Key memnos-abc123
 ```
 
 MCP config uses SSE transport for a remote server:
@@ -454,9 +454,9 @@ MCP config uses SSE transport for a remote server:
 ```json
 {
   "mcpServers": {
-    "engram": {
+    "memnos": {
       "type": "sse",
-      "url": "https://engram.yourcompany.com/sse",
+      "url": "https://memnos.yourcompany.com/sse",
       "headers": {
         "Authorization": "Bearer alice-personal-key"
       }
@@ -465,7 +465,7 @@ MCP config uses SSE transport for a remote server:
 }
 ```
 
-Each engineer uses their own API key. Keys are scoped to namespaces in `engram.yaml`:
+Each engineer uses their own API key. Keys are scoped to namespaces in `memnos.yaml`:
 
 ```yaml
 auth:
@@ -484,15 +484,15 @@ See [enterprise-team-setup.md](enterprise-team-setup.md) for the full team deplo
 
 ## Troubleshooting
 
-**`/mcp` shows engram as disconnected**
+**`/mcp` shows memnos as disconnected**
 - SSE: Is the server running? `curl http://localhost:8765/health`
-- stdio: Does the binary exist and run? `ENGRAM_CONFIG=/path/to/engram.yaml ARCADEDB_PASSWORD=... engram-mcp-stdio`
+- stdio: Does the binary exist and run? `MEMNOS_CONFIG=/path/to/memnos.yaml ARCADEDB_PASSWORD=... memnos-mcp-stdio`
 - Did you fully restart Claude Code (quit, not just new tab)?
-- Are all env vars set correctly? Check `ENGRAM_CONFIG` is an absolute path.
+- Are all env vars set correctly? Check `MEMNOS_CONFIG` is an absolute path.
 
 **Claude uses Bash/grep instead of memory_search**
 - CLAUDE.md isn't loaded. Run `Read ~/.claude/CLAUDE.md` at session start.
-- Or move the engram instructions to the project-level `CLAUDE.md` in your working directory.
+- Or move the memnos instructions to the project-level `CLAUDE.md` in your working directory.
 
 **memory_search returns no results**
 - Check namespace: `org:myteam` won't find results stored under `personal:default`
@@ -502,7 +502,7 @@ See [enterprise-team-setup.md](enterprise-team-setup.md) for the full team deplo
 **stdio takes too long to start**
 - First start downloads/loads the `all-MiniLM-L6-v2` model (~90MB). Allow 40–60s.
 - Subsequent starts are faster once the model is cached (`~/.cache/huggingface/`).
-- Set `ENGRAM_LOG_LEVEL=WARNING` in the env block to reduce logging overhead.
+- Set `MEMNOS_LOG_LEVEL=WARNING` in the env block to reduce logging overhead.
 
 **Claude spawns agents or runs scripts to parse results**
 - Add to CLAUDE.md: `"MCP results come back as plain text — read them directly, never spawn agents to parse tool results."`

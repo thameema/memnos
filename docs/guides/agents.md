@@ -1,6 +1,6 @@
 # Agent Authoring Guide
 
-engram agents are YAML files that tell the orchestrator how to handle specific types of tasks. Each file defines one agent: what model it uses, which tools it can call, how it should behave, and whether a critic pass is needed.
+memnos agents are YAML files that tell the orchestrator how to handle specific types of tasks. Each file defines one agent: what model it uses, which tools it can call, how it should behave, and whether a critic pass is needed.
 
 ---
 
@@ -122,7 +122,7 @@ description: Extracts named entities (people, organisations, dates) from documen
 
 ```
 agents/
-├── builtin/              # Shared agents bundled with engram
+├── builtin/              # Shared agents bundled with memnos
 │   ├── code-reviewer.yaml
 │   ├── critic.yaml
 │   ├── data-analyst.yaml
@@ -136,10 +136,10 @@ agents/
 └── my-custom-agent.yaml  # Project-specific agents
 ```
 
-Set `ENGRAM_AGENTS_DIR` to point at a different directory:
+Set `MEMNOS_AGENTS_DIR` to point at a different directory:
 
 ```bash
-ENGRAM_AGENTS_DIR=/path/to/my/agents engram-server
+MEMNOS_AGENTS_DIR=/path/to/my/agents memnos-server
 ```
 
 ---

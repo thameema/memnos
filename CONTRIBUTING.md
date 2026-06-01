@@ -1,6 +1,6 @@
-# Contributing to engram
+# Contributing to memnos
 
-Thank you for your interest in contributing. engram is MIT-licensed and community contributions are essential to making it a better tool.
+Thank you for your interest in contributing. memnos is MIT-licensed and community contributions are essential to making it a better tool.
 
 ## Before you start
 
@@ -11,19 +11,19 @@ Thank you for your interest in contributing. engram is MIT-licensed and communit
 ## Development setup
 
 ```bash
-git clone https://github.com/thameema/engram.git
-cd engram
+git clone https://github.com/thameema/memnos.git
+cd memnos
 make setup          # install all packages in editable mode + copy example configs
 # Edit .env with your API keys
 make dev            # start Neo4j + Qdrant via Docker Compose
-python -m engram_api.main   # start the server
+python -m memnos_api.main   # start the server
 ```
 
 ## Project layout
 
 ```
 packages/
-  core/           engram Python client (memory, graph, vector, skills)
+  core/           memnos Python client (memory, graph, vector, skills)
   mcp-server/     MCP server + SSE transport for Claude Code
   orchestrator/   Multi-agent task runner
   api/            FastAPI REST API
@@ -67,11 +67,11 @@ Use present tense, imperative mood: "add Pinecone backend" not "added Pinecone b
 ## Reporting bugs
 
 Open a GitHub issue with:
-- engram version (`engram status`)
+- memnos version (`memnos status`)
 - OS and Python version
 - Steps to reproduce
 - What you expected vs what happened
-- Relevant logs (`engram logs`)
+- Relevant logs (`memnos logs`)
 
 ## Questions
 

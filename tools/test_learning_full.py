@@ -43,13 +43,13 @@ def _tmp_db() -> Path:
 
 class TestEpisodeStore(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        from engram_learning.episode_store import EpisodeStore
+        from memnos_learning.episode_store import EpisodeStore
         self.db_path = _tmp_db()
         self.store = EpisodeStore(self.db_path)
         await self.store.init()
 
     async def _ep(self, **kw):
-        from engram_learning.models import EpisodicRecord, Outcome
+        from memnos_learning.models import EpisodicRecord, Outcome
         defaults = dict(
             task_id="t1", namespace="ns1", original_prompt="do the thing",
             decomposition=["step1"], agent_used="alpha", runtime="api",
@@ -81,7 +81,7 @@ class TestEpisodeStore(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result)
 
     async def test_get_recent(self):
-        from engram_learning.models import EpisodicRecord, Outcome
+        from memnos_learning.models import EpisodicRecord, Outcome
         ep = EpisodicRecord(namespace="ns1", original_prompt="recent task",
                             outcome=Outcome.SUCCESS, created_at=datetime.now(timezone.utc))
         await self.store.save(ep)
@@ -89,7 +89,7 @@ class TestEpisodeStore(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(r.id == ep.id for r in results))
 
     async def test_get_recent_excludes_old(self):
-        from engram_learning.models import EpisodicRecord, Outcome
+        from memnos_learning.models import EpisodicRecord, Outcome
         ep = EpisodicRecord(namespace="ns1", original_prompt="old task",
                             outcome=Outcome.FAILURE,
                             created_at=datetime.now(timezone.utc) - timedelta(days=30))
@@ -98,7 +98,7 @@ class TestEpisodeStore(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(r.id == ep.id for r in results))
 
     async def test_update_outcome(self):
-        from engram_learning.models import Outcome
+        from memnos_learning.models import Outcome
         ep = await self._ep()
         await self.store.save(ep)
         await self.store.update_outcome(ep.id, Outcome.CORRECTED, "wrong answer", 0.2)
@@ -114,7 +114,7 @@ class TestEpisodeStore(unittest.IsolatedAsyncioTestCase):
         self.assertIn("active_ns", ns_list)
 
     async def test_get_active_namespaces_empty_when_old(self):
-        from engram_learning.models import EpisodicRecord, Outcome
+        from memnos_learning.models import EpisodicRecord, Outcome
         ep = EpisodicRecord(namespace="stale_ns", original_prompt="old",
                             outcome=Outcome.SUCCESS,
                             created_at=datetime.now(timezone.utc) - timedelta(days=20))
@@ -129,13 +129,13 @@ class TestEpisodeStore(unittest.IsolatedAsyncioTestCase):
 
 class TestHeuristicStore(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        from engram_learning.heuristic_store import HeuristicStore
+        from memnos_learning.heuristic_store import HeuristicStore
         self.db_path = _tmp_db()
         self.store = HeuristicStore(self.db_path)
         await self.store.init()
 
     def _h(self, namespace="ns1", rule="always validate input", confidence=0.8, tags=None):
-        from engram_learning.models import Heuristic
+        from memnos_learning.models import Heuristic
         return Heuristic(namespace=namespace, rule=rule, confidence=confidence,
                          applies_to_tags=tags or [])
 
@@ -206,13 +206,13 @@ class TestHeuristicStore(unittest.IsolatedAsyncioTestCase):
 
 class TestSkillStore(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        from engram_learning.skill_store import SkillStore
+        from memnos_learning.skill_store import SkillStore
         self.db_path = _tmp_db()
         self.store = SkillStore(self.db_path)
         await self.store.init()
 
     def _t(self, name="deploy-service", namespace="ns1", patterns=None, steps=None):
-        from engram_learning.models import SkillTemplate
+        from memnos_learning.models import SkillTemplate
         return SkillTemplate(
             name=name, namespace=namespace,
             description="Deploy a service to k8s",
@@ -245,7 +245,7 @@ class TestSkillStore(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result)
 
     async def test_find_match_no_patterns(self):
-        from engram_learning.models import SkillTemplate
+        from memnos_learning.models import SkillTemplate
         t = SkillTemplate(namespace="ns1", name="empty", trigger_patterns=[], steps=[])
         await self.store.add(t)
         result = await self.store.find_match("anything", "ns1")
@@ -259,7 +259,7 @@ class TestSkillStore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(all_t[0].use_count, 1)
 
     async def test_increment_use_failure_lowers_success_rate(self):
-        from engram_learning.models import SkillTemplate
+        from memnos_learning.models import SkillTemplate
         t = SkillTemplate(namespace="ns1", name="t", trigger_patterns=["x"], steps=[], success_rate=1.0)
         await self.store.add(t)
         # Prime use_count=1 with a success so the failure formula produces a non-zero result
@@ -282,7 +282,7 @@ class TestSkillStore(unittest.IsolatedAsyncioTestCase):
 
 class TestQualityStore(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        from engram_learning.quality_store import QualityStore
+        from memnos_learning.quality_store import QualityStore
         self.db_path = _tmp_db()
         self.store = QualityStore(self.db_path)
         await self.store.init()
@@ -342,7 +342,7 @@ class TestQualityStore(unittest.IsolatedAsyncioTestCase):
 
 class TestDetectCorrection(unittest.TestCase):
     def _call(self, text):
-        from engram_learning.feedback import detect_correction
+        from memnos_learning.feedback import detect_correction
         return detect_correction(text)
 
     def test_no_returns_true(self):
@@ -363,9 +363,9 @@ class TestDetectCorrection(unittest.TestCase):
 
 class TestFeedbackService(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        from engram_learning.episode_store import EpisodeStore
-        from engram_learning.quality_store import QualityStore
-        from engram_learning.feedback import FeedbackService
+        from memnos_learning.episode_store import EpisodeStore
+        from memnos_learning.quality_store import QualityStore
+        from memnos_learning.feedback import FeedbackService
         self.db_path = _tmp_db()
         self.episodes = EpisodeStore(self.db_path)
         self.quality = QualityStore(self.db_path)
@@ -374,7 +374,7 @@ class TestFeedbackService(unittest.IsolatedAsyncioTestCase):
         self.svc = FeedbackService(self.episodes, self.quality)
 
     async def _save_episode(self, task_id="t1"):
-        from engram_learning.models import EpisodicRecord, Outcome
+        from memnos_learning.models import EpisodicRecord, Outcome
         ep = EpisodicRecord(task_id=task_id, namespace="ns1",
                             original_prompt="do x", agent_used="agent-a",
                             runtime="api", outcome=Outcome.SUCCESS,
@@ -383,7 +383,7 @@ class TestFeedbackService(unittest.IsolatedAsyncioTestCase):
         return ep
 
     async def test_record_explicit_positive(self):
-        from engram_learning.models import Outcome
+        from memnos_learning.models import Outcome
         ep = await self._save_episode()
         await self.svc.record_explicit(ep.task_id, "positive")
         fetched = await self.episodes.get(ep.id)
@@ -391,14 +391,14 @@ class TestFeedbackService(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(fetched.quality_score, 1.0)
 
     async def test_record_explicit_negative_sets_failure(self):
-        from engram_learning.models import Outcome
+        from memnos_learning.models import Outcome
         ep = await self._save_episode()
         await self.svc.record_explicit(ep.task_id, "negative")
         fetched = await self.episodes.get(ep.id)
         self.assertEqual(fetched.outcome, Outcome.FAILURE)
 
     async def test_record_explicit_negative_with_comment_corrected(self):
-        from engram_learning.models import Outcome
+        from memnos_learning.models import Outcome
         ep = await self._save_episode()
         await self.svc.record_explicit(ep.task_id, "negative", comment="wrong approach")
         fetched = await self.episodes.get(ep.id)
@@ -408,7 +408,7 @@ class TestFeedbackService(unittest.IsolatedAsyncioTestCase):
         await self.svc.record_explicit("no-such-task", "positive")
 
     async def test_record_correction(self):
-        from engram_learning.models import Outcome
+        from memnos_learning.models import Outcome
         ep = await self._save_episode()
         await self.svc.record_correction(ep.task_id, "you forgot step 3")
         fetched = await self.episodes.get(ep.id)
@@ -421,7 +421,7 @@ class TestFeedbackService(unittest.IsolatedAsyncioTestCase):
     async def test_record_explicit_triggers_reflection(self):
         ep = await self._save_episode()
         reflection = AsyncMock()
-        from engram_learning.feedback import FeedbackService
+        from memnos_learning.feedback import FeedbackService
         svc = FeedbackService(self.episodes, self.quality, reflection_service=reflection)
         await svc.record_explicit(ep.task_id, "negative")
         reflection.run.assert_awaited_once()
@@ -429,7 +429,7 @@ class TestFeedbackService(unittest.IsolatedAsyncioTestCase):
     async def test_record_correction_triggers_reflection(self):
         ep = await self._save_episode()
         reflection = AsyncMock()
-        from engram_learning.feedback import FeedbackService
+        from memnos_learning.feedback import FeedbackService
         svc = FeedbackService(self.episodes, self.quality, reflection_service=reflection)
         await svc.record_correction(ep.task_id, "bad")
         reflection.run.assert_awaited_once()
@@ -441,8 +441,8 @@ class TestFeedbackService(unittest.IsolatedAsyncioTestCase):
 
 class TestSkillExtractor(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        from engram_learning.skill_store import SkillStore
-        from engram_learning.extractor import SkillExtractor
+        from memnos_learning.skill_store import SkillStore
+        from memnos_learning.extractor import SkillExtractor
         self.db_path = _tmp_db()
         self.skill_store = SkillStore(self.db_path)
         await self.skill_store.init()
@@ -452,7 +452,7 @@ class TestSkillExtractor(unittest.IsolatedAsyncioTestCase):
         )
 
     async def _episode(self, quality=0.9, outcome=None):
-        from engram_learning.models import EpisodicRecord, Outcome
+        from memnos_learning.models import EpisodicRecord, Outcome
         return EpisodicRecord(
             namespace="ns1",
             original_prompt="deploy service to kubernetes",
@@ -468,14 +468,14 @@ class TestSkillExtractor(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(templates, [])
 
     async def test_skip_non_success_outcome(self):
-        from engram_learning.models import Outcome
+        from memnos_learning.models import Outcome
         ep = await self._episode(outcome=Outcome.FAILURE)
         await self.extractor.maybe_extract(ep)
         templates = await self.skill_store.get_all("ns1")
         self.assertEqual(templates, [])
 
     async def test_skip_when_existing_match(self):
-        from engram_learning.models import SkillTemplate
+        from memnos_learning.models import SkillTemplate
         existing = SkillTemplate(
             namespace="ns1", name="deploy-k8s",
             trigger_patterns=["deploy", "kubernetes"],
@@ -526,15 +526,15 @@ class TestSkillExtractor(unittest.IsolatedAsyncioTestCase):
         ep = await self._episode()
         llm_response = MagicMock()
         llm_response.content = [MagicMock(text='{"extract": true, "description": "Do a thing", "trigger_patterns": ["do"], "steps": ["1. step"]}')]
-        engram_client = AsyncMock()
+        memnos_client = AsyncMock()
         with patch("anthropic.AsyncAnthropic") as mock_cls:
             mock_cls.return_value.messages.create = AsyncMock(return_value=llm_response)
-            from engram_learning.skill_store import SkillStore
-            from engram_learning.extractor import SkillExtractor
-            extractor = SkillExtractor("k", "m", self.skill_store, engram_client)
+            from memnos_learning.skill_store import SkillStore
+            from memnos_learning.extractor import SkillExtractor
+            extractor = SkillExtractor("k", "m", self.skill_store, memnos_client)
             extractor._client = mock_cls.return_value
             await extractor.maybe_extract(ep)
-        engram_client.add.assert_awaited_once()
+        memnos_client.add.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -543,9 +543,9 @@ class TestSkillExtractor(unittest.IsolatedAsyncioTestCase):
 
 class TestReflectionService(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        from engram_learning.episode_store import EpisodeStore
-        from engram_learning.heuristic_store import HeuristicStore
-        from engram_learning.reflection import ReflectionService
+        from memnos_learning.episode_store import EpisodeStore
+        from memnos_learning.heuristic_store import HeuristicStore
+        from memnos_learning.reflection import ReflectionService
         self.db_path = _tmp_db()
         self.episodes = EpisodeStore(self.db_path)
         self.heuristics = HeuristicStore(self.db_path)
@@ -559,7 +559,7 @@ class TestReflectionService(unittest.IsolatedAsyncioTestCase):
         )
 
     async def _add_failures(self, n: int):
-        from engram_learning.models import EpisodicRecord, Outcome
+        from memnos_learning.models import EpisodicRecord, Outcome
         for i in range(n):
             ep = EpisodicRecord(
                 namespace="ns1",
@@ -614,7 +614,7 @@ class TestReflectionService(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(all_h, [])
 
     async def test_deletes_heuristics(self):
-        from engram_learning.models import Heuristic
+        from memnos_learning.models import Heuristic
         h = Heuristic(namespace="ns1", rule="old rule")
         await self.heuristics.add(h)
         await self._add_failures(3)
@@ -628,7 +628,7 @@ class TestReflectionService(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(all_h, [])
 
     async def test_updates_confidence(self):
-        from engram_learning.models import Heuristic
+        from memnos_learning.models import Heuristic
         h = Heuristic(namespace="ns1", rule="rule A", confidence=0.8)
         await self.heuristics.add(h)
         await self._add_failures(3)
@@ -645,14 +645,14 @@ class TestReflectionService(unittest.IsolatedAsyncioTestCase):
         await self._add_failures(3)
         llm_response = MagicMock()
         llm_response.content = [MagicMock(text='{"new_heuristics": [{"rule": "be careful", "rationale": "x", "applies_to_tags": [], "confidence": 0.8}], "update_heuristics": [], "delete_heuristic_ids": []}')]
-        engram_client = AsyncMock()
-        from engram_learning.reflection import ReflectionService
-        svc = ReflectionService("k", "m", self.episodes, self.heuristics, "ns1", engram_client=engram_client)
+        memnos_client = AsyncMock()
+        from memnos_learning.reflection import ReflectionService
+        svc = ReflectionService("k", "m", self.episodes, self.heuristics, "ns1", memnos_client=memnos_client)
         with patch("anthropic.AsyncAnthropic") as mock_cls:
             mock_cls.return_value.messages.create = AsyncMock(return_value=llm_response)
             svc._client = mock_cls.return_value
             await svc.run()
-        engram_client.add.assert_awaited_once()
+        memnos_client.add.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -661,8 +661,8 @@ class TestReflectionService(unittest.IsolatedAsyncioTestCase):
 
 class TestHeuristicDecayService(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        from engram_learning.heuristic_store import HeuristicStore
-        from engram_learning.decay import HeuristicDecayService
+        from memnos_learning.heuristic_store import HeuristicStore
+        from memnos_learning.decay import HeuristicDecayService
         self.db_path = _tmp_db()
         self.store = HeuristicStore(self.db_path)
         await self.store.init()
@@ -674,7 +674,7 @@ class TestHeuristicDecayService(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(all_h, [])
 
     async def test_recent_heuristic_not_decayed(self):
-        from engram_learning.models import Heuristic
+        from memnos_learning.models import Heuristic
         h = Heuristic(namespace="ns1", rule="fresh rule", confidence=0.8,
                       last_triggered_at=datetime.now(timezone.utc))
         await self.store.add(h)
@@ -683,7 +683,7 @@ class TestHeuristicDecayService(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(all_h[0].confidence, 0.8)
 
     async def test_stale_heuristic_is_decayed(self):
-        from engram_learning.models import Heuristic
+        from memnos_learning.models import Heuristic
         h = Heuristic(namespace="ns1", rule="stale rule", confidence=0.8,
                       last_triggered_at=datetime.now(timezone.utc) - timedelta(days=60))
         await self.store.add(h)
@@ -692,7 +692,7 @@ class TestHeuristicDecayService(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(all_h[0].confidence, 0.72, places=4)
 
     async def test_very_stale_heuristic_is_deleted(self):
-        from engram_learning.models import Heuristic
+        from memnos_learning.models import Heuristic
         h = Heuristic(namespace="ns1", rule="dying rule", confidence=0.09,
                       last_triggered_at=datetime.now(timezone.utc) - timedelta(days=60))
         await self.store.add(h)
@@ -707,7 +707,7 @@ class TestHeuristicDecayService(unittest.IsolatedAsyncioTestCase):
 
 class TestLearningScheduler(unittest.TestCase):
     def _make_svc(self, reflection=None, decay=None, episode_store=None):
-        from engram_learning.scheduler import LearningScheduler
+        from memnos_learning.scheduler import LearningScheduler
         cfg = MagicMock()
         cfg.learning.reflection.schedule = "0 2 * * *"
         cfg.learning.reflection.lookback_days = 7
@@ -758,8 +758,8 @@ class TestLearningScheduler(unittest.TestCase):
 
 class TestSchedulerRunReflection(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        from engram_learning.episode_store import EpisodeStore
-        from engram_learning.scheduler import LearningScheduler
+        from memnos_learning.episode_store import EpisodeStore
+        from memnos_learning.scheduler import LearningScheduler
         self.db_path = _tmp_db()
         self.episodes = EpisodeStore(self.db_path)
         await self.episodes.init()
@@ -786,7 +786,7 @@ class TestSchedulerRunReflection(unittest.IsolatedAsyncioTestCase):
         self.reflection.run.assert_awaited_once()
 
     async def test_run_reflection_additional_namespaces(self):
-        from engram_learning.models import EpisodicRecord, Outcome
+        from memnos_learning.models import EpisodicRecord, Outcome
         ep = EpisodicRecord(namespace="ns2", original_prompt="x", outcome=Outcome.SUCCESS)
         await self.episodes.save(ep)
 

@@ -9,7 +9,7 @@ on:
       - 'install-client.sh'
       - 'install-client.ps1'
       - 'docker-compose.yml'
-      - 'engram.yaml.example'
+      - 'memnos.yaml.example'
       - '.env.example'
       - 'docker/**'
       - 'hooks/**'
@@ -24,7 +24,7 @@ on:
       - 'install-client.sh'
       - 'install-client.ps1'
       - 'docker-compose.yml'
-      - 'engram.yaml.example'
+      - 'memnos.yaml.example'
       - '.env.example'
       - 'docker/**'
       - 'hooks/**'
@@ -99,22 +99,22 @@ jobs:
       - name: Run Layer 3
         run: bash tests/install/run.sh e2e
 
-      - name: Capture engram logs on failure
+      - name: Capture memnos logs on failure
         if: failure()
         run: |
-          if [ -d /tmp/engram-e2e-src ]; then
-            cd /tmp/engram-e2e-src
-            docker compose --project-name engram-e2e \
-              --env-file /tmp/engram-e2e-data/.env logs engram | tail -100
+          if [ -d /tmp/memnos-e2e-src ]; then
+            cd /tmp/memnos-e2e-src
+            docker compose --project-name memnos-e2e \
+              --env-file /tmp/memnos-e2e-data/.env logs memnos | tail -100
           fi
 
       - name: Teardown
         if: always()
         run: |
-          if [ -d /tmp/engram-e2e-src ]; then
-            cd /tmp/engram-e2e-src
-            docker compose --project-name engram-e2e \
-              --env-file /tmp/engram-e2e-data/.env down -v || true
+          if [ -d /tmp/memnos-e2e-src ]; then
+            cd /tmp/memnos-e2e-src
+            docker compose --project-name memnos-e2e \
+              --env-file /tmp/memnos-e2e-data/.env down -v || true
           fi
 
   # ─── macOS smoke check — runs syntax + static checks on macOS too ────────

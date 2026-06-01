@@ -11,7 +11,7 @@ Covers:
   G. Knowledge search  (GET /knowledge/search)
   H. Namespace CRUD  (POST/GET/DELETE /admin/namespaces)
 
-All tests use the runner fixture from conftest.py and skip if the engram
+All tests use the runner fixture from conftest.py and skip if the memnos
 API is not reachable.
 """
 from __future__ import annotations
@@ -24,8 +24,8 @@ from datetime import datetime, timezone, timedelta
 import httpx
 import pytest
 
-ENGRAM_API = os.environ.get("ENGRAM_API_URL", "http://127.0.0.1:8766")
-ENGRAM_KEY = os.environ.get("ENGRAM_API_KEY", "engram-local-dev-key")
+MEMNOS_API = os.environ.get("MEMNOS_API_URL", "http://127.0.0.1:8766")
+MEMNOS_KEY = os.environ.get("MEMNOS_API_KEY", "memnos-local-dev-key")
 BASE_NS = "test:api:integ"
 
 
@@ -34,22 +34,22 @@ def _uid() -> str:
 
 
 def _client() -> httpx.Client:
-    return httpx.Client(headers={"X-API-Key": ENGRAM_KEY}, timeout=30)
+    return httpx.Client(headers={"X-API-Key": MEMNOS_KEY}, timeout=30)
 
 
 def _write(c: httpx.Client, content: str, ns: str, **extra) -> dict:
     body = {"content": content, "namespace": ns, **extra}
-    r = c.post(f"{ENGRAM_API}/api/v1/memory/", json=body)
+    r = c.post(f"{MEMNOS_API}/api/v1/memory/", json=body)
     assert r.status_code == 201, f"Write failed {r.status_code}: {r.text[:200]}"
     return r.json()
 
 
 def _delete_mem(c: httpx.Client, mid: str, ns: str) -> None:
-    c.delete(f"{ENGRAM_API}/api/v1/memory/{mid}", params={"ns": ns})
+    c.delete(f"{MEMNOS_API}/api/v1/memory/{mid}", params={"ns": ns})
 
 
 def _get_mem(c: httpx.Client, mid: str, ns: str) -> dict:
-    r = c.get(f"{ENGRAM_API}/api/v1/memory/{mid}", params={"ns": ns})
+    r = c.get(f"{MEMNOS_API}/api/v1/memory/{mid}", params={"ns": ns})
     assert r.status_code == 200, f"GET {mid} failed {r.status_code}: {r.text[:200]}"
     return r.json()
 
@@ -124,7 +124,7 @@ def test_review_due_endpoint_returns_overdue_memories(runner) -> None:
         overdue = _write(c, "overdue review memory", ns, review_by=past)
         not_due = _write(c, "future review memory", ns, review_by=future)
         try:
-            r = c.get(f"{ENGRAM_API}/api/v1/memory/review-due", params={"ns": ns})
+            r = c.get(f"{MEMNOS_API}/api/v1/memory/review-due", params={"ns": ns})
             assert r.status_code == 200, f"review-due failed: {r.status_code}"
             items = r.json()
             ids = [i["id"] for i in items]
@@ -145,7 +145,7 @@ def test_governance_endpoint_returns_decisions_and_constraints(runner) -> None:
         mid = mem["id"]
         try:
             r = c.get(
-                f"{ENGRAM_API}/api/v1/memory/governance",
+                f"{MEMNOS_API}/api/v1/memory/governance",
                 params={"ns": ns, "entities": "database"},
             )
             assert r.status_code == 200, f"governance failed: {r.status_code} {r.text[:200]}"
@@ -168,7 +168,7 @@ def test_memory_search_returns_relevant_results(runner) -> None:
         try:
             time.sleep(0.5)  # brief settle
             r = c.get(
-                f"{ENGRAM_API}/api/v1/memory/search",
+                f"{MEMNOS_API}/api/v1/memory/search",
                 params={"q": marker, "ns": ns, "top_k": 5},
             )
             assert r.status_code == 200
@@ -190,7 +190,7 @@ def test_memory_search_mode_vector(runner) -> None:
         mid = mem["id"]
         try:
             r = c.get(
-                f"{ENGRAM_API}/api/v1/memory/search",
+                f"{MEMNOS_API}/api/v1/memory/search",
                 params={"q": marker, "ns": ns, "top_k": 3, "mode": "vector"},
             )
             assert r.status_code == 200, f"vector search failed: {r.status_code}"
@@ -204,9 +204,9 @@ def test_memory_delete_returns_204(runner) -> None:
     with _client() as c:
         mem = _write(c, "memory to delete", ns)
         mid = mem["id"]
-        r = c.delete(f"{ENGRAM_API}/api/v1/memory/{mid}", params={"ns": ns})
+        r = c.delete(f"{MEMNOS_API}/api/v1/memory/{mid}", params={"ns": ns})
         assert r.status_code == 204, f"DELETE returned {r.status_code}"
-        r2 = c.get(f"{ENGRAM_API}/api/v1/memory/{mid}", params={"ns": ns})
+        r2 = c.get(f"{MEMNOS_API}/api/v1/memory/{mid}", params={"ns": ns})
         assert r2.status_code == 404, f"Memory still exists after DELETE: {r2.status_code}"
 
 
@@ -225,7 +225,7 @@ def test_export_returns_json_envelope(runner) -> None:
         m2 = _write(c, f"export-beta-{uid2}: python version requirement is 3.10 or higher", ns)
         time.sleep(1.0)  # allow ArcadeDB to commit both writes before scan
         try:
-            r = c.get(f"{ENGRAM_API}/api/v1/admin/export", params={"ns": ns})
+            r = c.get(f"{MEMNOS_API}/api/v1/admin/export", params={"ns": ns})
             assert r.status_code == 200, f"export failed: {r.status_code} {r.text[:200]}"
             body = r.json()
             assert "memories" in body, f"export envelope missing 'memories' key: {list(body.keys())}"
@@ -247,7 +247,7 @@ def test_export_import_round_trip(runner) -> None:
         orig_id = orig["id"]
         try:
             # Export
-            r = c.get(f"{ENGRAM_API}/api/v1/admin/export", params={"ns": src_ns})
+            r = c.get(f"{MEMNOS_API}/api/v1/admin/export", params={"ns": src_ns})
             assert r.status_code == 200
             envelope = r.json()
 
@@ -257,12 +257,12 @@ def test_export_import_round_trip(runner) -> None:
                 m["namespace"] = dst_ns
 
             # Import
-            r2 = c.post(f"{ENGRAM_API}/api/v1/admin/import", json=envelope)
+            r2 = c.post(f"{MEMNOS_API}/api/v1/admin/import", json=envelope)
             assert r2.status_code in (200, 201), f"import failed: {r2.status_code} {r2.text[:300]}"
 
             # Verify content arrived in dst namespace
             r3 = c.get(
-                f"{ENGRAM_API}/api/v1/memory/search",
+                f"{MEMNOS_API}/api/v1/memory/search",
                 params={"q": "round-trip export import test", "ns": dst_ns, "top_k": 5},
             )
             assert r3.status_code == 200
@@ -272,7 +272,7 @@ def test_export_import_round_trip(runner) -> None:
             _delete_mem(c, orig_id, src_ns)
             # Clean up dst namespace memories
             r_search = c.get(
-                f"{ENGRAM_API}/api/v1/memory/search",
+                f"{MEMNOS_API}/api/v1/memory/search",
                 params={"q": "round-trip", "ns": dst_ns, "top_k": 10},
             )
             for m in r_search.json() if r_search.status_code == 200 else []:
@@ -283,7 +283,7 @@ def test_export_empty_namespace_returns_empty_memories(runner) -> None:
     """Exporting a namespace with no memories returns an empty list, not an error."""
     ns = f"{BASE_NS}:export-empty:{_uid()}"
     with _client() as c:
-        r = c.get(f"{ENGRAM_API}/api/v1/admin/export", params={"ns": ns})
+        r = c.get(f"{MEMNOS_API}/api/v1/admin/export", params={"ns": ns})
         assert r.status_code == 200, f"export of empty ns failed: {r.status_code}"
         body = r.json()
         memories = body.get("memories", [])
@@ -299,7 +299,7 @@ def test_create_and_list_api_key(runner) -> None:
     """POST /admin/keys creates a key; GET /admin/keys lists it."""
     with _client() as c:
         r = c.post(
-            f"{ENGRAM_API}/api/v1/admin/keys",
+            f"{MEMNOS_API}/api/v1/admin/keys",
             json={
                 "user_id": f"test-user-{_uid()}",
                 "namespaces": [f"{BASE_NS}:keys-test"],
@@ -312,43 +312,43 @@ def test_create_and_list_api_key(runner) -> None:
         key_id = created["id"]
         assert created.get("key"), "key secret not returned on creation"
         try:
-            r2 = c.get(f"{ENGRAM_API}/api/v1/admin/keys")
+            r2 = c.get(f"{MEMNOS_API}/api/v1/admin/keys")
             assert r2.status_code == 200
             keys = r2.json()
             key_ids = [k["id"] for k in keys]
             assert key_id in key_ids, f"Created key {key_id} not in list"
         finally:
-            c.delete(f"{ENGRAM_API}/api/v1/admin/keys/{key_id}")
+            c.delete(f"{MEMNOS_API}/api/v1/admin/keys/{key_id}")
 
 
 def test_api_key_secret_not_returned_on_list(runner) -> None:
     """The raw key secret is only returned on creation, never on GET /admin/keys."""
     with _client() as c:
         r = c.post(
-            f"{ENGRAM_API}/api/v1/admin/keys",
+            f"{MEMNOS_API}/api/v1/admin/keys",
             json={"user_id": f"u-{_uid()}", "namespaces": ["*"]},
         )
         assert r.status_code == 201
         key_id = r.json()["id"]
         try:
-            r2 = c.get(f"{ENGRAM_API}/api/v1/admin/keys")
+            r2 = c.get(f"{MEMNOS_API}/api/v1/admin/keys")
             for k in r2.json():
                 if k["id"] == key_id:
                     assert not k.get("key"), "key secret leaked in list response"
         finally:
-            c.delete(f"{ENGRAM_API}/api/v1/admin/keys/{key_id}")
+            c.delete(f"{MEMNOS_API}/api/v1/admin/keys/{key_id}")
 
 
 def test_revoke_api_key(runner) -> None:
     """DELETE /admin/keys/{id} revokes the key; it no longer appears active."""
     with _client() as c:
         r = c.post(
-            f"{ENGRAM_API}/api/v1/admin/keys",
+            f"{MEMNOS_API}/api/v1/admin/keys",
             json={"user_id": f"u-revoke-{_uid()}", "namespaces": ["*"]},
         )
         assert r.status_code == 201
         key_id = r.json()["id"]
-        r2 = c.delete(f"{ENGRAM_API}/api/v1/admin/keys/{key_id}")
+        r2 = c.delete(f"{MEMNOS_API}/api/v1/admin/keys/{key_id}")
         assert r2.status_code == 204, f"revoke failed: {r2.status_code}"
 
 
@@ -360,7 +360,7 @@ def test_read_only_key_cannot_write(runner) -> None:
     """
     # Detect open_mode: if an obviously invalid key gets a 200, auth is bypassed
     probe = httpx.get(
-        f"{ENGRAM_API}/api/v1/memory/search",
+        f"{MEMNOS_API}/api/v1/memory/search",
         params={"q": "probe", "ns": "test"},
         headers={"X-API-Key": "clearly-invalid-probe-key-xyz"},
         timeout=5,
@@ -370,7 +370,7 @@ def test_read_only_key_cannot_write(runner) -> None:
 
     with _client() as c:
         r = c.post(
-            f"{ENGRAM_API}/api/v1/admin/keys",
+            f"{MEMNOS_API}/api/v1/admin/keys",
             json={"user_id": f"readonly-{_uid()}", "namespaces": ["*"], "read_only": True},
         )
         assert r.status_code == 201
@@ -379,21 +379,21 @@ def test_read_only_key_cannot_write(runner) -> None:
         try:
             with httpx.Client(headers={"X-API-Key": ro_key}, timeout=10) as ro:
                 r2 = ro.post(
-                    f"{ENGRAM_API}/api/v1/memory/",
+                    f"{MEMNOS_API}/api/v1/memory/",
                     json={"content": "should be rejected", "namespace": BASE_NS},
                 )
                 assert r2.status_code in (403, 401), (
                     f"read-only key should be rejected on write, got {r2.status_code}"
                 )
         finally:
-            c.delete(f"{ENGRAM_API}/api/v1/admin/keys/{key_id}")
+            c.delete(f"{MEMNOS_API}/api/v1/admin/keys/{key_id}")
 
 
 def test_invalid_api_key_returns_401_or_dev_bypass(runner) -> None:
     """Requests with a bad API key return 401 in production; dev mode may allow all keys."""
     with httpx.Client(headers={"X-API-Key": "definitely-invalid-key-xyz"}, timeout=10) as c:
-        r = c.get(f"{ENGRAM_API}/api/v1/memory/search", params={"q": "test", "ns": BASE_NS})
-        # In dev mode ENGRAM_API_KEY=* auth is bypassed — 200 is acceptable in that case
+        r = c.get(f"{MEMNOS_API}/api/v1/memory/search", params={"q": "test", "ns": BASE_NS})
+        # In dev mode MEMNOS_API_KEY=* auth is bypassed — 200 is acceptable in that case
         assert r.status_code in (200, 401), f"Expected 200 (dev) or 401 (prod), got {r.status_code}"
 
 
@@ -406,9 +406,9 @@ def test_graph_fact_creates_spo_triple(runner) -> None:
     ns = f"{BASE_NS}:graph:{_uid()}"
     with _client() as c:
         r = c.post(
-            f"{ENGRAM_API}/api/v1/graph/fact",
+            f"{MEMNOS_API}/api/v1/graph/fact",
             json={
-                "subject": "engram",
+                "subject": "memnos",
                 "predicate": "stores",
                 "object": "memories",
                 "namespace": ns,
@@ -424,7 +424,7 @@ def test_graph_entity_fetch(runner) -> None:
     with _client() as c:
         # Create a fact to ensure the entity exists
         c.post(
-            f"{ENGRAM_API}/api/v1/graph/fact",
+            f"{MEMNOS_API}/api/v1/graph/fact",
             json={
                 "subject": entity_name,
                 "predicate": "is",
@@ -433,7 +433,7 @@ def test_graph_entity_fetch(runner) -> None:
             },
         )
         r = c.get(
-            f"{ENGRAM_API}/api/v1/graph/entity/{entity_name}",
+            f"{MEMNOS_API}/api/v1/graph/entity/{entity_name}",
             params={"ns": ns},
         )
         assert r.status_code in (200, 404), f"graph/entity returned unexpected {r.status_code}"
@@ -448,7 +448,7 @@ def test_graph_query_returns_list(runner) -> None:
     """POST /graph/query executes SQL and returns a list."""
     with _client() as c:
         r = c.post(
-            f"{ENGRAM_API}/api/v1/graph/query",
+            f"{MEMNOS_API}/api/v1/graph/query",
             json={
                 "cypher": "SELECT count(*) as cnt FROM Memory",
                 "namespace": BASE_NS,
@@ -465,7 +465,7 @@ def test_graph_query_returns_list(runner) -> None:
 def test_stats_endpoint_returns_counts(runner) -> None:
     """GET /graph/stats returns a dict with count fields."""
     with _client() as c:
-        r = c.get(f"{ENGRAM_API}/api/v1/graph/stats", params={"ns": "org:engram"})
+        r = c.get(f"{MEMNOS_API}/api/v1/graph/stats", params={"ns": "org:memnos"})
         assert r.status_code == 200, f"stats failed: {r.status_code} {r.text[:200]}"
         body = r.json()
         assert isinstance(body, dict), "stats should return a dict"
@@ -476,7 +476,7 @@ def test_stats_endpoint_returns_counts(runner) -> None:
 def test_visualize_endpoint_returns_graph_data(runner) -> None:
     """GET /graph/visualize returns nodes and edges."""
     with _client() as c:
-        r = c.get(f"{ENGRAM_API}/api/v1/graph/visualize", params={"ns": "org:engram"})
+        r = c.get(f"{MEMNOS_API}/api/v1/graph/visualize", params={"ns": "org:memnos"})
         assert r.status_code == 200, f"visualize failed: {r.status_code} {r.text[:200]}"
         body = r.json()
         assert "nodes" in body or "vertices" in body, (
@@ -496,7 +496,7 @@ def test_spawn_and_poll_task(runner) -> None:
     ns = f"{BASE_NS}:tasks:{_uid()}"
     with _client() as c:
         r = c.post(
-            f"{ENGRAM_API}/api/v1/tasks/",
+            f"{MEMNOS_API}/api/v1/tasks/",
             json={
                 "prompt": "summarise the last 3 memories in one sentence",
                 "namespace": ns,
@@ -508,7 +508,7 @@ def test_spawn_and_poll_task(runner) -> None:
         task_id = task["task_id"]
         assert task_id, "task_id missing from response"
 
-        r2 = c.get(f"{ENGRAM_API}/api/v1/tasks/{task_id}")
+        r2 = c.get(f"{MEMNOS_API}/api/v1/tasks/{task_id}")
         assert r2.status_code == 200, f"task poll failed: {r2.status_code}"
         status = r2.json()
         assert status["task_id"] == task_id
@@ -520,7 +520,7 @@ def test_spawn_and_poll_task(runner) -> None:
 def test_list_tasks_returns_list(runner) -> None:
     """GET /tasks/ returns a list (may be empty). ns param is required."""
     with _client() as c:
-        r = c.get(f"{ENGRAM_API}/api/v1/tasks/", params={"ns": BASE_NS})
+        r = c.get(f"{MEMNOS_API}/api/v1/tasks/", params={"ns": BASE_NS})
         assert r.status_code == 200, f"task list failed: {r.status_code}"
         assert isinstance(r.json(), list), "tasks list should be a list"
 
@@ -530,13 +530,13 @@ def test_delete_task(runner) -> None:
     ns = f"{BASE_NS}:tasks:del:{_uid()}"
     with _client() as c:
         r = c.post(
-            f"{ENGRAM_API}/api/v1/tasks/",
+            f"{MEMNOS_API}/api/v1/tasks/",
             json={"prompt": "noop", "namespace": ns, "runtime": "api"},
         )
         if r.status_code not in (200, 201, 202):
             pytest.skip(f"task creation returned {r.status_code} — skipping delete test")
         task_id = r.json()["task_id"]
-        r2 = c.delete(f"{ENGRAM_API}/api/v1/tasks/{task_id}")
+        r2 = c.delete(f"{MEMNOS_API}/api/v1/tasks/{task_id}")
         assert r2.status_code == 204, f"task delete returned {r2.status_code}"
 
 
@@ -553,7 +553,7 @@ def test_knowledge_search_returns_memories(runner) -> None:
         mid = mem["id"]
         try:
             r = c.get(
-                f"{ENGRAM_API}/api/v1/knowledge/search",
+                f"{MEMNOS_API}/api/v1/knowledge/search",
                 params={"q": marker, "ns": ns, "top_k": 5},
             )
             assert r.status_code == 200, f"knowledge/search failed: {r.status_code}"
@@ -570,7 +570,7 @@ def test_knowledge_search_returns_memories(runner) -> None:
 def test_list_namespaces(runner) -> None:
     """GET /admin/namespaces returns a list."""
     with _client() as c:
-        r = c.get(f"{ENGRAM_API}/api/v1/admin/namespaces")
+        r = c.get(f"{MEMNOS_API}/api/v1/admin/namespaces")
         assert r.status_code == 200, f"namespaces list failed: {r.status_code}"
         assert isinstance(r.json(), list), "namespaces should be a list"
 
@@ -578,7 +578,7 @@ def test_list_namespaces(runner) -> None:
 def test_health_check(runner) -> None:
     """GET /admin/health returns status=ok."""
     with _client() as c:
-        r = c.get(f"{ENGRAM_API}/api/v1/admin/health")
+        r = c.get(f"{MEMNOS_API}/api/v1/admin/health")
         assert r.status_code == 200
         body = r.json()
         assert body.get("status") == "ok", f"health status not ok: {body}"
@@ -593,7 +593,7 @@ def test_write_empty_content_rejected(runner) -> None:
     """POST /memory/ with empty content is rejected."""
     with _client() as c:
         r = c.post(
-            f"{ENGRAM_API}/api/v1/memory/",
+            f"{MEMNOS_API}/api/v1/memory/",
             json={"content": "", "namespace": BASE_NS},
         )
         assert r.status_code in (400, 422), (
@@ -605,7 +605,7 @@ def test_write_missing_namespace_rejected(runner) -> None:
     """POST /memory/ without namespace is rejected with 422."""
     with _client() as c:
         r = c.post(
-            f"{ENGRAM_API}/api/v1/memory/",
+            f"{MEMNOS_API}/api/v1/memory/",
             json={"content": "no namespace"},
         )
         assert r.status_code == 422, f"Expected 422, got {r.status_code}"
@@ -615,7 +615,7 @@ def test_get_nonexistent_memory_returns_404(runner) -> None:
     """GET /memory/{id} with a random UUID returns 404."""
     with _client() as c:
         fake_id = str(uuid.uuid4())
-        r = c.get(f"{ENGRAM_API}/api/v1/memory/{fake_id}", params={"ns": BASE_NS})
+        r = c.get(f"{MEMNOS_API}/api/v1/memory/{fake_id}", params={"ns": BASE_NS})
         assert r.status_code == 404, f"Expected 404 for missing memory, got {r.status_code}"
 
 
@@ -630,7 +630,7 @@ def test_search_with_top_k_limit(runner) -> None:
                 ids.append(mem["id"])
             time.sleep(0.5)
             r = c.get(
-                f"{ENGRAM_API}/api/v1/memory/search",
+                f"{MEMNOS_API}/api/v1/memory/search",
                 params={"q": "top-k test memory", "ns": ns, "top_k": 3},
             )
             assert r.status_code == 200

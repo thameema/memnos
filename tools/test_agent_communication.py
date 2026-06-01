@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 test_agent_communication.py — End-to-end tests for agent-to-agent communication
-via engram's shared memory layer.
+via memnos's shared memory layer.
 
-This test answers: "Can two independent agents coordinate through engram without
+This test answers: "Can two independent agents coordinate through memnos without
 any direct connection to each other?"
 
 Three communication patterns are tested
@@ -20,7 +20,7 @@ Pattern 2 — Governance traversal (affects[] lookup)
 
 Pattern 3 — Push (webhook subscription)
     Agent B registers a webhook before Agent A writes. When A writes a matching
-    memory, engram POSTs to B's webhook. A local HTTP server captures the
+    memory, memnos POSTs to B's webhook. A local HTTP server captures the
     payload and verifies it arrives within 5 seconds.
 
 Pattern 4 — Point-in-time isolation (as_of)
@@ -59,9 +59,9 @@ except ImportError:
     print("[error] Missing package: httpx  (pip install httpx)", file=sys.stderr)
     sys.exit(1)
 
-ENGRAM_API  = os.environ.get("ENGRAM_API",  "http://localhost:8766")
-ENGRAM_KEY  = os.environ.get("ENGRAM_KEY",  "engram-local-dev-key")
-WEBHOOK_PORT = int(os.environ.get("ENGRAM_TEST_WEBHOOK_PORT", "19876"))
+MEMNOS_API  = os.environ.get("MEMNOS_API",  "http://localhost:8766")
+MEMNOS_KEY  = os.environ.get("MEMNOS_KEY",  "memnos-local-dev-key")
+WEBHOOK_PORT = int(os.environ.get("MEMNOS_TEST_WEBHOOK_PORT", "19876"))
 
 TEST_NS = f"test:agent-comm:{uuid.uuid4().hex[:8]}"   # isolated per run
 
@@ -79,8 +79,8 @@ def now_iso() -> str:
 
 
 def api(method: str, path: str, **kwargs) -> httpx.Response:
-    headers = {"X-API-Key": ENGRAM_KEY, "Content-Type": "application/json"}
-    url = ENGRAM_API.rstrip("/") + path
+    headers = {"X-API-Key": MEMNOS_KEY, "Content-Type": "application/json"}
+    url = MEMNOS_API.rstrip("/") + path
     with httpx.Client(timeout=30) as c:  # 30s covers slow OpenAI embedding calls
         return c.request(method, url, headers=headers, **kwargs)
 
@@ -190,7 +190,7 @@ def test_pull_handoff(runner: Runner) -> None:
     """Agent A writes a session handoff; Agent B discovers it via semantic search.
 
     No direct reference between agents — B finds A's work purely through
-    engram's vector similarity.
+    memnos's vector similarity.
     """
     agent_a_id = "agent-A-" + uid()[:6]
     agent_b_id = "agent-B-" + uid()[:6]
@@ -248,7 +248,7 @@ def test_governance_traversal(runner: Runner) -> None:
     it by component name via the affects[] index.
 
     B never references A's memory ID directly — it queries "what rules govern
-    payment-service?" and engram returns A's decision.
+    payment-service?" and memnos returns A's decision.
     """
     architect_id = "agent-architect-" + uid()[:6]
 
@@ -360,7 +360,7 @@ class _WebhookCapture:
 
 def test_push_webhook(runner: Runner) -> None:
     """Agent B registers a webhook; Agent A writes a matching memory;
-    engram delivers the payload to B within 5 seconds.
+    memnos delivers the payload to B within 5 seconds.
     """
     if runner.skip_webhook:
         print("    (skipped — --skip-webhook)")
@@ -406,12 +406,12 @@ def test_push_webhook(runner: Runner) -> None:
                 print(f"    Content preview: {content[:80]}")
             else:
                 print("\n    Webhook not delivered within 5s — "
-                      "engram may not support webhook push in this build")
+                      "memnos may not support webhook push in this build")
 
         # Webhook delivery is best-effort in some builds; warn don't fail
         if not delivered:
             print("    WARNING: webhook not received — "
-                  "check ENGRAM_WEBHOOK_DELIVERY is enabled in engram.yaml")
+                  "check MEMNOS_WEBHOOK_DELIVERY is enabled in memnos.yaml")
         else:
             assert capture.received, "Webhook fired but payload list is empty"
             payload = capture.received[0]
@@ -465,7 +465,7 @@ def test_as_of_isolation(runner: Runner) -> None:
     try:
         time.sleep(0.3)
 
-        # Agent B queries without as_of — should see both (engram doesn't
+        # Agent B queries without as_of — should see both (memnos doesn't
         # auto-supersede unless explicitly marked, so both are active)
         current = search("order-service inventory-service communication pattern")
         current_ids = {(r.get("memory") or r).get("id") for r in current}
@@ -628,23 +628,23 @@ def test_namespace_isolation(runner: Runner) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="engram agent-to-agent communication tests")
+    parser = argparse.ArgumentParser(description="memnos agent-to-agent communication tests")
     parser.add_argument("--verbose",      action="store_true")
     parser.add_argument("--test",         metavar="NAME", help="run one test by name")
     parser.add_argument("--skip-webhook", action="store_true",
                         help="skip Pattern 3 (webhook push) — requires a free TCP port")
     args = parser.parse_args()
 
-    # Verify engram is reachable
+    # Verify memnos is reachable
     try:
         with httpx.Client(timeout=4) as c:
-            r = c.get(f"{ENGRAM_API}/api/v1/admin/health",
-                      headers={"X-API-Key": ENGRAM_KEY})
+            r = c.get(f"{MEMNOS_API}/api/v1/admin/health",
+                      headers={"X-API-Key": MEMNOS_KEY})
             if r.status_code != 200:
-                print(f"[error] engram health check failed: {r.status_code}", file=sys.stderr)
+                print(f"[error] memnos health check failed: {r.status_code}", file=sys.stderr)
                 return 1
     except Exception as e:
-        print(f"[error] Cannot reach engram at {ENGRAM_API}: {e}", file=sys.stderr)
+        print(f"[error] Cannot reach memnos at {MEMNOS_API}: {e}", file=sys.stderr)
         return 1
 
     runner = Runner(
@@ -653,8 +653,8 @@ def main() -> int:
         skip_webhook=args.skip_webhook,
     )
 
-    print("engram Agent-to-Agent Communication Tests")
-    print(f"API: {ENGRAM_API}   namespace: {TEST_NS}")
+    print("memnos Agent-to-Agent Communication Tests")
+    print(f"API: {MEMNOS_API}   namespace: {TEST_NS}")
     print("=" * 70)
     print()
 

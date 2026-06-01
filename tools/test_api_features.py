@@ -9,11 +9,11 @@ test_api_features.py — Tests for Phase 2 features:
   7. Admin key endpoints  (GET / POST / DELETE /api/v1/admin/keys)
 
 All tests are fully self-contained — no ArcadeDB or live Anthropic call needed.
-The knowledge router tests mock the engram client and the Anthropic async client.
+The knowledge router tests mock the memnos client and the Anthropic async client.
 
 Usage
 -----
-cd /path/to/engram
+cd /path/to/memnos
 .venv/bin/python -m pytest tools/test_api_features.py -v
 """
 
@@ -67,7 +67,7 @@ def _make_config(keys: list[dict]):
 
 
 def _make_search_result(content, namespace="test:ns", score=0.9):
-    """Build a fake search result object matching what EngramClient.search returns."""
+    """Build a fake search result object matching what MemnosClient.search returns."""
     mem = SimpleNamespace()
     mem.id = "mem-id-1"
     mem.content = content
@@ -89,7 +89,7 @@ class TestRuntimeKeyStore:
     @pytest.fixture
     def store(self, tmp_path):
         import asyncio
-        from engram_api.key_store import RuntimeKeyStore
+        from memnos_api.key_store import RuntimeKeyStore
         db = tmp_path / "keys.db"
         s = RuntimeKeyStore(db_path=db)
         asyncio.run(s.init())
@@ -163,54 +163,54 @@ class TestRuntimeKeyStore:
 class TestCheckNamespaceAccess:
 
     async def test_wildcard_allows_any_namespace(self):
-        from engram_api.auth import check_namespace_access
+        from memnos_api.auth import check_namespace_access
         await check_namespace_access(_make_entry(["*"]), "anything:goes:here")
 
     async def test_exact_match_allowed(self):
-        from engram_api.auth import check_namespace_access
+        from memnos_api.auth import check_namespace_access
         entry = _make_entry(["personal:alice", "team:eng"])
         await check_namespace_access(entry, "personal:alice")
         await check_namespace_access(entry, "team:eng")
 
     async def test_exact_mismatch_raises_403(self):
         from fastapi import HTTPException
-        from engram_api.auth import check_namespace_access
+        from memnos_api.auth import check_namespace_access
         with pytest.raises(HTTPException) as exc:
             await check_namespace_access(_make_entry(["personal:alice"]), "personal:bob")
         assert exc.value.status_code == 403
 
     async def test_prefix_wildcard_allows_subnamespace(self):
-        from engram_api.auth import check_namespace_access
+        from memnos_api.auth import check_namespace_access
         entry = _make_entry(["org:acme:*"])
         await check_namespace_access(entry, "org:acme:engineering")
         await check_namespace_access(entry, "org:acme:qa")
 
     async def test_prefix_wildcard_blocks_sibling_prefix(self):
         from fastapi import HTTPException
-        from engram_api.auth import check_namespace_access
+        from memnos_api.auth import check_namespace_access
         with pytest.raises(HTTPException) as exc:
             await check_namespace_access(_make_entry(["org:acme:*"]), "org:other:engineering")
         assert exc.value.status_code == 403
 
     async def test_read_only_blocks_write(self):
         from fastapi import HTTPException
-        from engram_api.auth import check_namespace_access
+        from memnos_api.auth import check_namespace_access
         with pytest.raises(HTTPException) as exc:
             await check_namespace_access(_make_entry(["*"], read_only=True), "any:ns", operation="write")
         assert exc.value.status_code == 403
         assert "read-only" in exc.value.detail.lower()
 
     async def test_read_only_allows_read(self):
-        from engram_api.auth import check_namespace_access
+        from memnos_api.auth import check_namespace_access
         await check_namespace_access(_make_entry(["*"], read_only=True), "any:ns", operation="read")
 
     async def test_read_write_key_allows_write(self):
-        from engram_api.auth import check_namespace_access
+        from memnos_api.auth import check_namespace_access
         await check_namespace_access(_make_entry(["*"], read_only=False), "any:ns", operation="write")
 
     async def test_empty_namespaces_blocks_all(self):
         from fastapi import HTTPException
-        from engram_api.auth import check_namespace_access
+        from memnos_api.auth import check_namespace_access
         with pytest.raises(HTTPException):
             await check_namespace_access(_make_entry([]), "personal:me")
 
@@ -222,14 +222,14 @@ class TestCheckNamespaceAccess:
 class TestValidateKey:
 
     async def test_yaml_key_found(self):
-        from engram_api.auth import _validate_key
+        from memnos_api.auth import _validate_key
         cfg = _make_config([{"key": "secret-yaml-key", "user_id": "alice"}])
         entry = await _validate_key("Bearer secret-yaml-key", cfg)
         assert entry.user_id == "alice"
 
     async def test_yaml_key_wrong_raises_401(self):
         from fastapi import HTTPException
-        from engram_api.auth import _validate_key
+        from memnos_api.auth import _validate_key
         cfg = _make_config([{"key": "correct-key"}])
         with pytest.raises(HTTPException) as exc:
             await _validate_key("Bearer wrong-key", cfg)
@@ -237,20 +237,20 @@ class TestValidateKey:
 
     async def test_missing_authorization_raises_401(self):
         from fastapi import HTTPException
-        from engram_api.auth import _validate_key
+        from memnos_api.auth import _validate_key
         with pytest.raises(HTTPException) as exc:
             await _validate_key(None, _make_config([]))
         assert exc.value.status_code == 401
 
     async def test_malformed_bearer_raises_401(self):
         from fastapi import HTTPException
-        from engram_api.auth import _validate_key
+        from memnos_api.auth import _validate_key
         with pytest.raises(HTTPException) as exc:
             await _validate_key("Token abc", _make_config([]))
         assert exc.value.status_code == 401
 
     async def test_runtime_store_fallback_hit(self):
-        from engram_api.auth import _validate_key
+        from memnos_api.auth import _validate_key
         cfg = _make_config([])  # no YAML keys
 
         fake_entry = SimpleNamespace(user_id="runtime-user", namespaces=["*"], read_only=False)
@@ -263,7 +263,7 @@ class TestValidateKey:
 
     async def test_runtime_store_miss_raises_401(self):
         from fastapi import HTTPException
-        from engram_api.auth import _validate_key
+        from memnos_api.auth import _validate_key
         cfg = _make_config([])
 
         store = AsyncMock()
@@ -281,21 +281,21 @@ class TestValidateKey:
 class TestRequireAdminAccess:
 
     async def test_wildcard_key_passes(self):
-        from engram_api.auth import require_admin_access
+        from memnos_api.auth import require_admin_access
         entry = _make_entry(["*"])
         result = await require_admin_access(entry)
         assert result is entry
 
     async def test_scoped_key_raises_403(self):
         from fastapi import HTTPException
-        from engram_api.auth import require_admin_access
+        from memnos_api.auth import require_admin_access
         with pytest.raises(HTTPException) as exc:
             await require_admin_access(_make_entry(["personal:me", "team:eng"]))
         assert exc.value.status_code == 403
 
     async def test_empty_namespaces_raises_403(self):
         from fastapi import HTTPException
-        from engram_api.auth import require_admin_access
+        from memnos_api.auth import require_admin_access
         with pytest.raises(HTTPException) as exc:
             await require_admin_access(_make_entry([]))
         assert exc.value.status_code == 403
@@ -308,11 +308,11 @@ class TestRequireAdminAccess:
 def _build_knowledge_app(search_results=None):
     """
     Build a minimal FastAPI app with the knowledge router mounted.
-    EngramClient.search is mocked; Anthropic must be patched per-test.
+    MemnosClient.search is mocked; Anthropic must be patched per-test.
     """
     from fastapi import FastAPI
 
-    from engram_api.routers import knowledge as knowledge_router
+    from memnos_api.routers import knowledge as knowledge_router
 
     app = FastAPI()
     app.state.config = _make_config([
@@ -477,8 +477,8 @@ class TestKnowledgeEndpoints:
 
 def _build_admin_app():
     import asyncio
-    from engram_api.key_store import RuntimeKeyStore
-    from engram_api.routers import admin as admin_router
+    from memnos_api.key_store import RuntimeKeyStore
+    from memnos_api.routers import admin as admin_router
     from fastapi import FastAPI
 
     app = FastAPI()
@@ -568,9 +568,9 @@ class TestAdminKeyEndpoints:
     def test_non_admin_key_cannot_list(self):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        from engram_api.routers import admin as admin_router
+        from memnos_api.routers import admin as admin_router
         import asyncio
-        from engram_api.key_store import RuntimeKeyStore
+        from memnos_api.key_store import RuntimeKeyStore
 
         app = FastAPI()
         app.state.config = _make_config([

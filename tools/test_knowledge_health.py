@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 sys.path.insert(0, _REPO_ROOT + "/packages/api")
 sys.path.insert(0, _REPO_ROOT + "/packages/core")
 
-from engram_api.routers.knowledge import (
+from memnos_api.routers.knowledge import (
     _compute_health_score,
     KnowledgeHealthReport,
     HealthIssue,
@@ -129,13 +129,13 @@ def _make_mock_client(
 class TestKnowledgeHealthEndpoint(unittest.IsolatedAsyncioTestCase):
 
     async def _call(self, client, ns="test:ns", stale_days=30):
-        from engram_api.routers.knowledge import knowledge_health
+        from memnos_api.routers.knowledge import knowledge_health
         # Bypass auth dependency — pass key_entry as a simple mock
         key_entry = MagicMock()
         key_entry.namespaces = [ns]
         key_entry.access = "full"
         # Patch check_namespace_access to be a no-op
-        import engram_api.routers.knowledge as kmod
+        import memnos_api.routers.knowledge as kmod
         from unittest.mock import patch, AsyncMock as AM
         with patch.object(kmod, "check_namespace_access", new=AM(return_value=None)):
             return await knowledge_health(
