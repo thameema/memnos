@@ -279,9 +279,14 @@ def answer_question(
 
     prompt = (
         f"You are answering questions about a multi-session conversation.\n\n"
-        f"Relevant context from memory:\n{context}\n\n"
+        f"Retrieved memories:\n{context}\n\n"
         f"Question: {question}\n\n"
-        f"Answer concisely and directly based on the context above."
+        f"Rules:\n"
+        f"- Answer ONLY from the retrieved memories above. Do not guess or infer.\n"
+        f"- If the answer contains a specific date, state it exactly as it appears in the memories.\n"
+        f"- If the answer is not in the retrieved memories, reply: 'I don't know.'\n"
+        f"- Be concise — one sentence is enough.\n\n"
+        f"Answer:"
     )
     answer = llm_complete(client_type, client, model, prompt)
     return answer, results
@@ -317,6 +322,7 @@ def run_sample(
     sample_id: str,
     verbose: bool = False,
     max_qa: int = 0,
+    top_k: int = 20,
     ns_prefix: str = "locomo",
 ) -> list[dict]:
     """Run all QA pairs for one sample. Returns list of result records."""
@@ -343,7 +349,7 @@ def run_sample(
         try:
             predicted, search_results = answer_question(
                 http, base_url, api_key, client_type, client, model,
-                question, namespace,
+                question, namespace, top_k=top_k,
             )
             score = judge_answer(client_type, client, model, question, expected, predicted)
         except Exception as e:
@@ -503,6 +509,7 @@ def main():
                 client_type, client, args.model,
                 sample, sample_id, args.verbose,
                 max_qa=args.max_qa, ns_prefix=args.ns_prefix,
+                top_k=args.top_k,
             )
             all_results.extend(qa_results)
             print(f"  Answered {len(qa_results)} questions")

@@ -153,6 +153,11 @@ Rules:
 - Omit trivial, ephemeral, or duplicate items
 - If nothing is worth remembering, return {{"items": []}}
 
+CRITICAL DATE RULE: If an event occurred on a specific date, the content MUST
+include that exact date in the format "On [Month Day, Year], [event]".
+Example: "On March 15, 2023, Caroline attended the LGBTQ support group."
+Never omit dates when they appear in the source text.
+
 TEXT:
 {text}
 
