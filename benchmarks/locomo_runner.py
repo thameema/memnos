@@ -17,6 +17,7 @@ Usage:
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -25,17 +26,39 @@ from typing import Optional
 import httpx
 
 # ---------------------------------------------------------------------------
-# LLM client setup
+# LLM client setup — prefers `claude --print` (subscription), then API keys
 # ---------------------------------------------------------------------------
 
+def _claude_print_available() -> bool:
+    """Return True if `claude --print` is available (Claude Code subscription)."""
+    try:
+        r = subprocess.run(
+            ["claude", "--version"], capture_output=True, text=True, timeout=5
+        )
+        return r.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
 def get_llm_client():
-    """Return (client_type, client) — prefers anthropic, falls back to openai."""
+    """Return (client_type, client).
+
+    Priority:
+      1. claude --print  (uses Max subscription — no API cost)
+      2. ANTHROPIC_API_KEY
+      3. OPENAI_API_KEY
+    """
+    if _claude_print_available():
+        print("LLM backend: claude --print (Max subscription)", flush=True)
+        return "claude-cli", None
+
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
     openai_key = os.environ.get("OPENAI_API_KEY")
 
     if anthropic_key:
         try:
             import anthropic
+            print("LLM backend: Anthropic API", flush=True)
             return "anthropic", anthropic.Anthropic(api_key=anthropic_key)
         except ImportError:
             print("WARNING: anthropic SDK not installed; trying openai", file=sys.stderr)
@@ -43,13 +66,16 @@ def get_llm_client():
     if openai_key:
         try:
             import openai
+            print("LLM backend: OpenAI API", flush=True)
             return "openai", openai.OpenAI(api_key=openai_key)
         except ImportError:
             print("ERROR: neither anthropic nor openai SDK is installed.", file=sys.stderr)
             sys.exit(1)
 
     print(
-        "ERROR: no LLM API key found. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.",
+        "ERROR: no LLM backend found.\n"
+        "  Option 1 (free): install Claude Code and ensure `claude` is in PATH\n"
+        "  Option 2: set ANTHROPIC_API_KEY or OPENAI_API_KEY",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -57,6 +83,14 @@ def get_llm_client():
 
 def llm_complete(client_type, client, model: str, prompt: str) -> str:
     """Call LLM and return the text response."""
+    if client_type == "claude-cli":
+        # Use Claude Code's `claude --print` — no API key needed
+        result = subprocess.run(
+            ["claude", "--print", prompt],
+            capture_output=True, text=True, timeout=60,
+        )
+        return result.stdout.strip()
+
     if client_type == "anthropic":
         response = client.messages.create(
             model=model,
@@ -64,13 +98,14 @@ def llm_complete(client_type, client, model: str, prompt: str) -> str:
             messages=[{"role": "user", "content": prompt}],
         )
         return response.content[0].text.strip()
-    else:  # openai
-        response = client.chat.completions.create(
-            model=model,
-            max_tokens=512,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.choices[0].message.content.strip()
+
+    # openai
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=512,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.choices[0].message.content.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +133,7 @@ def write_memory(
             r = http.post(
                 f"{base_url}/api/v1/memory/",
                 json=payload,
-                headers={"X-API-Key": api_key},
+                headers={"Authorization": f"Bearer {api_key}"},
                 timeout=30,
             )
             r.raise_for_status()
@@ -167,18 +202,18 @@ def ingest_conversation(
     namespace = f"locomo:{sample_id}"
     turns_written = 0
 
-    # The LoCoMo dataset has sessions as a list of dicts with "conversation" key
-    sessions = sample.get("conversation", [])
-    if not sessions:
-        # Fallback: some versions have top-level sessions list
-        sessions = sample.get("sessions", [])
+    # conversation is a dict: {speaker_a, speaker_b, session_1, session_2, ...}
+    conv = sample.get("conversation", {})
+    # Collect session keys in order: session_1, session_2, ...
+    session_keys = sorted(
+        [k for k in conv if k.startswith("session_") and not k.endswith("_date_time")],
+        key=lambda k: int(k.split("_")[1]) if k.split("_")[1].isdigit() else 0,
+    )
 
-    for session_idx, session in enumerate(sessions):
-        # Each session may be a list of turn dicts or a dict with "dialog"
-        if isinstance(session, dict):
-            turns = session.get("conversation", session.get("dialog", []))
-        else:
-            turns = session  # already a list
+    for session_idx, sess_key in enumerate(session_keys):
+        turns = conv[sess_key]
+        if not isinstance(turns, list):
+            continue
 
         for turn in turns:
             if isinstance(turn, dict):
@@ -263,6 +298,7 @@ def run_sample(
     sample: dict,
     sample_id: str,
     verbose: bool = False,
+    max_qa: int = 0,
 ) -> list[dict]:
     """Run all QA pairs for one sample. Returns list of result records."""
     namespace = f"locomo:{sample_id}"
@@ -270,11 +306,14 @@ def run_sample(
 
     # QA pairs are stored under different keys depending on dataset version
     qa_pairs = sample.get("qa", sample.get("questions", []))
+    if max_qa > 0:
+        qa_pairs = qa_pairs[:max_qa]
 
     for qa in qa_pairs:
         question = qa.get("question", qa.get("q", ""))
         expected = qa.get("answer", qa.get("a", ""))
-        category = qa.get("category", qa.get("type", "unknown"))
+        raw_cat = qa.get("category", qa.get("type", "unknown"))
+        category = CATEGORY_MAP.get(raw_cat, str(raw_cat))
 
         if not question or not expected:
             continue
@@ -316,6 +355,8 @@ def run_sample(
 # Scoring and display
 # ---------------------------------------------------------------------------
 
+# LoCoMo category mapping: numeric → string (from paper)
+CATEGORY_MAP = {1: "single_hop", 2: "multi_hop", 3: "temporal", 4: "open_domain", 5: "open_domain"}
 KNOWN_CATEGORIES = ["single_hop", "multi_hop", "temporal", "open_domain"]
 
 
@@ -399,6 +440,7 @@ def parse_args():
         help="Skip memory ingestion (assume already loaded)",
     )
     p.add_argument("--top-k", type=int, default=5, help="Top-k search results")
+    p.add_argument("--max-qa", type=int, default=0, help="Max QA pairs per sample (0=all). Use 30 for a quick representative run.")
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args()
 
@@ -425,7 +467,7 @@ def main():
     with httpx.Client() as http:
         for idx in indices:
             sample = dataset[idx]
-            sample_id = str(sample.get("id", idx))
+            sample_id = str(sample.get("sample_id", sample.get("id", idx)))
             print(f"\n[{idx+1}/{len(indices)}] Sample {sample_id}")
 
             if not args.skip_ingest:
@@ -438,6 +480,7 @@ def main():
                 http, args.url, args.key,
                 client_type, client, args.model,
                 sample, sample_id, args.verbose,
+                max_qa=args.max_qa,
             )
             all_results.extend(qa_results)
             print(f"  Answered {len(qa_results)} questions")
