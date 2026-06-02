@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
-from typing import Any
+from typing import Any, AsyncIterator, Iterator
 
 from memnos_sdk._http import _AsyncTransport, _SyncTransport
 from memnos_sdk.corpus import AsyncCorpusClient, SyncCorpusClient
@@ -196,6 +197,69 @@ class AsyncMemnosClient:
             return [item["name"] if isinstance(item, dict) else item for item in data]
         return []
 
+    # ------------------------------------------------------------------
+    # Episodes
+    # ------------------------------------------------------------------
+
+    async def create_episode(
+        self,
+        title: str,
+        namespace: str,
+        *,
+        summary: str = "",
+        tags: list[str] = [],
+    ) -> dict:
+        """Create a named session container Episode. Returns the episode dict."""
+        return await self._transport.post(
+            "/api/v1/episodes/",
+            json={"title": title, "namespace": namespace, "summary": summary, "tags": tags},
+        )
+
+    async def close_episode(self, episode_id: str) -> dict:
+        """Mark an Episode as closed (session complete)."""
+        return await self._transport.post(f"/api/v1/episodes/{episode_id}/close", json={})
+
+    async def link_memory_to_episode(self, episode_id: str, memory_id: str) -> dict:
+        """Associate a memory with an Episode."""
+        return await self._transport.post(
+            f"/api/v1/episodes/{episode_id}/memories/{memory_id}", json={}
+        )
+
+    async def get_episode(self, episode_id: str) -> dict:
+        """Fetch an Episode with its linked memories."""
+        return await self._transport.get(f"/api/v1/episodes/{episode_id}")
+
+    async def list_episodes(self, namespace: str, *, include_closed: bool = False) -> list[dict]:
+        """List Episodes in a namespace."""
+        params: dict[str, Any] = {"ns": namespace}
+        if include_closed:
+            params["include_closed"] = "true"
+        data = await self._transport.get("/api/v1/episodes/", params=params)
+        return data if isinstance(data, list) else []
+
+    @asynccontextmanager
+    async def session(
+        self,
+        title: str,
+        namespace: str,
+        *,
+        summary: str = "",
+        tags: list[str] = [],
+        auto_link: bool = False,
+    ) -> AsyncIterator[dict]:
+        """Async context manager: open an Episode on enter, close on exit.
+
+        Usage:
+            async with client.session("my task", "org:acme:eng") as episode:
+                mem = await client.write("Found the bug", "org:acme:eng")
+                # memories written inside are auto-linked when auto_link=True
+        """
+        episode = await self.create_episode(title, namespace, summary=summary, tags=tags)
+        try:
+            yield episode
+        finally:
+            await self.close_episode(episode["id"])
+
 
 class MemnosClient:
     """Synchronous wrapper around AsyncMemnosClient. Suitable for scripts and non-async code.
@@ -312,3 +376,43 @@ class MemnosClient:
 
     def list_namespaces(self) -> list[str]:
         return self._run(self._async_client.list_namespaces())
+
+    # ------------------------------------------------------------------
+    # Episodes (sync wrappers)
+    # ------------------------------------------------------------------
+
+    def create_episode(self, title: str, namespace: str, *, summary: str = "", tags: list[str] = []) -> dict:
+        return self._run(self._async_client.create_episode(title, namespace, summary=summary, tags=tags))
+
+    def close_episode(self, episode_id: str) -> dict:
+        return self._run(self._async_client.close_episode(episode_id))
+
+    def link_memory_to_episode(self, episode_id: str, memory_id: str) -> dict:
+        return self._run(self._async_client.link_memory_to_episode(episode_id, memory_id))
+
+    def get_episode(self, episode_id: str) -> dict:
+        return self._run(self._async_client.get_episode(episode_id))
+
+    def list_episodes(self, namespace: str, *, include_closed: bool = False) -> list[dict]:
+        return self._run(self._async_client.list_episodes(namespace, include_closed=include_closed))
+
+    @contextmanager
+    def session(
+        self,
+        title: str,
+        namespace: str,
+        *,
+        summary: str = "",
+        tags: list[str] = [],
+    ) -> Iterator[dict]:
+        """Sync context manager: open an Episode on enter, close on exit.
+
+        Usage:
+            with client.session("my task", "org:acme:eng") as episode:
+                client.write("Found the bug", "org:acme:eng")
+        """
+        episode = self.create_episode(title, namespace, summary=summary, tags=tags)
+        try:
+            yield episode
+        finally:
+            self.close_episode(episode["id"])

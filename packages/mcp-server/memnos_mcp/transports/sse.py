@@ -37,6 +37,38 @@ from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
+# Namespace used for auto-created session Episodes.
+# Override with MEMNOS_SESSION_NAMESPACE env var.
+_SESSION_NS = os.environ.get("MEMNOS_SESSION_NAMESPACE", "default")
+
+
+async def _open_session_episode(client, request: Request) -> str | None:
+    """Create an Episode when an MCP client connects. Returns the episode id or None."""
+    try:
+        ua = request.headers.get("user-agent", "")
+        tool = "claude-code" if "claude" in ua.lower() else "cursor" if "cursor" in ua.lower() else "mcp-client"
+        ep = await client.create_episode(
+            namespace=_SESSION_NS,
+            title=f"MCP Session — {tool}",
+            tags=["mcp-session", tool],
+        )
+        logger.info("Session episode opened: %s (%s)", ep.id, tool)
+        return ep.id
+    except Exception as exc:
+        logger.debug("Could not open session episode: %s", exc)
+        return None
+
+
+async def _close_session_episode(client, episode_id: str | None) -> None:
+    """Close the session Episode when the MCP client disconnects."""
+    if not episode_id:
+        return
+    try:
+        await client.close_episode(episode_id)
+        logger.info("Session episode closed: %s", episode_id)
+    except Exception as exc:
+        logger.debug("Could not close session episode %s: %s", episode_id, exc)
+
 _DEFAULT_HOST = "0.0.0.0"
 _DEFAULT_PORT = 8765
 
@@ -45,7 +77,7 @@ _DEFAULT_PORT = 8765
 # FastAPI app factory
 # ---------------------------------------------------------------------------
 
-def create_app(client, orchestrator, config) -> FastAPI:
+def create_app(client, orchestrator, config) -> FastAPI:  # noqa: C901
     """
     Build the FastAPI application that wraps the MCP server over SSE.
 
@@ -73,7 +105,7 @@ def create_app(client, orchestrator, config) -> FastAPI:
         app = FastAPI(title="memnos MCP Server", version="0.1.0", lifespan=lifespan)
         _install_auth_middleware(app, config)
         _add_health_route(app)
-        _add_sdk_sse_routes(app, mcp_server, sse_transport)
+        _add_sdk_sse_routes(app, mcp_server, sse_transport, client=client)
 
     except ImportError:
         logger.warning(
@@ -90,7 +122,7 @@ def create_app(client, orchestrator, config) -> FastAPI:
         app = FastAPI(title="memnos MCP Server", version="0.1.0", lifespan=lifespan)
         _install_auth_middleware(app, config)
         _add_health_route(app)
-        _add_manual_sse_routes(app, mcp_server)
+        _add_manual_sse_routes(app, mcp_server, client=client)
 
     return app
 
@@ -120,21 +152,26 @@ def _add_health_route(app: FastAPI) -> None:
         return JSONResponse({"status": "ok", "service": "memnos-mcp"})
 
 
-def _add_sdk_sse_routes(app: FastAPI, mcp_server, sse_transport) -> None:
+def _add_sdk_sse_routes(app: FastAPI, mcp_server, sse_transport, client=None) -> None:
     """Register /sse and /messages routes using the MCP SDK's transport."""
 
     @app.get("/sse")
     async def sse_endpoint(request: Request):
         """SSE endpoint — MCP client opens a persistent connection here."""
-        async with sse_transport.connect_sse(
-            request.scope, request.receive, request._send  # type: ignore[attr-defined]
-        ) as streams:
-            read_stream, write_stream = streams
-            await mcp_server.run(
-                read_stream,
-                write_stream,
-                mcp_server.create_initialization_options(),
-            )
+        episode_id = await _open_session_episode(client, request) if client else None
+        try:
+            async with sse_transport.connect_sse(
+                request.scope, request.receive, request._send  # type: ignore[attr-defined]
+            ) as streams:
+                read_stream, write_stream = streams
+                await mcp_server.run(
+                    read_stream,
+                    write_stream,
+                    mcp_server.create_initialization_options(),
+                )
+        finally:
+            if client:
+                await _close_session_episode(client, episode_id)
 
     @app.post("/messages")
     async def messages_endpoint(request: Request) -> Response:
@@ -144,7 +181,7 @@ def _add_sdk_sse_routes(app: FastAPI, mcp_server, sse_transport) -> None:
         )
 
 
-def _add_manual_sse_routes(app: FastAPI, mcp_server) -> None:
+def _add_manual_sse_routes(app: FastAPI, mcp_server, client=None) -> None:
     """
     Fallback SSE implementation using sse_starlette.
 
@@ -168,8 +205,9 @@ def _add_manual_sse_routes(app: FastAPI, mcp_server) -> None:
         _connections[conn_id] = (incoming, outgoing)
         logger.debug("SSE connection opened: %s", conn_id)
 
+        episode_id = await _open_session_episode(client, request) if client else None
+
         async def event_generator():
-            # Send the connection ID so the client knows where to POST
             yield {
                 "event": "endpoint",
                 "data": json.dumps({"messages_url": f"/messages?conn_id={conn_id}"}),
@@ -186,6 +224,8 @@ def _add_manual_sse_routes(app: FastAPI, mcp_server) -> None:
             finally:
                 _connections.pop(conn_id, None)
                 logger.debug("SSE connection closed: %s", conn_id)
+                if client:
+                    await _close_session_episode(client, episode_id)
 
         return EventSourceResponse(event_generator())
 
