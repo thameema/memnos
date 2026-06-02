@@ -248,9 +248,7 @@ def ingest_conversation(
             if not text:
                 continue
 
-            # Prefix with session date so consolidation LLM gets the right year/month
-            date_prefix = f"[Date: {session_date}] " if session_date else ""
-            content = f"{date_prefix}[{speaker}]: {text}"
+            content = f"[{speaker}]: {text}"
             tags = ["locomo", f"session_{session_idx + 1}"]
             write_memory(http, base_url, api_key, content, namespace, tags)
             turns_written += 1
@@ -282,17 +280,49 @@ def answer_question(
 
     context = "\n".join(context_parts) if context_parts else "(no relevant memories found)"
 
-    prompt = (
-        f"You are answering questions about a multi-session conversation.\n\n"
-        f"Retrieved memories:\n{context}\n\n"
-        f"Question: {question}\n\n"
-        f"Rules:\n"
-        f"- Answer ONLY from the retrieved memories above. Do not guess or infer.\n"
-        f"- If the answer contains a specific date, state it exactly as it appears in the memories.\n"
-        f"- If the answer is not in the retrieved memories, reply: 'I don't know.'\n"
-        f"- Be concise — one sentence is enough.\n\n"
-        f"Answer:"
-    )
+    # Route to appropriate prompt based on question type
+    q_lower = question.lower().strip()
+    is_date_question = q_lower.startswith("when ") or "what date" in q_lower or "how long ago" in q_lower
+    is_inference_question = q_lower.startswith("would ") or q_lower.startswith("could ") or q_lower.startswith("is it likely")
+
+    if is_date_question:
+        # Strict: date questions need exact facts, no hallucination
+        prompt = (
+            f"You are answering questions about a multi-session conversation.\n\n"
+            f"Retrieved memories:\n{context}\n\n"
+            f"Question: {question}\n\n"
+            f"Rules:\n"
+            f"- Answer ONLY from the retrieved memories. Do not guess or hallucinate dates.\n"
+            f"- If the answer contains a specific date, state it exactly as it appears.\n"
+            f"- If the exact date is not in the memories, reply: 'I don't know.'\n"
+            f"- Be concise — one sentence.\n\n"
+            f"Answer:"
+        )
+    elif is_inference_question:
+        # Inference: temporal/hypothetical questions need character reasoning
+        prompt = (
+            f"You are answering questions about a person based on what you know about them.\n\n"
+            f"What we know about them:\n{context}\n\n"
+            f"Question: {question}\n\n"
+            f"Rules:\n"
+            f"- Use the retrieved context to reason about the answer.\n"
+            f"- These are hypothetical/inferential questions — reason from personality, interests, and values.\n"
+            f"- Give a direct YES or NO answer with a brief explanation from the context.\n"
+            f"- Be concise — one sentence.\n\n"
+            f"Answer:"
+        )
+    else:
+        # General: factual recall with light grounding
+        prompt = (
+            f"You are answering questions about a multi-session conversation.\n\n"
+            f"Retrieved memories:\n{context}\n\n"
+            f"Question: {question}\n\n"
+            f"Rules:\n"
+            f"- Answer from the retrieved memories. Make reasonable inferences when needed.\n"
+            f"- Be concise and direct — one sentence.\n\n"
+            f"Answer:"
+        )
+
     answer = llm_complete(client_type, client, model, prompt)
     return answer, results
 
