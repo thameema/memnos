@@ -80,16 +80,24 @@ include that exact date in the format "On [Month Day, Year], [event]".
 Example: "On March 15, 2023, Caroline attended the LGBTQ support group."
 Never omit dates when they appear in the source text.
 
+GRANULAR DETAIL RULE: Extract specific, answerable facts — not vague summaries.
+Good: "Melanie has read Charlotte's Web and Nothing is Impossible."
+Bad:  "Melanie reads books."
+Good: "Melanie's kids love animals, outdoor exploration, and art."
+Bad:  "Melanie has kids who like activities."
+Good: "Caroline is single and not in a relationship."
+Bad:  "Caroline's relationship status is complex."
+
 Rules:
 - Each item must be self-contained (understandable without the full conversation)
-- content: concise, standalone statement (max 300 chars)
+- content: concise, specific, standalone statement (max 300 chars)
 - type: one of the allowed types above
 - tags: 1-5 lowercase keywords relevant to the item
 - rationale: brief explanation of why this is worth remembering (max 150 chars)
 - action: ADD, UPDATE, or SKIP
 - updates_id: the id of the existing memory being updated (only for UPDATE action)
-- Extract at most 20 items
-- Omit trivial or ephemeral items
+- Extract at most 25 items — prefer granular specific facts over broad summaries
+- Omit trivial or ephemeral items (greetings, filler, transient status)
 - If nothing is worth extracting, return {{"items": []}}
 
 TEXT:
