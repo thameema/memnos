@@ -4,7 +4,7 @@
 **Status:** Draft  
 **Date:** 2026-05-22
 
-> **v0.2 Changes:** Replaced Neo4j + Qdrant + Graphiti with ArcadeDB (single Apache 2.0 multi-model database). Removed LLM-dependency for entity extraction (replaced with spaCy). Added UTC timestamps as first-class temporal properties. Added binary asset reference model. Clarified namespace/ACL model. Introduced AI Governance positioning. Simplified to single Docker deployment.
+> **v0.2 Changes:** Replaced Neo4j + Qdrant + Graphiti with ArcadeDB (single Apache 2.0 multi-model database). Removed LLM-dependency for entity extraction (replaced with spaCy). Added UTC timestamps as first-class temporal properties. Added binary asset reference model. Clarified namespace/ACL model. Introduced  Agent Memory Policies positioning. Simplified to single Docker deployment.
 
 ---
 
@@ -30,7 +30,7 @@
 18. [Implementation Roadmap](#18-implementation-roadmap)
 19. [Agents and Skills](#19-agents-and-skills)
 20. [Self-Learning Architecture](#20-self-learning-architecture)
-21. [AI Governance Positioning](#21-ai-governance-positioning)
+21. [Agent Memory Policies](#21-agent-memory-policies)
 22. [Binary Asset Handling](#22-binary-asset-handling)
 
 ---
@@ -70,7 +70,7 @@ memnos provides:
 | G6 | Mobile-first interaction via Telegram (primary) and WhatsApp (optional) |
 | G7 | Be fully open-source (Apache 2.0), portable, and self-hostable with no vendor lock-in |
 | G8 | Comply with Anthropic's API terms of service |
-| G9 | Provide AI governance: agents must query organizational knowledge before acting |
+| G9 | Provide agent memory policies: agents must query organizational knowledge before acting |
 | G10 | Temporal knowledge: every fact is timestamped (UTC); superseded facts are preserved as history |
 | G11 | No external API dependency for entity extraction — graph edges built without LLM calls |
 
@@ -1012,7 +1012,7 @@ org : acme : engineering : backend
 
 ### 9.4 API Key → Namespace Mapping (The ACL Model)
 
-A **single API key can cover multiple namespaces**. This is the enterprise governance primitive: you issue one key per developer and specify exactly which namespaces they can read and write.
+A **single API key can cover multiple namespaces**. This is the enterprise access control primitive: you issue one key per developer and specify exactly which namespaces they can read and write.
 
 ```yaml
 # memnos.yaml — auth section
@@ -1092,7 +1092,7 @@ results = await client.search(
 )
 ```
 
-### 9.7 Namespace Governance in the UI
+### 9.7 Namespace Policies in the UI
 
 The dashboard shows namespace hierarchy visually, with:
 - **Key assignments**: which keys cover which namespaces
@@ -1100,7 +1100,7 @@ The dashboard shows namespace hierarchy visually, with:
 - **Recent activity**: last write per namespace (helps detect stale namespaces)
 - **Access matrix**: which user/key can read/write which namespace
 
-This gives the operator transparency into who knows what — a core requirement for AI governance.
+This gives the operator transparency into who knows what — a core requirement for agent policy enforcement.
 
 ---
 
@@ -3108,7 +3108,7 @@ Also returns raw counts for dashboard display. Tests: `tools/test_knowledge_heal
 
 ---
 
-## 21. AI Governance Positioning
+## 21. Agent Memory Policies
 
 ### 21.1 The Problem memnos Solves for Enterprise Engineering Teams
 
@@ -3153,7 +3153,7 @@ All decisions, specs, patterns, standards → memnos (timestamped, namespace-sco
 
 The developer's AI agent cannot go off-specification because the specification is available in real time, versioned, and the agent is instructed to query it before generating code.
 
-### 21.3 What AI Governance Requires
+### 21.3 What  Agent Memory Policies Requires
 
 | Governance Layer | What it does | How memnos provides it |
 |---|---|---|
@@ -3166,7 +3166,7 @@ The developer's AI agent cannot go off-specification because the specification i
 | **Knowledge gap flags** | Search returned nothing → human should write it | Empty search result logging → gap report |
 | **Citation enforcement** | Agent must cite which knowledge informed output | memory_search returns IDs; agent cites them in output |
 
-### 21.4 Governance Workflow for a Developer Team
+### 21.4 Policy Workflow for a Developer Team
 
 ```
 1. PM writes product spec → memory_write(namespace="org:acme:product")
@@ -3186,7 +3186,7 @@ The developer's AI agent cannot go off-specification because the specification i
 
 ### 21.5 Knowledge Quality Target: 85%+
 
-To be useful for governance, the knowledge graph must be accurate. The path to 85%+ accuracy:
+To be useful for policy enforcement, the knowledge graph must be accurate. The path to 85%+ accuracy:
 
 1. **Human-written memories are the ground truth** — agents write what humans tell them; humans correct errors
 2. **Conflict detection** — when a new write is semantically similar to an existing memory but contradicts it, surface both to the human for resolution before writing
