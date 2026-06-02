@@ -467,6 +467,7 @@ class ArcadeDBClient:
             "expires_at = :expires_at, review_by = :review_by, "
             "provenance = :provenance, "
             "decay_policy = :decay_policy, last_accessed_at = :last_accessed_at, "
+            "episode_ids = :episode_ids, "
             "content_embedding = :embedding"
         )
         params = {
@@ -488,12 +489,120 @@ class ArcadeDBClient:
             "provenance": memory.provenance.model_dump() if memory.provenance else {},
             "decay_policy": memory.decay_policy.value if hasattr(memory.decay_policy, 'value') else str(memory.decay_policy or "none"),
             "last_accessed_at": to_epoch_ms(memory.last_accessed_at),
+            "episode_ids": list(memory.episode_ids or []),
             "embedding": embedding,
         }
         await self._command(sql, params)
         self._embed_cache_dirty = True
         logger.debug("Memory inserted: id=%s namespace=%s", memory.id, memory.namespace)
         return memory.id
+
+    # ------------------------------------------------------------------
+    # Episode CRUD
+    # ------------------------------------------------------------------
+
+    async def create_episode(self, episode: "Episode") -> str:  # type: ignore[name-defined]
+        """Insert an Episode vertex. Returns the episode id."""
+        from engram.models import Episode  # noqa: PLC0415
+        sql = (
+            "INSERT INTO Episode SET "
+            "id = :id, title = :title, namespace = :namespace, "
+            "summary = :summary, tags = :tags, "
+            "created_at = :created_at, closed_at = :closed_at"
+        )
+        await self._command(sql, {
+            "id": episode.id,
+            "title": episode.title,
+            "namespace": episode.namespace,
+            "summary": episode.summary,
+            "tags": list(episode.tags or []),
+            "created_at": to_epoch_ms(episode.created_at),
+            "closed_at": to_epoch_ms(episode.closed_at),
+        })
+        logger.debug("Episode inserted: id=%s namespace=%s", episode.id, episode.namespace)
+        return episode.id
+
+    async def get_episode(self, episode_id: str, namespace: str) -> "Episode | None":  # type: ignore[name-defined]
+        rows = await self._query(
+            "SELECT * FROM Episode WHERE id = :id AND namespace = :ns LIMIT 1",
+            {"id": episode_id, "ns": namespace},
+        )
+        if not rows:
+            return None
+        return _row_to_episode(rows[0])
+
+    async def list_episodes(
+        self, namespace: str, *, limit: int = 50, include_closed: bool = True
+    ) -> "list[Episode]":  # type: ignore[name-defined]
+        where = "WHERE namespace = :ns"
+        if not include_closed:
+            where += " AND closed_at IS NULL"
+        rows = await self._query(
+            f"SELECT * FROM Episode {where} ORDER BY created_at DESC LIMIT {limit}",
+            {"ns": namespace},
+        )
+        return [_row_to_episode(r) for r in rows]
+
+    async def update_episode(
+        self,
+        episode_id: str,
+        namespace: str,
+        *,
+        title: str | None = None,
+        summary: str | None = None,
+        tags: list[str] | None = None,
+    ) -> bool:
+        parts, params = [], {"id": episode_id, "ns": namespace}
+        if title is not None:
+            parts.append("title = :title"); params["title"] = title
+        if summary is not None:
+            parts.append("summary = :summary"); params["summary"] = summary
+        if tags is not None:
+            parts.append("tags = :tags"); params["tags"] = tags
+        if not parts:
+            return True
+        rows = await self._command(
+            f"UPDATE Episode SET {', '.join(parts)} WHERE id = :id AND namespace = :ns",
+            params,
+        )
+        return bool(rows)
+
+    async def close_episode(self, episode_id: str, namespace: str) -> bool:
+        rows = await self._command(
+            "UPDATE Episode SET closed_at = :now WHERE id = :id AND namespace = :ns",
+            {"now": now_ms(), "id": episode_id, "ns": namespace},
+        )
+        return bool(rows)
+
+    async def link_memory_to_episode(
+        self, memory_id: str, namespace: str, episode_id: str
+    ) -> bool:
+        rows = await self._query(
+            "SELECT episode_ids FROM Memory WHERE id = :id AND namespace = :ns LIMIT 1",
+            {"id": memory_id, "ns": namespace},
+        )
+        if not rows:
+            return False
+        current: list[str] = rows[0].get("episode_ids") or []
+        if episode_id in current:
+            return True
+        updated = current + [episode_id]
+        result = await self._command(
+            "UPDATE Memory SET episode_ids = :eids WHERE id = :id AND namespace = :ns",
+            {"eids": updated, "id": memory_id, "ns": namespace},
+        )
+        self._embed_cache_dirty = True
+        return bool(result)
+
+    async def get_episode_memories(
+        self, episode_id: str, namespace: str, *, limit: int = 100
+    ) -> list[MemoryEntry]:
+        rows = await self._query(
+            "SELECT * FROM Memory WHERE namespace = :ns AND status = 'active' "
+            "AND episode_ids CONTAINS :eid ORDER BY created_at ASC LIMIT :lim",
+            {"ns": namespace, "eid": episode_id, "lim": limit},
+        )
+        return [_row_to_memory(r) for r in rows]
 
     async def get_memory(self, memory_id: str, namespace: str) -> MemoryEntry | None:
         rows = await self._query(
@@ -2270,6 +2379,20 @@ def _row_to_memory(row: dict) -> MemoryEntry:
         provenance=Provenance(**(row.get("provenance") or {})) if row.get("provenance") else Provenance(),
         decay_policy=decay_policy,
         last_accessed_at=_parse_dt(row.get("last_accessed_at")),
+        episode_ids=row.get("episode_ids") or [],
+    )
+
+
+def _row_to_episode(row: dict) -> "Episode":  # type: ignore[name-defined]
+    from engram.models import Episode  # noqa: PLC0415
+    return Episode(
+        id=row.get("id", row.get("@rid", "")),
+        title=row.get("title", ""),
+        namespace=row.get("namespace", ""),
+        summary=row.get("summary", ""),
+        tags=row.get("tags") or [],
+        created_at=_parse_dt(row.get("created_at")) or _now(),
+        closed_at=_parse_dt(row.get("closed_at")),
     )
 
 

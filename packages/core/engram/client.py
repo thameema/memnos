@@ -217,6 +217,7 @@ class EngramClient:
         expires_at=None,
         review_by=None,
         provenance: "Provenance | None" = None,
+        episode_ids: list[str] | None = None,
     ) -> MemoryEntry:
         """Persist a new memory entry and extract knowledge-graph edges.
 
@@ -254,6 +255,7 @@ class EngramClient:
             expires_at=expires_at,
             review_by=review_by,
             provenance=provenance or Provenance(),
+            episode_ids=episode_ids or [],
         )
         logger.debug("add: memory_id=%s namespace=%s type=%s", memory.id, namespace, memory_type)
 
@@ -990,6 +992,38 @@ class EngramClient:
         """Return memories past their review_by date — need human confirmation or deprecation."""
         self._assert_started()
         return await self._arcadedb.get_review_due(namespace, limit)
+
+    # ------------------------------------------------------------------
+    # Episodes (Feature 2)
+    # ------------------------------------------------------------------
+
+    async def create_episode(self, episode: "Any") -> str:
+        self._assert_started()
+        return await self._arcadedb.create_episode(episode)
+
+    async def get_episode(self, episode_id: str, namespace: str) -> "Any":
+        self._assert_started()
+        return await self._arcadedb.get_episode(episode_id, namespace)
+
+    async def list_episodes(self, namespace: str, *, limit: int = 50, include_closed: bool = True) -> "Any":
+        self._assert_started()
+        return await self._arcadedb.list_episodes(namespace, limit=limit, include_closed=include_closed)
+
+    async def update_episode(self, episode_id: str, namespace: str, **kwargs: "Any") -> bool:
+        self._assert_started()
+        return await self._arcadedb.update_episode(episode_id, namespace, **kwargs)
+
+    async def close_episode(self, episode_id: str, namespace: str) -> bool:
+        self._assert_started()
+        return await self._arcadedb.close_episode(episode_id, namespace)
+
+    async def link_memory_to_episode(self, memory_id: str, namespace: str, episode_id: str) -> bool:
+        self._assert_started()
+        return await self._arcadedb.link_memory_to_episode(memory_id, namespace, episode_id)
+
+    async def get_episode_memories(self, episode_id: str, namespace: str, *, limit: int = 100) -> list[MemoryEntry]:
+        self._assert_started()
+        return await self._arcadedb.get_episode_memories(episode_id, namespace, limit=limit)
 
     # ------------------------------------------------------------------
     # Namespace subscriptions (Feature 2.1)
