@@ -40,25 +40,24 @@ def _claude_print_available() -> bool:
         return False
 
 
-def get_llm_client():
+def get_llm_client(force_api: bool = False):
     """Return (client_type, client).
 
     Priority:
-      1. claude --print  (uses Max subscription — no API cost)
-      2. ANTHROPIC_API_KEY
-      3. OPENAI_API_KEY
+      1. ANTHROPIC_API_KEY  (direct API — clean completion, no tool interference)
+      2. OPENAI_API_KEY
+      3. claude --print     (last resort — NOTE: claude --print runs with full
+                             Claude Code system prompt + MCP tools, which causes
+                             it to try using memnos MCP tools instead of answering
+                             the prompt directly. Not suitable for benchmarking.)
     """
-    if _claude_print_available():
-        print("LLM backend: claude --print (Max subscription)", flush=True)
-        return "claude-cli", None
-
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
     openai_key = os.environ.get("OPENAI_API_KEY")
 
     if anthropic_key:
         try:
             import anthropic
-            print("LLM backend: Anthropic API", flush=True)
+            print("LLM backend: Anthropic API (claude-haiku)", flush=True)
             return "anthropic", anthropic.Anthropic(api_key=anthropic_key)
         except ImportError:
             print("WARNING: anthropic SDK not installed; trying openai", file=sys.stderr)
@@ -72,10 +71,15 @@ def get_llm_client():
             print("ERROR: neither anthropic nor openai SDK is installed.", file=sys.stderr)
             sys.exit(1)
 
+    # Last resort: claude --print (not recommended for benchmarks — see docstring)
+    if _claude_print_available():
+        print("WARNING: using claude --print — answers may be incorrect due to tool interference.", flush=True)
+        print("  Set ANTHROPIC_API_KEY for reliable benchmark results.", flush=True)
+        return "claude-cli", None
+
     print(
         "ERROR: no LLM backend found.\n"
-        "  Option 1 (free): install Claude Code and ensure `claude` is in PATH\n"
-        "  Option 2: set ANTHROPIC_API_KEY or OPENAI_API_KEY",
+        "  Set ANTHROPIC_API_KEY or OPENAI_API_KEY",
         file=sys.stderr,
     )
     sys.exit(1)
