@@ -471,12 +471,11 @@ async def search_memory(
     if results is None:
         return []
 
-    # Score threshold (fix #5): drop low-similarity vector results. The 0.45
-    # floor is calibrated for cosine similarity (0–1). BM25 scores live in a
-    # different scale (1–10+) and RRF scores are tiny (~0.03) — apply no floor
-    # for those modes since the rank already implies relevance.
+    # Score threshold: drop low-similarity vector results. 0.35 is intentionally
+    # permissive — better to return a borderline-relevant memory than miss the
+    # correct answer. BM25/RRF/graph use different scales so no floor there.
     if mode not in ("bm25", "rrf", "graph"):
-        _SCORE_FLOOR = 0.45
+        _SCORE_FLOOR = 0.35
         results = [r for r in results if r.score >= _SCORE_FLOOR]
 
     # Feature 5 — confidence floor. Applied last so it filters all modes.
