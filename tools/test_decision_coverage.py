@@ -167,7 +167,7 @@ class Runner:
 # Helper: fetch all decision/constraint/adr memories for a namespace
 # ---------------------------------------------------------------------------
 
-def get_governance_memories(namespace: str) -> list[dict]:
+def get_policy_memories(namespace: str) -> list[dict]:
     """Return all active decision, constraint, and adr memories for a namespace."""
     return arcade_query(
         "SELECT id, memory_type, content, affects, rationale, tags, created_at "
@@ -194,7 +194,7 @@ def get_facts_for_namespace(namespace: str) -> list[dict]:
 # Tests
 # ---------------------------------------------------------------------------
 
-def test_governance_types_are_distinct_from_facts(runner: Runner) -> None:
+def test_policy_types_are_distinct_from_facts(runner: Runner) -> None:
     """decision, constraint, adr memories are stored as distinct types — not as facts.
 
     Inserts one of each governance type plus a fact, then verifies:
@@ -229,7 +229,7 @@ def test_governance_types_are_distinct_from_facts(runner: Runner) -> None:
             },
         )
 
-    gov = get_governance_memories(ns)
+    gov = get_policy_memories(ns)
     gov_ids   = {r["id"] for r in gov}
     gov_types = {r["id"]: r["memory_type"] for r in gov}
 
@@ -394,7 +394,7 @@ def test_project_namespaces_have_decisions(runner: Runner) -> None:
     failures = []
 
     for ns, cfg in PROJECT_NAMESPACES.items():
-        gov = get_governance_memories(ns)
+        gov = get_policy_memories(ns)
         decisions   = [r for r in gov if r["memory_type"] in ("decision", "adr")]
         constraints = [r for r in gov if r["memory_type"] == "constraint"]
 
@@ -441,7 +441,7 @@ def test_decisions_have_quality_fields(runner: Runner) -> None:
 
     for ns, cfg in PROJECT_NAMESPACES.items():
         min_pct = cfg.get("min_quality_pct", 0.0)
-        gov = get_governance_memories(ns)
+        gov = get_policy_memories(ns)
         if not gov:
             continue
 
@@ -635,7 +635,7 @@ def test_superseded_decisions_excluded_from_code_review(runner: Runner) -> None:
         {"id": new_id, "ns": ns, "ts": now_str()},
     )
 
-    gov = get_governance_memories(ns)
+    gov = get_policy_memories(ns)
     ids = {r["id"] for r in gov}
 
     assert new_id in ids, "Active decision not returned in code review query"
@@ -654,7 +654,7 @@ def test_superseded_decisions_excluded_from_code_review(runner: Runner) -> None:
 # ---------------------------------------------------------------------------
 
 ALL_TESTS: list[tuple[str, Callable]] = [
-    ("governance_types_distinct_from_facts",          test_governance_types_are_distinct_from_facts),
+    ("governance_types_distinct_from_facts",          test_policy_types_are_distinct_from_facts),
     ("decision_requires_affects_and_rationale",       test_decision_requires_affects_and_rationale),
     ("constraint_injectable_before_search_results",   test_constraint_is_injectable_before_search_results),
     ("project_namespaces_have_decisions",             test_project_namespaces_have_decisions),

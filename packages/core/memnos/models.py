@@ -106,33 +106,41 @@ class Provenance(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Episode — immutable raw input (Feature 2: source of ground truth)
+# Episode — raw input record + named container (Feature 2)
 # ---------------------------------------------------------------------------
 
 class Episode(BaseModel):
-    """An immutable verbatim record of an input that produced one or more Memories.
+    """A recorded episode: either a verbatim raw input or a named session container.
 
-    Episodes are write-only through the public API — no PATCH, no DELETE.
-    Every Memory carries `source_episode_ids` linking back to the Episode(s)
-    it was derived from, so:
+    As a raw-input record (audit / compliance):
+      Every Memory carries `source_episode_ids` linking back to the Episode(s)
+      it was derived from. Audit / PII review can always re-trace any Memory
+      to its original source. `content` holds the verbatim text.
 
-      • Audit / compliance can always re-trace any Memory to its raw source
-      • Future extraction logic can re-derive Memories from the original
-        Episode content (eg. when a better LLM or extractor is released)
-      • PHI / PII redaction can be revisited against the original input
-
-    For audit-driven verticals (healthcare, life sciences, legal, defense)
-    this is the foundational primitive — every derived fact has an
-    immutable provenance chain.
+    As a named session container (grouping):
+      Episodes group related memories under a human-readable `title`.
+      They can be closed (closed_at set) to mark a session complete.
+      `content` is empty string when used purely as a container.
     """
     id: str = Field(default_factory=_uuid)
-    content: str                                  # exact verbatim text as submitted
     namespace: str
     created_at: datetime = Field(default_factory=_now)
+    # Raw-input fields (set when episode is a verbatim record)
+    content: str = ""
     source: str = "api"                           # api | file | voice | webhook | mcp
-    author: str = ""                              # user_id from the api_key that wrote it
+    author: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
     provenance: "Provenance" = Field(default_factory=lambda: Provenance())
+    # Container fields (set when episode is a named session)
+    title: str = ""
+    summary: str = ""
+    tags: list[str] = Field(default_factory=list)
+    closed_at: datetime | None = None
+
+    @computed_field
+    @property
+    def is_open(self) -> bool:
+        return self.closed_at is None
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -165,6 +173,7 @@ class MemoryEntry(BaseModel):
     provenance: "Provenance" = Field(default_factory=lambda: Provenance())
     decay_policy: "DecayPolicy" = DecayPolicy.none
     last_accessed_at: datetime | None = None   # updated on every search hit
+    episode_ids: list[str] = Field(default_factory=list)
 
     # Feature 2 — immutable source-episode lineage. Every Memory derived
     # from a raw input carries the Episode id(s) it was extracted from,

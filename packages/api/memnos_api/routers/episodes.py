@@ -18,18 +18,18 @@ POST   /episodes/          — write a new Episode (verbatim input)
 GET    /episodes/          — list Episodes in a namespace
 GET    /episodes/{id}      — fetch one Episode by ID
 GET    /episodes/{id}/memories — list Memories derived from this Episode
-
-There is intentionally NO PUT, PATCH, or DELETE on /episodes/{id}.
-Episodes are append-only by design — that is the whole point of the feature.
+PATCH  /episodes/{id}                      — update title / summary / tags
+POST   /episodes/{id}/close               — mark episode closed
+POST   /episodes/{id}/memories/{mem_id}   — link an existing memory to an episode
 """
 
 from __future__ import annotations
 
 import logging
 from typing import Any
+from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from memnos.models import Episode, Provenance
 from memnos_api.auth import (
@@ -38,125 +38,218 @@ from memnos_api.auth import (
     require_api_key,
     require_api_key_entry,
 )
+from memnos_api.schemas import (
+    EpisodeCreateRequest,
+    EpisodeResponse,
+    EpisodeUpdateRequest,
+    EpisodeWithMemoriesResponse,
+    MemoryResponse,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/episodes", tags=["episodes"])
 
 
-class EpisodeWriteRequest(BaseModel):
-    """POST body for creating an Episode."""
-    content: str = Field(..., min_length=1, description="Verbatim text of the input")
-    namespace: str = Field(..., min_length=1)
-    source: str = Field("api", description="api | file | voice | webhook | mcp")
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class EpisodeResponse(BaseModel):
-    """Single Episode envelope."""
-    id: str
+class EpisodeWriteRequest(object):
+    """POST body for creating an Episode (write-once verbatim input)."""
     content: str
     namespace: str
-    created_at: str
     source: str
-    author: str
     metadata: dict[str, Any]
-    provenance: dict[str, Any]
 
 
 def _episode_to_response(ep: Episode) -> EpisodeResponse:
     return EpisodeResponse(
         id=ep.id,
-        content=ep.content,
+        title=ep.title,
         namespace=ep.namespace,
-        created_at=ep.created_at.isoformat(),
-        source=ep.source,
-        author=ep.author,
-        metadata=ep.metadata or {},
-        provenance=ep.provenance.model_dump() if ep.provenance else {},
+        summary=ep.summary,
+        tags=list(ep.tags or []),
+        created_at=ep.created_at,
+        closed_at=ep.closed_at,
+        is_open=ep.is_open,
+    )
+
+
+def _memory_to_response(mem) -> MemoryResponse:
+    prov = mem.provenance.model_dump() if mem.provenance and hasattr(mem.provenance, "model_dump") else {}
+    return MemoryResponse(
+        id=str(mem.id),
+        content=mem.content,
+        namespace=mem.namespace,
+        created_at=mem.created_at,
+        tags=list(mem.tags or []),
+        memory_type=mem.memory_type.value if hasattr(mem.memory_type, "value") else str(mem.memory_type),
+        author=getattr(mem, "author", ""),
+        affects=list(getattr(mem, "affects", None) or []),
+        rationale=getattr(mem, "rationale", "") or "",
+        provenance=prov,
+        episode_ids=list(getattr(mem, "episode_ids", None) or []),
     )
 
 
 # ---------------------------------------------------------------------------
-# POST /episodes/  — create a new Episode (write-only; no updates ever)
+# POST /episodes/  — create a new Episode
 # ---------------------------------------------------------------------------
+
 @router.post("/", response_model=EpisodeResponse, status_code=201)
 async def create_episode(
-    payload: EpisodeWriteRequest,
+    req: EpisodeCreateRequest,
     user_id: str = Depends(require_api_key),
     key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
-):
-    await check_namespace_access(key_entry, payload.namespace, operation="write")
-    ep = Episode(
-        content=payload.content,
-        namespace=payload.namespace,
-        source=payload.source,
-        author=user_id,
-        metadata=payload.metadata or {},
-        provenance=Provenance(user_id=user_id, tool="api"),
-    )
-    await client._arcadedb.insert_episode(ep)
-    logger.info("Episode created: id=%s namespace=%s by=%s", ep.id, ep.namespace, user_id)
-    return _episode_to_response(ep)
+) -> EpisodeResponse:
+    """Create a new episode in the given namespace."""
+    await check_namespace_access(key_entry, req.namespace, operation="write")
+    episode = Episode(title=req.title, namespace=req.namespace, summary=req.summary, tags=req.tags)
+    try:
+        await client.create_episode(episode)
+    except Exception as exc:
+        logger.exception("Failed to create episode: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return _episode_to_response(episode)
 
 
 # ---------------------------------------------------------------------------
 # GET /episodes/  — list episodes in a namespace
 # ---------------------------------------------------------------------------
+
 @router.get("/", response_model=list[EpisodeResponse])
 async def list_episodes(
     ns: str = Query(..., description="Namespace to list episodes for"),
     limit: int = Query(50, ge=1, le=500),
-    skip: int = Query(0, ge=0),
+    include_closed: bool = Query(True),
     user_id: str = Depends(require_api_key),
     key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
-):
-    await check_namespace_access(key_entry, ns, operation="read")
-    episodes = await client._arcadedb.list_episodes(ns, limit=limit, skip=skip)
-    return [_episode_to_response(e) for e in episodes]
+) -> list[EpisodeResponse]:
+    """List episodes in a namespace, newest first."""
+    await check_namespace_access(key_entry, ns)
+    try:
+        episodes = await client.list_episodes(ns, limit=limit, include_closed=include_closed)
+    except Exception as exc:
+        logger.exception("Failed to list episodes: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return [_episode_to_response(ep) for ep in episodes]
 
 
 # ---------------------------------------------------------------------------
-# GET /episodes/{id} — fetch a single Episode
+# GET /episodes/{id} — fetch a single Episode with its memories
 # ---------------------------------------------------------------------------
-@router.get("/{episode_id}", response_model=EpisodeResponse)
+
+@router.get("/{episode_id}", response_model=EpisodeWithMemoriesResponse)
 async def get_episode(
     episode_id: str,
-    ns: str = Query(..., description="Namespace the episode lives in"),
+    ns: str = Query(..., description="Namespace the episode belongs to"),
+    limit: int = Query(100, ge=1, le=500),
     user_id: str = Depends(require_api_key),
     key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
-):
-    await check_namespace_access(key_entry, ns, operation="read")
-    ep = await client._arcadedb.get_episode(episode_id, ns)
-    if ep is None:
-        raise HTTPException(status_code=404, detail=f"Episode {episode_id} not found in {ns}")
-    return _episode_to_response(ep)
+) -> EpisodeWithMemoriesResponse:
+    """Fetch an episode and all memories linked to it."""
+    await check_namespace_access(key_entry, ns)
+    try:
+        episode = await client.get_episode(episode_id, ns)
+    except Exception as exc:
+        logger.exception("Failed to get episode: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if episode is None:
+        raise HTTPException(status_code=404, detail=f"Episode {episode_id!r} not found")
+
+    try:
+        memories = await client.get_episode_memories(episode_id, ns, limit=limit)
+    except Exception as exc:
+        logger.warning("Failed to fetch episode memories (non-fatal): %s", exc)
+        memories = []
+
+    return EpisodeWithMemoriesResponse(
+        **_episode_to_response(episode).model_dump(),
+        memories=[_memory_to_response(m) for m in memories],
+    )
 
 
 # ---------------------------------------------------------------------------
-# GET /episodes/{id}/memories — list derived Memories
+# PATCH /episodes/{id} — update title / summary / tags
 # ---------------------------------------------------------------------------
-@router.get("/{episode_id}/memories")
-async def list_episode_memories(
+
+@router.patch("/{episode_id}", response_model=EpisodeResponse)
+async def update_episode(
     episode_id: str,
-    ns: str = Query(..., description="Namespace"),
+    req: EpisodeUpdateRequest,
+    ns: str = Query(..., description="Namespace the episode belongs to"),
     user_id: str = Depends(require_api_key),
     key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
-):
-    await check_namespace_access(key_entry, ns, operation="read")
-    memories = await client._arcadedb.list_memories_for_episode(episode_id, ns)
-    return [
-        {
-            "id": m.id,
-            "content": m.content,
-            "memory_type": m.memory_type.value if hasattr(m.memory_type, "value") else str(m.memory_type),
-            "namespace": m.namespace,
-            "created_at": m.created_at.isoformat(),
-            "source_episode_ids": list(getattr(m, "source_episode_ids", []) or []),
-        }
-        for m in memories
-    ]
+) -> EpisodeResponse:
+    """Update an episode's title, summary, or tags."""
+    await check_namespace_access(key_entry, ns, operation="write")
+    try:
+        ok = await client.update_episode(
+            episode_id, ns,
+            title=req.title,
+            summary=req.summary,
+            tags=req.tags,
+        )
+    except Exception as exc:
+        logger.exception("Failed to update episode: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Episode {episode_id!r} not found")
+
+    episode = await client.get_episode(episode_id, ns)
+    if episode is None:
+        raise HTTPException(status_code=404, detail=f"Episode {episode_id!r} not found")
+    return _episode_to_response(episode)
+
+
+# ---------------------------------------------------------------------------
+# POST /episodes/{id}/close — mark episode closed
+# ---------------------------------------------------------------------------
+
+@router.post("/{episode_id}/close", response_model=EpisodeResponse)
+async def close_episode(
+    episode_id: str,
+    ns: str = Query(..., description="Namespace the episode belongs to"),
+    user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
+    client=Depends(get_client),
+) -> EpisodeResponse:
+    """Mark an episode as closed (sets closed_at to now)."""
+    await check_namespace_access(key_entry, ns, operation="write")
+    try:
+        ok = await client.close_episode(episode_id, ns)
+    except Exception as exc:
+        logger.exception("Failed to close episode: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Episode {episode_id!r} not found")
+
+    episode = await client.get_episode(episode_id, ns)
+    if episode is None:
+        raise HTTPException(status_code=404, detail=f"Episode {episode_id!r} not found")
+    return _episode_to_response(episode)
+
+
+# ---------------------------------------------------------------------------
+# POST /episodes/{id}/memories/{mem_id} — link memory to episode
+# ---------------------------------------------------------------------------
+
+@router.post("/{episode_id}/memories/{memory_id}", status_code=204, response_model=None)
+async def link_memory(
+    episode_id: str,
+    memory_id: str,
+    ns: str = Query(..., description="Namespace shared by both episode and memory"),
+    user_id: str = Depends(require_api_key),
+    key_entry=Depends(require_api_key_entry),
+    client=Depends(get_client),
+) -> None:
+    """Link an existing memory to an episode."""
+    await check_namespace_access(key_entry, ns, operation="write")
+    try:
+        ok = await client.link_memory_to_episode(memory_id, ns, episode_id)
+    except Exception as exc:
+        logger.exception("Failed to link memory to episode: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Memory {memory_id!r} not found in namespace {ns!r}")

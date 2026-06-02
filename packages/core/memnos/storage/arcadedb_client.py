@@ -524,7 +524,7 @@ class ArcadeDBClient:
         return memory.id
 
     # ------------------------------------------------------------------
-    # Episode CRUD (Feature 2 — immutable raw input layer)
+    # Episode CRUD (Feature 2 — immutable raw input layer + mutable container)
     # ------------------------------------------------------------------
 
     async def insert_episode(self, episode: Episode) -> str:
@@ -553,6 +553,26 @@ class ArcadeDBClient:
         logger.debug("Episode inserted: id=%s namespace=%s", episode.id, episode.namespace)
         return episode.id
 
+    async def create_episode(self, episode: "Episode") -> str:
+        """Insert an Episode container vertex (title/summary/tags). Returns the episode id."""
+        sql = (
+            "INSERT INTO Episode SET "
+            "id = :id, title = :title, namespace = :namespace, "
+            "summary = :summary, tags = :tags, "
+            "created_at = :created_at, closed_at = :closed_at"
+        )
+        await self._command(sql, {
+            "id": episode.id,
+            "title": episode.title,
+            "namespace": episode.namespace,
+            "summary": episode.summary,
+            "tags": list(episode.tags or []),
+            "created_at": to_epoch_ms(episode.created_at),
+            "closed_at": to_epoch_ms(episode.closed_at),
+        })
+        logger.debug("Episode inserted: id=%s namespace=%s", episode.id, episode.namespace)
+        return episode.id
+
     async def get_episode(self, episode_id: str, namespace: str) -> Episode | None:
         rows = await self._query(
             "SELECT * FROM Episode WHERE id = :id AND namespace = :ns LIMIT 1",
@@ -568,11 +588,12 @@ class ArcadeDBClient:
         *,
         limit: int = 50,
         skip: int = 0,
+        include_closed: bool = True,
     ) -> list[Episode]:
-        sql = (
-            f"SELECT * FROM Episode WHERE namespace = :ns "
-            f"ORDER BY created_at DESC SKIP {int(skip)} LIMIT {int(limit)}"
-        )
+        where = "WHERE namespace = :ns"
+        if not include_closed:
+            where += " AND closed_at IS NULL"
+        sql = f"SELECT * FROM Episode {where} ORDER BY created_at DESC SKIP {int(skip)} LIMIT {int(limit)}"
         rows = await self._query(sql, {"ns": namespace})
         return [_row_to_episode(r) for r in rows]
 
@@ -587,6 +608,67 @@ class ArcadeDBClient:
             "AND source_episode_ids CONTAINS :eid"
         )
         rows = await self._query(sql, {"ns": namespace, "eid": episode_id})
+        return [_row_to_memory(r) for r in rows]
+
+    async def update_episode(
+        self,
+        episode_id: str,
+        namespace: str,
+        *,
+        title: str | None = None,
+        summary: str | None = None,
+        tags: list[str] | None = None,
+    ) -> bool:
+        parts, params = [], {"id": episode_id, "ns": namespace}
+        if title is not None:
+            parts.append("title = :title"); params["title"] = title
+        if summary is not None:
+            parts.append("summary = :summary"); params["summary"] = summary
+        if tags is not None:
+            parts.append("tags = :tags"); params["tags"] = tags
+        if not parts:
+            return True
+        rows = await self._command(
+            f"UPDATE Episode SET {', '.join(parts)} WHERE id = :id AND namespace = :ns",
+            params,
+        )
+        return bool(rows)
+
+    async def close_episode(self, episode_id: str, namespace: str) -> bool:
+        rows = await self._command(
+            "UPDATE Episode SET closed_at = :now WHERE id = :id AND namespace = :ns",
+            {"now": now_ms(), "id": episode_id, "ns": namespace},
+        )
+        return bool(rows)
+
+    async def link_memory_to_episode(
+        self, memory_id: str, namespace: str, episode_id: str
+    ) -> bool:
+        rows = await self._query(
+            "SELECT source_episode_ids FROM Memory WHERE id = :id AND namespace = :ns LIMIT 1",
+            {"id": memory_id, "ns": namespace},
+        )
+        if not rows:
+            return False
+        current: list[str] = rows[0].get("source_episode_ids") or []
+        if episode_id in current:
+            return True
+        updated = current + [episode_id]
+        result = await self._command(
+            "UPDATE Memory SET source_episode_ids = :eids WHERE id = :id AND namespace = :ns",
+            {"eids": updated, "id": memory_id, "ns": namespace},
+        )
+        self._embed_cache_dirty = True
+        return bool(result)
+
+    async def get_episode_memories(
+        self, episode_id: str, namespace: str, *, limit: int = 100
+    ) -> list[MemoryEntry]:
+        rows = await self._query(
+            "SELECT * FROM Memory WHERE namespace = :ns AND status = 'active' "
+            "AND source_episode_ids CONTAINS :eid ORDER BY created_at ASC LIMIT :lim",
+            {"ns": namespace, "eid": episode_id, "lim": limit},
+        )
         return [_row_to_memory(r) for r in rows]
 
     async def get_memory(self, memory_id: str, namespace: str) -> MemoryEntry | None:
@@ -859,7 +941,7 @@ class ArcadeDBClient:
             match_rows = await self._query(match_sql, params)
             matched_ids = {row["id"] for row in match_rows if row.get("id")}
         except Exception as exc:
-            logger.warning("Graph traversal for governance failed, falling back to list-match: %s", exc)
+            logger.warning("Graph traversal for policy lookup failed, falling back to list-match: %s", exc)
             matched_ids = None
 
         if matched_ids is not None:
@@ -1528,7 +1610,7 @@ class ArcadeDBClient:
             return 0
 
     async def get_unused_constraints(self, namespace: str) -> list["MemoryEntry"]:
-        """Return active constraint memories whose affects list is empty (no governance coverage)."""
+        """Return active constraint memories whose affects list is empty (no policy coverage)."""
         parts = namespace.split(":")
         ns_list = [":".join(parts[:i+1]) for i in range(len(parts))]
         placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))
@@ -2457,6 +2539,10 @@ def _row_to_episode(row: dict) -> Episode:
         author=row.get("author") or "",
         metadata=row.get("metadata") or {},
         provenance=Provenance(**(row.get("provenance") or {})) if row.get("provenance") else Provenance(),
+        title=row.get("title", ""),
+        summary=row.get("summary", ""),
+        tags=row.get("tags") or [],
+        closed_at=_parse_dt(row.get("closed_at")),
     )
 
 

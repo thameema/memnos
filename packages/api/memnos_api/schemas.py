@@ -57,6 +57,7 @@ class MemoryResponse(BaseModel):
     affects: list[str] = Field(default_factory=list)
     rationale: str = ""
     provenance: dict = Field(default_factory=dict)
+    episode_ids: list[str] = Field(default_factory=list)
     contradiction_warnings: list[dict] = Field(default_factory=list)
     # Feature 2 — link to immutable raw Episode(s) this memory was derived from.
     source_episode_ids: list[str] = Field(default_factory=list)
@@ -170,3 +171,35 @@ class KeyResponse(BaseModel):
     revoked_at: str | None = None
     # Only populated on initial creation — never returned again after that.
     key: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Episodes (Feature 2)
+# ---------------------------------------------------------------------------
+
+class EpisodeCreateRequest(BaseModel):
+    title: str
+    namespace: str
+    summary: str = ""
+    tags: list[str] = []
+
+
+class EpisodeUpdateRequest(BaseModel):
+    title: str | None = None
+    summary: str | None = None
+    tags: list[str] | None = None
+
+
+class EpisodeResponse(BaseModel):
+    id: str
+    title: str
+    namespace: str
+    summary: str
+    tags: list[str]
+    created_at: datetime
+    closed_at: datetime | None = None
+    is_open: bool
+
+
+class EpisodeWithMemoriesResponse(EpisodeResponse):
+    memories: list[MemoryResponse] = Field(default_factory=list)
