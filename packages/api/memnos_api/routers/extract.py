@@ -88,6 +88,17 @@ Bad:  "Melanie has kids who like activities."
 Good: "Caroline is single and not in a relationship."
 Bad:  "Caroline's relationship status is complex."
 
+PROPER NOUN RULE: Preserve all proper nouns, place names, book titles, and
+relationship status words EXACTLY as spoken. Never substitute with generic terms.
+Good: "Caroline moved from Sweden four years ago."
+Bad:  "Caroline moved from her home country."
+Good: "Caroline is a transgender woman."
+Bad:  "Caroline's identity is evolving through transition."
+Good: "Melanie has read Charlotte's Web and Nothing is Impossible."
+Bad:  "Melanie has read books including one about hope."
+Good: "Caroline is single."
+Bad:  "Caroline's relationship status is positive."
+
 Rules:
 - Each item must be self-contained (understandable without the full conversation)
 - content: concise, specific, standalone statement (max 300 chars)
