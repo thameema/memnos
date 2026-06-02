@@ -44,6 +44,7 @@ memnos-vault = "memnos.cli.vault_cli:main"
 memnos-community = "memnos.cli.community_cli:main"
 memnos-migrate = "memnos.cli.migrate_cli:main"
 memnos-export = "memnos.cli.export_cli:main"
+memnos-install = "memnos.cli.install_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
