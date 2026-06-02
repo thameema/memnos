@@ -134,7 +134,10 @@ def _install_tool(name: str, meta: dict, url: str, api_key: str, dry_run: bool) 
     merger = _MERGERS[fmt]
     config, changed = merger(config, url, api_key)
 
-    status = "would update" if dry_run else "updated" if changed else "already correct"
+    if dry_run:
+        status = "would update" if changed else "already correct"
+    else:
+        status = "updated" if changed else "already correct"
     print(f"  {meta['label']:14} {path}  [{status}]")
 
     if not dry_run and changed:
