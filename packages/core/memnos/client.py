@@ -276,6 +276,7 @@ class MemnosClient:
                 await self._vector_backend.upsert(
                     str(memory.id), embedding, namespace,
                     memory_type=memory_type.value if hasattr(memory_type, "value") else str(memory_type),
+                    text=content,
                 )
             except Exception as exc:
                 logger.warning("Qdrant upsert failed (non-fatal): %s", exc)
@@ -360,6 +361,7 @@ class MemnosClient:
                 namespace=namespace,
                 top_k=top_k,
                 include_superseded=include_historical,
+                text=query,
             )
             results: list[SearchResult] = []
             _cross_ns = namespace.lower().strip() in ("", "all", "*")
@@ -533,7 +535,11 @@ class MemnosClient:
                 if self._vector_backend is not None:
                     try:
                         mtype = copy.memory_type.value if hasattr(copy.memory_type, "value") else str(copy.memory_type)
-                        await self._vector_backend.upsert(str(copy.id), embedding, delivery_ns, memory_type=mtype)
+                        await self._vector_backend.upsert(
+                            str(copy.id), embedding, delivery_ns,
+                            memory_type=mtype,
+                            text=copy.content,
+                        )
                     except Exception as qexc:
                         logger.warning("fan-out Qdrant upsert failed (non-fatal): %s", qexc)
                 logger.debug(
