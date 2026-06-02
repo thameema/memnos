@@ -33,6 +33,95 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
+
+# ---------------------------------------------------------------------------
+# Background extraction helper (called by write_memory on every ingest)
+# ---------------------------------------------------------------------------
+
+async def _extract_and_write(
+    client,
+    text: str,
+    namespace: str,
+    author: str = "",
+    source: str = "auto-extract",
+    max_similarity: float = 0.92,
+) -> None:
+    """Fire-and-forget: extract facts from *text* and write non-duplicate items.
+
+    Called as an asyncio background task after every memory write when an LLM
+    API key is configured.  Silently returns on any failure so it never affects
+    the caller.  Items written here carry the ``auto-extracted`` tag so they
+    are not re-extracted on their own ingest.
+    """
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if not anthropic_key and not openai_key:
+        return  # no LLM configured — skip silently
+
+    if len(text.strip()) < 80:
+        return  # too short to be worth an LLM call
+
+    try:
+        raw = await _call_llm(text)
+    except Exception as exc:
+        logger.debug("auto-extract: LLM call failed (non-fatal): %s", exc)
+        return
+
+    clean = raw
+    if clean.startswith("```"):
+        clean = re.sub(r"^```[a-zA-Z]*\n?", "", clean)
+        clean = re.sub(r"\n?```$", "", clean)
+
+    try:
+        data = json.loads(clean)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.debug("auto-extract: JSON parse failed: %s | raw=%r", exc, raw[:200])
+        return
+
+    from memnos.models import MemoryType  # noqa: PLC0415
+
+    raw_items = data.get("items", [])[:20]
+    written = 0
+    for raw_item in raw_items:
+        try:
+            content = str(raw_item.get("content", "")).strip()
+            mem_type_str = str(raw_item.get("type", "fact")).lower().strip()
+            tags = [str(t).lower() for t in (raw_item.get("tags") or [])]
+            rationale = str(raw_item.get("rationale", "")).strip()
+        except Exception:
+            continue
+
+        if not content:
+            continue
+        if mem_type_str not in _VALID_TYPES:
+            mem_type_str = "fact"
+
+        # Dedup against existing memories
+        try:
+            hits = await client.search(content, namespace, top_k=1)
+            if hits and float(getattr(hits[0], "score", 0.0)) >= max_similarity:
+                continue
+        except Exception:
+            pass  # dedup failure is non-fatal — write anyway
+
+        try:
+            mem_type = MemoryType(mem_type_str) if mem_type_str in _VALID_TYPES else MemoryType.fact
+            await client.add(
+                content=content,
+                namespace=namespace,
+                tags=tags + ["auto-extracted"],
+                source=source,
+                memory_type=mem_type,
+                author=author,
+                rationale=rationale,
+            )
+            written += 1
+        except Exception as exc:
+            logger.debug("auto-extract: write failed for item %r: %s", content[:80], exc)
+
+    if written:
+        logger.info("auto-extract | ns=%s written=%d from %d chars", namespace, written, len(text))
+
 # ---------------------------------------------------------------------------
 # Extraction prompt
 # ---------------------------------------------------------------------------

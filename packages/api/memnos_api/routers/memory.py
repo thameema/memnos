@@ -238,6 +238,26 @@ async def write_memory(
             for w in all_warnings
         ]
 
+    # ── Auto-extract: fire-and-forget background fact extraction ─────────────
+    # Skips if MEMNOS_AUTO_EXTRACT=false, content is short, or the memory was
+    # itself produced by extraction (avoid re-extracting extracted facts).
+    _auto_extract = os.environ.get("MEMNOS_AUTO_EXTRACT", "true").lower()
+    _is_already_extracted = "auto-extracted" in (req.tags or [])
+    if _auto_extract != "false" and not _is_already_extracted and len(req.content) >= 80:
+        try:
+            from memnos_api.routers.extract import _extract_and_write  # noqa: PLC0415
+            asyncio.create_task(
+                _extract_and_write(
+                    client,
+                    req.content,
+                    req.namespace,
+                    author=req.author or user_id,
+                    source="auto-extract",
+                )
+            )
+        except Exception as exc:
+            logger.debug("auto-extract scheduling failed (non-fatal): %s", exc)
+
     return response
 
 
