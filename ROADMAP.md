@@ -1,6 +1,6 @@
 # Engram Roadmap
 
-Engram is an open-source persistent memory and AI governance layer for engineering teams. This document describes what we are building, why, and in what order.
+Engram is an open-source persistent memory and agent memory policy layer for engineering teams. This document describes what we are building, why, and in what order.
 
 Tiers reflect priority and dependency order, not fixed time boxes. Tier 1 must be substantially complete before Tier 2 delivers full value.
 
@@ -32,11 +32,11 @@ Add `AFFECTS` graph edge: `Memory → Entity` — binds a decision or constraint
 
 ADR tooling exists — adr-tools, Log4brains, MADR — but none of it reaches AI agents automatically. `AGENTS.md` files are static text that goes stale and gets forgotten. Engram makes decisions machine-readable and ambient: a constraint written once surfaces automatically when any agent touches the governed code path.
 
-The Atlan 2026 review of eight memory frameworks found no tool supporting decision records, constraint injection, or AI coding governance. This is unoccupied ground.
+The Atlan 2026 review of eight memory frameworks found no tool supporting decision records, constraint injection, or agent policy enforcement. This is unoccupied ground.
 
 ---
 
-### 1.2 Constraint Injection — AI Governance Enforcement
+### 1.2 Constraint Injection — Agent Policy Enforcement
 
 **What to build**
 
@@ -46,7 +46,7 @@ No special API call required. No agent-side configuration. Constraints are alway
 
 **Why it matters**
 
-This is the AI governance enforcement layer. Engineering standards, security rules, approved patterns — stored once in engram, enforced on every agent call touching that namespace. The alternative is maintaining `CLAUDE.md` files that drift, get copied inconsistently, and are silently ignored. Engram makes compliance structural rather than documentary.
+This is the agent policy enforcement layer. Engineering standards, security rules, approved patterns — stored once in engram, enforced on every agent call touching that namespace. The alternative is maintaining `CLAUDE.md` files that drift, get copied inconsistently, and are silently ignored. Engram makes compliance structural rather than documentary.
 
 ---
 
@@ -222,7 +222,7 @@ Senior engineers write skill memories once. Every engineer on the team gets coac
 | ADR / Decision Records | adr-tools, Log4brains, MADR, AGENTS.md | Static files, not injected into AI context, no graph relationships |
 | AI Memory | Mem0, Zep, Letta, LangMem, Graphiti | None support decision records, constraint injection, or cross-team pub-sub (Atlan 2026) |
 | Developer Portal | Backstage / Spotify Portal | Heavy infrastructure, not agent-facing, no real-time memory write |
-| AI Governance | TrueFoundry Gateway, NeMo Guardrails | LLM proxy layer, not knowledge layer — filters outputs but cannot inject org knowledge |
+|  Agent Memory Policies | TrueFoundry Gateway, NeMo Guardrails | LLM proxy layer, not knowledge layer — filters outputs but cannot inject org knowledge |
 | Incident Intelligence | incident.io (proprietary), Keep (OSS) | No memory graph, no cross-incident learning, not integrated with AI coding agents |
 | Skill Coaching | None | No tool discovers and proactively surfaces AI coding tool capabilities to developers |
 
@@ -231,12 +231,12 @@ Senior engineers write skill memories once. Every engineer on the team gets coac
 No existing tool combines all five of:
 
 1. Real-time read/write memory (not batch RAG)
-2. Typed decision and constraint memories with AI governance enforcement
+2. Typed decision and constraint memories with agent policy enforcement
 3. Graph relationships between memories and code entities
 4. Team namespace sharing with ACL
 5. Ambient skill coaching for AI coding tools
 
-The closest competitor is Zep/Graphiti for temporal graph memory. It targets conversational agents, not engineering workflows, not governance, not skill coaching.
+The closest competitor is Zep/Graphiti for temporal graph memory. It targets conversational agents, not engineering workflows, not policy management, not skill coaching.
 
 ---
 

@@ -378,18 +378,18 @@ async def delete_memory(
 
 
 # ---------------------------------------------------------------------------
-# Governance
+# Policies
 # ---------------------------------------------------------------------------
 
-@router.get("/governance", response_model=dict)
-async def get_governance(
+@router.get("/policies", response_model=dict)
+async def get_policies(
     entities: str = Query(..., description="Comma-separated entity names"),
     ns: str = Query(..., description="Namespace to search within"),
     user_id: str = Depends(require_api_key),
     key_entry=Depends(require_api_key_entry),
     client=Depends(get_client),
 ) -> dict:
-    """Return active constraints and decisions/ADRs governing a set of entities.
+    """Return active constraints and decisions/ADRs that apply to a set of entities.
 
     Decisions/ADRs are filtered by whether their affects[] field overlaps with
     the requested entities. Constraints are all active constraints in the namespace.
@@ -414,7 +414,7 @@ async def get_governance(
             if r.memory.memory_type.value == "constraint"
         ]
     except Exception as exc:
-        logger.exception("Governance query failed: %s", exc)
+        logger.exception("Policies query failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return {

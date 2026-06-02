@@ -1,5 +1,5 @@
 """
-tools/test_ai_governance.py — AI governance correctness test suite.
+tools/test_memory_policies.py — Memory policy correctness test suite.
 
 Tests:
 1. constraint_always_injected       — constraint surfaces regardless of query topic
@@ -11,10 +11,10 @@ Tests:
 7. quality_gate_affects_rationale   — decision lacking affects[]/rationale flagged by get_unused_constraints
 
 Run standalone:
-    python3 tools/test_ai_governance.py [--verbose] [--test <name>]
+    python3 tools/test_memory_policies.py [--verbose] [--test <name>]
 
 Run via pytest (requires live engram API):
-    python -m pytest tools/test_ai_governance.py -v
+    python -m pytest tools/test_memory_policies.py -v
 """
 from __future__ import annotations
 
@@ -347,7 +347,7 @@ def test_quality_gate_affects_rationale(runner: Runner) -> None:
     time.sleep(1)
 
     # Use the admin endpoint to check for uncovered constraints/decisions
-    r = api("GET", f"/api/v1/admin/governance/gaps", params={"ns": ns})
+    r = api("GET", f"/api/v1/admin/policy-gaps", params={"ns": ns})
     if r.status_code == 404:
         # Endpoint doesn't exist yet — fall back to direct ArcadeDB check
         rows = arcade_query(
@@ -364,7 +364,7 @@ def test_quality_gate_affects_rationale(runner: Runner) -> None:
             print(f"\n    {len(gaps)} decision(s) flagged as quality gaps")
         return
 
-    assert r.status_code == 200, f"Governance gaps endpoint error: {r.text}"
+    assert r.status_code == 200, f"Policy gaps endpoint error: {r.text}"
     gaps = r.json()
     assert len(gaps) > 0, "Expected at least one quality gap flagged"
 
@@ -409,7 +409,7 @@ def test_quality_gate_affects_rationale_pytest(runner) -> None:
 # ===========================================================================
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="engram AI Governance Tests")
+    parser = argparse.ArgumentParser(description="engram Memory Policy Tests")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--test", "-t", metavar="NAME", help="Run a single test by name")
     args = parser.parse_args()
@@ -427,7 +427,7 @@ def main() -> int:
 
     runner = Runner(verbose=args.verbose, only=args.test)
 
-    print("engram AI Governance Tests")
+    print("engram Memory Policy Tests")
     print(f"API: {ENGRAM_API}   namespace: {TEST_NS}")
     print("=" * 70)
     print()

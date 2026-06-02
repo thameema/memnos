@@ -559,7 +559,7 @@ Claude Code calls memory_search("architecture conventions patterns standards",
 
 ---
 
-## Governance and security considerations
+## Policy and security considerations
 
 ### What goes in the knowledge graph
 

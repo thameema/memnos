@@ -103,7 +103,7 @@ def _query_entity_names(query: str) -> list[str]:
     """Extract candidate entity names from a query string for decision pinning.
 
     Returns lowercase names. These are matched against the `affects` list on
-    decision/constraint/ADR memories to find governance rules for those entities.
+    decision/constraint/ADR memories to find applicable policies for those entities.
     """
     names: set[str] = set()
     for m in _CAMEL_CASE.finditer(query):
@@ -657,7 +657,7 @@ class EngramClient:
         )
 
     # ------------------------------------------------------------------
-    # Constraint retrieval (Tier 1 — AI governance)
+    # Constraint retrieval (Tier 1 — agent memory policies)
     # ------------------------------------------------------------------
 
     async def get_constraints(self, namespace: str) -> list[MemoryEntry]:
