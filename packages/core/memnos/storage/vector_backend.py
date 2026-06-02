@@ -45,8 +45,14 @@ class VectorBackend(ABC):
         embedding: list[float],
         namespace: str,
         memory_type: str = "fact",
+        text: str | None = None,
     ) -> None:
-        """Insert or update a vector point for *memory_id*."""
+        """Insert or update a vector point for *memory_id*.
+
+        *text* — original content string used to generate a BM25 sparse vector
+        alongside the dense embedding.  Implementations that do not support
+        sparse vectors should ignore this parameter.
+        """
 
     @abstractmethod
     async def search(
@@ -55,12 +61,16 @@ class VectorBackend(ABC):
         namespace: str,
         top_k: int = 10,
         include_superseded: bool = False,
+        text: str | None = None,
     ) -> list[tuple[str, float]]:
         """
         Return up to *top_k* (memory_id, score) pairs for the nearest
         neighbours of *embedding* in *namespace*, sorted by score descending.
 
         *include_superseded* — when False (default), exclude superseded memories.
+        *text* — original query string used to generate a BM25 sparse vector for
+        hybrid RRF search.  Implementations that do not support sparse vectors
+        should fall back to dense-only search.
         """
 
     @abstractmethod
