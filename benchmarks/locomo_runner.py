@@ -233,6 +233,9 @@ def ingest_conversation(
         if not isinstance(turns, list):
             continue
 
+        # Pull session date — stored as session_N_date_time in the dataset
+        session_date = conv.get(f"{sess_key}_date_time", "")
+
         for turn in turns:
             if isinstance(turn, dict):
                 speaker = turn.get("speaker", turn.get("role", "unknown"))
@@ -245,7 +248,9 @@ def ingest_conversation(
             if not text:
                 continue
 
-            content = f"[{speaker}]: {text}"
+            # Prefix with session date so consolidation LLM gets the right year/month
+            date_prefix = f"[Date: {session_date}] " if session_date else ""
+            content = f"{date_prefix}[{speaker}]: {text}"
             tags = ["locomo", f"session_{session_idx + 1}"]
             write_memory(http, base_url, api_key, content, namespace, tags)
             turns_written += 1
