@@ -1,18 +1,86 @@
 # memnos
 
-**Persistent memory and AI governance for Claude Code and any MCP-compatible LLM client.**
+**Persistent memory for AI coding agents — MCP server, REST API & Python SDK.**
 
-memnos gives Claude Code a long-term memory that persists across sessions and the ability to fork parallel background agents — all backed by a single Docker container (ArcadeDB) with no external vector database or graph database required.
+memnos gives AI coding agents long-term memory that persists across sessions. Works with **Claude Code, Cursor, Windsurf** and any MCP-compatible client. One Docker container — no external vector database required.
 
 ```
-Claude Code  ──── MCP stdio or SSE ────►  memnos server
-                                            ├── Knowledge graph  (ArcadeDB — graph + vector search)
-                                            ├── Encrypted vault  (AES-256-GCM envelope encryption)
-                                            ├── Multi-agent orchestrator
-                                            └── Self-learning    (reflection + heuristics)
+Claude Code  ─┐
+Cursor        ├── MCP (SSE/stdio) ──►  memnos server
+Windsurf      ─┘                        ├── Knowledge graph  (ArcadeDB — graph + vector search)
+Any LLM agent ──── REST / SDK ──────►   ├── Session episodes (group memories by task/session)
+                                         ├── Encrypted vault  (AES-256-GCM envelope encryption)
+                                         ├── Multi-agent orchestrator
+                                         └── Self-learning    (reflection + heuristics)
 ```
 
-> **v1.1.0** — Corpus ingestion + architecture enforcement (`memnos-sdk[corpus]`), LangChain and LlamaIndex integrations, 93 tests. ArcadeDB backend — one container, no OpenAI key required for embeddings. See [DESIGN.md](DESIGN.md) for the full architecture.
+```bash
+# Python SDK
+pip install memnos-sdk
+
+# or: one-line server install
+curl -fsSL https://raw.githubusercontent.com/thameema/memnos/master/install.sh | bash
+```
+
+> **v1.1.0** — Episodes (F2), corpus ingestion, LangChain & LlamaIndex integrations, `memnos install --detect` for auto-wiring tools. ArcadeDB backend — one container, no OpenAI key required. See [DESIGN.md](DESIGN.md) for the full architecture.
+
+---
+
+## Persistent memory for Claude Code
+
+Claude Code forgets everything when the session ends. memnos gives it a searchable, persistent memory layer — decisions, patterns, constraints and session history — injected back into context automatically on every new session.
+
+```json
+// ~/.claude/settings.json  (added by: memnos install --detect)
+{ "mcpServers": { "memnos": { "type": "sse", "url": "http://localhost:8765/sse" } } }
+```
+
+## Persistent memory for Cursor and Windsurf
+
+Same MCP config, same server. Add memnos to `~/.cursor/mcp.json` or `~/.codeium/windsurf/mcp_config.json` and every Cursor or Windsurf session can search and write to the same shared memory store. One server, all your tools.
+
+```bash
+memnos install --detect   # auto-detects Claude Code, Cursor, Windsurf and writes all configs
+```
+
+## Python SDK — pip install memnos-sdk
+
+Use memnos from any Python agent, LangChain chain, or LlamaIndex pipeline:
+
+```python
+from memnos_sdk import MemnosClient
+
+with MemnosClient("http://localhost:8766", api_key="...") as client:
+    # Open a session episode — groups all writes under a named container
+    with client.session("fix auth bug", "org:acme:engineering") as episode:
+        results = client.search("JWT token expiry decisions", "org:acme:engineering")
+        client.write("Decided: use 15-min access tokens, 7-day refresh", "org:acme:engineering")
+    # Episode auto-closes; all memories linked to the session for later audit
+```
+
+LangChain and LlamaIndex integrations ship in `memnos-sdk`:
+
+```bash
+pip install 'memnos-sdk[langchain]'    # LangChain memory integration
+pip install 'memnos-sdk[llamaindex]'   # LlamaIndex retriever integration
+pip install 'memnos-sdk[all]'          # everything
+```
+
+## REST API — works with any language
+
+memnos exposes a full REST API at `:8766` — usable from TypeScript, Go, curl, or any HTTP client:
+
+```bash
+# Write a memory
+curl -X POST http://localhost:8766/api/v1/memory/ \
+  -H "Authorization: Bearer $MEMNOS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"content": "Use PostgreSQL for all new services", "namespace": "org:acme:engineering", "memory_type": "decision"}'
+
+# Search memories
+curl "http://localhost:8766/api/v1/memory/search?q=database+decisions&ns=org:acme:engineering" \
+  -H "Authorization: Bearer $MEMNOS_API_KEY"
+```
 
 ---
 
