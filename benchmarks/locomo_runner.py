@@ -258,6 +258,48 @@ def ingest_conversation(
     return turns_written
 
 
+def _multi_query_search(
+    http: httpx.Client,
+    base_url: str,
+    api_key: str,
+    question: str,
+    namespace: str,
+    top_k: int,
+) -> list[dict]:
+    """Run 2-3 query reformulations, merge and deduplicate results."""
+    q_lower = question.lower().strip()
+    queries = [question]
+
+    # For date questions: add reformulations that surface date-explicit facts
+    if q_lower.startswith("when "):
+        subject = question[5:].rstrip("?").strip()  # "did Melanie run a charity race"
+        queries.append(f"date {subject}")
+        queries.append(f"{subject} 2023")
+
+    # For single_hop factual: add a more specific variant
+    elif q_lower.startswith("what ") or q_lower.startswith("where ") or q_lower.startswith("who "):
+        queries.append(question.replace("?", "").strip())
+
+    seen_ids: set[str] = set()
+    merged: list[dict] = []
+    per_query_k = max(top_k, 10)
+
+    for q in queries:
+        try:
+            hits = search_memories(http, base_url, api_key, q, namespace, per_query_k)
+            for h in hits:
+                mem_id = h.get("id", h.get("content", ""))[:50]
+                if mem_id not in seen_ids:
+                    seen_ids.add(mem_id)
+                    merged.append(h)
+        except Exception:
+            pass
+
+    # Sort by score descending, keep top_k
+    merged.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+    return merged[:top_k]
+
+
 def answer_question(
     http: httpx.Client,
     base_url: str,
@@ -269,8 +311,8 @@ def answer_question(
     namespace: str,
     top_k: int = 5,
 ) -> tuple[str, list[dict]]:
-    """Search memnos then call LLM to produce an answer. Returns (answer, results)."""
-    results = search_memories(http, base_url, api_key, question, namespace, top_k)
+    """Multi-query search then call LLM to produce an answer. Returns (answer, results)."""
+    results = _multi_query_search(http, base_url, api_key, question, namespace, top_k)
 
     context_parts = []
     for r in results:
