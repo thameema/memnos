@@ -111,10 +111,26 @@ All runs use conv-26 (sample 0), 30 QA pairs, claude-haiku-4-5-20251001.
 - `single_hop` at 50% — slightly below v3's 70% due to date-prefixed extraction facts adding noise
 - **OVERALL 56.7%** — 10 points above v3, closing gap with mnemory (73.2%)
 
-**Remaining gap to 73%+:**
-- single_hop: need more specific facts about Melanie's activities, books, kids (extraction misses details)
-- multi_hop: ~8 questions still wrong because exact event dates not in top-20 (need multi-query reformulation)
-- Full 10-sample run would give statistically stable baseline
+**v6 architecture (best confirmed stack):**
+```
+Ingest:     clean raw turns (no date prefix) → BM25 named-vector Qdrant collection
+Extract:    session-level via POST /memory/extract — SESSION DATE: header feeds LLM
+            prompt: date-anchored + granular + proper noun preservation rules
+Facts:      ~200 date-explicit facts per conversation (real 2023 dates)
+Retrieval:  BM25 + dense RRF hybrid, top_k=20, score floor 0.35
+Answering:  gpt-4o-mini with split prompts:
+              date questions  → strict grounding (no hallucinated dates)
+              temporal/would  → inference-friendly (reason from character facts)
+              general         → light grounding + inference
+```
+
+**Remaining gap to mnemory 73.2%:**
+| Gap area | Issue | Fix |
+|----------|-------|-----|
+| single_hop -13% | Extraction generalizes specifics ("home country" vs "Sweden") | Proper noun rule (shipped v8) — needs stable extraction run |
+| multi_hop -3% | memnos is now ahead (62.5% vs 53.1%) | Already solved |
+| 30 QA pairs | High variance on small sample | Run full 10-sample dataset |
+| open_domain | Not tested (dataset gap) | Add open_domain samples |
 
 ### Output file (`results.json`)
 
