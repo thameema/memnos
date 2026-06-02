@@ -197,10 +197,24 @@ def ingest_conversation(
     sample: dict,
     sample_id: str,
     verbose: bool = False,
+    force_ingest: bool = False,
+    ns_prefix: str = "locomo",
 ) -> int:
     """Write all dialog turns for a sample into memnos. Returns turn count."""
-    namespace = f"locomo:{sample_id}"
+    namespace = f"{ns_prefix}:{sample_id}"
     turns_written = 0
+
+    # Guard: skip if already populated to avoid duplicates. --force-ingest overrides.
+    if not force_ingest:
+        try:
+            check = http.get(f"{base_url}/api/v1/memory/search",
+                             params={"q": "speaker", "ns": namespace, "top_k": 1},
+                             headers={"Authorization": f"Bearer {api_key}"}, timeout=10)
+            if check.status_code == 200 and check.json():
+                print(f"  Namespace {namespace} already populated — skipping (use --force-ingest to re-ingest)", flush=True)
+                return 0
+        except Exception:
+            pass  # proceed with ingestion on error
 
     # conversation is a dict: {speaker_a, speaker_b, session_1, session_2, ...}
     conv = sample.get("conversation", {})
@@ -299,9 +313,10 @@ def run_sample(
     sample_id: str,
     verbose: bool = False,
     max_qa: int = 0,
+    ns_prefix: str = "locomo",
 ) -> list[dict]:
     """Run all QA pairs for one sample. Returns list of result records."""
-    namespace = f"locomo:{sample_id}"
+    namespace = f"{ns_prefix}:{sample_id}"
     qa_results = []
 
     # QA pairs are stored under different keys depending on dataset version
@@ -414,6 +429,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="LoCoMo benchmark runner for memnos")
     p.add_argument("--url", default="http://localhost:8766", help="memnos base URL")
     p.add_argument("--key", default="memnos-local-dev-key", help="memnos API key")
+    p.add_argument("--ns-prefix", default="locomo", help="Namespace prefix (default: locomo). Change to avoid reusing polluted namespaces.")
     p.add_argument(
         "--model",
         default="claude-haiku-4-5-20251001",
@@ -439,7 +455,8 @@ def parse_args():
         action="store_true",
         help="Skip memory ingestion (assume already loaded)",
     )
-    p.add_argument("--top-k", type=int, default=5, help="Top-k search results")
+    p.add_argument("--top-k", type=int, default=10, help="Top-k search results")
+    p.add_argument("--force-ingest", action="store_true", help="Re-ingest even if namespace already has memories")
     p.add_argument("--max-qa", type=int, default=0, help="Max QA pairs per sample (0=all). Use 30 for a quick representative run.")
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args()
@@ -472,15 +489,16 @@ def main():
 
             if not args.skip_ingest:
                 n = ingest_conversation(
-                    http, args.url, args.key, sample, sample_id, args.verbose
+                    http, args.url, args.key, sample, sample_id, args.verbose,
+                    force_ingest=args.force_ingest, ns_prefix=args.ns_prefix,
                 )
-                print(f"  Ingested {n} turns")
+                print(f"  Ingested {n} turns", flush=True)
 
             qa_results = run_sample(
                 http, args.url, args.key,
                 client_type, client, args.model,
                 sample, sample_id, args.verbose,
-                max_qa=args.max_qa,
+                max_qa=args.max_qa, ns_prefix=args.ns_prefix,
             )
             all_results.extend(qa_results)
             print(f"  Answered {len(qa_results)} questions")
