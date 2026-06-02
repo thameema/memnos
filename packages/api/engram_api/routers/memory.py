@@ -49,6 +49,7 @@ def _to_response(memory, score: float | None = None) -> MemoryResponse:
         affects=list(getattr(memory, "affects", None) or []),
         rationale=getattr(memory, "rationale", "") or "",
         provenance=prov_dict,
+        episode_ids=list(getattr(memory, "episode_ids", None) or []),
     )
 
 
@@ -143,6 +144,7 @@ async def write_memory(
             provenance=Provenance(**prov),
             expires_at=req.expires_at,
             review_by=req.review_by,
+            episode_ids=[req.episode_id] if req.episode_id else [],
         )
     except Exception as exc:
         logger.exception("Failed to write memory: %s", exc)

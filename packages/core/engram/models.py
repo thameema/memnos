@@ -113,6 +113,7 @@ class MemoryEntry(BaseModel):
     provenance: "Provenance" = Field(default_factory=lambda: Provenance())
     decay_policy: "DecayPolicy" = DecayPolicy.none
     last_accessed_at: datetime | None = None   # updated on every search hit
+    episode_ids: list[str] = Field(default_factory=list)
 
     @computed_field
     @property
@@ -125,6 +126,28 @@ class MemoryEntry(BaseModel):
         if self.expires_at is None:
             return False
         return datetime.now(timezone.utc) > self.expires_at
+
+    model_config = {"arbitrary_types_allowed": True}
+
+
+# ---------------------------------------------------------------------------
+# Episodes (Feature 2 — grouping related memories into named sessions)
+# ---------------------------------------------------------------------------
+
+class Episode(BaseModel):
+    """A named container grouping related memories (e.g. a work session or conversation)."""
+    id: str = Field(default_factory=_uuid)
+    title: str
+    namespace: str
+    summary: str = ""
+    tags: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=_now)
+    closed_at: datetime | None = None
+
+    @computed_field
+    @property
+    def is_open(self) -> bool:
+        return self.closed_at is None
 
     model_config = {"arbitrary_types_allowed": True}
 
