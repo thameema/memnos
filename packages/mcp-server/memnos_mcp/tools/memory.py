@@ -306,6 +306,83 @@ async def handle_memory_review_due(
 
 
 # ---------------------------------------------------------------------------
+# Extract
+# ---------------------------------------------------------------------------
+
+async def handle_memory_extract(
+    text: str,
+    namespace: str,
+    dry_run: bool = False,
+) -> str:
+    """
+    Extract memorable items from raw text via the REST API and return a summary.
+
+    Parameters
+    ----------
+    text      : raw conversation or document text to extract memories from
+    namespace : target namespace to write extracted memories into
+    dry_run   : if True, extract but do not persist to the store
+
+    Returns
+    -------
+    Human-readable summary string listing extracted memory snippets.
+    """
+    import os
+    import httpx
+
+    base_url = os.environ.get("MEMNOS_API_BASE", "http://localhost:8766")
+    api_key = os.environ.get("MEMNOS_API_KEY", "memnos-local-dev-key")
+
+    url = f"{base_url}/api/v1/memory/extract"
+    payload = {
+        "text": text,
+        "namespace": namespace,
+        "dry_run": dry_run,
+    }
+
+    logger.debug(
+        "memory_extract | ns=%s dry_run=%s text_len=%d",
+        namespace, dry_run, len(text),
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as http:
+            resp = await http.post(
+                url,
+                json=payload,
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.warning("memory_extract HTTP error: %s", exc)
+        return f"memory_extract failed: {exc}"
+
+    items = data.get("extracted", [])
+    written = data.get("written", 0)
+    skipped = data.get("skipped", 0)
+    ns = data.get("namespace", namespace)
+
+    if not items:
+        return f"No memories extracted from the supplied text (namespace: {ns!r})."
+
+    dry_label = " [DRY RUN — not persisted]" if dry_run else ""
+    lines = [
+        f"Extracted {len(items)} memories from text — {written} written, {skipped} skipped "
+        f"(namespace: {ns!r}){dry_label}:\n"
+    ]
+    for i, item in enumerate(items, 1):
+        status = "written" if item.get("written") else f"skipped: {item.get('skip_reason', '')}"
+        snippet = str(item.get("content", ""))[:_CONTENT_PREVIEW_LEN]
+        mem_type = item.get("memory_type", "fact")
+        tags = item.get("tags") or []
+        tag_str = f"  tags: {', '.join(tags)}" if tags else ""
+        lines.append(f"{i}. [{mem_type}] ({status}){tag_str}")
+        lines.append(f"   {snippet}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Delete
 # ---------------------------------------------------------------------------
 

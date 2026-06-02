@@ -307,6 +307,7 @@ def create_app() -> FastAPI:
     from memnos_api.routers.learning_admin import router as learning_router  # noqa: PLC0415
     from memnos_api.routers.agents import router as agents_router  # noqa: PLC0415
     from memnos_api.routers.corpus import router as corpus_router  # noqa: PLC0415
+    from memnos_api.routers.extract import router as extract_router  # noqa: PLC0415
 
     application = FastAPI(
         title="memnos",
@@ -342,6 +343,7 @@ def create_app() -> FastAPI:
     application.include_router(learning_router, prefix=api_prefix)
     application.include_router(agents_router, prefix=api_prefix)
     application.include_router(corpus_router, prefix=api_prefix)
+    application.include_router(extract_router, prefix=api_prefix)  # auto-extraction from raw text
 
     # Interactive knowledge graph dashboard
     _dashboard_path = pathlib.Path(__file__).parent / "static" / "dashboard.html"

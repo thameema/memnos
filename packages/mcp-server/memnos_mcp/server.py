@@ -39,6 +39,7 @@ from memnos_mcp.tools.graph import (
 from memnos_mcp.tools.memory import (
     _dt_to_iso,
     handle_memory_delete,
+    handle_memory_extract,
     handle_memory_review_due,
     handle_memory_search,
     handle_memory_write,
@@ -181,6 +182,35 @@ TOOLS: list[Tool] = [
                 "namespace": {"type": "string", "description": "Namespace that owns the memory"},
             },
             "required": ["memory_id", "namespace"],
+        },
+    ),
+    Tool(
+        name="memory_extract",
+        description=(
+            "Extract memorable facts, decisions, constraints, preferences, and skills from "
+            "raw conversation text and write them to persistent memory. "
+            "Uses an LLM (Anthropic or OpenAI) to identify distinct items worth remembering, "
+            "deduplicates against existing memories, and stores survivors. "
+            "Set dry_run=true to preview extractions without persisting."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "Raw conversation or document text to extract memories from",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Target namespace to write extracted memories into",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, extract but do not persist to the store",
+                },
+            },
+            "required": ["text", "namespace"],
         },
     ),
     Tool(
@@ -795,6 +825,14 @@ async def _dispatch(
             memory_id=args["memory_id"],
             namespace=args["namespace"],
         )
+
+    if name == "memory_extract":
+        text = await handle_memory_extract(
+            text=args["text"],
+            namespace=args["namespace"],
+            dry_run=bool(args.get("dry_run", False)),
+        )
+        return [TextContent(type="text", text=text)]
 
     # ---- graph tools ----
     if name == "graph_query":
