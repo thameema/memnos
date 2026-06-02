@@ -874,7 +874,7 @@ class ArcadeDBClient:
             match_rows = await self._query(match_sql, params)
             matched_ids = {row["id"] for row in match_rows if row.get("id")}
         except Exception as exc:
-            logger.warning("Graph traversal for governance failed, falling back to list-match: %s", exc)
+            logger.warning("Graph traversal for policy lookup failed, falling back to list-match: %s", exc)
             matched_ids = None
 
         if matched_ids is not None:
@@ -1545,7 +1545,7 @@ class ArcadeDBClient:
             return 0
 
     async def get_unused_constraints(self, namespace: str) -> list["MemoryEntry"]:
-        """Return active constraint memories whose affects list is empty (no governance coverage)."""
+        """Return active constraint memories whose affects list is empty (no policy coverage)."""
         parts = namespace.split(":")
         ns_list = [":".join(parts[:i+1]) for i in range(len(parts))]
         placeholders = ", ".join(f":ns{i}" for i in range(len(ns_list)))

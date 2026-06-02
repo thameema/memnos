@@ -85,7 +85,7 @@ async def handle_memory_search(
 
     lines: list[str] = []
 
-    # Prepend constraints as a prominent governance block
+    # Prepend constraints as a prominent policy block
     if constraint_memories:
         lines.append(f"⚠ ACTIVE CONSTRAINTS for namespace {namespace!r} ({len(constraint_memories)} rules — always enforced):\n")
         for c in constraint_memories:
@@ -102,7 +102,7 @@ async def handle_memory_search(
         ranked = [r for r in raw_results if getattr(r, "source", "") != "pinned"]
 
         if pinned:
-            lines.append(f"📌 PINNED — {len(pinned)} governance record(s) directly affecting entities in this query:\n")
+            lines.append(f"📌 PINNED — {len(pinned)} policy record(s) directly affecting entities in this query:\n")
             for r in pinned:
                 memory = r.memory if hasattr(r, "memory") else r
                 mem_type = getattr(memory.memory_type, "value", str(memory.memory_type)) if hasattr(memory, "memory_type") else "decision"
