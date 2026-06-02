@@ -161,7 +161,7 @@
       <a href="index.html#features" class="text-sm text-gray-400 hover:text-white transition-colors">Features</a>
       <a href="use-cases.html" class="text-sm text-gray-400 hover:text-white transition-colors">Use Cases</a>
       <a href="index.html#sdk" class="text-sm text-gray-400 hover:text-white transition-colors">SDK</a>
-      <a href="governance.html" class="text-sm text-gray-400 hover:text-white transition-colors">Governance</a>
+      <a href="governance.html" class="text-sm text-gray-400 hover:text-white transition-colors">Policies</a>
       <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="text-sm text-gray-400 hover:text-white transition-colors">Docs</a>
       <a href="compare.html" class="text-sm nav-active hover:text-white transition-colors">Compare</a>
       <a href="https://github.com/thameema/memnos" class="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-1.5">
@@ -183,7 +183,7 @@
       <a href="index.html#features" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Features</a>
       <a href="use-cases.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Use Cases</a>
       <a href="index.html#sdk" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">SDK</a>
-      <a href="governance.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Governance</a>
+      <a href="governance.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Policies</a>
       <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Docs</a>
       <a href="compare.html" class="text-sm text-white font-medium py-2.5 border-b border-gray-900">Compare</a>
       <a href="https://github.com/thameema/memnos" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900 flex items-center gap-2">
@@ -441,7 +441,7 @@
           <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Stores per-user conversation facts and preferences</li>
           <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Optimized for single-user AI assistant recall</li>
           <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>No concept of multi-agent coordination</li>
-          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>No governance, audit trail, or access control</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>No memory policies, audit trail, or access control</li>
           <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>No architectural enforcement or constraint ingestion</li>
           <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Good for: personal AI assistants, chatbots</li>
         </ul>
@@ -481,7 +481,7 @@
   <div class="max-w-6xl mx-auto px-6">
     <div class="text-center mb-12">
       <h2 class="text-3xl font-bold text-white mb-4">memnos vs Zep</h2>
-      <p class="text-gray-400 max-w-xl mx-auto">Zep focuses on long-term memory for individual AI assistants, primarily through conversation history summarization. memnos stores typed organizational knowledge with governance.</p>
+      <p class="text-gray-400 max-w-xl mx-auto">Zep focuses on long-term memory for individual AI assistants, primarily through conversation history summarization. memnos stores typed organizational knowledge with policy enforcement.</p>
     </div>
 
     <div class="grid md:grid-cols-2 gap-6 mb-10">
@@ -668,7 +668,7 @@
         </div>
         <div class="bg-white/2 rounded-xl p-4">
           <p class="text-xs text-red-400 font-medium mb-1 uppercase">Any compliance requirement</p>
-          <p class="text-xs text-gray-500 leading-relaxed">There is no audit trail, no governance, and no way to prove which AI agent made which decision. Compliance requires more than git blame on a markdown file.</p>
+          <p class="text-xs text-gray-500 leading-relaxed">There is no audit trail, no policy enforcement, and no way to prove which AI agent made which decision. Compliance requires more than git blame on a markdown file.</p>
         </div>
       </div>
     </div>
@@ -710,7 +710,7 @@
             <svg class="w-6 h-6 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
           </div>
           <h3 class="text-white font-bold text-xl mb-3">Architecture Enforcement</h3>
-          <p class="text-gray-400 text-sm leading-relaxed mb-4">Ingest your docs as constraints. Every agent's code is automatically checked against your architecture at search time and in CI. This is governance, not just memory — rules that enforce themselves.</p>
+          <p class="text-gray-400 text-sm leading-relaxed mb-4">Ingest your docs as constraints. Every agent's code is automatically checked against your architecture at search time and in CI. This is policy enforcement, not just memory — rules that enforce themselves.</p>
           <div class="code-block p-4 mt-4">
             <pre class="text-xs leading-relaxed"><code><span class="token-cmt"># Enforce in CI — no manual review</span>
 <span class="token-var">result</span> <span class="token-kw">=</span> <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-var">corpus</span>.<span class="token-fn">check_all</span>(
@@ -778,7 +778,7 @@
       <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="hover:text-gray-300 transition-colors">Docs</a>
       <a href="https://github.com/thameema/memnos" class="hover:text-gray-300 transition-colors">GitHub</a>
       <a href="use-cases.html" class="hover:text-gray-300 transition-colors">Use Cases</a>
-      <a href="governance.html" class="hover:text-gray-300 transition-colors">Governance</a>
+      <a href="governance.html" class="hover:text-gray-300 transition-colors">Policies</a>
       <a href="compare.html" class="hover:text-gray-300 transition-colors">Compare</a>
       <a href="https://github.com/thameema/memnos/blob/main/LICENSE" class="hover:text-gray-300 transition-colors">MIT License</a>
     </div>
