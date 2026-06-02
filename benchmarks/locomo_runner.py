@@ -85,27 +85,65 @@ def get_llm_client(force_api: bool = False):
     sys.exit(1)
 
 
-def llm_complete(client_type, client, model: str, prompt: str) -> str:
-    """Call LLM and return the text response."""
-    if client_type == "claude-cli":
-        # Use Claude Code's `claude --print` — no API key needed
+def get_dual_clients():
+    """Return (primary_type, primary_client, secondary_type, secondary_client).
+
+    Model routing strategy:
+      date questions (multi_hop)   → gpt-4o-mini: better date precision
+      other questions              → claude-haiku: better character inference
+    """
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+    openai_key = os.environ.get("OPENAI_API_KEY")
+
+    haiku_type, haiku_client = None, None
+    gpt_type, gpt_client = None, None
+
+    if anthropic_key:
+        try:
+            import anthropic
+            haiku_type, haiku_client = "anthropic", anthropic.Anthropic(api_key=anthropic_key)
+        except ImportError:
+            pass
+
+    if openai_key:
+        try:
+            import openai
+            gpt_type, gpt_client = "openai", openai.OpenAI(api_key=openai_key)
+        except ImportError:
+            pass
+
+    return haiku_type, haiku_client, gpt_type, gpt_client
+
+
+def llm_complete(client_type, client, model: str, prompt: str,
+                  alt_client_type: str | None = None, alt_client=None, alt_model: str | None = None) -> str:
+    """Call LLM and return the text response.
+
+    If alt_client_type/alt_client/alt_model are provided, they are used instead
+    of the primary client — enables per-question model routing.
+    """
+    _type  = alt_client_type or client_type
+    _cli   = alt_client if alt_client_type else client
+    _model = alt_model or model
+
+    if _type == "claude-cli":
         result = subprocess.run(
             ["claude", "--print", prompt],
             capture_output=True, text=True, timeout=60,
         )
         return result.stdout.strip()
 
-    if client_type == "anthropic":
-        response = client.messages.create(
-            model=model,
+    if _type == "anthropic":
+        response = _cli.messages.create(
+            model=_model,
             max_tokens=512,
             messages=[{"role": "user", "content": prompt}],
         )
         return response.content[0].text.strip()
 
     # openai
-    response = client.chat.completions.create(
-        model=model,
+    response = _cli.chat.completions.create(
+        model=_model,
         max_tokens=512,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -270,15 +308,12 @@ def _multi_query_search(
     q_lower = question.lower().strip()
     queries = [question]
 
-    # For date questions: add reformulations that surface date-explicit facts
+    # Multi-query only for date questions — adds date-specific reformulations
+    # that surface facts like "On May 7, 2023, Caroline attended..."
     if q_lower.startswith("when "):
         subject = question[5:].rstrip("?").strip()  # "did Melanie run a charity race"
         queries.append(f"date {subject}")
         queries.append(f"{subject} 2023")
-
-    # For single_hop factual: add a more specific variant
-    elif q_lower.startswith("what ") or q_lower.startswith("where ") or q_lower.startswith("who "):
-        queries.append(question.replace("?", "").strip())
 
     seen_ids: set[str] = set()
     merged: list[dict] = []
@@ -365,7 +400,16 @@ def answer_question(
             f"Answer:"
         )
 
-    answer = llm_complete(client_type, client, model, prompt)
+    # Model routing: gpt-4o-mini for date questions, haiku for everything else
+    gpt_type  = getattr(answer_question, "_gpt_type",  None)
+    gpt_cli   = getattr(answer_question, "_gpt_cli",   None)
+    gpt_model = getattr(answer_question, "_gpt_model", None)
+
+    if is_date_question and gpt_type:
+        answer = llm_complete(client_type, client, model,
+                              prompt, gpt_type, gpt_cli, gpt_model)
+    else:
+        answer = llm_complete(client_type, client, model, prompt)
     return answer, results
 
 
@@ -542,7 +586,7 @@ def parse_args():
         action="store_true",
         help="Skip memory ingestion (assume already loaded)",
     )
-    p.add_argument("--top-k", type=int, default=10, help="Top-k search results")
+    p.add_argument("--top-k", type=int, default=20, help="Top-k search results")
     p.add_argument("--force-ingest", action="store_true", help="Re-ingest even if namespace already has memories")
     p.add_argument("--max-qa", type=int, default=0, help="Max QA pairs per sample (0=all). Use 30 for a quick representative run.")
     p.add_argument("--verbose", "-v", action="store_true")
@@ -562,9 +606,23 @@ def main():
     else:
         indices = [int(x.strip()) for x in args.sample_ids.split(",")]
 
-    # LLM client
+    # LLM clients — dual-model routing
     client_type, client = get_llm_client()
     print(f"LLM backend: {client_type}, model: {args.model}")
+
+    # Wire gpt-4o-mini as secondary for date (multi_hop) questions
+    haiku_type, haiku_client, gpt_type, gpt_client = get_dual_clients()
+    if haiku_type and gpt_type:
+        # Primary = haiku (single_hop/temporal), secondary = gpt-4o-mini (dates)
+        client_type, client = haiku_type, haiku_client
+        answer_question._gpt_type  = gpt_type
+        answer_question._gpt_cli   = gpt_client
+        answer_question._gpt_model = "gpt-4o-mini"
+        print("Model routing: haiku → single_hop/temporal | gpt-4o-mini → date questions")
+    else:
+        answer_question._gpt_type  = None
+        answer_question._gpt_cli   = None
+        answer_question._gpt_model = None
 
     all_results: list[dict] = []
 
