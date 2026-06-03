@@ -187,6 +187,41 @@ def write_memory(
     return {}
 
 
+def session_extract(
+    http: httpx.Client,
+    base_url: str,
+    api_key: str,
+    session_text: str,
+    session_date: str,
+    namespace: str,
+) -> int:
+    """POST /memory/extract — run date-aware extraction for a full session.
+
+    Returns the number of facts extracted, or 0 on failure.
+    """
+    if not session_text.strip():
+        return 0
+    # Prepend date context so the extraction LLM can anchor relative references
+    if session_date:
+        payload_text = f"SESSION DATE: {session_date}\n\n{session_text}"
+    else:
+        payload_text = session_text
+
+    try:
+        r = http.post(
+            f"{base_url}/api/v1/memory/extract",
+            json={"text": payload_text, "namespace": namespace, "author": "locomo-ingest"},
+            headers={"X-API-Key": api_key},
+            timeout=120,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return len(data.get("extracted", []))
+    except Exception as exc:
+        print(f"    [warn] session_extract failed: {exc}", flush=True)
+        return 0
+
+
 def search_memories(
     http: httpx.Client,
     base_url: str,
@@ -266,6 +301,7 @@ def ingest_conversation(
         key=lambda k: int(k.split("_")[1]) if k.split("_")[1].isdigit() else 0,
     )
 
+    total_facts_extracted = 0
     for session_idx, sess_key in enumerate(session_keys):
         turns = conv[sess_key]
         if not isinstance(turns, list):
@@ -274,6 +310,7 @@ def ingest_conversation(
         # Pull session date — stored as session_N_date_time in the dataset
         session_date = conv.get(f"{sess_key}_date_time", "")
 
+        session_lines: list[str] = []
         for turn in turns:
             if isinstance(turn, dict):
                 speaker = turn.get("speaker", turn.get("role", "unknown"))
@@ -287,12 +324,24 @@ def ingest_conversation(
                 continue
 
             content = f"[{speaker}]: {text}"
+            session_lines.append(content)
             tags = ["locomo", f"session_{session_idx + 1}"]
             write_memory(http, base_url, api_key, content, namespace, tags)
             turns_written += 1
 
+        # Session-level extraction pass with date context — converts relative dates
+        # ("yesterday", "last Saturday") into absolute dates ("On May 7, 2023, ...")
+        if session_lines:
+            n_facts = session_extract(
+                http, base_url, api_key,
+                "\n".join(session_lines), session_date, namespace,
+            )
+            total_facts_extracted += n_facts
+            if verbose:
+                print(f"    Session {session_idx + 1}: extracted {n_facts} facts (date={session_date})", flush=True)
+
     if verbose:
-        print(f"  Ingested {turns_written} turns into namespace {namespace}")
+        print(f"  Ingested {turns_written} turns, {total_facts_extracted} facts extracted")
     return turns_written
 
 
