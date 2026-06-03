@@ -339,7 +339,7 @@ def ingest_conversation(
 
             content = f"[{speaker}]: {text}"
             session_lines.append(content)
-            tags = ["locomo", f"session_{session_idx + 1}"]
+            tags = ["locomo", f"session_{session_idx + 1}", "auto-extracted"]  # skip auto-extraction
             write_memory(http, base_url, api_key, content, namespace, tags)
             turns_written += 1
 
