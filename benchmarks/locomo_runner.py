@@ -194,10 +194,12 @@ def session_extract(
     session_text: str,
     session_date: str,
     namespace: str,
+    retries: int = 2,
 ) -> int:
     """POST /memory/extract — run date-aware extraction for a full session.
 
     Returns the number of facts extracted, or 0 on failure.
+    Retries on 502 errors with exponential backoff.
     """
     if not session_text.strip():
         return 0
@@ -207,19 +209,31 @@ def session_extract(
     else:
         payload_text = session_text
 
-    try:
-        r = http.post(
-            f"{base_url}/api/v1/memory/extract",
-            json={"text": payload_text, "namespace": namespace, "author": "locomo-ingest"},
-            headers={"X-API-Key": api_key},
-            timeout=120,
-        )
-        r.raise_for_status()
-        data = r.json()
-        return len(data.get("extracted", []))
-    except Exception as exc:
-        print(f"    [warn] session_extract failed: {exc}", flush=True)
-        return 0
+    for attempt in range(retries):
+        try:
+            r = http.post(
+                f"{base_url}/api/v1/memory/extract",
+                json={"text": payload_text, "namespace": namespace, "author": "locomo-ingest"},
+                headers={"X-API-Key": api_key},
+                timeout=180,  # increased from 120 to allow server more processing time
+            )
+            r.raise_for_status()
+            data = r.json()
+            return len(data.get("extracted", []))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 502 and attempt < retries - 1:
+                # 502 Bad Gateway — server overloaded, retry with backoff
+                wait_time = 2 ** attempt  # 1s, then 2s
+                print(f"    [info] extraction 502, retrying in {wait_time}s (attempt {attempt + 1}/{retries})", flush=True)
+                time.sleep(wait_time)
+                continue
+            print(f"    [warn] session_extract failed: {exc}", flush=True)
+            return 0
+        except Exception as exc:
+            print(f"    [warn] session_extract failed: {exc}", flush=True)
+            return 0
+
+    return 0
 
 
 def search_memories(
