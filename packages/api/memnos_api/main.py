@@ -431,12 +431,18 @@ def main() -> None:
         port = 8766
         log_level = "info"
 
+    # Tuning for concurrent extraction workloads (high I/O, lots of LLM + DB calls)
+    workers = int(os.environ.get("UVICORN_WORKERS", "4"))
+    loop = os.environ.get("UVICORN_LOOP", "auto")
+
     uvicorn.run(
         "memnos_api.main:app",
         host=host,
         port=port,
         log_level=log_level,
         reload=False,
+        workers=workers,
+        loop=loop,
     )
 
 

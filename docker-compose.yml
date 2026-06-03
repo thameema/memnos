@@ -54,6 +54,9 @@ services:
       MEMNOS_VECTOR_BACKEND: ${MEMNOS_VECTOR_BACKEND:-}
       QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
       QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      # uvicorn tuning for high-concurrency extraction workloads
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-4}
+      UVICORN_WORKER_CLASS: ${UVICORN_WORKER_CLASS:-uvicorn.workers.UvicornWorker}
     volumes:
       # memnos.yaml lives in the user's data dir (~/.memnos by default) so the
       # source clone (~/.memnos-src) can be wiped/re-cloned without losing config.
@@ -66,6 +69,14 @@ services:
       arcadedb:
         condition: service_healthy
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8766/api/v1/admin/health"]
       interval: 15s
