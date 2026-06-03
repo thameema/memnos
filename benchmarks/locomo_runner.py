@@ -176,7 +176,7 @@ def write_memory(
                 f"{base_url}/api/v1/memory/",
                 json=payload,
                 headers={"Authorization": f"Bearer {api_key}"},
-                timeout=30,
+                timeout=120,  # increased from 30 — auto-extraction can take time
             )
             r.raise_for_status()
             return r.json()
