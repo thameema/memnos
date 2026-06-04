@@ -13,6 +13,16 @@ DECLARE s text := format('tenant_%s', tenant);
 BEGIN
   EXECUTE format('CREATE SCHEMA IF NOT EXISTS %I', s);
 
+  -- episodes (raw verbatim turns — provenance / source of truth) -----------
+  EXECUTE format($f$
+    CREATE TABLE IF NOT EXISTS %I.episode (
+      id          bigserial PRIMARY KEY,
+      namespace   text NOT NULL,
+      role        text NOT NULL DEFAULT 'user',   -- user | assistant | file
+      content     text NOT NULL,                   -- RAW text, stored once, verbatim
+      created_at  timestamptz NOT NULL DEFAULT now()
+    )$f$, s);
+
   -- entities (graph nodes) ------------------------------------------------
   EXECUTE format($f$
     CREATE TABLE IF NOT EXISTS %I.entity (
@@ -41,7 +51,8 @@ BEGIN
       session_id   text NOT NULL DEFAULT '',
       created_at   timestamptz NOT NULL DEFAULT now(),
       superseded_at timestamptz,
-      confidence   real NOT NULL DEFAULT 1.0
+      confidence   real NOT NULL DEFAULT 1.0,
+      source_episode_id bigint              -- provenance: which raw episode this came from
     )$f$, s);
 
   -- bi-temporal facts (P1) ------------------------------------------------
@@ -57,7 +68,8 @@ BEGIN
       created_at    timestamptz NOT NULL DEFAULT now(),   -- SYSTEM axis
       superseded_at timestamptz,                          -- SYSTEM axis (expired)
       invalidated_by bigint,
-      source_memory_id bigint
+      source_memory_id bigint,
+      source_episode_id bigint            -- provenance back to the raw turn
     )$f$, s);
 
   -- relations (graph edges, typed) ----------------------------------------
@@ -87,4 +99,6 @@ BEGIN
   EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I.mentions (entity_id)', s||'_men_ent', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I.fact (namespace, subject)', s||'_fact_subj', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I.relation (src_entity)', s||'_rel_src', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I.episode (namespace)', s||'_ep_ns', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I.memory (source_episode_id)', s||'_mem_ep', s);
 END $$;
