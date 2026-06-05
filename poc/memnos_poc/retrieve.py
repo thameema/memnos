@@ -5,8 +5,8 @@ from __future__ import annotations
 from memnos_poc import local_models
 
 
-def retrieve(storage, schema, ns, query, *, k=20, top_k=8, rerank=True):
-    qvec = local_models.embed(query)
+def retrieve(storage, schema, ns, query, *, embed_fn, k=20, top_k=8, rerank=True):
+    qvec = embed_fn(query)
     cands = storage.hybrid_search(schema, ns, query, qvec, k=k, top_k=k)
     if not cands:
         return []

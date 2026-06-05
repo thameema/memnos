@@ -41,15 +41,16 @@ def extract(openai_client, model: str, text: str, meter: CostMeter):
         return [], []
 
 
-def ingest_turn(storage, schema, ns, role, text, *, openai_client=None, extract_model=None,
+def ingest_turn(storage, schema, ns, role, text, *, embed_fn, openai_client=None, extract_model=None,
                 meter: CostMeter, do_extract: bool = True, gate_min_chars: int = 12) -> dict:
     """Ingest one turn. Returns counts. Stores: episode (raw) + memory (embedded)
-    + extracted entities/facts + mentions (memory↔entity)."""
+    + extracted entities/facts + mentions (memory↔entity). ``embed_fn`` is the
+    pluggable embedder (OpenAI or local)."""
     if len(text.strip()) < gate_min_chars:      # gate: skip trivial turns
         return {"skipped": True}
 
     ep = storage.insert_episode(schema, ns, role, text)
-    mid = storage.insert_memory(schema, ns, text, local_models.embed(text), entity_ids=())
+    mid = storage.insert_memory(schema, ns, text, embed_fn(text), entity_ids=())
 
     n_ent = n_fact = 0
     if do_extract and openai_client is not None:

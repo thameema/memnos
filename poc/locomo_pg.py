@@ -16,6 +16,7 @@ from openai import OpenAI
 
 from memnos_poc import ingest as ing
 from memnos_poc import retrieve as ret
+from memnos_poc.embedders import OpenAIEmbedder, LocalEmbedder
 from memnos_poc.storage import PgStorage
 from memnos_poc.usage import CostMeter, BudgetExceeded
 
@@ -29,7 +30,7 @@ def load_dataset():
         return h.get(URL).json()
 
 
-def ingest_sample(st, schema, ns, sample, cli, model, meter, do_extract):
+def ingest_sample(st, schema, ns, sample, cli, model, meter, do_extract, embed_fn):
     conv = sample.get("conversation", {})
     sess_keys = sorted([k for k in conv if k.startswith("session_") and not k.endswith("_date_time")],
                        key=lambda k: int(k.split("_")[1]) if k.split("_")[1].isdigit() else 0)
@@ -45,14 +46,14 @@ def ingest_sample(st, schema, ns, sample, cli, model, meter, do_extract):
             spk = t.get("speaker", "?")
             if not text:
                 continue
-            ing.ingest_turn(st, schema, ns, "user", f"{spk}: {text}",
+            ing.ingest_turn(st, schema, ns, "user", f"{spk}: {text}", embed_fn=embed_fn,
                             openai_client=cli, extract_model=model, meter=meter, do_extract=do_extract)
             n += 1
     return n
 
 
-def answer(st, schema, ns, q, cli, model, meter):
-    rows = ret.retrieve(st, schema, ns, q, k=20, top_k=8)
+def answer(st, schema, ns, q, cli, model, meter, embed_fn):
+    rows = ret.retrieve(st, schema, ns, q, embed_fn=embed_fn, k=20, top_k=8)
     ctx = ret.context_block(rows)
     r = cli.chat.completions.create(model=model, temperature=0, max_tokens=120,
         messages=[{"role": "system", "content": "Answer ONLY from the retrieved memories. "
@@ -77,10 +78,13 @@ def main():
     ap.add_argument("--budget", type=float, default=1.00)
     ap.add_argument("--model", default="gpt-4o-mini")
     ap.add_argument("--no-extract", action="store_true")
+    ap.add_argument("--local-embed", action="store_true", help="use local bge-small (384-d) instead of OpenAI")
     args = ap.parse_args()
 
     cli = OpenAI()
     meter = CostMeter(budget_usd=args.budget)
+    embedder = LocalEmbedder() if args.local_embed else OpenAIEmbedder(cli, meter)
+    embed_fn = embedder.embed
     data = load_dataset()
     ids = list(range(len(data))) if args.sample_ids == "all" else [int(x) for x in args.sample_ids.split(",")]
 
@@ -94,9 +98,9 @@ def main():
             ns = f"locomo:{sid}"
             with st.conn.cursor() as c:
                 c.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
-                c.execute("SELECT create_tenant_schema(%s, 384)", (f"locomo{idx}",))
+                c.execute("SELECT create_tenant_schema(%s, %s)", (f"locomo{idx}", embedder.dim))
             t0 = time.perf_counter()
-            n = ingest_sample(st, schema, ns, sample, cli, args.model, meter, not args.no_extract)
+            n = ingest_sample(st, schema, ns, sample, cli, args.model, meter, not args.no_extract, embed_fn)
             print(f"[{idx}] ingested {n} turns in {time.perf_counter()-t0:.0f}s   ({meter.summary()})")
 
             qa = sample.get("qa", [])[: args.max_qa] if args.max_qa else sample.get("qa", [])
@@ -105,7 +109,7 @@ def main():
                 cat = CATEGORY_MAP.get(q.get("category"), "unknown")
                 if not question or not expected:
                     continue
-                pred = answer(st, schema, ns, question, cli, args.model, meter)
+                pred = answer(st, schema, ns, question, cli, args.model, meter, embed_fn)
                 sc = judge(cli, args.model, question, expected, pred, meter)
                 results.append((cat, sc))
     except BudgetExceeded as e:
