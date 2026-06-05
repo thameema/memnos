@@ -70,6 +70,20 @@ class PgStorage(StorageBackend):
                 )
             return mid
 
+    def insert_episode(self, schema, namespace, role, content) -> int:
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(f"INSERT INTO {schema}.episode(namespace,role,content) VALUES(%s,%s,%s) RETURNING id",
+                      (namespace, role, content))
+            return c.fetchone()["id"]
+
+    def insert_fact(self, schema, namespace, subject, predicate, obj, valid_at=None, source_episode_id=None):
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(f"INSERT INTO {schema}.fact(namespace,subject,predicate,object,valid_at,source_episode_id) "
+                      f"VALUES(%s,%s,%s,%s,%s,%s)",
+                      (namespace, subject, predicate, obj, valid_at, source_episode_id))
+
     def insert_relation(self, schema, namespace, src, dst, rel_type):
         self._chk(schema)
         with self.conn.cursor() as c:

@@ -7,7 +7,7 @@
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
-CREATE OR REPLACE FUNCTION create_tenant_schema(tenant text)
+CREATE OR REPLACE FUNCTION create_tenant_schema(tenant text, dim int DEFAULT 1536)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE s text := format('tenant_%s', tenant);
 BEGIN
@@ -37,11 +37,11 @@ BEGIN
 
   -- memories (the primary unit) -------------------------------------------
   EXECUTE format($f$
-    CREATE TABLE IF NOT EXISTS %I.memory (
+    CREATE TABLE IF NOT EXISTS %1$I.memory (
       id           bigserial PRIMARY KEY,
       namespace    text NOT NULL,
       content      text NOT NULL,
-      embedding    halfvec(1536),
+      embedding    halfvec(%2$s),
       fts          tsvector GENERATED ALWAYS AS (to_tsvector('english', coalesce(content,''))) STORED,
       source       text NOT NULL DEFAULT 'api',
       author       text NOT NULL DEFAULT '',
@@ -53,7 +53,7 @@ BEGIN
       superseded_at timestamptz,
       confidence   real NOT NULL DEFAULT 1.0,
       source_episode_id bigint              -- provenance: which raw episode this came from
-    )$f$, s);
+    )$f$, s, dim);
 
   -- bi-temporal facts (P1) ------------------------------------------------
   EXECUTE format($f$
