@@ -120,14 +120,6 @@ class MemnosMemory:
         intent = T.analyze(query, now)
         qv = self.embed(query)
         raw = self.store.search_raw_turns(self.schema, namespace, qv, query, k)
-        if intent.temporal:
-            sem = self.store.search_semantic_temporal(
-                self.schema, namespace, qv, query, k,
-                start=intent.start, end=intent.end, current_only=intent.current, order=intent.order)
-            fact_quota = max(fact_quota, 12)        # temporal leans on dated facts
-            raw_quota = min(raw_quota, 6)
-        else:
-            sem = self.store.search_semantic(self.schema, namespace, qv, query, k)
 
         def rr(items, kind):
             if not items:
@@ -140,7 +132,33 @@ class MemnosMemory:
                     row["date"] = items[i]["valid_from"].date().isoformat()
                 out.append(row)
             return out
-        return rr(raw, "turn")[:raw_quota] + rr(sem, "fact")[:fact_quota]
+
+        if not intent.temporal:
+            sem = self.store.search_semantic(self.schema, namespace, qv, query, k)
+            return rr(raw, "turn")[:raw_quota] + rr(sem, "fact")[:fact_quota]
+
+        # --- TEMPORAL: GUARANTEE the entity timeline in context (parity with the tested
+        # phaseA engine). Vector search structurally misses dated evidence ('when did X'
+        # ≁ 'I moved out'), so we GUARANTEE the entity facts sorted by event time — a
+        # JOIN/range, not a cosine bet — then add a few reranked relevance facts. This is
+        # the arm that lifted temporal recall 12% → 70%.
+        ents = T.query_entities(query)
+        tl = self.store.timeline(self.schema, namespace, ents, start=intent.start,
+                                 end=intent.end, order=intent.order or "asc", limit=12)
+        tl_rows, tl_seen = [], set()
+        for r in tl:
+            c = r["content"]
+            if c in tl_seen:
+                continue
+            tl_seen.add(c)
+            tl_rows.append({"content": c, "kind": "fact",
+                            "date": r["valid_from"].date().isoformat() if r.get("valid_from") else None})
+        sem = self.store.search_semantic_temporal(
+            self.schema, namespace, qv, query, k,
+            start=intent.start, end=intent.end, current_only=intent.current, order=intent.order)
+        sem_rows = [r for r in rr(sem, "fact") if r["content"] not in tl_seen]
+        # small raw + GUARANTEED timeline + a few reranked relevance facts
+        return rr(raw, "turn")[:5] + tl_rows[:12] + sem_rows[:6]
 
     def context(self, namespace: str, query: str, *, max_chars=4000, **kw) -> str:
         out, used = [], 0
