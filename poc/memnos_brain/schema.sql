@@ -1,0 +1,121 @@
+-- memnos brain-inspired memory — tenant schema (B1)
+-- Dual long-term store (episodic + semantic) + associative graph + provenance.
+-- One ACID engine. halfvec embeddings (pgvector >= 0.7).
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE OR REPLACE FUNCTION create_brain_schema(tenant text, dim int DEFAULT 1536)
+RETURNS void LANGUAGE plpgsql AS $fn$
+DECLARE s text := 'tenant_' || tenant;
+BEGIN
+  EXECUTE format('CREATE SCHEMA IF NOT EXISTS %I', s);
+
+  -- SENSORY / verbatim log — provenance floor, append-only
+  EXECUTE format($t$
+    CREATE TABLE IF NOT EXISTS %I.raw_turns(
+      id bigserial PRIMARY KEY,
+      namespace text NOT NULL,
+      session_id text,
+      speaker text,
+      text text NOT NULL,
+      observed_at timestamptz NOT NULL DEFAULT now(),
+      embedding halfvec(%s),
+      fts tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
+    )$t$, s, dim);
+
+  -- EPISODIC — hippocampus: sharp, recent, verbatim, event-segmented
+  EXECUTE format($t$
+    CREATE TABLE IF NOT EXISTS %I.episodic(
+      id bigserial PRIMARY KEY,
+      namespace text NOT NULL,
+      session_id text,
+      text text NOT NULL,
+      summary text,
+      t_start timestamptz,
+      t_end timestamptz,
+      observed_at timestamptz NOT NULL DEFAULT now(),
+      salience real NOT NULL DEFAULT 0,
+      last_access timestamptz,
+      access_count int NOT NULL DEFAULT 0,
+      consolidated boolean NOT NULL DEFAULT false,
+      source_turn_ids bigint[],
+      embedding halfvec(%s),
+      fts tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
+    )$t$, s, dim);
+
+  -- SEMANTIC — neocortex: durable, deduped, multi-hop pre-joined, FULLY BI-TEMPORAL.
+  --   valid time   (application/event): valid_from .. valid_to  (when the fact is TRUE)
+  --   system time  (transaction/audit): created_at, expired_at (when we KNEW / removed it)
+  -- Supersession sets valid_to (belief changed); corrections set expired_at (system-removed);
+  -- nothing is ever hard-deleted → full history + "as-of" queries on either axis.
+  EXECUTE format($t$
+    CREATE TABLE IF NOT EXISTS %I.semantic(
+      id bigserial PRIMARY KEY,
+      namespace text NOT NULL,
+      kind text NOT NULL,                 -- proposition | dossier | summary
+      statement text NOT NULL,
+      subject_entity text,
+      predicate text,
+      object text,
+      valid_from timestamptz,             -- valid_at: when the fact became true   (valid/app time)
+      valid_to timestamptz,               -- invalid_at: NULL = still true (supersession sets this)
+      created_at timestamptz NOT NULL DEFAULT now(),   -- system time: when first recorded (immutable)
+      expired_at timestamptz,             -- system time: NULL = live; set on correction (never deleted)
+      observed_at timestamptz NOT NULL DEFAULT now(),  -- legacy/event-observed (kept)
+      confidence real DEFAULT 1.0,
+      salience real NOT NULL DEFAULT 0,
+      embedding halfvec(%s),
+      fts tsvector GENERATED ALWAYS AS (to_tsvector('english', statement)) STORED
+    )$t$, s, dim);
+
+  -- ASSOCIATIVE GRAPH
+  EXECUTE format($t$
+    CREATE TABLE IF NOT EXISTS %I.entities(
+      id bigserial PRIMARY KEY,
+      namespace text NOT NULL,
+      name text NOT NULL,
+      embedding halfvec(%s),
+      UNIQUE(namespace, name)
+    )$t$, s, dim);
+
+  EXECUTE format($t$
+    CREATE TABLE IF NOT EXISTS %I.mentions(
+      entity_id bigint NOT NULL,
+      memory_id bigint NOT NULL,
+      memory_kind text NOT NULL,          -- episodic | semantic
+      UNIQUE(entity_id, memory_id, memory_kind)
+    )$t$, s);
+
+  EXECUTE format($t$
+    CREATE TABLE IF NOT EXISTS %I.edges(
+      id bigserial PRIMARY KEY,
+      namespace text NOT NULL,
+      src_entity bigint NOT NULL,
+      dst_entity bigint NOT NULL,
+      weight real DEFAULT 1.0,
+      UNIQUE(namespace, src_entity, dst_entity)
+    )$t$, s);
+
+  -- PROVENANCE — every semantic fact links to its episodic evidence (auditable;
+  -- consolidation can hallucinate, so this is non-negotiable)
+  EXECUTE format($t$
+    CREATE TABLE IF NOT EXISTS %I.provenance(
+      semantic_id bigint NOT NULL,
+      episodic_id bigint NOT NULL,
+      UNIQUE(semantic_id, episodic_id)
+    )$t$, s);
+
+  -- INDEXES (HNSW vector + GIN fts + temporal + graph)
+  EXECUTE format('CREATE INDEX IF NOT EXISTS raw_hnsw ON %I.raw_turns USING hnsw (embedding halfvec_cosine_ops)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS epi_hnsw ON %I.episodic USING hnsw (embedding halfvec_cosine_ops)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS epi_fts  ON %I.episodic USING gin (fts)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS epi_time ON %I.episodic (observed_at)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS sem_hnsw ON %I.semantic USING hnsw (embedding halfvec_cosine_ops)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS sem_fts  ON %I.semantic USING gin (fts)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS sem_valid ON %I.semantic (valid_from, valid_to)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS sem_live ON %I.semantic (valid_from) WHERE expired_at IS NULL AND valid_to IS NULL', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS ent_hnsw ON %I.entities USING hnsw (embedding halfvec_cosine_ops)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS men_ent  ON %I.mentions (entity_id)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS men_mem  ON %I.mentions (memory_id)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS prov_sem ON %I.provenance (semantic_id)', s);
+END
+$fn$;

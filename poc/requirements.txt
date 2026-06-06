@@ -1,0 +1,8 @@
+# memnos production deps
+psycopg[binary]>=3.2
+psycopg_pool>=3.2
+httpx>=0.27
+openai>=1.40
+sentence-transformers>=3.0   # local embeddings + cross-encoder reranker
+mcp>=1.2                      # MCP server (Claude-native)
+python-dateutil>=2.9

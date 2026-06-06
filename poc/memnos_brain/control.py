@@ -1,0 +1,241 @@
+"""Production control plane: identity, token auth, namespace ACL, audit, usage ledger.
+
+Server-side identity (never client-trusted): a Bearer token resolves to a principal,
+whose namespace GRANTS clamp every read/write. Tokens are stored as SHA-256 hashes
+(high-entropy random tokens — no bcrypt needed). Every operation is audited; every
+LLM op is metered. All in the same Postgres (one ACID engine = the governance moat).
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import secrets
+
+CONTROL_DDL = """
+CREATE SCHEMA IF NOT EXISTS memnos_control;
+CREATE TABLE IF NOT EXISTS memnos_control.principals(
+    id bigserial PRIMARY KEY, name text UNIQUE NOT NULL, kind text NOT NULL DEFAULT 'user',
+    created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS memnos_control.api_tokens(
+    id bigserial PRIMARY KEY, principal_id bigint NOT NULL REFERENCES memnos_control.principals(id),
+    token_hash text UNIQUE NOT NULL, label text, created_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz, revoked boolean NOT NULL DEFAULT false);
+CREATE INDEX IF NOT EXISTS tok_hash ON memnos_control.api_tokens(token_hash);
+CREATE TABLE IF NOT EXISTS memnos_control.grants(
+    principal_id bigint NOT NULL REFERENCES memnos_control.principals(id),
+    namespace text NOT NULL, can_read boolean NOT NULL DEFAULT true, can_write boolean NOT NULL DEFAULT true,
+    UNIQUE(principal_id, namespace));
+CREATE TABLE IF NOT EXISTS memnos_control.audit_log(
+    id bigserial PRIMARY KEY, ts timestamptz NOT NULL DEFAULT now(), principal_id bigint,
+    action text NOT NULL, namespace text, ok boolean NOT NULL, detail jsonb);
+ALTER TABLE memnos_control.audit_log ADD COLUMN IF NOT EXISTS latency_ms int;
+ALTER TABLE memnos_control.audit_log ADD COLUMN IF NOT EXISTS result_count int;
+ALTER TABLE memnos_control.audit_log ADD COLUMN IF NOT EXISTS status int;
+CREATE INDEX IF NOT EXISTS audit_ts ON memnos_control.audit_log(ts);
+CREATE TABLE IF NOT EXISTS memnos_control.usage_ledger(
+    id bigserial PRIMARY KEY, ts timestamptz NOT NULL DEFAULT now(), principal_id bigint,
+    namespace text, op text, model text, tokens_in int DEFAULT 0, tokens_out int DEFAULT 0,
+    cost_usd numeric(12,6) DEFAULT 0);
+CREATE INDEX IF NOT EXISTS usage_ts ON memnos_control.usage_ledger(ts);
+-- quality canary: track recall accuracy over time (does it stay good as data grows?)
+CREATE TABLE IF NOT EXISTS memnos_control.eval_runs(
+    id bigserial PRIMARY KEY, ts timestamptz NOT NULL DEFAULT now(), eval text NOT NULL,
+    metric text NOT NULL, value numeric, n int, detail jsonb);
+CREATE INDEX IF NOT EXISTS eval_ts ON memnos_control.eval_runs(ts);
+-- user/agent feedback: was a recalled memory actually helpful? (the true quality signal)
+CREATE TABLE IF NOT EXISTS memnos_control.feedback(
+    id bigserial PRIMARY KEY, ts timestamptz NOT NULL DEFAULT now(), principal_id bigint,
+    namespace text, query text, helpful boolean, note text);
+"""
+
+
+def _hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+class Control:
+    """Operates over a pooled connection (passed per call) so it's stateless + poolable."""
+
+    @staticmethod
+    def init(conn):
+        with conn.cursor() as c:
+            c.execute(CONTROL_DDL)
+
+    # --- identity / tokens (admin) ----------------------------------------
+    @staticmethod
+    def create_principal(conn, name, kind="user") -> int:
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.principals(name,kind) VALUES(%s,%s) "
+                      "ON CONFLICT (name) DO UPDATE SET kind=EXCLUDED.kind RETURNING id", (name, kind))
+            return c.fetchone()["id"]
+
+    @staticmethod
+    def mint_token(conn, principal_id, label=None, ttl_days=None) -> str:
+        token = "mnk_" + secrets.token_urlsafe(32)
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.api_tokens(principal_id,token_hash,label,expires_at) "
+                      "VALUES(%s,%s,%s, CASE WHEN %s::int IS NULL THEN NULL "
+                      "ELSE now()+(%s::int||' days')::interval END)",
+                      (principal_id, _hash(token), label, ttl_days, ttl_days))
+        return token   # plaintext returned ONCE; only the hash is stored
+
+    @staticmethod
+    def grant(conn, principal_id, namespace, can_read=True, can_write=True):
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.grants(principal_id,namespace,can_read,can_write) "
+                      "VALUES(%s,%s,%s,%s) ON CONFLICT (principal_id,namespace) "
+                      "DO UPDATE SET can_read=EXCLUDED.can_read, can_write=EXCLUDED.can_write",
+                      (principal_id, namespace, can_read, can_write))
+
+    @staticmethod
+    def revoke_token(conn, token):
+        with conn.cursor() as c:
+            c.execute("UPDATE memnos_control.api_tokens SET revoked=true WHERE token_hash=%s", (_hash(token),))
+
+    # --- auth + ACL (hot path) --------------------------------------------
+    @staticmethod
+    def authenticate(conn, token):
+        """Bearer token -> principal_id (or None). Checks revoked + expiry."""
+        if not token:
+            return None
+        with conn.cursor() as c:
+            c.execute("SELECT principal_id FROM memnos_control.api_tokens "
+                      "WHERE token_hash=%s AND NOT revoked AND (expires_at IS NULL OR expires_at>now())",
+                      (_hash(token),))
+            r = c.fetchone()
+            return r["principal_id"] if r else None
+
+    @staticmethod
+    def authorize(conn, principal_id, namespace, write=False) -> bool:
+        """A grant on the exact namespace, a parent prefix ('team:eng:*'), or '*' (admin)."""
+        col = "can_write" if write else "can_read"
+        with conn.cursor() as c:
+            c.execute(f"SELECT namespace, {col} AS ok FROM memnos_control.grants WHERE principal_id=%s",
+                      (principal_id,))
+            for g in c.fetchall():
+                gns = g["namespace"]
+                if not g["ok"]:
+                    continue
+                if gns == "*" or gns == namespace:
+                    return True
+                if gns.endswith(":*") and namespace.startswith(gns[:-1]):
+                    return True
+        return False
+
+    @staticmethod
+    def authorized_namespaces(conn, principal_id):
+        with conn.cursor() as c:
+            c.execute("SELECT namespace, can_read, can_write FROM memnos_control.grants WHERE principal_id=%s",
+                      (principal_id,))
+            return c.fetchall()
+
+    # --- audit + usage ----------------------------------------------------
+    @staticmethod
+    def audit(conn, principal_id, action, namespace, ok, detail=None,
+              latency_ms=None, result_count=None, status=None):
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.audit_log"
+                      "(principal_id,action,namespace,ok,detail,latency_ms,result_count,status) "
+                      "VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
+                      (principal_id, action, namespace, ok, json.dumps(detail) if detail else None,
+                       latency_ms, result_count, status))
+
+    @staticmethod
+    def stats(conn, hours=24):
+        """Pilot reliability rollup from the audit log: volume, error rate, latency
+        p50/p95, recall-empty rate — by op, over the last N hours."""
+        with conn.cursor() as c:
+            c.execute("""
+                SELECT action,
+                  count(*) AS calls,
+                  -- reliability error = genuine server FAULT (5xx). 403 ACL denials are
+                  -- governance working as designed (status NULL) and are excluded here;
+                  -- they remain visible via `errors` and acl_denied_pct below.
+                  round(100.0*avg((coalesce(status,0) >= 500)::int), 1) AS error_pct,
+                  round(100.0*avg((NOT ok AND coalesce(status,0) < 500)::int), 1) AS acl_denied_pct,
+                  percentile_disc(0.5) WITHIN GROUP (ORDER BY latency_ms) AS p50_ms,
+                  percentile_disc(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95_ms,
+                  round(100.0*avg(CASE WHEN action='recall' AND result_count=0 THEN 1
+                                       WHEN action='recall' THEN 0 END), 1) AS recall_empty_pct
+                FROM memnos_control.audit_log
+                WHERE ts > now() - (%s||' hours')::interval
+                GROUP BY action ORDER BY calls DESC""", (hours,))
+            return c.fetchall()
+
+    @staticmethod
+    def record_usage(conn, principal_id, namespace, op, model, tin, tout, cost):
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.usage_ledger"
+                      "(principal_id,namespace,op,model,tokens_in,tokens_out,cost_usd) "
+                      "VALUES(%s,%s,%s,%s,%s,%s,%s)", (principal_id, namespace, op, model, tin, tout, cost))
+
+    # --- quality canary + feedback + errors ------------------------------
+    @staticmethod
+    def record_eval(conn, eval_name, metric, value, n=None, detail=None):
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.eval_runs(eval,metric,value,n,detail) "
+                      "VALUES(%s,%s,%s,%s,%s)",
+                      (eval_name, metric, value, n, json.dumps(detail) if detail else None))
+
+    @staticmethod
+    def eval_trend(conn, eval_name, metric, limit=10):
+        with conn.cursor() as c:
+            c.execute("SELECT ts, value, n FROM memnos_control.eval_runs WHERE eval=%s AND metric=%s "
+                      "ORDER BY ts DESC LIMIT %s", (eval_name, metric, limit))
+            return c.fetchall()
+
+    @staticmethod
+    def record_feedback(conn, principal_id, namespace, query, helpful, note=None):
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.feedback(principal_id,namespace,query,helpful,note) "
+                      "VALUES(%s,%s,%s,%s,%s)", (principal_id, namespace, query, helpful, note))
+
+    @staticmethod
+    def recent_errors(conn, hours=24, limit=20):
+        with conn.cursor() as c:
+            c.execute("SELECT ts, principal_id, action, namespace, status, latency_ms, detail "
+                      "FROM memnos_control.audit_log WHERE NOT ok AND ts > now()-(%s||' hours')::interval "
+                      "ORDER BY ts DESC LIMIT %s", (hours, limit))
+            return c.fetchall()
+
+    # --- RELIABILITY HEURISTIC: metrics -> actionable findings -----------
+    @staticmethod
+    def health(conn, hours=24):
+        """Turn raw metrics into actionable findings (the 'doctor'). Thresholds chosen for
+        a pilot — tune as you learn the platform's normal ranges."""
+        findings = []  # (level, message)
+        T = {"err_warn": 5, "err_crit": 20, "p95_warn": 2000, "p95_crit": 8000,
+             "empty_warn": 25, "quality_warn": 0.70, "quality_crit": 0.50}
+        for r in Control.stats(conn, hours):
+            op, calls = r["action"], r["calls"]
+            err = float(r["error_pct"] or 0); p95 = int(r["p95_ms"] or 0); empty = r["recall_empty_pct"]
+            if err >= T["err_crit"]:
+                findings.append(("CRITICAL", f"{op}: {err}% errors — inspect `errors`; auth/ACL or a bug"))
+            elif err >= T["err_warn"]:
+                findings.append(("WARN", f"{op}: {err}% errors over {hours}h — check `errors`"))
+            if p95 >= T["p95_crit"]:
+                findings.append(("CRITICAL", f"{op}: p95 {p95}ms — pool saturation/reranker/DB; scale or tune"))
+            elif p95 >= T["p95_warn"]:
+                findings.append(("WARN", f"{op}: p95 {p95}ms — watch reranker/pool; consider lighter reranker"))
+            if op == "recall" and empty is not None and float(empty) >= T["empty_warn"]:
+                findings.append(("WARN", f"recall returns nothing {empty}% of the time — ingest gaps or namespace mismatch"))
+        # quality canary regression
+        q = Control.eval_trend(conn, "stale_suppression", "rate", 1)
+        if q:
+            v = float(q[0]["value"] or 0)
+            if v < T["quality_crit"]:
+                findings.append(("CRITICAL", f"stale-suppression {v:.0%} — memory serving STALE as current; supersession broken"))
+            elif v < T["quality_warn"]:
+                findings.append(("WARN", f"stale-suppression {v:.0%} (target ~85%) — quality regressed, review consolidation"))
+        else:
+            findings.append(("INFO", "no quality-canary eval recorded yet — run `memnos_eval.py`"))
+        # restart storms (uptime signal)
+        with conn.cursor() as c:
+            c.execute("SELECT count(*) n FROM memnos_control.audit_log WHERE action='server_start' "
+                      "AND ts > now()-interval '1 hour'")
+            starts = c.fetchone()["n"]
+        if starts >= 5:
+            findings.append(("CRITICAL", f"{starts} server restarts in 1h — crash loop; check /tmp/memnos_server.log"))
+        if not findings:
+            findings.append(("OK", "no issues detected"))
+        return findings
