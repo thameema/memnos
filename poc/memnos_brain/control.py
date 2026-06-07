@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS memnos_control.api_tokens(
     id bigserial PRIMARY KEY, principal_id bigint NOT NULL REFERENCES memnos_control.principals(id),
     token_hash text UNIQUE NOT NULL, label text, created_at timestamptz NOT NULL DEFAULT now(),
     expires_at timestamptz, revoked boolean NOT NULL DEFAULT false);
+ALTER TABLE memnos_control.api_tokens ADD COLUMN IF NOT EXISTS hint text;  -- 'mnk_XXXX…YYYY' (non-secret) so tokens are identifiable
 CREATE INDEX IF NOT EXISTS tok_hash ON memnos_control.api_tokens(token_hash);
 CREATE TABLE IF NOT EXISTS memnos_control.grants(
     principal_id bigint NOT NULL REFERENCES memnos_control.principals(id),
@@ -82,11 +83,12 @@ class Control:
     @staticmethod
     def mint_token(conn, principal_id, label=None, ttl_days=None) -> str:
         token = "mnk_" + secrets.token_urlsafe(32)
+        hint = token[:8] + "…" + token[-4:]   # non-secret: 8 of 43 random chars → identifiable, not brute-forceable
         with conn.cursor() as c:
-            c.execute("INSERT INTO memnos_control.api_tokens(principal_id,token_hash,label,expires_at) "
-                      "VALUES(%s,%s,%s, CASE WHEN %s::int IS NULL THEN NULL "
+            c.execute("INSERT INTO memnos_control.api_tokens(principal_id,token_hash,label,hint,expires_at) "
+                      "VALUES(%s,%s,%s,%s, CASE WHEN %s::int IS NULL THEN NULL "
                       "ELSE now()+(%s::int||' days')::interval END)",
-                      (principal_id, _hash(token), label, ttl_days, ttl_days))
+                      (principal_id, _hash(token), label, hint, ttl_days, ttl_days))
         return token   # plaintext returned ONCE; only the hash is stored
 
     @staticmethod
@@ -203,7 +205,7 @@ class Control:
     def list_tokens(conn, principal_id):
         """Token METADATA only — the secret is never retrievable (only its hash is stored)."""
         with conn.cursor() as c:
-            c.execute("SELECT id, label, created_at, expires_at, revoked FROM memnos_control.api_tokens "
+            c.execute("SELECT id, label, hint, created_at, expires_at, revoked FROM memnos_control.api_tokens "
                       "WHERE principal_id=%s ORDER BY created_at DESC", (principal_id,))
             return c.fetchall()
 
