@@ -66,4 +66,4 @@ memnos is *semantic* memory: `put`→remember, `search`→hybrid+reranked recall
 `consolidate()` · `feedback(query, helpful)` · `healthy()`. Async mirror on
 `AsyncMemnosClient`.
 
-Apache-2.0.
+MIT.
