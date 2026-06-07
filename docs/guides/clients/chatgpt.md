@@ -1,83 +1,74 @@
 # Connecting memnos to ChatGPT
 
-ChatGPT Plus/Pro supports MCP via **Connectors** (Settings → Connectors → Add MCP Server).
+The open-source memnos server exposes a **REST API** (no hosted MCP-over-HTTP endpoint), so
+the way to use it from ChatGPT is a **custom GPT Action** against that REST API.
 
-## Requirement: Public URL
+## Requirement: a public URL
 
-memnos MCP runs on `localhost:8765`. ChatGPT requires a publicly accessible URL. Use ngrok to expose it:
+memnos binds `127.0.0.1:8900`. ChatGPT needs a publicly reachable URL — expose it with a
+tunnel (and put auth in front for anything beyond local testing):
 
 ```bash
-ngrok http 8765
+ngrok http 8900        # or: cloudflared tunnel --url http://localhost:8900
 ```
 
 Copy the forwarding URL (e.g. `https://abc123.ngrok-free.app`).
 
-## Add as MCP Connector
+## Create a custom GPT Action
 
-1. Open ChatGPT → Settings → Connectors → Add MCP Server
-2. URL: `https://abc123.ngrok-free.app/sse`
-3. Add header: `Authorization: Bearer memnos-local-dev-key`
-4. Save and enable
-
-## Limitations
-
-ChatGPT MCP support is limited:
-- `memory_search` and `memory_write` work via explicit tool calls
-- **Hooks do not fire** — auto-inject on session start is not supported
-- You must explicitly ask ChatGPT to call memnos tools (e.g. "search my memories for X")
-
-## Alternative: GPT Action (REST API)
-
-Use the memnos REST API at `localhost:8766` via a custom GPT Action with an OpenAPI spec.
+In **ChatGPT → Create a GPT → Configure → Actions → Create new action**, paste this schema
+(swap in your tunnel URL):
 
 ```yaml
 openapi: 3.1.0
-info:
-  title: memnos Memory API
-  version: 1.0.0
+info: { title: memnos Memory API, version: "1.0.0" }
 servers:
   - url: https://abc123.ngrok-free.app
 paths:
-  /api/v1/memory/search:
-    get:
-      operationId: searchMemory
-      summary: Search memories
-      parameters:
-        - name: q
-          in: query
-          required: true
-          schema:
-            type: string
-        - name: top_k
-          in: query
-          schema:
-            type: integer
-            default: 5
-      responses:
-        "200":
-          description: List of matching memories
-  /api/v1/memory/:
+  /recall:
     post:
-      operationId: writeMemory
-      summary: Write a memory
+      operationId: recall
+      summary: Recall ranked memories + a context block for a query
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required: [namespace, query]
               properties:
-                content:
-                  type: string
-                namespace:
-                  type: string
-                tags:
-                  type: array
-                  items:
-                    type: string
-      responses:
-        "201":
-          description: Memory created
+                namespace: { type: string }
+                query: { type: string }
+      responses: { "200": { description: ranked memories + context } }
+  /remember:
+    post:
+      operationId: remember
+      summary: Store a message (raw turn + extracted bi-temporal facts)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [namespace, text]
+              properties:
+                namespace: { type: string }
+                text: { type: string }
+      responses: { "200": { description: stored } }
 ```
 
-Add authentication: API Key in `Authorization` header with value `Bearer memnos-local-dev-key`.
+## Authentication
+
+Under **Authentication** choose **API Key → Bearer**, and paste a memnos token
+(`memnos token alice` → `mnk_…`). The token is sent as `Authorization: Bearer mnk_…` and
+clamps every call to that token's granted namespaces.
+
+## Use it
+
+Tell the GPT: *"Use recall on namespace `user:alice` to find what I decided about X"* or
+*"remember this in `user:alice`: …"*. Recall runs with **no LLM at query time**; the GPT
+reasons over the returned context.
+
+> **Limitations:** ChatGPT only calls the Action when asked — there is no automatic
+> inject-on-every-prompt (that's available for Claude Code via hooks). Never expose your
+> tunnel publicly without auth + TLS.

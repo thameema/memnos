@@ -7,11 +7,11 @@ MCP-compatible agent can use it. The tool surface is identical everywhere:
 Prereq: a running memnos server + token (see [`../../QUICKSTART.md`](../../QUICKSTART.md)).
 
 ## Generic MCP config
-Point the client at the stdio command:
+Point the client at the stdio command. With the package installed (`pipx install memnos`):
 ```jsonc
 {
-  "command": "/abs/path/memnos/poc/.venv/bin/python",
-  "args": ["/abs/path/memnos/poc/memnos_mcp.py"],
+  "command": "memnos",
+  "args": ["mcp"],
   "env": {
     "MEMNOS_URL": "http://127.0.0.1:8900",
     "MEMNOS_TOKEN": "mnk_...",
@@ -19,6 +19,8 @@ Point the client at the stdio command:
   }
 }
 ```
+(From-source checkout: `"command": "/abs/path/poc/.venv/bin/python", "args":
+["/abs/path/poc/memnos_mcp.py"]`.)
 
 ## Per-client locations
 | Client | Where to add it |

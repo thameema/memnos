@@ -1,251 +1,178 @@
 # memnos Quickstart
 
+Get a governed, self-hosted memory server running and talking to your AI tools in about
+five minutes — one package, one command.
+
+> **Engine:** PostgreSQL + pgvector. No second database, no graph store. An LLM is used
+> only at **write** time (fact extraction + embeddings); recall is pure SQL + a local
+> cross-encoder reranker — **no LLM at query time**.
+
+---
+
 ## Prerequisites
 
-- Docker + Docker Compose
-- Python 3.11+
-- An Anthropic API key (for multi-agent tasks and reflection; **not** required for memory/search)
+- **PostgreSQL** with the `pgvector` extension available. memnos **does not install
+  Postgres** — it connects to yours and creates its own schema. (For local dev, any
+  Postgres works; the `pgvector/pgvector` Docker image is the easiest.)
+- **Python 3.10+** (for `pipx` / `pip`).
+- *Optional:* an **OpenAI API key** for 1536-d embeddings + fact extraction. Without one,
+  memnos runs in free **local 384-d** mode (embeddings only, no extraction).
 
-> **No OpenAI key required.** memnos uses `all-MiniLM-L6-v2` (sentence-transformers) for embeddings by default — it runs locally on CPU and requires no API key. OpenAI embeddings are available as an optional alternative.
+> No OpenAI key required to try it. The local mode runs entirely on CPU.
 
 ---
 
-## 1. Clone and configure
+## 1. Install the `memnos` package
+
+One package ships the server **and** the client/admin CLI, on macOS, Linux and Windows.
 
 ```bash
-git clone https://github.com/thameema/memnos.git
-cd memnos
+# macOS / Linux
+./install.sh           # installs the `memnos` command (via pipx)
 
-cp memnos.yaml.example memnos.yaml
-# Edit memnos.yaml and set the following environment variables, or export them:
-#
-#   ARCADEDB_PASSWORD   — ArcadeDB root password (choose any strong password)
-#   MEMNOS_API_KEY      — API key for memnos's REST/MCP endpoints (generate one: openssl rand -hex 32)
-#   MEMNOS_VAULT_KEY    — 32-byte key for vault encryption (generate: python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")
-#   ANTHROPIC_API_KEY   — Only needed for multi-agent tasks and nightly reflection
+# Windows (PowerShell)
+.\install.ps1
 ```
 
----
-
-## 2. Start the stack
+Prefer to do it by hand? `pipx install memnos` (or `pip install memnos`) is equivalent.
+Verify:
 
 ```bash
-docker compose up -d
-
-# Watch logs until ready (usually 30–60s for first start)
-docker compose logs -f memnos
-# Look for:
-#   "memnos API ready on :8766"
-#   "MCP SSE server ready on :8765"
+memnos --help
 ```
-
-ArcadeDB starts on port 2480. The memnos Python server starts on ports 8765 (MCP) and 8766 (API/dashboard).
 
 ---
 
-## 3. Connect Claude Code
-
-Choose one of two transport modes:
-
-### Option A — stdio (recommended for local use)
-
-The stdio transport requires no persistent HTTP server. Claude Code spawns `memnos-mcp-stdio` on demand.
+## 2. Point memnos at your Postgres
 
 ```bash
-which memnos-mcp-stdio   # confirm it is in PATH after pip install
+memnos setup
 ```
 
-Add to **`~/.claude.json`**:
+The wizard asks for your Postgres connection (host / port / database / user / password, or
+pass `--dsn postgresql://user:pass@host:5432/db`). It then:
 
-```json
-{
-  "mcpServers": {
-    "memnos": {
-      "type": "stdio",
-      "command": "/Users/yourname/.venv/bin/memnos-mcp-stdio",
-      "env": {
-        "MEMNOS_CONFIG": "/Users/yourname/memnos/memnos.yaml",
-        "ARCADEDB_PASSWORD": "your-arcadedb-password",
-        "MEMNOS_API_KEY": "your-memnos-api-key",
-        "MEMNOS_VAULT_KEY": "your-vault-key",
-        "ANTHROPIC_API_KEY": "sk-ant-..."
-      }
-    }
-  }
-}
-```
-
-### Option B — SSE (HTTP, requires server running)
-
-```json
-{
-  "mcpServers": {
-    "memnos": {
-      "type": "sse",
-      "url": "http://localhost:8765/sse",
-      "headers": {
-        "Authorization": "Bearer your-memnos-api-key"
-      }
-    }
-  }
-}
-```
-
-Fully restart Claude Code (quit and reopen), then run `/mcp` — you should see `memnos  ✓ connected  · 18 tools`.
+- enables `pgvector` (`CREATE EXTENSION IF NOT EXISTS vector`),
+- creates the memnos schema + the governance control plane,
+- generates your encrypted-vault key,
+- mints a one-time **admin token** (copy it — it is shown once),
+- writes everything to `~/.memnos/config.json` (DSN, port, vault key).
 
 ---
 
-## 4. Add CLAUDE.md instructions
-
-Add to **`~/.claude/CLAUDE.md`** so Claude uses memnos automatically:
-
-```markdown
-## Memory System — memnos MCP
-
-ALWAYS call `memory_search` first when asked about past decisions, prior context, or anything previously remembered.
-ALWAYS call `memory_write` when a key technical decision is made, or the user says "remember this".
-Never use Bash grep or Obsidian file search to recall knowledge — use memory_search instead.
-MCP results come back as plain text — read them directly, never spawn agents to parse them.
-
-### Namespace guide
-| Content type     | Namespace           |
-|------------------|---------------------|
-| Personal notes   | personal:default         |
-| Team knowledge   | org:myteam          |
-| Project-specific | project:myproject   |
-```
-
----
-
-## 5. Test memory
-
-In a Claude Code session:
-
-```
-Use memory_write to save:
-  content: "memnos is working correctly"
-  namespace: "personal:default"
-  tags: ["test"]
-```
-
-In a new session (to confirm persistence):
-
-```
-Use memory_search to find:
-  query: "memnos working"
-  namespace: "personal:default"
-```
-
-The memory persists across sessions.
-
----
-
-## 6. Spawn a background task
-
-```
-Use spawn_task with:
-  prompt: "Search memory for all test entries and summarize what's there"
-  namespace: "personal:default"
-  runtime: "api"
-```
-
-Then:
-
-```
-Use get_task_result with task_id: <the id from above> and wait: true
-```
-
----
-
-## 7. View the dashboard
-
-Open `http://localhost:8766/dashboard` in your browser. Enter your API key when prompted.
-
-You will see:
-- Live stats: memory count, graph nodes, edges, namespaces
-- Interactive force-directed knowledge graph — click any node to inspect it
-- Namespace distribution and activity timeline
-
----
-
-## 8. Encrypted vault
-
-Store API keys and credentials securely:
+## 3. Start the server
 
 ```bash
-# Store a secret
-curl -X POST http://localhost:8766/api/v1/vault/secrets \
-  -H "Authorization: Bearer your-memnos-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{"key_name": "GITHUB_TOKEN", "value": "ghp_...", "namespace": "personal:default", "note": "GitHub PAT"}'
-
-# Retrieve a secret
-curl http://localhost:8766/api/v1/vault/secrets/GITHUB_TOKEN?namespace=personal:default \
-  -H "Authorization: Bearer your-memnos-api-key"
+memnos serve            # binds http://127.0.0.1:8900
+curl -s localhost:8900/healthz      # -> {"ok": true}
 ```
 
-Or via Claude Code: `"Store my GitHub token in the vault as GITHUB_TOKEN"`.
-
-All vault access is written to an immutable audit log. See `GET /api/v1/vault/audit?namespace=personal:default`.
-
----
-
-## 9. Optional: Enable Telegram gateway
-
-1. Create a bot via [@BotFather](https://t.me/BotFather) — copy the token
-2. Find your Telegram user ID (send `/start` to [@userinfobot](https://t.me/userinfobot))
-3. Edit `memnos.yaml`:
-   ```yaml
-   gateway:
-     telegram:
-       enabled: true
-       bot_token: ${TELEGRAM_BOT_TOKEN}
-       allowed_users: [your-numeric-user-id]
-   ```
-4. Set `TELEGRAM_BOT_TOKEN` and restart: `docker compose restart memnos`
-
-Send a message to your bot — memnos will respond.
+Open the management console at **http://127.0.0.1:8900/admin** and paste your admin token.
+From the console you can create namespaces, mint/revoke tokens, manage grants, store
+secrets, and watch the dashboard.
 
 ---
 
-## 10. Optional: Migrate your Obsidian vault
+## 4. Create a namespace + a scoped token
+
+Namespaces are **explicit** — you create them; memnos never auto-creates them. Use one per
+user, team, project or agent.
+
+From the console, or from the CLI:
 
 ```bash
-python3 tools/migrate_obsidian.py \
-  --vault ~/path/to/your/vault \
-  --namespace obsidian:my-vault \
-  --api-key your-memnos-api-key
+memnos namespace add user:alice:notes
+memnos principal alice
+memnos token alice --label "alice laptop"     # prints a token ONCE — copy it
+memnos grant alice user:alice:notes
 ```
-
-See [obsidian-migration.md](obsidian-migration.md) for the full guide.
 
 ---
 
-## 11. Optional: Remote/team deployment
+## 5. Remember & recall
 
-See [remote-deployment.md](remote-deployment.md) for VPS and Tailscale team setups.
+```bash
+TOK=mnk_...                       # the token from step 4
+NS=user:alice:notes
 
-For enterprise team configuration (namespace hierarchy, per-engineer API keys, shared server): see [enterprise-team-setup.md](enterprise-team-setup.md).
+memnos remember "On 2026-06-07 Alice moved to Seattle and joined Acme as a staff engineer." \
+  --namespace "$NS" --token "$TOK"
+
+memnos recall "Where does Alice work and live?" \
+  --namespace "$NS" --token "$TOK"
+```
+
+Recall returns ranked memories **and** a ready-to-paste context block — with no LLM in the
+loop. (Equivalent REST: `POST /remember`, `POST /recall` with a `Bearer` token.)
+
+---
+
+## 6. Secrets (encrypted vault + auto-redaction)
+
+memnos auto-redacts secret-looking text (API keys, tokens, passwords) from remembered
+messages **before** storage, so credentials never leak into recall. For secrets you *do*
+want to keep:
+
+```bash
+memnos secret set openai          # prompts for the value (not echoed)
+memnos secret ls
+```
+
+Reference a stored secret anywhere as `secret://openai` (e.g.
+`OPENAI_API_KEY=secret://openai` in `.env` — the server resolves it at startup). Values are
+AES-256-GCM encrypted at rest, never logged or returned. Rotate the key with
+`memnos secret rotate`.
+
+---
+
+## 7. Connect your AI tools
+
+memnos is **MCP-native** and works with any MCP client, plus hooks for Claude Code:
+
+- **Claude Code** → [claude-code-setup.md](claude-code-setup.md) (MCP tools *and* automatic hooks)
+- **Cursor** → [clients/cursor.md](clients/cursor.md)
+- **Windsurf** → [clients/windsurf.md](clients/windsurf.md)
+- **Any MCP client / REST / SDK** → the `memnos mcp` stdio adapter, or the HTTP API directly
+
+The single command for every MCP client is:
+
+```bash
+memnos mcp        # stdio MCP server; reads MEMNOS_TOKEN / MEMNOS_NS from the client env
+```
+
+---
+
+## 8. Operate it
+
+```bash
+memnos stats      # volume · error% · p50–p95 latency · empty-recall rate
+memnos health     # actionable CRITICAL / WARN findings
+memnos whoami <token>   # what a token can see
+```
+
+---
+
+## Endpoints
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET  | `/healthz` | — | liveness |
+| GET  | `/readyz`  | — | DB reachable |
+| POST | `/remember`| Bearer (write) | store a message → raw turn + extracted bi-temporal facts |
+| POST | `/recall`  | Bearer (read)  | ranked memories + context block (no LLM) |
+| POST | `/consolidate` | Bearer (write) | distill facts into entity dossiers |
+| POST | `/feedback`| Bearer | was the recall helpful? (quality signal) |
 
 ---
 
 ## Troubleshooting
 
-**`/mcp` shows memnos as disconnected (SSE mode)**
-- Is the server running? `curl http://localhost:8765/health`
-- Did you fully restart Claude Code?
-- Is the API key in `~/.claude.json` correct?
+**`memnos setup` can't enable pgvector** — your Postgres user needs rights to
+`CREATE EXTENSION`, and the `pgvector` extension must be installed on the server. Ask your
+DBA, or use the `pgvector/pgvector` image for local dev.
 
-**`/mcp` shows memnos as disconnected (stdio mode)**
-- Does the binary exist? `ls -la $(which memnos-mcp-stdio)`
-- Can it run? `MEMNOS_CONFIG=memnos.yaml ARCADEDB_PASSWORD=... memnos-mcp-stdio` (should start without error)
-- Check `MEMNOS_CONFIG` points to an absolute path — relative paths may fail when Claude spawns the process
-- The binary takes up to 40s on first start (embedding model loading). Claude Code's stdio timeout is 60s by default.
+**`/admin` rejects my token** — the admin console requires a token with the `*` grant
+(the one `memnos setup` printed). Mint another with `memnos admin` if you lost it.
 
-**`memory_search` returns no results**
-- Check namespace: `org:myteam` won't find results stored under `personal:default`
-- Use `namespace="all"` to search everything
-
-**Claude uses Bash/grep instead of memory_search**
-- CLAUDE.md instructions aren't loaded. Run `Read ~/.claude/CLAUDE.md` at session start.
-- Or add the memnos instructions to the project-level `CLAUDE.md` in your working directory.
+**Recall returns nothing** — check the namespace; a token only sees namespaces it was
+granted. `memnos whoami <token>` shows the grants.

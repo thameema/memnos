@@ -1,8 +1,13 @@
 # Connecting memnos to Codex CLI (OpenAI)
 
-Codex CLI does **not** support MCP. Use the memnos REST API instead.
+Codex CLI does **not** support MCP. Use the memnos REST API or the Python SDK.
 
-## Option A — Python SDK
+## Prerequisites
+
+- memnos running (`memnos serve`, default `http://127.0.0.1:8900`) — see [quickstart](../quickstart.md).
+- A scoped token + namespace (`memnos token alice` → `mnk_…`; `memnos grant alice user:alice`).
+
+## Option A — Python SDK (recommended)
 
 ```bash
 pip install memnos-sdk
@@ -11,45 +16,46 @@ pip install memnos-sdk
 ```python
 from memnos_sdk import MemnosClient
 
-client = MemnosClient("http://localhost:8766", api_key="memnos-local-dev-key")
-memories = client.search("your query", "your:namespace", top_k=5)
-context = "\n".join(m.content for m in memories)
+mem = MemnosClient("http://127.0.0.1:8900", token="mnk_...", namespace="user:alice")
 
-# Pass context to codex via --instructions or stdin
+# A ready-to-paste context block (ranked, no LLM at query time):
+context = mem.context("your query")
+
+# Or the structured result:
+result = mem.recall("your query")          # {"memories": [...], "context": "..."}
+
+# Store something:
+mem.remember("Decided to use pgvector over a separate graph DB.")
+
+# Pass the context to Codex via --instructions or stdin
 ```
 
-## Option B — Shell Wrapper Script
+## Option B — Shell wrapper (REST)
 
 Create `codex-with-memory.sh`:
 
 ```bash
 #!/bin/bash
 # Usage: ./codex-with-memory.sh "query" [codex args...]
-# Injects top-5 memnos memories matching the query as Codex instructions
+# Injects the memnos context block for the query as Codex instructions.
+set -euo pipefail
+QUERY="${1:-}"; shift || true
 
-QUERY="${1:-}"
-shift
+CONTEXT=$(curl -s http://127.0.0.1:8900/recall \
+  -H "Authorization: Bearer ${MEMNOS_TOKEN:?set MEMNOS_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"namespace\":\"${MEMNOS_NS:-user:alice}\",\"query\":\"${QUERY}\"}" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('context',''))")
 
-MEMORIES=$(curl -s "http://localhost:8766/api/v1/memory/search?q=${QUERY}&top_k=5" \
-  -H "Authorization: Bearer memnos-local-dev-key" \
-  | python3 -c "import json,sys; [print(m['content']) for m in json.load(sys.stdin)]")
-
-codex --instructions "$MEMORIES" "$@"
+codex --instructions "$CONTEXT" "$@"
 ```
 
 ```bash
 chmod +x codex-with-memory.sh
-./codex-with-memory.sh "project context" "refactor this function"
+export MEMNOS_TOKEN=mnk_... MEMNOS_NS=user:alice
+./codex-with-memory.sh "auth service decisions" "refactor this handler"
 ```
 
-## Option C — Namespace-scoped search
-
-To search a specific namespace (e.g. personal notes only):
-
-```bash
-MEMORIES=$(curl -s "http://localhost:8766/api/v1/memory/search?q=project+status&ns=personal:me&top_k=5" \
-  -H "Authorization: Bearer memnos-local-dev-key" \
-  | python3 -c "import json,sys; [print(m['content']) for m in json.load(sys.stdin)]")
-```
-
-Drop the `ns=` parameter to search all accessible namespaces.
+The `/recall` endpoint returns ranked memories **and** a ready-to-paste `context` string —
+no LLM at query time. To store from the shell, `POST /remember` with
+`{"namespace": "...", "text": "..."}`.
