@@ -250,10 +250,13 @@ class MemnosMemory:
                     model=self.extract_model, temperature=0, max_tokens=500,
                     response_format={"type": "json_object"},
                     messages=[{"role": "system", "content":
-                               "Consolidate durable CURRENT facts about the subject, DERIVING multi-input "
-                               "joins (A@B + B in C => A in C). On conflict keep the most recent. Keep dates "
-                               "inline in each sentence. Each fact MUST be a single self-contained SENTENCE "
-                               '(a string, not an object). JSON {"facts":["...", "..."]}.'},
+                               "Consolidate EVERYTHING known about ONE subject into durable facts, DERIVING "
+                               "facts that require COMBINING inputs ('A works at B' + 'B in C' => 'A works in "
+                               "C'). PRESERVE every distinct item the subject has done/owns/likes — do NOT "
+                               "collapse a list (e.g. keep BOTH 'kickboxing' AND 'taekwondo'). On genuine "
+                               "value conflict keep the most recent (dates given). Keep dates inline. Each "
+                               "fact MUST be a single self-contained SENTENCE (a string, not an object). "
+                               'JSON {"facts":["...", "..."]}.'},
                               {"role": "user", "content": f"Subject: {e}\n- " +
                                "\n- ".join(f for _, f in fs[:40])}])
                 self._track(self.extract_model, r)

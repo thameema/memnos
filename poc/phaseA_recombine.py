@@ -96,6 +96,7 @@ def main():
             mem = MemnosMemory(st, embed_fn, dim=embed_fn.dim, llm=cli,
                                extract_model=args.model, reranker_model=args.reranker,
                                on_usage=lambda model, pt, ct: meter.record("extract", model, pt, ct))
+            mem.schema = schema   # isolate benchmark data per sample (NOT production tenant_memnos)
 
             t0 = time.perf_counter()
             ing = ingest_via_engine(mem, embed_fn, ns, sample)
