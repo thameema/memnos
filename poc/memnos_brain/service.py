@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from .store import BrainStore
 from . import rerank as brain_rerank
@@ -36,13 +36,27 @@ def _dossier_text(x) -> str:
 
 class MemnosMemory:
     def __init__(self, store_or_dsn, embed_fn, *, reranker_model=brain_rerank.DEFAULT_RERANKER,
-                 dim=1536, llm=None, extract_model="gpt-4o-mini", ensure_schema=False):
+                 dim=1536, llm=None, extract_model="gpt-4o-mini", ensure_schema=False,
+                 on_usage=None):
         # store_or_dsn may be a pooled BrainStore (production) or a DSN string (scripts).
         self.store = store_or_dsn if isinstance(store_or_dsn, BrainStore) else BrainStore(store_or_dsn)
         self.embed = embed_fn
         self.reranker = reranker_model
         self.llm, self.extract_model = llm, extract_model
+        # on_usage(model, prompt_tokens, completion_tokens): called after EVERY engine LLM
+        # call (extraction + consolidation) so token cost is fully accounted — the server
+        # records it to usage_ledger, the benchmark feeds it to the budget cap. No silent
+        # untracked spend.
+        self.on_usage = on_usage
         self.schema = self.store.create_schema(_TENANT, dim=dim) if ensure_schema else f"tenant_{_TENANT}"
+
+    def _track(self, model, resp):
+        if self.on_usage is not None:
+            try:
+                u = resp.usage
+                self.on_usage(model, u.prompt_tokens, u.completion_tokens)
+            except Exception:
+                pass
 
     # --- WRITE -------------------------------------------------------------
     def remember(self, namespace: str, text: str, *, speaker=None, session_id=None,
@@ -52,34 +66,67 @@ class MemnosMemory:
         subject/predicate/object so belief-change SUPERSESSION fires (close out the
         prior value for the same subject+predicate) and the entity GRAPH is populated
         — parity with the validated phaseA engine. Returns ids + supersession count."""
-        from .temporal import parse_event_date
         observed_at = observed_at or datetime.now(timezone.utc)
         tid = self.store.insert_raw_turn(self.schema, namespace, session_id, speaker,
                                          text, observed_at, self.embed(text))
         n_facts = n_super = 0
         if extract and self.llm is not None:
             for f in self._extract(text, observed_at):
-                stmt = f["statement"]
-                subj = (f["subject"][:100] if f["subject"] else None)
-                pred = f["predicate"] or None
-                obj = f["object"] or None
-                ev = parse_event_date(stmt, observed_at)        # relative → absolute event date
-                if subj and pred:                                # belief-change supersession
-                    n_super += self.store.supersede_predicate(self.schema, namespace, subj, pred, obj, ev)
-                vec = self.embed(stmt)
-                fid = self.store.insert_semantic(self.schema, namespace, "fact", stmt,
-                                                 subject=subj, predicate=pred, obj=obj,
-                                                 valid_from=ev, salience=0.5, vec=vec)
-                # populate the ENTITY GRAPH from the SPO triple (every fact is an edge)
-                if subj:
-                    se = self.store.upsert_entity(self.schema, namespace, subj)
-                    self.store.add_mention(self.schema, se, fid, "semantic")
-                    if obj:
-                        oe = self.store.upsert_entity(self.schema, namespace, obj[:100])
-                        self.store.add_mention(self.schema, oe, fid, "semantic")
-                        self.store.bump_edge(self.schema, namespace, se, oe)
-                n_facts += 1
+                df, ds = self._write_fact(namespace, f, observed_at)
+                n_facts += df; n_super += ds
         return {"turn_id": tid, "facts": n_facts, "superseded": n_super}
+
+    def ingest_session(self, namespace: str, turns, *, session_date, session_id=None,
+                       extract=True) -> dict:
+        """BENCHMARKED ingest path (per-SESSION batch). Store each raw turn, then extract
+        SPO facts from the WHOLE session at once (better pronoun / relative-date
+        resolution than per-message), then supersede + graph-populate via the same
+        `_write_fact` used by remember(). `turns` = [(speaker, text), ...].
+
+        This is the SAME code the LoCoMo benchmark runs — there is one engine, not two.
+        Feed sessions in chronological order so belief-change supersession closes the
+        OLDER value first."""
+        for ti, (spk, txt) in enumerate(turns):
+            if not txt:
+                continue
+            self.store.insert_raw_turn(self.schema, namespace, session_id, spk, txt,
+                                       session_date + timedelta(minutes=ti), self.embed(txt))
+        n_facts = n_super = 0
+        if extract and self.llm is not None:
+            content = f"SESSION DATE: {session_date}\n\n" + "\n".join(
+                f"{s}: {t}" for s, t in turns if t)
+            for f in self._extract(content, session_date):
+                df, ds = self._write_fact(namespace, f, session_date)
+                n_facts += df; n_super += ds
+        return {"turns": len(turns), "facts": n_facts, "superseded": n_super}
+
+    def _write_fact(self, namespace, f, fallback_date):
+        """Write ONE SPO fact: absolute event date → belief-change supersession → store
+        with subject/predicate/object → populate the entity graph. Shared by remember()
+        and ingest_session() so the write path can never drift between them.
+        Returns (facts_written, superseded_count)."""
+        from .temporal import parse_event_date
+        stmt = f["statement"]
+        subj = (f["subject"][:100] if f["subject"] else None)
+        pred = f["predicate"] or None
+        obj = f["object"] or None
+        ev = parse_event_date(stmt, fallback_date)          # relative → absolute event date
+        n_super = 0
+        if subj and pred:                                    # belief-change supersession
+            n_super = self.store.supersede_predicate(self.schema, namespace, subj, pred, obj, ev)
+        vec = self.embed(stmt)
+        fid = self.store.insert_semantic(self.schema, namespace, "fact", stmt,
+                                         subject=subj, predicate=pred, obj=obj,
+                                         valid_from=ev, salience=0.5, vec=vec)
+        # populate the ENTITY GRAPH from the SPO triple (every fact is an edge)
+        if subj:
+            se = self.store.upsert_entity(self.schema, namespace, subj)
+            self.store.add_mention(self.schema, se, fid, "semantic")
+            if obj:
+                oe = self.store.upsert_entity(self.schema, namespace, obj[:100])
+                self.store.add_mention(self.schema, oe, fid, "semantic")
+                self.store.bump_edge(self.schema, namespace, se, oe)
+        return 1, n_super
 
     def _extract(self, text, date):
         """Structured SPO extraction: [{subject, predicate, object, statement}] —
@@ -98,6 +145,7 @@ class MemnosMemory:
                            "full self-contained sentence with the date). "
                            'JSON {"facts":[{"subject":"...","predicate":"...","object":"...","statement":"..."}]}.'},
                           {"role": "user", "content": text}])
+            self._track(self.extract_model, r)
             out = []
             for f in json.loads(r.choices[0].message.content).get("facts", []):
                 if isinstance(f, dict) and str(f.get("statement", "")).strip():
@@ -110,7 +158,7 @@ class MemnosMemory:
             return []
 
     # --- READ (no query-time LLM) -----------------------------------------
-    def recall(self, namespace: str, query: str, *, k=40, raw_quota=8, fact_quota=6) -> list[dict]:
+    def recall(self, namespace: str, query: str, *, k=40, raw_quota=11, fact_quota=8) -> list[dict]:
         """Quota retrieval (raw turns ⊕ semantic facts) with BI-TEMPORAL awareness:
         for time-scoped questions, retrieve facts by EVENT TIME (valid_from window /
         current-vs-past / first-last ordering), lean on dated facts, and surface the
@@ -160,7 +208,7 @@ class MemnosMemory:
         # small raw + GUARANTEED timeline + a few reranked relevance facts
         return rr(raw, "turn")[:5] + tl_rows[:12] + sem_rows[:6]
 
-    def context(self, namespace: str, query: str, *, max_chars=4000, **kw) -> str:
+    def context(self, namespace: str, query: str, *, max_chars=9000, **kw) -> str:
         out, used = [], 0
         for r in self.recall(namespace, query, **kw):
             if r["kind"] == "fact":
@@ -174,17 +222,22 @@ class MemnosMemory:
         return "\n".join(out)
 
     # --- consolidation (offline; call on idle / schedule) -----------------
-    def consolidate(self, namespace: str, max_entities=30, max_dossier=6) -> dict:
-        """Build entity dossiers (offline multi-hop pre-join) from stored facts."""
+    def consolidate(self, namespace: str, max_entities=25, max_dossier=6) -> dict:
+        """Build entity dossiers (offline multi-hop pre-join) from stored facts. Groups
+        facts by SUBJECT entity (SPO) + proper nouns in the statement — same clustering
+        as the benchmarked phaseA ingest."""
         import json
         from collections import defaultdict
         with self.store.conn.cursor() as c:
-            c.execute(f"SELECT statement, valid_from FROM {self.schema}.semantic "
+            c.execute(f"SELECT statement, subject_entity, valid_from FROM {self.schema}.semantic "
                       f"WHERE namespace=%s AND kind='fact'", (namespace,))
             facts = c.fetchall()
         ent = defaultdict(list)
         for row in facts:
-            for e in set(_PROPER.findall(row["statement"])):
+            ents = set(_PROPER.findall(row["statement"]))
+            if row.get("subject_entity"):
+                ents.add(row["subject_entity"])
+            for e in ents:
                 ent[e].append((row["valid_from"], row["statement"]))
         clusters = sorted(((e, fs) for e, fs in ent.items() if len(fs) >= 3),
                           key=lambda x: -len(x[1]))[:max_entities]
@@ -203,6 +256,7 @@ class MemnosMemory:
                                '(a string, not an object). JSON {"facts":["...", "..."]}.'},
                               {"role": "user", "content": f"Subject: {e}\n- " +
                                "\n- ".join(f for _, f in fs[:40])}])
+                self._track(self.extract_model, r)
                 vf = max((d for d, _ in fs if d), default=None)
                 for f in [_dossier_text(x) for x in json.loads(r.choices[0].message.content).get("facts", [])][:max_dossier]:
                     if not f:

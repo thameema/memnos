@@ -60,6 +60,23 @@ LLM = None
 DIM = 384
 
 
+class _UsageAcc:
+    """Per-request accumulator for engine LLM token usage (extraction + consolidation),
+    converted to USD via the shared pricing table — so usage_ledger reflects real spend."""
+    __slots__ = ("tin", "tout", "cost")
+
+    def __init__(self):
+        self.tin = self.tout = 0
+        self.cost = 0.0
+
+    def __call__(self, model, prompt_tokens, completion_tokens):
+        from memnos_poc.usage import PRICING
+        pin, pout = PRICING.get(model, (0.0, 0.0))
+        self.tin += int(prompt_tokens or 0)
+        self.tout += int(completion_tokens or 0)
+        self.cost += (prompt_tokens or 0) / 1e6 * pin + (completion_tokens or 0) / 1e6 * pout
+
+
 def _build_embedder():
     global LLM, DIM
     if os.environ.get("OPENAI_API_KEY"):
@@ -156,7 +173,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, {"ok": True})
 
                 store = BrainStore(conn=conn)
-                mem = MemnosMemory(store, EMBED, dim=DIM, llm=LLM)
+                usage = _UsageAcc()        # captures extraction/consolidation LLM tokens+cost
+                mem = MemnosMemory(store, EMBED, dim=DIM, llm=LLM, on_usage=usage)
                 cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 action = self.path.lstrip("/")
                 try:
@@ -169,9 +187,14 @@ class Handler(BaseHTTPRequestHandler):
                         q = str(req.get("query", "")).strip()
                         if not q or len(q) > 4000:
                             return self._send(400, {"error": "query required (<=4000 chars)"})
-                        rows = mem.recall(ns, q, raw_quota=int(req.get("raw_quota", 8)),
-                                          fact_quota=int(req.get("fact_quota", 6)))
-                        out = {"memories": rows, "context": mem.context(ns, q, max_chars=int(req.get("max_chars", 4000)))}
+                        # use the engine's CANONICAL (benchmarked) defaults; only override
+                        # when the client explicitly supplies a value — no server-side drift.
+                        rkw = {}
+                        if "raw_quota" in req: rkw["raw_quota"] = int(req["raw_quota"])
+                        if "fact_quota" in req: rkw["fact_quota"] = int(req["fact_quota"])
+                        ckw = {"max_chars": int(req["max_chars"])} if "max_chars" in req else {}
+                        rows = mem.recall(ns, q, **rkw)
+                        out = {"memories": rows, "context": mem.context(ns, q, **rkw, **ckw)}
                     elif self.path == "/consolidate":
                         out = mem.consolidate(ns)
                     else:
@@ -185,7 +208,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(500, {"error": "internal error"})
 
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
-                Control.record_usage(conn, principal, ns, action, mem.extract_model, 0, 0, round(cost1 - cost0, 6))
+                # full cost = embedding delta + extraction/consolidation LLM cost; tokens
+                # = extraction tokens (the previously-untracked spend)
+                Control.record_usage(conn, principal, ns, action, mem.extract_model,
+                                     usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))
                 rcount = len(out.get("memories", [])) if isinstance(out, dict) and "memories" in out else None
                 Control.audit(conn, principal, action, ns, True,
                               latency_ms=int((time.perf_counter() - t0) * 1000), result_count=rcount, status=200)
