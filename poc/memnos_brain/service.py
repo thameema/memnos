@@ -17,6 +17,19 @@ from . import rerank as brain_rerank
 _TENANT = "memnos"
 _PROPER = re.compile(r"\b[A-Z][a-zA-Z]{2,}\b")
 
+# Belief-change supersession applies ONLY to SINGLE-VALUED attributes (a person has one
+# current home/job/age — a new value replaces the old). MULTI-VALUED relations
+# ('did_activity','met_person','visited','likes','owns') are ADDITIVE — a new martial art
+# does NOT replace a previous one. Over-superseding list items corrupts aggregation +
+# temporal recall, so default is ADDITIVE unless the predicate matches a single-valued cue.
+_SINGLE_VALUED_CUES = ("live", "reside", "home", "based", "located", "current_city",
+                       "work_at", "works_at", "employ", "employer", "job_title", "occupation",
+                       "role_at", "age", "marital", "married", "spouse", "status")
+
+
+def _is_single_valued(pred: str) -> bool:
+    return bool(pred) and any(cue in pred for cue in _SINGLE_VALUED_CUES)
+
 
 def _dossier_text(x) -> str:
     """Coerce an LLM fact (string OR {date,event/statement/fact} object) into one clean
@@ -112,7 +125,7 @@ class MemnosMemory:
         obj = f["object"] or None
         ev = parse_event_date(stmt, fallback_date)          # relative → absolute event date
         n_super = 0
-        if subj and pred:                                    # belief-change supersession
+        if subj and pred and _is_single_valued(pred):        # belief-change ONLY for single-valued attrs
             n_super = self.store.supersede_predicate(self.schema, namespace, subj, pred, obj, ev)
         vec = self.embed(stmt)
         fid = self.store.insert_semantic(self.schema, namespace, "fact", stmt,
@@ -129,21 +142,33 @@ class MemnosMemory:
         return 1, n_super
 
     def _extract(self, text, date):
-        """Structured SPO extraction: [{subject, predicate, object, statement}] —
-        enables same-(subject,predicate) belief-change supersession in production."""
+        """EXHAUSTIVE statement-first extraction with optional SPO metadata.
+
+        The `statement` is the retrieval unit (embedded + searched), so coverage matters
+        most: capture EVERY fact, not just clean triples. subject/predicate are best-effort
+        metadata that enable belief-change supersession when applicable — a fact that
+        doesn't fit a triple is still captured (empty predicate). Measured: rigid
+        SPO-only + 700-token cap under-extracted (~12 facts / 33-turn session); answers
+        existed in raw turns but never became facts."""
         import json
         try:
             r = self.llm.chat.completions.create(
-                model=self.extract_model, temperature=0, max_tokens=700,
+                model=self.extract_model, temperature=0, max_tokens=2000,
                 response_format={"type": "json_object"},
                 messages=[{"role": "system", "content":
-                           f"DATE: {date}. Extract atomic, self-contained FACTS as STRUCTURED triples. "
-                           "RESOLVE relative dates ('yesterday','last Saturday') to ABSOLUTE using DATE, and "
-                           "pronouns to named people. For each fact give: subject (the named entity it's "
-                           "about), predicate (a short normalized relation like 'lives_in','works_at',"
-                           "'owns_pet','favorite_food','job_title'), object (the value), and statement (a "
-                           "full self-contained sentence with the date). "
-                           'JSON {"facts":[{"subject":"...","predicate":"...","object":"...","statement":"..."}]}.'},
+                           f"DATE: {date}. Extract EVERY atomic, self-contained FACT about any person in "
+                           "this conversation — be EXHAUSTIVE, do not skip minor details. Cover: hobbies & "
+                           "activities, experiences & events, preferences & opinions, possessions, "
+                           "relationships & who they met, places been/lived, jobs & education, plans, and "
+                           "feelings/values. List EACH distinct item separately (e.g. one fact per martial "
+                           "art, per dessert, per country). RESOLVE relative dates ('yesterday','last "
+                           "Saturday') to ABSOLUTE using DATE, and pronouns to named people. For each fact: "
+                           "statement = a full self-contained sentence (with the date if known); subject = "
+                           "the named person it's about; predicate = a short normalized relation "
+                           "('lives_in','works_at','did_activity','met_person','visited','likes') or '' if it "
+                           "doesn't fit; object = the value or ''. ALWAYS include a statement even when "
+                           'subject/predicate/object are empty. JSON {"facts":[{"subject":"","predicate":"",'
+                           '"object":"","statement":"..."}]}.'},
                           {"role": "user", "content": text}])
             self._track(self.extract_model, r)
             out = []
