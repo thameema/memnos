@@ -105,7 +105,7 @@ def main():
     args = ap.parse_args()
     ids = [int(x) for x in args.sample_ids.split(",")]
 
-    cli = OpenAI(max_retries=5)
+    cli = OpenAI(max_retries=4, timeout=60)
     meter = TSCostMeter(budget_usd=args.budget)
     embed_fn = CachedEmbedder(cli, meter)
     print(f"warming reranker {args.reranker} ...", flush=True)
