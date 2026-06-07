@@ -1,0 +1,56 @@
+name: poc-tests
+
+# Tests for the PostgreSQL+pgvector engine (poc/) + the memnos-sdk. No OpenAI key needed:
+# the server runs in free local-384 mode and the governance/redaction/SDK tests don't use
+# an LLM. (The LoCoMo accuracy benchmark is separate and not run in CI.)
+
+on:
+  push:
+    branches: [dev, main, "poc/**"]
+  pull_request:
+
+jobs:
+  sdk-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install ./sdk
+      - run: python sdk/tests/test_client.py
+
+  server-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: memnos
+          POSTGRES_PASSWORD: memnos_poc
+          POSTGRES_DB: memnos
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U memnos -d memnos"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      MEMNOS_DSN: postgresql://memnos:memnos_poc@localhost:5433/memnos
+      MEMNOS_SECRET_KEY: "Y2lfdGVzdF9rZXlfMzJfYnl0ZXNfZXhhY3RseV9vayE="   # 32B base64, CI-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - working-directory: poc
+        run: pip install -r requirements.txt
+      - name: enable pgvector
+        run: PGPASSWORD=memnos_poc psql -h localhost -p 5433 -U memnos -d memnos -c "CREATE EXTENSION IF NOT EXISTS vector"
+      - name: start server (local-384 mode) + wait for ready
+        working-directory: poc
+        run: |
+          python memnos_server.py & echo $! > /tmp/srv.pid
+          for i in $(seq 1 40); do curl -sf http://127.0.0.1:8900/healthz && break || sleep 2; done
+      - name: governance + redaction + CLI tests
+        working-directory: poc
+        run: |
+          python test_admin_api.py
+          python test_vault.py
+          python test_cli.py
