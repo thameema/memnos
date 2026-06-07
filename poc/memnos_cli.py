@@ -131,6 +131,19 @@ def cmd_serve(args, cfg):
     memnos_server.serve(port=args.port)
 
 
+def cmd_mcp(args, cfg):
+    # stdio MCP adapter for Claude Code / Cursor / Windsurf / any MCP client.
+    # MEMNOS_URL / MEMNOS_TOKEN / MEMNOS_NS come from the client's env block;
+    # fall back to the local config so `memnos mcp` works out of the box.
+    os.environ.setdefault("MEMNOS_URL", f"http://127.0.0.1:{cfg.get('port', 8900)}")
+    if cfg.get("admin_token"):
+        os.environ.setdefault("MEMNOS_TOKEN", cfg["admin_token"])
+    if args.namespace:
+        os.environ["MEMNOS_NS"] = args.namespace
+    import memnos_mcp
+    memnos_mcp.mcp.run()
+
+
 # ---- admin / control --------------------------------------------------------
 def _principal_id(conn, name):
     with conn.cursor() as c:
@@ -269,6 +282,7 @@ def main():
 
     p = sub.add_parser("setup"); p.add_argument("--dsn"); p.set_defaults(fn=cmd_setup)
     p = sub.add_parser("serve"); p.add_argument("--port", type=int); p.set_defaults(fn=cmd_serve)
+    p = sub.add_parser("mcp"); p.add_argument("--namespace"); p.set_defaults(fn=cmd_mcp)
     p = sub.add_parser("admin"); p.set_defaults(fn=cmd_admin)
     p = sub.add_parser("principal"); p.add_argument("name"); p.add_argument("--kind", default="user"); p.set_defaults(fn=cmd_principal)
     p = sub.add_parser("token"); p.add_argument("principal"); p.add_argument("--label"); p.add_argument("--ttl-days", type=int); p.set_defaults(fn=cmd_token)

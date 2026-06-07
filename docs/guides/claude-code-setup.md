@@ -1,508 +1,129 @@
 # Connecting Claude Code to memnos
 
-This guide covers the full setup: registering memnos as a Claude Code MCP server, configuring `CLAUDE.md` so Claude uses it, and wiring the zero-touch automation hooks so context is injected and memories are written without any manual action.
+Give Claude Code persistent, governed memory across sessions. Two paths — use either or both:
+
+- **MCP tools** — Claude explicitly calls `recall` / `remember` / `consolidate`.
+- **Hooks** — memnos *automatically* injects relevant memory before each prompt and
+  captures the exchange after, with zero tool calls.
 
 ## Prerequisites
 
-- memnos server installed and running — see [Installer](#installer) below or [quickstart.md](quickstart.md)
-- Claude Code v2.0+ (CLI or desktop app)
-- macOS, Linux, WSL, or Windows (PowerShell 5.1+)
+- memnos installed and running — see [quickstart.md](quickstart.md)
+  (`./install.sh` → `memnos setup` → `memnos serve`, server on `http://127.0.0.1:8900`).
+- A scoped token + namespace:
+  ```bash
+  memnos namespace add user:alice
+  memnos token alice --label "claude code"     # prints mnk_… once — copy it
+  memnos grant alice user:alice
+  ```
+- Claude Code v2.0+ (CLI or desktop).
 
 ---
 
-## Installer
+## Option A — MCP server (explicit tools)
 
-memnos ships three installer scripts. Run the one that fits your situation:
-
-| Script | Platform | What it does |
-|--------|----------|--------------|
-| `install.sh` | macOS / Linux / WSL | **Orchestrator** — interactive menu, calls the scripts below |
-| `install-server.sh` | macOS / Linux / WSL | Installs memnos server via Docker (ArcadeDB + API) |
-| `install-client.sh` | macOS / Linux / WSL / Git Bash | Installs Claude Code hooks on a developer machine |
-| `install-client.ps1` | Windows (PowerShell 5.1+) | Same as above for Windows |
-
-### Quick start
-
-```bash
-# Interactive — choose server / client / both
-./install.sh
-
-# Or non-interactive
-./install.sh --both        # server + client on this machine (laptop / dev box)
-./install.sh --server      # server only (dedicated VM or shared host)
-./install.sh --client      # client hooks only (team member pointing at remote server)
-```
-
-The orchestrator presents a menu when run without flags:
-
-```
-  What would you like to install?
-
-  1) Full install (server + client)
-     → Run memnos server here AND install Claude Code hooks on this machine.
-  2) Server only
-     → Install memnos server (Docker). Share the API URL + key with team members.
-  3) Client only
-     → Install Claude Code hooks only. Connects to an existing memnos server.
-```
-
-### Windows
-
-```powershell
-# With server URL and key (e.g. pointing at a remote/shared memnos server)
-.\install-client.ps1 -Server http://memnos.yourcompany.com:8766 -Key memnos-abc123
-
-# Local server
-.\install-client.ps1 -Server http://localhost:8766 -Key memnos-abc123
-```
-
-Requires git for Windows and Claude Code for Windows. The script copies PowerShell hook scripts from `hooks/windows/` and creates a `.bat` wrapper so git can invoke the post-commit hook.
-
-### What gets installed
-
-**Server** (`install-server.sh`):
-- `~/.memnos/docker-compose.yml` — ArcadeDB + memnos API containers
-- `~/.memnos/.env` — API key, ArcadeDB password (mode 600)
-- Pulls images and starts services
-
-**Client** (`install-client.sh` / `install-client.ps1`):
-- `~/.claude/hooks/memnos.env` — central config (server URL, API key, default namespace)
-- `~/.claude/hooks/memnos-inject.sh` — UserPromptSubmit hook
-- `~/.claude/hooks/memnos-session-write.sh` — Stop hook
-- `~/.git-hooks/post-commit` — global git hook
-- `~/.claude/commands/memnos.md` — `/memnos` slash command
-- Patches `~/.claude/settings.json` to register the hooks
-
----
-
-## Step 1 — Register the MCP server
-
-Claude Code reads MCP server configuration from **`~/.claude.json`** (not `~/.claude/settings.json`).
-
-Two transport modes are available. Choose one:
-
-### Transport A — stdio (recommended for local use)
-
-The stdio transport is simpler: Claude Code spawns `memnos-mcp-stdio` as a subprocess. No HTTP server needs to be running separately; ArcadeDB must still be accessible.
+Because memnos installs as a single package, the MCP server is just `memnos mcp` (a stdio
+adapter — no repo paths, no second process to babysit). Add to **`~/.claude/settings.json`**:
 
 ```json
 {
   "mcpServers": {
     "memnos": {
-      "type": "stdio",
-      "command": "/Users/yourname/.venv/bin/memnos-mcp-stdio",
+      "command": "memnos",
+      "args": ["mcp"],
       "env": {
-        "MEMNOS_CONFIG": "/Users/yourname/memnos/memnos.yaml",
-        "ARCADEDB_PASSWORD": "your-arcadedb-password",
-        "MEMNOS_API_KEY": "your-memnos-api-key",
-        "MEMNOS_VAULT_KEY": "your-vault-key",
-        "ANTHROPIC_API_KEY": "sk-ant-..."
+        "MEMNOS_URL": "http://127.0.0.1:8900",
+        "MEMNOS_TOKEN": "mnk_...",
+        "MEMNOS_NS": "user:alice"
       }
     }
   }
 }
 ```
 
-Find the binary path: `which memnos-mcp-stdio`
+Fully restart Claude Code, then run `/mcp` — you should see `memnos ✓ connected`. Tools:
 
-> **Important:** Use **absolute paths** for `command` and `MEMNOS_CONFIG`. Claude Code spawns the process from a different working directory; relative paths will fail silently.
+| tool | what it does |
+|------|--------------|
+| `recall(query)` | ranked context block for a query — **no LLM at query time** |
+| `remember(text)` | stores a message → raw turn + extracted bi-temporal facts |
+| `consolidate()` | distills stored facts into entity dossiers (multi-hop pre-join) |
 
-> **Startup time:** On first invocation, `memnos-mcp-stdio` loads the sentence-transformers embedding model (~25–40s). Claude Code's stdio timeout is 60s by default — if your machine is slow, consider setting `MEMNOS_LOG_LEVEL=WARNING` to reduce I/O during startup.
-
-### Transport B — SSE (HTTP, for shared/remote servers)
-
-Requires `memnos-server` to be running (see [quickstart.md](quickstart.md)). Best for team deployments where all engineers share one server.
-
-```json
-{
-  "mcpServers": {
-    "memnos": {
-      "type": "sse",
-      "url": "http://localhost:8765/sse",
-      "headers": {
-        "Authorization": "Bearer your-memnos-api-key"
-      }
-    }
-  }
-}
-```
-
-For a team server, replace `localhost:8765` with your shared server URL.
+> If `memnos` isn't on the PATH Claude Code uses (common with `pipx`), use the absolute
+> path from `which memnos` as `command`.
 
 ---
 
-After adding either entry: **fully restart Claude Code** (quit and reopen), then run:
+## Option B — Hooks (automatic, no tool calls)
 
-```
-/mcp
-```
+memnos ships two hook scripts that wire into Claude Code's lifecycle:
 
-You should see `memnos  ✓ connected  · 18 tools`.
+- `memnos-recall.py` — **UserPromptSubmit**: injects relevant memories *before* Claude answers.
+- `memnos-remember.py` — **Stop**: stores the exchange *after* Claude responds.
 
----
-
-## Step 2 — Add CLAUDE.md instructions
-
-Registering the MCP server makes the tools *available*, but Claude won't use them automatically without instructions. Add the following to **`~/.claude/CLAUDE.md`**:
-
-```markdown
-## Memory System — memnos MCP
-
-memnos is connected as an MCP server. Use it for all memory and recall operations.
-
-### Recall (MANDATORY — do this before answering from training data)
-ALWAYS call `memory_search` first when the user asks about:
-- Past decisions, architecture choices, or context
-- Customer or project specifics
-- Anything the user has previously asked you to remember
-
-Never use Bash grep, file search, or Obsidian MCP to recall knowledge.
-The MCP result comes back in plain text — read it directly, do not spawn agents or run scripts.
-
-### Save (do this when something worth keeping happens)
-Call `memory_write` when:
-- A significant technical decision is made
-- The user says "remember this" or "note that"
-- A meeting or call produces actionable context
-- You discover something non-obvious about a codebase or system
-
-### End of session
-When the user wraps up or says goodbye, write a session summary:
-`memory_write(content="Session [date]: ...", namespace="personal:default", tags=["session"])`
-
-### Namespace guide
-| Content type          | Namespace              |
-|-----------------------|------------------------|
-| Personal notes        | personal:default            |
-| Shared team knowledge | org:myteam             |
-| Project-specific      | project:myproject      |
-| Customer context      | org:myteam:customers:customername |
-
-### Tool reference
-| Tool | When to use |
-|---|---|
-| `memory_search(query, namespace)` | Recall — always try this first |
-| `memory_write(content, namespace, tags)` | Save a decision or learning |
-| `memory_delete(memory_id, namespace)` | Remove an outdated entry |
-| `secret_set(key_name, value, namespace)` | Store a credential in the encrypted vault |
-| `secret_get(key_name, namespace)` | Retrieve a vault secret |
-```
-
----
-
-## Step 3 — Verify end-to-end
-
-In a fresh Claude Code session:
-
-```
-What do you remember about the auth service?
-```
-
-Claude should call `memory_search` (visible in the tool-use output). If it runs Bash or searches files instead, the CLAUDE.md changes aren't loaded — restart Claude Code or run `Read ~/.claude/CLAUDE.md`.
-
-To write a memory:
-
-```
-Remember that we use JWT with 24h expiry for the auth service
-```
-
-Claude should call `memory_write`. Verify at `http://localhost:8766/dashboard`.
-
-The dashboard has two main tabs:
-- **Memory Graph** — interactive force-directed graph of all memories and their relationships
-- **API Keys** — create, list, and revoke runtime API keys without restarting the server
-
----
-
-## What is and isn't automatic
-
-| Behaviour | Automatic? | How |
-|---|---|---|
-| Recall when asked about past context | ✅ Yes (with CLAUDE.md) | Claude calls `memory_search` |
-| Saving key decisions | ✅ Yes (with CLAUDE.md) | Claude calls `memory_write` |
-| Full conversation transcript | ❌ No | Claude summarises — it doesn't record every message |
-| Knowledge graph entity extraction | ✅ Yes (spaCy, no LLM needed) | Runs on every `memory_write` |
-| Cross-session persistence | ✅ Yes | Stored in ArcadeDB on disk |
-| Credential auto-redaction | ✅ Yes | Detected and redacted before any write reaches ArcadeDB |
-
----
-
-## Zero-touch automation (optional but recommended)
-
-The MCP approach above requires Claude to actively call `memory_write`. If Claude skips it, forgets, or a session ends abruptly, memories are lost.
-
-**Zero-touch automation** wires memnos directly into Claude Code's lifecycle via shell hooks, so memories are written and injected automatically — no agent action required.
-
-Three hooks work together:
-
-| Hook | When it fires | What it does |
-|------|--------------|--------------|
-| **UserPromptSubmit** | Every Claude Code prompt | Queries memnos and injects relevant past context |
-| **Stop** | Every turn end | Writes a session-state memory (branch, recent commits, CWD) |
-| **git post-commit** | Every `git commit` | Writes the commit to memnos (conventional prefix → memory type) |
-
-### Quick install
-
-The fastest path is the client installer — it writes all hook scripts, patches `~/.claude/settings.json`, and sets the global git hooks path in one shot:
-
-```bash
-# macOS / Linux / WSL
-./install-client.sh                                              # local server (localhost:8766)
-./install-client.sh --server http://eng.example.com:8766 \
-                    --key memnos-abc123                          # remote server
-./install-client.sh --server http://localhost:8766 \
-                    --key memnos-abc123 \
-                    --namespace personal:default                      # with explicit namespace
-```
-
-```powershell
-# Windows (PowerShell 5.1+)
-.\install-client.ps1
-.\install-client.ps1 -Server http://eng.example.com:8766 -Key memnos-abc123
-```
-
-The installer asks for anything not supplied as a flag, tests the server connection, and tells you at the end what it installed.
-
-After running: **restart Claude Code** (quit and reopen). The hooks are active for every project immediately — no per-repo setup needed.
-
----
-
-### Central config file — `~/.claude/hooks/memnos.env`
-
-All hooks read their connection details from a single config file so you only have one place to update when the server URL or key changes:
-
-```bash
-# ~/.claude/hooks/memnos.env
-MEMNOS_API=http://localhost:8766       # change to your remote server if needed
-MEMNOS_KEY=memnos-abc123               # your API key
-MEMNOS_DEFAULT_NS=personal:default          # fallback namespace for all projects
-MEMNOS_TOP_K=5                         # memories injected per prompt
-```
-
-Edit this file any time to point hooks at a different server — no need to reinstall.
-
----
-
-### Per-project namespace — `.memnos` file
-
-Drop a `.memnos` file in any repo root to override the default namespace for that project:
-
-```bash
-# in ~/work/my-project/.memnos
-namespace=project:my-project
-```
-
-**Namespace resolution order** (highest to lowest priority):
-
-1. `.memnos` file in the git repo root
-2. `MEMNOS_NS_OVERRIDE` environment variable
-3. `MEMNOS_DEFAULT_NS` in `~/.claude/hooks/memnos.env`
-
-This means every repo can silently route to its own namespace without touching the global config.
-
----
-
-### `/memnos` slash command
-
-The installer creates a `~/.claude/commands/memnos.md` slash command. Type `/memnos` in any Claude Code session to see:
-
-```
-memnos status
-
-Namespaces
-  • personal:default
-  • project:my-project
-  • org:myteam:engineering
-
-Current namespace — project:my-project  (resolved from .memnos file)
-
-Recent memories
-  [fact] 0.91 — session ended | project: my-project | branch: feature/auth-refactor | uncommitted: 3
-  [decision] 0.88 — feat: replace JWT with session tokens...
-  ...
-```
-
-If you pass a namespace argument (`/memnos ns:project:other`), the command also shows how to set it permanently:
-
-```bash
-echo "namespace=project:other" > .memnos
-```
-
----
-
-### Manual install (reference)
-
-If you prefer to install hooks by hand or need to understand what the installer does:
-
-**Step 1 — Create directories**
-
-```bash
-mkdir -p ~/.claude/hooks ~/.git-hooks ~/.claude/commands
-```
-
-**Step 2 — Write `memnos.env`**
-
-```bash
-cat > ~/.claude/hooks/memnos.env <<'EOF'
-MEMNOS_API=http://localhost:8766
-MEMNOS_KEY=your-memnos-api-key
-MEMNOS_DEFAULT_NS=personal:default
-MEMNOS_TOP_K=5
-EOF
-```
-
-**Step 3 — Write the hook scripts**
-
-See `install-client.sh` in the repo for the full script content — the installer writes the same scripts verbatim.
-
-**Step 4 — Register in `~/.claude/settings.json`**
+Both **fail open** (never block your prompt) and use no LLM at query time. Find them under
+the installed package's `integrations/claude-code/` directory (or in the repo at
+`poc/integrations/claude-code/`). Wire them in **`~/.claude/settings.json`**:
 
 ```json
 {
   "hooks": {
     "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/Users/yourname/.claude/hooks/memnos-inject.sh",
-            "timeout": 8
-          }
-        ]
-      }
+      { "hooks": [ { "type": "command",
+        "command": "MEMNOS_NS=user:alice MEMNOS_URL=http://127.0.0.1:8900 python3 /path/to/integrations/claude-code/memnos-recall.py",
+        "timeout": 15 } ] }
     ],
     "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/Users/yourname/.claude/hooks/memnos-session-write.sh",
-            "timeout": 8,
-            "async": true
-          }
-        ]
-      }
+      { "hooks": [ { "type": "command",
+        "command": "MEMNOS_NS=user:alice MEMNOS_TOKEN=mnk_... python3 /path/to/integrations/claude-code/memnos-remember.py",
+        "async": true } ] }
     ]
   }
 }
 ```
 
-> Use **absolute paths** for `command`. Relative paths fail silently.  
-> `async: true` on the Stop hook means it runs after Claude responds — the user never waits for it.
-
-**Step 5 — Global git post-commit hook**
-
-```bash
-chmod +x ~/.git-hooks/post-commit
-git config --global core.hooksPath ~/.git-hooks
-```
-
-> **Per-repo overrides:** create `.git/hooks/post-commit.local` in a specific repo — the global hook calls it automatically after writing to memnos.
+The recall hook needs no token if the server allows read on that namespace; the remember
+hook writes, so it needs `MEMNOS_TOKEN`.
 
 ---
 
-### What each hook writes
+## Which to use?
 
-**inject hook** (reads): surfaces the 5 most semantically similar past memories as context before every Claude response. Claude sees them as `[memnos: relevant past context]` at the top of its input — no extra tool calls needed.
-
-**session hook** (writes): after every turn, records the current branch, recent commits, and CWD so the next session can orient itself without reading git history.
-
-**commit hook** (writes): every `git commit` produces an memnos memory tagged `git-commit`. `feat:`/`refactor:` commits become `decision` type; `fix:` commits become `incident` type. These surface automatically when you later ask "why did we change X?" or "what was the fix for Y?".
-
-### Updated automation table
-
-| Behaviour | Automatic? | How |
-|---|---|---|
-| Recall when asked about past context | ✅ Yes (with CLAUDE.md) | Claude calls `memory_search` |
-| Context injected before every prompt | ✅ Yes (with inject hook) | UserPromptSubmit hook |
-| Session state written after every turn | ✅ Yes (with stop hook) | Stop hook (async) |
-| Every git commit recorded | ✅ Yes (with git hook) | `core.hooksPath` global hook |
-| Saving key decisions | ✅ Yes (with CLAUDE.md) | Claude calls `memory_write` |
-| Full conversation transcript | ❌ No | Claude summarises — it doesn't record every message |
-| Knowledge graph entity extraction | ✅ Yes (spaCy, no LLM needed) | Runs on every `memory_write` |
-| Cross-session persistence | ✅ Yes | Stored in ArcadeDB on disk |
-| Credential auto-redaction | ✅ Yes | Detected and redacted before any write reaches ArcadeDB |
+- **Hooks** = effortless, always-on memory (recommended for daily coding).
+- **MCP** = explicit control when you want Claude to decide *when* to remember/recall.
+- **Both** = automatic recall + Claude can also deliberately store key decisions.
 
 ---
 
-## Team setup — shared server with per-engineer hooks
+## Optionally tell Claude to lean on it
 
-**Server admin** — run once on the shared host:
+Add to **`~/.claude/CLAUDE.md`** so Claude prefers memnos over ad-hoc file search:
+
+```markdown
+## Memory — memnos
+Call `recall` first when I reference past decisions, preferences, people, or prior context.
+Call `remember` when a key decision is made or I say "remember this".
+MCP results are plain text — read them directly; don't spawn agents to parse them.
+```
+
+---
+
+## Verify
 
 ```bash
-./install-server.sh
-# → generates ~/.memnos/.env with MEMNOS_API_KEY and ARCADEDB_PASSWORD
-# → starts ArcadeDB + memnos API via Docker
+curl -s localhost:8900/healthz            # {"ok": true}
 ```
 
-Share the API URL and key from `~/.memnos/.env` with each developer.
-
-**Each developer** — run on their own machine:
-
-```bash
-./install-client.sh --server http://memnos.yourcompany.com:8766 --key memnos-abc123
-# → installs hooks, sets their default namespace, restarts Claude Code
-```
-
-On Windows:
-```powershell
-.\install-client.ps1 -Server http://memnos.yourcompany.com:8766 -Key memnos-abc123
-```
-
-MCP config uses SSE transport for a remote server:
-
-```json
-{
-  "mcpServers": {
-    "memnos": {
-      "type": "sse",
-      "url": "https://memnos.yourcompany.com/sse",
-      "headers": {
-        "Authorization": "Bearer alice-personal-key"
-      }
-    }
-  }
-}
-```
-
-Each engineer uses their own API key. Keys are scoped to namespaces in `memnos.yaml`:
-
-```yaml
-auth:
-  api_keys:
-    - key: "alice-personal-key"
-      user_id: "alice"
-      namespaces: ["personal:alice", "team:architecture", "project:*"]
-    - key: "bob-personal-key"
-      user_id: "bob"
-      namespaces: ["personal:bob", "project:payments:*"]
-```
-
-See [enterprise-team-setup.md](enterprise-team-setup.md) for the full team deployment guide.
+In a fresh session ask: *"What do you remember about the auth service?"* — Claude should
+call `recall`. Then *"Remember we use JWT with 24h expiry"* — it should call `remember`.
+Inspect everything in the console at **http://127.0.0.1:8900/admin**.
 
 ---
 
 ## Troubleshooting
 
-**`/mcp` shows memnos as disconnected**
-- SSE: Is the server running? `curl http://localhost:8765/health`
-- stdio: Does the binary exist and run? `MEMNOS_CONFIG=/path/to/memnos.yaml ARCADEDB_PASSWORD=... memnos-mcp-stdio`
-- Did you fully restart Claude Code (quit, not just new tab)?
-- Are all env vars set correctly? Check `MEMNOS_CONFIG` is an absolute path.
-
-**Claude uses Bash/grep instead of memory_search**
-- CLAUDE.md isn't loaded. Run `Read ~/.claude/CLAUDE.md` at session start.
-- Or move the memnos instructions to the project-level `CLAUDE.md` in your working directory.
-
-**memory_search returns no results**
-- Check namespace: `org:myteam` won't find results stored under `personal:default`
-- Use `namespace="all"` to search everything: `memory_search(query="...", namespace="all")`
-- Verify memories exist: `curl http://localhost:8766/api/v1/graph/stats?namespace=all -H "Authorization: Bearer your-key"`
-
-**stdio takes too long to start**
-- First start downloads/loads the `all-MiniLM-L6-v2` model (~90MB). Allow 40–60s.
-- Subsequent starts are faster once the model is cached (`~/.cache/huggingface/`).
-- Set `MEMNOS_LOG_LEVEL=WARNING` in the env block to reduce logging overhead.
-
-**Claude spawns agents or runs scripts to parse results**
-- Add to CLAUDE.md: `"MCP results come back as plain text — read them directly, never spawn agents to parse tool results."`
+- **`/mcp` shows disconnected** — fully restart Claude Code (quit, not a new tab); confirm
+  `memnos mcp` runs in a terminal with the same env; use the absolute path to `memnos`.
+- **Recall returns nothing** — the token only sees granted namespaces. `memnos whoami <token>`
+  shows the grants; check `MEMNOS_NS` matches one of them.
+- **Auth errors** — the token must have a *write* grant for `remember`; read is enough for `recall`.

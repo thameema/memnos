@@ -1,52 +1,51 @@
 # Connecting memnos to Cline (VS Code)
 
-Cline supports MCP servers via two config locations: global VS Code settings or a per-project file.
+Cline supports MCP servers over stdio. memnos installs as a single package, so the server
+command is just `memnos mcp`.
 
-## Global Config (VS Code settings.json)
+## Prerequisites
 
-Open Command Palette → `Preferences: Open User Settings (JSON)` and add:
+- memnos running (`memnos serve`, default `http://127.0.0.1:8900`) — see [quickstart](../quickstart.md).
+- A scoped token + namespace:
+  ```bash
+  memnos namespace add user:alice
+  memnos token alice --label cline      # prints mnk_… once
+  memnos grant alice user:alice
+  ```
 
-```json
-{
-  "cline.mcpServers": {
-    "memnos": {
-      "type": "sse",
-      "url": "http://localhost:8765/sse",
-      "headers": { "Authorization": "Bearer memnos-local-dev-key" }
-    }
-  }
-}
-```
+## Add the server
 
-## Project Config (.cline/mcp_settings.json)
-
-Create `.cline/mcp_settings.json` in your project root:
+Open the Cline MCP settings (**Cline panel → MCP Servers → Configure → Edit JSON**, which
+opens `cline_mcp_settings.json`) and add:
 
 ```json
 {
   "mcpServers": {
     "memnos": {
-      "type": "sse",
-      "url": "http://localhost:8765/sse",
-      "headers": { "Authorization": "Bearer memnos-local-dev-key" }
+      "command": "memnos",
+      "args": ["mcp"],
+      "env": {
+        "MEMNOS_URL": "http://127.0.0.1:8900",
+        "MEMNOS_TOKEN": "mnk_...",
+        "MEMNOS_NS": "user:alice"
+      }
     }
   }
 }
 ```
 
-Project config takes precedence over global config when present.
+> If `memnos` isn't found, use the absolute path from `which memnos` (pipx installs to
+> `~/.local/bin/memnos`).
 
-## After Setup
+Toggle the server on, then reload the Cline extension. memnos appears with three tools:
 
-1. Reload the Cline extension (or restart VS Code)
-2. Open the Cline panel → MCP tab — memnos tools should appear as enabled
-3. Verify by asking Cline: `search my memories for "X"` — it will invoke `memory_search` and return results inline
+| tool | purpose |
+|------|---------|
+| `recall(query)` | ranked context for a query — no LLM at query time |
+| `remember(text)` | store a message → raw turn + bi-temporal facts |
+| `consolidate()` | distill facts into entity dossiers |
 
-## Available Tools
+## Verify
 
-Once connected, Cline can call all memnos tools:
-- `memory_search` — recall knowledge
-- `memory_write` — save new knowledge
-- `memory_delete` — remove stale entries
-- `get_related` — graph traversal
-- `graph_query` — AQL queries
+Ask Cline to *"recall what we decided about <topic>"*; it should call `recall`. Confirm
+writes in the console at `http://127.0.0.1:8900/admin`.

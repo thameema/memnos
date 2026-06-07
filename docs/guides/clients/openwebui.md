@@ -1,64 +1,45 @@
 # Connecting memnos to Open WebUI
 
-Open WebUI supports MCP tools natively.
+Open WebUI can call external tools via **OpenAPI tool servers**. The open-source memnos
+server exposes a REST API (no hosted MCP-over-HTTP endpoint), so you point Open WebUI at
+that REST API with a small OpenAPI spec.
 
-## Local Setup (both running on host)
+## Prerequisites
 
-1. Open WebUI → Settings → Tools → Add Tool Server
-2. URL: `http://localhost:8765/sse`
-3. Header: `Authorization: Bearer memnos-local-dev-key`
-4. Save
+- memnos running (`memnos serve`, default `http://127.0.0.1:8900`) — see [quickstart](../quickstart.md).
+- A scoped token + namespace (`memnos token alice` → `mnk_…`; `memnos grant alice user:alice`).
 
-All memnos tools (`memory_search`, `memory_write`, `memory_delete`, etc.) appear in the Tools panel.
+## Add memnos as a tool server
 
-## Docker Setup
-
-If Open WebUI runs in Docker, `localhost` inside the container refers to the container itself, not the host.
-
-**Option A — host.docker.internal (macOS/Windows):**
+**Settings → Tools → Add Tool Server** and provide the memnos base URL plus an OpenAPI spec
+describing `/recall` and `/remember` (see the [ChatGPT guide](chatgpt.md) for the same
+schema). Set the auth header:
 
 ```
-URL: http://host.docker.internal:8765/sse
+Authorization: Bearer mnk_...
 ```
 
-**Option B — shared Docker network (recommended for production):**
+## Docker networking
 
-Add both services to the same network in `docker-compose.yml`:
+If Open WebUI runs in Docker, `localhost` points at the container, not the host:
+
+- **macOS / Windows:** use `http://host.docker.internal:8900`
+- **Linux / same compose network:** run memnos on the shared network and use its service
+  name, e.g. `http://memnos:8900`
 
 ```yaml
 services:
-  memnos:
-    image: memnos:latest
-    ports:
-      - "8765:8765"
-      - "8766:8766"
-    networks:
-      - ai-net
-
   open-webui:
     image: ghcr.io/open-webui/open-webui:latest
-    ports:
-      - "3000:8080"
-    environment:
-      - WEBUI_SECRET_KEY=your-secret
-    networks:
-      - ai-net
-    depends_on:
-      - memnos
-
-networks:
-  ai-net:
-    driver: bridge
+    ports: ["3000:8080"]
+    extra_hosts: ["host.docker.internal:host-gateway"]   # Linux
 ```
 
-Then set the Tool Server URL to `http://memnos:8765/sse` (using the service name as hostname).
+(memnos itself connects to *your* PostgreSQL — it is the only datastore; there is no second
+service to run.)
 
 ## Verify
 
-After adding the tool server, open a chat and type:
-
-```
-Search my memories for "project status"
-```
-
-Open WebUI should invoke `memory_search` automatically if tool use is enabled, or you can manually select it from the Tools panel.
+In a chat, ask: *"recall my notes about project status (namespace user:alice)"*. Open WebUI
+invokes the `recall` tool and the model answers from the returned context — with no LLM at
+query time inside memnos. Confirm writes in the console at `http://127.0.0.1:8900/admin`.

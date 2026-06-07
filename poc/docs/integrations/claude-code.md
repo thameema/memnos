@@ -13,22 +13,24 @@ Prereq: a running memnos server + a token (see [`../../QUICKSTART.md`](../../QUI
 
 ## Option A — MCP server (explicit tools)
 
-Add to `~/.claude/settings.json`:
+If you installed the package (`pipx install memnos`), the MCP server is just `memnos mcp`:
 ```jsonc
 {
   "mcpServers": {
     "memnos": {
-      "command": "/abs/path/memnos/poc/.venv/bin/python",
-      "args": ["/abs/path/memnos/poc/memnos_mcp.py"],
+      "command": "memnos",
+      "args": ["mcp"],
       "env": {
         "MEMNOS_URL": "http://127.0.0.1:8900",
-        "MEMNOS_TOKEN": "mnk_...",          // python memnos_admin.py token <principal>
+        "MEMNOS_TOKEN": "mnk_...",          // memnos token <principal>
         "MEMNOS_NS": "user:alice"           // this agent's namespace scope
       }
     }
   }
 }
 ```
+(For a from-source checkout, use the venv Python instead: `"command":
+"/abs/path/poc/.venv/bin/python", "args": ["/abs/path/poc/memnos_mcp.py"]`.)
 Restart Claude Code. It now has three tools:
 | tool | what it does |
 |------|--------------|
