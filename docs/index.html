@@ -45,7 +45,7 @@
   </script>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
   <script>
     tailwind.config = {
       theme: {
@@ -61,6 +61,7 @@
   <style>
     :root { --bg: #09090f; --surface: #111118; --border: #1e1e2e; --muted: #6b7280; }
     body { background: var(--bg); font-family: 'Inter', sans-serif; color: #e5e7eb; }
+    .hero-display { font-family: 'Space Grotesk', 'Inter', sans-serif; letter-spacing: -0.02em; }
     .gradient-text {
       background: linear-gradient(135deg, #a78bfa 0%, #60a5fa 50%, #34d399 100%);
       -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
@@ -186,14 +187,14 @@
   <div class="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-600 rounded-full blur-[140px] opacity-10 pointer-events-none"></div>
   <div class="absolute bottom-1/4 right-1/4 w-80 h-80 bg-blue-500 rounded-full blur-[120px] opacity-8 pointer-events-none"></div>
 
-  <div class="relative z-10 max-w-6xl mx-auto px-6 w-full grid md:grid-cols-2 gap-16 items-center py-24">
+  <div class="relative z-10 max-w-6xl mx-auto px-6 w-full grid md:grid-cols-2 gap-16 items-center py-14">
     <!-- Left -->
     <div>
       <div class="inline-flex items-center gap-2 bg-purple-500/10 border border-purple-500/20 rounded-full px-4 py-1.5 text-sm text-purple-300 mb-8">
         <span class="w-1.5 h-1.5 bg-purple-400 rounded-full pulse-dot"></span>
         Apache-2.0 · Self-hostable · Private · Works with Claude, GPT-5, Llama, Gemini
       </div>
-      <h1 class="text-5xl md:text-6xl font-bold text-white leading-[1.1] tracking-tight mb-6">
+      <h1 class="hero-display text-5xl md:text-6xl font-bold text-white leading-[1.05] mb-6">
         Your AI forgets you.<br />
         <span class="gradient-text">memnos remembers.</span>
       </h1>
@@ -201,17 +202,15 @@
         Every AI tool forgets you the moment a chat ends. memnos is the memory layer that remembers — what you decided, what you prefer, what your team knows — and feeds it back to any AI, automatically. Yours, private, and portable across every tool.
       </p>
       <p class="text-gray-300 text-base leading-relaxed mb-8 max-w-lg">
-        <span class="text-white font-semibold">How we're different:</span> other memory tools lock you into their cloud, or let an LLM <em>guess</em> what to keep and forget. memnos is yours to self-host, remembers <span class="text-white">deterministically</span> (no LLM guessing), is fully governed and audited — and we publish <span class="text-white">honest, independently-judged</span> benchmarks. <a href="compare.html" class="text-purple-300 hover:text-purple-200 underline underline-offset-2">See how we compare to Zep, Mem0 &amp; Graphiti →</a>
+        <span class="text-white font-semibold">How we're different:</span> other memory tools lock you into their cloud, or let an LLM <em>guess</em> what to keep and forget. memnos is yours to self-host, remembers <span class="text-white">deterministically</span> (no LLM guessing), is fully governed and audited — and we publish <span class="text-white">honest, independently-judged</span> benchmarks.
       </p>
-      <div class="flex items-center gap-4">
-        <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white font-semibold px-7 py-3 rounded-full text-sm">Deploy in 90 seconds</a>
-        <a href="compare.html" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-7 py-3 rounded-full flex items-center gap-2">
-          How we compare &rarr;
-        </a>
-        <a href="https://github.com/thameema/memnos" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-7 py-3 rounded-full flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-3">
+        <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white font-semibold px-6 py-3 rounded-full text-sm whitespace-nowrap">Deploy free</a>
+        <a href="https://github.com/thameema/memnos" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-6 py-3 rounded-full flex items-center gap-2 whitespace-nowrap">
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
-          View on GitHub &rarr;
+          View on GitHub
         </a>
+        <a href="compare.html" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-6 py-3 rounded-full whitespace-nowrap">How we're different</a>
       </div>
       <!-- Stats row -->
       <div class="mt-14 grid grid-cols-2 gap-x-8 gap-y-6 border-t border-gray-800 pt-8">
@@ -284,9 +283,9 @@
 </section>
 
 <!-- ── PROBLEM ──────────────────────────────────────────────────────── -->
-<section class="relative z-10 py-24 fade-in">
+<section class="relative z-10 py-14 fade-in">
   <div class="max-w-6xl mx-auto px-6">
-    <div class="text-center mb-16">
+    <div class="text-center mb-12">
       <h2 class="text-3xl font-bold text-white mb-4">The real cost of stateless AI teams</h2>
       <p class="text-gray-400 max-w-xl mx-auto">Your team has 20 engineers and 20 AI assistants. Without shared memory, you have 40 silos — each starting from zero.</p>
     </div>
@@ -352,9 +351,9 @@
 </section>
 
 <!-- ── AUDIENCES ────────────────────────────────────────────────────── -->
-<section id="who" class="relative z-10 py-24 fade-in">
+<section id="who" class="relative z-10 py-14 fade-in">
   <div class="max-w-6xl mx-auto px-6">
-    <div class="text-center mb-16">
+    <div class="text-center mb-12">
       <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Who it's for</span>
       <h2 class="text-3xl font-bold text-white mt-3 mb-4">Memory for everyone an AI talks to</h2>
       <p class="text-gray-400 max-w-2xl mx-auto">Every AI tool forgets you the moment a chat ends. memnos is the memory layer underneath — for the person on ChatGPT, the team shipping software, the developer building agents, and the regulated enterprise that can't send data anywhere.</p>
@@ -381,14 +380,13 @@
         <p class="text-sm text-gray-400 leading-relaxed">Healthcare, legal, finance, government — self-host with token auth, namespace access control, full audit, and an encrypted secret vault. Your data never leaves your infrastructure.</p>
       </div>
     </div>
-    <p class="text-center text-gray-500 text-sm mt-10">Coming as a hosted service — <span class="text-gray-300">Memory-as-a-Service</span> — so anyone can give their AI a memory in one click.</p>
   </div>
 </section>
 
 <!-- ── FEATURES ─────────────────────────────────────────────────────── -->
-<section id="features" class="relative z-10 py-24 fade-in">
+<section id="features" class="relative z-10 py-14 fade-in">
   <div class="max-w-6xl mx-auto px-6">
-    <div class="text-center mb-16">
+    <div class="text-center mb-12">
       <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Capabilities</span>
       <h2 class="text-3xl font-bold text-white mt-3 mb-4">Enterprise-grade memory for every layer of your stack</h2>
     </div>
@@ -495,9 +493,9 @@
 </section>
 
 <!-- ── USE CASES PREVIEW ─────────────────────────────────────────────── -->
-<section class="relative z-10 py-24 fade-in">
+<section class="relative z-10 py-14 fade-in">
   <div class="max-w-6xl mx-auto px-6">
-    <div class="text-center mb-16">
+    <div class="text-center mb-12">
       <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Use Cases</span>
       <h2 class="text-3xl font-bold text-white mt-3 mb-4">Built for real engineering team complexity</h2>
     </div>
@@ -595,9 +593,9 @@
 </section>
 
 <!-- ── COMPARISON TEASER ──────────────────────────────────────────────── -->
-<section class="relative z-10 py-24 fade-in">
+<section class="relative z-10 py-14 fade-in">
   <div class="max-w-6xl mx-auto px-6">
-    <div class="text-center mb-16">
+    <div class="text-center mb-12">
       <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Comparison</span>
       <h2 class="text-3xl font-bold text-white mt-3 mb-4">Not just another memory layer</h2>
       <p class="text-gray-400 max-w-lg mx-auto">memnos is the only memory tool built for multi-agent engineering teams — with memory policies, temporal queries, and architecture enforcement no other tool has.</p>
@@ -675,9 +673,9 @@
 </section>
 
 <!-- ── SDK ───────────────────────────────────────────────────────────── -->
-<section id="sdk" class="relative z-10 py-24 fade-in">
+<section id="sdk" class="relative z-10 py-14 fade-in">
   <div class="max-w-6xl mx-auto px-6">
-    <div class="text-center mb-16">
+    <div class="text-center mb-12">
       <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Install &amp; integrate</span>
       <h2 class="text-3xl font-bold text-white mt-3 mb-4">One command. Then use it from anywhere.</h2>
       <p class="text-gray-400 max-w-2xl mx-auto">A cross-platform <code class="text-green-300">memnos</code> CLI (server + client in one), an MCP server for Claude Code / Cursor / Windsurf, and a plain REST API. PostgreSQL is the only prerequisite. <span class="text-gray-500">(Plus a Python SDK — <code class="text-green-300">memnos-sdk</code> — with LangChain &amp; LangGraph adapters; PyPI release pending.)</span></p>
@@ -853,9 +851,9 @@ memnos recall   <span class="token-str">"token expiry policy"</span> --namespace
 </section>
 
 <!-- ── HOW IT WORKS ─────────────────────────────────────────────────── -->
-<section id="how-it-works" class="relative z-10 py-24 fade-in">
+<section id="how-it-works" class="relative z-10 py-14 fade-in">
   <div class="max-w-6xl mx-auto px-6">
-    <div class="text-center mb-16">
+    <div class="text-center mb-12">
       <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Integration</span>
       <h2 class="text-3xl font-bold text-white mt-3 mb-4">How it works</h2>
       <p class="text-gray-400 max-w-md mx-auto">Five lines is all it takes to give your agent permanent, governed, shared memory.</p>
@@ -949,7 +947,7 @@ memnos recall   <span class="token-str">"token expiry policy"</span> --namespace
 </section>
 
 <!-- ── DOGFOOD ───────────────────────────────────────────────────────── -->
-<section class="relative z-10 py-24 fade-in">
+<section class="relative z-10 py-14 fade-in">
   <div class="max-w-6xl mx-auto px-6">
     <div class="gradient-border">
       <div class="gradient-border-inner p-10 md:p-14 rounded-2xl">
@@ -996,7 +994,7 @@ memnos recall   <span class="token-str">"token expiry policy"</span> --namespace
 </section>
 
 <!-- ── CTA ──────────────────────────────────────────────────────────── -->
-<section class="relative z-10 py-24 fade-in">
+<section class="relative z-10 py-14 fade-in">
   <div class="max-w-2xl mx-auto px-6 text-center">
     <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
       <div class="w-96 h-96 bg-purple-600 rounded-full blur-[160px] opacity-8"></div>
