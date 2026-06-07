@@ -138,6 +138,27 @@ async function loadDashboard() {
     <td>${esc(r.action)}</td><td>${esc(r.namespace || "")}</td>
     <td>${r.status ?? (r.ok ? 200 : "—")}</td><td>${r.latency_ms ?? ""}</td></tr>`).join("");
 }
+async function loadSecrets() {
+  const j = await api("GET", "secrets");
+  $("#vault-state").textContent = j.unlocked ? "· unlocked" : "· LOCKED (set MEMNOS_SECRET_KEY in .env)";
+  $("#sec-table tbody").innerHTML = (j.secrets || []).map(s => `<tr>
+    <td><code>${esc(s.name)}</code></td><td>${esc(s.description || "")}</td><td>${fmt(s.updated_at)}</td>
+    <td><button class="danger" data-ds="${esc(s.name)}">delete</button></td></tr>`).join("")
+    || `<tr><td colspan=4 class=muted>No secrets stored.</td></tr>`;
+  $$("#sec-table [data-ds]").forEach(b => b.onclick = async () => {
+    if (!confirm(`Delete secret "${b.dataset.ds}"?`)) return;
+    await api("DELETE", "secrets?name=" + encodeURIComponent(b.dataset.ds)); loadSecrets();
+  });
+}
+$("#sec-set").onclick = async () => {
+  const name = $("#sec-name").value.trim(), value = $("#sec-value").value;
+  if (!name || !value) return;
+  try {
+    await api("POST", "secrets", { name, value, description: $("#sec-desc").value.trim() || null });
+    $("#sec-name").value = ""; $("#sec-value").value = ""; $("#sec-desc").value = ""; $("#sec-err").textContent = "";
+    loadSecrets();
+  } catch (e) { $("#sec-err").textContent = e.message; }
+};
 async function loadSettings() {
   const p = await api("GET", "provider");
   $("#set-provider").innerHTML = `Mode: <b>${esc(p.mode)}</b> · embedding dim <b>${p.dim}</b> ·
@@ -145,6 +166,7 @@ async function loadSettings() {
 }
 $$(".tabs button").forEach(b => b.addEventListener("click", () => {
   if (b.dataset.tab === "dashboard") loadDashboard();
+  if (b.dataset.tab === "secrets") loadSecrets();
   if (b.dataset.tab === "settings") loadSettings();
 }));
 

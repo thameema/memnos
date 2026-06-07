@@ -203,9 +203,27 @@ class Handler(BaseHTTPRequestHandler):
                 if sub == "quality" and method == "GET":
                     return 200, {"trend": Control.eval_trend(conn, "stale_suppression", "rate", 10)}
                 if sub == "provider" and method == "GET":
+                    from memnos_brain.vault import Vault
                     return 200, {"mode": "openai" if os.environ.get("OPENAI_API_KEY") else "local",
                                  "dim": DIM, "key_present": bool(os.environ.get("OPENAI_API_KEY")),
-                                 "extract_model": "gpt-4o-mini"}
+                                 "extract_model": "gpt-4o-mini", "vault_unlocked": Vault.available()}
+                if sub == "secrets":
+                    from memnos_brain.vault import Vault, VaultLocked
+                    try:
+                        if method == "GET":
+                            return 200, {"secrets": Vault.list(conn), "unlocked": Vault.available()}
+                        if method == "POST":
+                            name = str(body.get("name", "")).strip()
+                            val = str(body.get("value", ""))
+                            if not name or not val:
+                                return 400, {"error": "name and value required"}
+                            Vault.set(conn, name, val, body.get("description"))   # plaintext never stored
+                            return 200, {"ok": True, "name": name}
+                        if method == "DELETE":
+                            Vault.delete(conn, (qs.get("name", [""])[0]).strip())
+                            return 200, {"ok": True}
+                    except VaultLocked as v:
+                        return 409, {"error": "vault locked", "msg": str(v)}
             except Exception as e:
                 traceback.print_exc()
                 return 500, {"error": type(e).__name__, "msg": str(e)[:200]}
@@ -353,12 +371,24 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     brain_rerank.rerank("warm", ["a", "b"])
-    EMBED = _build_embedder()
     POOL = ConnectionPool(DSN, min_size=2, max_size=POOL_MAX, open=True,
                           kwargs={"autocommit": True, "row_factory": dict_row})
     with POOL.connection() as conn:
+        Control.init(conn)                                        # control plane (incl. secrets table)
+        # provider key may be a vault value-ref (secret://name) — resolve before building embedder
+        k = os.environ.get("OPENAI_API_KEY", "")
+        if k.startswith("secret://"):
+            try:
+                from memnos_brain.vault import Vault
+                rk = Vault.resolve(conn, k)
+                if rk:
+                    os.environ["OPENAI_API_KEY"] = rk
+                    print("[memnos] OPENAI_API_KEY resolved from vault", flush=True)
+            except Exception as e:
+                print(f"[memnos] WARN: could not resolve provider key from vault: {e}", flush=True)
+    EMBED = _build_embedder()
+    with POOL.connection() as conn:
         BrainStore(conn=conn).create_schema("memnos", dim=DIM)   # memory schema
-        Control.init(conn)                                        # control plane
         Control.audit(conn, None, "server_start", "-", True,      # heartbeat (uptime/crash-loop signal)
                       detail={"dim": DIM})
     print(f"[memnos] production server on http://127.0.0.1:{PORT} (pool max {POOL_MAX})", flush=True)

@@ -30,6 +30,7 @@
       <button data-tab="tokens">Tokens</button>
       <button data-tab="access">Principals &amp; Grants</button>
       <button data-tab="dashboard">Dashboard</button>
+      <button data-tab="secrets">Secrets</button>
       <button data-tab="settings">Settings</button>
     </nav>
 
@@ -89,6 +90,23 @@
       <div class="card"><h3>Reliability (24h)</h3><table id="dash-stats"><thead><tr><th>op</th><th>calls</th><th>err%</th><th>p50ms</th><th>p95ms</th><th>recall-empty%</th></tr></thead><tbody></tbody></table></div>
       <div class="card"><h3>Usage / cost</h3><table id="dash-usage"><thead><tr><th>op</th><th>calls</th><th>tokens in</th><th>tokens out</th><th>cost $</th></tr></thead><tbody></tbody></table></div>
       <div class="card"><h3>Recent activity</h3><table id="dash-audit"><thead><tr><th>time</th><th>principal</th><th>action</th><th>namespace</th><th>status</th><th>ms</th></tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section id="tab-secrets" class="tab" hidden>
+      <div class="card">
+        <h3>Secret vault <span id="vault-state" class="muted"></span></h3>
+        <p class="muted">Encrypted at rest (AES-256-GCM). Plaintext is never stored, listed, or returned —
+          reference a secret anywhere as <code>secret://name</code>. memnos also auto-redacts secret-looking
+          text from remembered messages so credentials can't leak into recall.</p>
+        <div class="row">
+          <input id="sec-name" placeholder="name (e.g. openai)">
+          <input id="sec-value" type="password" placeholder="value (stored encrypted)">
+          <input id="sec-desc" placeholder="description (optional)">
+          <button id="sec-set">Store</button>
+        </div>
+        <p id="sec-err" class="err"></p>
+      </div>
+      <div class="card"><table id="sec-table"><thead><tr><th>Name</th><th>Description</th><th>Updated</th><th></th></tr></thead><tbody></tbody></table></div>
     </section>
 
     <section id="tab-settings" class="tab" hidden>

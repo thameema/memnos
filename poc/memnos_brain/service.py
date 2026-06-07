@@ -50,7 +50,7 @@ def _dossier_text(x) -> str:
 class MemnosMemory:
     def __init__(self, store_or_dsn, embed_fn, *, reranker_model=brain_rerank.DEFAULT_RERANKER,
                  dim=1536, llm=None, extract_model="gpt-4o-mini", ensure_schema=False,
-                 on_usage=None, extract_fn=None):
+                 on_usage=None, extract_fn=None, redact=True):
         # store_or_dsn may be a pooled BrainStore (production) or a DSN string (scripts).
         self.store = store_or_dsn if isinstance(store_or_dsn, BrainStore) else BrainStore(store_or_dsn)
         self.embed = embed_fn
@@ -65,6 +65,7 @@ class MemnosMemory:
         # extraction run on a different (e.g. subscription-billed Claude CLI) backend while the
         # cheap-per-call answerer stays on a paid API — the provider mix. None = OpenAI path.
         self.extract_fn = extract_fn
+        self.redact = redact          # strip secrets from text BEFORE it enters memory
         self.schema = self.store.create_schema(_TENANT, dim=dim) if ensure_schema else f"tenant_{_TENANT}"
 
     def _track(self, model, resp):
@@ -84,6 +85,9 @@ class MemnosMemory:
         prior value for the same subject+predicate) and the entity GRAPH is populated
         — parity with the validated phaseA engine. Returns ids + supersession count."""
         observed_at = observed_at or datetime.now(timezone.utc)
+        if self.redact:
+            from .redact import redact as _redact
+            text, _ = _redact(text)             # strip secrets BEFORE storage + extraction
         tid = self.store.insert_raw_turn(self.schema, namespace, session_id, speaker,
                                          text, observed_at, self.embed(text))
         n_facts = n_super = 0
@@ -103,6 +107,9 @@ class MemnosMemory:
         This is the SAME code the LoCoMo benchmark runs — there is one engine, not two.
         Feed sessions in chronological order so belief-change supersession closes the
         OLDER value first."""
+        if self.redact:
+            from .redact import redact as _redact
+            turns = [(spk, _redact(txt)[0] if txt else txt) for spk, txt in turns]
         for ti, (spk, txt) in enumerate(turns):
             if not txt:
                 continue

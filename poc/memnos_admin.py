@@ -40,7 +40,17 @@ def main():
     p = sub.add_parser("health"); p.add_argument("--hours", type=int, default=24)
     sub.add_parser("ns")          # show the auto-resolved namespace for the current dir
     p = sub.add_parser("admin"); p.add_argument("--name", default="admin")   # bootstrap console login
+    sub.add_parser("secret-keygen")                                          # mint a vault master key
+    p = sub.add_parser("secret-set"); p.add_argument("name"); p.add_argument("--desc"); p.add_argument("--value")
+    sub.add_parser("secret-list")
+    p = sub.add_parser("secret-rm"); p.add_argument("name")
     args = ap.parse_args()
+
+    if args.cmd == "secret-keygen":
+        from memnos_brain.vault import Vault
+        print("MEMNOS_SECRET_KEY=" + Vault.keygen())
+        print("# add the line above to poc/.env (keep it safe — losing it makes secrets unrecoverable)")
+        return
 
     if args.cmd == "ns":
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -123,6 +133,24 @@ def main():
         print(f"=== memnos health (last {args.hours}h) ===")
         for level, msg in Control.health(c, args.hours):
             print(f"  [{level}] {msg}")
+    elif args.cmd == "secret-set":
+        from memnos_brain.vault import Vault, VaultLocked
+        val = args.value
+        if val is None:
+            import getpass
+            val = getpass.getpass(f"value for secret '{args.name}': ")   # not echoed / not in shell history
+        try:
+            Vault.set(c, args.name, val, args.desc); print(f"secret '{args.name}' stored (encrypted)")
+        except VaultLocked as e:
+            sys.exit(f"vault locked: {e}")
+    elif args.cmd == "secret-list":
+        from memnos_brain.vault import Vault
+        print("secrets (metadata only — plaintext never shown):")
+        for s in Vault.list(c):
+            print(f"  {s['name']:<24} {s['description'] or ''}  (updated {s['updated_at']:%Y-%m-%d})")
+    elif args.cmd == "secret-rm":
+        from memnos_brain.vault import Vault
+        Vault.delete(c, args.name); print(f"secret '{args.name}' deleted")
 
 
 if __name__ == "__main__":

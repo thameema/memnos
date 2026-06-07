@@ -74,6 +74,19 @@ curl -s localhost:8900/recall -H "Authorization: Bearer $TOK" \
   -d "{\"namespace\":\"$NS\",\"query\":\"Where does Alice work and live?\"}"
 ```
 
+## 6b. Secrets (encrypted vault + auto-redaction)
+memnos auto-redacts secret-looking text (API keys, tokens, passwords) from remembered
+messages **before** storage, so credentials never leak into recall. For secrets you *do*
+want to keep (provider keys, integration creds), use the encrypted vault:
+```bash
+.venv/bin/python memnos_admin.py secret-keygen     # prints MEMNOS_SECRET_KEY → add to .env
+.venv/bin/python memnos_admin.py secret-set openai # prompts for the value (not echoed)
+.venv/bin/python memnos_admin.py secret-list
+```
+Reference a secret anywhere as `secret://openai` (e.g. set `OPENAI_API_KEY=secret://openai`
+in `.env` — the server resolves it at startup). Plaintext is AES-256-GCM encrypted at rest
+and never logged/listed/returned. Also manageable in the console **Secrets** tab.
+
 ## 7. Operate it (the governance/observability dashboard)
 ```bash
 python memnos_admin.py stats     # volume / error% / p50-p95 latency / recall-empty
