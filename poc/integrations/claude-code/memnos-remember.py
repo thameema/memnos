@@ -24,8 +24,19 @@ if tp and os.path.exists(tp):
         text = last or text
     except Exception:
         pass
-if not text.strip():
+text = text.strip()
+if not text:
     sys.exit(0)
+
+# SKIP noise: agent/system-generated prompts and trivial turns pollute memory
+# (e.g. autonomous-loop ticks, system reminders, one-word replies like "Yes").
+_SKIP_PREFIX = ("# autonomous loop", "<system-reminder", "<command-", "# ")
+_lower = text.lower()
+if any(_lower.startswith(p) for p in _SKIP_PREFIX) or "<<autonomous-loop" in _lower:
+    sys.exit(0)
+if len(text) < 15 or len(text.split()) < 3:        # trivial-turn salience gate
+    sys.exit(0)
+
 try:
     headers = {"Content-Type": "application/json"}
     if TOKEN:
