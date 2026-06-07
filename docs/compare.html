@@ -471,7 +471,7 @@
           </div>
         </div>
         <ul class="space-y-2 text-sm text-gray-400">
-          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Stores team knowledge graphs — decisions, constraints, incidents</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Stores team memory stores — decisions, constraints, incidents</li>
           <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Shared across entire agent fleet — not per-user</li>
           <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Real-time pub/sub for multi-agent coordination</li>
           <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Enterprise-grade ACLs, audit trail, secret vault</li>
@@ -577,7 +577,7 @@
         <ul class="space-y-2 text-sm text-gray-400">
           <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Works with Claude Code, Cursor, and any MCP-compatible client</li>
           <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Single Docker container — no external database to provision</li>
-          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Can be used as a LangMem drop-in via <code class="text-xs bg-purple-900/30 px-1 rounded">memnos-sdk[langchain]</code></li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>LangChain retriever + LangGraph store via <code class="text-xs bg-purple-900/30 px-1 rounded">memnos-sdk[langchain]</code></li>
           <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Knowledge graph traversal — not just vector search</li>
           <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Encrypted vault, audit trail, namespace ACLs</li>
           <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Architecture enforcement — corpus checks in CI</li>
@@ -662,7 +662,7 @@
     <div class="gradient-border mb-8">
       <div class="gradient-border-inner px-8 py-6 rounded-2xl">
         <p class="text-white font-semibold text-lg mb-3 text-center">The fundamental difference</p>
-        <p class="text-gray-400 text-sm leading-relaxed text-center max-w-2xl mx-auto">"Obsidian is a notebook you manage. You are the librarian. memnos is a living knowledge graph the team builds together — where AI is also a contributor. The former scales with your discipline. The latter scales with your team's activity."</p>
+        <p class="text-gray-400 text-sm leading-relaxed text-center max-w-2xl mx-auto">"Obsidian is a notebook you manage. You are the librarian. memnos is a living memory store the team builds together — where AI is also a contributor. The former scales with your discipline. The latter scales with your team's activity."</p>
       </div>
     </div>
 
@@ -704,7 +704,7 @@
             <svg class="w-6 h-6 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
           </div>
           <h3 class="text-white font-bold text-xl mb-3">Temporal Memory</h3>
-          <p class="text-gray-400 text-sm leading-relaxed mb-4">Query the knowledge graph as of any past date. Know what your team knew on March 15th. Track how understanding evolved. Watch when a decision was superseded and by what.</p>
+          <p class="text-gray-400 text-sm leading-relaxed mb-4">Query the memory store as of any past date. Know what your team knew on March 15th. Track how understanding evolved. Watch when a decision was superseded and by what.</p>
           <div class="code-block p-4 mt-4">
             <pre class="text-xs leading-relaxed"><code><span class="token-cmt"># What did we know about auth on March 15?</span>
 <span class="token-var">results</span> <span class="token-kw">=</span> <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-fn">search</span>(
