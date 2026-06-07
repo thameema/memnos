@@ -11,7 +11,13 @@ async function api(method, path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || ("HTTP " + r.status) + (j.msg ? ": " + j.msg : ""));
+  if (r.status === 401 || r.status === 403) {   // revoked/expired/invalid token → back to login
+    localStorage.removeItem("memnos_admin_token");
+    show(false);
+    $("#loginerr").textContent = "Session expired or token revoked — sign in again with a valid admin token.";
+    throw new Error("unauthorized");
+  }
+  if (!r.ok) throw new Error((j.error || ("HTTP " + r.status)) + (j.msg ? ": " + j.msg : ""));
   return j;
 }
 const esc = (s) => String(s ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -44,7 +50,8 @@ function loadAll() { loadNamespaces(); loadPrincipals(); }
 async function loadNamespaces() {
   const { namespaces } = await api("GET", "namespaces");
   $("#ns-table tbody").innerHTML = namespaces.map(n => `<tr>
-    <td><code>${esc(n.name)}</code></td><td>${esc(n.description || "")}</td>
+    <td><code>${esc(n.name)}</code>${n.registered ? "" : ' <span class="pill no">discovered</span>'}</td>
+    <td>${esc(n.description || "")}</td>
     <td>${n.turns}</td><td>${n.facts}</td><td>${fmt(n.created_at)}</td>
     <td><button class="danger" data-del="${esc(n.name)}">delete</button></td></tr>`).join("")
     || `<tr><td colspan=6 class=muted>No namespaces yet — create one above.</td></tr>`;

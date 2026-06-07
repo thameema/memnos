@@ -164,18 +164,29 @@ class Control:
 
     @staticmethod
     def list_namespaces(conn):
-        """Registry rows + live row counts from the memory tables."""
+        """ALL real namespaces: the explicit registry UNION any namespace that has data
+        (raw_turns/semantic) or a concrete grant — so implicitly-created namespaces (e.g.
+        from hooks) still show. `registered` flags whether it's in the registry."""
         with conn.cursor() as c:
             c.execute("""
-                SELECT n.name, n.description, n.created_at, p.name AS created_by,
-                  COALESCE(rt.cnt,0) AS turns, COALESCE(sm.cnt,0) AS facts
-                FROM memnos_control.namespaces n
+                WITH names AS (
+                    SELECT name FROM memnos_control.namespaces
+                    UNION SELECT DISTINCT namespace FROM tenant_memnos.raw_turns
+                    UNION SELECT DISTINCT namespace FROM tenant_memnos.semantic
+                    UNION SELECT DISTINCT namespace FROM memnos_control.grants
+                      WHERE namespace <> '*' AND namespace NOT LIKE '%*'
+                )
+                SELECT nm.name, n.description, n.created_at, p.name AS created_by,
+                  COALESCE(rt.cnt,0) AS turns, COALESCE(sm.cnt,0) AS facts,
+                  (n.name IS NOT NULL) AS registered
+                FROM names nm
+                LEFT JOIN memnos_control.namespaces n ON n.name=nm.name
                 LEFT JOIN memnos_control.principals p ON p.id=n.created_by
                 LEFT JOIN (SELECT namespace, count(*) cnt FROM tenant_memnos.raw_turns GROUP BY namespace) rt
-                  ON rt.namespace=n.name
+                  ON rt.namespace=nm.name
                 LEFT JOIN (SELECT namespace, count(*) cnt FROM tenant_memnos.semantic GROUP BY namespace) sm
-                  ON sm.namespace=n.name
-                ORDER BY n.created_at DESC""")
+                  ON sm.namespace=nm.name
+                ORDER BY turns DESC, nm.name""")
             return c.fetchall()
 
     @staticmethod
