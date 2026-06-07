@@ -105,7 +105,10 @@ def main():
         print("[consolidate] no dirty namespaces — all dossiers fresh")
         return
 
-    mem = MemnosMemory(store, embed, dim=embed.dim, llm=cli)
+    # on_usage feeds dossier-LLM tokens to the meter so the per-namespace cost recorded
+    # to usage_ledger reflects real spend (not just embeddings).
+    mem = MemnosMemory(store, embed, dim=embed.dim, llm=cli,
+                       on_usage=lambda model, pt, ct: meter.record("consolidate", model, pt, ct))
     total = 0
     for ns, n_facts in targets:
         cost0 = meter.cost
