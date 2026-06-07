@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memnos-sdk"
+version = "0.1.0"
+description = "Lightweight client + LangChain/LangGraph adapters for memnos — backend memory for AI agents."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "memnos" }]
+keywords = ["memnos", "memory", "AI agents", "LangChain", "LangGraph", "RAG", "MCP"]
+dependencies = ["httpx>=0.27"]
+
+[project.optional-dependencies]
+langchain = ["langchain-core>=0.3"]
+langgraph = ["langgraph>=0.2"]
+all = ["langchain-core>=0.3", "langgraph>=0.2"]
+dev = ["pytest>=8", "langchain-core>=0.3", "langgraph>=0.2"]
+
+[project.urls]
+Homepage = "https://memnos.net"
+Source = "https://github.com/thameema/memnos"
+
+[tool.setuptools]
+packages = ["memnos_sdk", "memnos_sdk.integrations"]
