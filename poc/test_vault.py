@@ -57,6 +57,12 @@ def main():
               and "AKIAIOSFODNN7EXAMPLE" not in clean and "hunter2hunter2" not in clean
               and "mnk_abcdefghijklmnop" not in clean)
     check("keeps normal text", redact.redact("I moved to Seattle in May")[1] == 0)
+    check("redacts stripe key", "sk_live_" not in redact.redact("use sk_live_abcd1234efgh5678ijkl")[0])
+    # entropy catch-all: a long high-entropy token with no named pattern
+    ent_clean, ent_n = redact.redact("token=Zx9Qe7Lm2Pk4Rt6Vy8Bn1Cd3Fg5Hj0Ws aGq")
+    check("entropy catch-all redacts unknown token", ent_n >= 1 and "Zx9Qe7Lm2Pk4Rt6Vy8Bn1Cd3Fg5Hj0Ws" not in ent_clean)
+    check("entropy guard keeps long prose", redact.redact(
+        "the quick brown fox jumps over the lazy dog again and again today")[1] == 0)
 
     print("=== vault ===")
     if not Vault.available():
@@ -79,6 +85,22 @@ def main():
         Vault.get(conn, "test_secret"); check("wrong key fails to decrypt", False)
     except Exception:
         check("wrong key fails to decrypt", True)
+    os.environ["MEMNOS_SECRET_KEY"] = saved
+
+    print("=== key rotation ===")
+    Vault.set(conn, "rot_secret", "rotate-me-please")
+    new_key = Vault.keygen()
+    n_rot = Vault.rotate_key(conn, saved, new_key)
+    check("rotate re-encrypted >=1 secret", n_rot >= 1)
+    os.environ["MEMNOS_SECRET_KEY"] = new_key
+    check("decrypts under NEW key after rotate", Vault.get(conn, "rot_secret") == "rotate-me-please")
+    os.environ["MEMNOS_SECRET_KEY"] = saved
+    try:
+        Vault.get(conn, "rot_secret"); check("OLD key fails after rotate", False)
+    except Exception:
+        check("OLD key fails after rotate", True)
+    os.environ["MEMNOS_SECRET_KEY"] = new_key   # delete needs a working key path; name-AAD only
+    Vault.delete(conn, "rot_secret")
     os.environ["MEMNOS_SECRET_KEY"] = saved
 
     print("=== end-to-end: secret in remembered text never stored ===")

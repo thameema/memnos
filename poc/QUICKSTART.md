@@ -10,8 +10,24 @@ MCP client, or plain HTTP) in ~5 minutes.
 
 ---
 
+## Fastest path — `memnos` CLI (pip/pipx)
+**Postgres is a prerequisite** (an existing PG with the `vector` extension available — the
+installer never installs Postgres). Then:
+```bash
+cd poc && ./install.sh          # macOS/Linux  (Windows: .\install.ps1)  → installs the `memnos` command
+memnos setup                    # enter your Postgres connection → creates schema + admin token
+memnos serve                    # start the server → open http://127.0.0.1:8900/admin
+```
+`memnos --help` lists everything: `setup serve token grant namespace secret stats health
+remember recall whoami ns`. Config (DSN, vault key, port) lives in `~/.memnos/config.json`.
+
+The manual/dev steps below are equivalent (and what the launchd service uses).
+
+---
+
 ## 1. Prerequisites
-- Docker (for Postgres+pgvector)
+- PostgreSQL with **pgvector** (a prerequisite — not installed for you). For local dev a
+  container is easy: `docker compose -f docker-compose.poc.yml up -d`.
 - Python 3.10+
 - An OpenAI API key (extraction + 1536-d embeddings). *Optional:* without it the server
   runs in free **local 384-d** mode (embeddings only, no fact extraction).

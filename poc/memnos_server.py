@@ -39,7 +39,27 @@ def _load_env(path=".env"):
         pass
 
 
+def _load_config():
+    """Load ~/.memnos/config.json (written by `memnos setup`) into env. setdefault, so an
+    existing .env / real env still wins — but a fresh pip install with only config.json
+    works with no .env. Shares the master key + DSN between CLI and server."""
+    import json as _json
+    p = os.path.join(os.path.expanduser("~"), ".memnos", "config.json")
+    try:
+        with open(p) as fh:
+            cfg = _json.load(fh)
+        if cfg.get("dsn"):
+            os.environ.setdefault("MEMNOS_DSN", cfg["dsn"])
+        if cfg.get("secret_key"):
+            os.environ.setdefault("MEMNOS_SECRET_KEY", cfg["secret_key"])
+        if cfg.get("port"):
+            os.environ.setdefault("MEMNOS_PORT", str(cfg["port"]))
+    except (FileNotFoundError, ValueError):
+        pass
+
+
 _load_env()
+_load_config()
 
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -369,7 +389,10 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-if __name__ == "__main__":
+def serve(port=None):
+    """Boot + run the memnos server. Importable so the `memnos serve` CLI reuses it."""
+    global POOL, EMBED
+    port = int(port or PORT)
     brain_rerank.rerank("warm", ["a", "b"])
     POOL = ConnectionPool(DSN, min_size=2, max_size=POOL_MAX, open=True,
                           kwargs={"autocommit": True, "row_factory": dict_row})
@@ -391,5 +414,9 @@ if __name__ == "__main__":
         BrainStore(conn=conn).create_schema("memnos", dim=DIM)   # memory schema
         Control.audit(conn, None, "server_start", "-", True,      # heartbeat (uptime/crash-loop signal)
                       detail={"dim": DIM})
-    print(f"[memnos] production server on http://127.0.0.1:{PORT} (pool max {POOL_MAX})", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    print(f"[memnos] production server on http://127.0.0.1:{port} (pool max {POOL_MAX})", flush=True)
+    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+
+
+if __name__ == "__main__":
+    serve()

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memnos"
+version = "0.1.0"
+description = "Self-hostable, governed, vendor-neutral memory for AI agents (PostgreSQL + pgvector)."
+readme = "QUICKSTART.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "psycopg[binary]>=3.2",
+    "psycopg_pool>=3.2",
+    "httpx>=0.27",
+    "openai>=1.40",
+    "sentence-transformers>=3.0",
+    "mcp>=1.2",
+    "python-dateutil>=2.9",
+    "cryptography>=42",
+]
+
+[project.scripts]
+memnos = "memnos_cli:main"
+
+# Package-in-place: ship the engine packages + the needed top-level modules + the console
+# UI as data. (Keeps current layout; no risky file-move refactor.)
+[tool.setuptools]
+packages = ["memnos_brain", "memnos_poc"]
+py-modules = ["memnos_cli", "memnos_server", "memnos_admin", "memnos_mcp",
+              "validate_brain", "locomo_pg_parallel", "locomo_pg_qa_only"]
+
+[tool.setuptools.package-data]
+memnos_brain = ["schema.sql"]
+
+[tool.setuptools.data-files]
+"share/memnos/ui" = ["ui/index.html", "ui/app.js", "ui/app.css"]
