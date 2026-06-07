@@ -101,20 +101,17 @@
     /* Main comparison table */
     .big-compare { border-collapse: collapse; width: 100%; }
     .big-compare thead th {
-      background: rgba(9,9,15,0.95);
+      background: #0d0d16;
       padding: 14px 12px;
       font-size: 0.78rem;
       font-weight: 600;
       text-align: center;
-      border-bottom: 1px solid rgba(255,255,255,0.08);
-      position: sticky;
-      top: 64px;
-      z-index: 10;
+      border-bottom: 1px solid rgba(255,255,255,0.10);
     }
     .big-compare thead th:first-child { text-align: left; color: #9ca3af; }
     .big-compare thead th.col-memnos {
       color: #a78bfa;
-      background: rgba(124,92,252,0.08);
+      background: #15122a;
     }
     .big-compare tbody td {
       padding: 12px 12px;
@@ -235,21 +232,28 @@
         <table class="big-compare">
           <thead>
             <tr>
-              <th style="min-width:240px;">Capability</th>
+              <th style="min-width:280px;">Capability</th>
               <th class="col-memnos" style="min-width:110px;">
                 <div class="flex items-center justify-center gap-1.5">
                   <svg width="14" height="14" viewBox="0 0 28 28" fill="none"><rect x="4" y="17" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.8"/><rect x="4" y="11" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.9"/><rect x="4" y="5" width="20" height="5" rx="2.5" fill="#a78bfa"/></svg>
                   memnos
                 </div>
               </th>
-              <th style="min-width:95px;">Mem0</th>
-              <th style="min-width:95px;">Zep</th>
-              <th style="min-width:95px;">Graphiti</th>
+              <th style="min-width:95px;">Mem0<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">v2.0.4</span></th>
+              <th style="min-width:95px;">Zep<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">Cloud<sup>†</sup></span></th>
+              <th style="min-width:95px;">Graphiti<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">v0.29</span></th>
             </tr>
           </thead>
           <tbody>
-            <!-- Memory model -->
-            <tr class="section-header"><td colspan="5">Memory model &amp; retrieval</td></tr>
+            <!-- Ingestion & memory model -->
+            <tr class="section-header"><td colspan="5">Ingestion &amp; memory model</td></tr>
+            <tr>
+              <td>Structured fact extraction (typed subject–predicate–object)</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+            </tr>
             <tr>
               <td>Bi-temporal facts (valid-time + as-of queries)</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
@@ -258,23 +262,53 @@
               <td><span class="check-green">&#10003;</span></td>
             </tr>
             <tr>
-              <td>Deterministic conflict handling (no LLM guessing at write)</td>
+              <td>Deterministic conflict resolution at write — <em>no LLM</em></td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Single- vs multi-valued attribute logic (supersede vs accumulate)</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Offline consolidation into entity dossiers / communities</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span></td>
-              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+            </tr>
+            <!-- Retrieval & ranking -->
+            <tr class="section-header"><td colspan="5">Retrieval &amp; ranking</td></tr>
+            <tr>
+              <td>Hybrid retrieval (vector + BM25 keyword)</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+            </tr>
+            <tr>
+              <td>Reciprocal Rank Fusion (RRF)</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
             </tr>
             <tr>
               <td>Cross-encoder reranking on recall</td>
-              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-yellow">~</span></td>
-              <td><span class="check-red">&#10007;</span></td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">default</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">opt-in</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">opt-in</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">opt-in</span></td>
             </tr>
             <tr>
-              <td>One engine — no separate vector + graph database</td>
+              <td>Entity-guarantee + timeline retrieval arms (answer completeness)</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
-              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
             </tr>
@@ -282,22 +316,52 @@
               <td>No LLM at query time</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">LLM reranker default</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">LLM reranker default</span></td>
+            </tr>
+            <!-- Architecture & deploy -->
+            <tr class="section-header"><td colspan="5">Architecture &amp; deploy</td></tr>
+            <tr>
+              <td>Single store — no separate graph database required</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>Runs on standard PostgreSQL + pgvector</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+            </tr>
+            <tr>
+              <td>MCP server (any MCP client)</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span></td>
               <td><span class="check-green">&#10003;</span></td>
             </tr>
-            <!-- Governance -->
+            <tr>
+              <td>Python SDK (LangChain / LangGraph)</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">DIY</span></td>
+            </tr>
+            <!-- Governance & security -->
             <tr class="section-header"><td colspan="5">Governance &amp; security</td></tr>
             <tr>
               <td>Token auth + namespace access control</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-yellow">~</span></td>
-              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-yellow">~</span></td>
             </tr>
             <tr>
-              <td>Full audit trail + usage ledger</td>
+              <td>Audit trail + usage / cost ledger</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-yellow">~</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-red">&#10007;</span></td>
             </tr>
@@ -309,56 +373,36 @@
               <td><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
-              <td>Built-in management console (UI)</td>
+              <td>Built-in management console (self-hostable)</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
-              <td><span class="check-yellow">~</span></td>
-              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">cloud</span></td>
               <td><span class="check-red">&#10007;</span></td>
-            </tr>
-            <!-- Deploy -->
-            <tr class="section-header"><td colspan="5">Deploy &amp; integration</td></tr>
-            <tr>
-              <td>Self-host, single-org, runs anywhere</td>
-              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
-              <td><span class="check-green">&#10003;</span></td>
-              <td><span class="check-yellow">~</span></td>
-              <td><span class="check-green">&#10003;</span></td>
-            </tr>
-            <tr>
-              <td>MCP server (any MCP client)</td>
-              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
-              <td><span class="check-yellow">~</span></td>
-              <td><span class="check-yellow">~</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-            </tr>
-            <tr>
-              <td>Python SDK (LangChain / LangGraph)</td>
-              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
-              <td><span class="check-green">&#10003;</span></td>
-              <td><span class="check-green">&#10003;</span></td>
-              <td><span class="check-yellow">~</span></td>
-            </tr>
-            <tr>
-              <td>Open source</td>
-              <td class="col-memnos"><span class="check-green">&#10003;</span> Apache-2.0</td>
-              <td><span class="check-green">&#10003;</span></td>
-              <td><span class="check-yellow">~</span></td>
-              <td><span class="check-green">&#10003;</span></td>
             </tr>
             <!-- Trust -->
-            <tr class="section-header"><td colspan="5">Trust</td></tr>
+            <tr class="section-header"><td colspan="5">Trust &amp; licensing</td></tr>
             <tr>
-              <td>Benchmark scored under an <em>independent</em> judge (not self-graded)</td>
+              <td>Open source — actively maintained</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">Apache-2.0</span></td>
+              <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">Apache-2.0</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">CE deprecated</span></td>
+              <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">Apache-2.0</span></td>
+            </tr>
+            <tr>
+              <td>Benchmark scored by an <em>independent</em> judge (not self-graded)</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
-              <td><span class="check-yellow">~</span></td>
-              <td><span class="check-yellow">~</span></td>
-              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
-    <p class="text-xs text-gray-600 text-center mt-3">~ indicates partial or limited support. Information based on public documentation and known capabilities as of 2026.</p>
+    <div class="max-w-4xl mx-auto mt-4 space-y-1.5">
+      <p class="text-xs text-gray-600 text-center">~ = partial / limited / opt-in support. Verified from official docs against <span class="text-gray-500">Mem0 v2.0.4, Graphiti v0.29.x, and Zep Cloud, June 2026</span>. Vendors evolve — check each project's current docs.</p>
+      <p class="text-xs text-gray-600 text-center"><sup>†</sup> Zep's open-source Community Edition was <span class="text-gray-500">deprecated April 2025</span>; Zep is now a hosted Cloud product whose open-source engine is <span class="text-gray-500">Graphiti</span> (shown separately). Cloud-only features are marked ~ for self-hosters.</p>
+    </div>
   </div>
 </section>
 
@@ -384,9 +428,9 @@
         <ul class="space-y-2 text-sm text-gray-400">
           <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Stores per-user conversation facts and preferences</li>
           <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Optimized for single-user AI assistant recall</li>
-          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>No concept of multi-agent coordination</li>
-          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>No memory policies, audit trail, or access control</li>
-          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>No architectural enforcement or constraint ingestion</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>An LLM decides what to add/update/delete at write time</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>No bi-temporal "as-of" history; latest value overwrites</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>No namespace ACL, cost ledger, or encrypted secret vault</li>
           <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Good for: personal AI assistants, chatbots</li>
         </ul>
       </div>
@@ -404,9 +448,9 @@
         <ul class="space-y-2 text-sm text-gray-400">
           <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Stores team memory stores — decisions, constraints, incidents</li>
           <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Shared across entire agent fleet — not per-user</li>
-          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Real-time pub/sub for multi-agent coordination</li>
-          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Enterprise-grade ACLs, audit trail, secret vault</li>
-          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Architecture enforcement — corpus checks in CI</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Deterministic, bi-temporal facts — no LLM guessing at write</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Hybrid retrieval + cross-encoder rerank, no LLM at query</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Namespace ACL, audit + cost ledger, encrypted secret vault</li>
           <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Good for: engineering teams with multiple AI agents</li>
         </ul>
       </div>
@@ -425,39 +469,39 @@
   <div class="max-w-6xl mx-auto px-6">
     <div class="text-center mb-12">
       <h2 class="text-3xl font-bold text-white mb-4">memnos vs Zep</h2>
-      <p class="text-gray-400 max-w-xl mx-auto">Zep focuses on long-term memory for individual AI assistants, primarily through conversation history summarization. memnos stores typed organizational knowledge with policy enforcement.</p>
+      <p class="text-gray-400 max-w-xl mx-auto">Zep is a hosted temporal-knowledge-graph memory built on Graphiti and a graph database. memnos delivers bi-temporal memory and self-hostable governance on a single PostgreSQL — no graph DB, no cloud dependency.</p>
     </div>
 
     <div class="grid md:grid-cols-2 gap-6 mb-10">
       <div class="space-y-4">
         <h3 class="text-white font-semibold text-base mb-3">What Zep does well</h3>
         <div class="vs-card">
-          <p class="text-xs text-gray-500 font-medium mb-1 uppercase tracking-wide">Conversation memory</p>
-          <p class="text-sm text-gray-300">Zep stores and summarizes chat history efficiently. For a single AI assistant that needs to remember previous conversations, Zep works well.</p>
+          <p class="text-xs text-gray-500 font-medium mb-1 uppercase tracking-wide">Temporal knowledge graph</p>
+          <p class="text-sm text-gray-300">Zep/Graphiti builds a bi-temporal graph of entities and relationships from conversations, with community detection and graph-aware retrieval. A mature, well-engineered approach.</p>
         </div>
         <div class="vs-card">
-          <p class="text-xs text-gray-500 font-medium mb-1 uppercase tracking-wide">Long-term user preferences</p>
-          <p class="text-sm text-gray-300">Zep extracts entities and facts from conversations and persists them across sessions for a single user's AI assistant.</p>
+          <p class="text-xs text-gray-500 font-medium mb-1 uppercase tracking-wide">Managed cloud</p>
+          <p class="text-sm text-gray-300">Zep Cloud is a polished hosted product with SDKs, a dashboard and multi-tenant auth — a good fit if you'd rather not self-host your memory layer.</p>
         </div>
       </div>
 
       <div class="space-y-4">
         <h3 class="text-white font-semibold text-base mb-3">Where memnos is different</h3>
         <div class="glass rounded-xl p-4">
-          <p class="text-xs text-purple-400 font-medium mb-1 uppercase tracking-wide">Typed knowledge, not summaries</p>
-          <p class="text-sm text-gray-400">memnos stores typed memories — decisions, constraints, incidents, ADRs. Not chat history summaries. The distinction matters for architecture governance and incident intelligence.</p>
+          <p class="text-xs text-purple-400 font-medium mb-1 uppercase tracking-wide">One engine, not a graph database</p>
+          <p class="text-sm text-gray-400">Zep's engine (Graphiti) requires a graph database — Neo4j, FalkorDB or Neptune. memnos runs entirely on one PostgreSQL + pgvector you already know how to operate. No second store to scale, secure or back up.</p>
         </div>
         <div class="glass rounded-xl p-4">
-          <p class="text-xs text-purple-400 font-medium mb-1 uppercase tracking-wide">No temporal memory in Zep</p>
-          <p class="text-sm text-gray-400">memnos's as_of temporal queries have no equivalent in Zep. "What did we know about the auth service on March 15th" is a uniquely memnos capability.</p>
+          <p class="text-xs text-purple-400 font-medium mb-1 uppercase tracking-wide">Deterministic writes, not LLM-judged</p>
+          <p class="text-sm text-gray-400">Both are bi-temporal. The difference is <em>how</em> conflicts resolve: Zep/Graphiti use an LLM to detect and invalidate contradicting edges; memnos supersedes by rule (same subject + attribute), so writes are predictable and reproducible.</p>
         </div>
         <div class="glass rounded-xl p-4">
-          <p class="text-xs text-purple-400 font-medium mb-1 uppercase tracking-wide">Multi-agent coordination</p>
-          <p class="text-sm text-gray-400">Zep has no real-time multi-agent coordination mechanism. There's no pub/sub, no cross-agent event stream, no way for one agent's discovery to reach another agent in real time.</p>
+          <p class="text-xs text-purple-400 font-medium mb-1 uppercase tracking-wide">Self-hostable governance</p>
+          <p class="text-sm text-gray-400">Zep's Community Edition was deprecated in 2025; auth, audit and the console now live in Zep Cloud. memnos ships token auth, namespace ACL, audit + cost ledger and an encrypted secret vault in the open-source build you self-host.</p>
         </div>
         <div class="glass rounded-xl p-4">
-          <p class="text-xs text-purple-400 font-medium mb-1 uppercase tracking-wide">Architecture enforcement</p>
-          <p class="text-sm text-gray-400">Zep has no concept of typed constraint nodes, corpus ingestion, or CI pipeline enforcement. It cannot check a PR diff against your architecture documentation.</p>
+          <p class="text-xs text-purple-400 font-medium mb-1 uppercase tracking-wide">No LLM at query time</p>
+          <p class="text-sm text-gray-400">memnos answers retrieval with hybrid search + RRF + a cross-encoder by default — no generative model in the loop. Graphiti's default reranker is an LLM classifier, adding latency and cost to every recall.</p>
         </div>
       </div>
     </div>
