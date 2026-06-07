@@ -244,7 +244,7 @@ The closest competitor is Zep/Graphiti for temporal graph memory. It targets con
 
 **A Confluence replacement.** Wrong data model. Painful to import from. The goal is to replace the habit of writing docs, not docs themselves.
 
-**A web UI for knowledge browsing.** Engineers will not use it. The value is ambient injection into agent context, not a knowledge portal. Build APIs; let others build UIs if they want.
+**A web UI for knowledge *browsing*.** Engineers will not use it. The value is ambient injection into agent context, not a knowledge portal. Build APIs; let others build UIs if they want. *(Note: a basic **management console** — namespaces, tokens, grants, observability — IS shipped in OSS, because operators can't self-serve governance without it. That's management, not knowledge-browsing. The richer enterprise UI stays commercial.)*
 
 **Fine-grained per-memory ACL.** Namespace-level access control is sufficient for v1. Per-memory ACL adds complexity without meaningful security improvement at the team scale memnos targets.
 

@@ -39,6 +39,7 @@ def main():
     p = sub.add_parser("quality"); p.add_argument("--limit", type=int, default=10)
     p = sub.add_parser("health"); p.add_argument("--hours", type=int, default=24)
     sub.add_parser("ns")          # show the auto-resolved namespace for the current dir
+    p = sub.add_parser("admin"); p.add_argument("--name", default="admin")   # bootstrap console login
     args = ap.parse_args()
 
     if args.cmd == "ns":
@@ -51,6 +52,13 @@ def main():
     c = conn()
     if args.cmd == "init":
         Control.init(c); print("control plane initialized")
+    elif args.cmd == "admin":
+        Control.init(c)                                   # ensure tables exist
+        pid = Control.create_principal(c, args.name, "service")
+        Control.grant(c, pid, "*")                        # '*' = admin (gates the console)
+        tok = Control.mint_token(c, pid, label="console")
+        print(f"admin principal '{args.name}' id={pid} ('*' grant)")
+        print(f"ADMIN TOKEN (store now, shown once) — paste into the console at /admin:\n  {tok}")
     elif args.cmd == "principal":
         pid = Control.create_principal(c, args.name, args.kind); print(f"principal '{args.name}' id={pid}")
     elif args.cmd == "token":

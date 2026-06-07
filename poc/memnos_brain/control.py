@@ -46,6 +46,11 @@ CREATE INDEX IF NOT EXISTS eval_ts ON memnos_control.eval_runs(ts);
 CREATE TABLE IF NOT EXISTS memnos_control.feedback(
     id bigserial PRIMARY KEY, ts timestamptz NOT NULL DEFAULT now(), principal_id bigint,
     namespace text, query text, helpful boolean, note text);
+-- namespace registry: namespaces are explicit, user-created objects (via the UI/CLI),
+-- not implicit-on-write. Lets the console list/create/delete them.
+CREATE TABLE IF NOT EXISTS memnos_control.namespaces(
+    name text PRIMARY KEY, created_by bigint REFERENCES memnos_control.principals(id),
+    created_at timestamptz NOT NULL DEFAULT now(), description text);
 """
 
 
@@ -127,6 +132,100 @@ class Control:
         with conn.cursor() as c:
             c.execute("SELECT namespace, can_read, can_write FROM memnos_control.grants WHERE principal_id=%s",
                       (principal_id,))
+            return c.fetchall()
+
+    @staticmethod
+    def is_admin(conn, principal_id) -> bool:
+        """Admin = holds the '*' grant. Gates the management console endpoints."""
+        if principal_id is None:
+            return False
+        with conn.cursor() as c:
+            c.execute("SELECT 1 FROM memnos_control.grants WHERE principal_id=%s AND namespace='*' "
+                      "AND can_read LIMIT 1", (principal_id,))
+            return c.fetchone() is not None
+
+    # --- namespace registry (explicit, user-created) ----------------------
+    @staticmethod
+    def create_namespace(conn, name, created_by=None, description=None):
+        """Register a namespace + grant its creator read/write. Idempotent on name."""
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.namespaces(name,created_by,description) "
+                      "VALUES(%s,%s,%s) ON CONFLICT (name) DO UPDATE SET description=EXCLUDED.description",
+                      (name, created_by, description))
+        if created_by is not None:
+            Control.grant(conn, created_by, name)
+
+    @staticmethod
+    def list_namespaces(conn):
+        """Registry rows + live row counts from the memory tables."""
+        with conn.cursor() as c:
+            c.execute("""
+                SELECT n.name, n.description, n.created_at, p.name AS created_by,
+                  COALESCE(rt.cnt,0) AS turns, COALESCE(sm.cnt,0) AS facts
+                FROM memnos_control.namespaces n
+                LEFT JOIN memnos_control.principals p ON p.id=n.created_by
+                LEFT JOIN (SELECT namespace, count(*) cnt FROM tenant_memnos.raw_turns GROUP BY namespace) rt
+                  ON rt.namespace=n.name
+                LEFT JOIN (SELECT namespace, count(*) cnt FROM tenant_memnos.semantic GROUP BY namespace) sm
+                  ON sm.namespace=n.name
+                ORDER BY n.created_at DESC""")
+            return c.fetchall()
+
+    @staticmethod
+    def delete_namespace(conn, name, purge_data=False):
+        """Remove registry row + all grants on it; optionally purge its memory rows."""
+        with conn.cursor() as c:
+            c.execute("DELETE FROM memnos_control.namespaces WHERE name=%s", (name,))
+            c.execute("DELETE FROM memnos_control.grants WHERE namespace=%s", (name,))
+            if purge_data:
+                c.execute("DELETE FROM tenant_memnos.mentions m USING tenant_memnos.entities e "
+                          "WHERE m.entity_id=e.id AND e.namespace=%s", (name,))
+                for t in ("edges", "entities", "semantic", "episodic", "raw_turns"):
+                    c.execute(f"DELETE FROM tenant_memnos.{t} WHERE namespace=%s", (name,))
+
+    # --- listings for the console -----------------------------------------
+    @staticmethod
+    def list_principals(conn):
+        with conn.cursor() as c:
+            c.execute("""SELECT p.id, p.name, p.kind, p.created_at,
+                  count(t.id) FILTER (WHERE NOT t.revoked) AS active_tokens
+                FROM memnos_control.principals p
+                LEFT JOIN memnos_control.api_tokens t ON t.principal_id=p.id
+                GROUP BY p.id ORDER BY p.created_at""")
+            return c.fetchall()
+
+    @staticmethod
+    def list_tokens(conn, principal_id):
+        """Token METADATA only — the secret is never retrievable (only its hash is stored)."""
+        with conn.cursor() as c:
+            c.execute("SELECT id, label, created_at, expires_at, revoked FROM memnos_control.api_tokens "
+                      "WHERE principal_id=%s ORDER BY created_at DESC", (principal_id,))
+            return c.fetchall()
+
+    @staticmethod
+    def revoke_token_by_id(conn, token_id):
+        with conn.cursor() as c:
+            c.execute("UPDATE memnos_control.api_tokens SET revoked=true WHERE id=%s", (token_id,))
+
+    @staticmethod
+    def revoke_grant(conn, principal_id, namespace):
+        with conn.cursor() as c:
+            c.execute("DELETE FROM memnos_control.grants WHERE principal_id=%s AND namespace=%s",
+                      (principal_id, namespace))
+
+    @staticmethod
+    def recent_audit(conn, limit=50):
+        with conn.cursor() as c:
+            c.execute("SELECT ts, principal_id, action, namespace, ok, status, latency_ms, result_count "
+                      "FROM memnos_control.audit_log ORDER BY ts DESC LIMIT %s", (limit,))
+            return c.fetchall()
+
+    @staticmethod
+    def usage_rollup(conn):
+        with conn.cursor() as c:
+            c.execute("SELECT op, count(*) n, round(sum(cost_usd),4) cost, sum(tokens_in) tin, "
+                      "sum(tokens_out) tout FROM memnos_control.usage_ledger "
+                      "GROUP BY op ORDER BY cost DESC NULLS LAST")
             return c.fetchall()
 
     # --- audit + usage ----------------------------------------------------
