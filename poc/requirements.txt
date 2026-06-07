@@ -6,3 +6,4 @@ openai>=1.40
 sentence-transformers>=3.0   # local embeddings + cross-encoder reranker
 mcp>=1.2                      # MCP server (Claude-native)
 python-dateutil>=2.9
+cryptography>=42  # secret vault (AES-256-GCM)

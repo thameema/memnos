@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS memnos_control.feedback(
 CREATE TABLE IF NOT EXISTS memnos_control.namespaces(
     name text PRIMARY KEY, created_by bigint REFERENCES memnos_control.principals(id),
     created_at timestamptz NOT NULL DEFAULT now(), description text);
+-- encrypted secret vault: AES-256-GCM ciphertext only (plaintext NEVER stored).
+-- Referenced as value-refs (secret://name); resolved at use-time, never logged.
+CREATE TABLE IF NOT EXISTS memnos_control.secrets(
+    name text PRIMARY KEY, nonce bytea NOT NULL, ciphertext bytea NOT NULL, description text,
+    created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
 """
 
 
