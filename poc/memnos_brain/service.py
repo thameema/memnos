@@ -158,7 +158,8 @@ class MemnosMemory:
             return []
 
     # --- READ (no query-time LLM) -----------------------------------------
-    def recall(self, namespace: str, query: str, *, k=40, raw_quota=11, fact_quota=8) -> list[dict]:
+    def recall(self, namespace: str, query: str, *, k=40, raw_quota=11, fact_quota=8,
+               entity_quota=10) -> list[dict]:
         """Quota retrieval (raw turns ⊕ semantic facts) with BI-TEMPORAL awareness:
         for time-scoped questions, retrieve facts by EVENT TIME (valid_from window /
         current-vs-past / first-last ordering), lean on dated facts, and surface the
@@ -183,7 +184,25 @@ class MemnosMemory:
 
         if not intent.temporal:
             sem = self.store.search_semantic(self.schema, namespace, qv, query, k)
-            return rr(raw, "turn")[:raw_quota] + rr(sem, "fact")[:fact_quota]
+            sem_rows = rr(sem, "fact")
+            ents = T.query_entities(query)
+            if not ents:
+                return rr(raw, "turn")[:raw_quota] + sem_rows[:fact_quota]
+            # ENTITY-GUARANTEE arm: vector search misses items in list/aggregation answers
+            # ('what martial arts' ≁ 'taekwondo'), and 82% of eval failures were retrieval
+            # misses. Guarantee the facts about the query's entities so multi-item recall is
+            # complete — the same JOIN-not-cosine trick the timeline arm uses for temporal.
+            dump = self.store.timeline(self.schema, namespace, ents, order="desc", limit=20)
+            seen, eg = set(), []
+            for r in dump:
+                c = r["content"]
+                if c in seen:
+                    continue
+                seen.add(c)
+                eg.append({"content": c, "kind": "fact",
+                           "date": r["valid_from"].date().isoformat() if r.get("valid_from") else None})
+            sem_rows = [r for r in sem_rows if r["content"] not in seen]
+            return rr(raw, "turn")[:raw_quota] + eg[:entity_quota] + sem_rows[:fact_quota]
 
         # --- TEMPORAL: GUARANTEE the entity timeline in context (parity with the tested
         # phaseA engine). Vector search structurally misses dated evidence ('when did X'
