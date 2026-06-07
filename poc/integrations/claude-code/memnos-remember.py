@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """memnos remember hook (Stop) — save the user's last message to memnos.
-Fire-and-forget. Env: MEMNOS_URL, MEMNOS_NS."""
+Fire-and-forget. Env: MEMNOS_URL, MEMNOS_NS, MEMNOS_TOKEN."""
 import json, os, sys, urllib.request
 
 URL = os.environ.get("MEMNOS_URL", "http://127.0.0.1:8900")
 NS = os.environ.get("MEMNOS_NS", "claude:default")
+TOKEN = os.environ.get("MEMNOS_TOKEN", "")          # server requires a Bearer token (write)
 try:
     data = json.load(sys.stdin)
 except Exception:
@@ -26,9 +27,12 @@ if tp and os.path.exists(tp):
 if not text.strip():
     sys.exit(0)
 try:
+    headers = {"Content-Type": "application/json"}
+    if TOKEN:
+        headers["Authorization"] = f"Bearer {TOKEN}"
     req = urllib.request.Request(f"{URL}/remember", method="POST",
         data=json.dumps({"namespace": NS, "text": text, "speaker": "user"}).encode(),
-        headers={"Content-Type": "application/json"})
+        headers=headers)
     urllib.request.urlopen(req, timeout=12).read()
 except Exception:
     pass
