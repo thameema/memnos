@@ -34,6 +34,9 @@ _SKIP_PREFIX = ("# autonomous loop", "<system-reminder", "<command-", "# ")
 _lower = text.lower()
 if any(_lower.startswith(p) for p in _SKIP_PREFIX) or "<<autonomous-loop" in _lower:
     sys.exit(0)
+# skip LLM-judge / eval prompts (e.g. headless `claude -p` judge calls inherit hooks)
+if "reference answer:" in _lower or "reply with only" in _lower or _lower.startswith("question:"):
+    sys.exit(0)
 if len(text) < 15 or len(text.split()) < 3:        # trivial-turn salience gate
     sys.exit(0)
 

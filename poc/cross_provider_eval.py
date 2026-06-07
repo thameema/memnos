@@ -55,7 +55,8 @@ JUDGE_PROMPT = ("Question: {q}\nReference answer: {exp}\nModel answer: {pred}\n"
 
 
 def claude_cli(prompt, timeout=60):
-    r = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=timeout)
+    # --bare skips hooks: headless judge calls must not trigger the global memnos hooks.
+    r = subprocess.run(["claude", "-p", "--bare", prompt], capture_output=True, text=True, timeout=timeout)
     return (r.stdout or "").strip()
 
 
