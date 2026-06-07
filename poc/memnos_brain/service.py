@@ -50,7 +50,7 @@ def _dossier_text(x) -> str:
 class MemnosMemory:
     def __init__(self, store_or_dsn, embed_fn, *, reranker_model=brain_rerank.DEFAULT_RERANKER,
                  dim=1536, llm=None, extract_model="gpt-4o-mini", ensure_schema=False,
-                 on_usage=None):
+                 on_usage=None, extract_fn=None):
         # store_or_dsn may be a pooled BrainStore (production) or a DSN string (scripts).
         self.store = store_or_dsn if isinstance(store_or_dsn, BrainStore) else BrainStore(store_or_dsn)
         self.embed = embed_fn
@@ -61,6 +61,10 @@ class MemnosMemory:
         # records it to usage_ledger, the benchmark feeds it to the budget cap. No silent
         # untracked spend.
         self.on_usage = on_usage
+        # extract_fn(text, date) -> [{subject,predicate,object,statement}]. Lets the COST-HEAVY
+        # extraction run on a different (e.g. subscription-billed Claude CLI) backend while the
+        # cheap-per-call answerer stays on a paid API — the provider mix. None = OpenAI path.
+        self.extract_fn = extract_fn
         self.schema = self.store.create_schema(_TENANT, dim=dim) if ensure_schema else f"tenant_{_TENANT}"
 
     def _track(self, model, resp):
@@ -151,6 +155,11 @@ class MemnosMemory:
         SPO-only + 700-token cap under-extracted (~12 facts / 33-turn session); answers
         existed in raw turns but never became facts."""
         import json
+        if self.extract_fn is not None:          # pluggable backend (e.g. Claude CLI, free via sub)
+            try:
+                return self.extract_fn(text, date)
+            except Exception:
+                return []
         try:
             r = self.llm.chat.completions.create(
                 model=self.extract_model, temperature=0, max_tokens=2000,
