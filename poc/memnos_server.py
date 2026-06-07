@@ -83,7 +83,9 @@ def _build_embedder():
         from openai import OpenAI
         from validate_brain import CachedEmbedder
         from locomo_pg_parallel import TSCostMeter
-        LLM = OpenAI(max_retries=3)
+        # timeout is REQUIRED: without it a single stalled request hangs the request
+        # thread forever (observed: extraction/consolidation wedged with no timeout).
+        LLM = OpenAI(max_retries=3, timeout=60)
         DIM = 1536
         emb = CachedEmbedder(LLM, TSCostMeter())
         print("[memnos] OpenAI 1536-d embeddings + extraction ENABLED", flush=True)

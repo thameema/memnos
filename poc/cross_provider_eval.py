@@ -92,7 +92,7 @@ def main():
     ids = [int(x) for x in args.sample_ids.split(",")]
     judges = [j.strip() for j in args.judges.split(",") if j.strip()]
 
-    cli = OpenAI(max_retries=5)
+    cli = OpenAI(max_retries=4, timeout=45)
     embed = CachedEmbedder(cli, TSCostMeter())
     brain_rerank.rerank("warm", ["a", "b"])
     data = httpx.get(URL, follow_redirects=True, timeout=60).json()
@@ -104,7 +104,14 @@ def main():
         schema = f"tenant_pa{idx}"
         mem = MemnosMemory(st, embed, dim=embed.dim, llm=cli); mem.schema = schema
         qa = [q for q in sample.get("qa", []) if q.get("question") and str(q.get("answer", "")) != ""]
-        items = [(q, mem.context(ns, q["question"])) for q in qa]
+        def ctx_for(q):
+            for attempt in range(3):       # survive transient APIConnectionError on embed
+                try:
+                    return mem.context(ns, q["question"])
+                except Exception:
+                    if attempt == 2:
+                        return ""
+        items = [(q, ctx_for(q)) for q in qa]
 
         def do(it):
             q, ctx = it

@@ -42,27 +42,53 @@ def load_dataset():
         return h.get(URL).json()
 
 
-def ingest_via_engine(mem, embed_fn, ns, sample):
-    """Build per-session turn lists and feed them to the PRODUCTION ingest path."""
+def ingest_via_engine(mem, embed_fn, ns, sample, claude_extract=False, workers=6):
+    """Build per-session turn lists and feed them to the PRODUCTION ingest path.
+
+    claude_extract=True runs the COST-HEAVY extraction on the Claude CLI (free via sub),
+    PARALLEL across sessions (subprocess releases the GIL), then writes facts via the same
+    engine write path. Otherwise uses the engine's built-in (OpenAI) extraction."""
     conv = sample.get("conversation", {})
     sess = sorted([k for k in conv if k.startswith("session_") and not k.endswith("_date_time")],
                   key=lambda k: int(k.split("_")[1]) if k.split("_")[1].isdigit() else 0)
     base = datetime(2023, 1, 1, tzinfo=timezone.utc)
-    # prime turn embeddings in one batch (CachedEmbedder) — pure speedup, same vectors
     embed_fn.prime([t["text"] for sk in sess for t in (conv[sk] if isinstance(conv.get(sk), list) else [])
                     if isinstance(t, dict) and t.get("text")])
     totals = {"turns": 0, "facts": 0, "superseded": 0}
-    # chronological so belief-change supersession closes the OLDER value first
     dated = []
     for si, sk in enumerate(sess):
         date = parse_date(str(conv.get(f"{sk}_date_time", "")), base + timedelta(days=30 * si))
         turns = [(t.get("speaker", "?"), t["text"]) for t in (conv[sk] if isinstance(conv.get(sk), list) else [])
                  if isinstance(t, dict) and t.get("text")]
         dated.append((date, sk, turns))
-    for date, sk, turns in sorted(dated, key=lambda x: x[0] or datetime(1970, 1, 1, tzinfo=timezone.utc)):
-        out = mem.ingest_session(ns, turns, session_date=date, session_id=sk)
-        for kk in totals:
-            totals[kk] += out.get(kk, 0)
+    dated.sort(key=lambda x: x[0] or datetime(1970, 1, 1, tzinfo=timezone.utc))
+
+    if not claude_extract:
+        for date, sk, turns in dated:
+            out = mem.ingest_session(ns, turns, session_date=date, session_id=sk)
+            for kk in totals:
+                totals[kk] += out.get(kk, 0)
+        return totals
+
+    # --- Claude CLI extractor: parallel-extract sessions, then write in chrono order ---
+    import claude_cli
+    def ex(item):
+        date, sk, turns = item
+        content = f"SESSION DATE: {date}\n\n" + "\n".join(f"{s}: {t}" for s, t in turns if t)
+        try:
+            facts = claude_cli.extract(content, date)
+        except Exception:
+            facts = []
+        return date, sk, turns, facts
+    with ThreadPoolExecutor(max_workers=workers) as exr:
+        extracted = list(exr.map(ex, dated))
+    extracted.sort(key=lambda x: x[0] or datetime(1970, 1, 1, tzinfo=timezone.utc))   # chrono write
+    for date, sk, turns, facts in extracted:
+        mem.ingest_session(ns, turns, session_date=date, session_id=sk, extract=False)  # raw turns only
+        totals["turns"] += len(turns)
+        for f in facts:
+            df, ds = mem._write_fact(ns, f, date)
+            totals["facts"] += df; totals["superseded"] += ds
     return totals
 
 
@@ -74,6 +100,8 @@ def main():
     ap.add_argument("--reranker", default="BAAI/bge-reranker-base")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--budget", type=float, default=5.0)
+    ap.add_argument("--extractor", default="openai", choices=["openai", "claude"])
+    ap.add_argument("--ingest-only", action="store_true")
     args = ap.parse_args()
     ids = [int(x) for x in args.sample_ids.split(",")]
 
@@ -99,9 +127,12 @@ def main():
             mem.schema = schema   # isolate benchmark data per sample (NOT production tenant_memnos)
 
             t0 = time.perf_counter()
-            ing = ingest_via_engine(mem, embed_fn, ns, sample)
+            ing = ingest_via_engine(mem, embed_fn, ns, sample,
+                                    claude_extract=(args.extractor == "claude"), workers=args.workers)
             dos = mem.consolidate(ns)
-            print(f"[{idx}] ingested {ing} + {dos} in {time.perf_counter()-t0:.0f}s ({meter.summary()})", flush=True)
+            print(f"[{idx}] ingested[{args.extractor}] {ing} + {dos} in {time.perf_counter()-t0:.0f}s ({meter.summary()})", flush=True)
+            if args.ingest_only:
+                continue
 
             # --- build context per question via PRODUCTION recall (sequential = server logic) ---
             qa = [q for q in sample.get("qa", []) if q.get("question") and str(q.get("answer", "")) != ""]
