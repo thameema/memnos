@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-K7M6RWTW1P"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-K7M6RWTW1P');
+  </script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>How to read a memory benchmark — claims vs reality | memnos</title>
+  <meta name="description" content="AI memory benchmark scores swing from the 40s to the 90s on the same answers — purely based on who grades them. A vendor-neutral guide to how memory benchmarks are really measured, and the five questions to ask before you trust any number." />
+  <meta name="keywords" content="AI memory benchmark, LoCoMo, LLM as judge, agent memory accuracy, self-reported benchmarks, memory benchmark methodology" />
+  <link rel="canonical" href="https://memnos.net/benchmarks.html" />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://memnos.net/benchmarks.html" />
+  <meta property="og:title" content="How to read a memory benchmark — claims vs reality" />
+  <meta property="og:description" content="Memory benchmark scores swing 40s→90s on identical answers depending on the judge. Here's how to measure honestly." />
+  <meta property="og:image" content="https://memnos.net/og-image.png" />
+  <meta property="og:site_name" content="memnos" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="How to read a memory benchmark — claims vs reality" />
+  <meta name="twitter:description" content="Memory benchmark scores swing 40s→90s on identical answers depending on the judge. Here's how to measure honestly." />
+  <meta name="twitter:image" content="https://memnos.net/og-image.png" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'], mono: ['JetBrains Mono', 'monospace'] },
+          colors: {
+            brand: { purple: '#7c5cfc', blue: '#4f9cf9', cyan: '#00d2ff', dim: '#1a1a2e' },
+          },
+        }
+      }
+    }
+  </script>
+  <style>
+    :root { --bg: #09090f; --surface: #111118; --border: #1e1e2e; --muted: #6b7280; }
+    body { background: var(--bg); font-family: 'Inter', sans-serif; color: #e5e7eb; }
+    .hero-display { font-family: 'Space Grotesk', 'Inter', sans-serif; letter-spacing: -0.02em; }
+    .gradient-text {
+      background: linear-gradient(135deg, #a78bfa 0%, #60a5fa 50%, #34d399 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .glow-btn {
+      background: linear-gradient(135deg, #7c5cfc, #4f9cf9);
+      box-shadow: 0 0 20px rgba(124, 92, 252, 0.4);
+      transition: box-shadow 0.3s, transform 0.2s;
+    }
+    .glow-btn:hover { box-shadow: 0 0 35px rgba(124, 92, 252, 0.65); transform: translateY(-1px); }
+    .glass {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.07);
+      backdrop-filter: blur(12px);
+      transition: border-color 0.3s, transform 0.2s, box-shadow 0.3s;
+    }
+    .glass:hover {
+      border-color: rgba(124,92,252,0.35);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(124,92,252,0.12);
+    }
+    body::before {
+      content: '';
+      position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background-image: radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+    .code-block {
+      background: #0d0d1a; border: 1px solid #1e1e3f; border-radius: 12px;
+      font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; line-height: 1.7;
+    }
+    .token-cmt { color: #4b5563; } .token-num { color: #fb923c; } .token-str { color: #86efac; }
+    nav { backdrop-filter: blur(20px); background: rgba(9,9,15,0.8); border-bottom: 1px solid var(--border); }
+    .nav-active { color: #a78bfa !important; }
+    .fade-in { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease, transform 0.6s ease; }
+    .fade-in.visible { opacity: 1; transform: translateY(0); }
+    .gradient-border { position: relative; border-radius: 16px; padding: 1px; background: linear-gradient(135deg, rgba(124,92,252,0.4), rgba(79,156,249,0.2), rgba(0,210,255,0.1)); }
+    .gradient-border-inner { background: var(--surface); border-radius: 15px; }
+    /* judge-band bar */
+    .band-track { position: relative; height: 14px; border-radius: 999px; background: rgba(255,255,255,0.06); overflow: hidden; }
+    .band-fill { position: absolute; top: 0; bottom: 0; border-radius: 999px;
+      background: linear-gradient(90deg, #f87171 0%, #facc15 45%, #34d399 100%); }
+  </style>
+</head>
+<body class="antialiased overflow-x-hidden">
+
+<!-- ── NAV ─────────────────────────────────────────────────────────── -->
+<nav class="fixed top-0 left-0 right-0 z-50">
+  <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.6"/>
+        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.8"/>
+        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gnav)"/>
+        <defs><linearGradient id="gnav" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/></linearGradient></defs>
+      </svg>
+      <span class="text-white font-semibold text-lg tracking-tight">memnos</span>
+    </a>
+    <div class="hidden md:flex items-center gap-7">
+      <a href="index.html#features" class="text-sm text-gray-400 hover:text-white transition-colors">Features</a>
+      <a href="use-cases.html" class="text-sm text-gray-400 hover:text-white transition-colors">Use Cases</a>
+      <a href="index.html#sdk" class="text-sm text-gray-400 hover:text-white transition-colors">SDK</a>
+      <a href="benchmarks.html" class="text-sm nav-active hover:text-white transition-colors">Benchmarks</a>
+      <a href="compare.html" class="text-sm text-gray-400 hover:text-white transition-colors">Compare</a>
+      <a href="https://github.com/thameema/memnos" class="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-1.5">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        GitHub
+      </a>
+    </div>
+    <div class="flex items-center gap-3">
+      <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white text-sm font-medium px-5 py-2 rounded-full hidden md:inline-flex">Deploy Free</a>
+      <button id="nav-toggle" onclick="toggleMobileNav()" class="md:hidden flex flex-col justify-center items-center w-9 h-9 rounded-lg border border-gray-700 bg-gray-900/60 gap-1.5 px-2">
+        <span id="ham-1" class="block w-4 h-0.5 bg-gray-300 transition-all duration-300 origin-center"></span>
+        <span id="ham-2" class="block w-4 h-0.5 bg-gray-300 transition-all duration-300"></span>
+        <span id="ham-3" class="block w-4 h-0.5 bg-gray-300 transition-all duration-300 origin-center"></span>
+      </button>
+    </div>
+  </div>
+  <div id="mobile-nav" class="hidden md:hidden border-t border-gray-800 bg-gray-950/95 backdrop-blur-xl">
+    <div class="max-w-6xl mx-auto px-6 py-5 flex flex-col gap-1">
+      <a href="index.html#features" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Features</a>
+      <a href="use-cases.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Use Cases</a>
+      <a href="index.html#sdk" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">SDK</a>
+      <a href="benchmarks.html" class="text-sm text-white font-medium py-2.5 border-b border-gray-900">Benchmarks</a>
+      <a href="compare.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Compare</a>
+      <a href="https://github.com/thameema/memnos" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ── HERO ─────────────────────────────────────────────────────────── -->
+<section class="relative pt-32 pb-16 overflow-hidden">
+  <div class="absolute top-0 right-1/3 w-96 h-96 bg-purple-600 rounded-full blur-[160px] opacity-10 pointer-events-none"></div>
+  <div class="relative z-10 max-w-4xl mx-auto px-6 text-center">
+    <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Benchmarks, honestly</span>
+    <h1 class="hero-display text-4xl md:text-6xl font-bold text-white leading-[1.05] mt-4 mb-6">
+      The same answers can score<br /><span class="gradient-text">44% or 88%.</span>
+    </h1>
+    <p class="text-gray-400 text-lg leading-relaxed max-w-2xl mx-auto">
+      AI memory is full of impressive accuracy numbers — 90%, "state of the art," "best in class."
+      Here's the uncomfortable truth: on the <em>exact same answers</em>, a memory benchmark can read
+      anywhere from the low 40s to the high 80s, depending entirely on <span class="text-gray-200">who grades it and how</span>.
+      This is a vendor-neutral guide to reading those numbers — and how we report ours.
+    </p>
+  </div>
+</section>
+
+<!-- ── THE JUDGE BAND ───────────────────────────────────────────────── -->
+<section class="relative z-10 py-12 fade-in">
+  <div class="max-w-3xl mx-auto px-6">
+    <div class="glass rounded-2xl p-8">
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">One set of answers · one benchmark · three rubrics</p>
+      <h2 class="text-xl font-bold text-white mb-6">The score is mostly about the grader</h2>
+      <div class="band-track mb-3"><div class="band-fill" style="left:0;right:0;"></div></div>
+      <div class="flex justify-between text-sm">
+        <div class="text-left">
+          <div class="text-red-300 font-bold text-lg">~44%</div>
+          <div class="text-xs text-gray-500">Strict judge<br/>exact, no benefit of the doubt</div>
+        </div>
+        <div class="text-center">
+          <div class="text-yellow-300 font-bold text-lg">~58–61%</div>
+          <div class="text-xs text-gray-500">Standard judge<br/>reasonable correctness</div>
+        </div>
+        <div class="text-right">
+          <div class="text-green-300 font-bold text-lg">~85–88%</div>
+          <div class="text-xs text-gray-500">Lenient judge<br/>"one right item ⇒ correct"</div>
+        </div>
+      </div>
+      <p class="text-sm text-gray-400 mt-6 leading-relaxed">
+        These are real numbers from <span class="text-gray-200">the same model answering the same questions</span> —
+        only the grading rubric changed. A headline can move 40+ points without the underlying system
+        getting one bit smarter. So when you see a single big number with no rubric attached, you're
+        reading a marketing decision, not a measurement.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ── WHERE NUMBERS COME FROM ──────────────────────────────────────── -->
+<section class="relative z-10 py-16 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <h2 class="text-3xl font-bold text-white mb-4">Five ways a benchmark number gets inflated</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">None of these are lying, exactly. They're choices — and each one quietly pushes the number up. Knowing them lets you read any vendor's claim with clear eyes.</p>
+    </div>
+    <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-center mb-4 text-red-400 font-bold">1</div>
+        <h3 class="text-white font-semibold mb-2">The model grades itself</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Most published scores use an LLM as the judge — and very often it's the <em>same model family</em> that produced the answers. A model grading its own output has a measurable self-preference bias. Ask: who graded this, and was it independent?</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-orange-500/10 border border-orange-500/20 rounded-xl flex items-center justify-center mb-4 text-orange-400 font-bold">2</div>
+        <h3 class="text-white font-semibold mb-2">A lenient rubric</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">"Mark correct if the answer contains <em>at least one</em> right item." "Dates within two weeks count." "Paraphrases count." Pair that with an answerer told to <em>never say 'I don't know'</em> and dump extra guesses, and the pass rate climbs on its own.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-yellow-500/10 border border-yellow-500/20 rounded-xl flex items-center justify-center mb-4 text-yellow-400 font-bold">3</div>
+        <h3 class="text-white font-semibold mb-2">A flattering baseline</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">"90% fewer tokens, 91% faster" sounds huge — until you notice the comparison is against stuffing the <em>entire</em> history into the prompt, the slowest, most expensive option there is. Beating the worst baseline isn't the same as beating the practical alternatives (like plain retrieval).</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-green-500/10 border border-green-500/20 rounded-xl flex items-center justify-center mb-4 text-green-400 font-bold">4</div>
+        <h3 class="text-white font-semibold mb-2">A small, gameable test</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Popular memory benchmarks are tiny — on the order of ten conversations and a few thousand questions, some short enough to fit in a modern context window. Small sets are noisy and easy to over-fit, and a couple of categories are known to be ambiguous. Big numbers on small tests deserve scrutiny.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-center mb-4 text-blue-400 font-bold">5</div>
+        <h3 class="text-white font-semibold mb-2">No reproducible harness</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">A single run, no seeds, no variance reported, the judge prompt unpublished, sometimes the rival systems configured by the people they're being compared against. If you can't re-run it and get the same answer, it's a claim, not a result.</p>
+      </div>
+
+      <div class="gradient-border h-full">
+        <div class="gradient-border-inner p-6 rounded-2xl h-full">
+          <div class="w-10 h-10 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center mb-4 text-purple-300 font-bold">✓</div>
+          <h3 class="text-white font-semibold mb-2">The honest version</h3>
+          <p class="text-sm text-gray-400 leading-relaxed">Independent judge. Published rubric. The full judge band, not one cherry-picked point. A fair baseline. An open harness anyone can re-run. Numbers reported with their caveats. That's the bar — and it's the bar we hold ourselves to below.</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── CHECKLIST ────────────────────────────────────────────────────── -->
+<section class="relative z-10 py-16 fade-in">
+  <div class="max-w-3xl mx-auto px-6">
+    <div class="text-center mb-10">
+      <h2 class="text-3xl font-bold text-white mb-3">Five questions to ask of any memory number</h2>
+      <p class="text-gray-400">Copy these. Use them on us, too.</p>
+    </div>
+    <div class="space-y-3">
+      <div class="glass rounded-xl p-5 flex gap-4 items-start"><span class="text-purple-300 font-bold">Q1</span><p class="text-sm text-gray-300"><span class="text-white font-medium">Who graded the answers?</span> A human, a rubric, or an LLM? If an LLM — was it a <em>different</em> provider than the one being scored, or did the model grade itself?</p></div>
+      <div class="glass rounded-xl p-5 flex gap-4 items-start"><span class="text-purple-300 font-bold">Q2</span><p class="text-sm text-gray-300"><span class="text-white font-medium">Where's the rubric?</span> Is the exact judge prompt published? How strict is "correct"? Show me the same answers under a strict <em>and</em> a lenient rubric.</p></div>
+      <div class="glass rounded-xl p-5 flex gap-4 items-start"><span class="text-purple-300 font-bold">Q3</span><p class="text-sm text-gray-300"><span class="text-white font-medium">What's the baseline?</span> Is the "X% better" measured against the worst possible option (full-context stuffing) or against the real alternative you'd actually deploy?</p></div>
+      <div class="glass rounded-xl p-5 flex gap-4 items-start"><span class="text-purple-300 font-bold">Q4</span><p class="text-sm text-gray-300"><span class="text-white font-medium">Can I re-run it?</span> Is the harness open? Are there seeds, multiple runs, and a reported variance — or one lucky run?</p></div>
+      <div class="glass rounded-xl p-5 flex gap-4 items-start"><span class="text-purple-300 font-bold">Q5</span><p class="text-sm text-gray-300"><span class="text-white font-medium">Were the rivals configured fairly?</span> Head-to-head numbers are only meaningful if every system was set up correctly — ideally by a neutral party, not by one of the competitors.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ── HOW WE REPORT ────────────────────────────────────────────────── -->
+<section class="relative z-10 py-16 fade-in">
+  <div class="max-w-5xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">How we report ours</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">We'd rather publish a credible 58% than an inflated 85%</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Here's exactly how memnos measures itself on a standard long-conversation memory benchmark — with every choice above made the honest way.</p>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-6 mb-8">
+      <div class="glass rounded-2xl p-6">
+        <h3 class="text-white font-semibold mb-3">An independent, cross-provider judge</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">We have one AI provider grade another provider's answers — never the model grading itself — to strip out self-preference bias. That's the number we lead with.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <h3 class="text-white font-semibold mb-3">The whole band, published</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">We show the same answers under strict, standard and lenient rubrics — so you can see how much the grader moves the number, and pick the one you trust.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <h3 class="text-white font-semibold mb-3">An open harness</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">The evaluation script ships in the repo. Re-run it yourself, swap the judge, change the rubric — and get the same numbers we did.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <h3 class="text-white font-semibold mb-3">Honest about the test itself</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">We don't pretend the benchmark is perfect — it's small and has known quirks. A reproducible, independently-judged number on a flawed test still beats an unverifiable one.</p>
+      </div>
+    </div>
+
+    <div class="gradient-border">
+      <div class="gradient-border-inner px-8 py-6 rounded-2xl">
+        <div class="grid sm:grid-cols-3 gap-6 text-center">
+          <div>
+            <div class="text-3xl font-bold text-white">58%</div>
+            <div class="text-xs text-gray-500 mt-1">independent cross-provider judge — the number we stand behind</div>
+          </div>
+          <div>
+            <div class="text-3xl font-bold text-white">61%</div>
+            <div class="text-xs text-gray-500 mt-1">a standard same-provider judge, for reference</div>
+          </div>
+          <div>
+            <div class="text-3xl font-bold text-white">44–88%</div>
+            <div class="text-xs text-gray-500 mt-1">the full judge band on the <em>same</em> answers — disclosed, not hidden</div>
+          </div>
+        </div>
+        <div class="code-block p-4 mt-6 max-w-lg mx-auto">
+          <pre class="text-xs leading-relaxed"><code><span class="token-cmt"># reproduce it yourself — full conversation set</span>
+$ python cross_provider_eval.py
+independent judge : <span class="token-num">58%</span>
+same-provider     : <span class="token-num">61%</span>
+<span class="token-cmt"># same answers, judge band: 44% .. 88%</span></code></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── CTA ──────────────────────────────────────────────────────────── -->
+<section class="relative z-10 py-20 fade-in">
+  <div class="max-w-2xl mx-auto px-6 text-center">
+    <h2 class="text-3xl md:text-4xl font-bold text-white mb-5">Memory you can <span class="gradient-text">verify</span>,<br/>not just trust</h2>
+    <p class="text-gray-400 mb-10">Deterministic writes, no LLM at query time, and benchmarks you can re-run. Self-host it and check every claim on this site for yourself.</p>
+    <div class="flex flex-wrap items-center justify-center gap-3">
+      <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white font-semibold px-8 py-3.5 rounded-full text-sm whitespace-nowrap">Deploy Free</a>
+      <a href="compare.html" class="text-sm text-gray-300 hover:text-white border border-gray-700 hover:border-gray-500 px-8 py-3.5 rounded-full transition-colors whitespace-nowrap">How we're different</a>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ───────────────────────────────────────────────────────── -->
+<footer class="relative z-10 border-t border-gray-800/60 py-12">
+  <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6">
+    <div class="flex items-center gap-2.5">
+      <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gfoot)" opacity="0.6"/>
+        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gfoot)" opacity="0.8"/>
+        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gfoot)"/>
+        <defs><linearGradient id="gfoot" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/></linearGradient></defs>
+      </svg>
+      <span class="text-white font-semibold">memnos</span>
+      <span class="text-gray-600 text-sm ml-2">Memory for AI agents</span>
+    </div>
+    <div class="flex items-center gap-8 text-sm text-gray-500">
+      <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="hover:text-gray-300 transition-colors">Docs</a>
+      <a href="benchmarks.html" class="hover:text-gray-300 transition-colors">Benchmarks</a>
+      <a href="compare.html" class="hover:text-gray-300 transition-colors">Compare</a>
+      <a href="governance.html" class="hover:text-gray-300 transition-colors">Policies</a>
+      <a href="https://github.com/thameema/memnos/blob/main/LICENSE" class="hover:text-gray-300 transition-colors">Apache-2.0 License</a>
+    </div>
+    <div class="text-xs text-gray-700">Measured honestly.</div>
+  </div>
+</footer>
+
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+  function toggleMobileNav() {
+    const menu = document.getElementById('mobile-nav');
+    const h1 = document.getElementById('ham-1'), h2 = document.getElementById('ham-2'), h3 = document.getElementById('ham-3');
+    const open = menu.classList.toggle('hidden') === false;
+    h1.style.transform = open ? 'translateY(6px) rotate(45deg)' : '';
+    h2.style.opacity   = open ? '0' : '';
+    h3.style.transform = open ? 'translateY(-6px) rotate(-45deg)' : '';
+  }
+</script>
+</body>
+</html>
