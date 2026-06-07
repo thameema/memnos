@@ -84,7 +84,7 @@ def judge_one(cli, judge, q, exp, pred):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--answerer", default="gpt-4o-mini")
+    ap.add_argument("--answerer", default="gpt-5-mini")  # LOCKED config: gpt-4o-mini extract + gpt-5-mini answer
     ap.add_argument("--judges", default="gpt-4o,claude")
     ap.add_argument("--sample-ids", default="2,3,4")
     ap.add_argument("--workers", type=int, default=6)
