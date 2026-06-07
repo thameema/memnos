@@ -32,7 +32,11 @@ _JUDGE_TMPL = ("Question: {q}\nReference answer: {exp}\nModel answer: {pred}\n"
 
 
 def _run(prompt, timeout=120):
-    r = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=timeout)
+    # --bare = skip hooks/LSP/plugins: programmatic claude -p calls must NOT trigger the
+    # global Claude Code hooks (e.g. the memnos remember hook would store every judge/
+    # extract prompt into prod memory).
+    r = subprocess.run(["claude", "-p", "--bare", prompt],
+                       capture_output=True, text=True, timeout=timeout)
     return (r.stdout or "").strip()
 
 
