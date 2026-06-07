@@ -18,6 +18,7 @@ import sys
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, ".")
 
@@ -53,6 +54,8 @@ PORT = int(os.environ.get("MEMNOS_PORT", "8900"))
 POOL_MAX = int(os.environ.get("MEMNOS_POOL_MAX", "16"))
 MAX_BODY = 256 * 1024          # 256 KB request cap
 WRITE_OPS = {"/remember", "/consolidate"}
+UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+_CTYPE = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}
 
 POOL = None
 EMBED = None
@@ -100,7 +103,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "memnos/1.0"
 
     def _send(self, code, obj):
-        body = json.dumps(obj).encode()
+        body = json.dumps(obj, default=str).encode()   # default=str → datetime/Decimal safe
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -111,7 +114,113 @@ class Handler(BaseHTTPRequestHandler):
         h = self.headers.get("Authorization", "")
         return h[7:].strip() if h.lower().startswith("bearer ") else None
 
+    def _send_static(self, fname):
+        """Serve the zero-build console from poc/ui/ (localhost-only shell; JS does auth)."""
+        safe = os.path.basename(fname)                     # no path traversal
+        fp = os.path.join(UI_DIR, safe)
+        if not os.path.isfile(fp):
+            return self._send(404, {"error": "not found"})
+        body = open(fp, "rb").read()
+        self.send_response(200)
+        self.send_header("Content-Type", _CTYPE.get(os.path.splitext(safe)[1], "application/octet-stream"))
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_body(self):
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            return None
+        if n > MAX_BODY:
+            return None
+        try:
+            req = json.loads(self.rfile.read(n) or b"{}")
+            return req if isinstance(req, dict) else None
+        except (ValueError, json.JSONDecodeError):
+            return None
+
+    def _admin(self, method, sub, qs, body):
+        """Management-console API under /admin/api/. Requires an ADMIN principal
+        (holds the '*' grant). Returns (code, obj). Audited by the caller."""
+        with POOL.connection() as conn:
+            pid = Control.authenticate(conn, self._token())
+            if pid is None:
+                return 401, {"error": "unauthorized"}
+            if not Control.is_admin(conn, pid):
+                return 403, {"error": "admin token required ('*' grant)"}
+            body = body or {}
+            try:
+                if sub == "namespaces" and method == "GET":
+                    return 200, {"namespaces": Control.list_namespaces(conn)}
+                if sub == "namespaces" and method == "POST":
+                    name = str(body.get("name", "")).strip()
+                    if not name or len(name) > 200:
+                        return 400, {"error": "name required (<=200 chars)"}
+                    Control.create_namespace(conn, name, created_by=pid, description=body.get("description"))
+                    return 200, {"ok": True, "name": name}
+                if sub == "namespaces" and method == "DELETE":
+                    name = (qs.get("name", [""])[0]).strip()
+                    if not name:
+                        return 400, {"error": "name required"}
+                    Control.delete_namespace(conn, name, purge_data=qs.get("purge", ["0"])[0] == "1")
+                    return 200, {"ok": True}
+                if sub == "principals" and method == "GET":
+                    return 200, {"principals": Control.list_principals(conn)}
+                if sub == "principals" and method == "POST":
+                    name = str(body.get("name", "")).strip()
+                    if not name:
+                        return 400, {"error": "name required"}
+                    npid = Control.create_principal(conn, name, body.get("kind", "user"))
+                    return 200, {"ok": True, "id": npid}
+                if sub == "tokens" and method == "GET":
+                    p = int(qs.get("principal", [0])[0])
+                    return 200, {"tokens": Control.list_tokens(conn, p)}
+                if sub == "tokens" and method == "POST":
+                    p = int(body.get("principal_id", 0))
+                    tok = Control.mint_token(conn, p, body.get("label"), body.get("ttl_days"))
+                    return 200, {"token": tok}          # plaintext ONCE
+                if sub == "tokens/revoke" and method == "POST":
+                    Control.revoke_token_by_id(conn, int(body.get("id", 0)))
+                    return 200, {"ok": True}
+                if sub == "grants" and method == "POST":
+                    Control.grant(conn, int(body.get("principal_id", 0)), str(body.get("namespace", "")),
+                                  bool(body.get("can_read", True)), bool(body.get("can_write", True)))
+                    return 200, {"ok": True}
+                if sub == "grants" and method == "DELETE":
+                    Control.revoke_grant(conn, int(qs.get("principal", [0])[0]), qs.get("namespace", [""])[0])
+                    return 200, {"ok": True}
+                if sub == "grants" and method == "GET":
+                    return 200, {"grants": Control.authorized_namespaces(conn, int(qs.get("principal", [0])[0]))}
+                if sub == "stats" and method == "GET":
+                    return 200, {"ops": Control.stats(conn)}
+                if sub == "usage" and method == "GET":
+                    return 200, {"usage": Control.usage_rollup(conn)}
+                if sub == "audit" and method == "GET":
+                    return 200, {"audit": Control.recent_audit(conn, int(qs.get("limit", [50])[0]))}
+                if sub == "health" and method == "GET":
+                    return 200, {"findings": [{"level": l, "msg": m} for l, m in Control.health(conn)]}
+                if sub == "quality" and method == "GET":
+                    return 200, {"trend": Control.eval_trend(conn, "stale_suppression", "rate", 10)}
+                if sub == "provider" and method == "GET":
+                    return 200, {"mode": "openai" if os.environ.get("OPENAI_API_KEY") else "local",
+                                 "dim": DIM, "key_present": bool(os.environ.get("OPENAI_API_KEY")),
+                                 "extract_model": "gpt-4o-mini"}
+            except Exception as e:
+                traceback.print_exc()
+                return 500, {"error": type(e).__name__, "msg": str(e)[:200]}
+            return 404, {"error": "unknown admin route"}
+
     def do_GET(self):
+        u = urlparse(self.path)
+        # --- management console (zero-build static UI) ---
+        if u.path in ("/admin", "/admin/"):
+            return self._send_static("index.html")
+        if u.path.startswith("/admin/api/"):
+            code, obj = self._admin("GET", u.path[len("/admin/api/"):], parse_qs(u.query), None)
+            return self._send(code, obj)
+        if u.path.startswith("/admin/"):
+            return self._send_static(u.path[len("/admin/"):])
         if self.path == "/healthz":
             return self._send(200, {"ok": True})
         if self.path == "/readyz":
@@ -134,7 +243,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(500, {"error": "internal error"})
         self._send(404, {"error": "not found"})
 
+    def do_DELETE(self):
+        u = urlparse(self.path)
+        if u.path.startswith("/admin/api/"):
+            code, obj = self._admin("DELETE", u.path[len("/admin/api/"):], parse_qs(u.query), None)
+            return self._send(code, obj)
+        return self._send(404, {"error": "not found"})
+
     def do_POST(self):
+        u = urlparse(self.path)
+        # --- management console admin API ---
+        if u.path.startswith("/admin/api/"):
+            body = self._read_body()
+            if body is None:
+                return self._send(400, {"error": "invalid json"})
+            code, obj = self._admin("POST", u.path[len("/admin/api/"):], parse_qs(u.query), body)
+            return self._send(code, obj)
+
         t0 = time.perf_counter()
         # --- body limits + json ---
         try:

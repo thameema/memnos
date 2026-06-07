@@ -36,12 +36,23 @@ echo 'OPENAI_API_KEY=sk-...' > .env                    # omit for free local mod
 ```
 
 ## 5. Create an identity + token (governance is built in)
+
+**Option A — Management console (recommended):**
+```bash
+python memnos_admin.py admin       # prints an ADMIN token once
+```
+Open **http://127.0.0.1:8900/admin**, paste the admin token, then create namespaces,
+mint/revoke tokens, manage grants, and view the dashboard — all from the UI.
+
+**Option B — CLI:**
 ```bash
 python memnos_admin.py init                            # one-time: control plane
 python memnos_admin.py principal alice                 # create a principal
 python memnos_admin.py token alice                     # prints a token ONCE — copy it
-python memnos_admin.py grant alice "user:alice:*"      # grant a namespace (ACL)
+python memnos_admin.py grant alice "user:alice:notes"  # grant a namespace (ACL)
 ```
+> Namespaces are **explicit** — you create them (console or CLI). memnos does not
+> auto-create namespaces. Use a namespace per project/user/agent as you like.
 
 ## 6. Use it (HTTP)
 ```bash

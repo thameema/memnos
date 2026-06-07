@@ -1,0 +1,30 @@
+:root{--bg:#0f1220;--card:#181c2e;--line:#2a2f45;--fg:#e7e9f3;--muted:#9aa0bd;--accent:#6d7cff;--ok:#3ecf8e;--warn:#f5a623;--err:#ff5d6c}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+header{display:flex;justify-content:space-between;align-items:center;padding:14px 24px;border-bottom:1px solid var(--line)}
+.brand{font-weight:700;font-size:18px}.brand span{color:var(--muted);font-weight:400}
+.who{color:var(--muted);font-size:13px}
+main{max-width:1000px;margin:0 auto;padding:20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;margin:0 auto 16px;max-width:1000px}
+#login{max-width:520px;margin:60px auto}
+h2,h3{margin:0 0 12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input,select{background:#0e1120;border:1px solid var(--line);color:var(--fg);padding:9px 11px;border-radius:8px;flex:1;min-width:120px}
+button{background:var(--accent);color:#fff;border:0;padding:9px 16px;border-radius:8px;cursor:pointer;font-weight:600}
+button:hover{filter:brightness(1.1)}button.ghost{background:transparent;border:1px solid var(--line);color:var(--muted);font-weight:400}
+button.danger{background:transparent;border:1px solid var(--err);color:var(--err);padding:5px 10px;font-weight:400}
+.muted{color:var(--muted);font-size:13px}.err{color:var(--err)}
+code{background:#0e1120;padding:2px 6px;border-radius:5px;font-size:12px}
+.tabs{display:flex;gap:4px;margin-bottom:16px;flex-wrap:wrap}
+.tabs button{background:transparent;color:var(--muted);border:1px solid transparent;font-weight:500}
+.tabs button.active{color:var(--fg);border-color:var(--line);background:var(--card)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:600}
+.banner{background:#0e2a1e;border:1px solid var(--ok);border-radius:8px;padding:12px;margin-top:12px;word-break:break-all}
+.banner code{background:#06160f}
+.chk{display:flex;align-items:center;gap:5px;flex:0;color:var(--muted)}
+.chk input{flex:0;min-width:auto}
+.pill{padding:2px 8px;border-radius:20px;font-size:12px}
+.pill.ok{background:#0e2a1e;color:var(--ok)}.pill.no{background:#2a0e14;color:var(--err)}
+.lvl{font-weight:700;margin-right:6px}.lvl.CRITICAL{color:var(--err)}.lvl.WARN{color:var(--warn)}.lvl.OK,.lvl.INFO{color:var(--ok)}
