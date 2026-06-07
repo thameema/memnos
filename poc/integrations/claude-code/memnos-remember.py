@@ -2,14 +2,16 @@
 """memnos remember hook (Stop) — save the user's last message to memnos.
 Fire-and-forget. Env: MEMNOS_URL, MEMNOS_NS, MEMNOS_TOKEN."""
 import json, os, sys, urllib.request
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import memnos_ns
 
 URL = os.environ.get("MEMNOS_URL", "http://127.0.0.1:8900")
-NS = os.environ.get("MEMNOS_NS", "claude:default")
 TOKEN = os.environ.get("MEMNOS_TOKEN", "")          # server requires a Bearer token (write)
 try:
     data = json.load(sys.stdin)
 except Exception:
     sys.exit(0)
+NS = memnos_ns.resolve(data)                          # per-project namespace
 text = data.get("prompt", "")
 tp = data.get("transcript_path", "")
 if tp and os.path.exists(tp):

@@ -38,7 +38,15 @@ def main():
     p = sub.add_parser("errors"); p.add_argument("--hours", type=int, default=24); p.add_argument("--limit", type=int, default=20)
     p = sub.add_parser("quality"); p.add_argument("--limit", type=int, default=10)
     p = sub.add_parser("health"); p.add_argument("--hours", type=int, default=24)
+    sub.add_parser("ns")          # show the auto-resolved namespace for the current dir
     args = ap.parse_args()
+
+    if args.cmd == "ns":
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "integrations", "claude-code"))
+        import memnos_ns
+        print(memnos_ns.resolve())
+        return
 
     c = conn()
     if args.cmd == "init":
