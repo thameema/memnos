@@ -11,8 +11,8 @@
   </script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>memnos — Persistent Memory for AI Agents | MCP, REST & CLI on one PostgreSQL</title>
-  <meta name="description" content="memnos gives AI coding agents persistent memory across sessions. MCP for Claude Code, Cursor & Windsurf — one PostgreSQL, no second database. Search, write and group memories via REST API or Python SDK." />
+  <title>memnos — Memory for AI that remembers you | persistent, private, portable</title>
+  <meta name="description" content="Your AI forgets you every chat. memnos is the memory layer that remembers — persistent, private and portable across Claude, ChatGPT, Cursor and any AI. Self-hostable, governed; works via MCP, REST and a Python SDK." />
   <meta name="keywords" content="persistent memory AI agents, LLM memory, MCP server, Claude Code memory, Cursor AI memory, agent context persistence, memory store AI, RAG memory, memnos, AI agent SDK" />
   <link rel="canonical" href="https://memnos.net/" />
   <!-- Open Graph -->
@@ -191,17 +191,23 @@
     <div>
       <div class="inline-flex items-center gap-2 bg-purple-500/10 border border-purple-500/20 rounded-full px-4 py-1.5 text-sm text-purple-300 mb-8">
         <span class="w-1.5 h-1.5 bg-purple-400 rounded-full pulse-dot"></span>
-        MIT · Self-hostable · One PostgreSQL · Works with Claude, GPT-5, Llama, Gemini
+        MIT · Self-hostable · Private · Works with Claude, GPT-5, Llama, Gemini
       </div>
       <h1 class="text-5xl md:text-6xl font-bold text-white leading-[1.1] tracking-tight mb-6">
         Your AI forgets you.<br />
         <span class="gradient-text">memnos remembers.</span>
       </h1>
-      <p class="text-gray-400 text-lg leading-relaxed mb-10 max-w-lg">
-        Governed, vendor-neutral memory for AI agents — on a single PostgreSQL. Persistent. Bi-temporal. Audited. No second database, no LLM at query time. Runs 100% local or in the cloud.
+      <p class="text-gray-400 text-lg leading-relaxed mb-6 max-w-lg">
+        Every AI tool forgets you the moment a chat ends. memnos is the memory layer that remembers — what you decided, what you prefer, what your team knows — and feeds it back to any AI, automatically. Yours, private, and portable across every tool.
+      </p>
+      <p class="text-gray-300 text-base leading-relaxed mb-8 max-w-lg">
+        <span class="text-white font-semibold">How we're different:</span> other memory tools lock you into their cloud, or let an LLM <em>guess</em> what to keep and forget. memnos is yours to self-host, remembers <span class="text-white">deterministically</span> (no LLM guessing), is fully governed and audited — and we publish <span class="text-white">honest, independently-judged</span> benchmarks. <a href="compare.html" class="text-purple-300 hover:text-purple-200 underline underline-offset-2">See how we compare to Zep, Mem0 &amp; Graphiti →</a>
       </p>
       <div class="flex items-center gap-4">
         <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white font-semibold px-7 py-3 rounded-full text-sm">Deploy in 90 seconds</a>
+        <a href="compare.html" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-7 py-3 rounded-full flex items-center gap-2">
+          How we compare &rarr;
+        </a>
         <a href="https://github.com/thameema/memnos" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-7 py-3 rounded-full flex items-center gap-2">
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
           View on GitHub &rarr;
@@ -214,8 +220,8 @@
           <div class="text-xs text-gray-500 mt-0.5">LoCoMo (full 10) — under an <em>independent</em> judge; 61% gpt-4o judge</div>
         </div>
         <div>
-          <div class="text-2xl font-bold text-white">1 DB</div>
-          <div class="text-xs text-gray-500 mt-0.5">PostgreSQL + pgvector — no second vector or graph store</div>
+          <div class="text-2xl font-bold text-white">Yours</div>
+          <div class="text-xs text-gray-500 mt-0.5">your memory, your data — self-host or cloud, never locked in</div>
         </div>
         <div>
           <div class="text-2xl font-bold text-white">Any LLM</div>
@@ -372,7 +378,7 @@
       <div class="glass rounded-2xl p-6">
         <div class="text-2xl mb-3">🏛️</div>
         <h3 class="text-white font-semibold mb-2">Regulated sectors</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Healthcare, legal, finance, government — self-host on one PostgreSQL with token auth, namespace ACL, audit, and an encrypted secret vault. Your data never leaves your infrastructure.</p>
+        <p class="text-sm text-gray-400 leading-relaxed">Healthcare, legal, finance, government — self-host with token auth, namespace access control, full audit, and an encrypted secret vault. Your data never leaves your infrastructure.</p>
       </div>
     </div>
     <p class="text-center text-gray-500 text-sm mt-10">Coming as a hosted service — <span class="text-gray-300">Memory-as-a-Service</span> — so anyone can give their AI a memory in one click.</p>
@@ -393,7 +399,7 @@
           <svg class="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg>
         </div>
         <h3 class="text-white font-semibold mb-2">Persistent Shared Memory</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">One PostgreSQL + pgvector backend — vector, full-text and relations in the engine you already run. Facts, decisions, incidents, and constraints survive session boundaries and are shared across your entire team.</p>
+        <p class="text-sm text-gray-400 leading-relaxed">Facts, decisions, preferences, incidents and constraints survive session boundaries and are shared across your whole team — so nothing important is ever lost or re-explained. Runs on infrastructure you already operate; no exotic database to babysit.</p>
       </div>
 
       <div class="glass rounded-2xl p-6">
