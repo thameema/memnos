@@ -85,7 +85,7 @@ async function loadTokens() {
   $("#tok-who").textContent = $("#tok-principal").selectedOptions[0].textContent;
   const { tokens } = await api("GET", "tokens?principal=" + pid);
   $("#tok-table tbody").innerHTML = tokens.map(t => `<tr>
-    <td>${t.id}</td><td>${esc(t.label || "")}</td><td>${fmt(t.created_at)}</td><td>${fmt(t.expires_at)}</td>
+    <td>${t.id}</td><td><code>${esc(t.hint || "—")}</code></td><td>${esc(t.label || "")}</td><td>${fmt(t.created_at)}</td><td>${fmt(t.expires_at)}</td>
     <td><span class="pill ${t.revoked ? "no" : "ok"}">${t.revoked ? "revoked" : "active"}</span></td>
     <td>${t.revoked ? "" : `<button class="danger" data-rv="${t.id}">revoke</button>`}</td></tr>`).join("");
   $$("#tok-table [data-rv]").forEach(b => b.onclick = async () => {
