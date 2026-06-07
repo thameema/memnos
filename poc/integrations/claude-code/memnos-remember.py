@@ -29,10 +29,12 @@ if not text:
     sys.exit(0)
 
 # SKIP noise: agent/system-generated prompts and trivial turns pollute memory
-# (e.g. autonomous-loop ticks, system reminders, one-word replies like "Yes").
-_SKIP_PREFIX = ("# autonomous loop", "<system-reminder", "<command-", "# ")
+# (autonomous-loop ticks, task-notifications, system reminders, command tags, one-word
+# replies). Any leading "<...>" XML-ish tag is a harness/system message, not the user.
 _lower = text.lower()
-if any(_lower.startswith(p) for p in _SKIP_PREFIX) or "<<autonomous-loop" in _lower:
+if _lower.startswith("<") or text.startswith("# ") or "<<autonomous-loop" in _lower \
+        or _lower.startswith("# autonomous loop") or "</task-notification" in _lower \
+        or "this is an automated background-task event" in _lower:
     sys.exit(0)
 # skip LLM-judge / eval prompts (e.g. headless `claude -p` judge calls inherit hooks)
 if "reference answer:" in _lower or "reply with only" in _lower or _lower.startswith("question:"):
