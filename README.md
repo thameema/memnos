@@ -9,7 +9,7 @@ no graph database — and uses **no LLM at query time** (retrieval is hybrid sea
 cross-encoder reranker). Works with **Claude Code, Cursor, Windsurf** and any MCP client,
 plus a REST API and a cross-platform CLI.
 
-> **Status:** POC / preview. Single-org self-host, local-first. MIT.
+> **Status:** POC / preview. Single-org self-host, local-first. Apache-2.0.
 
 ```
 Claude Code ─┐
@@ -37,7 +37,7 @@ REST / CLI ─────────────────┘     ├─ hyb
 | Governance | **token + namespace ACL + audit + usage ledger** | — | — |
 | Secrets | **encrypted vault + ingest redaction** | — | — |
 | Deploy | **one container / pip install**, runs anywhere | graph DB required | cloud or self-host |
-| License | **MIT** | — | — |
+| License | **Apache-2.0** | — | — |
 
 **The essence:** memnos is a *governed memory engine*, not an agent runtime. Conflicts are
 resolved deterministically (no LLM guessing at write time), retrieval is hybrid + reranked,
@@ -156,7 +156,7 @@ Temporal questions add a guaranteed entity **timeline**; entity questions add an
 
 ## License
 
-MIT. The open-source build is the engine + single-org self-host + the basic
+Apache-2.0. The open-source build is the engine + single-org self-host + the basic
 management console. SSO/advanced RBAC, encrypted-vault key management (KMS/HSM, rotation
 policies), the multi-tenant control plane, the richer enterprise UI, and managed cloud are
 the commercial layer.
