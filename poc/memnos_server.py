@@ -15,8 +15,10 @@ Bootstrap identity with: python memnos_admin.py ...
 import json
 import os
 import sys
+import threading
 import time
 import traceback
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -74,6 +76,33 @@ PORT = int(os.environ.get("MEMNOS_PORT", "8900"))
 POOL_MAX = int(os.environ.get("MEMNOS_POOL_MAX", "16"))
 MAX_BODY = 256 * 1024          # 256 KB request cap
 WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/corpus/ingest"}
+_DELIVER_EVENT = threading.Event()      # set after a write → wakes the webhook pusher
+WEBHOOK_TIMEOUT = float(os.environ.get("MEMNOS_WEBHOOK_TIMEOUT", "5"))
+PUSHER_INTERVAL = float(os.environ.get("MEMNOS_PUSHER_INTERVAL", "3"))
+
+
+def _webhook_post(url, payload):
+    """POST a JSON payload to a subscriber webhook; raises on non-2xx (stdlib, no dep)."""
+    req = urllib.request.Request(url, method="POST",
+                                 data=json.dumps(payload, default=str).encode(),
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": "memnos-webhook/1"})
+    with urllib.request.urlopen(req, timeout=WEBHOOK_TIMEOUT) as r:
+        if not (200 <= r.status < 300):
+            raise RuntimeError(f"webhook HTTP {r.status}")
+
+
+def _pusher_loop():
+    """Background webhook delivery: wakes on a write (event) or every PUSHER_INTERVAL,
+    delivers pending events to subscriber webhooks at-least-once. Daemon thread."""
+    while True:
+        _DELIVER_EVENT.wait(timeout=PUSHER_INTERVAL)
+        _DELIVER_EVENT.clear()
+        try:
+            with POOL.connection() as conn:
+                Control.deliver_pending(conn, _webhook_post)
+        except Exception:
+            traceback.print_exc()
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 _CTYPE = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}
 
@@ -222,6 +251,11 @@ class Handler(BaseHTTPRequestHandler):
                     return 200, {"findings": [{"level": l, "msg": m} for l, m in Control.health(conn)]}
                 if sub == "quality" and method == "GET":
                     return 200, {"trend": Control.eval_trend(conn, "stale_suppression", "rate", 10)}
+                if sub == "subscriptions" and method == "GET":
+                    return 200, {"subscriptions": Control.list_subscriptions(conn, int(qs.get("principal", [pid])[0]))}
+                if sub == "deliver" and method == "POST":
+                    # run a webhook delivery pass now (ops + deterministic tests)
+                    return 200, {"delivered": Control.deliver_pending(conn, _webhook_post)}
                 if sub == "provider" and method == "GET":
                     from memnos_brain.vault import Vault
                     return 200, {"mode": "openai" if os.environ.get("OPENAI_API_KEY") else "local",
@@ -483,6 +517,8 @@ class Handler(BaseHTTPRequestHandler):
                 rcount = len(out.get("memories", [])) if isinstance(out, dict) and "memories" in out else None
                 Control.audit(conn, principal, action, ns, True,
                               latency_ms=int((time.perf_counter() - t0) * 1000), result_count=rcount, status=200)
+                if self.path in WRITE_OPS:
+                    _DELIVER_EVENT.set()       # wake the webhook pusher (near-immediate push)
                 return self._send(200, out)
         except Exception:
             traceback.print_exc()              # pool/connection-level failure
@@ -517,7 +553,8 @@ def serve(port=None):
         BrainStore(conn=conn).create_schema("memnos", dim=DIM)   # memory schema
         Control.audit(conn, None, "server_start", "-", True,      # heartbeat (uptime/crash-loop signal)
                       detail={"dim": DIM})
-    print(f"[memnos] production server on http://127.0.0.1:{port} (pool max {POOL_MAX})", flush=True)
+    threading.Thread(target=_pusher_loop, name="memnos-webhook-pusher", daemon=True).start()
+    print(f"[memnos] production server on http://127.0.0.1:{port} (pool max {POOL_MAX}); webhook pusher on", flush=True)
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 
 

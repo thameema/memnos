@@ -57,4 +57,5 @@ jobs:
           python test_memory_api.py
           python test_knowledge_api.py
           python test_pubsub_api.py
+          python test_pubsub_push.py
           python test_corpus_api.py
