@@ -35,7 +35,15 @@ class BrainStore:
 
     # --- provisioning -----------------------------------------------------
     def create_schema(self, tenant: str, dim: int = 1536) -> str:
+        # (Re)load the schema DDL function from schema.sql first, so additive schema
+        # changes (e.g. new columns via ALTER ... ADD COLUMN IF NOT EXISTS) deploy on every
+        # boot — then materialise/upgrade the tenant schema. Rolling, additive-only.
+        import os
+        sql_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")
+        with open(sql_path) as fh:
+            ddl = fh.read()
         with self.conn.cursor() as c:
+            c.execute(ddl)                                   # CREATE OR REPLACE FUNCTION (idempotent)
             c.execute("SELECT create_brain_schema(%s, %s)", (tenant, dim))
         return f"tenant_{tenant}"
 
@@ -51,7 +59,7 @@ class BrainStore:
             c.execute(
                 f"INSERT INTO {schema}.raw_turns(namespace,session_id,speaker,text,observed_at,embedding) "
                 f"VALUES(%s,%s,%s,%s,%s,%s::halfvec) RETURNING id",
-                (ns, session_id, speaker, text, observed_at, vlit(vec)))
+                (ns, session_id, speaker, text, observed_at, vlit(vec) if vec is not None else None))
             return c.fetchone()["id"]
 
     # --- episodic ---------------------------------------------------------
@@ -102,16 +110,38 @@ class BrainStore:
     # --- semantic + provenance (used by B2 consolidation) -----------------
     def insert_semantic(self, schema, ns, kind, statement, *, subject=None, predicate=None,
                         obj=None, valid_from=None, valid_to=None, confidence=1.0,
-                        salience=0.0, vec=None) -> int:
+                        salience=0.0, vec=None, source_turn_ids: Iterable[int] = ()) -> int:
         self._chk(schema)
+        src = list(source_turn_ids) if source_turn_ids else None
         with self.conn.cursor() as c:
             c.execute(
                 f"INSERT INTO {schema}.semantic"
-                f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding) "
-                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::halfvec) RETURNING id",
+                f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding,source_turn_ids) "
+                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::halfvec,%s) RETURNING id",
                 (ns, kind, statement, subject, predicate, obj, valid_from, valid_to,
-                 confidence, salience, vlit(vec) if vec is not None else None))
+                 confidence, salience, vlit(vec) if vec is not None else None, src))
             return c.fetchone()["id"]
+
+    def provenance_of(self, schema, ns, semantic_id) -> dict | None:
+        """Evidence chain for a fact: the fact + the verbatim raw_turn(s) it was extracted
+        from (or, for a dossier, the turns its source facts derived from)."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(f"SELECT id, kind, statement, valid_from, valid_to, source_turn_ids "
+                      f"FROM {schema}.semantic WHERE id=%s AND namespace=%s", (semantic_id, ns))
+            fact = c.fetchone()
+            if not fact:
+                return None
+            srcs = fact.get("source_turn_ids") or []
+            sources = []
+            if srcs:
+                c.execute(f"SELECT id, speaker, text AS content, observed_at "
+                          f"FROM {schema}.raw_turns WHERE id = ANY(%s) AND namespace=%s ORDER BY id",
+                          (list(srcs), ns))
+                sources = c.fetchall()
+        return {"fact": {"id": fact["id"], "kind": fact["kind"], "statement": fact["statement"],
+                         "valid_from": fact["valid_from"], "valid_to": fact["valid_to"]},
+                "source_turn_ids": srcs, "sources": sources}
 
     def add_provenance(self, schema, semantic_id, episodic_ids: Iterable[int]) -> None:
         self._chk(schema)

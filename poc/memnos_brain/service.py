@@ -93,7 +93,7 @@ class MemnosMemory:
         n_facts = n_super = 0
         if extract and self.llm is not None:
             for f in self._extract(text, observed_at):
-                df, ds = self._write_fact(namespace, f, observed_at)
+                df, ds = self._write_fact(namespace, f, observed_at, source_turn_ids=[tid])
                 n_facts += df; n_super += ds
         return {"turn_id": tid, "facts": n_facts, "superseded": n_super}
 
@@ -110,25 +110,26 @@ class MemnosMemory:
         if self.redact:
             from .redact import redact as _redact
             turns = [(spk, _redact(txt)[0] if txt else txt) for spk, txt in turns]
+        tids = []
         for ti, (spk, txt) in enumerate(turns):
             if not txt:
                 continue
-            self.store.insert_raw_turn(self.schema, namespace, session_id, spk, txt,
-                                       session_date + timedelta(minutes=ti), self.embed(txt))
+            tids.append(self.store.insert_raw_turn(self.schema, namespace, session_id, spk, txt,
+                                                   session_date + timedelta(minutes=ti), self.embed(txt)))
         n_facts = n_super = 0
         if extract and self.llm is not None:
             content = f"SESSION DATE: {session_date}\n\n" + "\n".join(
                 f"{s}: {t}" for s, t in turns if t)
             for f in self._extract(content, session_date):
-                df, ds = self._write_fact(namespace, f, session_date)
+                df, ds = self._write_fact(namespace, f, session_date, source_turn_ids=tids)
                 n_facts += df; n_super += ds
         return {"turns": len(turns), "facts": n_facts, "superseded": n_super}
 
-    def _write_fact(self, namespace, f, fallback_date):
+    def _write_fact(self, namespace, f, fallback_date, *, source_turn_ids=()):
         """Write ONE SPO fact: absolute event date → belief-change supersession → store
-        with subject/predicate/object → populate the entity graph. Shared by remember()
-        and ingest_session() so the write path can never drift between them.
-        Returns (facts_written, superseded_count)."""
+        with subject/predicate/object (+ provenance to its source turn) → populate the
+        entity graph. Shared by remember() and ingest_session() so the write path can
+        never drift between them. Returns (facts_written, superseded_count)."""
         from .temporal import parse_event_date
         stmt = f["statement"]
         subj = (f["subject"][:100] if f["subject"] else None)
@@ -141,7 +142,8 @@ class MemnosMemory:
         vec = self.embed(stmt)
         fid = self.store.insert_semantic(self.schema, namespace, "fact", stmt,
                                          subject=subj, predicate=pred, obj=obj,
-                                         valid_from=ev, salience=0.5, vec=vec)
+                                         valid_from=ev, salience=0.5, vec=vec,
+                                         source_turn_ids=source_turn_ids)
         # populate the ENTITY GRAPH from the SPO triple (every fact is an edge)
         if subj:
             se = self.store.upsert_entity(self.schema, namespace, subj)
@@ -289,16 +291,18 @@ class MemnosMemory:
         import json
         from collections import defaultdict
         with self.store.conn.cursor() as c:
-            c.execute(f"SELECT statement, subject_entity, valid_from FROM {self.schema}.semantic "
+            c.execute(f"SELECT statement, subject_entity, valid_from, source_turn_ids FROM {self.schema}.semantic "
                       f"WHERE namespace=%s AND kind='fact'", (namespace,))
             facts = c.fetchall()
         ent = defaultdict(list)
+        ent_src = defaultdict(set)                           # dossier provenance = union of source facts' turns
         for row in facts:
             ents = set(_PROPER.findall(row["statement"]))
             if row.get("subject_entity"):
                 ents.add(row["subject_entity"])
             for e in ents:
                 ent[e].append((row["valid_from"], row["statement"]))
+                ent_src[e].update(row.get("source_turn_ids") or [])
         clusters = sorted(((e, fs) for e, fs in ent.items() if len(fs) >= 3),
                           key=lambda x: -len(x[1]))[:max_entities]
         n = 0
@@ -328,7 +332,8 @@ class MemnosMemory:
                     # belief-change supersession: close out the prior value for this subject
                     self.store.supersede_subject(self.schema, namespace, e[:100], vec, vf)
                     self.store.insert_semantic(self.schema, namespace, "dossier", f,
-                                               subject=e[:100], valid_from=vf, salience=0.8, vec=vec)
+                                               subject=e[:100], valid_from=vf, salience=0.8, vec=vec,
+                                               source_turn_ids=sorted(ent_src.get(e, ())))
                     n += 1
             except Exception:
                 continue

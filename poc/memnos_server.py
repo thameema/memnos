@@ -436,6 +436,15 @@ class Handler(BaseHTTPRequestHandler):
                         if res is None:
                             return self._send(404, {"error": "entity not found"})
                         out = res
+                    elif self.path == "/provenance":       # evidence chain for a fact
+                        try:
+                            sid = int(req.get("id"))
+                        except (TypeError, ValueError):
+                            return self._send(400, {"error": "id (int) required"})
+                        res = store.provenance_of(mem.schema, ns, sid)
+                        if res is None:
+                            return self._send(404, {"error": "fact not found in namespace"})
+                        out = res
                     elif self.path == "/related":          # get_related (adjacency)
                         name = str(req.get("name", "")).strip()
                         if not name:

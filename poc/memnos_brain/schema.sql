@@ -66,6 +66,9 @@ BEGIN
       embedding halfvec(%s),
       fts tsvector GENERATED ALWAYS AS (to_tsvector('english', statement)) STORED
     )$t$, s, dim);
+  -- PROVENANCE (inline): the raw_turn(s) a fact was extracted from / a dossier derived
+  -- from. Auditable evidence chain — "why do you believe this?" (additive, rolling-safe).
+  EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS source_turn_ids bigint[]', s);
 
   -- ASSOCIATIVE GRAPH
   EXECUTE format($t$
