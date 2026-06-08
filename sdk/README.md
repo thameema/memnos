@@ -1,8 +1,8 @@
 # memnos-sdk
 
 Lightweight Python client for [memnos](https://memnos.net) — governed, vendor-neutral
-**backend memory for AI agents**. Use it directly, or as a **LangChain** retriever / a
-**LangGraph** long-term-memory store.
+**backend memory for AI agents**. Use it directly, or as a **LangChain** retriever, a
+**LangGraph** long-term-memory store, or a **LlamaIndex** retriever.
 
 `httpx`-only (no server deps). Talks to a running memnos server over REST.
 
@@ -10,6 +10,7 @@ Lightweight Python client for [memnos](https://memnos.net) — governed, vendor-
 pip install memnos-sdk                  # core client
 pip install 'memnos-sdk[langchain]'     # + LangChain retriever
 pip install 'memnos-sdk[langgraph]'     # + LangGraph BaseStore
+pip install 'memnos-sdk[llamaindex]'    # + LlamaIndex retriever
 pip install 'memnos-sdk[all]'           # everything
 ```
 
@@ -60,6 +61,17 @@ graph = builder.compile(store=store)
 
 memnos is *semantic* memory: `put`→remember, `search`→hybrid+reranked recall. Exact-key
 `get` is best-effort (use `search`).
+
+## LlamaIndex
+
+```python
+from memnos_sdk import MemnosClient
+from memnos_sdk.integrations.llamaindex import MemnosRetriever
+
+retriever = MemnosRetriever(client=MemnosClient(token="mnk_...", namespace="org:acme"))
+nodes = retriever.retrieve("auth token expiry policy")   # NodeWithScore[]; drop into a query engine
+retriever.save("JWT tokens expire after 15 minutes in prod")
+```
 
 ## API surface
 `remember(text)` · `recall(query) -> {memories, context}` · `context(query) -> str` ·
