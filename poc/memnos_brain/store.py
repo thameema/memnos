@@ -365,6 +365,67 @@ class BrainStore:
             c.execute(sql, {"ns": ns, "names": names, "hops": hops, "lim": limit})
             return c.fetchall()
 
+    def get_entity(self, schema, ns, name, *, depth=1, fact_limit=20) -> dict | None:
+        """Entity lookup + its graph neighbourhood + the facts that mention it.
+        depth=1 returns direct neighbours; depth>=2 expands over `edges` (recursive CTE).
+        Pure SQL over the associative graph — no LLM, no graph DB."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(f"SELECT id, name FROM {schema}.entities WHERE namespace=%s AND lower(name)=lower(%s)",
+                      (ns, name))
+            ent = c.fetchone()
+            if not ent:
+                return None
+            eid = ent["id"]
+            # neighbours up to `depth` hops, with the edge weight of the first hop
+            c.execute(f"""
+                WITH RECURSIVE reach(id, hop) AS (
+                    SELECT %(eid)s::bigint, 0
+                    UNION
+                    SELECT CASE WHEN g.src_entity=r.id THEN g.dst_entity ELSE g.src_entity END, r.hop+1
+                    FROM reach r JOIN {schema}.edges g ON (g.src_entity=r.id OR g.dst_entity=r.id)
+                    WHERE r.hop < %(depth)s
+                )
+                SELECT DISTINCT e.name, max(g.weight) AS weight
+                FROM reach r
+                JOIN {schema}.edges g ON (g.src_entity=r.id OR g.dst_entity=r.id)
+                JOIN {schema}.entities e ON e.id = CASE WHEN g.src_entity=r.id THEN g.dst_entity ELSE g.src_entity END
+                WHERE e.id <> %(eid)s AND e.namespace=%(ns)s
+                GROUP BY e.name ORDER BY weight DESC LIMIT 50
+            """, {"eid": eid, "depth": depth, "ns": ns})
+            related = [{"name": r["name"], "weight": float(r["weight"] or 0)} for r in c.fetchall()]
+            c.execute(f"""
+                SELECT DISTINCT s.id, s.statement AS content, s.valid_from, s.valid_to
+                FROM {schema}.mentions m
+                JOIN {schema}.semantic s ON s.id=m.memory_id AND m.memory_kind='semantic'
+                WHERE m.entity_id=%s AND s.namespace=%s AND s.expired_at IS NULL
+                ORDER BY s.valid_from DESC NULLS LAST LIMIT %s
+            """, (eid, ns, fact_limit))
+            facts = c.fetchall()
+        return {"entity": {"id": eid, "name": ent["name"]}, "related": related, "facts": facts}
+
+    def get_related(self, schema, ns, name, *, limit=50) -> list[dict]:
+        """Adjacency list for an entity — direct neighbours over `edges`, weight-ranked."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(f"""
+                SELECT e2.name, g.weight
+                FROM {schema}.entities e1
+                JOIN {schema}.edges g ON (g.src_entity=e1.id OR g.dst_entity=e1.id)
+                JOIN {schema}.entities e2 ON e2.id = CASE WHEN g.src_entity=e1.id THEN g.dst_entity ELSE g.src_entity END
+                WHERE e1.namespace=%s AND lower(e1.name)=lower(%s) AND e2.id<>e1.id
+                ORDER BY g.weight DESC LIMIT %s
+            """, (ns, name, limit))
+            return [{"name": r["name"], "weight": float(r["weight"] or 0)} for r in c.fetchall()]
+
+    def get_semantic(self, schema, ns, semantic_id) -> dict | None:
+        """Fetch a single semantic fact by id (for memory_delete confirmation)."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(f"SELECT id, statement, expired_at FROM {schema}.semantic WHERE id=%s AND namespace=%s",
+                      (semantic_id, ns))
+            return c.fetchone()
+
     def counts(self, schema) -> dict:
         self._chk(schema)
         out = {}

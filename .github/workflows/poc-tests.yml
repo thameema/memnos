@@ -54,3 +54,4 @@ jobs:
           python test_admin_api.py
           python test_vault.py
           python test_cli.py
+          python test_memory_api.py
