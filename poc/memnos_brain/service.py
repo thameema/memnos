@@ -338,3 +338,42 @@ class MemnosMemory:
             except Exception:
                 continue
         return {"dossiers": n}
+
+    def segment_episodes(self, namespace: str, *, gap_minutes=30, max_episodes=200,
+                         summary_fn=None) -> dict:
+        """EPISODIC tier (hippocampus): segment uncovered raw turns into coherent episodes —
+        boundary on session_id change OR a time gap > gap_minutes — with an extractive
+        summary (no LLM; pass summary_fn for an optional LLM summary), time span, and
+        two-level provenance (fact → episode → turn). Incremental + idempotent: only turns
+        not already in an episode are segmented."""
+        import re
+        turns = self.store.uncovered_raw_turns(self.schema, namespace)
+        if not turns:
+            return {"episodes": 0}
+        groups, cur, prev = [], [], None
+        for t in turns:
+            if cur:
+                gap = (t["observed_at"] - prev["observed_at"]).total_seconds() / 60.0
+                if t.get("session_id") != prev.get("session_id") or gap > gap_minutes:
+                    groups.append(cur); cur = []
+            cur.append(t); prev = t
+        if cur:
+            groups.append(cur)
+        n = 0
+        for g in groups[:max_episodes]:
+            body = "\n".join(f"{(r['speaker'] or 'user')}: {r['text']}" for r in g)
+            if summary_fn:
+                summary = summary_fn(body)
+            else:
+                joined = " ".join(r["text"] for r in g)
+                sents = re.split(r"(?<=[.!?])\s+", joined)
+                summary = (" ".join(sents[:2])[:400] or joined[:400])
+            sids = [r["id"] for r in g]
+            vec = self.embed(summary) if summary else None
+            eid = self.store.insert_episodic(
+                self.schema, namespace, g[0].get("session_id"), body, summary=summary,
+                t_start=g[0]["observed_at"], t_end=g[-1]["observed_at"], observed_at=g[-1]["observed_at"],
+                salience=min(1.0, 0.3 + 0.1 * len(g)), source_turn_ids=sids, vec=vec)
+            self.store.link_episode_provenance(self.schema, namespace, eid, sids)
+            n += 1
+        return {"episodes": n}
