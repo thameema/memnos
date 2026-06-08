@@ -12,8 +12,11 @@ Config via env: MEMNOS_DSN, MEMNOS_PORT, MEMNOS_POOL_MAX, OPENAI_API_KEY (enable
 1536-d embeddings + extraction; else free local 384-d).
 Bootstrap identity with: python memnos_admin.py ...
 """
+import base64
+import io
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -75,7 +78,52 @@ DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_poc@localhost:543
 PORT = int(os.environ.get("MEMNOS_PORT", "8900"))
 POOL_MAX = int(os.environ.get("MEMNOS_POOL_MAX", "16"))
 MAX_BODY = 256 * 1024          # 256 KB request cap
-WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/corpus/ingest"}
+WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/corpus/ingest", "/ingest/file"}
+
+
+def _chunk_text(text, size=1200, overlap=150):
+    """Paragraph-aware chunking: pack paragraphs up to ~size chars; hard-split any
+    paragraph longer than size (with overlap). Keeps semantically-coherent chunks."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    chunks, cur = [], ""
+    for p in re.split(r"\n\s*\n", text):
+        p = p.strip()
+        if not p:
+            continue
+        if len(p) > size:
+            if cur:
+                chunks.append(cur); cur = ""
+            for i in range(0, len(p), max(1, size - overlap)):
+                chunks.append(p[i:i + size])
+        elif len(cur) + len(p) + 1 <= size:
+            cur = (cur + "\n" + p).strip()
+        else:
+            if cur:
+                chunks.append(cur)
+            cur = p
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _extract_file_text(filename, raw: bytes):
+    """Best-effort text extraction. PDF/DOCX need pypdf/python-docx (optional); everything
+    else is decoded as UTF-8 text (md/txt/code). Returns None if it can't be parsed."""
+    low = (filename or "").lower()
+    try:
+        if low.endswith(".pdf"):
+            import pypdf
+            r = pypdf.PdfReader(io.BytesIO(raw))
+            return "\n\n".join((pg.extract_text() or "") for pg in r.pages)
+        if low.endswith(".docx"):
+            import docx
+            d = docx.Document(io.BytesIO(raw))
+            return "\n\n".join(p.text for p in d.paragraphs)
+        return raw.decode("utf-8", "replace")
+    except Exception:
+        return None
 _DELIVER_EVENT = threading.Event()      # set after a write → wakes the webhook pusher
 WEBHOOK_TIMEOUT = float(os.environ.get("MEMNOS_WEBHOOK_TIMEOUT", "5"))
 PUSHER_INTERVAL = float(os.environ.get("MEMNOS_PUSHER_INTERVAL", "3"))
@@ -508,6 +556,30 @@ class Handler(BaseHTTPRequestHandler):
                         out = {"constraints": store.corpus_check(mem.schema, ns, snippet)}
                     elif self.path == "/corpus/list":
                         out = {"sources": Control.corpus_list(conn, ns)}
+                    # --- file ingest (chunk a document into memory) ---
+                    elif self.path == "/ingest/file":
+                        filename = (str(req.get("filename", "")).strip() or "upload")
+                        text = req.get("text")
+                        if text is None and req.get("content_b64"):
+                            try:
+                                raw = base64.b64decode(req["content_b64"])
+                            except Exception:
+                                return self._send(400, {"error": "content_b64 not valid base64"})
+                            text = _extract_file_text(filename, raw)
+                            if text is None:
+                                return self._send(415, {"error": f"cannot extract text from {filename} "
+                                                        "(install pypdf/python-docx, or send extracted 'text')"})
+                        text = str(text or "")
+                        if not text.strip():
+                            return self._send(400, {"error": "text or content_b64 required"})
+                        if len(text) > 2_000_000:
+                            return self._send(413, {"error": "file too large (2MB text cap)"})
+                        do_extract = bool(req.get("extract", False))
+                        tids = []
+                        for ch in _chunk_text(text, int(req.get("chunk_size", 1200))):
+                            tids.append(mem.remember(ns, ch, session_id=filename,
+                                                     extract=do_extract)["turn_id"])
+                        out = {"filename": filename, "chunks": len(tids), "turn_ids": tids}
                     else:
                         return self._send(404, {"error": "not found"})
                 except Exception as op_err:

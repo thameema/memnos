@@ -60,6 +60,13 @@ class MemnosClient:
                 body[k] = v
         return _raise(self._c.post("/recall", json=body))
 
+    def ingest_file(self, filename, text, *, namespace=None, extract=False) -> dict:
+        """Chunk a document's text into memory under `filename`. Pass extracted text
+        (md/txt/code, or text pulled from a PDF/DOCX)."""
+        return _raise(self._c.post("/ingest/file", json={
+            "namespace": _ns(namespace, self.namespace), "filename": filename,
+            "text": text, "extract": extract}))
+
     def context(self, query, *, namespace=None, **kw) -> str:
         """Just the ready-to-inject context string from recall()."""
         return self.recall(query, namespace=namespace, **kw).get("context", "")
