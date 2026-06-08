@@ -239,6 +239,18 @@ def corpus_list() -> str:
 
 
 @mcp.tool()
+def ingest_file(filename: str, text: str, extract: bool = False) -> str:
+    """Ingest a document's text into memory: it's chunked and each chunk stored as a
+    searchable memory under `filename`. Pass already-extracted text (md/txt/code, or
+    text you pulled from a PDF/DOCX). Set extract=true to also pull bi-temporal facts."""
+    try:
+        out = _post("/ingest/file", {"filename": filename, "text": text, "extract": extract})
+        return f"ingested '{out.get('filename')}' as {out.get('chunks', 0)} chunks"
+    except Exception as e:
+        return _err(e, "ingest_file")
+
+
+@mcp.tool()
 def get_provenance(id: int) -> str:
     """Show the evidence chain for a remembered fact: the verbatim source turn(s) it was
     extracted from (or, for a dossier, the turns its source facts derived from). Answers
