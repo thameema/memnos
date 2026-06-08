@@ -21,3 +21,7 @@ Instructions:
   auto-recalls before every prompt and auto-saves after each turn (via hooks), and that I
   can run `/memnos <query>` to search explicitly or use the `recall` / `remember` MCP tools.
 ```
+
+## Set a folder's namespace (no restart)
+
+`/memnos ns=proj:zudioz` pins this folder to a namespace (written to `~/.memnos/ns_overrides.json`, keyed by git-root; read live by the recall/remember hooks via `memnos_ns.resolve`). `/memnos ns=clear` reverts; `/memnos ns` shows the current one. The hook token must be granted that namespace (a `proj:*` wildcard grant covers the per-project pattern).
