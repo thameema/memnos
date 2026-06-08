@@ -59,3 +59,4 @@ jobs:
           python test_pubsub_api.py
           python test_pubsub_push.py
           python test_corpus_api.py
+          python test_provenance_api.py

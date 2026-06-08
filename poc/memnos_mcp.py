@@ -239,6 +239,17 @@ def corpus_list() -> str:
 
 
 @mcp.tool()
+def get_provenance(id: int) -> str:
+    """Show the evidence chain for a remembered fact: the verbatim source turn(s) it was
+    extracted from (or, for a dossier, the turns its source facts derived from). Answers
+    'why do you believe this?'. Get ids from memory_search or get_entity."""
+    try:
+        return str(_post("/provenance", {"id": int(id)}))
+    except Exception as e:
+        return _err(e, "get_provenance")
+
+
+@mcp.tool()
 def get_context(query: str) -> str:
     """Return a ready-to-paste context block for a query (same as recall) — no LLM at
     query time."""
