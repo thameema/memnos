@@ -57,6 +57,18 @@ CREATE TABLE IF NOT EXISTS memnos_control.namespaces(
 CREATE TABLE IF NOT EXISTS memnos_control.secrets(
     name text PRIMARY KEY, nonce bytea NOT NULL, ciphertext bytea NOT NULL, description text,
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
+-- namespace pub/sub: cursor-based feed (poll) + optional webhook. cursor = last raw_turn
+-- id delivered for the namespace; subscribe starts at the current max so feed yields only
+-- NEW memories. Replaces the old Redis/ArcadeDB subscription records on one PG engine.
+CREATE TABLE IF NOT EXISTS memnos_control.subscriptions(
+    id bigserial PRIMARY KEY,
+    principal_id bigint NOT NULL REFERENCES memnos_control.principals(id),
+    namespace text NOT NULL,
+    webhook text,
+    cursor bigint NOT NULL DEFAULT 0,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    last_polled_at timestamptz);
+CREATE INDEX IF NOT EXISTS subs_ns ON memnos_control.subscriptions(namespace);
 """
 
 
@@ -71,6 +83,53 @@ class Control:
     def init(conn):
         with conn.cursor() as c:
             c.execute(CONTROL_DDL)
+
+    # --- namespace pub/sub (cursor feed + optional webhook) -----------------
+    @staticmethod
+    def subscribe(conn, principal_id, namespace, webhook=None):
+        """Create a subscription. Cursor starts at the namespace's current max raw_turn id,
+        so the feed delivers only memories written AFTER subscribing."""
+        with conn.cursor() as c:
+            c.execute("SELECT COALESCE(max(id),0) AS m FROM tenant_memnos.raw_turns WHERE namespace=%s",
+                      (namespace,))
+            cur = c.fetchone()["m"]
+            c.execute("INSERT INTO memnos_control.subscriptions(principal_id,namespace,webhook,cursor) "
+                      "VALUES(%s,%s,%s,%s) RETURNING id", (principal_id, namespace, webhook, cur))
+            sid = c.fetchone()["id"]
+        return {"subscription_id": sid, "namespace": namespace, "cursor": cur, "webhook": webhook}
+
+    @staticmethod
+    def feed(conn, principal_id, subscription_id, namespace, *, limit=50):
+        """Poll new memories since the subscription cursor; advance the cursor. Returns
+        None if the subscription doesn't exist or isn't owned by this principal/namespace."""
+        with conn.cursor() as c:
+            c.execute("SELECT id, principal_id, namespace, cursor FROM memnos_control.subscriptions WHERE id=%s",
+                      (subscription_id,))
+            sub = c.fetchone()
+            if not sub or sub["principal_id"] != principal_id or sub["namespace"] != namespace:
+                return None
+            c.execute("SELECT id, speaker, text AS content, observed_at FROM tenant_memnos.raw_turns "
+                      "WHERE namespace=%s AND id > %s ORDER BY id LIMIT %s",
+                      (namespace, sub["cursor"], limit))
+            items = c.fetchall()
+            newcur = items[-1]["id"] if items else sub["cursor"]
+            c.execute("UPDATE memnos_control.subscriptions SET cursor=%s, last_polled_at=now() WHERE id=%s",
+                      (newcur, subscription_id))
+        return {"subscription_id": subscription_id, "items": items, "cursor": newcur}
+
+    @staticmethod
+    def list_subscriptions(conn, principal_id):
+        with conn.cursor() as c:
+            c.execute("SELECT id, namespace, webhook, cursor, created_at, last_polled_at "
+                      "FROM memnos_control.subscriptions WHERE principal_id=%s ORDER BY id", (principal_id,))
+            return c.fetchall()
+
+    @staticmethod
+    def unsubscribe(conn, principal_id, subscription_id) -> bool:
+        with conn.cursor() as c:
+            c.execute("DELETE FROM memnos_control.subscriptions WHERE id=%s AND principal_id=%s",
+                      (subscription_id, principal_id))
+            return c.rowcount > 0
 
     # --- identity / tokens (admin) ----------------------------------------
     @staticmethod

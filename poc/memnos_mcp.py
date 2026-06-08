@@ -187,6 +187,27 @@ def knowledge_health() -> str:
 
 
 @mcp.tool()
+def namespace_subscribe(webhook: str = "") -> str:
+    """Subscribe to this namespace's memory stream. Returns a subscription_id and a cursor;
+    new memories written after this call are delivered via namespace_feed (poll). Pass an
+    optional webhook URL to record it for push delivery."""
+    try:
+        return str(_post("/subscribe", {"webhook": webhook} if webhook else {}))
+    except Exception as e:
+        return _err(e, "namespace_subscribe")
+
+
+@mcp.tool()
+def namespace_feed(subscription_id: int) -> str:
+    """Poll new memories for a subscription since its last cursor (advances the cursor).
+    Returns the new memory items and the updated cursor."""
+    try:
+        return str(_post("/feed", {"subscription_id": int(subscription_id)}))
+    except Exception as e:
+        return _err(e, "namespace_feed")
+
+
+@mcp.tool()
 def get_context(query: str) -> str:
     """Return a ready-to-paste context block for a query (same as recall) — no LLM at
     query time."""

@@ -428,6 +428,25 @@ class Handler(BaseHTTPRequestHandler):
                         out = {"contradictions": store.contradictions(mem.schema, ns)}
                     elif self.path == "/knowledge/health":  # knowledge_health (namespace)
                         out = store.health(mem.schema, ns)
+                    # --- namespace pub/sub (Batch 3) ---
+                    elif self.path == "/subscribe":        # namespace_subscribe
+                        wh = (str(req.get("webhook")).strip() or None) if req.get("webhook") else None
+                        out = Control.subscribe(conn, principal, ns, wh)
+                    elif self.path == "/feed":             # namespace_feed (poll since cursor)
+                        try:
+                            sid = int(req.get("subscription_id"))
+                        except (TypeError, ValueError):
+                            return self._send(400, {"error": "subscription_id (int) required"})
+                        res = Control.feed(conn, principal, sid, ns, limit=int(req.get("limit", 50)))
+                        if res is None:
+                            return self._send(404, {"error": "subscription not found for this principal/namespace"})
+                        out = res
+                    elif self.path == "/unsubscribe":
+                        try:
+                            sid = int(req.get("subscription_id"))
+                        except (TypeError, ValueError):
+                            return self._send(400, {"error": "subscription_id (int) required"})
+                        out = {"unsubscribed": Control.unsubscribe(conn, principal, sid)}
                     else:
                         return self._send(404, {"error": "not found"})
                 except Exception as op_err:
