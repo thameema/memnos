@@ -23,6 +23,10 @@ dependencies = [
 [project.scripts]
 memnos = "memnos_cli:main"
 
+# Optional: PDF/DOCX text extraction for `memnos`/REST file ingest (else send extracted text).
+[project.optional-dependencies]
+files = ["pypdf>=4", "python-docx>=1.1"]
+
 # Package-in-place: ship the engine packages + the needed top-level modules + the console
 # UI as data. (Keeps current layout; no risky file-move refactor.)
 [tool.setuptools]

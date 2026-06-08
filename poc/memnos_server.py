@@ -152,7 +152,19 @@ def _pusher_loop():
                 Control.deliver_pending(conn, _webhook_post)
         except Exception:
             traceback.print_exc()
-UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+def _find_ui_dir():
+    """Locate the /admin console assets in both source and installed (pip/pipx) layouts —
+    next to the module (source/editable) or under <prefix>/share/memnos/ui (data-files)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for c in (os.path.join(here, "ui"),
+              os.path.join(sys.prefix, "share", "memnos", "ui"),
+              os.path.join(os.path.dirname(os.path.dirname(sys.executable)), "share", "memnos", "ui")):
+        if os.path.isdir(c):
+            return c
+    return os.path.join(here, "ui")
+
+
+UI_DIR = _find_ui_dir()
 _CTYPE = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}
 
 POOL = None
