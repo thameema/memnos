@@ -69,6 +69,14 @@ CREATE TABLE IF NOT EXISTS memnos_control.subscriptions(
     created_at timestamptz NOT NULL DEFAULT now(),
     last_polled_at timestamptz);
 CREATE INDEX IF NOT EXISTS subs_ns ON memnos_control.subscriptions(namespace);
+-- corpus registry: tracks ingested architecture docs (LLD/HLD/ADR). Their extracted
+-- normative constraints (SHALL/MUST/...) live as kind='constraint' semantic facts so
+-- corpus_check can hybrid-search them against a code snippet.
+CREATE TABLE IF NOT EXISTS memnos_control.corpus_sources(
+    id bigserial PRIMARY KEY, namespace text NOT NULL, name text NOT NULL,
+    kind text, git_sha text, constraint_count int NOT NULL DEFAULT 0,
+    ingested_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(namespace, name));
 """
 
 
@@ -116,6 +124,26 @@ class Control:
             c.execute("UPDATE memnos_control.subscriptions SET cursor=%s, last_polled_at=now() WHERE id=%s",
                       (newcur, subscription_id))
         return {"subscription_id": subscription_id, "items": items, "cursor": newcur}
+
+    # --- corpus registry ----------------------------------------------------
+    @staticmethod
+    def corpus_record(conn, namespace, name, kind, git_sha, count):
+        """Upsert a corpus source row (re-ingesting the same name updates count + sha)."""
+        with conn.cursor() as c:
+            c.execute("""INSERT INTO memnos_control.corpus_sources(namespace,name,kind,git_sha,constraint_count)
+                         VALUES(%s,%s,%s,%s,%s)
+                         ON CONFLICT (namespace,name) DO UPDATE
+                         SET kind=EXCLUDED.kind, git_sha=EXCLUDED.git_sha,
+                             constraint_count=EXCLUDED.constraint_count, ingested_at=now()
+                         RETURNING id""", (namespace, name, kind, git_sha, count))
+            return c.fetchone()["id"]
+
+    @staticmethod
+    def corpus_list(conn, namespace):
+        with conn.cursor() as c:
+            c.execute("SELECT id, name, kind, git_sha, constraint_count, ingested_at "
+                      "FROM memnos_control.corpus_sources WHERE namespace=%s ORDER BY name", (namespace,))
+            return c.fetchall()
 
     @staticmethod
     def list_subscriptions(conn, principal_id):

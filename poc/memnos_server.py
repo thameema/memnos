@@ -73,7 +73,7 @@ DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_poc@localhost:543
 PORT = int(os.environ.get("MEMNOS_PORT", "8900"))
 POOL_MAX = int(os.environ.get("MEMNOS_POOL_MAX", "16"))
 MAX_BODY = 256 * 1024          # 256 KB request cap
-WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete"}
+WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/corpus/ingest"}
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 _CTYPE = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}
 
@@ -447,6 +447,24 @@ class Handler(BaseHTTPRequestHandler):
                         except (TypeError, ValueError):
                             return self._send(400, {"error": "subscription_id (int) required"})
                         out = {"unsubscribed": Control.unsubscribe(conn, principal, sid)}
+                    # --- corpus ingestion + checks (Batch 4) ---
+                    elif self.path == "/corpus/ingest":    # parse doc constraints -> facts
+                        name = str(req.get("name", "")).strip()
+                        text = str(req.get("text", ""))
+                        if not name or not text.strip():
+                            return self._send(400, {"error": "name and text required"})
+                        ids = store.ingest_constraints(mem.schema, ns, name, text)
+                        Control.corpus_record(conn, ns, name, str(req.get("kind", "doc")),
+                                              (str(req.get("git_sha")) or None) if req.get("git_sha") else None,
+                                              len(ids))
+                        out = {"source": name, "constraints": len(ids), "ids": ids}
+                    elif self.path == "/corpus/check":      # constraints relevant to a snippet
+                        snippet = str(req.get("snippet", "") or req.get("code", ""))
+                        if not snippet.strip():
+                            return self._send(400, {"error": "snippet/code required"})
+                        out = {"constraints": store.corpus_check(mem.schema, ns, snippet)}
+                    elif self.path == "/corpus/list":
+                        out = {"sources": Control.corpus_list(conn, ns)}
                     else:
                         return self._send(404, {"error": "not found"})
                 except Exception as op_err:
