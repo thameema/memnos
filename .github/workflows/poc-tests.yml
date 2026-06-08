@@ -62,3 +62,4 @@ jobs:
           python test_corpus_api.py
           python test_provenance_api.py
           python test_ingest_api.py
+          python test_episodic_api.py

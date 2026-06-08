@@ -78,7 +78,8 @@ DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_poc@localhost:543
 PORT = int(os.environ.get("MEMNOS_PORT", "8900"))
 POOL_MAX = int(os.environ.get("MEMNOS_POOL_MAX", "16"))
 MAX_BODY = 256 * 1024          # 256 KB request cap
-WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/corpus/ingest", "/ingest/file"}
+WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/corpus/ingest",
+             "/ingest/file", "/episode/segment", "/episode/decay"}
 
 
 def _chunk_text(text, size=1200, overlap=150):
@@ -444,6 +445,30 @@ class Handler(BaseHTTPRequestHandler):
                         out = {"memories": rows, "context": mem.context(ns, q, **rkw, **ckw)}
                     elif self.path == "/consolidate":
                         out = mem.consolidate(ns)
+                    # --- episodic tier (hippocampus) + decay ---
+                    elif self.path == "/episode/segment":
+                        out = mem.segment_episodes(ns, gap_minutes=int(req.get("gap_minutes", 30)))
+                    elif self.path == "/episode/decay":
+                        out = {"updated": store.decay_episodes(mem.schema, ns,
+                                                               half_life_days=float(req.get("half_life_days", 30)))}
+                    elif self.path == "/episode/recall":
+                        q = str(req.get("query", "")).strip()
+                        if not q or len(q) > 4000:
+                            return self._send(400, {"error": "query required (<=4000 chars)"})
+                        rows = store.search_episodic(mem.schema, ns, mem.embed(q), q,
+                                                     k=int(req.get("k", 8)))
+                        store.touch_episodes(mem.schema, [r["id"] for r in rows])   # access signal for decay
+                        out = {"episodes": rows}
+                    elif self.path == "/episode":
+                        try:
+                            eid = int(req.get("id"))
+                        except (TypeError, ValueError):
+                            return self._send(400, {"error": "id (int) required"})
+                        res = store.get_episode(mem.schema, ns, eid)
+                        if res is None:
+                            return self._send(404, {"error": "episode not found"})
+                        store.touch_episodes(mem.schema, [eid])
+                        out = res
                     # --- memory CRUD parity (master/ArcadeDB feature parity) ---
                     elif self.path == "/memory/write":     # alias of /remember
                         text = str(req.get("text", "") or req.get("content", "")).strip()

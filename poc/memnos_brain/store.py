@@ -73,8 +73,80 @@ class BrainStore:
                 f"(namespace,session_id,text,summary,t_start,t_end,observed_at,salience,source_turn_ids,embedding) "
                 f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::halfvec) RETURNING id",
                 (ns, session_id, text, summary, t_start, t_end, observed_at, salience,
-                 list(source_turn_ids), vlit(vec)))
+                 list(source_turn_ids), vlit(vec) if vec is not None else None))
             return c.fetchone()["id"]
+
+    def uncovered_raw_turns(self, schema, ns) -> list[dict]:
+        """Raw turns not yet assigned to any episode (for incremental segmentation)."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(f"""
+                SELECT id, speaker, text, observed_at, session_id
+                FROM {schema}.raw_turns
+                WHERE namespace=%s AND id NOT IN (
+                    SELECT unnest(source_turn_ids) FROM {schema}.episodic
+                    WHERE namespace=%s AND source_turn_ids IS NOT NULL)
+                ORDER BY observed_at, id""", (ns, ns))
+            return c.fetchall()
+
+    def link_episode_provenance(self, schema, ns, episode_id, source_turn_ids) -> int:
+        """Two-level provenance: link semantic facts whose source turns overlap this episode
+        (fact → episode → turn), populating the provenance table as the schema intends."""
+        self._chk(schema)
+        if not source_turn_ids:
+            return 0
+        with self.conn.cursor() as c:
+            c.execute(f"""
+                INSERT INTO {schema}.provenance(semantic_id, episodic_id)
+                SELECT s.id, %s FROM {schema}.semantic s
+                WHERE s.namespace=%s AND s.source_turn_ids && %s::bigint[]
+                ON CONFLICT DO NOTHING""", (episode_id, ns, list(source_turn_ids)))
+            return c.rowcount
+
+    def get_episode(self, schema, ns, episode_id) -> dict | None:
+        """An episode + its verbatim turns + the facts derived from it (via provenance)."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(f"SELECT id, session_id, summary, text, t_start, t_end, salience, "
+                      f"access_count, source_turn_ids FROM {schema}.episodic WHERE id=%s AND namespace=%s",
+                      (episode_id, ns))
+            ep = c.fetchone()
+            if not ep:
+                return None
+            sids = ep.get("source_turn_ids") or []
+            turns = []
+            if sids:
+                c.execute(f"SELECT id, speaker, text AS content, observed_at FROM {schema}.raw_turns "
+                          f"WHERE id = ANY(%s) AND namespace=%s ORDER BY id", (list(sids), ns))
+                turns = c.fetchall()
+            c.execute(f"SELECT s.id, s.statement FROM {schema}.provenance p "
+                      f"JOIN {schema}.semantic s ON s.id=p.semantic_id "
+                      f"WHERE p.episodic_id=%s AND s.expired_at IS NULL", (episode_id,))
+            facts = c.fetchall()
+        return {"episode": ep, "turns": turns, "facts": facts}
+
+    def touch_episodes(self, schema, episode_ids) -> None:
+        """Record access (recency/frequency signal for decay)."""
+        self._chk(schema)
+        if not episode_ids:
+            return
+        with self.conn.cursor() as c:
+            c.execute(f"UPDATE {schema}.episodic SET last_access=now(), access_count=access_count+1 "
+                      f"WHERE id = ANY(%s)", (list(episode_ids),))
+
+    def decay_episodes(self, schema, ns, *, half_life_days=30) -> int:
+        """DECAY pass: recompute episodic salience as time-weighted recency (half-life) plus
+        an access-frequency boost. Recent/often-recalled episodes stay salient; old untouched
+        ones fade. Semantic facts are untouched (they persist). Returns # episodes updated."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(f"""
+                UPDATE {schema}.episodic SET salience = LEAST(1.0,
+                    exp(-ln(2.0) * (EXTRACT(EPOCH FROM (now() - COALESCE(last_access, observed_at)))
+                        / 86400.0) / %s)
+                    + 0.05 * LEAST(access_count, 10))
+                WHERE namespace=%s RETURNING id""", (float(half_life_days), ns))
+            return len(c.fetchall())
 
     # --- associative graph ------------------------------------------------
     def upsert_entity(self, schema, ns, name, vec=None) -> int:

@@ -251,6 +251,48 @@ def ingest_file(filename: str, text: str, extract: bool = False) -> str:
 
 
 @mcp.tool()
+def segment_episodes(gap_minutes: int = 30) -> str:
+    """Build the episodic memory tier: group recent raw turns into coherent episodes
+    (boundary on session change or a time gap), each with a summary + time span. Run after
+    a batch of activity. Incremental + idempotent."""
+    try:
+        return f"segmented {_post('/episode/segment', {'gap_minutes': gap_minutes}).get('episodes', 0)} episodes"
+    except Exception as e:
+        return _err(e, "segment_episodes")
+
+
+@mcp.tool()
+def recall_episodes(query: str) -> str:
+    """Recall whole EPISODES relevant to a query (event-level memory: 'the session where X
+    happened') rather than scattered facts. Hybrid search over episode summaries."""
+    try:
+        eps = _post("/episode/recall", {"query": query}).get("episodes", [])
+        return str(eps) if eps else "(no matching episodes)"
+    except Exception as e:
+        return _err(e, "recall_episodes")
+
+
+@mcp.tool()
+def get_episode(id: int) -> str:
+    """Fetch one episode in full: its verbatim turns and the facts derived from it."""
+    try:
+        return str(_post("/episode", {"id": int(id)}))
+    except Exception as e:
+        return _err(e, "get_episode")
+
+
+@mcp.tool()
+def decay_episodes(half_life_days: int = 30) -> str:
+    """Run episodic decay: re-score episode salience by recency (half-life) + access
+    frequency so old, unused episodes fade while recent/recalled ones stay sharp. Semantic
+    facts are not affected."""
+    try:
+        return f"decayed {_post('/episode/decay', {'half_life_days': half_life_days}).get('updated', 0)} episodes"
+    except Exception as e:
+        return _err(e, "decay_episodes")
+
+
+@mcp.tool()
 def get_provenance(id: int) -> str:
     """Show the evidence chain for a remembered fact: the verbatim source turn(s) it was
     extracted from (or, for a dossier, the turns its source facts derived from). Answers
