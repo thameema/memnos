@@ -497,6 +497,54 @@ class BrainStore:
                       (semantic_id, ns))
             return c.fetchone()
 
+    _CONSTRAINT_RE = re.compile(
+        r"\b(SHALL NOT|MUST NOT|SHOULD NOT|MAY NOT|SHALL|MUST|REQUIRED|SHOULD|PROHIBITED|FORBIDDEN)\b")
+
+    def ingest_constraints(self, schema, ns, source, text) -> list[int]:
+        """Parse normative constraints (RFC-2119 keywords) out of an architecture doc and
+        store each as a kind='constraint' semantic fact tagged with the source. FTS-searchable
+        immediately (embedding optional). Returns the inserted fact ids."""
+        self._chk(schema)
+        cands = []
+        for raw in re.split(r"\n+", text or ""):
+            line = raw.strip().lstrip("#-*>| ").strip()
+            if not line:
+                continue
+            for sent in re.split(r"(?<=[.!?])\s+", line):
+                sent = sent.strip()
+                if len(sent) >= 8 and self._CONSTRAINT_RE.search(sent.upper()):
+                    cands.append(sent[:1000])
+        ids = []
+        with self.conn.cursor() as c:
+            # idempotent re-ingest: drop this source's prior constraints first
+            c.execute(f"DELETE FROM {schema}.semantic WHERE namespace=%s AND kind='constraint' "
+                      f"AND subject_entity=%s", (ns, source))
+            for sent in cands:
+                c.execute(
+                    f"INSERT INTO {schema}.semantic(namespace,kind,statement,subject_entity,predicate,object) "
+                    f"VALUES(%s,'constraint',%s,%s,'constraint_of',%s) RETURNING id",
+                    (ns, sent, source, source))
+                ids.append(c.fetchone()["id"])
+        return ids
+
+    def corpus_check(self, schema, ns, snippet, *, k=10) -> list[dict]:
+        """Return the architecture constraints most relevant to a code snippet — FTS over
+        the kind='constraint' facts (shared keywords, ranked). Pure SQL, no LLM."""
+        self._chk(schema)
+        words = list(dict.fromkeys(w.lower() for w in re.findall(r"[A-Za-z]{4,}", snippet or "")))
+        if not words:
+            return []
+        q = " or ".join(words[:40])
+        with self.conn.cursor() as c:
+            c.execute(
+                f"SELECT id, statement AS content, subject_entity AS source, "
+                f"ts_rank(fts, websearch_to_tsquery('english',%s)) AS score "
+                f"FROM {schema}.semantic "
+                f"WHERE namespace=%s AND kind='constraint' AND expired_at IS NULL "
+                f"AND fts @@ websearch_to_tsquery('english',%s) "
+                f"ORDER BY score DESC LIMIT %s", (q, ns, q, k))
+            return c.fetchall()
+
     def counts(self, schema) -> dict:
         self._chk(schema)
         out = {}

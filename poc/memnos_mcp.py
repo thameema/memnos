@@ -208,6 +208,37 @@ def namespace_feed(subscription_id: int) -> str:
 
 
 @mcp.tool()
+def corpus_ingest(name: str, text: str, kind: str = "doc") -> str:
+    """Ingest an architecture document (LLD/HLD/ADR): extract its normative constraints
+    (SHALL/MUST/REQUIRED/...) and store them as searchable constraint memories under `name`."""
+    try:
+        out = _post("/corpus/ingest", {"name": name, "text": text, "kind": kind})
+        return f"ingested {out.get('constraints', 0)} constraints from '{name}'"
+    except Exception as e:
+        return _err(e, "corpus_ingest")
+
+
+@mcp.tool()
+def corpus_check(snippet: str) -> str:
+    """Return the architecture constraints relevant to a code snippet (does this code
+    violate a documented SHALL/MUST rule?). Read-only; ranked by relevance."""
+    try:
+        c = _post("/corpus/check", {"snippet": snippet}).get("constraints", [])
+        return str(c) if c else "(no relevant constraints found)"
+    except Exception as e:
+        return _err(e, "corpus_check")
+
+
+@mcp.tool()
+def corpus_list() -> str:
+    """List the architecture documents ingested into this namespace and their constraint counts."""
+    try:
+        return str(_post("/corpus/list", {}).get("sources", []))
+    except Exception as e:
+        return _err(e, "corpus_list")
+
+
+@mcp.tool()
 def get_context(query: str) -> str:
     """Return a ready-to-paste context block for a query (same as recall) — no LLM at
     query time."""
