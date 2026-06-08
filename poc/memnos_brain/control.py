@@ -69,6 +69,9 @@ CREATE TABLE IF NOT EXISTS memnos_control.subscriptions(
     created_at timestamptz NOT NULL DEFAULT now(),
     last_polled_at timestamptz);
 CREATE INDEX IF NOT EXISTS subs_ns ON memnos_control.subscriptions(namespace);
+ALTER TABLE memnos_control.subscriptions ADD COLUMN IF NOT EXISTS delivery_failures int NOT NULL DEFAULT 0;
+ALTER TABLE memnos_control.subscriptions ADD COLUMN IF NOT EXISTS active boolean NOT NULL DEFAULT true;
+ALTER TABLE memnos_control.subscriptions ADD COLUMN IF NOT EXISTS last_delivery_at timestamptz;
 -- corpus registry: tracks ingested architecture docs (LLD/HLD/ADR). Their extracted
 -- normative constraints (SHALL/MUST/...) live as kind='constraint' semantic facts so
 -- corpus_check can hybrid-search them against a code snippet.
@@ -146,9 +149,54 @@ class Control:
             return c.fetchall()
 
     @staticmethod
+    def deliver_pending(conn, post_fn, *, batch=50, max_failures=5):
+        """WEBHOOK PUSH — for each active webhook subscription, POST the memories written
+        since its cursor, then advance the cursor (at-least-once). `post_fn(url, payload)`
+        must raise on non-2xx; injected so tests use a fake and prod uses real HTTP. On
+        failure the cursor is NOT advanced (retried next tick) and a failure counter
+        increments; after `max_failures` the subscription is deactivated. Returns per-sub
+        results. Idempotent to run from both the background pusher and the admin endpoint."""
+        with conn.cursor() as c:
+            c.execute("SELECT id, namespace, webhook, cursor, delivery_failures "
+                      "FROM memnos_control.subscriptions "
+                      "WHERE webhook IS NOT NULL AND active=true ORDER BY id")
+            subs = c.fetchall()
+        results = []
+        for sub in subs:
+            with conn.cursor() as c:
+                c.execute("SELECT id, speaker, text AS content, observed_at "
+                          "FROM tenant_memnos.raw_turns WHERE namespace=%s AND id > %s "
+                          "ORDER BY id LIMIT %s", (sub["namespace"], sub["cursor"], batch))
+                items = c.fetchall()
+            if not items:
+                continue
+            payload = {"subscription_id": sub["id"], "namespace": sub["namespace"],
+                       "events": [{"id": i["id"], "speaker": i["speaker"], "content": i["content"],
+                                   "observed_at": i["observed_at"].isoformat() if i["observed_at"] else None}
+                                  for i in items]}
+            try:
+                post_fn(sub["webhook"], payload)
+                newcur = items[-1]["id"]
+                with conn.cursor() as c:
+                    c.execute("UPDATE memnos_control.subscriptions "
+                              "SET cursor=%s, delivery_failures=0, last_delivery_at=now() WHERE id=%s",
+                              (newcur, sub["id"]))
+                results.append({"subscription_id": sub["id"], "delivered": len(items), "cursor": newcur})
+            except Exception as e:
+                fails = sub["delivery_failures"] + 1
+                still = fails < max_failures
+                with conn.cursor() as c:
+                    c.execute("UPDATE memnos_control.subscriptions SET delivery_failures=%s, active=%s WHERE id=%s",
+                              (fails, still, sub["id"]))
+                results.append({"subscription_id": sub["id"], "error": str(e)[:200],
+                                "failures": fails, "active": still})
+        return results
+
+    @staticmethod
     def list_subscriptions(conn, principal_id):
         with conn.cursor() as c:
-            c.execute("SELECT id, namespace, webhook, cursor, created_at, last_polled_at "
+            c.execute("SELECT id, namespace, webhook, cursor, active, delivery_failures, "
+                      "created_at, last_polled_at, last_delivery_at "
                       "FROM memnos_control.subscriptions WHERE principal_id=%s ORDER BY id", (principal_id,))
             return c.fetchall()
 
