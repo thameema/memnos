@@ -78,5 +78,91 @@ def consolidate() -> str:
         return f"(memnos consolidate failed: {e})"
 
 
+def _err(e, what):
+    if isinstance(e, httpx.HTTPStatusError):
+        c = e.response.status_code
+        if c == 401: return "(memnos: unauthorized — check MEMNOS_TOKEN)"
+        if c == 403: return f"(memnos: not authorized for namespace {NS})"
+        if c == 404: return f"(memnos: not found)"
+        return f"(memnos {what} error: HTTP {c})"
+    return f"(memnos {what} unavailable: {e})"
+
+
+@mcp.tool()
+def memory_search(query: str) -> str:
+    """Search long-term memory and return the raw ranked memories (facts + raw turns)
+    as JSON. Like recall(), but returns structured rows rather than a formatted context
+    block — useful when you want to inspect or post-process individual memories."""
+    try:
+        rows = _post("/memory/search", {"query": query}).get("memories", [])
+        return str(rows) if rows else "(no matching memories)"
+    except Exception as e:
+        return _err(e, "memory_search")
+
+
+@mcp.tool()
+def memory_write(text: str) -> str:
+    """Write a durable memory (alias of remember). Stores the text and extracts
+    bi-temporal facts; supersedes a changed single-valued fact automatically."""
+    try:
+        out = _post("/memory/write", {"text": text, "speaker": "user"})
+        return f"written (turn {out.get('turn_id')}, {out.get('facts', 0)} facts)"
+    except Exception as e:
+        return _err(e, "memory_write")
+
+
+@mcp.tool()
+def memory_delete(id: int) -> str:
+    """Delete (system-time expire) a semantic fact by its numeric id. The fact is excluded
+    from all future retrieval; history is preserved (never hard-deleted). Get ids from
+    memory_search or get_entity."""
+    try:
+        out = _post("/memory/delete", {"id": int(id)})
+        return f"deleted fact {out.get('deleted')}: {out.get('statement','')}"
+    except Exception as e:
+        return _err(e, "memory_delete")
+
+
+@mcp.tool()
+def get_entity(name: str, depth: int = 1) -> str:
+    """Look up an entity (person/project/place) and return its graph neighbourhood
+    (related entities + edge weights) and the facts that mention it. depth 1-3 expands
+    further over the relationship graph."""
+    try:
+        return str(_post("/entity", {"name": name, "depth": depth}))
+    except Exception as e:
+        return _err(e, "get_entity")
+
+
+@mcp.tool()
+def get_related(name: str) -> str:
+    """Return the directly-related entities for a given entity (the adjacency list),
+    ranked by co-mention strength."""
+    try:
+        return str(_post("/related", {"name": name}).get("related", []))
+    except Exception as e:
+        return _err(e, "get_related")
+
+
+@mcp.tool()
+def graph_query(entities: list[str], hops: int = 2) -> str:
+    """Relationship reasoning: seed from one or more entities, expand N hops over the
+    knowledge graph, and return the facts mentioned by the reachable entities. Read-only."""
+    try:
+        return str(_post("/graph", {"entities": entities, "hops": hops}).get("facts", []))
+    except Exception as e:
+        return _err(e, "graph_query")
+
+
+@mcp.tool()
+def get_context(query: str) -> str:
+    """Return a ready-to-paste context block for a query (same as recall) — no LLM at
+    query time."""
+    try:
+        return _post("/memory/context", {"query": query}).get("context", "") or "(no relevant memories)"
+    except Exception as e:
+        return _err(e, "get_context")
+
+
 if __name__ == "__main__":
     mcp.run()        # stdio transport (JSON-RPC over stdin/stdout)

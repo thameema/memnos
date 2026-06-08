@@ -73,7 +73,7 @@ DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_poc@localhost:543
 PORT = int(os.environ.get("MEMNOS_PORT", "8900"))
 POOL_MAX = int(os.environ.get("MEMNOS_POOL_MAX", "16"))
 MAX_BODY = 256 * 1024          # 256 KB request cap
-WRITE_OPS = {"/remember", "/consolidate"}
+WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete"}
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 _CTYPE = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}
 
@@ -362,6 +362,59 @@ class Handler(BaseHTTPRequestHandler):
                         out = {"memories": rows, "context": mem.context(ns, q, **rkw, **ckw)}
                     elif self.path == "/consolidate":
                         out = mem.consolidate(ns)
+                    # --- memory CRUD parity (master/ArcadeDB feature parity) ---
+                    elif self.path == "/memory/write":     # alias of /remember
+                        text = str(req.get("text", "") or req.get("content", "")).strip()
+                        if not text or len(text) > 20000:
+                            return self._send(400, {"error": "text/content required (<=20000 chars)"})
+                        out = mem.remember(ns, text, speaker=req.get("speaker"), session_id=req.get("session_id"))
+                    elif self.path in ("/memory/search", "/recall_v2"):   # alias of /recall (memory_search)
+                        q = str(req.get("query", "")).strip()
+                        if not q or len(q) > 4000:
+                            return self._send(400, {"error": "query required (<=4000 chars)"})
+                        rkw = {}
+                        if "raw_quota" in req: rkw["raw_quota"] = int(req["raw_quota"])
+                        if "fact_quota" in req: rkw["fact_quota"] = int(req["fact_quota"])
+                        out = {"memories": mem.recall(ns, q, **rkw)}
+                    elif self.path == "/memory/context":   # ready-to-paste context block
+                        q = str(req.get("query", "")).strip()
+                        if not q or len(q) > 4000:
+                            return self._send(400, {"error": "query required (<=4000 chars)"})
+                        ckw = {"max_chars": int(req["max_chars"])} if "max_chars" in req else {}
+                        out = {"context": mem.context(ns, q, **ckw)}
+                    elif self.path == "/memory/delete":    # expire a semantic fact by id (system-time)
+                        try:
+                            sid = int(req.get("id"))
+                        except (TypeError, ValueError):
+                            return self._send(400, {"error": "id (int) required"})
+                        existing = store.get_semantic(mem.schema, ns, sid)
+                        if not existing:
+                            return self._send(404, {"error": "fact not found in namespace"})
+                        store.expire(mem.schema, ns, sid)
+                        out = {"deleted": sid, "statement": existing.get("statement")}
+                    # --- graph read (entities/edges already populated; no API existed) ---
+                    elif self.path == "/entity":           # get_entity
+                        name = str(req.get("name", "")).strip()
+                        if not name:
+                            return self._send(400, {"error": "name required"})
+                        depth = max(1, min(int(req.get("depth", 1)), 3))
+                        res = store.get_entity(mem.schema, ns, name, depth=depth)
+                        if res is None:
+                            return self._send(404, {"error": "entity not found"})
+                        out = res
+                    elif self.path == "/related":          # get_related (adjacency)
+                        name = str(req.get("name", "")).strip()
+                        if not name:
+                            return self._send(400, {"error": "name required"})
+                        out = {"name": name, "related": store.get_related(mem.schema, ns, name)}
+                    elif self.path == "/graph":            # graph_query (N-hop expand → facts)
+                        ents = req.get("entities") or ([req["name"]] if req.get("name") else [])
+                        ents = [str(e) for e in ents if str(e).strip()][:10]
+                        if not ents:
+                            return self._send(400, {"error": "entities[] or name required"})
+                        hops = max(1, min(int(req.get("hops", 2)), 3))
+                        out = {"facts": store.graph_expand(mem.schema, ns, ents, hops=hops,
+                                                           limit=int(req.get("limit", 20)))}
                     else:
                         return self._send(404, {"error": "not found"})
                 except Exception as op_err:
