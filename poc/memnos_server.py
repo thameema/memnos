@@ -415,6 +415,19 @@ class Handler(BaseHTTPRequestHandler):
                         hops = max(1, min(int(req.get("hops", 2)), 3))
                         out = {"facts": store.graph_expand(mem.schema, ns, ents, hops=hops,
                                                            limit=int(req.get("limit", 20)))}
+                    # --- communities / contradictions / knowledge health (Batch 2) ---
+                    elif self.path == "/community":        # community_search
+                        name = str(req.get("name", "")).strip()
+                        if not name:
+                            return self._send(400, {"error": "name required"})
+                        res = store.community(mem.schema, ns, name)
+                        if res is None:
+                            return self._send(404, {"error": "entity not found"})
+                        out = res
+                    elif self.path == "/contradictions":   # check_contradictions
+                        out = {"contradictions": store.contradictions(mem.schema, ns)}
+                    elif self.path == "/knowledge/health":  # knowledge_health (namespace)
+                        out = store.health(mem.schema, ns)
                     else:
                         return self._send(404, {"error": "not found"})
                 except Exception as op_err:
