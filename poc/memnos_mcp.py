@@ -155,6 +155,38 @@ def graph_query(entities: list[str], hops: int = 2) -> str:
 
 
 @mcp.tool()
+def community_search(name: str) -> str:
+    """Find the community (densely-connected cluster of entities) that a given entity
+    belongs to — the people/projects/things it's most associated with."""
+    try:
+        return str(_post("/community", {"name": name}))
+    except Exception as e:
+        return _err(e, "community_search")
+
+
+@mcp.tool()
+def check_contradictions() -> str:
+    """List potential contradictions in this namespace: currently-valid facts where the
+    same subject+predicate has more than one distinct value (e.g. lives in two places).
+    A non-blocking review signal."""
+    try:
+        c = _post("/contradictions", {}).get("contradictions", [])
+        return str(c) if c else "(no contradictions detected)"
+    except Exception as e:
+        return _err(e, "check_contradictions")
+
+
+@mcp.tool()
+def knowledge_health() -> str:
+    """Return a knowledge-health report for this namespace: a 0-100 score plus signals
+    (current/superseded/expired facts, entities, orphan entities, contradiction groups)."""
+    try:
+        return str(_post("/knowledge/health", {}))
+    except Exception as e:
+        return _err(e, "knowledge_health")
+
+
+@mcp.tool()
 def get_context(query: str) -> str:
     """Return a ready-to-paste context block for a query (same as recall) — no LLM at
     query time."""

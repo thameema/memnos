@@ -418,6 +418,77 @@ class BrainStore:
             """, (ns, name, limit))
             return [{"name": r["name"], "weight": float(r["weight"] or 0)} for r in c.fetchall()]
 
+    def community(self, schema, ns, name, *, max_nodes=200) -> dict | None:
+        """COMMUNITY (connected component) for an entity — the cluster it belongs to,
+        found by expanding the co-mention `edges` graph to convergence (recursive CTE,
+        UNION dedups → terminates). A dependency-free stand-in for Louvain: members of
+        the same densely-connected neighbourhood surface together."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(f"SELECT id, name FROM {schema}.entities WHERE namespace=%s AND lower(name)=lower(%s)",
+                      (ns, name))
+            seed = c.fetchone()
+            if not seed:
+                return None
+            c.execute(f"""
+                WITH RECURSIVE comp(id) AS (
+                    SELECT %(eid)s::bigint
+                    UNION
+                    SELECT CASE WHEN g.src_entity=comp.id THEN g.dst_entity ELSE g.src_entity END
+                    FROM comp JOIN {schema}.edges g ON (g.src_entity=comp.id OR g.dst_entity=comp.id)
+                    WHERE g.namespace=%(ns)s
+                )
+                SELECT e.name FROM comp JOIN {schema}.entities e ON e.id=comp.id
+                WHERE e.id <> %(eid)s ORDER BY e.name LIMIT %(lim)s
+            """, {"eid": seed["id"], "ns": ns, "lim": max_nodes})
+            members = [r["name"] for r in c.fetchall()]
+        return {"entity": seed["name"], "community": members, "size": len(members) + 1}
+
+    def contradictions(self, schema, ns, *, limit=50) -> list[dict]:
+        """POTENTIAL CONTRADICTIONS — currently-valid facts where the SAME subject+predicate
+        carries MORE THAN ONE distinct object (e.g. lives_in Austin AND lives_in Seattle,
+        both un-superseded). Deterministic SQL, no LLM. Non-blocking signal: multi-valued
+        predicates (visited, did) legitimately appear here too — surfaces for review."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(f"""
+                SELECT subject_entity, predicate,
+                       array_agg(DISTINCT object) AS objects,
+                       array_agg(id ORDER BY id) AS ids,
+                       count(DISTINCT object) AS n
+                FROM {schema}.semantic
+                WHERE namespace=%s AND expired_at IS NULL AND valid_to IS NULL
+                  AND subject_entity IS NOT NULL AND predicate IS NOT NULL AND object IS NOT NULL
+                GROUP BY subject_entity, predicate
+                HAVING count(DISTINCT object) > 1
+                ORDER BY count(DISTINCT object) DESC LIMIT %s
+            """, (ns, limit))
+            return [{"subject": r["subject_entity"], "predicate": r["predicate"],
+                     "objects": r["objects"], "ids": r["ids"]} for r in c.fetchall()]
+
+    def health(self, schema, ns) -> dict:
+        """KNOWLEDGE HEALTH — a 0-100 score from structural signals over one namespace:
+        contradictions, orphan entities (no edges), and the superseded ratio. Pure SQL."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            def one(sql, *p):
+                c.execute(sql, p); return c.fetchone()["n"]
+            facts_current = one(f"SELECT count(*) n FROM {schema}.semantic WHERE namespace=%s AND valid_to IS NULL AND expired_at IS NULL", ns)
+            facts_super = one(f"SELECT count(*) n FROM {schema}.semantic WHERE namespace=%s AND valid_to IS NOT NULL", ns)
+            facts_expired = one(f"SELECT count(*) n FROM {schema}.semantic WHERE namespace=%s AND expired_at IS NOT NULL", ns)
+            ent_total = one(f"SELECT count(*) n FROM {schema}.entities WHERE namespace=%s", ns)
+            orphans = one(f"""SELECT count(*) n FROM {schema}.entities e WHERE e.namespace=%s
+                              AND NOT EXISTS (SELECT 1 FROM {schema}.edges g WHERE g.src_entity=e.id OR g.dst_entity=e.id)""", ns)
+            contra = len(self.contradictions(schema, ns, limit=1000))
+        orphan_ratio = (orphans / ent_total) if ent_total else 0.0
+        score = 100
+        score -= min(40, contra * 5)                       # contradictions hurt most
+        score -= int(min(30, orphan_ratio * 30))           # disconnected entities
+        score = max(0, score)
+        return {"score": score, "facts_current": facts_current, "facts_superseded": facts_super,
+                "facts_expired": facts_expired, "entities": ent_total, "orphan_entities": orphans,
+                "contradiction_groups": contra}
+
     def get_semantic(self, schema, ns, semantic_id) -> dict | None:
         """Fetch a single semantic fact by id (for memory_delete confirmation)."""
         self._chk(schema)
