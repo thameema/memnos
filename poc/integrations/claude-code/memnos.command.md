@@ -12,7 +12,7 @@ allowed-tools: Bash(curl:*), Bash(python3:*)
 
 Server health: !`curl -s -m3 http://127.0.0.1:8900/healthz 2>/dev/null || echo "DOWN — start it: memnos serve"`
 
-Recalled memories for "$ARGUMENTS": !`curl -s -m12 http://127.0.0.1:8900/recall -H "Authorization: Bearer mnk_..." -H 'Content-Type: application/json' -d "{\"namespace\":\"user:you\",\"query\":\"$ARGUMENTS\"}" 2>/dev/null | python3 -c "import sys,json;\ntry:\n d=json.load(sys.stdin); print(d.get('context') or '(no matching memories)')\nexcept Exception: print('(recall unavailable)')"`
+Recalled memories for "$ARGUMENTS": !`curl -s -m12 http://127.0.0.1:8900/recall -H "Authorization: Bearer mnk_..." -H 'Content-Type: application/json' -d "{\"namespace\":\"user:you\",\"query\":\"$ARGUMENTS\"}" 2>/dev/null | python3 -c "import sys,json; d=sys.stdin.read(); print((json.loads(d).get('context') if d.strip().startswith('{') else '') or '(no matching memories)')"`
 
 Instructions:
 - If a query was provided in "$ARGUMENTS", use the recalled memories above (no LLM at query
