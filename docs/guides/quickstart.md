@@ -125,20 +125,26 @@ AES-256-GCM encrypted at rest, never logged or returned. Rotate the key with
 
 ---
 
-## 7. Connect your AI tools
+## 7. Connect your AI tools (one command each)
 
-memnos is **MCP-native** and works with any MCP client, plus hooks for Claude Code:
-
-- **Claude Code** → [claude-code-setup.md](claude-code-setup.md) (MCP tools *and* automatic hooks)
-- **Cursor** → [clients/cursor.md](clients/cursor.md)
-- **Windsurf** → [clients/windsurf.md](clients/windsurf.md)
-- **Any MCP client / REST / SDK** → the `memnos mcp` stdio adapter, or the HTTP API directly
-
-The single command for every MCP client is:
+memnos wires itself into your agent — no manual config editing:
 
 ```bash
-memnos mcp        # stdio MCP server; reads MEMNOS_TOKEN / MEMNOS_NS from the client env
+memnos claude-setup            # Claude Code: MCP + hooks (auto recall/save) + /memnos + CLAUDE.md
+memnos agent-setup codex       # Codex CLI
+memnos agent-setup cursor      # Cursor
+memnos agent-setup windsurf    # Windsurf
+memnos agent-setup claude-desktop
 ```
+
+(`memnos setup` already offered `claude-setup` if Claude Code was detected.) Each mints a
+scoped token, is idempotent, and backs up files it edits. **Restart the agent afterward.**
+
+- **Claude Code** is the only agent with lifecycle **hooks** (auto-recall before each prompt,
+  auto-save after); the rest get the memnos MCP **tools** (`recall`, `recall_wide`, `remember`,
+  `reconcile_claim`, …).
+- Under the hood every MCP client runs `memnos mcp` (stdio). Full guides:
+  [clients/](clients/README.md). Non-MCP tools use the REST API or `memnos-sdk`.
 
 ---
 

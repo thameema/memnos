@@ -1,5 +1,17 @@
 # Connecting memnos to Windsurf
 
+## One command
+
+```bash
+memnos agent-setup windsurf
+```
+
+Writes the memnos MCP server to `~/.codeium/windsurf/mcp_config.json` (mints a scoped token),
+idempotent + backed up. **Refresh the MCP panel** in Windsurf. The manual config below is
+only if you'd rather do it by hand.
+
+---
+
 Windsurf (Cascade) supports MCP servers over stdio. memnos installs as a single package, so
 the server command is just `memnos mcp`.
 

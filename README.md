@@ -72,12 +72,25 @@ it stays in `.env` or the encrypted vault.
 
 ## Integrations
 
-- **Claude Code** — MCP tools *and* automatic hooks (recall before each prompt, remember
-  after). See [`poc/docs/integrations/claude-code.md`](poc/docs/integrations/claude-code.md).
-- **Cursor / Windsurf / Zed / Claude Desktop** — any MCP client; see
-  [`poc/docs/integrations/mcp.md`](poc/docs/integrations/mcp.md).
+One command wires memnos into your agent — no manual config editing:
+
+```bash
+memnos claude-setup            # Claude Code: MCP + hooks (auto recall/save) + /memnos + CLAUDE.md
+memnos agent-setup codex       # Codex CLI (MCP via ~/.codex/config.toml + AGENTS.md)
+memnos agent-setup cursor      # Cursor
+memnos agent-setup windsurf    # Windsurf
+memnos agent-setup claude-desktop
+```
+
+Each mints a scoped token, is idempotent, and backs up edited files; `memnos setup` runs
+`claude-setup` automatically when it detects Claude Code. **Claude Code** is the only agent
+with lifecycle **hooks** (auto-recall before each prompt, auto-save after); every other agent
+gets the memnos MCP **tools** (`recall`, `recall_wide`, `remember`, `reconcile_claim`, …).
+
 - **REST** — `POST /remember`, `POST /recall` (Bearer token, namespace-scoped).
-- **CLI** — `memnos remember/recall` as a thin client.
+- **CLI / SDK** — `memnos remember/recall`, or `pip install memnos-sdk` (LangChain / LangGraph
+  / LlamaIndex adapters).
+- Full client guides: [`docs/guides/clients/`](docs/guides/clients/README.md).
 
 REST, MCP, hooks and the benchmark all run the **same engine** (`MemnosMemory`) — there is
 one codebase, not a benchmarked copy and a shipped copy.

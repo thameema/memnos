@@ -1,5 +1,17 @@
 # Connecting memnos to Cursor
 
+## One command
+
+```bash
+memnos agent-setup cursor
+```
+
+Writes the memnos MCP server to `~/.cursor/mcp.json` (mints a scoped token), idempotent +
+backed up. **Reload Cursor** and you have the memnos tools. The manual config below is only
+if you'd rather do it by hand or scope it per-project.
+
+---
+
 Cursor supports MCP servers over stdio. memnos installs as a single package, so the server
 command is just `memnos mcp`.
 

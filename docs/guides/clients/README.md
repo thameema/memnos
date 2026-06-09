@@ -1,8 +1,29 @@
 # memnos Client Setup Guides
 
 All guides use the single-package install: `./install.sh` → `memnos setup` → `memnos serve`
-(server on `http://127.0.0.1:8900`, console at `/admin`). MCP clients use the bundled
-stdio adapter, `memnos mcp`; everyone else uses the REST API or the `memnos-sdk`.
+(server on `http://127.0.0.1:8900`, console at `/admin`).
+
+## One-command setup per agent
+
+memnos wires itself into your agent for you — no manual config editing:
+
+```bash
+memnos claude-setup            # Claude Code: MCP + hooks (auto inject/save) + /memnos + CLAUDE.md
+memnos agent-setup codex       # Codex CLI:  MCP server in ~/.codex/config.toml + AGENTS.md
+memnos agent-setup cursor      # Cursor:     MCP server in ~/.cursor/mcp.json
+memnos agent-setup windsurf    # Windsurf:   MCP server in ~/.codeium/windsurf/mcp_config.json
+memnos agent-setup claude-desktop
+```
+
+Each mints a scoped token, is idempotent, and backs up files it edits. `memnos setup` also
+offers `claude-setup` automatically when it detects Claude Code. **Restart the agent after.**
+
+> **Claude Code is the only one with lifecycle hooks** (auto-recall before each prompt,
+> auto-save after). Every other agent gets the memnos MCP **tools** (`recall`, `recall_wide`,
+> `remember`, `reconcile_claim`, …) which it calls explicitly.
+
+MCP clients use the bundled stdio adapter, `memnos mcp`; non-MCP clients use the REST API or
+the `memnos-sdk`.
 
 | Client | Connection | Guide |
 |--------|-----------|-------|
