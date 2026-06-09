@@ -10,6 +10,8 @@ from __future__ import annotations
 PRICING = {
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4o": (2.50, 10.00),
+    "gpt-5-mini": (0.25, 2.00),   # approx; keep in sync with provider pricing
+    "gpt-5": (1.25, 10.00),       # approx
     "text-embedding-3-small": (0.02, 0.0),
     "text-embedding-3-large": (0.13, 0.0),
 }
