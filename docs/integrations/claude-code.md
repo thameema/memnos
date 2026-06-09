@@ -11,6 +11,22 @@ Prereq: a running memnos server + a token (see [`../../QUICKSTART.md`](../../QUI
 
 ---
 
+## Fastest — one command
+
+```bash
+memnos claude-setup
+```
+
+This wires **everything** for you and is idempotent (it backs up any file it edits):
+the MCP server in `~/.claude.json`, the auto recall/save **hooks** in
+`~/.claude/settings.json`, a `/memnos` slash command, and a memnos section in your
+`CLAUDE.md`. It also mints a scoped token. **Restart Claude Code afterwards** and verify
+with `/mcp`. (`memnos setup` runs this automatically when it detects Claude Code.)
+
+The manual paths below are the same wiring, by hand, if you'd rather not run the helper.
+
+---
+
 ## Option A — MCP server (explicit tools)
 
 If you installed the package (`pipx install memnos`), the MCP server is just `memnos mcp`:
@@ -40,29 +56,28 @@ Restart Claude Code. It now has three tools:
 
 ## Option B — Hooks (automatic, no tool calls)
 
-memnos ships two hook scripts in `integrations/claude-code/`:
-- `memnos-recall.py` — **UserPromptSubmit**: injects relevant memories *before* Claude answers.
-- `memnos-remember.py` — **Stop**: stores the exchange *after* Claude responds.
-
-Both **fail open** (never block your prompt) and use no LLM at query time. Wire them in
-`~/.claude/settings.json`:
+The packaged hooks ship inside the `memnos` CLI — `memnos hook recall` (**UserPromptSubmit**:
+injects relevant memories *before* Claude answers) and `memnos hook remember` (**Stop**:
+stores the exchange *after* Claude responds). Both **fail open** (never block your prompt)
+and use no LLM at query time. `memnos claude-setup` writes these for you; to do it by hand,
+add to `~/.claude/settings.json`:
 ```jsonc
 {
   "hooks": {
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command",
-        "command": "MEMNOS_NS=user:alice /abs/path/memnos/.venv/bin/python /abs/path/memnos/integrations/claude-code/memnos-recall.py",
+        "command": "MEMNOS_URL=http://127.0.0.1:8900 MEMNOS_NS=user:alice MEMNOS_TOKEN=mnk_... memnos hook recall",
         "timeout": 15 } ] }
     ],
     "Stop": [
       { "hooks": [ { "type": "command",
-        "command": "MEMNOS_NS=user:alice MEMNOS_TOKEN=mnk_... /abs/path/memnos/.venv/bin/python /abs/path/memnos/integrations/claude-code/memnos-remember.py" } ] }
+        "command": "MEMNOS_URL=http://127.0.0.1:8900 MEMNOS_NS=user:alice MEMNOS_TOKEN=mnk_... memnos hook remember",
+        "timeout": 15 } ] }
     ]
   }
 }
 ```
-(The recall hook needs no token if your server allows read on that namespace; the remember
-hook writes, so it needs `MEMNOS_TOKEN`.)
+(The remember hook writes, so its token needs write on the namespace; recall needs read.)
 
 ## Which to use?
 - **Hooks** = effortless, always-on memory (recommended for daily coding).
