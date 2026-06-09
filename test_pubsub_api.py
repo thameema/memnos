@@ -12,7 +12,7 @@ import urllib.request
 sys.path.insert(0, ".")
 import psycopg
 from psycopg.rows import dict_row
-from memnos_brain.control import Control
+from core.control import Control
 
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_core@localhost:5433/memnos")
 URL = os.environ.get("MEMNOS_URL", "http://127.0.0.1:8900")

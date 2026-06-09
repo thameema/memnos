@@ -26,9 +26,9 @@ _load_env()
 
 import psycopg
 from psycopg.rows import dict_row
-from memnos_brain.control import Control
-from memnos_brain.vault import Vault, VaultLocked
-from memnos_brain import redact
+from core.control import Control
+from core.vault import Vault, VaultLocked
+from core import redact
 
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_core@localhost:5433/memnos")
 PASS = FAIL = 0
@@ -104,8 +104,8 @@ def main():
     os.environ["MEMNOS_SECRET_KEY"] = saved
 
     print("=== end-to-end: secret in remembered text never stored ===")
-    from memnos_brain import BrainStore
-    from memnos_brain.service import MemnosMemory
+    from core import BrainStore
+    from core.service import MemnosMemory
     def fake_embed(t):
         import hashlib
         h = hashlib.sha256(t.encode()).digest()

@@ -119,9 +119,9 @@ def cmd_setup(args, cfg):
                          f"(create it manually: createdb {dbname})")
         else:
             sys.exit(f"could not connect to Postgres: {e}")
-    from memnos_brain.store import BrainStore
-    from memnos_brain.control import Control
-    from memnos_brain.vault import Vault
+    from core.store import BrainStore
+    from core.control import Control
+    from core.vault import Vault
     with conn.cursor() as c:
         try:
             c.execute("CREATE EXTENSION IF NOT EXISTS vector")
@@ -181,7 +181,7 @@ def _principal_id(conn, name):
 
 
 def cmd_admin(args, cfg):
-    from memnos_brain.control import Control
+    from core.control import Control
     conn = _conn(cfg)
     Control.init(conn)
     pid = Control.create_principal(conn, "admin", "service")
@@ -190,20 +190,20 @@ def cmd_admin(args, cfg):
 
 
 def cmd_principal(args, cfg):
-    from memnos_brain.control import Control
+    from core.control import Control
     pid = Control.create_principal(_conn(cfg), args.name, args.kind)
     print(f"principal '{args.name}' id={pid}")
 
 
 def cmd_token(args, cfg):
-    from memnos_brain.control import Control
+    from core.control import Control
     conn = _conn(cfg)
     tok = Control.mint_token(conn, _principal_id(conn, args.principal), args.label, args.ttl_days)
     print("TOKEN (shown once):\n  " + tok)
 
 
 def cmd_grant(args, cfg):
-    from memnos_brain.control import Control
+    from core.control import Control
     conn = _conn(cfg)
     Control.grant(conn, _principal_id(conn, args.principal), args.namespace,
                   can_read=True, can_write=not args.read_only)
@@ -211,7 +211,7 @@ def cmd_grant(args, cfg):
 
 
 def cmd_namespace(args, cfg):
-    from memnos_brain.control import Control
+    from core.control import Control
     conn = _conn(cfg)
     if args.action == "add":
         created_by = None
@@ -225,7 +225,7 @@ def cmd_namespace(args, cfg):
         Control.delete_namespace(conn, args.name, purge_data=args.purge)
         print(f"namespace '{args.name}' deleted")
     elif args.action in ("copy", "move"):
-        from memnos_brain.store import BrainStore
+        from core.store import BrainStore
         if not args.name or not args.to:
             sys.exit("usage: memnos namespace copy|move <src> --to <dst> [--like X]")
         out = BrainStore(conn=conn).migrate_namespace("tenant_memnos", args.name, args.to,
@@ -239,7 +239,7 @@ def cmd_namespace(args, cfg):
 
 def cmd_secret(args, cfg):
     _apply_env(cfg)
-    from memnos_brain.vault import Vault, VaultLocked
+    from core.vault import Vault, VaultLocked
     if args.action == "keygen":
         print("MEMNOS_SECRET_KEY=" + Vault.keygen()); return
     conn = _conn(cfg)
@@ -266,14 +266,14 @@ def cmd_secret(args, cfg):
 
 # ---- observability ----------------------------------------------------------
 def cmd_stats(args, cfg):
-    from memnos_brain.control import Control
+    from core.control import Control
     for r in Control.stats(_conn(cfg), 24):
         print(f"  {r['action']:<12} calls={r['calls']} err%={r['error_pct'] or 0} "
               f"p50={r['p50_ms'] or '-'} p95={r['p95_ms'] or '-'}")
 
 
 def cmd_health(args, cfg):
-    from memnos_brain.control import Control
+    from core.control import Control
     rows = Control.health(_conn(cfg), 24)
     print("OK — no findings" if not rows else "")
     for level, msg in rows:
@@ -281,7 +281,7 @@ def cmd_health(args, cfg):
 
 
 def cmd_whoami(args, cfg):
-    from memnos_brain.control import Control
+    from core.control import Control
     conn = _conn(cfg)
     pid = Control.authenticate(conn, args.token)
     if pid is None:
@@ -355,7 +355,7 @@ def _backup(path):
 def _ensure_claude_token(cfg):
     """A principal+token for the Claude integration: default namespace user:<user> plus a
     proj:* wildcard so per-project + widened recall work. (Grants, not namespace creation.)"""
-    from memnos_brain.control import Control
+    from core.control import Control
     conn = _conn(cfg)
     Control.init(conn)
     name = (os.environ.get("USER") or "me").split()[0]
