@@ -277,6 +277,30 @@ class Control:
             return c.fetchall()
 
     @staticmethod
+    def readable_namespaces(conn, principal_id):
+        """The CONCRETE namespaces (that actually hold memory) this principal may READ —
+        expanding its grants (exact, prefix `p:*`, or `*`) against the existing namespaces.
+        Used to WIDEN recall across all of an agent's permissible namespaces."""
+        grants = [g for g in Control.authorized_namespaces(conn, principal_id) if g["can_read"]]
+        if not grants:
+            return []
+        patterns = [g["namespace"] for g in grants]
+        with conn.cursor() as c:
+            c.execute("SELECT DISTINCT namespace FROM tenant_memnos.raw_turns "
+                      "UNION SELECT DISTINCT namespace FROM tenant_memnos.semantic")
+            existing = [r["namespace"] for r in c.fetchall()]
+
+        def covered(ns):
+            for p in patterns:
+                if p == "*" or p == ns:
+                    return True
+                if p.endswith(":*") and ns.startswith(p[:-1]):   # 'zudioz:*' covers 'zudioz:tap'
+                    return True
+            return False
+
+        return sorted(ns for ns in existing if covered(ns))
+
+    @staticmethod
     def is_admin(conn, principal_id) -> bool:
         """Admin = holds the '*' grant. Gates the management console endpoints."""
         if principal_id is None:

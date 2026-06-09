@@ -270,6 +270,52 @@ class MemnosMemory:
         # small raw + GUARANTEED timeline + a few reranked relevance facts
         return rr(raw, "turn")[:5] + tl_rows[:12] + sem_rows[:6]
 
+    def recall_wide(self, namespaces, query, *, k=40, raw_quota=11, fact_quota=8) -> list[dict]:
+        """WIDEN recall across multiple permissible namespaces (the agent's default + the
+        others its key can read). Reuses the single-namespace hybrid search per namespace,
+        then GLOBALLY reranks the merged candidates with the cross-encoder — so the best
+        memories surface regardless of which namespace they live in. No LLM at query time.
+        Each result is tagged with its source namespace."""
+        if not namespaces:
+            return []
+        qv = self.embed(query)
+        raw_c, sem_c = [], []
+        for ns in namespaces:
+            for r in self.store.search_raw_turns(self.schema, ns, qv, query, k):
+                r["_ns"] = ns; raw_c.append(r)
+            for r in self.store.search_semantic(self.schema, ns, qv, query, k):
+                r["_ns"] = ns; sem_c.append(r)
+        # cap candidates by RRF score before the (CPU) cross-encoder rerank
+        raw_c = sorted(raw_c, key=lambda x: x.get("score", 0), reverse=True)[:60]
+        sem_c = sorted(sem_c, key=lambda x: x.get("score", 0), reverse=True)[:60]
+
+        def rr(items, kind, quota):
+            if not items:
+                return []
+            order = brain_rerank.rerank(query, [c["content"] for c in items], self.reranker)
+            out = []
+            for i, s in order[:quota]:
+                it = items[i]
+                row = {"content": it["content"], "kind": kind, "score": float(s), "namespace": it["_ns"]}
+                if kind == "fact" and it.get("valid_from"):
+                    row["date"] = it["valid_from"].date().isoformat()
+                out.append(row)
+            return out
+
+        return rr(raw_c, "turn", raw_quota) + rr(sem_c, "fact", fact_quota)
+
+    def context_wide(self, namespaces, query, *, max_chars=9000, **kw) -> str:
+        out, used = [], 0
+        for r in self.recall_wide(namespaces, query, **kw):
+            d = f", {r['date']}" if r.get("date") else ""
+            tag = f" [{r['namespace']}]"
+            line = (f"- (fact{d}){tag} {r['content']}" if r["kind"] == "fact"
+                    else f"- (said){tag} {r['content']}")
+            if used + len(line) > max_chars:
+                break
+            out.append(line); used += len(line)
+        return "\n".join(out)
+
     def context(self, namespace: str, query: str, *, max_chars=9000, **kw) -> str:
         out, used = [], 0
         for r in self.recall(namespace, query, **kw):

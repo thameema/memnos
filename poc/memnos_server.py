@@ -453,8 +453,16 @@ class Handler(BaseHTTPRequestHandler):
                         if "raw_quota" in req: rkw["raw_quota"] = int(req["raw_quota"])
                         if "fact_quota" in req: rkw["fact_quota"] = int(req["fact_quota"])
                         ckw = {"max_chars": int(req["max_chars"])} if "max_chars" in req else {}
-                        rows = mem.recall(ns, q, **rkw)
-                        out = {"memories": rows, "context": mem.context(ns, q, **rkw, **ckw)}
+                        scope = str(req.get("scope", "")).lower()
+                        if scope in ("all", "wide"):
+                            # WIDEN across every namespace this key may read (ACL-bounded)
+                            nss = Control.readable_namespaces(conn, principal)
+                            rows = mem.recall_wide(nss, q, **rkw)
+                            out = {"memories": rows, "context": mem.context_wide(nss, q, **rkw, **ckw),
+                                   "namespaces_searched": nss}
+                        else:
+                            rows = mem.recall(ns, q, **rkw)
+                            out = {"memories": rows, "context": mem.context(ns, q, **rkw, **ckw)}
                     elif self.path == "/consolidate":
                         out = mem.consolidate(ns)
                     # --- episodic tier (hippocampus) + decay ---

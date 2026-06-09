@@ -123,6 +123,21 @@ def _err(e, what):
 
 
 @mcp.tool()
+def recall_wide(query: str) -> str:
+    """Recall ACROSS ALL namespaces your key is permitted to read (not just the current
+    one). Use when the answer might live in a related namespace — e.g. your default is
+    one project but the fact is in another you can access. Results are tagged with the
+    namespace they came from."""
+    try:
+        out = _post("/recall", {"query": query, "scope": "all"})
+        ctx = out.get("context", "")
+        ns = out.get("namespaces_searched", [])
+        return (f"[searched {len(ns)} namespaces: {', '.join(ns)}]\n" + ctx) if ctx else "(no relevant memories found)"
+    except Exception as e:
+        return _err(e, "recall_wide")
+
+
+@mcp.tool()
 def memory_search(query: str) -> str:
     """Search long-term memory and return the raw ranked memories (facts + raw turns)
     as JSON. Like recall(), but returns structured rows rather than a formatted context
