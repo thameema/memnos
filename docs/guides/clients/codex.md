@@ -1,61 +1,61 @@
 # Connecting memnos to Codex CLI (OpenAI)
 
-Codex CLI does **not** support MCP. Use the memnos REST API or the Python SDK.
+## One command
 
-## Prerequisites
+```bash
+memnos agent-setup codex
+```
 
-- memnos running (`memnos serve`, default `http://127.0.0.1:8900`) — see [quickstart](../quickstart.md).
-- A scoped token + namespace (`memnos token alice` → `mnk_…`; `memnos grant alice user:alice`).
+Wires memnos into Codex as an **MCP server** — it writes `[mcp_servers.memnos]` to
+`~/.codex/config.toml` (mints a scoped token for you) and adds a memnos section to
+`~/.codex/AGENTS.md`. Idempotent; backs up files it edits. **Restart Codex** afterward.
 
-## Option A — Python SDK (recommended)
+Codex then has the memnos tools — `recall` / `recall_wide`, `remember`, `reconcile_claim`,
+`get_entity`, etc. Unlike Claude Code, Codex has **no lifecycle hooks**, so memory isn't
+auto-injected/saved — the agent calls the tools explicitly (the `AGENTS.md` note tells it to).
+
+What it writes:
+
+```toml
+[mcp_servers.memnos]
+command = "memnos"
+args = ["mcp"]
+
+[mcp_servers.memnos.env]
+MEMNOS_URL = "http://127.0.0.1:8900"
+MEMNOS_TOKEN = "mnk_..."
+MEMNOS_NS = "user:you"
+```
+
+---
+
+## Manual / REST fallback
+
+If you're on a Codex build without MCP, use the REST API or the SDK directly.
+
+### Python SDK
 
 ```bash
 pip install memnos-sdk
 ```
-
 ```python
 from memnos_sdk import MemnosClient
-
-mem = MemnosClient("http://127.0.0.1:8900", token="mnk_...", namespace="user:alice")
-
-# A ready-to-paste context block (ranked, no LLM at query time):
-context = mem.context("your query")
-
-# Or the structured result:
-result = mem.recall("your query")          # {"memories": [...], "context": "..."}
-
-# Store something:
+mem = MemnosClient("http://127.0.0.1:8900", token="mnk_...", namespace="user:you")
+context = mem.context("your query")     # ready-to-paste; no LLM at query time
 mem.remember("Decided to use pgvector over a separate graph DB.")
-
-# Pass the context to Codex via --instructions or stdin
 ```
 
-## Option B — Shell wrapper (REST)
-
-Create `codex-with-memory.sh`:
+### Shell wrapper (inject memnos context as Codex instructions)
 
 ```bash
 #!/bin/bash
-# Usage: ./codex-with-memory.sh "query" [codex args...]
-# Injects the memnos context block for the query as Codex instructions.
+# ./codex-with-memory.sh "query" [codex args...]
 set -euo pipefail
 QUERY="${1:-}"; shift || true
-
 CONTEXT=$(curl -s http://127.0.0.1:8900/recall \
   -H "Authorization: Bearer ${MEMNOS_TOKEN:?set MEMNOS_TOKEN}" \
   -H 'Content-Type: application/json' \
-  -d "{\"namespace\":\"${MEMNOS_NS:-user:alice}\",\"query\":\"${QUERY}\"}" \
-  | python3 -c "import json,sys; print(json.load(sys.stdin).get('context',''))")
-
+  -d "{\"namespace\":\"${MEMNOS_NS:-user:you}\",\"query\":\"${QUERY}\"}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin).get('context',''))")
 codex --instructions "$CONTEXT" "$@"
 ```
-
-```bash
-chmod +x codex-with-memory.sh
-export MEMNOS_TOKEN=mnk_... MEMNOS_NS=user:alice
-./codex-with-memory.sh "auth service decisions" "refactor this handler"
-```
-
-The `/recall` endpoint returns ranked memories **and** a ready-to-paste `context` string —
-no LLM at query time. To store from the shell, `POST /remember` with
-`{"namespace": "...", "text": "..."}`.

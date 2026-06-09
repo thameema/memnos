@@ -415,6 +415,73 @@ def cmd_claude_setup(args, cfg):
     print("\n  Restart Claude Code to load the MCP tools. Verify with /mcp.")
 
 
+_AGENT_MD = """## memnos — long-term memory (MCP tools)
+memnos gives you persistent, governed memory across sessions (namespace-scoped). Call its
+MCP tools explicitly (this agent has no auto-inject hooks):
+- `recall` / `recall_wide` — fetch relevant past decisions, facts, people, and project state
+  before answering (recall_wide searches every namespace your key may read).
+- `remember` — save a durable fact/decision worth keeping.
+- **Staleness check:** before answering from a local note on a key project detail, call
+  `reconcile_claim(statement, subject, predicate)`. If it returns `stale`, tell the user their
+  local note is out of date and give the newer memnos value + its date.
+"""
+
+# MCP-capable agents: where each keeps its MCP server config, and the format.
+_AGENTS = {
+    "codex":          {"path": "~/.codex/config.toml",                         "fmt": "toml", "agents_md": "~/.codex/AGENTS.md"},
+    "cursor":         {"path": "~/.cursor/mcp.json",                           "fmt": "json"},
+    "windsurf":       {"path": "~/.codeium/windsurf/mcp_config.json",          "fmt": "json"},
+    "claude-desktop": {"path": "~/Library/Application Support/Claude/claude_desktop_config.json", "fmt": "json"},
+}
+
+
+def cmd_agent_setup(args, cfg):
+    """Wire memnos into another MCP-capable agent (codex/cursor/windsurf/claude-desktop).
+    Writes its MCP server config (+ an AGENTS.md instruction for codex). Idempotent; backs up."""
+    spec = _AGENTS.get(args.agent)
+    if not spec:
+        sys.exit(f"unknown agent '{args.agent}' — choose: {', '.join(_AGENTS)}")
+    url = os.environ.get("MEMNOS_URL") or f"http://127.0.0.1:{cfg.get('port', 8900)}"
+    token, default_ns = _ensure_claude_token(cfg)
+    ns = args.namespace or default_ns
+    path = os.path.expanduser(spec["path"])
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    if spec["fmt"] == "json":
+        try:
+            d = json.load(open(path)) if os.path.exists(path) else {}
+        except Exception:
+            d = {}
+        d.setdefault("mcpServers", {})["memnos"] = {
+            "command": "memnos", "args": ["mcp"],
+            "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns}}
+        _backup(path); json.dump(d, open(path, "w"), indent=2)
+    else:  # toml (codex)
+        existing = open(path).read() if os.path.exists(path) else ""
+        block = (f'\n[mcp_servers.memnos]\ncommand = "memnos"\nargs = ["mcp"]\n\n'
+                 f'[mcp_servers.memnos.env]\nMEMNOS_URL = "{url}"\n'
+                 f'MEMNOS_TOKEN = "{token}"\nMEMNOS_NS = "{ns}"\n')
+        if "[mcp_servers.memnos]" in existing:
+            print(f"[memnos] {args.agent}: MCP entry already present in {spec['path']} (left as-is).")
+        else:
+            _backup(path)
+            with open(path, "a") as f:
+                f.write(("\n" if existing and not existing.endswith("\n") else "") + block)
+        am = os.path.expanduser(spec["agents_md"])
+        cur = open(am).read() if os.path.exists(am) else ""
+        if "## memnos — long-term memory" not in cur:
+            if cur:
+                _backup(am)
+            with open(am, "a") as f:
+                f.write(("\n\n" if cur else "") + _AGENT_MD)
+
+    print(f"[memnos] {args.agent} wired -> {spec['path']} (MCP server 'memnos', ns={ns}).")
+    if spec.get("agents_md"):
+        print(f"          + instructions -> {spec['agents_md']}")
+    print("  Note: this agent uses the memnos MCP *tools* (recall/remember/reconcile_claim) — "
+          "no auto inject/save hooks (those are Claude Code only). Restart the agent to load it.")
+
+
 # ---- Claude Code hook entry (`memnos hook recall|remember`) ------------------
 def cmd_hook(args, cfg):
     """Stdin-driven Claude Code hooks, packaged so they work after a pipx install with no
@@ -497,6 +564,7 @@ def main():
     p = sub.add_parser("recall"); p.add_argument("query"); p.add_argument("--namespace", default="auto"); p.add_argument("--scope", choices=["all", "wide"]); p.add_argument("--token"); p.set_defaults(fn=cmd_recall)
     p = sub.add_parser("hook"); p.add_argument("which", choices=["recall", "remember"]); p.set_defaults(fn=cmd_hook)
     p = sub.add_parser("claude-setup"); p.add_argument("--namespace"); p.add_argument("--force", action="store_true"); p.set_defaults(fn=cmd_claude_setup)
+    p = sub.add_parser("agent-setup"); p.add_argument("agent", choices=list(_AGENTS)); p.add_argument("--namespace"); p.set_defaults(fn=cmd_agent_setup)
 
     args = ap.parse_args()
     args.fn(args, cfg)
