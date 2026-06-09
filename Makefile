@@ -1,6 +1,6 @@
 # memnos — developer convenience targets.
 # Postgres is a prerequisite (external). For local dev, the pgvector container is easiest:
-#   docker compose -f docker-compose.poc.yml up -d
+#   docker compose -f docker-compose.dev.yml up -d
 #
 # The test/serve targets read MEMNOS_DSN / MEMNOS_URL / MEMNOS_SECRET_KEY from the
 # environment (or a repo-root .env) — the same vars the server uses.

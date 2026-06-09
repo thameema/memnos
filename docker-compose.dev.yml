@@ -1,0 +1,22 @@
+# Local dev: single-engine Postgres + pgvector (no second store).
+# memnos does NOT install Postgres — this is just a convenient local one for development.
+services:
+  pg:
+    image: pgvector/pgvector:pg16
+    container_name: memnos-dev-pg
+    environment:
+      POSTGRES_USER: memnos
+      POSTGRES_PASSWORD: memnos
+      POSTGRES_DB: memnos
+    ports:
+      - "5433:5432"          # 5433 host → avoid colliding with a local Postgres on 5432
+    volumes:
+      - memnos_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memnos -d memnos"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  memnos_pgdata:

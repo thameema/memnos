@@ -30,7 +30,7 @@ from core.control import Control
 from core.vault import Vault, VaultLocked
 from core import redact
 
-DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_core@localhost:5433/memnos")
+DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
 PASS = FAIL = 0
 
 

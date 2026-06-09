@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 
-DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_core@localhost:5433/memnos")
+DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)   # repo root — where memnos_cli.py lives
 PY = sys.executable

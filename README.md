@@ -9,7 +9,7 @@ no graph database — and uses **no LLM at query time** (retrieval is hybrid sea
 cross-encoder reranker). Works with **Claude Code, Cursor, Windsurf** and any MCP client,
 plus a REST API and a cross-platform CLI.
 
-> **Status:** POC / preview. Single-org self-host, local-first. Apache-2.0.
+> **Status:** Preview. Single-org self-host, local-first. Apache-2.0.
 
 ```
 Claude Code ─┐
@@ -50,7 +50,7 @@ to operate.
 
 **Prerequisite:** a PostgreSQL with the `pgvector` extension available. memnos does **not**
 install Postgres — it connects to yours. (For local dev: `docker compose -f
-docker-compose.poc.yml up -d`.)
+docker-compose.dev.yml up -d`.)
 
 ```bash
 ./install.sh          # macOS/Linux   (Windows: .\install.ps1)  → installs the `memnos` command

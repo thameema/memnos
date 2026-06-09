@@ -1,6 +1,6 @@
 """memnos production memory server — pooled, authenticated, namespace-ACL'd, audited.
 
-Hardening vs the POC:
+Hardening vs the early prototype:
   - Bearer-token auth (server-side identity; never client-trusted) → principal
   - Namespace ACL: every read/write clamped to the principal's grants
   - Connection POOL (psycopg_pool) — no connection-per-request exhaustion
@@ -74,7 +74,7 @@ from core.service import MemnosMemory
 from core.control import Control
 from core import rerank as brain_rerank
 
-DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_core@localhost:5433/memnos")
+DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
 PORT = int(os.environ.get("MEMNOS_PORT", "8900"))
 POOL_MAX = int(os.environ.get("MEMNOS_POOL_MAX", "16"))
 MAX_BODY = 256 * 1024          # 256 KB request cap
