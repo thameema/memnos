@@ -194,8 +194,8 @@ def _build_embedder():
     global LLM, DIM
     if os.environ.get("OPENAI_API_KEY"):
         from openai import OpenAI
-        from validate_brain import CachedEmbedder
-        from locomo_pg_parallel import TSCostMeter
+        from core.embed import CachedEmbedder
+        from core.usage import TSCostMeter
         # timeout is REQUIRED: without it a single stalled request hangs the request
         # thread forever (observed: extraction/consolidation wedged with no timeout).
         LLM = OpenAI(max_retries=3, timeout=60)

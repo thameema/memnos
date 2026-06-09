@@ -46,3 +46,17 @@ class CostMeter:
         parts = "  ".join(f"{k}=${v:.4f}" for k, v in sorted(self.by_op.items()))
         cap = f" / ${self.budget:.2f} cap" if self.budget else ""
         return f"spent ${self.cost:.4f}{cap} over {self.calls} calls   [{parts}]"
+
+
+class TSCostMeter(CostMeter):
+    """Thread-safe meter: lock around record() so concurrent calls accumulate correctly
+    and the budget cap stays authoritative. Used by the server/consolidate worker pools
+    and the benchmark harness."""
+    def __init__(self, *a, **k):
+        import threading
+        super().__init__(*a, **k)
+        self._lock = threading.Lock()
+
+    def record(self, *a, **k):
+        with self._lock:
+            return super().record(*a, **k)

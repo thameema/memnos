@@ -24,5 +24,5 @@ gpt-4o judge 59% / claude judge 58%. (Subset had unusually hard temporal Qs: 18â
 - Answerer model was the biggest single lever (+6pp vs gpt-4o-mini). Free Claude-CLI
   extraction was tried and REJECTED (-4pp â€” volume diluted precision).
 - Cross-provider is an internal measurement aid only; **production is single-API (OpenAI)**.
-- Reproduce: `python cross_provider_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9`
+- Reproduce: `python benchmarks/locomo_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9`
   (defaults to the locked config). Engine = one codebase for benchmark + production.

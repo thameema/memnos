@@ -15,10 +15,10 @@ sys.path.insert(0, ".")
 import psycopg
 from psycopg.rows import dict_row
 from openai import OpenAI
-from memnos_brain import BrainStore
-from memnos_brain.control import Control
-from validate_brain import CachedEmbedder
-from locomo_pg_parallel import TSCostMeter
+from core import BrainStore
+from core.control import Control
+from core.embed import CachedEmbedder
+from core.usage import TSCostMeter
 
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_core@localhost:5433/memnos")
 SCHEMAS = os.environ.get("MEMNOS_EVAL_SCHEMAS", "tenant_pa2,tenant_pa3,tenant_pa4").split(",")
