@@ -24,15 +24,13 @@ read (NO LLM):  query ──► hybrid retrieve (pgvector HNSW + BM25/tsvector, 
                           ──► cross-encoder rerank ──► quota'd context block
 ```
 
-## Why memnos (vs Graphiti / Mem0)
-| | memnos | Graphiti | Mem0 |
-|---|---|---|---|
-| Store | one Postgres+pgvector | Neo4j graph | vector DB (+opt graph) |
-| Conflict handling | **deterministic** bi-temporal supersession | LLM edge-invalidation | LLM ADD/UPDATE/DELETE |
-| Query-time LLM | none | none | none |
-| Rerank | **cross-encoder** | RRF / node-distance | vector score |
-| Governance | **token + namespace ACL + audit + usage ledger** | — | — |
-| Deploy | one container, runs anywhere | graph DB required | cloud or self-host |
+## What makes memnos different
+- **One engine** — a single PostgreSQL + pgvector; no second store, no graph DB.
+- **Deterministic memory** — conflicts resolved by rule (bi-temporal supersession), not by an LLM at write time.
+- **No LLM at query time** — hybrid search + a local cross-encoder rerank.
+- **Governed by default** — token auth, namespace ACL, audit, usage/cost ledger, encrypted secret vault.
+
+A detailed, version-pinned comparison with other memory systems is at [memnos.net/compare](https://memnos.net/compare.html).
 
 ## Operate
 The `memnos` CLI — `setup · principal · token · grant · stats · health · usage · audit · whoami`.
