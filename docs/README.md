@@ -6,7 +6,7 @@ provenance-stamped portability. No second database; no LLM at query time.
 
 ## Start here
 - **[Quickstart (local, ~5 min)](../QUICKSTART.md)** — run the server + store/recall your first memory.
-- **[Accuracy baseline + LoCoMo numbers](../LOCKED_BASELINE.md)** — the locked config and scores.
+- **[Accuracy baseline + LoCoMo numbers](../benchmarks/README.md)** — the locked config and scores.
 
 ## Integrations
 - **[Claude Code](integrations/claude-code.md)** — MCP tools and/or automatic hooks.

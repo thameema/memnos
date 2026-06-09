@@ -130,8 +130,8 @@ We care more about *credibility* than a big headline:
   typically self-judged and sometimes on a *different* benchmark (e.g. DMR, not LoCoMo). We
   don't claim parity — we publish a reproducible harness.
 
-**Reproduce:** `python cross_provider_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9`
-(see [`LOCKED_BASELINE.md`](LOCKED_BASELINE.md)).
+**Reproduce:** `python benchmarks/locomo_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9`
+(see [`benchmarks/`](benchmarks/README.md)).
 
 *We'd rather report a credible 58% under an independent judge than an inflated 85% under a
 lenient one.*
