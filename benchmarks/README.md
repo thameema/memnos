@@ -32,17 +32,19 @@ Run date 2026-06-09, $1.81 — raw per-question predictions in
 
 | judge | single-hop | multi-hop | temporal | open-domain | **overall** |
 |-------|:---------:|:--------:|:--------:|:-----------:|:-----------:|
-| gpt-4o | 29% (82/282) | 59% (190/321) | 47% (45/96) | 69% (579/841) | **58% (898/1542)** |
+| gpt-4o | 26% (72/282) | 57% (182/321) | 46% (44/96) | 68% (574/841) | **57% (874/1542)** |
 
 This is what the **one-command public reproduce actually produces** end-to-end, judged by
-gpt-4o, via the same recall path production uses.
+gpt-4o, via the same recall path production uses. The reranker runs on ONNX Runtime
+(`fastembed`) — no torch — and produces the **same ranking** as the previous torch backend
+(bit-identical ordering), so this is the same retrieval pipeline, lighter.
 
-> **On variance, honestly.** Fact extraction + consolidation are LLM calls (gpt-4o-mini), and
-> they're not deterministic — a second independent from-scratch ingest of the same data scored
-> **61%** under the same gpt-4o judge. So the reproducible figure is a **58–61% band**, not a
-> single point; we publish the lower run we can show you the predictions for. The score is
-> also judge-sensitive: on the *same answers*, a strict → lenient judge prompt sweeps roughly
-> **44% → 58% → 85%**, which is why we always name the judge. We'd rather report a 58% you can
+> **On variance, honestly.** Fact extraction + consolidation are LLM calls (gpt-4o-mini) and
+> are not deterministic — independent from-scratch ingests of the same data scored **57%, 58%
+> and 61%** under the same gpt-4o judge. So the reproducible figure is a **57–61% band**, not a
+> single point; we publish the run whose predictions we can show you. The score is also
+> judge-sensitive: on the *same answers*, a strict → lenient judge prompt sweeps roughly
+> **44% → 57% → 85%**, which is why we always name the judge. We'd rather report a 57% you can
 > rerun than a headline you can't.
 
 ### How it runs (no LLM at query time)

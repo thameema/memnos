@@ -1,37 +1,47 @@
-"""Local embedding + cross-encoder rerank (no API, no cost).
+"""Local embedding + cross-encoder rerank (no API, no cost) — free 384-d mode.
 
-- embedding: BAAI/bge-small-en-v1.5 (384-d) — small, fast, strong retrieval quality
-- rerank: cross-encoder/ms-marco-MiniLM-L-6-v2 — final-stage precision
+- embedding: BAAI/bge-small-en-v1.5 (384-d, L2-normalized) — small, fast, strong retrieval
+- rerank: ms-marco-MiniLM-L-6-v2 — final-stage precision
 
-Both run locally via sentence-transformers (already installed). This proves the
-'no LLM at query, local cross-encoder rerank' rule end-to-end and measures the
-latency the rerank stage adds on top of the base retrieval number.
+Both run locally on ONNX Runtime via `fastembed` (no torch), so the install stays light.
+This is the free path: no OpenAI key, no cost, no LLM at query time.
 """
 from __future__ import annotations
 
 import functools
+import math
 
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
-RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+RERANK_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"   # ONNX build of the MiniLM cross-encoder
+
+
+def _sigmoid(x: float) -> float:
+    if x >= 0:
+        return 1.0 / (1.0 + math.exp(-x))
+    e = math.exp(x)
+    return e / (1.0 + e)
 
 
 @functools.lru_cache(maxsize=1)
 def _embedder():
-    from sentence_transformers import SentenceTransformer
-    return SentenceTransformer(EMBED_MODEL)
+    from fastembed import TextEmbedding
+    return TextEmbedding(model_name=EMBED_MODEL)
 
 
 @functools.lru_cache(maxsize=1)
 def _reranker():
-    from sentence_transformers import CrossEncoder
-    return CrossEncoder(RERANK_MODEL)
+    from fastembed.rerank.cross_encoder import TextCrossEncoder
+    return TextCrossEncoder(model_name=RERANK_MODEL)
 
 
 def embed(text: str) -> list[float]:
-    return _embedder().encode(text, normalize_embeddings=True).tolist()
+    return next(iter(_embedder().embed([text]))).tolist()
 
 
 def rerank(query: str, candidates: list[str]) -> list[tuple[int, float]]:
     """Return [(orig_index, score)] sorted best-first."""
-    scores = _reranker().predict([(query, c) for c in candidates])
-    return sorted([(i, float(s)) for i, s in enumerate(scores)], key=lambda x: x[1], reverse=True)
+    if not candidates:
+        return []
+    logits = list(_reranker().rerank(query, candidates))
+    scores = [_sigmoid(float(s)) for s in logits]
+    return sorted(((i, scores[i]) for i in range(len(candidates))), key=lambda x: x[1], reverse=True)

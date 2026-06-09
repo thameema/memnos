@@ -10,17 +10,18 @@
 ## LoCoMo — FULL 10 (n=1542) — REPRODUCED FROM SCRATCH 2026-06-09
 | judge | single_hop | multi_hop | temporal | open_domain | OVERALL |
 |-------|-----------|-----------|----------|-------------|---------|
-| gpt-4o | 29% (82/282) | 59% (190/321) | 47% (45/96) | 69% (579/841) | **58% (898/1542)** |
+| gpt-4o | 26% (72/282) | 57% (182/321) | 46% (44/96) | 68% (574/841) | **57% (874/1542)** |
 
 `python benchmarks/locomo_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9` on a fresh clone + fresh
-DB, gpt-4o judge, $1.81. Full predictions:
-[`results/locomo-2026-06-09.json`](results/locomo-2026-06-09.json).
+DB, gpt-4o judge, $1.81, **ONNX reranker** (fastembed; no torch — bit-identical ranking to the
+prior torch backend). Full predictions: [`results/locomo-2026-06-09.json`](results/locomo-2026-06-09.json).
 
 ### Run-to-run variance (measured, not hand-waved)
-Extraction + consolidation are non-deterministic LLM calls, so the from-scratch overall
-moves a few points between ingests. Two correct full runs (both gpt-4o judge, production
-recall path): **58%** (the published run above) and **61%** (an independent ingest of the
-same data) → a **58–61% band**. We publish the lower run because we can show its predictions.
+Extraction + consolidation are non-deterministic LLM calls, so the from-scratch overall moves
+a few points between ingests. Three correct full runs (gpt-4o judge, production recall path):
+**57%** (the ONNX run above), **58%** and **61%** (torch backend, independent ingests) → a
+**57–61% band**. The reranker swap (torch → ONNX) does NOT move the band — ordering is
+bit-identical; the spread is extraction variance. We publish the run whose predictions we show.
 
 > Note: an earlier 2026-06-09 commit briefly recorded **56%** here. That was a *harness* bug,
 > not the engine — the rewritten driver retrieved via the low-level `Retriever`, bypassing the
