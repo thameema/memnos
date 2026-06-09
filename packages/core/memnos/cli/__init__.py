@@ -1,1 +1,0 @@
-# memnos CLI commands
