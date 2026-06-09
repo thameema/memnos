@@ -11,7 +11,7 @@ five minutes — one package, one command.
 
 ## Prerequisites
 
-- **PostgreSQL** with the `pgvector` extension available. memnos **does not install
+- **PostgreSQL 13+** with the **pgvector ≥ 0.7** extension available. memnos **does not install
   Postgres** — it connects to yours and creates its own schema. (For local dev, the
   `pgvector/pgvector` Docker image is easiest: `docker compose -f docker-compose.dev.yml up -d`.)
 - **Python 3.10+** (for `pipx` / `pip`).

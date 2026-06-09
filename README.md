@@ -55,7 +55,7 @@ comparison with other memory systems lives at **[memnos.net/compare](https://mem
 
 ## Quickstart (local)
 
-**Prerequisite:** a PostgreSQL with the `pgvector` extension available. memnos does **not**
+**Prerequisite:** PostgreSQL **13+** with the **pgvector ≥ 0.7** extension available. memnos does **not**
 install Postgres — it connects to yours. (For local dev: `docker compose -f
 docker-compose.dev.yml up -d`.)
 
