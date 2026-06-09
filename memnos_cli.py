@@ -22,7 +22,7 @@ import urllib.request
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".memnos")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
-DEFAULT_DSN = "postgresql://memnos:memnos_core@localhost:5433/memnos"
+DEFAULT_DSN = "postgresql://memnos:memnos@localhost:5432/memnos"
 
 
 # ---- config -----------------------------------------------------------------

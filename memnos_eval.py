@@ -20,7 +20,7 @@ from core.control import Control
 from core.embed import CachedEmbedder
 from core.usage import TSCostMeter
 
-DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_core@localhost:5433/memnos")
+DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
 SCHEMAS = os.environ.get("MEMNOS_EVAL_SCHEMAS", "tenant_pa2,tenant_pa3,tenant_pa4").split(",")
 
 

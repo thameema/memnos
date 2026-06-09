@@ -19,7 +19,7 @@ from core.control import Control
 from core.store import BrainStore
 from core.service import MemnosMemory
 
-DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_core@localhost:5433/memnos")
+DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
 URL = os.environ.get("MEMNOS_URL", "http://127.0.0.1:8900")
 NS = "test:prov"
 SCHEMA = "tenant_memnos"

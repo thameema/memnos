@@ -1,6 +1,6 @@
 """Configurable cross-encoder reranker (B3).
 
-SmartSearch's biggest single lever was reranker QUALITY (+6pp). Our POC used a
+SmartSearch's biggest single lever was reranker QUALITY (+6pp). An earlier build used a
 22M ms-marco-MiniLM; this lets us swap to a stronger model (bge-reranker-base/large,
 mxbai-rerank-large) with one config. A reranker is NOT a generative LLM, so the
 'no LLM at query time' moat is preserved. Lazily loaded + cached per model.

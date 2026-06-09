@@ -20,7 +20,7 @@ from psycopg.rows import dict_row
 from core.control import Control
 from core.store import BrainStore
 
-DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_core@localhost:5433/memnos")
+DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
 URL = os.environ.get("MEMNOS_URL", "http://127.0.0.1:8900")
 NS = "test:memapi"
 SCHEMA = "tenant_memnos"

@@ -1,11 +1,11 @@
-"""POC-1b: real LOCAL embedding + cross-encoder rerank (no API, no cost).
+"""Local embedding + cross-encoder rerank (no API, no cost).
 
 - embedding: BAAI/bge-small-en-v1.5 (384-d) — small, fast, strong retrieval quality
 - rerank: cross-encoder/ms-marco-MiniLM-L-6-v2 — final-stage precision
 
 Both run locally via sentence-transformers (already installed). This proves the
 'no LLM at query, local cross-encoder rerank' rule end-to-end and measures the
-latency the rerank stage adds on top of POC-5's retrieval number.
+latency the rerank stage adds on top of the base retrieval number.
 """
 from __future__ import annotations
 

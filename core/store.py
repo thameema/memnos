@@ -21,7 +21,7 @@ def vlit(vec: Sequence[float]) -> str:
 
 class BrainStore:
     def __init__(self, dsn: str | None = None, conn=None):
-        # Accept a pooled connection (production) or open one from a DSN (scripts/POC).
+        # Accept a pooled connection (production) or open one from a DSN (scripts/tests).
         if conn is not None:
             self.conn = conn
             self._owns = False
