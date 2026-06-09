@@ -46,20 +46,20 @@ memnos ships two hook scripts: `memnos-recall.py` (UserPromptSubmit → inject m
 Claude answers) and `memnos-remember.py` (Stop → save the turn after). Both **fail open**
 (never block your prompt) and use no LLM at query time.
 
-Add to **`~/.claude/settings.json`** (`<REPO>` = your memnos checkout, e.g.
-`/Users/you/git/memnos/poc`):
+The hooks ship inside the `memnos` CLI (`memnos hook recall` / `memnos hook remember`).
+Add to **`~/.claude/settings.json`**:
 
 ```json
 {
   "hooks": {
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command",
-        "command": "MEMNOS_URL=http://127.0.0.1:8900 MEMNOS_NS=user:thameem MEMNOS_TOKEN=mnk_... <REPO>/.venv/bin/python <REPO>/integrations/claude-code/memnos-recall.py",
+        "command": "MEMNOS_URL=http://127.0.0.1:8900 MEMNOS_NS=user:thameem MEMNOS_TOKEN=mnk_... memnos hook recall",
         "timeout": 15 } ] }
     ],
     "Stop": [
       { "hooks": [ { "type": "command",
-        "command": "MEMNOS_URL=http://127.0.0.1:8900 MEMNOS_NS=user:thameem MEMNOS_TOKEN=mnk_... <REPO>/.venv/bin/python <REPO>/integrations/claude-code/memnos-remember.py",
+        "command": "MEMNOS_URL=http://127.0.0.1:8900 MEMNOS_NS=user:thameem MEMNOS_TOKEN=mnk_... memnos hook remember",
         "timeout": 15 } ] }
     ]
   }
@@ -80,17 +80,15 @@ claude mcp add memnos \
   --env MEMNOS_URL=http://127.0.0.1:8900 \
   --env MEMNOS_TOKEN=mnk_... \
   --env MEMNOS_NS=user:thameem \
-  -- <REPO>/.venv/bin/python <REPO>/integrations/claude-code/memnos_mcp.py
+  -- memnos mcp
 ```
-
-(With a packaged install, `-- memnos mcp` works instead of the python+script form.)
 
 Equivalent manual entry in **`~/.claude.json`** under top-level `"mcpServers"`:
 
 ```json
 "memnos": {
-  "command": "<REPO>/.venv/bin/python",
-  "args": ["<REPO>/memnos_mcp.py"],
+  "command": "memnos",
+  "args": ["mcp"],
   "env": {
     "MEMNOS_URL": "http://127.0.0.1:8900",
     "MEMNOS_TOKEN": "mnk_...",
