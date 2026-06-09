@@ -1,6 +1,5 @@
-# memnos memory server image. Heavy (~torch via sentence-transformers) because local
-# embeddings + cross-encoder rerank run in-process. For an OpenAI-only/light build,
-# drop sentence-transformers and run with OPENAI_API_KEY set + reranker disabled.
+# memnos memory server image. Local embeddings + cross-encoder rerank run in-process on
+# ONNX Runtime (fastembed) — no torch, so the image stays light.
 FROM python:3.11-slim
 
 WORKDIR /app

@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![Engine: PostgreSQL + pgvector](https://img.shields.io/badge/engine-PostgreSQL%20%2B%20pgvector-336791.svg)](#)
 [![Query-time LLM: none](https://img.shields.io/badge/query--time%20LLM-none-success.svg)](#)
-[![LoCoMo](https://img.shields.io/badge/LoCoMo%20full--10-58–61%25-success.svg)](benchmarks/README.md)
+[![LoCoMo](https://img.shields.io/badge/LoCoMo%20full--10-57–61%25-success.svg)](benchmarks/README.md)
 [![PyPI](https://img.shields.io/pypi/v/memnos.svg)](https://pypi.org/project/memnos/)
 
 **Self-hostable, governed, vendor-neutral memory for AI agents — on one PostgreSQL.**
@@ -129,11 +129,11 @@ memnos admin          # bootstrap an admin token → paste into /admin
 
 ## Benchmarks — LoCoMo (and how we report it)
 
-**58–61% under the gpt-4o judge / 58% under an independent cross-provider judge** on the full
+**57–61% under the gpt-4o judge / 58% under an independent cross-provider judge** on the full
 LoCoMo benchmark (10 conversations, 1,542 QA). The gpt-4o-judge band is **reproduced from
-scratch** — `benchmarks/locomo_eval.py` on a fresh clone + DB scored 58% (a second ingest 61%;
-the spread is non-deterministic extraction), with every prediction published under
-[`benchmarks/results/`](benchmarks/results/).
+scratch** — `benchmarks/locomo_eval.py` on a fresh clone + DB scored 57%, 58% and 61% across
+independent ingests (the spread is non-deterministic extraction, not the engine), with every
+prediction published under [`benchmarks/results/`](benchmarks/results/).
 
 We care more about *credibility* than a big headline:
 
@@ -145,7 +145,7 @@ We care more about *credibility* than a big headline:
   grades its own answers). We additionally score under an **independent provider's judge**
   (Claude grading GPT answers) to remove self-preference bias.
 - **Judge transparency:** the score is judge-sensitive. On the *same answers* we measure a
-  **strict ~44% / standard 58-61% / lenient 85-88%** band — so you can see how much the
+  **strict ~44% / standard 57-61% / lenient 85-88%** band — so you can see how much the
   judge prompt moves any number.
 - **On comparisons:** headlines elsewhere (~66% Mem0, ~73% Mnemory, 90%+ others) are
   typically self-judged and sometimes on a *different* benchmark (e.g. DMR, not LoCoMo). We
