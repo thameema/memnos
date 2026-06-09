@@ -286,8 +286,8 @@
             <div class="text-xs text-gray-500 mt-1">independent cross-provider judge — the number we stand behind</div>
           </div>
           <div>
-            <div class="text-3xl font-bold text-white">61%</div>
-            <div class="text-xs text-gray-500 mt-1">a standard same-provider judge, for reference</div>
+            <div class="text-3xl font-bold text-white">58–61%</div>
+            <div class="text-xs text-gray-500 mt-1">gpt-4o judge, reproduced from scratch (predictions published)</div>
           </div>
           <div>
             <div class="text-3xl font-bold text-white">44–88%</div>
@@ -295,10 +295,10 @@
           </div>
         </div>
         <div class="code-block p-4 mt-6 max-w-lg mx-auto">
-          <pre class="text-xs leading-relaxed"><code><span class="token-cmt"># reproduce it yourself — full conversation set</span>
-$ python cross_provider_eval.py
+          <pre class="text-xs leading-relaxed"><code><span class="token-cmt"># reproduce it yourself — full conversation set, from scratch</span>
+$ python benchmarks/locomo_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9
+gpt-4o judge      : <span class="token-num">58–61%</span>
 independent judge : <span class="token-num">58%</span>
-same-provider     : <span class="token-num">61%</span>
 <span class="token-cmt"># same answers, judge band: 44% .. 88%</span></code></pre>
         </div>
       </div>

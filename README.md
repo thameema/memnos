@@ -111,8 +111,11 @@ memnos admin          # bootstrap an admin token → paste into /admin
 
 ## Benchmarks — LoCoMo (and how we report it)
 
-**58% under an independent cross-provider judge / 61% under the gpt-4o judge** on the full
-LoCoMo benchmark (10 conversations, 1,542 QA).
+**58–61% under the gpt-4o judge / 58% under an independent cross-provider judge** on the full
+LoCoMo benchmark (10 conversations, 1,542 QA). The gpt-4o-judge band is **reproduced from
+scratch** — `benchmarks/locomo_eval.py` on a fresh clone + DB scored 58% (a second ingest 61%;
+the spread is non-deterministic extraction), with every prediction published under
+[`benchmarks/results/`](benchmarks/results/).
 
 We care more about *credibility* than a big headline:
 
