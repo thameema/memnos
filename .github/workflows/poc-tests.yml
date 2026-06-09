@@ -64,3 +64,4 @@ jobs:
           python test_ingest_api.py
           python test_episodic_api.py
           python test_migrate_api.py
+          python test_reconcile_api.py

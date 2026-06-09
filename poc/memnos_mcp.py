@@ -211,6 +211,28 @@ def check_contradictions() -> str:
 
 
 @mcp.tool()
+def reconcile_claim(statement: str, subject: str = "", predicate: str = "") -> str:
+    """Check a claim you hold elsewhere (e.g. a local note / CLAUDE.md you treat as truth)
+    against memnos. If memnos holds a CURRENT, different value about the same subject, this
+    flags it as a likely STALE local memory — return the memnos value + its date so you can
+    tell the user their local memory is out of date. Pass the subject/predicate you parsed
+    from the claim (e.g. subject='TAP', predicate='uses'). Returns {stale, conflicts, matches}."""
+    try:
+        body = {"statement": statement}
+        if subject:
+            body["subject"] = subject
+        if predicate:
+            body["predicate"] = predicate
+        out = _post("/reconcile", body)
+        if out.get("stale"):
+            return ("STALE/contradiction — memnos holds a different current value: "
+                    + str(out.get("conflicts")))
+        return "no conflict — memnos agrees or has nothing newer: " + str(out.get("matches") or "(no related facts)")
+    except Exception as e:
+        return _err(e, "reconcile_claim")
+
+
+@mcp.tool()
 def knowledge_health() -> str:
     """Return a knowledge-health report for this namespace: a 0-100 score plus signals
     (current/superseded/expired facts, entities, orphan entities, contradiction groups)."""

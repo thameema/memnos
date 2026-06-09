@@ -701,6 +701,52 @@ class BrainStore:
                 self.bump_edge(schema, dst, se, oe)
         return {"mode": mode, "src": src, "dst": dst, "raw_turns": n_rt, "facts": n_sem, "episodes": n_epi}
 
+    def reconcile(self, schema, ns, statement, qvec=None, *, subject=None, predicate=None, k=8) -> dict:
+        """Reconcile an EXTERNAL claim (e.g. from a local note the agent trusts) against
+        memnos: does memnos hold a CURRENT fact about the same subject whose value is NOT
+        reflected in the claim? Surfaces staleness/contradiction so the agent can tell the
+        user 'your local memory is stale; memnos has a newer value (as of <date>)'.
+        Deterministic — the caller supplies the parsed subject/predicate; no LLM here."""
+        self._chk(schema)
+        claim_l = (statement or "").lower()
+        found, seen = [], set()
+
+        def add(r, conflict):
+            if r["id"] in seen:
+                return
+            seen.add(r["id"])
+            found.append({"id": r["id"], "statement": r["statement"], "subject": r["subject_entity"],
+                          "predicate": r["predicate"], "object": r["object"],
+                          "valid_from": r["valid_from"], "conflict": conflict})
+
+        with self.conn.cursor() as c:
+            # SUBJECT arm — deterministic: current facts about the same subject (+predicate)
+            if subject:
+                pred_clause = " AND predicate ILIKE %s" if predicate else ""
+                params = [ns, subject] + ([predicate] if predicate else [])
+                c.execute(f"SELECT id, statement, subject_entity, predicate, object, valid_from "
+                          f"FROM {schema}.semantic WHERE namespace=%s AND valid_to IS NULL AND expired_at IS NULL "
+                          f"AND subject_entity ILIKE %s{pred_clause} ORDER BY valid_from DESC NULLS LAST LIMIT 20",
+                          params)
+                for r in c.fetchall():
+                    obj = (r["object"] or "").strip()
+                    add(r, bool(obj) and obj.lower() not in claim_l)
+            # VECTOR arm — catch paraphrases / when no subject given: near-but-different facts
+            if qvec is not None:
+                c.execute(f"SELECT id, statement, subject_entity, predicate, object, valid_from, "
+                          f"(embedding <=> %s::halfvec) AS dist FROM {schema}.semantic "
+                          f"WHERE namespace=%s AND valid_to IS NULL AND expired_at IS NULL AND embedding IS NOT NULL "
+                          f"ORDER BY embedding <=> %s::halfvec LIMIT %s", (vlit(qvec), ns, vlit(qvec), k))
+                for r in c.fetchall():
+                    near = r["dist"] is not None and r["dist"] < 0.45
+                    if not near:
+                        continue
+                    obj = (r["object"] or "").strip()
+                    differs = r["statement"].lower().strip() != claim_l.strip()
+                    add(r, bool(obj) and obj.lower() not in claim_l and differs)
+        conflicts = [f for f in found if f["conflict"]]
+        return {"claim": statement, "matches": found, "conflicts": conflicts, "stale": bool(conflicts)}
+
     def counts(self, schema) -> dict:
         self._chk(schema)
         out = {}

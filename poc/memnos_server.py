@@ -554,6 +554,14 @@ class Handler(BaseHTTPRequestHandler):
                         out = res
                     elif self.path == "/contradictions":   # check_contradictions
                         out = {"contradictions": store.contradictions(mem.schema, ns)}
+                    elif self.path == "/reconcile":        # external claim vs memnos (staleness)
+                        stmt = str(req.get("statement", "")).strip()
+                        if not stmt or len(stmt) > 4000:
+                            return self._send(400, {"error": "statement required (<=4000 chars)"})
+                        qv = mem.embed(stmt)
+                        out = store.reconcile(mem.schema, ns, stmt, qv,
+                                              subject=(str(req["subject"]).strip() if req.get("subject") else None),
+                                              predicate=(str(req["predicate"]).strip() if req.get("predicate") else None))
                     elif self.path == "/knowledge/health":  # knowledge_health (namespace)
                         out = store.health(mem.schema, ns)
                     # --- copy / move memories between namespaces ---
