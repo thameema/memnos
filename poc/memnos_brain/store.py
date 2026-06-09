@@ -647,6 +647,60 @@ class BrainStore:
                 f"ORDER BY score DESC LIMIT %s", (q, ns, q, k))
             return c.fetchall()
 
+    def migrate_namespace(self, schema, src, dst, *, mode="copy", like=None) -> dict:
+        """Copy or MOVE memories from one namespace to another (same tenant schema).
+        `copy` (default) duplicates raw turns + facts (optional `like` substring filter on
+        the text) and rebuilds the entity graph in the destination from the facts' SPO —
+        no LLM. `move` relocates the WHOLE namespace (raw turns + facts + episodes), rebuilds
+        the destination graph, and drops the now-orphaned source graph. Returns counts."""
+        self._chk(schema)
+        if mode not in ("copy", "move"):
+            raise ValueError("mode must be 'copy' or 'move'")
+        likeval = f"%{like}%" if like else None
+        with self.conn.cursor() as c:
+            if mode == "move":
+                c.execute(f"UPDATE {schema}.raw_turns SET namespace=%s WHERE namespace=%s", (dst, src))
+                n_rt = c.rowcount
+                c.execute(f"UPDATE {schema}.semantic SET namespace=%s WHERE namespace=%s "
+                          f"RETURNING id, subject_entity, object", (dst, src))
+                moved = c.fetchall(); n_sem = len(moved)
+                c.execute(f"UPDATE {schema}.episodic SET namespace=%s WHERE namespace=%s", (dst, src))
+                n_epi = c.rowcount
+                # drop the now-orphaned source graph (facts moved out)
+                c.execute(f"DELETE FROM {schema}.mentions m USING {schema}.entities e "
+                          f"WHERE m.entity_id=e.id AND e.namespace=%s", (src,))
+                c.execute(f"DELETE FROM {schema}.edges WHERE namespace=%s", (src,))
+                c.execute(f"DELETE FROM {schema}.entities WHERE namespace=%s", (src,))
+            else:  # copy
+                rt_filter = " AND text ILIKE %s" if like else ""
+                c.execute(f"INSERT INTO {schema}.raw_turns(namespace,session_id,speaker,text,observed_at,embedding) "
+                          f"SELECT %s,session_id,speaker,text,observed_at,embedding FROM {schema}.raw_turns "
+                          f"WHERE namespace=%s{rt_filter}",
+                          ([dst, src] + ([likeval] if like else [])))
+                n_rt = c.rowcount
+                sem_filter = " AND statement ILIKE %s" if like else ""
+                # copied facts lose source_turn_ids (raw-turn ids differ in the copy)
+                c.execute(f"INSERT INTO {schema}.semantic"
+                          f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding) "
+                          f"SELECT %s,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding "
+                          f"FROM {schema}.semantic WHERE namespace=%s{sem_filter} "
+                          f"RETURNING id, subject_entity, object",
+                          ([dst, src] + ([likeval] if like else [])))
+                moved = c.fetchall(); n_sem = len(moved); n_epi = 0
+        # rebuild the destination graph from the (moved/copied) facts' SPO — idempotent, no LLM
+        for r in moved:
+            subj = r.get("subject_entity")
+            if not subj:
+                continue
+            se = self.upsert_entity(schema, dst, subj[:100])
+            self.add_mention(schema, se, r["id"], "semantic")
+            obj = r.get("object")
+            if obj:
+                oe = self.upsert_entity(schema, dst, obj[:100])
+                self.add_mention(schema, oe, r["id"], "semantic")
+                self.bump_edge(schema, dst, se, oe)
+        return {"mode": mode, "src": src, "dst": dst, "raw_turns": n_rt, "facts": n_sem, "episodes": n_epi}
+
     def counts(self, schema) -> dict:
         self._chk(schema)
         out = {}
