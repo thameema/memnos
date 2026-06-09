@@ -45,8 +45,9 @@ If you installed the package (`pipx install memnos`), the MCP server is just `me
   }
 }
 ```
-(For a from-source checkout, use the venv Python instead: `"command":
-"/abs/path/.venv/bin/python", "args": ["/abs/path/memnos_mcp.py"]`.)
+(Running from a source checkout without installing the package? Point `command` at your
+venv Python and `args` at `memnos_mcp.py`: `"command": "/abs/path/.venv/bin/python",
+"args": ["/abs/path/memnos_mcp.py"]`.)
 Restart Claude Code. It now has three tools:
 | tool | what it does |
 |------|--------------|
@@ -89,5 +90,5 @@ add to `~/.claude/settings.json`:
   why a strong agent gets the best results for free (the +6pp answerer effect from
   [`../../benchmarks/`](../../benchmarks/README.md) applies automatically).
 - **Governance:** every call is token-authed, namespace-ACL'd, and audited
-  (`python memnos_admin.py audit`).
+  (`memnos audit`).
 - **Help memnos learn what helped:** call `/feedback {helpful:true}` after a useful recall.
