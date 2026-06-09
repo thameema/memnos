@@ -8,22 +8,22 @@ import sys
 
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_core@localhost:5433/memnos")
 HERE = os.path.dirname(os.path.abspath(__file__))
-PY = os.path.join(HERE, ".venv", "bin", "python")
-if not os.path.exists(PY):
-    PY = sys.executable
+ROOT = os.path.dirname(HERE)   # repo root — where memnos_cli.py lives
+PY = sys.executable
 PASS = FAIL = 0
 
 
 def run(*args):
     env = dict(os.environ, MEMNOS_DSN=DSN)
-    # load .env so the CLI shares the server's MEMNOS_SECRET_KEY
+    # load repo-root .env so the CLI shares the server's MEMNOS_SECRET_KEY (optional;
+    # env var wins when already set, e.g. in CI)
     try:
-        for line in open(os.path.join(HERE, ".env")):
-            if line.strip().startswith("MEMNOS_SECRET_KEY="):
+        for line in open(os.path.join(ROOT, ".env")):
+            if line.strip().startswith("MEMNOS_SECRET_KEY=") and "MEMNOS_SECRET_KEY" not in os.environ:
                 env["MEMNOS_SECRET_KEY"] = line.strip().split("=", 1)[1]
     except FileNotFoundError:
         pass
-    r = subprocess.run([PY, os.path.join(HERE, "memnos_cli.py"), *args],
+    r = subprocess.run([PY, os.path.join(ROOT, "memnos_cli.py"), *args],
                        capture_output=True, text=True, env=env, timeout=60)
     return r.returncode, (r.stdout + r.stderr)
 
