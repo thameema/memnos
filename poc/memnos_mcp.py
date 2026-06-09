@@ -14,19 +14,53 @@ Wire into Claude Code (~/.claude/settings.json mcpServers), Claude Desktop, etc.
   { "memnos": { "command": "/path/.venv/bin/python", "args": ["/path/memnos_mcp.py"],
                 "env": { "MEMNOS_TOKEN": "mnk_...", "MEMNOS_NS": "user:alice" } } }
 """
+import json
 import os
+import subprocess
 import httpx
 from mcp.server.fastmcp import FastMCP
 
 URL = os.environ.get("MEMNOS_URL", "http://127.0.0.1:8900").rstrip("/")
 TOKEN = os.environ.get("MEMNOS_TOKEN", "")
-NS = os.environ.get("MEMNOS_NS", "claude:default")
+_OVR = os.path.join(os.path.expanduser("~"), ".memnos", "ns_overrides.json")
 
 mcp = FastMCP("memnos")
 
 
+def _git_root():
+    try:
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=3).stdout.strip()
+        return r or None
+    except Exception:
+        return None
+
+
+def _ns():
+    """Resolve the namespace the SAME way the hooks do (memnos_ns.resolve), so explicit
+    tool calls and auto-save/recall never target different buckets:
+    override file (set via `/memnos ns=`) → MEMNOS_NS env → proj:<repo> → proj:<cwd>."""
+    cwd = os.getcwd()
+    root = _git_root()
+    try:
+        m = json.load(open(_OVR))
+        for k in (cwd, os.path.realpath(cwd), root):
+            if k and m.get(k):
+                return m[k]
+    except Exception:
+        pass
+    env = os.environ.get("MEMNOS_NS", "").strip()
+    if env and env.lower() != "auto":
+        return env
+    return "proj:" + (os.path.basename(root) if root else (os.path.basename(cwd.rstrip("/")) or "default"))
+
+
+# expose the resolved namespace on every tool result so it's never ambiguous
+NS = _ns()
+
+
 def _post(path, payload):
-    r = httpx.post(f"{URL}{path}", json={"namespace": NS, **payload},
+    r = httpx.post(f"{URL}{path}", json={"namespace": _ns(), **payload},
                    headers={"Authorization": f"Bearer {TOKEN}"}, timeout=20)
     r.raise_for_status()
     return r.json()
@@ -82,7 +116,7 @@ def _err(e, what):
     if isinstance(e, httpx.HTTPStatusError):
         c = e.response.status_code
         if c == 401: return "(memnos: unauthorized — check MEMNOS_TOKEN)"
-        if c == 403: return f"(memnos: not authorized for namespace {NS})"
+        if c == 403: return f"(memnos: not authorized for namespace {_ns()})"
         if c == 404: return f"(memnos: not found)"
         return f"(memnos {what} error: HTTP {c})"
     return f"(memnos {what} unavailable: {e})"
@@ -304,7 +338,7 @@ def copy_memories_from(src: str, mode: str = "copy", like: str = "") -> str:
             body["like"] = like
         out = _post("/namespace/copy", body)
         return (f"{out.get('mode')}d {out.get('facts',0)} facts + {out.get('raw_turns',0)} turns "
-                f"from {src} into {NS}")
+                f"from {src} into {_ns()}")
     except Exception as e:
         return _err(e, "copy_memories_from")
 
