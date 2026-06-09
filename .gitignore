@@ -25,3 +25,5 @@ graphify-out/
 neo4j_data/
 qdrant_data/
 evolution_data/
+run_canary.sh
+run_consolidate.sh
