@@ -10,12 +10,18 @@ command -v python3 >/dev/null 2>&1 || { echo "Python 3.10+ is required. Install 
 
 echo "[memnos] installing 'memnos' (server + CLI + client, isolated via pipx) ..."
 
-# 1. ensure pipx — the standard cross-OS way to put a Python CLI app on PATH in its own env
-if ! command -v pipx >/dev/null 2>&1 && ! python3 -m pipx --version >/dev/null 2>&1; then
+# 1. pick a pipx that actually WORKS — a stale `pipx` launcher can exist on PATH but be
+#    broken (e.g. its shebang points at a Python that no longer has pipx). Test --version,
+#    don't just check the command exists.
+if pipx --version >/dev/null 2>&1; then
+  PIPX="pipx"
+elif python3 -m pipx --version >/dev/null 2>&1; then
+  PIPX="python3 -m pipx"
+else
   echo "[memnos] installing pipx ..."
   python3 -m pip install --user --quiet pipx
+  PIPX="python3 -m pipx"
 fi
-PIPX="pipx"; command -v pipx >/dev/null 2>&1 || PIPX="python3 -m pipx"
 
 # 2. put pipx's bin dir on PATH for FUTURE shells (writes to your shell profile)
 $PIPX ensurepath >/dev/null 2>&1 || true
