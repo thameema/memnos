@@ -24,4 +24,4 @@ Instructions:
 
 ## Set a folder's namespace (no restart)
 
-`/memnos ns=proj:zudioz` pins this folder to a namespace (written to `~/.memnos/ns_overrides.json`, keyed by git-root; read live by the recall/remember hooks via `memnos_ns.resolve`). `/memnos ns=clear` reverts; `/memnos ns` shows the current one. The hook token must be granted that namespace (a `proj:*` wildcard grant covers the per-project pattern).
+`/memnos ns=proj:zudioz` pins this folder to a namespace (written to `~/.memnos/ns_overrides.json`, keyed by git-root; read live by the recall/remember hooks via `memnos_ns.resolve`). `/memnos ns` shows it; `/memnos ns list` lists granted + existing namespaces; `/memnos ns=clear` reverts. The hook token must be granted that namespace (a `proj:*` wildcard grant covers the per-project pattern).
