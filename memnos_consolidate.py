@@ -41,8 +41,8 @@ from openai import OpenAI
 from core import BrainStore
 from core.service import MemnosMemory
 from core.control import Control
-from validate_brain import CachedEmbedder
-from locomo_pg_parallel import TSCostMeter
+from core.embed import CachedEmbedder
+from core.usage import TSCostMeter
 
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_core@localhost:5433/memnos")
 SCHEMA = "tenant_memnos"

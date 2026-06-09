@@ -9,12 +9,11 @@ ENV PIP_NO_CACHE_DIR=1 HF_HOME=/app/.hf
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY memnos_brain/ ./memnos_brain/
-COPY memnos_core/ ./memnos_core/
+COPY core/ ./core/
 COPY ui/ ./ui/
-COPY memnos_server.py memnos_admin.py memnos_cli.py validate_brain.py locomo_pg_parallel.py ./
+COPY memnos_server.py memnos_admin.py memnos_cli.py memnos_mcp.py memnos_consolidate.py nsresolve.py ./
 # pre-warm the reranker/embedder model downloads into the image layer (optional; comment to slim)
-RUN python -c "from memnos_brain import rerank; rerank.rerank('warm',['a','b'])" || true
+RUN python -c "from core import rerank; rerank.rerank('warm',['a','b'])" || true
 
 EXPOSE 8900
 CMD ["python", "memnos_server.py"]
