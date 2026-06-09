@@ -6,6 +6,13 @@ build/
 .venv/
 venv/
 .env
+.env.*
+!.env.example
+*.bak
+*.prerestructure-bak
+.memnos/
+.claude/
+~/.memnos
 memnos.yaml
 *.log
 .DS_Store
