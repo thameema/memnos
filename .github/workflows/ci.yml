@@ -1,6 +1,6 @@
 name: CI
 
-# Runs on every push to dev/main and on every pull request, so a merge can't break the
+# Runs on every push to master and on every pull request, so a merge can't break the
 # branch. Two jobs: the memnos-sdk unit tests, and the full server test suite against a
 # real PostgreSQL + pgvector. No OpenAI key needed — the server runs in free local-384
 # mode and every test seeds directly / asserts governance, so nothing calls an LLM.
@@ -8,7 +8,7 @@ name: CI
 
 on:
   push:
-    branches: [master, dev]
+    branches: [master]
   pull_request:
 
 concurrency:
