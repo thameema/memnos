@@ -293,6 +293,23 @@ def decay_episodes(half_life_days: int = 30) -> str:
 
 
 @mcp.tool()
+def copy_memories_from(src: str, mode: str = "copy", like: str = "") -> str:
+    """Copy (or move) memories from another namespace INTO the current one. `src` is the
+    source namespace; mode 'copy' duplicates (optional `like` substring filter on the text),
+    mode 'move' relocates the whole source namespace. You must have read on the source and
+    write on the current namespace. The entity graph is rebuilt in the destination."""
+    try:
+        body = {"src": src, "mode": mode}
+        if like:
+            body["like"] = like
+        out = _post("/namespace/copy", body)
+        return (f"{out.get('mode')}d {out.get('facts',0)} facts + {out.get('raw_turns',0)} turns "
+                f"from {src} into {NS}")
+    except Exception as e:
+        return _err(e, "copy_memories_from")
+
+
+@mcp.tool()
 def get_provenance(id: int) -> str:
     """Show the evidence chain for a remembered fact: the verbatim source turn(s) it was
     extracted from (or, for a dossier, the turns its source facts derived from). Answers

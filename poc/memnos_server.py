@@ -79,7 +79,7 @@ PORT = int(os.environ.get("MEMNOS_PORT", "8900"))
 POOL_MAX = int(os.environ.get("MEMNOS_POOL_MAX", "16"))
 MAX_BODY = 256 * 1024          # 256 KB request cap
 WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/corpus/ingest",
-             "/ingest/file", "/episode/segment", "/episode/decay"}
+             "/ingest/file", "/episode/segment", "/episode/decay", "/namespace/copy"}
 
 
 def _chunk_text(text, size=1200, overlap=150):
@@ -556,6 +556,18 @@ class Handler(BaseHTTPRequestHandler):
                         out = {"contradictions": store.contradictions(mem.schema, ns)}
                     elif self.path == "/knowledge/health":  # knowledge_health (namespace)
                         out = store.health(mem.schema, ns)
+                    # --- copy / move memories between namespaces ---
+                    elif self.path == "/namespace/copy":   # namespace = DESTINATION (write-authed above)
+                        src = str(req.get("src", "")).strip()
+                        if not src:
+                            return self._send(400, {"error": "src (source namespace) required"})
+                        if not Control.authorize(conn, principal, src, write=False):  # need READ on source
+                            return self._send(403, {"error": f"forbidden: read on source namespace {src}"})
+                        mode = "move" if str(req.get("mode", "copy")).lower() == "move" else "copy"
+                        if src == ns:
+                            return self._send(400, {"error": "src and destination must differ"})
+                        out = store.migrate_namespace(mem.schema, src, ns, mode=mode,
+                                                      like=(str(req["like"]) if req.get("like") else None))
                     # --- namespace pub/sub (Batch 3) ---
                     elif self.path == "/subscribe":        # namespace_subscribe
                         wh = (str(req.get("webhook")).strip() or None) if req.get("webhook") else None

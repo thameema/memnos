@@ -198,6 +198,14 @@ def cmd_namespace(args, cfg):
     elif args.action == "rm":
         Control.delete_namespace(conn, args.name, purge_data=args.purge)
         print(f"namespace '{args.name}' deleted")
+    elif args.action in ("copy", "move"):
+        from memnos_brain.store import BrainStore
+        if not args.name or not args.to:
+            sys.exit("usage: memnos namespace copy|move <src> --to <dst> [--like X]")
+        out = BrainStore(conn=conn).migrate_namespace("tenant_memnos", args.name, args.to,
+                                                      mode=args.action, like=args.like)
+        print(f"{out['mode']}d {out['facts']} facts + {out['raw_turns']} turns "
+              f"from {args.name} -> {args.to}")
     else:  # ls
         for n in Control.list_namespaces(conn):
             print(f"  {n['name']:<28} turns={n['turns']} facts={n['facts']}  {n['description'] or ''}")
@@ -287,7 +295,7 @@ def main():
     p = sub.add_parser("principal"); p.add_argument("name"); p.add_argument("--kind", default="user"); p.set_defaults(fn=cmd_principal)
     p = sub.add_parser("token"); p.add_argument("principal"); p.add_argument("--label"); p.add_argument("--ttl-days", type=int); p.set_defaults(fn=cmd_token)
     p = sub.add_parser("grant"); p.add_argument("principal"); p.add_argument("namespace"); p.add_argument("--read-only", action="store_true"); p.set_defaults(fn=cmd_grant)
-    p = sub.add_parser("namespace"); p.add_argument("action", choices=["add", "ls", "rm"]); p.add_argument("name", nargs="?"); p.add_argument("--desc"); p.add_argument("--purge", action="store_true"); p.set_defaults(fn=cmd_namespace)
+    p = sub.add_parser("namespace"); p.add_argument("action", choices=["add", "ls", "rm", "copy", "move"]); p.add_argument("name", nargs="?"); p.add_argument("--to"); p.add_argument("--like"); p.add_argument("--desc"); p.add_argument("--purge", action="store_true"); p.set_defaults(fn=cmd_namespace)
     p = sub.add_parser("secret"); p.add_argument("action", choices=["set", "ls", "rm", "keygen", "rotate"]); p.add_argument("name", nargs="?"); p.add_argument("--value"); p.add_argument("--desc"); p.set_defaults(fn=cmd_secret)
     p = sub.add_parser("stats"); p.set_defaults(fn=cmd_stats)
     p = sub.add_parser("health"); p.set_defaults(fn=cmd_health)
