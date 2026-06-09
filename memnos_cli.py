@@ -85,6 +85,81 @@ def _post(cfg, path, payload, token):
 
 
 # ---- setup wizard -----------------------------------------------------------
+MIN_PG_MAJOR = 13          # generated STORED columns need 12; 13 is our tested floor
+MIN_PGVECTOR = (0, 7, 0)   # halfvec + halfvec HNSW
+
+
+def _vtuple(v):
+    """'0.8.2' -> (0,8,2); tolerant of junk."""
+    parts = []
+    for p in (v or "").split(".")[:3]:
+        n = "".join(ch for ch in p if ch.isdigit())
+        parts.append(int(n) if n else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts)
+
+
+def _pgvector_install_hint(pg_major=None):
+    maj = pg_major or "16"
+    if sys.platform == "darwin":
+        return ("  macOS (Homebrew):  brew install pgvector\n"
+                f"    then restart Postgres:  brew services restart postgresql@{maj}")
+    if sys.platform.startswith("linux"):
+        return (f"  Debian/Ubuntu:  sudo apt install postgresql-{maj}-pgvector\n"
+                f"  RHEL/Fedora:    sudo dnf install pgvector_{maj}\n"
+                "  (or use the pgvector/pgvector Docker image)")
+    return "  See https://github.com/pgvector/pgvector#installation"
+
+
+def _pg_not_reachable_hint(host, port):
+    base = (f"Couldn't reach PostgreSQL at {host}:{port}. memnos does not install Postgres — "
+            "it connects to yours.\n")
+    if sys.platform == "darwin":
+        return base + ("  Is it running?   brew services start postgresql@16\n"
+                       "  Not installed?   brew install postgresql@16 && brew install pgvector")
+    if sys.platform.startswith("linux"):
+        return base + ("  Is it running?   sudo systemctl start postgresql\n"
+                       "  Not installed?   sudo apt install postgresql postgresql-16-pgvector")
+    return base + "  Start your PostgreSQL server (needs the pgvector >= 0.7 extension) and re-run."
+
+
+def _preflight_postgres(conn):
+    """Detect + validate the server: PG version, pgvector availability, enable it, verify the
+    pgvector version supports halfvec. Exits with an actionable message on any problem."""
+    with conn.cursor() as c:
+        c.execute("SHOW server_version")
+        pgver = c.fetchone()["server_version"]
+        c.execute("SELECT current_setting('server_version_num')::int AS n")
+        pgnum = c.fetchone()["n"]
+        if pgnum < MIN_PG_MAJOR * 10000:
+            sys.exit(f"PostgreSQL {pgver} found — memnos needs >= {MIN_PG_MAJOR}. Please upgrade.")
+        pg_major = str(pgnum // 10000)
+        print(f"[memnos] ✓ PostgreSQL {pgver}")
+
+        c.execute("SELECT installed_version FROM pg_available_extensions WHERE name = 'vector'")
+        avail = c.fetchone()
+        if not avail:
+            sys.exit("pgvector is NOT installed on this PostgreSQL server.\n"
+                     "memnos needs the 'vector' extension (>= 0.7, for halfvec). Install it:\n"
+                     + _pgvector_install_hint(pg_major) + "\nthen re-run `memnos setup`.")
+        try:
+            c.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        except Exception as e:
+            sys.exit("pgvector is available but couldn't be enabled — creating an extension "
+                     "needs a superuser role.\n"
+                     f"  {str(e).strip()}\n"
+                     "Have a superuser run:  CREATE EXTENSION vector;  (in this database), "
+                     "then re-run `memnos setup` — or run setup as a superuser role.")
+        c.execute("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+        ver = c.fetchone()["extversion"]
+        if _vtuple(ver) < MIN_PGVECTOR:
+            sys.exit(f"pgvector {ver} is enabled, but memnos needs >= "
+                     f"{'.'.join(map(str, MIN_PGVECTOR))} (halfvec). Upgrade pgvector:\n"
+                     + _pgvector_install_hint(pg_major))
+        print(f"[memnos] ✓ pgvector {ver} enabled")
+
+
 def cmd_setup(args, cfg):
     print("=== memnos setup (Postgres is a prerequisite — this only creates objects in it) ===")
     dsn = args.dsn or os.environ.get("MEMNOS_DSN")
@@ -98,14 +173,15 @@ def cmd_setup(args, cfg):
     os.environ["MEMNOS_DSN"] = dsn
     import psycopg
     from psycopg.rows import dict_row
+    from urllib.parse import urlsplit
+    u = urlsplit(dsn)
+    host, port = (u.hostname or "localhost"), (u.port or 5432)
     try:
         conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
     except Exception as e:
         # friction-free: if only the DATABASE is missing, create it (connect to 'postgres')
-        if "does not exist" in str(e).lower():
+        if "does not exist" in str(e).lower() and "database" in str(e).lower():
             try:
-                from urllib.parse import urlsplit
-                u = urlsplit(dsn)
                 dbname = u.path.lstrip("/") or "memnos"
                 admin_dsn = dsn.rsplit("/", 1)[0] + "/postgres"
                 ac = psycopg.connect(admin_dsn, autocommit=True)
@@ -117,16 +193,18 @@ def cmd_setup(args, cfg):
             except Exception as e2:
                 sys.exit(f"could not connect or create the database: {e2}\n"
                          f"(create it manually: createdb {dbname})")
+        elif any(k in str(e).lower() for k in ("could not connect", "connection refused",
+                                               "could not translate", "timeout", "no route")):
+            sys.exit(_pg_not_reachable_hint(host, port))
         else:
             sys.exit(f"could not connect to Postgres: {e}")
+
+    # detect + validate PostgreSQL version, then verify + enable pgvector (>= 0.7, halfvec)
+    _preflight_postgres(conn)
+
     from core.store import BrainStore
     from core.control import Control
     from core.vault import Vault
-    with conn.cursor() as c:
-        try:
-            c.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        except Exception as e:
-            sys.exit(f"pgvector extension missing/insufficient privilege — install pgvector and grant CREATE: {e}")
     dim = 1536 if os.environ.get("OPENAI_API_KEY") else 384
     BrainStore(conn=conn).create_schema("memnos", dim=dim)
     Control.init(conn)
