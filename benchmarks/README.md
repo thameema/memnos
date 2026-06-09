@@ -27,23 +27,23 @@ dates/order) and **open-domain** (world knowledge grounded in the conversation).
 Full 10 conversations (n = 1,542), reproduced **from scratch** with
 `python benchmarks/locomo_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9` on the config below
 (gpt-4o-mini extract · text-embedding-3-small 1536-d · gpt-5-mini answer · gpt-4o judge).
-Run date 2026-06-09 — raw per-question predictions in
+Run date 2026-06-09, $1.81 — raw per-question predictions in
 [`results/locomo-2026-06-09.json`](results/locomo-2026-06-09.json):
 
 | judge | single-hop | multi-hop | temporal | open-domain | **overall** |
 |-------|:---------:|:--------:|:--------:|:-----------:|:-----------:|
-| gpt-4o | 32% (91/282) | 56% (180/321) | 45% (43/96) | 66% (553/841) | **56% (869/1542)** |
+| gpt-4o | 29% (82/282) | 59% (190/321) | 47% (45/96) | 69% (579/841) | **58% (898/1542)** |
 
-This is the number the **public reproduce script actually produces** end-to-end, judged by
-gpt-4o. Total cost of the run: **$1.45**.
+This is what the **one-command public reproduce actually produces** end-to-end, judged by
+gpt-4o, via the same recall path production uses.
 
-> **On the judge, honestly.** The score is judge-sensitive — on the *same answers*, a strict
-> → lenient judge prompt moves the overall number across roughly a **44% → 56% → 85%** band,
-> which is exactly why we name the judge. We previously also measured an *independent*
-> cross-provider judge (Claude grading GPT answers) to remove self-preference bias; that path
-> requires the `claude` CLI and isn't part of the one-command public reproduce, so we report
-> the gpt-4o-judged number that anyone can rerun. We'd rather publish a 56% you can reproduce
-> than a higher number you can't.
+> **On variance, honestly.** Fact extraction + consolidation are LLM calls (gpt-4o-mini), and
+> they're not deterministic — a second independent from-scratch ingest of the same data scored
+> **61%** under the same gpt-4o judge. So the reproducible figure is a **58–61% band**, not a
+> single point; we publish the lower run we can show you the predictions for. The score is
+> also judge-sensitive: on the *same answers*, a strict → lenient judge prompt sweeps roughly
+> **44% → 58% → 85%**, which is why we always name the judge. We'd rather report a 58% you can
+> rerun than a headline you can't.
 
 ### How it runs (no LLM at query time)
 
