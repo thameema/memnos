@@ -50,10 +50,9 @@ to operate.
 
 **Prerequisite:** a PostgreSQL with the `pgvector` extension available. memnos does **not**
 install Postgres — it connects to yours. (For local dev: `docker compose -f
-poc/docker-compose.poc.yml up -d`.)
+docker-compose.poc.yml up -d`.)
 
 ```bash
-cd poc
 ./install.sh          # macOS/Linux   (Windows: .\install.ps1)  → installs the `memnos` command
 memnos setup          # enter your Postgres connection → creates schema + an admin token
 memnos serve          # start the server → open http://127.0.0.1:8900/admin
@@ -61,7 +60,7 @@ memnos serve          # start the server → open http://127.0.0.1:8900/admin
 
 `memnos --help` covers everything: `setup serve token grant principal namespace secret
 stats health whoami ns remember recall`. Config (DSN, vault key, port) lives in
-`~/.memnos/config.json`. Full walkthrough: [`poc/QUICKSTART.md`](poc/QUICKSTART.md).
+`~/.memnos/config.json`. Full walkthrough: [`QUICKSTART.md`](QUICKSTART.md).
 
 An OpenAI key (in `.env` or `memnos secret set openai` → `OPENAI_API_KEY=secret://openai`)
 enables 1536-d embeddings + fact extraction. Without it, memnos runs in free **local 384-d**
@@ -131,8 +130,8 @@ We care more about *credibility* than a big headline:
   typically self-judged and sometimes on a *different* benchmark (e.g. DMR, not LoCoMo). We
   don't claim parity — we publish a reproducible harness.
 
-**Reproduce:** `cd poc && python cross_provider_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9`
-(see [`poc/LOCKED_BASELINE.md`](poc/LOCKED_BASELINE.md)).
+**Reproduce:** `python cross_provider_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9`
+(see [`LOCKED_BASELINE.md`](LOCKED_BASELINE.md)).
 
 *We'd rather report a credible 58% under an independent judge than an inflated 85% under a
 lenient one.*

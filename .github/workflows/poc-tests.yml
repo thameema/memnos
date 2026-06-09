@@ -1,12 +1,12 @@
 name: poc-tests
 
-# Tests for the PostgreSQL+pgvector engine (poc/) + the memnos-sdk. No OpenAI key needed:
+# Tests for the PostgreSQL+pgvector engine + the memnos-sdk. No OpenAI key needed:
 # the server runs in free local-384 mode and the governance/redaction/SDK tests don't use
 # an LLM. (The LoCoMo accuracy benchmark is separate and not run in CI.)
 
 on:
   push:
-    branches: [dev, main, "poc/**"]
+    branches: [dev, main]
   pull_request:
 
 jobs:
@@ -40,17 +40,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
-      - working-directory: poc
         run: pip install -r requirements.txt
       - name: enable pgvector
         run: PGPASSWORD=memnos_poc psql -h localhost -p 5433 -U memnos -d memnos -c "CREATE EXTENSION IF NOT EXISTS vector"
       - name: start server (local-384 mode) + wait for ready
-        working-directory: poc
         run: |
           python memnos_server.py & echo $! > /tmp/srv.pid
           for i in $(seq 1 40); do curl -sf http://127.0.0.1:8900/healthz && break || sleep 2; done
       - name: governance + redaction + CLI tests
-        working-directory: poc
         run: |
           python test_admin_api.py
           python test_vault.py
