@@ -24,19 +24,26 @@ dates/order) and **open-domain** (world knowledge grounded in the conversation).
 
 ## Latest result
 
-Full 10 conversations (n = 1,542), under the locked configuration in
-[`LOCKED_BASELINE.md`](LOCKED_BASELINE.md):
+Full 10 conversations (n = 1,542), reproduced **from scratch** with
+`python benchmarks/locomo_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9` on the config below
+(gpt-4o-mini extract · text-embedding-3-small 1536-d · gpt-5-mini answer · gpt-4o judge).
+Run date 2026-06-09 — raw per-question predictions in
+[`results/locomo-2026-06-09.json`](results/locomo-2026-06-09.json):
 
 | judge | single-hop | multi-hop | temporal | open-domain | **overall** |
 |-------|:---------:|:--------:|:--------:|:-----------:|:-----------:|
-| gpt-4o (same-provider) | 34% | 64% | 47% | 70% | **61%** |
-| claude (independent) | 33% | 58% | 45% | 68% | **58%** |
+| gpt-4o | 32% (91/282) | 56% (180/321) | 45% (43/96) | 66% (553/841) | **56% (869/1542)** |
 
-We lead with the **independent (cross-provider) judge — 58%** because it removes the
-self-preference bias of a model grading its own provider's answers. The same-provider judge
-reads 61%. On the *same answers*, sweeping the judge prompt from strict → lenient moves the
-number across a **~44% / 58–61% / 85–88%** band — which is exactly why we always name the
-judge.
+This is the number the **public reproduce script actually produces** end-to-end, judged by
+gpt-4o. Total cost of the run: **$1.45**.
+
+> **On the judge, honestly.** The score is judge-sensitive — on the *same answers*, a strict
+> → lenient judge prompt moves the overall number across roughly a **44% → 56% → 85%** band,
+> which is exactly why we name the judge. We previously also measured an *independent*
+> cross-provider judge (Claude grading GPT answers) to remove self-preference bias; that path
+> requires the `claude` CLI and isn't part of the one-command public reproduce, so we report
+> the gpt-4o-judged number that anyone can rerun. We'd rather publish a 56% you can reproduce
+> than a higher number you can't.
 
 ### How it runs (no LLM at query time)
 
@@ -48,8 +55,8 @@ judge.
   entity-guarantee arm (aggregation). **No LLM is used at retrieval time.**
 - **Answer:** the retrieved context block is handed to the answerer model (the *calling
   agent* in production; `gpt-5-mini` in this run).
-- **Judge:** an LLM grades each answer against the gold answer; we score under two
-  independent judges.
+- **Judge:** an LLM (gpt-4o) grades each answer against the gold answer (YES/NO same key
+  information).
 
 The benchmark and the shipping product run the **same engine** (`core` / `MemnosMemory`) —
 there is no separate "benchmark build."
