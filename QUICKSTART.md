@@ -5,7 +5,7 @@ MCP client, or plain HTTP) in ~5 minutes.
 
 > **Engine:** PostgreSQL + pgvector, one container. **No second database.** LLM is used
 > only at write time (extraction + embeddings); retrieval is pure SQL + a local
-> cross-encoder reranker (no LLM at query time). See [`LOCKED_BASELINE.md`](LOCKED_BASELINE.md)
+> cross-encoder reranker (no LLM at query time). See [`benchmarks/`](benchmarks/README.md)
 > for the accuracy config.
 
 ---
@@ -134,4 +134,4 @@ On macOS these can run via LaunchAgents (`com.memnos.server`, `com.memnos.consol
 ## Next
 - **Claude Code:** [`docs/integrations/claude-code.md`](docs/integrations/claude-code.md)
 - **Any MCP client (Cursor, Windsurf):** [`docs/integrations/mcp.md`](docs/integrations/mcp.md)
-- **Accuracy config + LoCoMo numbers:** [`LOCKED_BASELINE.md`](LOCKED_BASELINE.md)
+- **Accuracy config + LoCoMo numbers:** [`benchmarks/`](benchmarks/README.md)

@@ -72,7 +72,7 @@ hook writes, so it needs `MEMNOS_TOKEN`.)
 ## Notes
 - **Answerer = Claude itself.** memnos returns *context*; Claude does the reasoning. This is
   why a strong agent gets the best results for free (the +6pp answerer effect from
-  [`../../LOCKED_BASELINE.md`](../../LOCKED_BASELINE.md) applies automatically).
+  [`../../benchmarks/`](../../benchmarks/README.md) applies automatically).
 - **Governance:** every call is token-authed, namespace-ACL'd, and audited
   (`python memnos_admin.py audit`).
 - **Help memnos learn what helped:** call `/feedback {helpful:true}` after a useful recall.
