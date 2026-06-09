@@ -28,8 +28,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import httpx
 from openai import OpenAI
 
-from core import BrainStore, Encoder, Consolidator, Retriever, context_block
+from core import BrainStore, Encoder, Consolidator
 from core import rerank as brain_rerank
+from core.service import MemnosMemory   # production recall path (entity-guarantee + timeline arms)
 from core.usage import BudgetExceeded
 from _harness import CachedEmbedder, TSCostMeter, CATEGORY_MAP
 
@@ -143,11 +144,15 @@ def main():
                                 meter=meter, workers=args.workers).run()
             print(f"[{idx}] consolidated {cres} in {time.perf_counter()-t1:.0f}s ({meter.summary()})", flush=True)
 
-            # --- QA ---
+            # --- QA: retrieve via the PRODUCTION recall path (same as MCP/REST/hooks),
+            #     which adds the entity-guarantee arm (multi-item/aggregation) and the
+            #     temporal timeline arm on top of hybrid+rerank. One MemnosMemory (its own
+            #     DB connection) per worker so reads parallelize safely. ---
             pool = Queue()
             for _ in range(args.workers):
-                pool.put(Retriever(BrainStore(DSN), schema, ns, embed,
-                                   reranker_model=args.reranker, rerank_lock=rlock))
+                m = MemnosMemory(BrainStore(DSN), embed, dim=embed.dim, llm=cli)
+                m.schema = schema
+                pool.put(m)
             qa = [q for q in sample.get("qa", []) if q.get("question") and str(q.get("answer", "")) != ""]
             if args.max_qa:
                 qa = qa[:args.max_qa]
@@ -155,12 +160,13 @@ def main():
             def do_qa(q):
                 ques, exp = q["question"], str(q["answer"])
                 cat = CATEGORY_MAP.get(q.get("category"), "unknown")
-                R = pool.get()
+                m = pool.get()
                 try:
-                    rows = R.retrieve(ques, k=args.k, top_k=args.top_k)
+                    ctx = m.context(ns, ques, max_chars=args.max_chars)
+                except Exception:
+                    ctx = ""
                 finally:
-                    pool.put(R)
-                ctx = context_block(rows, max_chars=args.max_chars)
+                    pool.put(m)
                 try:
                     pred = answer(cli, args.answerer, ques, ctx, meter)
                 except Exception as e:
