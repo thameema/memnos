@@ -8,7 +8,7 @@ Run: python test_vault.py   (needs MEMNOS_SECRET_KEY in env/.env)
 import os
 import sys
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _load_env(path=".env"):

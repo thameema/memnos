@@ -1,65 +1,68 @@
 name: CI
 
+# Runs on every push to dev/main and on every pull request, so a merge can't break the
+# branch. Two jobs: the memnos-sdk unit tests, and the full server test suite against a
+# real PostgreSQL + pgvector. No OpenAI key needed — the server runs in free local-384
+# mode and every test seeds directly / asserts governance, so nothing calls an LLM.
+# (The LoCoMo accuracy benchmark is separate and not run in CI.)
+
 on:
   push:
-    branches: [master, main]
+    branches: [dev, main]
   pull_request:
-    branches: [master, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  lint-and-test:
-    name: Lint & unit tests
+  sdk-tests:
+    name: SDK unit tests
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install './sdk[all]'        # client + langchain/langgraph/llamaindex adapters
+      - run: python sdk/tests/test_client.py
+      - run: python sdk/tests/test_integrations.py
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install packages (editable)
+  server-tests:
+    name: Server + governance suite (PG16 + pgvector)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: memnos
+          POSTGRES_PASSWORD: memnos_ci
+          POSTGRES_DB: memnos
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U memnos -d memnos"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      MEMNOS_DSN: postgresql://memnos:memnos_ci@localhost:5433/memnos
+      MEMNOS_URL: http://127.0.0.1:8900
+      MEMNOS_SECRET_KEY: "Y2lfdGVzdF9rZXlfMzJfYnl0ZXNfZXhhY3RseV9vayE="   # 32B base64, CI-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Enable pgvector
+        run: PGPASSWORD=memnos_ci psql -h localhost -p 5433 -U memnos -d memnos -c "CREATE EXTENSION IF NOT EXISTS vector"
+      - name: Start server (free local-384 mode) + wait for ready
         run: |
-          pip install --upgrade pip
-          pip install -e packages/core
-          pip install -e packages/mcp-server
-          pip install -e packages/orchestrator
-          pip install -e packages/api
-          pip install -e packages/learning
-          pip install -e "packages/gateway[telegram]"
-          pip install -e packages/sdk
-          pip install pytest pytest-asyncio httpx aiosqlite
-
-      - name: Syntax check — all packages
+          python memnos_server.py & echo $! > /tmp/srv.pid
+          for i in $(seq 1 40); do curl -sf "$MEMNOS_URL/healthz" && break || sleep 2; done
+      - name: Run full test suite
         run: |
-          python - <<'EOF'
-          import ast
-          from pathlib import Path
-          errors = []
-          for f in Path('packages').rglob('*.py'):
-              if '__pycache__' in str(f):
-                  continue
-              try:
-                  ast.parse(f.read_text())
-              except SyntaxError as e:
-                  errors.append(f'{f}: {e}')
-          if errors:
-              for e in errors:
-                  print(e)
-              raise SystemExit(1)
-          print(f'All {sum(1 for _ in Path("packages").rglob("*.py"))} Python files parse cleanly')
-          EOF
-
-      - name: Tests — self-learning subsystem
-        run: python -m pytest tools/test_learning.py -v --tb=short
-
-      - name: Tests — Phase 2 API features
-        run: python -m pytest tools/test_api_features.py -v --tb=short
-
-      - name: Tests — corpus ingestion & constraint enforcement
-        run: python -m pytest tools/test_corpus.py -v --tb=short -k "not integration"
-
-      - name: Tests — subscriptions
-        run: python -m pytest tools/test_subscriptions.py -v --tb=short -k "not integration"
+          fail=0
+          for t in tests/test_*.py; do
+            echo "::group::$t"
+            python "$t" || fail=1
+            echo "::endgroup::"
+          done
+          exit $fail
