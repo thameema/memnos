@@ -1,5 +1,13 @@
 # memnos
 
+[![CI](https://github.com/thameema/memnos/actions/workflows/ci.yml/badge.svg)](https://github.com/thameema/memnos/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![Engine: PostgreSQL + pgvector](https://img.shields.io/badge/engine-PostgreSQL%20%2B%20pgvector-336791.svg)](#)
+[![Query-time LLM: none](https://img.shields.io/badge/query--time%20LLM-none-success.svg)](#)
+[![LoCoMo](https://img.shields.io/badge/LoCoMo%20full--10-58–61%25-success.svg)](benchmarks/README.md)
+[![PyPI](https://img.shields.io/pypi/v/memnos.svg)](https://pypi.org/project/memnos/)
+
 **Self-hostable, governed, vendor-neutral memory for AI agents — on one PostgreSQL.**
 
 memnos gives AI agents long-term memory that persists across sessions, with **governance
