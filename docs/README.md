@@ -35,10 +35,9 @@ read (NO LLM):  query ──► hybrid retrieve (pgvector HNSW + BM25/tsvector, 
 | Deploy | one container, runs anywhere | graph DB required | cloud or self-host |
 
 ## Operate
-`memnos_admin.py` — `init · principal · token · grant · stats · health · usage · audit · quality`.
+The `memnos` CLI — `setup · principal · token · grant · stats · health · usage · audit · whoami`.
 Health turns metrics into actionable CRITICAL/WARN findings; usage ledger tracks per-op cost.
 
-## Architecture deep-dives
-The full design narrative + decisions live in the dev vault:
-`~/Documents/ai/personal/projects/memnos/` (`DESIGN-memory-architecture.md`, `research/`,
-and dated `handoffs/`).
+## Architecture
+See the [main README](../README.md#how-it-works) for the write/read pipeline, and
+[`benchmarks/`](../benchmarks/README.md) for the accuracy methodology and reproduce steps.
