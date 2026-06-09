@@ -17,7 +17,7 @@ no graph database — and uses **no LLM at query time** (retrieval is hybrid sea
 cross-encoder reranker). Works with **Claude Code, Cursor, Windsurf** and any MCP client,
 plus a REST API and a cross-platform CLI.
 
-> **Status:** Preview. Single-org self-host, local-first. Apache-2.0.
+> **Released — v0.1.0 on PyPI.** Apache-2.0 · self-hostable · single-org · local-first.
 
 ```
 Claude Code ─┐
@@ -34,23 +34,22 @@ REST / CLI ─────────────────┘     ├─ hyb
 
 ---
 
-## Why memnos (vs Graphiti / Mem0)
+## What makes memnos different
 
-| | **memnos** | Graphiti (Zep) | Mem0 |
-|---|---|---|---|
-| Store | **one** Postgres + pgvector | Neo4j graph DB | vector DB (+ optional graph) |
-| Conflict handling | **deterministic** bi-temporal supersession | LLM edge-invalidation | LLM ADD/UPDATE/DELETE |
-| Query-time LLM | **none** | none | none |
-| Reranking | **cross-encoder** | RRF / node distance | vector score |
-| Governance | **token + namespace ACL + audit + usage ledger** | — | — |
-| Secrets | **encrypted vault + ingest redaction** | — | — |
-| Deploy | **one container / pip install**, runs anywhere | graph DB required | cloud or self-host |
-| License | **Apache-2.0** | — | — |
+- **One engine.** Everything lives in a single PostgreSQL + pgvector — no second vector
+  store, no graph database to run, scale, secure, or back up.
+- **Deterministic memory.** Conflicting facts are resolved by rule (bi-temporal,
+  single-valued supersession), not by asking an LLM at write time — so writes are predictable
+  and reproducible.
+- **No LLM at query time.** Recall is hybrid search (pgvector HNSW + BM25, RRF) → a local
+  cross-encoder rerank → quota / timeline / entity arms. Fast, cheap, and private.
+- **Governed by default.** Token auth, namespace ACL, audit log, usage/cost ledger, and an
+  encrypted secret vault with ingest redaction — in the open-source build.
+- **Vendor-neutral, self-hosted.** Apache-2.0, your Postgres, your data, your LLM keys (never
+  stored in plaintext).
 
-**The essence:** memnos is a *governed memory engine*, not an agent runtime. Conflicts are
-resolved deterministically (no LLM guessing at write time), retrieval is hybrid + reranked,
-everything is bi-temporal and audited, and it all runs on one Postgres you already know how
-to operate.
+memnos is a *governed memory engine*, not an agent runtime. A detailed, version-pinned
+comparison with other memory systems lives at **[memnos.net/compare](https://memnos.net/compare.html)**.
 
 ---
 
@@ -60,11 +59,22 @@ to operate.
 install Postgres — it connects to yours. (For local dev: `docker compose -f
 docker-compose.dev.yml up -d`.)
 
+Install the `memnos` command into its **own isolated environment** (recommended — `uv` is
+fastest; `pipx` also works). **Don't `pip install` into your system Python** — a polluted or
+half-upgraded system interpreter will fail to load native deps like `psycopg`.
+
 ```bash
-./install.sh          # macOS/Linux   (Windows: .\install.ps1)  → installs the `memnos` command
-memnos setup          # enter your Postgres connection → creates schema + an admin token
-memnos serve          # start the server → open http://127.0.0.1:8900/admin
+uv tool install memnos        # recommended  (no uv? `brew install uv`  or
+                              #  curl -LsSf https://astral.sh/uv/install.sh | sh)
+# or:  pipx install memnos
+# or run ./install.sh (macOS/Linux) / .\install.ps1 (Windows) — picks uv→pipx for you
+
+memnos setup                  # enter your Postgres connection → creates schema + admin token
+memnos serve                  # start the server → open http://127.0.0.1:8900/admin
 ```
+
+> Inside your own virtualenv, plain `pip install memnos` is fine too —
+> `python -m venv .venv && .venv/bin/pip install memnos`.
 
 `memnos --help` covers everything: `setup serve token grant principal namespace secret
 stats health whoami ns remember recall`. Config (DSN, vault key, port) lives in

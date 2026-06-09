@@ -25,17 +25,27 @@ five minutes — one package, one command.
 ## 1. Install the `memnos` package
 
 One package ships the server **and** the client/admin CLI, on macOS, Linux and Windows.
+Install it into its **own isolated environment** — `uv` (fastest) or `pipx`. **Don't
+`pip install` into your system Python**; a polluted/half-upgraded system interpreter will
+fail to load native deps like `psycopg`.
 
 ```bash
-./install.sh           # macOS / Linux   (Windows: .\install.ps1)
+uv tool install memnos        # recommended  (no uv? `brew install uv`  or
+                              #  curl -LsSf https://astral.sh/uv/install.sh | sh)
+# or:  pipx install memnos
+# from a source checkout:  ./install.sh   (macOS/Linux) | .\install.ps1 (Windows)
 ```
 
-This installs the `memnos` command (via `pipx`). Prefer to do it by hand?
-`pipx install .` (or `pip install .`) from this checkout is equivalent. Verify:
+Verify:
 
 ```bash
 memnos --help
 ```
+
+> Inside your own virtualenv, plain `pip` is fine too:
+> `python -m venv .venv && .venv/bin/pip install memnos`.
+> If a fresh shell can't find `memnos`, run `hash -r` and open a new terminal (the
+> installer already added its bin dir to your PATH).
 
 ---
 
