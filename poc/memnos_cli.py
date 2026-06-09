@@ -101,7 +101,24 @@ def cmd_setup(args, cfg):
     try:
         conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
     except Exception as e:
-        sys.exit(f"could not connect to Postgres: {e}")
+        # friction-free: if only the DATABASE is missing, create it (connect to 'postgres')
+        if "does not exist" in str(e).lower():
+            try:
+                from urllib.parse import urlsplit
+                u = urlsplit(dsn)
+                dbname = u.path.lstrip("/") or "memnos"
+                admin_dsn = dsn.rsplit("/", 1)[0] + "/postgres"
+                ac = psycopg.connect(admin_dsn, autocommit=True)
+                with ac.cursor() as c:
+                    c.execute(f'CREATE DATABASE "{dbname}"')
+                ac.close()
+                print(f"[memnos] created database '{dbname}'.")
+                conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
+            except Exception as e2:
+                sys.exit(f"could not connect or create the database: {e2}\n"
+                         f"(create it manually: createdb {dbname})")
+        else:
+            sys.exit(f"could not connect to Postgres: {e}")
     from memnos_brain.store import BrainStore
     from memnos_brain.control import Control
     from memnos_brain.vault import Vault
