@@ -9,7 +9,7 @@ memnos can now hold secrets (LLM/provider keys, integration creds) WITHOUT them 
 Master key: `MEMNOS_SECRET_KEY` = base64 of 32 random bytes (generate with
 `memnos_admin.py secret-keygen`, store in .env). If absent, the vault is LOCKED — set/get
 raise VaultLocked (we never fall back to an ephemeral key — that would make stored secrets
-undecryptable after restart). Redaction (memnos_brain.redact) needs no key and stays on.
+undecryptable after restart). Redaction (core.redact) needs no key and stays on.
 """
 import base64
 import os

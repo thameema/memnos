@@ -69,10 +69,10 @@ _load_config()
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
-from memnos_brain.store import BrainStore
-from memnos_brain.service import MemnosMemory
-from memnos_brain.control import Control
-from memnos_brain import rerank as brain_rerank
+from core.store import BrainStore
+from core.service import MemnosMemory
+from core.control import Control
+from core import rerank as brain_rerank
 
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_core@localhost:5433/memnos")
 PORT = int(os.environ.get("MEMNOS_PORT", "8900"))
@@ -183,7 +183,7 @@ class _UsageAcc:
         self.cost = 0.0
 
     def __call__(self, model, prompt_tokens, completion_tokens):
-        from memnos_core.usage import PRICING
+        from core.usage import PRICING
         pin, pout = PRICING.get(model, (0.0, 0.0))
         self.tin += int(prompt_tokens or 0)
         self.tout += int(completion_tokens or 0)
@@ -203,7 +203,7 @@ def _build_embedder():
         emb = CachedEmbedder(LLM, TSCostMeter())
         print("[memnos] OpenAI 1536-d embeddings + extraction ENABLED", flush=True)
         return emb
-    from memnos_core import local_models
+    from core import local_models
     DIM = 384
     print("[memnos] local 384-d embeddings (free/private), no extraction", flush=True)
     return local_models.embed
@@ -318,12 +318,12 @@ class Handler(BaseHTTPRequestHandler):
                     # run a webhook delivery pass now (ops + deterministic tests)
                     return 200, {"delivered": Control.deliver_pending(conn, _webhook_post)}
                 if sub == "provider" and method == "GET":
-                    from memnos_brain.vault import Vault
+                    from core.vault import Vault
                     return 200, {"mode": "openai" if os.environ.get("OPENAI_API_KEY") else "local",
                                  "dim": DIM, "key_present": bool(os.environ.get("OPENAI_API_KEY")),
                                  "extract_model": "gpt-4o-mini", "vault_unlocked": Vault.available()}
                 if sub == "secrets":
-                    from memnos_brain.vault import Vault, VaultLocked
+                    from core.vault import Vault, VaultLocked
                     try:
                         if method == "GET":
                             return 200, {"secrets": Vault.list(conn), "unlocked": Vault.available()}
@@ -687,7 +687,7 @@ def serve(port=None):
         k = os.environ.get("OPENAI_API_KEY", "")
         if k.startswith("secret://"):
             try:
-                from memnos_brain.vault import Vault
+                from core.vault import Vault
                 rk = Vault.resolve(conn, k)
                 if rk:
                     os.environ["OPENAI_API_KEY"] = rk

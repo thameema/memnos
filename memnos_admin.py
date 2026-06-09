@@ -15,7 +15,7 @@ import sys
 sys.path.insert(0, ".")
 import psycopg
 from psycopg.rows import dict_row
-from memnos_brain.control import Control
+from core.control import Control
 
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos_core@localhost:5433/memnos")
 
@@ -47,7 +47,7 @@ def main():
     args = ap.parse_args()
 
     if args.cmd == "secret-keygen":
-        from memnos_brain.vault import Vault
+        from core.vault import Vault
         print("MEMNOS_SECRET_KEY=" + Vault.keygen())
         print("# add the line above to .env (keep it safe — losing it makes secrets unrecoverable)")
         return
@@ -134,7 +134,7 @@ def main():
         for level, msg in Control.health(c, args.hours):
             print(f"  [{level}] {msg}")
     elif args.cmd == "secret-set":
-        from memnos_brain.vault import Vault, VaultLocked
+        from core.vault import Vault, VaultLocked
         val = args.value
         if val is None:
             import getpass
@@ -144,12 +144,12 @@ def main():
         except VaultLocked as e:
             sys.exit(f"vault locked: {e}")
     elif args.cmd == "secret-list":
-        from memnos_brain.vault import Vault
+        from core.vault import Vault
         print("secrets (metadata only — plaintext never shown):")
         for s in Vault.list(c):
             print(f"  {s['name']:<24} {s['description'] or ''}  (updated {s['updated_at']:%Y-%m-%d})")
     elif args.cmd == "secret-rm":
-        from memnos_brain.vault import Vault
+        from core.vault import Vault
         Vault.delete(c, args.name); print(f"secret '{args.name}' deleted")
 
 

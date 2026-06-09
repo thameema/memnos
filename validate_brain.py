@@ -19,8 +19,8 @@ sys.path.insert(0, ".")
 import httpx
 from openai import OpenAI
 
-from memnos_brain import BrainStore, Encoder, Consolidator, Retriever, context_block
-from memnos_brain import rerank as brain_rerank
+from core import BrainStore, Encoder, Consolidator, Retriever, context_block
+from core import rerank as brain_rerank
 from memnos_core import local_models
 from locomo_pg_qa_only import answer_from_ctx, judge
 from locomo_pg_parallel import TSCostMeter, CATEGORY_MAP

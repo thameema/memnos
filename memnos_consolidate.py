@@ -38,9 +38,9 @@ import psycopg
 from psycopg.rows import dict_row
 from openai import OpenAI
 
-from memnos_brain import BrainStore
-from memnos_brain.service import MemnosMemory
-from memnos_brain.control import Control
+from core import BrainStore
+from core.service import MemnosMemory
+from core.control import Control
 from validate_brain import CachedEmbedder
 from locomo_pg_parallel import TSCostMeter
 
