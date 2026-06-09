@@ -18,6 +18,7 @@ import getpass
 import json
 import os
 import sys
+import urllib.request
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".memnos")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
@@ -123,6 +124,14 @@ def cmd_setup(args, cfg):
     print(f"✓ config written to {CONFIG_PATH}")
     print(f"\nADMIN TOKEN (shown once — paste into the /admin console or `--token`):\n  {tok}")
     print("\nNext:  memnos serve   then open  http://127.0.0.1:8900/admin")
+
+    # friction-free: if Claude Code is installed, wire it up (MCP + hooks + /memnos + CLAUDE.md)
+    if os.path.isdir(os.path.join(os.path.expanduser("~"), ".claude")):
+        ans = "y" if (args.dsn or os.environ.get("MEMNOS_CI")) else \
+            (input("\nClaude Code detected — wire up memnos memory (MCP + hooks + /memnos)? [Y/n]: ").strip().lower() or "y")
+        if ans.startswith("y"):
+            cfg = load_config()
+            cmd_claude_setup(argparse.Namespace(namespace=None, force=False), cfg)
 
 
 def cmd_serve(args, cfg):
@@ -266,20 +275,203 @@ def cmd_whoami(args, cfg):
 
 
 def cmd_ns(args, cfg):
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "integrations", "claude-code"))
-    import memnos_ns
-    print(memnos_ns.resolve())
+    import nsresolve
+    if getattr(args, "value", None) is not None:        # `memnos ns set <X>` / `ns clear`
+        print(nsresolve.set_override(args.value))
+    else:
+        print(nsresolve.resolve())
 
 
 # ---- data client ------------------------------------------------------------
 def cmd_remember(args, cfg):
-    out = _post(cfg, "/remember", {"namespace": args.namespace, "text": args.text}, args.token or cfg.get("admin_token"))
+    import nsresolve
+    ns = args.namespace if args.namespace and args.namespace != "auto" else nsresolve.resolve()
+    out = _post(cfg, "/remember", {"namespace": ns, "text": args.text}, args.token or cfg.get("admin_token"))
     print(json.dumps(out))
 
 
 def cmd_recall(args, cfg):
-    out = _post(cfg, "/recall", {"namespace": args.namespace, "query": args.query}, args.token or cfg.get("admin_token"))
+    import nsresolve
+    ns = args.namespace if args.namespace and args.namespace != "auto" else nsresolve.resolve()
+    body = {"namespace": ns, "query": args.query}
+    if getattr(args, "scope", None) in ("all", "wide"):
+        body["scope"] = "all"
+    out = _post(cfg, "/recall", body, args.token or cfg.get("admin_token"))
+    if out.get("namespaces_searched"):
+        print(f"[searched: {', '.join(out['namespaces_searched'])}]")
     print(out.get("context", json.dumps(out)))
+
+
+_SLASH_CMD = """---
+description: memnos memory — recall, set folder namespace (ns=...), show (ns) or list (ns list)
+allowed-tools: Bash(memnos:*)
+---
+
+!`A="$ARGUMENTS"; case "$A" in ns=*) memnos ns "${A#ns=}";; "ns clear") memnos ns clear;; "ns list"|"list"|"ls") memnos namespace ls;; ""|"ns") memnos ns;; *) memnos recall "$A" --namespace auto;; esac`
+
+Instructions:
+- `/memnos ns=proj:x` pins this folder's namespace; `/memnos ns` shows it; `/memnos ns list` lists namespaces; `/memnos ns clear` reverts.
+- Otherwise, use the recalled memories above to answer: $ARGUMENTS
+"""
+
+_CLAUDE_MD = """## memnos — long-term memory (auto)
+memnos gives you persistent, governed memory across sessions (local server, namespace-scoped).
+- Memory **auto-injects** before each prompt and **auto-saves** after (hooks). The
+  "## Relevant memories (memnos)" block in your context comes from memnos.
+- Use the memnos MCP tools for recall instead of ad-hoc file search: `recall` (current
+  namespace), `recall_wide` (across all namespaces your key may read), `remember`,
+  `get_entity`, `get_provenance`.
+- **Staleness check (important):** before answering from a local note / CLAUDE.md fact on a
+  key project detail, call `reconcile_claim(statement, subject, predicate)`. If it returns
+  `stale`, tell the user their local note is out of date and give the newer memnos value + its
+  date. (Local notes are authoritative for the user; memnos catches when they drift.)
+- This folder's namespace is set with `/memnos ns=<namespace>`.
+"""
+
+
+def _backup(path):
+    if os.path.exists(path):
+        import shutil, time
+        shutil.copy2(path, f"{path}.memnos-bak")
+
+
+def _ensure_claude_token(cfg):
+    """A principal+token for the Claude integration: default namespace user:<user> plus a
+    proj:* wildcard so per-project + widened recall work. (Grants, not namespace creation.)"""
+    from memnos_brain.control import Control
+    conn = _conn(cfg)
+    Control.init(conn)
+    name = (os.environ.get("USER") or "me").split()[0]
+    try:
+        pid = _principal_id(conn, name)
+    except SystemExit:
+        pid = Control.create_principal(conn, name, "user")
+    Control.grant(conn, pid, f"user:{name}")
+    Control.grant(conn, pid, "proj:*")
+    return Control.mint_token(conn, pid, "claude-code"), f"user:{name}"
+
+
+def cmd_claude_setup(args, cfg):
+    """Auto-wire Claude Code (MCP + hooks + /memnos + CLAUDE.md) — friction-free. Idempotent;
+    backs up files it edits. Detects ~/.claude; safe to re-run."""
+    home = os.path.expanduser("~")
+    claude_dir = os.path.join(home, ".claude")
+    if not os.path.isdir(claude_dir):
+        if args.force:
+            os.makedirs(os.path.join(claude_dir, "commands"), exist_ok=True)
+        else:
+            print("Claude Code not detected (~/.claude missing). Re-run with --force to set it up anyway.")
+            return
+    os.makedirs(os.path.join(claude_dir, "commands"), exist_ok=True)
+    url = os.environ.get("MEMNOS_URL") or f"http://127.0.0.1:{cfg.get('port', 8900)}"
+    token, default_ns = _ensure_claude_token(cfg)
+    ns = args.namespace or default_ns
+
+    # 1. MCP server -> ~/.claude.json (the file Claude Code reads for MCP)
+    cj = os.path.join(home, ".claude.json")
+    try:
+        d = json.load(open(cj)) if os.path.exists(cj) else {}
+    except Exception:
+        d = {}
+    d.setdefault("mcpServers", {})["memnos"] = {
+        "command": "memnos", "args": ["mcp"],
+        "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns}}
+    _backup(cj); json.dump(d, open(cj, "w"), indent=2)
+
+    # 2. hooks -> ~/.claude/settings.json (recall before prompt, remember after)
+    sj = os.path.join(claude_dir, "settings.json")
+    try:
+        s = json.load(open(sj)) if os.path.exists(sj) else {}
+    except Exception:
+        s = {}
+    hooks = s.setdefault("hooks", {})
+    env = f"MEMNOS_URL={url} MEMNOS_TOKEN={token} MEMNOS_NS={ns}"
+
+    def wire(event, cmd):
+        groups = [g for g in hooks.get(event, []) if "memnos hook" not in json.dumps(g)]
+        groups.append({"hooks": [{"type": "command", "command": cmd, "timeout": 15}]})
+        hooks[event] = groups
+    wire("UserPromptSubmit", f"{env} memnos hook recall")
+    wire("Stop", f"{env} memnos hook remember")
+    _backup(sj); json.dump(s, open(sj, "w"), indent=2)
+
+    # 3. /memnos slash command
+    open(os.path.join(claude_dir, "commands", "memnos.md"), "w").write(_SLASH_CMD)
+
+    # 4. CLAUDE.md memnos section (append once)
+    cm = os.path.join(claude_dir, "CLAUDE.md")
+    existing = open(cm).read() if os.path.exists(cm) else ""
+    if "## memnos — long-term memory" not in existing:
+        if existing:
+            _backup(cm)
+        with open(cm, "a") as f:
+            f.write(("\n\n" if existing else "") + _CLAUDE_MD)
+
+    print("[memnos] Claude Code wired:")
+    print(f"  • MCP server      -> ~/.claude.json (memnos, ns={ns})")
+    print("  • hooks           -> ~/.claude/settings.json (auto recall + save)")
+    print("  • /memnos command -> ~/.claude/commands/memnos.md")
+    print("  • CLAUDE.md       -> memnos usage + staleness-check instructions")
+    print("\n  Restart Claude Code to load the MCP tools. Verify with /mcp.")
+
+
+# ---- Claude Code hook entry (`memnos hook recall|remember`) ------------------
+def cmd_hook(args, cfg):
+    """Stdin-driven Claude Code hooks, packaged so they work after a pipx install with no
+    repo paths. recall -> inject memory before the prompt; remember -> save the turn after."""
+    import nsresolve
+    url = os.environ.get("MEMNOS_URL") or f"http://127.0.0.1:{cfg.get('port', 8900)}"
+    token = os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token", "")
+    hdr = {"Content-Type": "application/json", **({"Authorization": "Bearer " + token} if token else {})}
+    try:
+        data = json.load(sys.stdin)
+    except Exception:
+        return
+    ns = nsresolve.resolve(data)
+
+    if args.which == "recall":
+        prompt = (data.get("prompt") or "").strip()
+        if not prompt:
+            return
+        try:
+            req = urllib.request.Request(f"{url}/recall", method="POST",
+                data=json.dumps({"namespace": ns, "query": prompt}).encode(), headers=hdr)
+            ctx = json.load(urllib.request.urlopen(req, timeout=12)).get("context", "")
+        except Exception:
+            return
+        if ctx.strip():
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                  "additionalContext": "## Relevant memories (memnos)\n" + ctx}}))
+        return
+
+    # remember (Stop): prefer the last user message from the transcript
+    text = data.get("prompt", "")
+    tp = data.get("transcript_path", "")
+    if tp and os.path.exists(tp):
+        try:
+            last = ""
+            with open(tp) as f:
+                for line in f:
+                    ev = json.loads(line); c = ev.get("message", {}).get("content")
+                    if ev.get("type") == "user" and isinstance(c, str):
+                        last = c
+            text = last or text
+        except Exception:
+            pass
+    text = (text or "").strip()
+    low = text.lower()
+    if not text or low.startswith("<") or text.startswith("# ") or "<<autonomous-loop" in low \
+            or low.startswith("# autonomous loop") or "</task-notification" in low \
+            or "this is an automated background-task event" in low \
+            or "reference answer:" in low or "reply with only" in low or low.startswith("question:") \
+            or len(text) < 15 or len(text.split()) < 3:
+        return
+    try:
+        req = urllib.request.Request(f"{url}/remember", method="POST",
+            data=json.dumps({"namespace": ns, "text": text, "speaker": "user"}).encode(), headers=hdr)
+        urllib.request.urlopen(req, timeout=12).read()
+    except Exception:
+        pass
 
 
 def main():
@@ -300,9 +492,11 @@ def main():
     p = sub.add_parser("stats"); p.set_defaults(fn=cmd_stats)
     p = sub.add_parser("health"); p.set_defaults(fn=cmd_health)
     p = sub.add_parser("whoami"); p.add_argument("token"); p.set_defaults(fn=cmd_whoami)
-    p = sub.add_parser("ns"); p.set_defaults(fn=cmd_ns)
-    p = sub.add_parser("remember"); p.add_argument("text"); p.add_argument("--namespace", required=True); p.add_argument("--token"); p.set_defaults(fn=cmd_remember)
-    p = sub.add_parser("recall"); p.add_argument("query"); p.add_argument("--namespace", required=True); p.add_argument("--token"); p.set_defaults(fn=cmd_recall)
+    p = sub.add_parser("ns"); p.add_argument("value", nargs="?"); p.set_defaults(fn=cmd_ns)
+    p = sub.add_parser("remember"); p.add_argument("text"); p.add_argument("--namespace", default="auto"); p.add_argument("--token"); p.set_defaults(fn=cmd_remember)
+    p = sub.add_parser("recall"); p.add_argument("query"); p.add_argument("--namespace", default="auto"); p.add_argument("--scope", choices=["all", "wide"]); p.add_argument("--token"); p.set_defaults(fn=cmd_recall)
+    p = sub.add_parser("hook"); p.add_argument("which", choices=["recall", "remember"]); p.set_defaults(fn=cmd_hook)
+    p = sub.add_parser("claude-setup"); p.add_argument("--namespace"); p.add_argument("--force", action="store_true"); p.set_defaults(fn=cmd_claude_setup)
 
     args = ap.parse_args()
     args.fn(args, cfg)

@@ -1,5 +1,20 @@
 # Connecting Claude Code to memnos
 
+## One command (recommended)
+
+```bash
+memnos claude-setup
+```
+
+That's it. It auto-wires everything — the MCP server (`~/.claude.json`), the recall + remember
+**hooks** (`~/.claude/settings.json`), the **`/memnos`** slash command, and a **`CLAUDE.md`**
+section (including the staleness-check instruction). It mints a scoped token for you, is
+idempotent (safe to re-run), and backs up any file it edits. `memnos setup` also offers to run
+it automatically when it detects Claude Code. **Restart Claude Code afterward** and run `/mcp`
+to confirm. The manual steps below are only if you want to customise.
+
+---
+
 Give Claude Code persistent, governed memory across sessions. Three pieces, all optional but
 best together:
 
