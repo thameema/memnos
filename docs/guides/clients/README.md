@@ -1,7 +1,7 @@
 # memnos Client Setup Guides
 
-All guides use the single-package install: `./install.sh` → `memnos setup` → `memnos serve`
-(server on `http://127.0.0.1:8900`, console at `/admin`).
+All guides use the single-package install: `uv tool install memnos` → `memnos setup` →
+`memnos start` (server on `http://127.0.0.1:8900`, console at `/admin`).
 
 ## One-command setup per agent
 
@@ -13,6 +13,8 @@ memnos agent-setup codex       # Codex CLI:  MCP server in ~/.codex/config.toml 
 memnos agent-setup cursor      # Cursor:     MCP server in ~/.cursor/mcp.json
 memnos agent-setup windsurf    # Windsurf:   MCP server in ~/.codeium/windsurf/mcp_config.json
 memnos agent-setup claude-desktop
+memnos agent-setup openclaw    # OpenClaw:   MCP server under mcp.servers in ~/.openclaw/openclaw.json
+memnos agent-setup hermes      # Hermes Agent (Nous): MCP server in ~/.hermes/config.yaml
 ```
 
 Each mints a scoped token, is idempotent, and backs up files it edits. `memnos setup` also
@@ -31,6 +33,8 @@ the `memnos-sdk`.
 | Cursor | MCP (`memnos mcp`, stdio) | [Setup](cursor.md) |
 | Windsurf | MCP (`memnos mcp`, stdio) | [Setup](windsurf.md) |
 | Cline (VS Code) | MCP (`memnos mcp`, stdio) | [Setup](cline.md) |
+| OpenClaw | MCP (`memnos mcp`, stdio) | [Setup](openclaw.md) |
+| Hermes Agent (Nous) | MCP (`memnos mcp`, stdio) | [Setup](hermes.md) |
 | Codex CLI | REST / `memnos-sdk` | [Setup](codex.md) |
 | ChatGPT | REST via custom GPT Action (tunnel) | [Setup](chatgpt.md) |
 | Open WebUI | REST via OpenAPI tool server | [Setup](openwebui.md) |

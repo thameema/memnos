@@ -6,7 +6,7 @@ that REST API with a small OpenAPI spec.
 
 ## Prerequisites
 
-- memnos running (`memnos serve`, default `http://127.0.0.1:8900`) — see [quickstart](../quickstart.md).
+- memnos running (`memnos start`, default `http://127.0.0.1:8900`) — see [quickstart](../quickstart.md).
 - A scoped token + namespace (`memnos token alice` → `mnk_…`; `memnos grant alice user:alice`).
 
 ## Add memnos as a tool server

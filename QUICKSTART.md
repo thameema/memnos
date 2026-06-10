@@ -62,6 +62,13 @@ and writes everything to `~/.memnos/config.json`. If pgvector is missing or buil
 wrong PG version, it tells you exactly how to fix it. If it detects Claude Code it offers to
 wire it up (`memnos claude-setup`).
 
+The wizard also asks for an **optional OpenAI key** (hidden input, validated live against
+the OpenAI API, stored encrypted in the vault) — that's what chooses between 1536-d OpenAI
+mode and free local 384-d mode. Choose carefully, but it's not one-way:
+`memnos migrate-embeddings` later re-embeds every memory between the two dimensions,
+losslessly (it re-embeds from the stored text). Re-running `memnos setup` is safe — the
+schema is additive and never wipes data.
+
 > **Alternative (needs Docker):** `memnos setup --docker` runs a pre-configured pgvector
 > Postgres for you — no Postgres install or version-matching. Then continue to step 3.
 
@@ -70,9 +77,15 @@ wire it up (`memnos claude-setup`).
 ## 3. Start the server
 
 ```bash
-memnos serve                          # binds http://127.0.0.1:8900
+memnos start                          # background server on http://127.0.0.1:8900
+memnos status                         # version · config · embedding mode · server state
 curl -s localhost:8900/healthz        # -> {"ok": true}
 ```
+
+Manage it like any daemon: `memnos stop` / `restart` / `status`. The **first** start
+downloads the local embedding/reranker models (~1 GB) — `memnos start` shows the progress.
+(`memnos serve` runs the server in the *foreground* instead — for systemd, launchd, Docker,
+or debugging.)
 
 Open the management console at **http://127.0.0.1:8900/admin** and paste your admin token to
 create namespaces, mint/revoke tokens, manage grants, store secrets, and watch the dashboard.
@@ -138,6 +151,8 @@ memnos agent-setup codex       # Codex CLI
 memnos agent-setup cursor      # Cursor
 memnos agent-setup windsurf    # Windsurf
 memnos agent-setup claude-desktop
+memnos agent-setup openclaw    # OpenClaw (assistant gateway — ~/.openclaw/openclaw.json)
+memnos agent-setup hermes      # Hermes Agent (Nous Research — ~/.hermes/config.yaml)
 ```
 
 Each mints a scoped token, is idempotent, and backs up files it edits. **Restart the agent
@@ -151,10 +166,13 @@ prompt, auto-save after); the rest get the memnos MCP **tools** (`recall`, `reca
 ## 8. Operate it
 
 ```bash
+memnos status     # version · config · embedding mode · server up?
 memnos stats      # volume · error% · p50–p95 latency · empty-recall rate
 memnos health     # actionable CRITICAL / WARN findings
 memnos usage      # cost per op (extraction tokens tracked)
 memnos whoami <token>   # what a token can see
+memnos upgrade    # check PyPI for a newer version and update in place
+memnos migrate-embeddings --to 1536   # switch local 384-d ↔ OpenAI 1536-d (re-embeds all)
 ```
 
 ---

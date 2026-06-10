@@ -30,7 +30,7 @@ best together:
 
 ## Prerequisites
 
-- memnos installed + running — `memnos serve` (or the launchd service), `http://127.0.0.1:8900`.
+- memnos installed + running — `memnos start` (or `memnos serve` under launchd/systemd), `http://127.0.0.1:8900`.
 - A token + namespace:
   ```bash
   memnos namespace add user:thameem

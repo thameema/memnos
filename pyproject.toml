@@ -33,6 +33,7 @@ dependencies = [
     "mcp>=1.2",
     "python-dateutil>=2.9",
     "cryptography>=42",
+    "pyyaml>=6",
 ]
 
 [project.urls]

@@ -41,8 +41,10 @@ REST / CLI ─────────────────┘     ├─ hyb
 - **Deterministic memory.** Conflicting facts are resolved by rule (bi-temporal,
   single-valued supersession), not by asking an LLM at write time — so writes are predictable
   and reproducible.
-- **No LLM at query time.** Recall is hybrid search (pgvector HNSW + BM25, RRF) → a local
-  cross-encoder rerank → quota / timeline / entity arms. Fast, cheap, and private.
+- **No LLM at query time.** Recall makes no generative-LLM call — one embedding lookup
+  (fully on-device in local 384-d mode), then hybrid search (pgvector HNSW + BM25, RRF) →
+  a local ONNX cross-encoder rerank → quota / timeline / entity arms. Fast, cheap,
+  deterministic.
 - **Governed by default.** Token auth, namespace ACL, audit log, usage/cost ledger, and an
   encrypted secret vault with ingest redaction — in the open-source build.
 - **Vendor-neutral, self-hosted.** Apache-2.0, your Postgres, your data, your LLM keys (never
@@ -70,23 +72,29 @@ uv tool install memnos        # recommended  (no uv? `brew install uv`  or
 # or run ./install.sh (macOS/Linux) / .\install.ps1 (Windows) — picks uv→pipx for you
 
 memnos setup                  # enter your Postgres connection → creates schema + admin token
-memnos serve                  # start the server → open http://127.0.0.1:8900/admin
+memnos start                  # start the server (background) → open http://127.0.0.1:8900/admin
 ```
 
+Operate it like any daemon: `memnos status` / `stop` / `restart` (`memnos serve` runs it in
+the **foreground** for systemd/launchd/Docker), and `memnos upgrade` updates in place.
+
 > **Alternative (needs Docker):** `memnos setup --docker` spins up a pgvector Postgres for you
-> — no Postgres install or pgvector version-matching. Then `memnos serve`.
+> — no Postgres install or pgvector version-matching. Then `memnos start`.
 
 > Inside your own virtualenv, plain `pip install memnos` is fine too —
 > `python -m venv .venv && .venv/bin/pip install memnos`.
 
-`memnos --help` covers everything: `setup serve token grant principal namespace secret
-stats health whoami ns remember recall`. Config (DSN, vault key, port) lives in
-`~/.memnos/config.json`. Full walkthrough: [`QUICKSTART.md`](QUICKSTART.md).
+`memnos --help` covers everything: `setup start stop restart status token grant principal
+namespace secret stats health whoami ns remember recall migrate-embeddings upgrade`. Config
+(DSN, vault key, port) lives in `~/.memnos/config.json`. Full walkthrough:
+[`QUICKSTART.md`](QUICKSTART.md).
 
-An OpenAI key (in `.env` or `memnos secret set openai` → `OPENAI_API_KEY=secret://openai`)
-enables 1536-d embeddings + fact extraction. Without it, memnos runs in free **local 384-d**
-mode (embeddings only, no extraction). memnos **never holds your LLM key in plaintext** —
-it stays in `.env` or the encrypted vault.
+`memnos setup` asks for an **optional OpenAI key** (validated live, stored AES-256-GCM
+encrypted in the vault): with one, you get 1536-d embeddings + bi-temporal fact extraction;
+without one, memnos runs in free **local 384-d** mode (embeddings only, no extraction —
+nothing leaves your machine). Changed your mind later? `memnos migrate-embeddings` re-embeds
+every stored memory between the two, losslessly. memnos **never holds your LLM key in
+plaintext** — it lives in the encrypted vault (or your `.env`).
 
 ---
 
@@ -100,6 +108,8 @@ memnos agent-setup codex       # Codex CLI (MCP via ~/.codex/config.toml + AGENT
 memnos agent-setup cursor      # Cursor
 memnos agent-setup windsurf    # Windsurf
 memnos agent-setup claude-desktop
+memnos agent-setup openclaw    # OpenClaw (personal AI assistant gateway)
+memnos agent-setup hermes      # Hermes Agent (Nous Research)
 ```
 
 Each mints a scoped token, is idempotent, and backs up edited files; `memnos setup` runs
