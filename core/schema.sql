@@ -109,6 +109,9 @@ BEGIN
 
   -- INDEXES (HNSW vector + GIN fts + temporal + graph)
   EXECUTE format('CREATE INDEX IF NOT EXISTS raw_hnsw ON %I.raw_turns USING hnsw (embedding halfvec_cosine_ops)', s);
+  -- raw_turns BM25 arm: episodic/semantic always had GIN fts indexes but raw_turns did
+  -- not, so every /recall row-filtered the whole namespace (linear with data size)
+  EXECUTE format('CREATE INDEX IF NOT EXISTS raw_fts  ON %I.raw_turns USING gin (fts)', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS epi_hnsw ON %I.episodic USING hnsw (embedding halfvec_cosine_ops)', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS epi_fts  ON %I.episodic USING gin (fts)', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS epi_time ON %I.episodic (observed_at)', s);

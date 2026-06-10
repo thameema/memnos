@@ -376,7 +376,7 @@ class Control:
         """Token METADATA only — the secret is never retrievable (only its hash is stored)."""
         with conn.cursor() as c:
             c.execute("SELECT id, label, hint, created_at, expires_at, revoked FROM memnos_control.api_tokens "
-                      "WHERE principal_id=%s ORDER BY created_at DESC", (principal_id,))
+                      "WHERE principal_id=%s ORDER BY created_at DESC LIMIT 500", (principal_id,))
             return c.fetchall()
 
     @staticmethod
@@ -391,18 +391,41 @@ class Control:
                       (principal_id, namespace))
 
     @staticmethod
-    def recent_audit(conn, limit=50):
+    def recent_audit(conn, limit=50, offset=0):
+        """Paginated audit page (newest first). limit clamped to 1..1000 and offset >= 0
+        so a console (or a bad client) can never pull the whole log in one response."""
+        limit = max(1, min(int(limit), 1000))
+        offset = max(0, int(offset))
         with conn.cursor() as c:
             c.execute("SELECT ts, principal_id, action, namespace, ok, status, latency_ms, result_count "
-                      "FROM memnos_control.audit_log ORDER BY ts DESC LIMIT %s", (limit,))
+                      "FROM memnos_control.audit_log ORDER BY ts DESC LIMIT %s OFFSET %s",
+                      (limit, offset))
             return c.fetchall()
 
     @staticmethod
-    def usage_rollup(conn):
+    def audit_total(conn) -> int:
+        """APPROXIMATE audit row count from planner stats (pg_class.reltuples) — exact
+        counts seq-scan a table that grows unbounded. Falls back to exact count only
+        when the table has never been analyzed (reltuples = -1)."""
+        with conn.cursor() as c:
+            c.execute("SELECT reltuples::bigint AS n FROM pg_class "
+                      "WHERE oid = 'memnos_control.audit_log'::regclass")
+            n = c.fetchone()["n"]
+            if n < 0:
+                c.execute("SELECT count(*) AS n FROM memnos_control.audit_log")
+                n = c.fetchone()["n"]
+            return int(n)
+
+    @staticmethod
+    def usage_rollup(conn, hours=None):
+        """Usage/cost rollup by op — all-time by default; pass hours for a window so the
+        scan stays bounded (usage_ts index) on long-lived deployments."""
+        win = "WHERE ts > now() - (%s||' hours')::interval" if hours else ""
         with conn.cursor() as c:
             c.execute("SELECT op, count(*) n, round(sum(cost_usd),4) cost, sum(tokens_in) tin, "
-                      "sum(tokens_out) tout FROM memnos_control.usage_ledger "
-                      "GROUP BY op ORDER BY cost DESC NULLS LAST")
+                      f"sum(tokens_out) tout FROM memnos_control.usage_ledger {win} "
+                      "GROUP BY op ORDER BY cost DESC NULLS LAST",
+                      ((hours,) if hours else None))
             return c.fetchall()
 
     # --- audit + usage ----------------------------------------------------

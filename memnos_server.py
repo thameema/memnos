@@ -320,11 +320,20 @@ class Handler(BaseHTTPRequestHandler):
                 if sub == "grants" and method == "GET":
                     return 200, {"grants": Control.authorized_namespaces(conn, int(qs.get("principal", [0])[0]))}
                 if sub == "stats" and method == "GET":
-                    return 200, {"ops": Control.stats(conn)}
+                    hours = max(1, min(int(qs.get("hours", [24])[0]), 720))
+                    return 200, {"ops": Control.stats(conn, hours), "window_hours": hours}
                 if sub == "usage" and method == "GET":
-                    return 200, {"usage": Control.usage_rollup(conn)}
+                    hours = qs.get("hours", [None])[0]   # optional window; default all-time
+                    hours = max(1, min(int(hours), 8760)) if hours else None
+                    return 200, {"usage": Control.usage_rollup(conn, hours), "window_hours": hours}
                 if sub == "audit" and method == "GET":
-                    return 200, {"audit": Control.recent_audit(conn, int(qs.get("limit", [50])[0]))}
+                    # server-side pagination: limit clamped 1..1000, total is APPROXIMATE
+                    # (planner stats) so the endpoint stays O(page) as the log grows
+                    limit = max(1, min(int(qs.get("limit", [100])[0]), 1000))
+                    offset = max(0, int(qs.get("offset", [0])[0]))
+                    return 200, {"audit": Control.recent_audit(conn, limit, offset),
+                                 "total": Control.audit_total(conn), "total_estimated": True,
+                                 "limit": limit, "offset": offset}
                 if sub == "health" and method == "GET":
                     return 200, {"findings": [{"level": l, "msg": m} for l, m in Control.health(conn)]}
                 if sub == "quality" and method == "GET":
@@ -475,11 +484,12 @@ class Handler(BaseHTTPRequestHandler):
                             # WIDEN across every namespace this key may read (ACL-bounded)
                             nss = Control.readable_namespaces(conn, principal)
                             rows = mem.recall_wide(nss, q, **rkw)
-                            out = {"memories": rows, "context": mem.context_wide(nss, q, **rkw, **ckw),
+                            # render context from the SAME rows — retrieval+rerank runs once
+                            out = {"memories": rows, "context": mem.render_context(rows, **ckw),
                                    "namespaces_searched": nss}
                         else:
                             rows = mem.recall(ns, q, **rkw)
-                            out = {"memories": rows, "context": mem.context(ns, q, **rkw, **ckw)}
+                            out = {"memories": rows, "context": mem.render_context(rows, **ckw)}
                     elif self.path == "/consolidate":
                         out = mem.consolidate(ns)
                     # --- episodic tier (hippocampus) + decay ---
@@ -704,8 +714,12 @@ def serve(port=None):
     # (hooks/MCP/agents) must never sit behind a 30s pool wait.
     # max_idle=60: shrink back to min_size within a minute after bursts — a congested
     # period must not leave a wall of idle postgres backends behind (field: 22 procs)
+    # statement_timeout (default 15s): one bad/oversized query can no longer wedge a
+    # worker thread + pin a backend — it fails with a clear error instead.
+    stmt_ms = int(os.environ.get("MEMNOS_STMT_TIMEOUT_MS", "15000"))
     POOL = ConnectionPool(DSN, min_size=2, max_size=POOL_MAX, open=True, timeout=5,
-                          max_idle=60, kwargs={"autocommit": True, "row_factory": dict_row})
+                          max_idle=60, kwargs={"autocommit": True, "row_factory": dict_row,
+                                               "options": f"-c statement_timeout={stmt_ms}"})
     # wait for Postgres instead of crashing: under autostart (launchd/systemd) at login,
     # PG often isn't up yet — keep retrying with a clear, single-line heartbeat.
     while True:
@@ -732,7 +746,11 @@ def serve(port=None):
                 print(f"[memnos] WARN: could not resolve provider key from vault: {e}", flush=True)
     EMBED = _build_embedder()
     with POOL.connection() as conn:
+        # schema DDL (HNSW/GIN builds on a fresh install over existing data) may
+        # legitimately exceed the request statement_timeout — exempt it
+        conn.execute("SET statement_timeout = 0")
         BrainStore(conn=conn).create_schema("memnos", dim=DIM)   # memory schema
+        conn.execute(f"SET statement_timeout = {stmt_ms}")
         Control.audit(conn, None, "server_start", "-", True,      # heartbeat (uptime/crash-loop signal)
                       detail={"dim": DIM})
     threading.Thread(target=_pusher_loop, name="memnos-webhook-pusher", daemon=True).start()

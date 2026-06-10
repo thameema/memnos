@@ -89,7 +89,14 @@
       <div class="card"><h3>Health <span class="muted">· last 24h</span></h3><div id="dash-health"></div></div>
       <div class="card"><h3>Reliability <span class="muted">· last 24h</span></h3><table id="dash-stats"><thead><tr><th>op</th><th>calls</th><th>err%</th><th>p50ms</th><th>p95ms</th><th>recall-empty%</th></tr></thead><tbody></tbody></table></div>
       <div class="card"><h3>Usage / cost <span class="muted">· all-time total</span></h3><table id="dash-usage"><thead><tr><th>op</th><th>calls</th><th>tokens in</th><th>tokens out</th><th>cost $</th></tr></thead><tbody></tbody></table></div>
-      <div class="card"><h3>Recent activity</h3><table id="dash-audit"><thead><tr><th>time</th><th>principal</th><th>action</th><th>namespace</th><th>status</th><th>ms</th></tr></thead><tbody></tbody></table></div>
+      <div class="card"><h3>Recent activity</h3>
+        <table id="dash-audit"><thead><tr><th>time</th><th>principal</th><th>action</th><th>namespace</th><th>status</th><th>ms</th></tr></thead><tbody></tbody></table>
+        <div class="pager">
+          <button id="audit-prev" class="ghost">‹ newer</button>
+          <span id="audit-info" class="muted"></span>
+          <button id="audit-next" class="ghost">older ›</button>
+        </div>
+      </div>
     </section>
 
     <section id="tab-secrets" class="tab" hidden>
