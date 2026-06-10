@@ -68,8 +68,9 @@ def _load_config():
 _load_env()
 _load_config()
 
+from psycopg import OperationalError
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+from psycopg_pool import ConnectionPool, PoolTimeout
 
 from core.store import BrainStore
 from core.service import MemnosMemory
@@ -152,6 +153,8 @@ def _pusher_loop():
         try:
             with POOL.connection() as conn:
                 Control.deliver_pending(conn, _webhook_post)
+        except (PoolTimeout, OperationalError) as e:
+            print(f"[memnos] webhook pusher: DB unreachable ({type(e).__name__}) — will retry", flush=True)
         except Exception:
             traceback.print_exc()
 def _find_ui_dir():
@@ -216,11 +219,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, code, obj):
         body = json.dumps(obj, default=str).encode()   # default=str → datetime/Decimal safe
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass                                       # client timed out / gave up — nothing to send to
 
     def _token(self):
         h = self.headers.get("Authorization", "")
@@ -668,6 +674,10 @@ class Handler(BaseHTTPRequestHandler):
                 if self.path in WRITE_OPS:
                     _DELIVER_EVENT.set()       # wake the webhook pusher (near-immediate push)
                 return self._send(200, out)
+        except (PoolTimeout, OperationalError) as e:
+            # fail FAST and clearly when the database is down — never leave clients hanging
+            print(f"[memnos] DB unreachable ({type(e).__name__}): {e}", flush=True)
+            return self._send(503, {"error": "database unreachable — is Postgres running?"})
         except Exception:
             traceback.print_exc()              # pool/connection-level failure
             return self._send(500, {"error": "internal error"})
@@ -681,8 +691,21 @@ def serve(port=None):
     global POOL, EMBED
     port = int(port or PORT)
     brain_rerank.rerank("warm", ["a", "b"])
-    POOL = ConnectionPool(DSN, min_size=2, max_size=POOL_MAX, open=True,
+    # timeout=5: a request against a dead DB fails in 5s with a clear 503 — clients
+    # (hooks/MCP/agents) must never sit behind a 30s pool wait.
+    POOL = ConnectionPool(DSN, min_size=2, max_size=POOL_MAX, open=True, timeout=5,
                           kwargs={"autocommit": True, "row_factory": dict_row})
+    # wait for Postgres instead of crashing: under autostart (launchd/systemd) at login,
+    # PG often isn't up yet — keep retrying with a clear, single-line heartbeat.
+    while True:
+        try:
+            with POOL.connection() as conn:
+                conn.execute("SELECT 1")
+            break
+        except (PoolTimeout, OperationalError) as e:
+            print(f"[memnos] waiting for Postgres at {re.sub(r'://[^@]*@', '://***@', DSN)} "
+                  f"({type(e).__name__}) — retrying in 5s ...", flush=True)
+            time.sleep(5)
     with POOL.connection() as conn:
         Control.init(conn)                                        # control plane (incl. secrets table)
         # provider key may be a vault value-ref (secret://name) — resolve before building embedder

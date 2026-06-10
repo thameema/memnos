@@ -437,29 +437,98 @@ def cmd_setup(args, cfg):
             cfg = load_config()
             cmd_claude_setup(argparse.Namespace(namespace=None, force=False), cfg)
 
+    # offer autostart (login service) — the #1 cause of "my agent has no memory" is a
+    # server that was never started after a reboot
+    if sys.platform in ("darwin",) or sys.platform.startswith("linux"):
+        if not (args.dsn or os.environ.get("MEMNOS_CI")) and not _autostart_installed():
+            ans = input("\nStart memnos automatically at login (recommended — survives reboots, "
+                        "waits for Postgres)? [Y/n]: ").strip().lower() or "y"
+            if ans.startswith("y"):
+                cmd_autostart(argparse.Namespace(remove=False), cfg)
+
     port = cfg.get("port", 8900)
     print("\n" + "═" * 70)
-    print("  ✓ Setup complete — but ONE more step: START THE SERVER")
-    print("")
-    print("      memnos start          # starts the server in the background")
+    if _autostart_installed():
+        print("  ✓ Setup complete — the server is starting via autostart")
+        print("")
+        print("      memnos status         # check it (first start downloads ~1 GB of models)")
+    else:
+        print("  ✓ Setup complete — but ONE more step: START THE SERVER")
+        print("")
+        print("      memnos start          # starts the server in the background")
     print("")
     print("  Nothing works until the server is running — recall, the MCP tools, and any")
     print(f"  agent memory you just wired all talk to it. Then open  http://127.0.0.1:{port}/admin")
-    print("  Manage it with:  memnos status · memnos restart · memnos stop")
+    print("  Manage it with:  memnos status · memnos restart · memnos stop · memnos autostart")
     print("═" * 70)
+
+
+def _preflight_pg(cfg):
+    """Fail FAST with a clear message if Postgres is down — never let the user discover
+    it via a hanging server. Returns silently when reachable."""
+    import psycopg
+    from urllib.parse import urlparse
+    dsn = _dsn(cfg)
+    try:
+        psycopg.connect(dsn, connect_timeout=5).close()
+    except Exception:
+        u = urlparse(dsn if "//" in dsn else "postgresql://" + dsn)
+        sys.exit(_pg_not_reachable_hint(u.hostname or "localhost", u.port or 5432) +
+                 "\n\nmemnos was NOT started — once Postgres is up, run `memnos start` again.\n"
+                 "(Tip: `memnos autostart` installs a login service that keeps retrying until "
+                 "Postgres is up.)")
 
 
 def cmd_start(args, cfg):
     """Start the server in the background (the usual way to run it)."""
+    import subprocess
+    import time
     _apply_env(cfg)
     port = args.port or int(os.environ.get("MEMNOS_PORT", cfg.get("port", 8900)))
+    _preflight_pg(cfg)
+    svc = _autostart_installed()
+    if svc:                                   # managed by launchd/systemd — start through it
+        kind, path = svc
+        url = f"http://127.0.0.1:{port}"
+        if _server_up(url):
+            sys.exit(f"a memnos server is already running at {url} (autostart service).")
+        if kind == "launchd":
+            subprocess.run(["launchctl", "load", path], capture_output=True)
+            subprocess.run(["launchctl", "kickstart", f"gui/{os.getuid()}/com.memnos.server"], capture_output=True)
+        else:
+            subprocess.run(["systemctl", "--user", "start", "memnos"], capture_output=True)
+        print(f"[memnos] starting via the autostart service ({kind}) ...")
+        for _ in range(240):
+            if _server_up(url):
+                print(f"[memnos] ✓ server running at {url}   ·   logs: {LOG_PATH}")
+                return
+            time.sleep(1.5)
+        sys.exit(f"server still not up — check:  tail {LOG_PATH}")
     _serve_background(port)
 
 
 def cmd_restart(args, cfg):
+    import subprocess
     import time
     _apply_env(cfg)
     port = args.port or int(os.environ.get("MEMNOS_PORT", cfg.get("port", 8900)))
+    _preflight_pg(cfg)
+    svc = _autostart_installed()
+    if svc:
+        kind, path = svc
+        if kind == "launchd":
+            subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.memnos.server"],
+                           capture_output=True)
+        else:
+            subprocess.run(["systemctl", "--user", "restart", "memnos"], capture_output=True)
+        url = f"http://127.0.0.1:{port}"
+        print(f"[memnos] restarting via the autostart service ({kind}) ...")
+        for _ in range(240):
+            if _server_up(url):
+                print(f"[memnos] ✓ server running at {url}")
+                return
+            time.sleep(1.5)
+        sys.exit(f"server still not up — check:  tail {LOG_PATH}")
     _stop_quiet()
     url = f"http://127.0.0.1:{port}"
     for _ in range(20):                      # wait for the old server to release the port
@@ -491,6 +560,7 @@ def _serve_background(port):
         sys.exit(f"a memnos server is already running at {url} (stop it with `memnos stop`).")
     exe = shutil.which("memnos")
     cmd = ([exe, "serve"] if exe else [sys.executable, os.path.abspath(__file__), "serve"]) + ["--port", str(port)]
+    _rotate_log()
     log = open(LOG_PATH, "a")
     proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                             start_new_session=True, env=dict(os.environ))
@@ -526,6 +596,15 @@ def _serve_background(port):
     sys.exit(f"[memnos] server still not up after ~6 min — check `memnos status` and:  tail {LOG_PATH}")
 
 
+def _rotate_log(max_bytes=10 * 1024 * 1024):
+    """Keep ~/.memnos/server.log bounded: at >10MB roll to server.log.1 (one generation)."""
+    try:
+        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > max_bytes:
+            os.replace(LOG_PATH, LOG_PATH + ".1")
+    except OSError:
+        pass
+
+
 def _server_up(url, timeout=2):
     import urllib.request
     try:
@@ -557,6 +636,91 @@ def cmd_status(args, cfg):
         print(f"  server:    not running   (run: memnos start)")
     if os.path.exists(PID_PATH):
         print(f"  background: pid {open(PID_PATH).read().strip()}   ·   logs: {LOG_PATH}")
+    svc = _autostart_installed()
+    print(f"  autostart: {'installed (' + svc[0] + ') — starts at login, restarts on failure' if svc else 'not installed   (run: memnos autostart)'}")
+
+
+# ---- autostart (login service: launchd on macOS, systemd --user on Linux) ----------
+_LAUNCHD_PLIST = os.path.join(os.path.expanduser("~"), "Library", "LaunchAgents", "com.memnos.server.plist")
+_SYSTEMD_UNIT = os.path.join(os.path.expanduser("~"), ".config", "systemd", "user", "memnos.service")
+
+
+def _autostart_installed():
+    if sys.platform == "darwin":
+        return ("launchd", _LAUNCHD_PLIST) if os.path.exists(_LAUNCHD_PLIST) else None
+    if sys.platform.startswith("linux"):
+        return ("systemd", _SYSTEMD_UNIT) if os.path.exists(_SYSTEMD_UNIT) else None
+    return None
+
+
+def cmd_autostart(args, cfg):
+    """Install (or --remove) a login service so the memnos server starts automatically and
+    keeps retrying until Postgres is up — no more 'Claude has no memory because I forgot
+    to start the server'."""
+    import shutil
+    import subprocess
+    exe = shutil.which("memnos") or os.path.abspath(__file__)
+
+    if sys.platform == "darwin":
+        if args.remove:
+            subprocess.run(["launchctl", "unload", _LAUNCHD_PLIST], capture_output=True)
+            try:
+                os.remove(_LAUNCHD_PLIST)
+            except OSError:
+                pass
+            print("[memnos] autostart removed (launchd service unloaded + plist deleted).")
+            return
+        os.makedirs(os.path.dirname(_LAUNCHD_PLIST), exist_ok=True)
+        plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.memnos.server</string>
+  <key>ProgramArguments</key><array><string>{exe}</string><string>serve</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>{LOG_PATH}</string>
+  <key>StandardErrorPath</key><string>{LOG_PATH}</string>
+</dict></plist>
+"""
+        _rotate_log()
+        with open(_LAUNCHD_PLIST, "w") as f:
+            f.write(plist)
+        subprocess.run(["launchctl", "unload", _LAUNCHD_PLIST], capture_output=True)   # reload if present
+        r = subprocess.run(["launchctl", "load", _LAUNCHD_PLIST], capture_output=True, text=True)
+        if r.returncode != 0:
+            sys.exit(f"launchctl load failed: {r.stderr.strip()}")
+        print(f"[memnos] ✓ autostart installed (launchd) — the server now starts at login,")
+        print(f"  restarts if it dies, and waits for Postgres if it isn't up yet.")
+        print(f"  service: {_LAUNCHD_PLIST}\n  logs:    {LOG_PATH}\n  remove:  memnos autostart --remove")
+    elif sys.platform.startswith("linux"):
+        if args.remove:
+            subprocess.run(["systemctl", "--user", "disable", "--now", "memnos"], capture_output=True)
+            try:
+                os.remove(_SYSTEMD_UNIT)
+            except OSError:
+                pass
+            subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+            print("[memnos] autostart removed (systemd user unit disabled + deleted).")
+            return
+        os.makedirs(os.path.dirname(_SYSTEMD_UNIT), exist_ok=True)
+        unit = (f"[Unit]\nDescription=memnos memory server\nAfter=network.target\n\n"
+                f"[Service]\nExecStart={exe} serve\nRestart=always\nRestartSec=10\n"
+                f"StandardOutput=append:{LOG_PATH}\nStandardError=append:{LOG_PATH}\n\n"
+                f"[Install]\nWantedBy=default.target\n")
+        _rotate_log()
+        with open(_SYSTEMD_UNIT, "w") as f:
+            f.write(unit)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+        r = subprocess.run(["systemctl", "--user", "enable", "--now", "memnos"], capture_output=True, text=True)
+        if r.returncode != 0:
+            sys.exit(f"systemctl enable failed: {r.stderr.strip()}")
+        print("[memnos] ✓ autostart installed (systemd --user) — starts at login, restarts on failure,")
+        print(f"  waits for Postgres.\n  unit: {_SYSTEMD_UNIT}\n  logs: {LOG_PATH}\n  remove: memnos autostart --remove")
+    else:
+        print("[memnos] Windows: create a logon task that runs `memnos serve`:\n"
+              f'  schtasks /create /tn memnos /tr "{exe} serve" /sc onlogon\n'
+              "  (remove with: schtasks /delete /tn memnos)")
 
 
 def _stop_quiet():
@@ -580,6 +744,18 @@ def _stop_quiet():
 
 
 def cmd_stop(args, cfg):
+    import subprocess
+    svc = _autostart_installed()
+    if svc:                                   # managed by launchd/systemd — stop through it
+        kind, path = svc                      # (killing the pid would just get auto-restarted)
+        if kind == "launchd":
+            subprocess.run(["launchctl", "unload", path], capture_output=True)
+        else:
+            subprocess.run(["systemctl", "--user", "stop", "memnos"], capture_output=True)
+        _stop_quiet()                         # clean up any stray manually-started copy too
+        print(f"[memnos] stopped ({kind} service unloaded — it returns at next login; "
+              "remove permanently with `memnos autostart --remove`)")
+        return
     if not os.path.exists(PID_PATH):
         sys.exit("no background memnos server recorded (no pid file). If it's in the foreground, Ctrl-C it.")
     pid = _stop_quiet()
@@ -1106,8 +1282,22 @@ def cmd_hook(args, cfg):
         try:
             req = urllib.request.Request(f"{url}/recall", method="POST",
                 data=json.dumps({"namespace": ns, "query": prompt}).encode(), headers=hdr)
-            ctx = json.load(urllib.request.urlopen(req, timeout=12)).get("context", "")
+            ctx = json.load(urllib.request.urlopen(req, timeout=8)).get("context", "")
         except Exception:
+            # server down must NEVER block or break the session — but the user should
+            # know memory is off. Tell them once per ~10 min (marker-file throttle).
+            marker = os.path.join(CONFIG_DIR, ".hook_down_notified")
+            import time
+            try:
+                stale = (not os.path.exists(marker)) or (time.time() - os.path.getmtime(marker) > 600)
+                if stale:
+                    open(marker, "w").close()
+                    print(json.dumps({"systemMessage":
+                        f"memnos: memory server unreachable/unhealthy at {url} — recall/auto-save "
+                        "are OFF for now. Check `memnos status`; start with `memnos start`, or "
+                        "`memnos autostart` to keep it running across reboots."}))
+            except Exception:
+                pass
             return
         if ctx.strip():
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
@@ -1162,6 +1352,9 @@ def main():
     p = sub.add_parser("restart", help="restart the background server")
     p.add_argument("--port", type=int); p.set_defaults(fn=cmd_restart)
     sub.add_parser("status", help="show server + config + embedding mode").set_defaults(fn=cmd_status)
+    p = sub.add_parser("autostart", help="install a login service (launchd/systemd) so the server always runs")
+    p.add_argument("--remove", action="store_true", help="uninstall the login service")
+    p.set_defaults(fn=cmd_autostart)
     p = sub.add_parser("serve", help="run the server in the FOREGROUND (process managers / Docker / debug)")
     p.add_argument("--port", type=int); p.set_defaults(fn=cmd_serve)
     p = sub.add_parser("mcp"); p.add_argument("--namespace"); p.set_defaults(fn=cmd_mcp)
