@@ -17,7 +17,7 @@ no graph database — and uses **no LLM at query time** (retrieval is hybrid sea
 cross-encoder reranker). Works with **Claude Code, Cursor, Windsurf** and any MCP client,
 plus a REST API and a cross-platform CLI.
 
-> **Released — v0.1.0 on PyPI.** Apache-2.0 · self-hostable · single-org · local-first.
+> **Released on PyPI** (`uv tool install memnos`). Apache-2.0 · self-hostable · single-org · local-first.
 
 ```
 Claude Code ─┐
@@ -105,7 +105,7 @@ with lifecycle **hooks** (auto-recall before each prompt, auto-save after); ever
 gets the memnos MCP **tools** (`recall`, `recall_wide`, `remember`, `reconcile_claim`, …).
 
 - **REST** — `POST /remember`, `POST /recall` (Bearer token, namespace-scoped).
-- **CLI / SDK** — `memnos remember/recall`, or `pip install memnos-sdk` (LangChain / LangGraph
+- **CLI / SDK** — `memnos remember/recall`, or `uv pip install memnos-sdk` (LangChain / LangGraph
   / LlamaIndex adapters).
 - Full client guides: [`docs/guides/clients/`](docs/guides/clients/README.md).
 

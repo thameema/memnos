@@ -7,7 +7,7 @@ MCP-compatible agent can use it. The tool surface is identical everywhere:
 Prereq: a running memnos server + token (see [`../../QUICKSTART.md`](../../QUICKSTART.md)).
 
 ## Generic MCP config
-Point the client at the stdio command. With the package installed (`pipx install memnos`):
+Point the client at the stdio command. With the package installed (`uv tool install memnos`):
 ```jsonc
 {
   "command": "memnos",

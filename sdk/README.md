@@ -6,12 +6,14 @@ Lightweight Python client for [memnos](https://memnos.net) — governed, vendor-
 
 `httpx`-only (no server deps). Talks to a running memnos server over REST.
 
+Add it to your project with `uv` (or plain `pip` — it's an importable library, not a CLI app):
+
 ```bash
-pip install memnos-sdk                  # core client
-pip install 'memnos-sdk[langchain]'     # + LangChain retriever
-pip install 'memnos-sdk[langgraph]'     # + LangGraph BaseStore
-pip install 'memnos-sdk[llamaindex]'    # + LlamaIndex retriever
-pip install 'memnos-sdk[all]'           # everything
+uv pip install memnos-sdk                  # core client   (or: pip install memnos-sdk)
+uv pip install 'memnos-sdk[langchain]'     # + LangChain retriever
+uv pip install 'memnos-sdk[langgraph]'     # + LangGraph BaseStore
+uv pip install 'memnos-sdk[llamaindex]'    # + LlamaIndex retriever
+uv pip install 'memnos-sdk[all]'           # everything
 ```
 
 ## Core client (sync + async)

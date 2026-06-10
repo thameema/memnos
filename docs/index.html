@@ -753,7 +753,7 @@ memnos recall   <span class="token-str">"token expiry policy"</span> --namespace
           <div class="w-2.5 h-2.5 rounded-full bg-green-500/60"></div>
           <span class="ml-2 text-xs text-gray-600">chain.py — LangChain memory backend</span>
         </div>
-        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># pip install 'memnos-sdk[langchain]'</span>
+        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># uv pip install 'memnos-sdk[langchain]'</span>
 <span class="token-kw">from</span> <span class="token-var">langchain.chains</span> <span class="token-kw">import</span> <span class="token-fn">ConversationChain</span>
 <span class="token-kw">from</span> <span class="token-var">memnos_sdk</span> <span class="token-kw">import</span> <span class="token-fn">MemnosClient</span>
 <span class="token-kw">from</span> <span class="token-var">memnos_sdk.integrations.langchain</span> <span class="token-kw">import</span> <span class="token-fn">MemnosMemory</span>
@@ -782,7 +782,7 @@ memnos recall   <span class="token-str">"token expiry policy"</span> --namespace
           <div class="w-2.5 h-2.5 rounded-full bg-green-500/60"></div>
           <span class="ml-2 text-xs text-gray-600">rag_pipeline.py — LlamaIndex reader</span>
         </div>
-        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># pip install 'memnos-sdk[llamaindex]'</span>
+        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># uv pip install 'memnos-sdk[llamaindex]'</span>
 <span class="token-kw">from</span> <span class="token-var">llama_index.core</span> <span class="token-kw">import</span> <span class="token-fn">VectorStoreIndex</span>
 <span class="token-kw">from</span> <span class="token-var">memnos_sdk</span> <span class="token-kw">import</span> <span class="token-fn">MemnosClient</span>
 <span class="token-kw">from</span> <span class="token-var">memnos_sdk.integrations.llamaindex</span> <span class="token-kw">import</span> <span class="token-fn">MemnosReader</span>
@@ -869,7 +869,7 @@ memnos recall   <span class="token-str">"token expiry policy"</span> --namespace
           </div>
           <div class="pb-8">
             <h3 class="text-white font-semibold mb-2">Connect your agents</h3>
-            <p class="text-sm text-gray-400 leading-relaxed">Drop the MCP server into Claude Code, Cursor, or any MCP-compatible host. Or use the REST SDK from any language. Self-host with one <code>pip install</code> — your Postgres, your data.</p>
+            <p class="text-sm text-gray-400 leading-relaxed">Drop the MCP server into Claude Code, Cursor, or any MCP-compatible host. Or use the REST SDK from any language. Self-host with one <code>uv tool install</code> — your Postgres, your data.</p>
           </div>
         </div>
         <div class="flex gap-5">
