@@ -20,9 +20,10 @@ Do this once for **`memnos`** and once for **`memnos-sdk`**:
 
 The version number is the single source of truth; bump it, tag it, release it:
 
-1. Bump the version:
-   - `pyproject.toml` → `version = "0.1.2"` (the `memnos` package)
-   - `sdk/pyproject.toml` → bump too **only if the SDK changed** (`skip-existing` ignores it otherwise)
+1. Bump the version — **strict lockstep: ALWAYS bump both to the same number**, even if only
+   one changed (`skip-existing` makes the unchanged one a no-op upload):
+   - `pyproject.toml` → `version = "0.1.3"` (the `memnos` package)
+   - `sdk/pyproject.toml` → `version = "0.1.3"` (the `memnos-sdk` package — same number)
 2. Commit + push to `master`.
 3. Create the GitHub release (this is what triggers publishing):
    ```bash
