@@ -27,12 +27,50 @@ PID_PATH = os.path.join(CONFIG_DIR, "server.pid")
 DEFAULT_DSN = "postgresql://memnos:memnos@localhost:5432/memnos"
 
 
-def _version():
+def _installed_version():
     try:
         import importlib.metadata as _m
-        return "v" + _m.version("memnos")
+        return _m.version("memnos")
     except Exception:
-        return "(dev)"
+        return None
+
+
+def _version():
+    v = _installed_version()
+    return ("v" + v) if v else "(dev)"
+
+
+def _vparts(v):
+    out = []
+    for p in (v or "0").split(".")[:4]:
+        n = "".join(c for c in p if c.isdigit())
+        out.append(int(n) if n else 0)
+    return tuple(out)
+
+
+def _latest_pypi_version(timeout=4):
+    import urllib.request
+    import json as _json
+    try:
+        with urllib.request.urlopen("https://pypi.org/pypi/memnos/json", timeout=timeout) as r:
+            return _json.load(r)["info"]["version"]
+    except Exception:
+        return None
+
+
+def _upgrade_cmd():
+    """Pick the right upgrade command for however memnos was installed (uv tool / pipx / pip)."""
+    import shutil
+    import subprocess
+    if shutil.which("uv"):
+        out = subprocess.run(["uv", "tool", "list"], capture_output=True, text=True).stdout
+        if "memnos" in out:
+            return ["uv", "tool", "upgrade", "memnos"]
+    if shutil.which("pipx"):
+        out = subprocess.run(["pipx", "list", "--short"], capture_output=True, text=True).stdout
+        if "memnos" in out:
+            return ["pipx", "upgrade", "memnos"]
+    return [sys.executable, "-m", "pip", "install", "-U", "memnos"]
 
 
 # ---- config -----------------------------------------------------------------
@@ -492,6 +530,33 @@ def cmd_stop(args, cfg):
           "[memnos] server wasn't running (cleaned up stale pid file)")
 
 
+def cmd_upgrade(args, cfg):
+    cur = _installed_version()
+    print(f"[memnos] checking for updates (installed v{cur or '?'}) ...")
+    latest = _latest_pypi_version()
+    if not latest:
+        sys.exit("couldn't reach PyPI to check for updates (offline?). Try later, or run "
+                 "`uv tool upgrade memnos` manually.")
+    cfg["latest_known"] = latest
+    save_config(cfg)
+    if cur and _vparts(latest) <= _vparts(cur):
+        print(f"[memnos] ✓ you're on the latest version (v{cur}).")
+        return
+    print(f"[memnos] update available: v{cur or '?'} → v{latest}")
+    if getattr(args, "check", False):
+        print("  run `memnos upgrade` to install it.")
+        return
+    import subprocess
+    cmd = _upgrade_cmd()
+    print(f"  upgrading ... ({' '.join(cmd)})")
+    rc = subprocess.run(cmd).returncode
+    if rc == 0:
+        print(f"[memnos] ✓ upgraded to v{latest}. (restart the server: memnos restart)")
+    else:
+        sys.exit(f"upgrade failed (exit {rc}). Try manually:  uv tool upgrade memnos  "
+                 "(or: pip install -U memnos)")
+
+
 def cmd_mcp(args, cfg):
     # stdio MCP adapter for Claude Code / Cursor / Windsurf / any MCP client.
     # MEMNOS_URL / MEMNOS_TOKEN / MEMNOS_NS come from the client's env block;
@@ -897,6 +962,7 @@ def main():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     cfg = load_config()
     ap = argparse.ArgumentParser(prog="memnos", description="memnos memory platform CLI")
+    ap.add_argument("-V", "--version", action="version", version=f"memnos {_version()}")
     sub = ap.add_subparsers(dest="cmd")   # not required — bare `memnos` prints help
 
     p = sub.add_parser("setup", help="connect to Postgres, create schema + admin token")
@@ -928,10 +994,16 @@ def main():
     p = sub.add_parser("hook"); p.add_argument("which", choices=["recall", "remember"]); p.set_defaults(fn=cmd_hook)
     p = sub.add_parser("claude-setup"); p.add_argument("--namespace"); p.add_argument("--force", action="store_true"); p.set_defaults(fn=cmd_claude_setup)
     p = sub.add_parser("agent-setup"); p.add_argument("agent", choices=list(_AGENTS)); p.add_argument("--namespace"); p.set_defaults(fn=cmd_agent_setup)
+    p = sub.add_parser("upgrade", help="check the repo for a newer version and install it")
+    p.add_argument("--check", action="store_true", help="only check; don't install")
+    p.set_defaults(fn=cmd_upgrade)
     sub.add_parser("help", help="show this help").set_defaults(fn=lambda a, c: ap.print_help())
 
     args = ap.parse_args()
-    if not getattr(args, "cmd", None):     # bare `memnos` → help, not an error
+    if not getattr(args, "cmd", None):     # bare `memnos` → version + help (like Claude Code)
+        cur, lk = _installed_version(), cfg.get("latest_known")
+        hint = f"   ↑ v{lk} available — run: memnos upgrade" if (cur and lk and _vparts(lk) > _vparts(cur)) else ""
+        print(f"memnos {_version()}{hint}\n")
         ap.print_help()
         return
     args.fn(args, cfg)
