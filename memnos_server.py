@@ -16,6 +16,7 @@ import base64
 import io
 import json
 import os
+import queue
 import re
 import sys
 import threading
@@ -174,6 +175,7 @@ _CTYPE = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}
 
 POOL = None
 _NS_CACHE = {"t": 0.0, "data": None}    # namespace-census cache (10s TTL, write-invalidated)
+_INGEST_Q = queue.Queue(maxsize=1024)   # async /remember extraction queue
 EMBED = None
 LLM = None
 DIM = 384
@@ -438,6 +440,12 @@ class Handler(BaseHTTPRequestHandler):
         token = self._token()
         if not ns or len(ns) > 200:
             return self._send(400, {"error": "namespace required (<=200 chars)"})
+
+        if self.path == "/remember":
+            # dedicated phased path: a pool connection must NEVER be held across the
+            # LLM extraction call — that starves the pool under concurrent sessions
+            # (field: 30s admin queueing behind in-flight hook writes)
+            return self._remember_phased(req, ns, token, t0)
 
         try:
             with POOL.connection() as conn:
@@ -704,6 +712,89 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def _remember_phased(self, req, ns, token, t0):
+        """/remember in three phases — the 'LLM at ingest only, NEVER on the request
+        path while holding resources' rule from the architecture, finally enforced:
+          P1 (conn, ~ms):  auth + ACL + redact + store the verbatim raw turn
+          P2 (NO conn):    LLM fact extraction — pure model I/O
+          P3 (conn, ~ms):  supersession + fact writes + usage + audit
+        Default stays SYNCHRONOUS (same response contract). {"async": true} defers
+        P2+P3 to the background ingest worker and returns immediately after P1 —
+        used by the Claude Code Stop hook, which never reads the fact count."""
+        text = str(req.get("text", "")).strip()
+        if not text or len(text) > 20000:
+            return self._send(400, {"error": "text required (<=20000 chars)"})
+        run_async = bool(req.get("async"))
+        usage = _UsageAcc()
+        cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
+        try:
+            with POOL.connection() as conn:                       # P1
+                principal = Control.authenticate(conn, token)
+                if principal is None:
+                    return self._send(401, {"error": "unauthorized"})
+                if not Control.authorize(conn, principal, ns, write=True):
+                    Control.audit(conn, principal, "remember", ns, False, {"reason": "forbidden"})
+                    return self._send(403, {"error": "forbidden for namespace"})
+                mem = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM, on_usage=usage)
+                tid, rtext, obs = mem.remember_turn(ns, text, speaker=req.get("speaker"),
+                                                    session_id=req.get("session_id"))
+            # conn is back in the pool. `mem` is reused ONLY for extract_facts below,
+            # which never touches its store.
+            if LLM is None:                                       # local mode: no extraction
+                with POOL.connection() as conn:
+                    Control.audit(conn, principal, "remember", ns, True,
+                                  latency_ms=int((time.perf_counter() - t0) * 1000), status=200)
+                _DELIVER_EVENT.set()
+                return self._send(200, {"turn_id": tid, "facts": 0, "superseded": 0})
+            if run_async:
+                try:
+                    _INGEST_Q.put_nowait((ns, rtext, obs, tid, principal, mem, cost0, t0))
+                    return self._send(200, {"turn_id": tid, "facts": None,
+                                            "extraction": "queued"})
+                except Exception:                                  # queue full → fall through to sync
+                    pass
+            facts = mem.extract_facts(rtext, obs)                 # P2 — NO conn held
+            with POOL.connection() as conn:                       # P3
+                mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM, on_usage=usage)
+                nf, nsup = mem3.write_facts(ns, facts, obs, tid)
+                cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
+                Control.record_usage(conn, principal, ns, "remember", mem3.extract_model,
+                                     usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))
+                Control.audit(conn, principal, "remember", ns, True,
+                              latency_ms=int((time.perf_counter() - t0) * 1000), status=200)
+            _DELIVER_EVENT.set()
+            return self._send(200, {"turn_id": tid, "facts": nf, "superseded": nsup})
+        except (PoolTimeout, OperationalError) as e:
+            print(f"[memnos] DB unreachable ({type(e).__name__}): {e}", flush=True)
+            return self._send(503, {"error": "database unreachable — is Postgres running?"})
+        except Exception:
+            traceback.print_exc()
+            return self._send(500, {"error": "internal error"})
+
+
+def _ingest_worker():
+    """Background extraction for async /remember: P2 with no conn, then a short P3.
+    Failures are logged — the raw turn is already durably stored either way."""
+    while True:
+        ns, rtext, obs, tid, principal, mem, cost0, t0 = _INGEST_Q.get()
+        try:
+            usage = _UsageAcc()
+            mem.on_usage = usage
+            facts = mem.extract_facts(rtext, obs)                 # NO conn held
+            with POOL.connection() as conn:
+                mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM, on_usage=usage)
+                nf, nsup = mem3.write_facts(ns, facts, obs, tid)
+                cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
+                Control.record_usage(conn, principal, ns, "remember", mem3.extract_model,
+                                     usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))
+                Control.audit(conn, principal, "remember", ns, True,
+                              latency_ms=int((time.perf_counter() - t0) * 1000), status=200,
+                              detail={"async": True, "facts": nf, "superseded": nsup})
+            _DELIVER_EVENT.set()
+        except Exception as e:
+            print(f"[memnos] async ingest failed for turn {tid} (raw turn IS stored): "
+                  f"{type(e).__name__}: {e}", flush=True)
+
 
 def serve(port=None):
     """Boot + run the memnos server. Importable so the `memnos serve` CLI reuses it."""
@@ -754,6 +845,7 @@ def serve(port=None):
         Control.audit(conn, None, "server_start", "-", True,      # heartbeat (uptime/crash-loop signal)
                       detail={"dim": DIM})
     threading.Thread(target=_pusher_loop, name="memnos-webhook-pusher", daemon=True).start()
+    threading.Thread(target=_ingest_worker, name="memnos-async-ingest", daemon=True).start()
     print(f"[memnos] production server on http://127.0.0.1:{port} (pool max {POOL_MAX}); webhook pusher on", flush=True)
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 
