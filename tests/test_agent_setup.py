@@ -89,6 +89,10 @@ def main():
     d = json_agent(home, "claude-desktop", cd_rel,
                    ("mcpServers",), {"mcpServers": {"other": {"command": "x"}}, "theme": "dark"})
     check("claude-desktop: unrelated settings preserved", d.get("theme") == "dark")
+    sk = os.path.join(home, ".memnos/claude-desktop-skill/SKILL.md")
+    check("claude-desktop: memory skill written",
+          os.path.exists(sk) and "memnos-memory" in open(sk).read()
+          and "VERBATIM" in open(sk).read())
 
     # --- openclaw: nested mcp.servers ---
     json_agent(home, "openclaw", ".openclaw/openclaw.json",

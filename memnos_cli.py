@@ -1261,6 +1261,44 @@ MCP tools explicitly (this agent has no auto-inject hooks):
   local note is out of date and give the newer memnos value + its date.
 """
 
+_DESKTOP_SKILL = """---
+name: memnos-memory
+description: >-
+  Long-term memory via memnos. Use when the user references past work, prior decisions,
+  preferences, people, projects, or anything from earlier conversations — and after giving
+  answers that contain decisions, identifiers, or outcomes worth keeping.
+---
+
+# memnos — long-term memory
+
+You have persistent, governed long-term memory through the **memnos** MCP tools
+(`recall`, `recall_wide`, `remember`, `reconcile_claim`, `get_entity`, `get_provenance`).
+Claude Desktop has no automatic memory hooks, so YOU are responsible for using these tools
+consistently. Follow these rules:
+
+## Recall — before answering
+- When the user references past conversations, prior decisions, preferences, ongoing
+  projects, or people/things not introduced in this session, call `recall` with a focused
+  query BEFORE answering. If nothing relevant returns, call `recall_wide`.
+- Prefer recalled facts over guessing. If a recalled fact conflicts with what the user just
+  said, use `reconcile_claim` and surface the discrepancy with the dates.
+
+## Remember — after answering
+- After any answer that contains a DECISION, conclusion, identifier, or outcome (ticket
+  keys like ABC-123, PR/MR numbers, versions, URLs, chosen options, agreed plans), call
+  `remember` with a ONE-LINE summary — keep identifiers VERBATIM, never paraphrase them away.
+- Also `remember` durable facts the user states about themselves, their projects,
+  preferences, and commitments. One fact per call, self-contained, dates absolute.
+- Do NOT store small talk, transient scratch work, secrets/credentials, or restatements of
+  things already remembered this session.
+
+## Notes
+- Memories are namespace-scoped and access-controlled server-side; if a read/write is
+  denied, say so rather than retrying.
+- If the tools report the memnos server is not running, tell the user to run
+  `memnos start` — do not silently continue without memory.
+"""
+
 # MCP-capable agents: where each keeps its MCP server config, and the format.
 _AGENTS = {
     # claude-code routes to the full Claude Code setup (MCP + lifecycle hooks + /memnos +
@@ -1367,6 +1405,19 @@ def cmd_agent_setup(args, cfg):
     print(f"[memnos] {args.agent} wired -> {spec['path']} (MCP server 'memnos', ns={ns}).")
     if spec.get("agents_md"):
         print(f"          + instructions -> {spec['agents_md']}")
+    if args.agent == "claude-desktop":
+        # Desktop has no hooks — a personal SKILL makes tool use consistent instead of
+        # occasional. Write it where the user can add it via Customize → Skills → "+".
+        sk_dir = os.path.join(CONFIG_DIR, "claude-desktop-skill")
+        os.makedirs(sk_dir, exist_ok=True)
+        with open(os.path.join(sk_dir, "SKILL.md"), "w") as f:
+            f.write(_DESKTOP_SKILL)
+        print(f"  • memory skill   -> {sk_dir}/SKILL.md")
+        print("    Recommended: open Claude Desktop → Customize → Skills → '+' and add that")
+        print("    folder — it teaches Claude to recall before answering and to save")
+        print("    decisions/identifiers after. (Desktop has no hooks; the skill makes")
+        print("    memory use consistent. Also consider turning OFF Desktop's own")
+        print("    'Generate memory from chat history' to avoid two competing memories.)")
     print("  Note: this agent uses the memnos MCP *tools* (recall/remember/reconcile_claim) — "
           "no auto inject/save hooks (those are Claude Code only). Restart the agent to load it.")
     if spec.get("note"):
