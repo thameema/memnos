@@ -45,18 +45,30 @@ jobs:
       MEMNOS_DSN: postgresql://memnos:memnos_ci@localhost:5433/memnos
       MEMNOS_URL: http://127.0.0.1:8900
       MEMNOS_SECRET_KEY: "Y2lfdGVzdF9rZXlfMzJfYnl0ZXNfZXhhY3RseV9vayE="   # 32B base64, CI-only
+      FASTEMBED_CACHE_PATH: /home/runner/.cache/fastembed   # cached across runs (HF rate-limits)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
+      - name: Cache embedding/reranker models (HF Hub rate-limits unauthenticated pulls)
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/fastembed
+          key: fastembed-models-v1
       - name: Install deps
         run: pip install -r requirements.txt
       - name: Enable pgvector
         run: PGPASSWORD=memnos_ci psql -h localhost -p 5433 -U memnos -d memnos -c "CREATE EXTENSION IF NOT EXISTS vector"
       - name: Start server (free local-384 mode) + wait for ready
         run: |
-          python memnos_server.py & echo $! > /tmp/srv.pid
-          for i in $(seq 1 40); do curl -sf "$MEMNOS_URL/healthz" && break || sleep 2; done
+          python memnos_server.py > /tmp/srv.log 2>&1 & echo $! > /tmp/srv.pid
+          up=0
+          for i in $(seq 1 150); do   # up to 5 min — an uncached run downloads the models
+            curl -sf "$MEMNOS_URL/healthz" && { up=1; break; } || sleep 2
+          done
+          if [ "$up" != 1 ]; then
+            echo "::error::server never became ready — log follows"; cat /tmp/srv.log; exit 1
+          fi
       - name: Run full test suite
         run: |
           fail=0
