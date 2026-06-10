@@ -105,19 +105,20 @@ plaintext** — it lives in the encrypted vault (or your `.env`).
 One command wires memnos into your agent — no manual config editing:
 
 ```bash
-memnos claude-setup            # Claude Code: MCP + hooks (auto recall/save) + /memnos + CLAUDE.md
-memnos agent-setup codex       # Codex CLI (MCP via ~/.codex/config.toml + AGENTS.md)
-memnos agent-setup cursor      # Cursor
-memnos agent-setup windsurf    # Windsurf
-memnos agent-setup claude-desktop
-memnos agent-setup openclaw    # OpenClaw (personal AI assistant gateway)
-memnos agent-setup hermes      # Hermes Agent (Nous Research)
+memnos agent-setup claude-code     # Claude Code: MCP + hooks (auto recall/save) + /memnos + CLAUDE.md
+memnos agent-setup claude-desktop  # Claude Desktop
+memnos agent-setup codex           # Codex CLI (MCP via ~/.codex/config.toml + AGENTS.md)
+memnos agent-setup cursor          # Cursor
+memnos agent-setup windsurf        # Windsurf
+memnos agent-setup openclaw        # OpenClaw (personal AI assistant gateway)
+memnos agent-setup hermes          # Hermes Agent (Nous Research)
 ```
 
-Each mints a scoped token, is idempotent, and backs up edited files; `memnos setup` runs
-`claude-setup` automatically when it detects Claude Code. **Claude Code** is the only agent
-with lifecycle **hooks** (auto-recall before each prompt, auto-save after); every other agent
-gets the memnos MCP **tools** (`recall`, `recall_wide`, `remember`, `reconcile_claim`, …).
+Each mints a scoped token, is idempotent, and backs up edited files; `memnos setup` wires
+Claude Code automatically when it detects it (`memnos claude-setup` still works as an
+alias). **Claude Code** is the only agent with lifecycle **hooks** (auto-recall before each
+prompt, auto-save after); every other agent gets the memnos MCP **tools** (`recall`,
+`recall_wide`, `remember`, `reconcile_claim`, …).
 
 - **REST** — `POST /remember`, `POST /recall` (Bearer token, namespace-scoped).
 - **CLI / SDK** — `memnos remember/recall`, or `uv pip install memnos-sdk` (LangChain / LangGraph

@@ -1181,6 +1181,9 @@ MCP tools explicitly (this agent has no auto-inject hooks):
 
 # MCP-capable agents: where each keeps its MCP server config, and the format.
 _AGENTS = {
+    # claude-code routes to the full Claude Code setup (MCP + lifecycle hooks + /memnos +
+    # CLAUDE.md) — same as the legacy `memnos claude-setup` alias.
+    "claude-code":    {"special": "claude"},
     "codex":          {"path": "~/.codex/config.toml",                         "fmt": "toml", "agents_md": "~/.codex/AGENTS.md"},
     "cursor":         {"path": "~/.cursor/mcp.json",                           "fmt": "json"},
     "windsurf":       {"path": "~/.codeium/windsurf/mcp_config.json",          "fmt": "json"},
@@ -1204,6 +1207,9 @@ def cmd_agent_setup(args, cfg):
     spec = _AGENTS.get(args.agent)
     if not spec:
         sys.exit(f"unknown agent '{args.agent}' — choose: {', '.join(_AGENTS)}")
+    if spec.get("special") == "claude":       # full Claude Code setup (MCP + hooks + /memnos)
+        return cmd_claude_setup(argparse.Namespace(namespace=args.namespace,
+                                                   force=getattr(args, "force", False)), cfg)
     spec = dict(spec)
     if args.agent == "claude-desktop":        # app-data dir is platform-specific
         if sys.platform == "win32":
@@ -1384,8 +1390,11 @@ def main():
     p = sub.add_parser("remember"); p.add_argument("text"); p.add_argument("--namespace", default="auto"); p.add_argument("--token"); p.set_defaults(fn=cmd_remember)
     p = sub.add_parser("recall"); p.add_argument("query"); p.add_argument("--namespace", default="auto"); p.add_argument("--scope", choices=["all", "wide"]); p.add_argument("--token"); p.set_defaults(fn=cmd_recall)
     p = sub.add_parser("hook"); p.add_argument("which", choices=["recall", "remember"]); p.set_defaults(fn=cmd_hook)
-    p = sub.add_parser("claude-setup"); p.add_argument("--namespace"); p.add_argument("--force", action="store_true"); p.set_defaults(fn=cmd_claude_setup)
-    p = sub.add_parser("agent-setup"); p.add_argument("agent", choices=list(_AGENTS)); p.add_argument("--namespace"); p.set_defaults(fn=cmd_agent_setup)
+    p = sub.add_parser("claude-setup", help="(alias of: memnos agent-setup claude-code)")
+    p.add_argument("--namespace"); p.add_argument("--force", action="store_true"); p.set_defaults(fn=cmd_claude_setup)
+    p = sub.add_parser("agent-setup", help="wire memnos into an agent (claude-code, codex, cursor, ...)")
+    p.add_argument("agent", choices=list(_AGENTS)); p.add_argument("--namespace")
+    p.add_argument("--force", action="store_true"); p.set_defaults(fn=cmd_agent_setup)
     p = sub.add_parser("upgrade", help="check the repo for a newer version and install it")
     p.add_argument("--check", action="store_true", help="only check; don't install")
     p.set_defaults(fn=cmd_upgrade)

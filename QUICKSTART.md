@@ -152,14 +152,16 @@ never logged or returned. Rotate the key with `memnos secret rotate`.
 memnos wires itself into your agent — no manual config editing:
 
 ```bash
-memnos claude-setup            # Claude Code: MCP + hooks (auto recall/save) + /memnos + CLAUDE.md
-memnos agent-setup codex       # Codex CLI
-memnos agent-setup cursor      # Cursor
-memnos agent-setup windsurf    # Windsurf
-memnos agent-setup claude-desktop
-memnos agent-setup openclaw    # OpenClaw (assistant gateway — ~/.openclaw/openclaw.json)
-memnos agent-setup hermes      # Hermes Agent (Nous Research — ~/.hermes/config.yaml)
+memnos agent-setup claude-code     # Claude Code: MCP + hooks (auto recall/save) + /memnos + CLAUDE.md
+memnos agent-setup claude-desktop  # Claude Desktop
+memnos agent-setup codex           # Codex CLI
+memnos agent-setup cursor          # Cursor
+memnos agent-setup windsurf        # Windsurf
+memnos agent-setup openclaw        # OpenClaw (assistant gateway — ~/.openclaw/openclaw.json)
+memnos agent-setup hermes          # Hermes Agent (Nous Research — ~/.hermes/config.yaml)
 ```
+
+(`memnos claude-setup` still works — it's an alias of `agent-setup claude-code`.)
 
 Each mints a scoped token, is idempotent, and backs up files it edits. **Restart the agent
 afterward.** Claude Code is the only agent with lifecycle **hooks** (auto-recall before each
