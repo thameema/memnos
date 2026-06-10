@@ -368,10 +368,15 @@ def cmd_setup(args, cfg):
         print("                       private (nothing leaves your machine).")
         print("  ⚠ The embedding dimension (1536 vs 384) is baked into the schema. You CANNOT")
         print("    switch later without re-ingesting into a fresh database. Decide now.")
-        entered = getpass.getpass("\n  OpenAI API key (leave blank for free local mode): ").strip()
+        entered = getpass.getpass(
+            "\n  OpenAI API key (input is HIDDEN as you paste — leave blank for free local mode): ").strip()
         if entered:
             openai_key = entered
             os.environ["OPENAI_API_KEY"] = entered      # so the schema is built at 1536-d
+            masked = (entered[:6] + "…" + entered[-4:]) if len(entered) > 12 else "•" * len(entered)
+            print(f"  ✓ key received ({masked}, {len(entered)} chars) — stored encrypted in the vault.")
+        else:
+            print("  → no key entered — using free local 384-d mode (embeddings only, no extraction).")
 
     dim = 1536 if os.environ.get("OPENAI_API_KEY") else 384
     BrainStore(conn=conn).create_schema("memnos", dim=dim)
