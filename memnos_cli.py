@@ -363,22 +363,41 @@ def cmd_setup(args, cfg):
     print("\n" + "═" * 70)
     print("  ✓ Setup complete — but ONE more step: START THE SERVER")
     print("")
-    print("      memnos serve --background      # runs detached; logs to ~/.memnos/server.log")
-    print("      # or:  memnos serve            # foreground (Ctrl-C to stop)")
+    print("      memnos start          # starts the server in the background")
     print("")
     print("  Nothing works until the server is running — recall, the MCP tools, and any")
     print(f"  agent memory you just wired all talk to it. Then open  http://127.0.0.1:{port}/admin")
-    print("  Check status anytime with:  memnos status")
+    print("  Manage it with:  memnos status · memnos restart · memnos stop")
     print("═" * 70)
 
 
-def cmd_serve(args, cfg):
+def cmd_start(args, cfg):
+    """Start the server in the background (the usual way to run it)."""
     _apply_env(cfg)
     port = args.port or int(os.environ.get("MEMNOS_PORT", cfg.get("port", 8900)))
-    if getattr(args, "background", False):
-        return _serve_background(port)
-    print(f"[memnos] starting server in the FOREGROUND on http://127.0.0.1:{port}  (Ctrl-C to stop)")
-    print(f"         run detached instead with:  memnos serve --background")
+    _serve_background(port)
+
+
+def cmd_restart(args, cfg):
+    import time
+    _apply_env(cfg)
+    port = args.port or int(os.environ.get("MEMNOS_PORT", cfg.get("port", 8900)))
+    _stop_quiet()
+    url = f"http://127.0.0.1:{port}"
+    for _ in range(20):                      # wait for the old server to release the port
+        if not _server_up(url):
+            break
+        time.sleep(0.5)
+    _serve_background(port)
+
+
+def cmd_serve(args, cfg):
+    """Run the server in the FOREGROUND — for process managers (systemd/launchd), Docker, or
+    debugging. Most users want `memnos start` (background)."""
+    _apply_env(cfg)
+    port = args.port or int(os.environ.get("MEMNOS_PORT", cfg.get("port", 8900)))
+    print(f"[memnos] server (foreground) on http://127.0.0.1:{port}  —  Ctrl-C to stop "
+          f"(or use `memnos start` to run it in the background)")
     import memnos_server
     memnos_server.serve(port=args.port)
 
@@ -440,27 +459,37 @@ def cmd_status(args, cfg):
     if _server_up(url):
         print(f"  server:    RUNNING at {url}   ·   console: {url}/admin")
     else:
-        print(f"  server:    not running   (start: memnos serve --background)")
+        print(f"  server:    not running   (run: memnos start)")
     if os.path.exists(PID_PATH):
         print(f"  background: pid {open(PID_PATH).read().strip()}   ·   logs: {LOG_PATH}")
 
 
-def cmd_stop(args, cfg):
+def _stop_quiet():
+    """Best-effort stop of the background server; returns the pid it killed, or None."""
     import signal
     if not os.path.exists(PID_PATH):
-        sys.exit("no background memnos server recorded (no pid file). If it's in the foreground, Ctrl-C it.")
+        return None
+    pid = None
     try:
         pid = int(open(PID_PATH).read().strip())
         os.kill(pid, signal.SIGTERM)
-        print(f"[memnos] stopped background server (pid {pid})")
-    except ProcessLookupError:
-        print("[memnos] server wasn't running (stale pid file cleaned up)")
-    except Exception as e:
-        sys.exit(f"couldn't stop server: {e}")
+    except (ProcessLookupError, ValueError):
+        pid = None
+    except Exception:
+        pass
     try:
         os.remove(PID_PATH)
     except OSError:
         pass
+    return pid
+
+
+def cmd_stop(args, cfg):
+    if not os.path.exists(PID_PATH):
+        sys.exit("no background memnos server recorded (no pid file). If it's in the foreground, Ctrl-C it.")
+    pid = _stop_quiet()
+    print(f"[memnos] stopped background server (pid {pid})" if pid else
+          "[memnos] server wasn't running (cleaned up stale pid file)")
 
 
 def cmd_mcp(args, cfg):
@@ -875,13 +904,14 @@ def main():
     p.add_argument("--docker", action="store_true",
                    help="provision a pgvector Postgres in Docker (no Postgres setup needed)")
     p.set_defaults(fn=cmd_setup)
-    p = sub.add_parser("serve", help="run the memory server (foreground; --background to detach)")
-    p.add_argument("--port", type=int)
-    p.add_argument("--background", "-b", action="store_true",
-                   help="run detached; logs to ~/.memnos/server.log (stop with `memnos stop`)")
-    p.set_defaults(fn=cmd_serve)
-    sub.add_parser("status", help="show server + config + embedding mode").set_defaults(fn=cmd_status)
+    p = sub.add_parser("start", help="start the memory server in the background")
+    p.add_argument("--port", type=int); p.set_defaults(fn=cmd_start)
     sub.add_parser("stop", help="stop the background server").set_defaults(fn=cmd_stop)
+    p = sub.add_parser("restart", help="restart the background server")
+    p.add_argument("--port", type=int); p.set_defaults(fn=cmd_restart)
+    sub.add_parser("status", help="show server + config + embedding mode").set_defaults(fn=cmd_status)
+    p = sub.add_parser("serve", help="run the server in the FOREGROUND (process managers / Docker / debug)")
+    p.add_argument("--port", type=int); p.set_defaults(fn=cmd_serve)
     p = sub.add_parser("mcp"); p.add_argument("--namespace"); p.set_defaults(fn=cmd_mcp)
     p = sub.add_parser("admin"); p.set_defaults(fn=cmd_admin)
     p = sub.add_parser("principal"); p.add_argument("name"); p.add_argument("--kind", default="user"); p.set_defaults(fn=cmd_principal)
