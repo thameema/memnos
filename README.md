@@ -77,6 +77,8 @@ memnos start                  # start the server (background) → open http://12
 
 Operate it like any daemon: `memnos status` / `stop` / `restart` (`memnos serve` runs it in
 the **foreground** for systemd/launchd/Docker), and `memnos upgrade` updates in place.
+**`memnos autostart`** installs a login service (launchd/systemd) so the server survives
+reboots and waits for Postgres if it isn't up yet — setup offers it automatically.
 
 > **Alternative (needs Docker):** `memnos setup --docker` spins up a pgvector Postgres for you
 > — no Postgres install or pgvector version-matching. Then `memnos start`.

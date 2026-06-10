@@ -60,8 +60,16 @@ NS = _ns()
 
 
 def _post(path, payload):
-    r = httpx.post(f"{URL}{path}", json={"namespace": _ns(), **payload},
-                   headers={"Authorization": f"Bearer {TOKEN}"}, timeout=20)
+    try:
+        r = httpx.post(f"{URL}{path}", json={"namespace": _ns(), **payload},
+                       headers={"Authorization": f"Bearer {TOKEN}"}, timeout=20)
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        # fail fast + clearly — a down server must never surface as a cryptic traceback
+        raise RuntimeError(f"memnos server is not running at {URL} — "
+                           "ask the user to run `memnos start`") from None
+    if r.status_code == 503:
+        raise RuntimeError("memnos: database unreachable (Postgres may be down) — "
+                           "ask the user to check `memnos status`")
     r.raise_for_status()
     return r.json()
 

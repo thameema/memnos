@@ -87,6 +87,12 @@ downloads the local embedding/reranker models (~1 GB) — `memnos start` shows t
 (`memnos serve` runs the server in the *foreground* instead — for systemd, launchd, Docker,
 or debugging.)
 
+**Recommended:** `memnos autostart` installs a login service (launchd on macOS, systemd
+`--user` on Linux) so the server starts at every login, restarts if it dies, and **waits for
+Postgres** if it isn't up yet — your agents always have memory without you thinking about
+it. Setup offers this automatically. Logs go to `~/.memnos/server.log` (auto-rotated at
+10 MB); remove with `memnos autostart --remove`.
+
 Open the management console at **http://127.0.0.1:8900/admin** and paste your admin token to
 create namespaces, mint/revoke tokens, manage grants, store secrets, and watch the dashboard.
 
