@@ -540,10 +540,22 @@ def cmd_restart(args, cfg):
         sys.exit(f"server still not up — check:  tail {LOG_PATH}")
     _stop_quiet()
     url = f"http://127.0.0.1:{port}"
+    went_down = False
     for _ in range(20):                      # wait for the old server to release the port
         if not _server_up(url):
+            went_down = True
             break
         time.sleep(0.5)
+    if not went_down:
+        # a restart that doesn't restart is a LIE (field: leaked process survived every
+        # "restart" because an unmanaged service owned it) — fail loudly instead
+        sys.exit(f"restart FAILED: a memnos server is still running at {url} that this CLI "
+                 "does not manage (no/stale pid file). It may be an old launchd/systemd "
+                 "service or a foreground `memnos serve`.\n"
+                 "  find it:   launchctl list | grep -i memnos     (macOS)\n"
+                 "             systemctl --user list-units | grep -i memnos   (Linux)\n"
+                 "  or:        lsof -i :%d   then kill that pid, and use `memnos autostart` "
+                 "going forward." % port)
     _serve_background(port)
 
 
@@ -639,12 +651,28 @@ def cmd_status(args, cfg):
     mode = "OpenAI 1536-d + extraction" if (cfg.get("openai") or os.environ.get("OPENAI_API_KEY")) \
         else "local 384-d (free, no extraction)"
     print(f"  embeddings: {mode}")
-    if _server_up(url):
+    running = _server_up(url)
+    if running:
         print(f"  server:    RUNNING at {url}   ·   console: {url}/admin")
     else:
         print(f"  server:    not running   (run: memnos start)")
+    pid_alive = False
     if os.path.exists(PID_PATH):
-        print(f"  background: pid {open(PID_PATH).read().strip()}   ·   logs: {LOG_PATH}")
+        try:
+            pid = int(open(PID_PATH).read().strip())
+            os.kill(pid, 0)
+            pid_alive = True
+            print(f"  background: pid {pid}   ·   logs: {LOG_PATH}")
+        except (ProcessLookupError, ValueError):
+            print(f"  background: STALE pid file (that process is gone) — the running server, "
+                  "if any, is NOT managed by `memnos start`")
+        except PermissionError:
+            pid_alive = True
+            print(f"  background: pid {open(PID_PATH).read().strip()}   ·   logs: {LOG_PATH}")
+    if running and not pid_alive and not _autostart_installed():
+        print("  ⚠ server is running but unmanaged (foreground shell, an old launchd/systemd "
+              "service, or another manager) — `memnos stop/restart` may not control it.\n"
+              "    find it:  lsof -i :" + str(port))
     svc = _autostart_installed()
     print(f"  autostart: {'installed (' + svc[0] + ') — starts at login, restarts on failure' if svc else 'not installed   (run: memnos autostart)'}")
     if cfg.get("proxy_token"):                    # capture proxy configured on this machine
