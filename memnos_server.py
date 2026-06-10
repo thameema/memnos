@@ -59,6 +59,8 @@ def _load_config():
             os.environ.setdefault("MEMNOS_SECRET_KEY", cfg["secret_key"])
         if cfg.get("port"):
             os.environ.setdefault("MEMNOS_PORT", str(cfg["port"]))
+        if cfg.get("openai"):                         # 'secret://openai' — resolved at startup
+            os.environ.setdefault("OPENAI_API_KEY", cfg["openai"])
     except (FileNotFoundError, ValueError):
         pass
 

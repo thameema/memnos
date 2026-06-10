@@ -22,7 +22,17 @@ import urllib.request
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".memnos")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
+LOG_PATH = os.path.join(CONFIG_DIR, "server.log")
+PID_PATH = os.path.join(CONFIG_DIR, "server.pid")
 DEFAULT_DSN = "postgresql://memnos:memnos@localhost:5432/memnos"
+
+
+def _version():
+    try:
+        import importlib.metadata as _m
+        return "v" + _m.version("memnos")
+    except Exception:
+        return "(dev)"
 
 
 # ---- config -----------------------------------------------------------------
@@ -305,20 +315,41 @@ def cmd_setup(args, cfg):
     from core.store import BrainStore
     from core.control import Control
     from core.vault import Vault
+    secret_key = os.environ.get("MEMNOS_SECRET_KEY") or cfg.get("secret_key") or Vault.keygen()
+    os.environ["MEMNOS_SECRET_KEY"] = secret_key
+
+    # OpenAI key — optional; enables 1536-d embeddings + bi-temporal fact extraction. Without
+    # it, memnos runs free local 384-d mode (embeddings only). Stored ENCRYPTED in the vault.
+    openai_key = None
+    if not os.environ.get("OPENAI_API_KEY") and not (args.dsn or os.environ.get("MEMNOS_CI")):
+        print("\n── Embeddings: choose now (this is PERMANENT for this database) ──────────────")
+        print("  With an OpenAI key:  1536-d OpenAI embeddings + LLM fact extraction →")
+        print("                       stronger recall + structured bi-temporal facts. Costs")
+        print("                       OpenAI usage per write; your key is encrypted in the vault.")
+        print("  Without a key:       free LOCAL 384-d embeddings, no extraction, no cost, fully")
+        print("                       private (nothing leaves your machine).")
+        print("  ⚠ The embedding dimension (1536 vs 384) is baked into the schema. You CANNOT")
+        print("    switch later without re-ingesting into a fresh database. Decide now.")
+        entered = getpass.getpass("\n  OpenAI API key (leave blank for free local mode): ").strip()
+        if entered:
+            openai_key = entered
+            os.environ["OPENAI_API_KEY"] = entered      # so the schema is built at 1536-d
+
     dim = 1536 if os.environ.get("OPENAI_API_KEY") else 384
     BrainStore(conn=conn).create_schema("memnos", dim=dim)
     Control.init(conn)
-    secret_key = os.environ.get("MEMNOS_SECRET_KEY") or cfg.get("secret_key") or Vault.keygen()
+    if openai_key:
+        Vault.set(conn, "openai", openai_key, "OpenAI API key (embeddings + extraction)")
+        cfg["openai"] = "secret://openai"               # server resolves this from the vault
     pid = Control.create_principal(conn, "admin", "service")
     Control.grant(conn, pid, "*")
-    os.environ["MEMNOS_SECRET_KEY"] = secret_key
     tok = Control.mint_token(conn, pid, "console")
     cfg.update({"dsn": dsn, "port": cfg.get("port", 8900), "secret_key": secret_key})
     save_config(cfg)
-    print(f"\n✓ schema + control plane created (embedding dim {dim})")
+    print(f"\n✓ schema + control plane created (embedding dim {dim}"
+          f"{' — OpenAI key stored in the encrypted vault' if openai_key else ''})")
     print(f"✓ config written to {CONFIG_PATH}")
     print(f"\nADMIN TOKEN (shown once — paste into the /admin console or `--token`):\n  {tok}")
-    print("\nNext:  memnos serve   then open  http://127.0.0.1:8900/admin")
 
     # friction-free: if Claude Code is installed, wire it up (MCP + hooks + /memnos + CLAUDE.md)
     if os.path.isdir(os.path.join(os.path.expanduser("~"), ".claude")):
@@ -328,11 +359,108 @@ def cmd_setup(args, cfg):
             cfg = load_config()
             cmd_claude_setup(argparse.Namespace(namespace=None, force=False), cfg)
 
+    port = cfg.get("port", 8900)
+    print("\n" + "═" * 70)
+    print("  ✓ Setup complete — but ONE more step: START THE SERVER")
+    print("")
+    print("      memnos serve --background      # runs detached; logs to ~/.memnos/server.log")
+    print("      # or:  memnos serve            # foreground (Ctrl-C to stop)")
+    print("")
+    print("  Nothing works until the server is running — recall, the MCP tools, and any")
+    print(f"  agent memory you just wired all talk to it. Then open  http://127.0.0.1:{port}/admin")
+    print("  Check status anytime with:  memnos status")
+    print("═" * 70)
+
 
 def cmd_serve(args, cfg):
     _apply_env(cfg)
+    port = args.port or int(os.environ.get("MEMNOS_PORT", cfg.get("port", 8900)))
+    if getattr(args, "background", False):
+        return _serve_background(port)
+    print(f"[memnos] starting server in the FOREGROUND on http://127.0.0.1:{port}  (Ctrl-C to stop)")
+    print(f"         run detached instead with:  memnos serve --background")
     import memnos_server
     memnos_server.serve(port=args.port)
+
+
+def _serve_background(port):
+    import subprocess
+    import shutil
+    import time
+    import urllib.request
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    url = f"http://127.0.0.1:{port}"
+    if _server_up(url):
+        sys.exit(f"a memnos server is already running at {url} (stop it with `memnos stop`).")
+    exe = shutil.which("memnos")
+    cmd = ([exe, "serve"] if exe else [sys.executable, os.path.abspath(__file__), "serve"]) + ["--port", str(port)]
+    log = open(LOG_PATH, "a")
+    proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                            start_new_session=True, env=dict(os.environ))
+    with open(PID_PATH, "w") as f:
+        f.write(str(proc.pid))
+    print(f"[memnos] starting server in the background (pid {proc.pid}) ...")
+    for _ in range(40):
+        if _server_up(url):
+            print(f"[memnos] ✓ server running at {url}   ·   console: {url}/admin")
+            print(f"         logs:  {LOG_PATH}")
+            print(f"         stop:  memnos stop")
+            return
+        if proc.poll() is not None:
+            sys.exit(f"server exited on startup — see the log:  tail {LOG_PATH}")
+        time.sleep(1.5)
+    print(f"[memnos] server is starting (still loading models?) — check `memnos status` / {LOG_PATH}")
+
+
+def _server_up(url, timeout=2):
+    import urllib.request
+    try:
+        urllib.request.urlopen(url + "/healthz", timeout=timeout).read()
+        return True
+    except Exception:
+        return False
+
+
+def cmd_status(args, cfg):
+    port = int(os.environ.get("MEMNOS_PORT", cfg.get("port", 8900)))
+    url = f"http://127.0.0.1:{port}"
+    print(f"memnos {_version()}")
+    have_cfg = os.path.exists(CONFIG_PATH)
+    print(f"  config:    {CONFIG_PATH}  ({'ok' if have_cfg else 'missing — run: memnos setup'})")
+    dsn = cfg.get("dsn")
+    if dsn:
+        import re
+        redacted = re.sub(r"://([^:]+):[^@]*@", r"://\1:****@", dsn)
+        print(f"  database:  {redacted}")
+    else:
+        print("  database:  not configured  (run: memnos setup)")
+    mode = "OpenAI 1536-d + extraction" if (cfg.get("openai") or os.environ.get("OPENAI_API_KEY")) \
+        else "local 384-d (free, no extraction)"
+    print(f"  embeddings: {mode}")
+    if _server_up(url):
+        print(f"  server:    RUNNING at {url}   ·   console: {url}/admin")
+    else:
+        print(f"  server:    not running   (start: memnos serve --background)")
+    if os.path.exists(PID_PATH):
+        print(f"  background: pid {open(PID_PATH).read().strip()}   ·   logs: {LOG_PATH}")
+
+
+def cmd_stop(args, cfg):
+    import signal
+    if not os.path.exists(PID_PATH):
+        sys.exit("no background memnos server recorded (no pid file). If it's in the foreground, Ctrl-C it.")
+    try:
+        pid = int(open(PID_PATH).read().strip())
+        os.kill(pid, signal.SIGTERM)
+        print(f"[memnos] stopped background server (pid {pid})")
+    except ProcessLookupError:
+        print("[memnos] server wasn't running (stale pid file cleaned up)")
+    except Exception as e:
+        sys.exit(f"couldn't stop server: {e}")
+    try:
+        os.remove(PID_PATH)
+    except OSError:
+        pass
 
 
 def cmd_mcp(args, cfg):
@@ -740,13 +868,20 @@ def main():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     cfg = load_config()
     ap = argparse.ArgumentParser(prog="memnos", description="memnos memory platform CLI")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub = ap.add_subparsers(dest="cmd")   # not required — bare `memnos` prints help
 
-    p = sub.add_parser("setup"); p.add_argument("--dsn")
+    p = sub.add_parser("setup", help="connect to Postgres, create schema + admin token")
+    p.add_argument("--dsn")
     p.add_argument("--docker", action="store_true",
                    help="provision a pgvector Postgres in Docker (no Postgres setup needed)")
     p.set_defaults(fn=cmd_setup)
-    p = sub.add_parser("serve"); p.add_argument("--port", type=int); p.set_defaults(fn=cmd_serve)
+    p = sub.add_parser("serve", help="run the memory server (foreground; --background to detach)")
+    p.add_argument("--port", type=int)
+    p.add_argument("--background", "-b", action="store_true",
+                   help="run detached; logs to ~/.memnos/server.log (stop with `memnos stop`)")
+    p.set_defaults(fn=cmd_serve)
+    sub.add_parser("status", help="show server + config + embedding mode").set_defaults(fn=cmd_status)
+    sub.add_parser("stop", help="stop the background server").set_defaults(fn=cmd_stop)
     p = sub.add_parser("mcp"); p.add_argument("--namespace"); p.set_defaults(fn=cmd_mcp)
     p = sub.add_parser("admin"); p.set_defaults(fn=cmd_admin)
     p = sub.add_parser("principal"); p.add_argument("name"); p.add_argument("--kind", default="user"); p.set_defaults(fn=cmd_principal)
@@ -763,8 +898,12 @@ def main():
     p = sub.add_parser("hook"); p.add_argument("which", choices=["recall", "remember"]); p.set_defaults(fn=cmd_hook)
     p = sub.add_parser("claude-setup"); p.add_argument("--namespace"); p.add_argument("--force", action="store_true"); p.set_defaults(fn=cmd_claude_setup)
     p = sub.add_parser("agent-setup"); p.add_argument("agent", choices=list(_AGENTS)); p.add_argument("--namespace"); p.set_defaults(fn=cmd_agent_setup)
+    sub.add_parser("help", help="show this help").set_defaults(fn=lambda a, c: ap.print_help())
 
     args = ap.parse_args()
+    if not getattr(args, "cmd", None):     # bare `memnos` → help, not an error
+        ap.print_help()
+        return
     args.fn(args, cfg)
 
 
