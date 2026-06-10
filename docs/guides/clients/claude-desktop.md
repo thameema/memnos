@@ -43,6 +43,21 @@ What it writes:
 > `PATH` that doesn't include `~/.local/bin`, so a bare `memnos` fails to resolve there.
 > `agent-setup` handles this for you.
 
+## Make memory use consistent — add the memnos skill (recommended)
+
+Claude Desktop has no lifecycle hooks, so the MCP tools are called at Claude's discretion.
+A **personal skill** raises that from "occasional" to "habitual": it teaches Claude to
+`recall` before answering questions about past work and to `remember` decisions and
+identifiers (ticket keys, PR numbers — verbatim) after answering.
+
+`memnos agent-setup claude-desktop` writes the skill to `~/.memnos/claude-desktop-skill/`
+(also in the repo at [`claude-desktop-skill/SKILL.md`](claude-desktop-skill/SKILL.md)).
+Add it in Claude Desktop: **Customize → Skills → "+"** and select that folder.
+
+> **Tip:** Claude Desktop's own *"Generate memory from chat history"* (Settings →
+> Capabilities) is a separate, account-bound memory. Running both means two memories that
+> don't see each other — if memnos is your system of record, leave that toggle off.
+
 ## Usage notes
 
 - Claude Desktop gets the memnos MCP **tools** (`recall`, `recall_wide`, `remember`,
