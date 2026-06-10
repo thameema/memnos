@@ -84,6 +84,12 @@ POOL_MAX = int(os.environ.get("MEMNOS_POOL_MAX", "16"))
 MAX_BODY = 256 * 1024          # 256 KB request cap
 WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/corpus/ingest",
              "/ingest/file", "/episode/segment", "/episode/decay", "/namespace/copy"}
+# Endpoints whose handler mixes DB work with SLOW NON-DB work (network embeddings, LLM
+# calls, cross-encoder rerank, file parsing). These are served by the PHASED dispatcher
+# (_phased): pool connections are only held for the short DB phases — never across model
+# I/O. Everything left in the generic do_POST block below is pure SQL.
+PHASED_OPS = {"/recall", "/memory/search", "/recall_v2", "/memory/context", "/consolidate",
+              "/ingest/file", "/episode/segment", "/episode/recall", "/reconcile"}
 
 
 def _chunk_text(text, size=1200, overlap=150):
@@ -147,13 +153,14 @@ def _webhook_post(url, payload):
 
 def _pusher_loop():
     """Background webhook delivery: wakes on a write (event) or every PUSHER_INTERVAL,
-    delivers pending events to subscriber webhooks at-least-once. Daemon thread."""
+    delivers pending events to subscriber webhooks at-least-once. Daemon thread.
+    conn_factory=POOL.connection: DB steps each use a short-lived pool conn so NO pool
+    slot is held across the webhook POSTs (network, up to WEBHOOK_TIMEOUT each)."""
     while True:
         _DELIVER_EVENT.wait(timeout=PUSHER_INTERVAL)
         _DELIVER_EVENT.clear()
         try:
-            with POOL.connection() as conn:
-                Control.deliver_pending(conn, _webhook_post)
+            Control.deliver_pending(None, _webhook_post, conn_factory=POOL.connection)
         except (PoolTimeout, OperationalError) as e:
             print(f"[memnos] webhook pusher: DB unreachable ({type(e).__name__}) — will retry", flush=True)
         except Exception:
@@ -441,11 +448,19 @@ class Handler(BaseHTTPRequestHandler):
         if not ns or len(ns) > 200:
             return self._send(400, {"error": "namespace required (<=200 chars)"})
 
-        if self.path == "/remember":
+        if self.path in ("/remember", "/memory/write"):
             # dedicated phased path: a pool connection must NEVER be held across the
-            # LLM extraction call — that starves the pool under concurrent sessions
-            # (field: 30s admin queueing behind in-flight hook writes)
-            return self._remember_phased(req, ns, token, t0)
+            # embedding or LLM extraction calls — that starves the pool under concurrent
+            # sessions (field: 30s admin queueing behind in-flight hook writes)
+            if self.path == "/memory/write":   # alias accepts text OR content
+                req["text"] = str(req.get("text", "") or req.get("content", "")).strip()
+            return self._remember_phased(req, ns, token, t0,
+                                         action=self.path.lstrip("/"))
+        if self.path in PHASED_OPS:
+            # endpoints with slow non-DB work (query embedding, cross-encoder rerank,
+            # per-entity dossier LLM calls, chunk extraction, file parsing): same phased
+            # discipline — short conn for auth/reads/writes, NO conn during model I/O.
+            return self._phased(req, ns, token, t0)
 
         try:
             with POOL.connection() as conn:
@@ -472,48 +487,10 @@ class Handler(BaseHTTPRequestHandler):
                 cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 action = self.path.lstrip("/")
                 try:
-                    if self.path == "/remember":
-                        text = str(req.get("text", "")).strip()
-                        if not text or len(text) > 20000:
-                            return self._send(400, {"error": "text required (<=20000 chars)"})
-                        out = mem.remember(ns, text, speaker=req.get("speaker"), session_id=req.get("session_id"))
-                    elif self.path == "/recall":
-                        q = str(req.get("query", "")).strip()
-                        if not q or len(q) > 4000:
-                            return self._send(400, {"error": "query required (<=4000 chars)"})
-                        # use the engine's CANONICAL (benchmarked) defaults; only override
-                        # when the client explicitly supplies a value — no server-side drift.
-                        rkw = {}
-                        if "raw_quota" in req: rkw["raw_quota"] = int(req["raw_quota"])
-                        if "fact_quota" in req: rkw["fact_quota"] = int(req["fact_quota"])
-                        ckw = {"max_chars": int(req["max_chars"])} if "max_chars" in req else {}
-                        scope = str(req.get("scope", "")).lower()
-                        if scope in ("all", "wide"):
-                            # WIDEN across every namespace this key may read (ACL-bounded)
-                            nss = Control.readable_namespaces(conn, principal)
-                            rows = mem.recall_wide(nss, q, **rkw)
-                            # render context from the SAME rows — retrieval+rerank runs once
-                            out = {"memories": rows, "context": mem.render_context(rows, **ckw),
-                                   "namespaces_searched": nss}
-                        else:
-                            rows = mem.recall(ns, q, **rkw)
-                            out = {"memories": rows, "context": mem.render_context(rows, **ckw)}
-                    elif self.path == "/consolidate":
-                        out = mem.consolidate(ns)
-                    # --- episodic tier (hippocampus) + decay ---
-                    elif self.path == "/episode/segment":
-                        out = mem.segment_episodes(ns, gap_minutes=int(req.get("gap_minutes", 30)))
-                    elif self.path == "/episode/decay":
+                    # --- episodic decay (pure SQL; segment/recall are PHASED above) ---
+                    if self.path == "/episode/decay":
                         out = {"updated": store.decay_episodes(mem.schema, ns,
                                                                half_life_days=float(req.get("half_life_days", 30)))}
-                    elif self.path == "/episode/recall":
-                        q = str(req.get("query", "")).strip()
-                        if not q or len(q) > 4000:
-                            return self._send(400, {"error": "query required (<=4000 chars)"})
-                        rows = store.search_episodic(mem.schema, ns, mem.embed(q), q,
-                                                     k=int(req.get("k", 8)))
-                        store.touch_episodes(mem.schema, [r["id"] for r in rows])   # access signal for decay
-                        out = {"episodes": rows}
                     elif self.path == "/episode":
                         try:
                             eid = int(req.get("id"))
@@ -524,26 +501,7 @@ class Handler(BaseHTTPRequestHandler):
                             return self._send(404, {"error": "episode not found"})
                         store.touch_episodes(mem.schema, [eid])
                         out = res
-                    # --- memory CRUD parity (master/ArcadeDB feature parity) ---
-                    elif self.path == "/memory/write":     # alias of /remember
-                        text = str(req.get("text", "") or req.get("content", "")).strip()
-                        if not text or len(text) > 20000:
-                            return self._send(400, {"error": "text/content required (<=20000 chars)"})
-                        out = mem.remember(ns, text, speaker=req.get("speaker"), session_id=req.get("session_id"))
-                    elif self.path in ("/memory/search", "/recall_v2"):   # alias of /recall (memory_search)
-                        q = str(req.get("query", "")).strip()
-                        if not q or len(q) > 4000:
-                            return self._send(400, {"error": "query required (<=4000 chars)"})
-                        rkw = {}
-                        if "raw_quota" in req: rkw["raw_quota"] = int(req["raw_quota"])
-                        if "fact_quota" in req: rkw["fact_quota"] = int(req["fact_quota"])
-                        out = {"memories": mem.recall(ns, q, **rkw)}
-                    elif self.path == "/memory/context":   # ready-to-paste context block
-                        q = str(req.get("query", "")).strip()
-                        if not q or len(q) > 4000:
-                            return self._send(400, {"error": "query required (<=4000 chars)"})
-                        ckw = {"max_chars": int(req["max_chars"])} if "max_chars" in req else {}
-                        out = {"context": mem.context(ns, q, **ckw)}
+                    # --- memory CRUD parity (write/search/context are PHASED above) ---
                     elif self.path == "/memory/delete":    # expire a semantic fact by id (system-time)
                         try:
                             sid = int(req.get("id"))
@@ -597,14 +555,6 @@ class Handler(BaseHTTPRequestHandler):
                         out = res
                     elif self.path == "/contradictions":   # check_contradictions
                         out = {"contradictions": store.contradictions(mem.schema, ns)}
-                    elif self.path == "/reconcile":        # external claim vs memnos (staleness)
-                        stmt = str(req.get("statement", "")).strip()
-                        if not stmt or len(stmt) > 4000:
-                            return self._send(400, {"error": "statement required (<=4000 chars)"})
-                        qv = mem.embed(stmt)
-                        out = store.reconcile(mem.schema, ns, stmt, qv,
-                                              subject=(str(req["subject"]).strip() if req.get("subject") else None),
-                                              predicate=(str(req["predicate"]).strip() if req.get("predicate") else None))
                     elif self.path == "/knowledge/health":  # knowledge_health (namespace)
                         out = store.health(mem.schema, ns)
                     # --- copy / move memories between namespaces ---
@@ -656,30 +606,6 @@ class Handler(BaseHTTPRequestHandler):
                         out = {"constraints": store.corpus_check(mem.schema, ns, snippet)}
                     elif self.path == "/corpus/list":
                         out = {"sources": Control.corpus_list(conn, ns)}
-                    # --- file ingest (chunk a document into memory) ---
-                    elif self.path == "/ingest/file":
-                        filename = (str(req.get("filename", "")).strip() or "upload")
-                        text = req.get("text")
-                        if text is None and req.get("content_b64"):
-                            try:
-                                raw = base64.b64decode(req["content_b64"])
-                            except Exception:
-                                return self._send(400, {"error": "content_b64 not valid base64"})
-                            text = _extract_file_text(filename, raw)
-                            if text is None:
-                                return self._send(415, {"error": f"cannot extract text from {filename} "
-                                                        "(install pypdf/python-docx, or send extracted 'text')"})
-                        text = str(text or "")
-                        if not text.strip():
-                            return self._send(400, {"error": "text or content_b64 required"})
-                        if len(text) > 2_000_000:
-                            return self._send(413, {"error": "file too large (2MB text cap)"})
-                        do_extract = bool(req.get("extract", False))
-                        tids = []
-                        for ch in _chunk_text(text, int(req.get("chunk_size", 1200))):
-                            tids.append(mem.remember(ns, ch, session_id=filename,
-                                                     extract=do_extract)["turn_id"])
-                        out = {"filename": filename, "chunks": len(tids), "turn_ids": tids}
                     else:
                         return self._send(404, {"error": "not found"})
                 except Exception as op_err:
@@ -712,14 +638,28 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _remember_phased(self, req, ns, token, t0):
-        """/remember in three phases — the 'LLM at ingest only, NEVER on the request
-        path while holding resources' rule from the architecture, finally enforced:
-          P1 (conn, ~ms):  auth + ACL + redact + store the verbatim raw turn
+    def _auth_short(self, ns, token, *, write, action):
+        """Short-lived auth+ACL phase on its OWN pool connection (released before any
+        slow work). Returns (principal, None) or (None, (code, obj)) to send."""
+        with POOL.connection() as conn:
+            principal = Control.authenticate(conn, token)
+            if principal is None:
+                return None, (401, {"error": "unauthorized"})
+            if not Control.authorize(conn, principal, ns, write=write):
+                Control.audit(conn, principal, action, ns, False, {"reason": "forbidden"})
+                return None, (403, {"error": "forbidden for namespace"})
+        return principal, None
+
+    def _remember_phased(self, req, ns, token, t0, action="remember"):
+        """/remember (and its /memory/write alias) in phases — the 'LLM at ingest only,
+        NEVER on the request path while holding resources' rule from the architecture:
+          P0 (conn, ~ms):  auth + ACL
+          P1a (NO conn):   redact + EMBED the turn — network I/O in 1536 mode
+          P1b (conn, ~ms): store the verbatim raw turn
           P2 (NO conn):    LLM fact extraction — pure model I/O
           P3 (conn, ~ms):  supersession + fact writes + usage + audit
         Default stays SYNCHRONOUS (same response contract). {"async": true} defers
-        P2+P3 to the background ingest worker and returns immediately after P1 —
+        P2+P3 to the background ingest workers and returns immediately after P1 —
         used by the Claude Code Stop hook, which never reads the fact count."""
         text = str(req.get("text", "")).strip()
         if not text or len(text) > 20000:
@@ -728,21 +668,21 @@ class Handler(BaseHTTPRequestHandler):
         usage = _UsageAcc()
         cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
         try:
-            with POOL.connection() as conn:                       # P1
-                principal = Control.authenticate(conn, token)
-                if principal is None:
-                    return self._send(401, {"error": "unauthorized"})
-                if not Control.authorize(conn, principal, ns, write=True):
-                    Control.audit(conn, principal, "remember", ns, False, {"reason": "forbidden"})
-                    return self._send(403, {"error": "forbidden for namespace"})
+            principal, err = self._auth_short(ns, token, write=True, action=action)  # P0
+            if err:
+                return self._send(*err)
+            from core.redact import redact as _redact
+            rtext0, _n = _redact(text)                            # P1a — CPU
+            vec = EMBED(rtext0)                                   # P1a — network, NO conn
+            with POOL.connection() as conn:                       # P1b — short DB write
                 mem = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM, on_usage=usage)
-                tid, rtext, obs = mem.remember_turn(ns, text, speaker=req.get("speaker"),
-                                                    session_id=req.get("session_id"))
+                tid, rtext, obs = mem.remember_turn(ns, rtext0, speaker=req.get("speaker"),
+                                                    session_id=req.get("session_id"), vec=vec)
             # conn is back in the pool. `mem` is reused ONLY for extract_facts below,
             # which never touches its store.
             if LLM is None:                                       # local mode: no extraction
                 with POOL.connection() as conn:
-                    Control.audit(conn, principal, "remember", ns, True,
+                    Control.audit(conn, principal, action, ns, True,
                                   latency_ms=int((time.perf_counter() - t0) * 1000), status=200)
                 _DELIVER_EVENT.set()
                 return self._send(200, {"turn_id": tid, "facts": 0, "superseded": 0})
@@ -754,13 +694,15 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:                                  # queue full → fall through to sync
                     pass
             facts = mem.extract_facts(rtext, obs)                 # P2 — NO conn held
+            if hasattr(EMBED, "prime") and facts:                 # batch-embed fact statements, NO conn
+                EMBED.prime([f["statement"] for f in facts])
             with POOL.connection() as conn:                       # P3
                 mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM, on_usage=usage)
                 nf, nsup = mem3.write_facts(ns, facts, obs, tid)
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
-                Control.record_usage(conn, principal, ns, "remember", mem3.extract_model,
+                Control.record_usage(conn, principal, ns, action, mem3.extract_model,
                                      usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))
-                Control.audit(conn, principal, "remember", ns, True,
+                Control.audit(conn, principal, action, ns, True,
                               latency_ms=int((time.perf_counter() - t0) * 1000), status=200)
             _DELIVER_EVENT.set()
             return self._send(200, {"turn_id": tid, "facts": nf, "superseded": nsup})
@@ -771,10 +713,175 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             return self._send(500, {"error": "internal error"})
 
+    def _phased(self, req, ns, token, t0):
+        """Generic phased dispatcher for PHASED_OPS: P0 short conn (auth+ACL) → op with
+        the phased discipline (model I/O with NO conn; DB via short-lived conns) →
+        P-final short conn (usage + audit). Response contracts identical to the old
+        in-block handlers."""
+        action = self.path.lstrip("/")
+        usage = _UsageAcc()
+        cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
+        try:
+            principal, err = self._auth_short(ns, token, write=self.path in WRITE_OPS,
+                                              action=action)
+            if err:
+                return self._send(*err)
+            # store=None: DB phases attach a short-lived BrainStore per pool conn
+            mem = MemnosMemory(None, EMBED, dim=DIM, llm=LLM, on_usage=usage)
+            try:
+                code, out = self._phased_op(mem, req, ns, principal)
+            except Exception as op_err:
+                with POOL.connection() as conn:
+                    Control.audit(conn, principal, action, ns, False,
+                                  {"error": type(op_err).__name__, "msg": str(op_err)[:300]},
+                                  latency_ms=int((time.perf_counter() - t0) * 1000), status=500)
+                traceback.print_exc()
+                return self._send(500, {"error": "internal error"})
+            if code != 200:
+                return self._send(code, out)
+            with POOL.connection() as conn:                       # usage + audit (short)
+                cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
+                Control.record_usage(conn, principal, ns, action, mem.extract_model,
+                                     usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))
+                rcount = len(out.get("memories", [])) if isinstance(out, dict) and "memories" in out else None
+                Control.audit(conn, principal, action, ns, True,
+                              latency_ms=int((time.perf_counter() - t0) * 1000),
+                              result_count=rcount, status=200)
+            if self.path in WRITE_OPS:
+                _DELIVER_EVENT.set()
+            return self._send(200, out)
+        except (PoolTimeout, OperationalError) as e:
+            print(f"[memnos] DB unreachable ({type(e).__name__}): {e}", flush=True)
+            return self._send(503, {"error": "database unreachable — is Postgres running?"})
+        except Exception:
+            traceback.print_exc()
+            return self._send(500, {"error": "internal error"})
+
+    def _phased_op(self, mem, req, ns, principal):
+        """One PHASED_OPS endpoint body. Returns (code, out). Pool connections are
+        acquired ONLY around pure-DB sections; embeddings/LLM/rerank run with none."""
+        path = self.path
+        if path in ("/recall", "/memory/search", "/recall_v2", "/memory/context"):
+            q = str(req.get("query", "")).strip()
+            if not q or len(q) > 4000:
+                return 400, {"error": "query required (<=4000 chars)"}
+            # engine's CANONICAL (benchmarked) defaults; only override when the client
+            # explicitly supplies a value — no server-side drift.
+            rkw = {}
+            if "raw_quota" in req: rkw["raw_quota"] = int(req["raw_quota"])
+            if "fact_quota" in req: rkw["fact_quota"] = int(req["fact_quota"])
+            ckw = {"max_chars": int(req["max_chars"])} if "max_chars" in req else {}
+            qv = mem.embed(q)                                     # network — NO conn
+            wide = path == "/recall" and str(req.get("scope", "")).lower() in ("all", "wide")
+            with POOL.connection() as conn:                       # DB fetch phase
+                mem.store = BrainStore(conn=conn)
+                if wide:
+                    # WIDEN across every namespace this key may read (ACL-bounded)
+                    nss = Control.readable_namespaces(conn, principal)
+                    raw_c, sem_c = mem.recall_wide_fetch(nss, q, qv=qv)
+                else:
+                    bundle = mem.recall_fetch(ns, q, qv=qv)
+                mem.store = None
+            # CPU rerank phase — NO conn (ranking identical to pre-split recall)
+            if wide:
+                rows = mem.recall_wide_rank(q, raw_c, sem_c, **rkw)
+                out = {"memories": rows, "context": mem.render_context(rows, **ckw),
+                       "namespaces_searched": nss}
+            else:
+                rows = mem.recall_rank(q, bundle, **rkw)
+                if path == "/recall":
+                    out = {"memories": rows, "context": mem.render_context(rows, **ckw)}
+                elif path == "/memory/context":
+                    out = {"context": mem.render_context(rows, **ckw)}
+                else:                                             # /memory/search, /recall_v2
+                    out = {"memories": rows}
+            return 200, out
+
+        if path == "/consolidate":
+            # read (conn) → per-entity dossier LLM + embeddings (NO conn) → write (conn)
+            return 200, mem.consolidate(ns, conn_factory=POOL.connection)
+
+        if path == "/episode/segment":
+            return 200, mem.segment_episodes(ns, gap_minutes=int(req.get("gap_minutes", 30)),
+                                             conn_factory=POOL.connection)
+
+        if path == "/episode/recall":
+            q = str(req.get("query", "")).strip()
+            if not q or len(q) > 4000:
+                return 400, {"error": "query required (<=4000 chars)"}
+            qv = mem.embed(q)                                     # network — NO conn
+            with POOL.connection() as conn:
+                store = BrainStore(conn=conn)
+                rows = store.search_episodic(mem.schema, ns, qv, q, k=int(req.get("k", 8)))
+                store.touch_episodes(mem.schema, [r["id"] for r in rows])   # access signal for decay
+            return 200, {"episodes": rows}
+
+        if path == "/reconcile":
+            stmt = str(req.get("statement", "")).strip()
+            if not stmt or len(stmt) > 4000:
+                return 400, {"error": "statement required (<=4000 chars)"}
+            qv = mem.embed(stmt)                                  # network — NO conn
+            with POOL.connection() as conn:
+                out = BrainStore(conn=conn).reconcile(
+                    mem.schema, ns, stmt, qv,
+                    subject=(str(req["subject"]).strip() if req.get("subject") else None),
+                    predicate=(str(req["predicate"]).strip() if req.get("predicate") else None))
+            return 200, out
+
+        if path == "/ingest/file":
+            filename = (str(req.get("filename", "")).strip() or "upload")
+            text = req.get("text")
+            if text is None and req.get("content_b64"):
+                try:
+                    raw = base64.b64decode(req["content_b64"])
+                except Exception:
+                    return 400, {"error": "content_b64 not valid base64"}
+                text = _extract_file_text(filename, raw)          # CPU parse — NO conn
+                if text is None:
+                    return 415, {"error": f"cannot extract text from {filename} "
+                                 "(install pypdf/python-docx, or send extracted 'text')"}
+            text = str(text or "")
+            if not text.strip():
+                return 400, {"error": "text or content_b64 required"}
+            if len(text) > 2_000_000:
+                return 413, {"error": "file too large (2MB text cap)"}
+            do_extract = bool(req.get("extract", False))
+            from core.redact import redact as _redact
+            from datetime import datetime, timezone
+            observed_at = datetime.now(timezone.utc)
+            chunks = [_redact(ch)[0] for ch in _chunk_text(text, int(req.get("chunk_size", 1200)))]
+            if hasattr(EMBED, "prime") and chunks:                # batch-embed, NO conn
+                EMBED.prime(chunks)
+            facts_per = None
+            if do_extract and LLM is not None:                    # per-chunk LLM — NO conn
+                facts_per = [mem.extract_facts(ch, observed_at) for ch in chunks]
+                stmts = [f["statement"] for fl in facts_per for f in fl]
+                if hasattr(EMBED, "prime") and stmts:
+                    EMBED.prime(stmts)
+            tids = []
+            with POOL.connection() as conn:                       # short DB write phase
+                mem.store = BrainStore(conn=conn)
+                for i, ch in enumerate(chunks):
+                    tid, _, _ = mem.remember_turn(ns, ch, session_id=filename,
+                                                  observed_at=observed_at)
+                    if facts_per:
+                        mem.write_facts(ns, facts_per[i], observed_at, tid)
+                    tids.append(tid)
+                mem.store = None
+            return 200, {"filename": filename, "chunks": len(tids), "turn_ids": tids}
+
+        return 404, {"error": "not found"}
+
+
+INGEST_WORKERS = max(1, min(int(os.environ.get("MEMNOS_INGEST_WORKERS", "2")), 8))
+
 
 def _ingest_worker():
     """Background extraction for async /remember: P2 with no conn, then a short P3.
-    Failures are logged — the raw turn is already durably stored either way."""
+    Failures are logged — the raw turn is already durably stored either way.
+    INGEST_WORKERS (env MEMNOS_INGEST_WORKERS, default 2, max 8) threads drain the queue
+    so a burst of async remembers doesn't serialize behind one extraction at a time —
+    each worker's P2 is pure model I/O, so they overlap cleanly."""
     while True:
         ns, rtext, obs, tid, principal, mem, cost0, t0 = _INGEST_Q.get()
         try:
@@ -845,8 +952,10 @@ def serve(port=None):
         Control.audit(conn, None, "server_start", "-", True,      # heartbeat (uptime/crash-loop signal)
                       detail={"dim": DIM})
     threading.Thread(target=_pusher_loop, name="memnos-webhook-pusher", daemon=True).start()
-    threading.Thread(target=_ingest_worker, name="memnos-async-ingest", daemon=True).start()
-    print(f"[memnos] production server on http://127.0.0.1:{port} (pool max {POOL_MAX}); webhook pusher on", flush=True)
+    for i in range(INGEST_WORKERS):
+        threading.Thread(target=_ingest_worker, name=f"memnos-async-ingest-{i}", daemon=True).start()
+    print(f"[memnos] production server on http://127.0.0.1:{port} (pool max {POOL_MAX}; "
+          f"{INGEST_WORKERS} async-ingest workers); webhook pusher on", flush=True)
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 
 

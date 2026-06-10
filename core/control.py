@@ -149,21 +149,28 @@ class Control:
             return c.fetchall()
 
     @staticmethod
-    def deliver_pending(conn, post_fn, *, batch=50, max_failures=5):
+    def deliver_pending(conn, post_fn, *, batch=50, max_failures=5, conn_factory=None):
         """WEBHOOK PUSH — for each active webhook subscription, POST the memories written
         since its cursor, then advance the cursor (at-least-once). `post_fn(url, payload)`
         must raise on non-2xx; injected so tests use a fake and prod uses real HTTP. On
         failure the cursor is NOT advanced (retried next tick) and a failure counter
         increments; after `max_failures` the subscription is deactivated. Returns per-sub
-        results. Idempotent to run from both the background pusher and the admin endpoint."""
-        with conn.cursor() as c:
+        results. Idempotent to run from both the background pusher and the admin endpoint.
+
+        `conn_factory` (pooled callers, e.g. POOL.connection): each DB step uses its own
+        short-lived connection so NO pool slot is held across the webhook POSTs (network,
+        up to several seconds each) — the held-conn-across-network anti-pattern. With
+        conn_factory set, `conn` may be None."""
+        import contextlib
+        cf = conn_factory if conn_factory is not None else (lambda: contextlib.nullcontext(conn))
+        with cf() as cx, cx.cursor() as c:
             c.execute("SELECT id, namespace, webhook, cursor, delivery_failures "
                       "FROM memnos_control.subscriptions "
                       "WHERE webhook IS NOT NULL AND active=true ORDER BY id")
             subs = c.fetchall()
         results = []
         for sub in subs:
-            with conn.cursor() as c:
+            with cf() as cx, cx.cursor() as c:
                 c.execute("SELECT id, speaker, text AS content, observed_at "
                           "FROM tenant_memnos.raw_turns WHERE namespace=%s AND id > %s "
                           "ORDER BY id LIMIT %s", (sub["namespace"], sub["cursor"], batch))
@@ -175,9 +182,9 @@ class Control:
                                    "observed_at": i["observed_at"].isoformat() if i["observed_at"] else None}
                                   for i in items]}
             try:
-                post_fn(sub["webhook"], payload)
+                post_fn(sub["webhook"], payload)              # network — NO conn held when pooled
                 newcur = items[-1]["id"]
-                with conn.cursor() as c:
+                with cf() as cx, cx.cursor() as c:
                     c.execute("UPDATE memnos_control.subscriptions "
                               "SET cursor=%s, delivery_failures=0, last_delivery_at=now() WHERE id=%s",
                               (newcur, sub["id"]))
@@ -185,7 +192,7 @@ class Control:
             except Exception as e:
                 fails = sub["delivery_failures"] + 1
                 still = fails < max_failures
-                with conn.cursor() as c:
+                with cf() as cx, cx.cursor() as c:
                     c.execute("UPDATE memnos_control.subscriptions SET delivery_failures=%s, active=%s WHERE id=%s",
                               (fails, still, sub["id"]))
                 results.append({"subscription_id": sub["id"], "error": str(e)[:200],
