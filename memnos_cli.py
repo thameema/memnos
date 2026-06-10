@@ -306,6 +306,22 @@ def _preflight_postgres(conn):
         print(f"[memnos] ✓ pgvector {ver} enabled")
 
 
+def _openai_key_ok(key):
+    """Live-validate an OpenAI key (free call, no tokens). True = usable."""
+    try:
+        from openai import OpenAI, AuthenticationError
+        OpenAI(api_key=key, timeout=15, max_retries=1).models.list()
+        return True
+    except Exception as e:
+        name = type(e).__name__
+        if name == "AuthenticationError" or "401" in str(e) or "invalid_api_key" in str(e).lower():
+            print("  ✗ OpenAI rejected this key (invalid or revoked) — check it and try again.")
+            return False
+        # network / proxy / outage — can't verify, let the user decide
+        print(f"  ⚠ could not reach the OpenAI API to validate ({name}: {e})")
+        return input("    accept the key UNVERIFIED anyway? [y/N]: ").strip().lower() in ("y", "yes")
+
+
 def cmd_setup(args, cfg):
     print("=== memnos setup (Postgres is a prerequisite — this only creates objects in it) ===")
     dsn = args.dsn or os.environ.get("MEMNOS_DSN")
@@ -366,17 +382,36 @@ def cmd_setup(args, cfg):
         print("                       OpenAI usage per write; your key is encrypted in the vault.")
         print("  Without a key:       free LOCAL 384-d embeddings, no extraction, no cost, fully")
         print("                       private (nothing leaves your machine).")
-        print("  ⚠ The embedding dimension (1536 vs 384) is baked into the schema. You CANNOT")
-        print("    switch later without re-ingesting into a fresh database. Decide now.")
-        entered = getpass.getpass(
-            "\n  OpenAI API key (input is HIDDEN as you paste — leave blank for free local mode): ").strip()
-        if entered:
-            openai_key = entered
-            os.environ["OPENAI_API_KEY"] = entered      # so the schema is built at 1536-d
-            masked = (entered[:6] + "…" + entered[-4:]) if len(entered) > 12 else "•" * len(entered)
-            print(f"  ✓ key received ({masked}, {len(entered)} chars) — stored encrypted in the vault.")
-        else:
-            print("  → no key entered — using free local 384-d mode (embeddings only, no extraction).")
+        print("  ⚠ The embedding dimension (1536 vs 384) is baked into the schema. Switching")
+        print("    later means re-embedding EVERY stored memory (`memnos migrate-embeddings`)")
+        print("    — it works, but choose right the first time.")
+        try:                                  # drop buffered type-ahead/paste so a stray leading
+            import termios                    # newline can't be read as "blank = local mode"
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        except Exception:
+            pass
+        while True:
+            entered = getpass.getpass(
+                "\n  OpenAI API key (input is HIDDEN as you paste — leave blank for free local mode): ")
+            entered = "".join(entered.split())  # keys never contain whitespace — scrub any the paste added
+            if entered:
+                masked = (entered[:6] + "…" + entered[-4:]) if len(entered) > 12 else "•" * len(entered)
+                if not entered.startswith("sk-") or len(entered) < 40:
+                    print(f"  ✗ that doesn't look like an OpenAI key ({masked}, {len(entered)} chars — "
+                          "expected sk-…, 40+ chars). The paste may have been cut off — try again.")
+                    continue
+                print(f"  · validating key against the OpenAI API ({masked}, {len(entered)} chars) …")
+                if not _openai_key_ok(entered):
+                    continue
+                openai_key = entered
+                os.environ["OPENAI_API_KEY"] = entered  # so the schema is built at 1536-d
+                print("  ✓ key VALID — will be stored encrypted in the vault.")
+                break
+            # blank could be a stray newline from a paste — confirm before locking in 384-d
+            ans = input("  No key entered — confirm FREE LOCAL 384-d mode? [Y/n] (n = re-enter key): ").strip().lower()
+            if ans in ("", "y", "yes"):
+                print("  → using free local 384-d mode (embeddings only, no extraction).")
+                break
 
     dim = 1536 if os.environ.get("OPENAI_API_KEY") else 384
     BrainStore(conn=conn).create_schema("memnos", dim=dim)
@@ -588,6 +623,11 @@ def _embedder_for(target, conn):
     if key.startswith("secret://"):
         try:
             key = Vault.resolve(conn, key)
+        except Exception:
+            key = ""
+    if not key:                                # fall back to a vault-stored key
+        try:                                   # (`memnos secret set openai`)
+            key = Vault.get(conn, "openai") or ""
         except Exception:
             key = ""
     if not key or key.startswith("secret://"):
