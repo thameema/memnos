@@ -393,8 +393,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
             pass
 
 
+def _set_proc_title(title):
+    """Show a meaningful name in ps/top/Activity Monitor instead of "python"."""
+    try:
+        import setproctitle
+        setproctitle.setproctitle(title)
+    except Exception:
+        pass
+
+
 def serve(port=None):
     global WORKER
+    _set_proc_title("memnos-proxy")
     port = int(port or CFG["port"])
     WORKER = CaptureWorker()
     print(f"[memnos-proxy] capture proxy on http://127.0.0.1:{port}", flush=True)
