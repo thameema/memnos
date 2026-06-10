@@ -8,14 +8,16 @@ All guides use the single-package install: `uv tool install memnos` → `memnos 
 memnos wires itself into your agent for you — no manual config editing:
 
 ```bash
-memnos claude-setup            # Claude Code: MCP + hooks (auto inject/save) + /memnos + CLAUDE.md
-memnos agent-setup codex       # Codex CLI:  MCP server in ~/.codex/config.toml + AGENTS.md
-memnos agent-setup cursor      # Cursor:     MCP server in ~/.cursor/mcp.json
-memnos agent-setup windsurf    # Windsurf:   MCP server in ~/.codeium/windsurf/mcp_config.json
-memnos agent-setup claude-desktop
-memnos agent-setup openclaw    # OpenClaw:   MCP server under mcp.servers in ~/.openclaw/openclaw.json
-memnos agent-setup hermes      # Hermes Agent (Nous): MCP server in ~/.hermes/config.yaml
+memnos agent-setup claude-code     # Claude Code: MCP + hooks (auto inject/save) + /memnos + CLAUDE.md
+memnos agent-setup claude-desktop  # Claude Desktop: platform config dir, absolute command path
+memnos agent-setup codex           # Codex CLI:  MCP server in ~/.codex/config.toml + AGENTS.md
+memnos agent-setup cursor          # Cursor:     MCP server in ~/.cursor/mcp.json
+memnos agent-setup windsurf        # Windsurf:   MCP server in ~/.codeium/windsurf/mcp_config.json
+memnos agent-setup openclaw        # OpenClaw:   MCP server under mcp.servers in ~/.openclaw/openclaw.json
+memnos agent-setup hermes          # Hermes Agent (Nous): MCP server in ~/.hermes/config.yaml
 ```
+
+(`memnos claude-setup` remains as an alias of `agent-setup claude-code`.)
 
 Each mints a scoped token, is idempotent, and backs up files it edits. `memnos setup` also
 offers `claude-setup` automatically when it detects Claude Code. **Restart the agent after.**
