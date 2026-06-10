@@ -647,11 +647,27 @@ def cmd_status(args, cfg):
         print(f"  background: pid {open(PID_PATH).read().strip()}   ·   logs: {LOG_PATH}")
     svc = _autostart_installed()
     print(f"  autostart: {'installed (' + svc[0] + ') — starts at login, restarts on failure' if svc else 'not installed   (run: memnos autostart)'}")
+    if cfg.get("proxy_token"):                    # capture proxy configured on this machine
+        pport = (cfg.get("proxy") or {}).get("port", 8910)
+        purl = f"http://127.0.0.1:{pport}"
+        try:
+            import urllib.request
+            h = json.load(urllib.request.urlopen(purl + "/healthz", timeout=2))
+            s = h.get("stats", {})
+            print(f"  proxy:     RUNNING at {purl}   ·   captured {s.get('captured', 0)} · "
+                  f"skipped {s.get('skipped', 0)} · errors {s.get('errors', 0) + s.get('relay_errors', 0)}")
+            if s.get("last_error"):
+                print(f"             last error: {s['last_error']}")
+        except Exception:
+            print(f"  proxy:     not running   (run: memnos proxy — clients pointed at :{pport} "
+                  "will FAIL until it's up)")
 
 
 # ---- autostart (login service: launchd on macOS, systemd --user on Linux) ----------
 _LAUNCHD_PLIST = os.path.join(os.path.expanduser("~"), "Library", "LaunchAgents", "com.memnos.server.plist")
 _SYSTEMD_UNIT = os.path.join(os.path.expanduser("~"), ".config", "systemd", "user", "memnos.service")
+_LAUNCHD_PROXY = os.path.join(os.path.expanduser("~"), "Library", "LaunchAgents", "com.memnos.proxy.plist")
+_SYSTEMD_PROXY = os.path.join(os.path.expanduser("~"), ".config", "systemd", "user", "memnos-proxy.service")
 
 
 def _autostart_installed():
@@ -670,62 +686,76 @@ def cmd_autostart(args, cfg):
     import subprocess
     exe = shutil.which("memnos") or os.path.abspath(__file__)
 
-    if sys.platform == "darwin":
-        if args.remove:
-            subprocess.run(["launchctl", "unload", _LAUNCHD_PLIST], capture_output=True)
-            try:
-                os.remove(_LAUNCHD_PLIST)
-            except OSError:
-                pass
-            print("[memnos] autostart removed (launchd service unloaded + plist deleted).")
-            return
-        os.makedirs(os.path.dirname(_LAUNCHD_PLIST), exist_ok=True)
-        plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+    def _plist(label, prog_args, path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        argxml = "".join(f"<string>{a}</string>" for a in prog_args)
+        with open(path, "w") as f:
+            f.write(f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>com.memnos.server</string>
-  <key>ProgramArguments</key><array><string>{exe}</string><string>serve</string></array>
+  <key>Label</key><string>{label}</string>
+  <key>ProgramArguments</key><array>{argxml}</array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>StandardOutPath</key><string>{LOG_PATH}</string>
   <key>StandardErrorPath</key><string>{LOG_PATH}</string>
 </dict></plist>
-"""
-        _rotate_log()
-        with open(_LAUNCHD_PLIST, "w") as f:
-            f.write(plist)
-        subprocess.run(["launchctl", "unload", _LAUNCHD_PLIST], capture_output=True)   # reload if present
-        r = subprocess.run(["launchctl", "load", _LAUNCHD_PLIST], capture_output=True, text=True)
+""")
+        subprocess.run(["launchctl", "unload", path], capture_output=True)   # reload if present
+        r = subprocess.run(["launchctl", "load", path], capture_output=True, text=True)
         if r.returncode != 0:
-            sys.exit(f"launchctl load failed: {r.stderr.strip()}")
+            sys.exit(f"launchctl load failed for {label}: {r.stderr.strip()}")
+
+    if sys.platform == "darwin":
+        if args.remove:
+            for p in (_LAUNCHD_PLIST, _LAUNCHD_PROXY):
+                subprocess.run(["launchctl", "unload", p], capture_output=True)
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            print("[memnos] autostart removed (launchd services unloaded + plists deleted).")
+            return
+        _rotate_log()
+        _plist("com.memnos.server", [exe, "serve"], _LAUNCHD_PLIST)
         print(f"[memnos] ✓ autostart installed (launchd) — the server now starts at login,")
         print(f"  restarts if it dies, and waits for Postgres if it isn't up yet.")
+        if getattr(args, "proxy", False):
+            _plist("com.memnos.proxy", [exe, "proxy"], _LAUNCHD_PROXY)
+            print("  ✓ capture proxy autostart installed too (com.memnos.proxy) — clients")
+            print("    pointed at the proxy keep working after every reboot.")
         print(f"  service: {_LAUNCHD_PLIST}\n  logs:    {LOG_PATH}\n  remove:  memnos autostart --remove")
     elif sys.platform.startswith("linux"):
-        if args.remove:
-            subprocess.run(["systemctl", "--user", "disable", "--now", "memnos"], capture_output=True)
-            try:
-                os.remove(_SYSTEMD_UNIT)
-            except OSError:
-                pass
+        def _unit(name, desc, cmdline, path):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(f"[Unit]\nDescription={desc}\nAfter=network.target\n\n"
+                        f"[Service]\nExecStart={cmdline}\nRestart=always\nRestartSec=10\n"
+                        f"StandardOutput=append:{LOG_PATH}\nStandardError=append:{LOG_PATH}\n\n"
+                        f"[Install]\nWantedBy=default.target\n")
             subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
-            print("[memnos] autostart removed (systemd user unit disabled + deleted).")
+            r = subprocess.run(["systemctl", "--user", "enable", "--now", name], capture_output=True, text=True)
+            if r.returncode != 0:
+                sys.exit(f"systemctl enable failed for {name}: {r.stderr.strip()}")
+
+        if args.remove:
+            for name, path in (("memnos", _SYSTEMD_UNIT), ("memnos-proxy", _SYSTEMD_PROXY)):
+                subprocess.run(["systemctl", "--user", "disable", "--now", name], capture_output=True)
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+            print("[memnos] autostart removed (systemd user units disabled + deleted).")
             return
-        os.makedirs(os.path.dirname(_SYSTEMD_UNIT), exist_ok=True)
-        unit = (f"[Unit]\nDescription=memnos memory server\nAfter=network.target\n\n"
-                f"[Service]\nExecStart={exe} serve\nRestart=always\nRestartSec=10\n"
-                f"StandardOutput=append:{LOG_PATH}\nStandardError=append:{LOG_PATH}\n\n"
-                f"[Install]\nWantedBy=default.target\n")
         _rotate_log()
-        with open(_SYSTEMD_UNIT, "w") as f:
-            f.write(unit)
-        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
-        r = subprocess.run(["systemctl", "--user", "enable", "--now", "memnos"], capture_output=True, text=True)
-        if r.returncode != 0:
-            sys.exit(f"systemctl enable failed: {r.stderr.strip()}")
+        _unit("memnos", "memnos memory server", f"{exe} serve", _SYSTEMD_UNIT)
         print("[memnos] ✓ autostart installed (systemd --user) — starts at login, restarts on failure,")
         print(f"  waits for Postgres.\n  unit: {_SYSTEMD_UNIT}\n  logs: {LOG_PATH}\n  remove: memnos autostart --remove")
+        if getattr(args, "proxy", False):
+            _unit("memnos-proxy", "memnos LLM capture proxy", f"{exe} proxy", _SYSTEMD_PROXY)
+            print("  ✓ capture proxy autostart installed too (memnos-proxy.service).")
     else:
         print("[memnos] Windows: create a logon task that runs `memnos serve`:\n"
               f'  schtasks /create /tn memnos /tr "{exe} serve" /sc onlogon\n'
@@ -1197,6 +1227,7 @@ def cmd_claude_setup(args, cfg):
         hooks[event] = groups
     wire("UserPromptSubmit", f"{env} memnos hook recall")
     wire("Stop", f"{env} memnos hook remember")
+    wire("SessionStart", f"{env} memnos hook status")   # visible "memory ON/OFF" each session
     _backup(sj); json.dump(s, open(sj, "w"), indent=2)
 
     # 3. /memnos slash command
@@ -1356,6 +1387,22 @@ def cmd_hook(args, cfg):
         return
     ns = nsresolve.resolve(data)
 
+    if args.which == "status":
+        # SessionStart: ONE visible line so the user always knows whether memory is on —
+        # no silent loss of capture after a reboot.
+        parts = []
+        if _server_up(url):
+            parts.append(f"memory ACTIVE → {ns}")
+        else:
+            parts.append(f"⚠ memory OFF — server unreachable at {url}. Run `memnos start` "
+                         "(`memnos autostart` makes it survive reboots)")
+        if cfg.get("proxy_token"):                  # proxy configured on this machine
+            pport = (cfg.get("proxy") or {}).get("port", 8910)
+            parts.append("capture proxy ACTIVE" if _server_up(f"http://127.0.0.1:{pport}")
+                         else f"⚠ capture proxy DOWN (:{pport}) — run `memnos proxy`")
+        print(json.dumps({"systemMessage": "memnos: " + "  ·  ".join(parts)}))
+        return
+
     if args.which == "recall":
         prompt = (data.get("prompt") or "").strip()
         if not prompt:
@@ -1451,7 +1498,8 @@ def main():
     p.add_argument("--port", type=int); p.set_defaults(fn=cmd_restart)
     sub.add_parser("status", help="show server + config + embedding mode").set_defaults(fn=cmd_status)
     p = sub.add_parser("autostart", help="install a login service (launchd/systemd) so the server always runs")
-    p.add_argument("--remove", action="store_true", help="uninstall the login service")
+    p.add_argument("--remove", action="store_true", help="uninstall the login service(s)")
+    p.add_argument("--proxy", action="store_true", help="also keep the LLM capture proxy running at login")
     p.set_defaults(fn=cmd_autostart)
     p = sub.add_parser("serve", help="run the server in the FOREGROUND (process managers / Docker / debug)")
     p.add_argument("--port", type=int); p.set_defaults(fn=cmd_serve)
@@ -1474,7 +1522,7 @@ def main():
     p = sub.add_parser("ns"); p.add_argument("value", nargs="?"); p.set_defaults(fn=cmd_ns)
     p = sub.add_parser("remember"); p.add_argument("text"); p.add_argument("--namespace", default="auto"); p.add_argument("--token"); p.set_defaults(fn=cmd_remember)
     p = sub.add_parser("recall"); p.add_argument("query"); p.add_argument("--namespace", default="auto"); p.add_argument("--scope", choices=["all", "wide"]); p.add_argument("--token"); p.set_defaults(fn=cmd_recall)
-    p = sub.add_parser("hook"); p.add_argument("which", choices=["recall", "remember"]); p.set_defaults(fn=cmd_hook)
+    p = sub.add_parser("hook"); p.add_argument("which", choices=["recall", "remember", "status"]); p.set_defaults(fn=cmd_hook)
     p = sub.add_parser("claude-setup", help="(alias of: memnos agent-setup claude-code)")
     p.add_argument("--namespace"); p.add_argument("--force", action="store_true"); p.set_defaults(fn=cmd_claude_setup)
     p = sub.add_parser("agent-setup", help="wire memnos into an agent (claude-code, codex, cursor, ...)")
