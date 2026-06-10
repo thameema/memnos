@@ -903,9 +903,19 @@ def _ingest_worker():
                   f"{type(e).__name__}: {e}", flush=True)
 
 
+def _set_proc_title(title):
+    """Show a meaningful name in ps/top/Activity Monitor instead of "python"."""
+    try:
+        import setproctitle
+        setproctitle.setproctitle(title)
+    except Exception:
+        pass
+
+
 def serve(port=None):
     """Boot + run the memnos server. Importable so the `memnos serve` CLI reuses it."""
     global POOL, EMBED
+    _set_proc_title("memnos-server")
     port = int(port or PORT)
     brain_rerank.rerank("warm", ["a", "b"])
     # timeout=5: a request against a dead DB fails in 5s with a clear 503 — clients
