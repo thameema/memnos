@@ -30,9 +30,15 @@ authenticated identity: visible in the audit log, ACL-scoped, instantly revocabl
 
 ## Point your client at it
 
+> **Rule of thumb: Claude Code should use HOOKS, not the proxy.** Hooks are equally
+> deterministic, capture both speakers, and run *off* the request path — a hook failure can
+> never delay or break your session, while a proxy sits between you and the model. Use the
+> proxy for clients that have **no hooks** (Hermes, OpenClaw, Open WebUI, SDK apps). Never
+> run both on the same client — that double-captures.
+
 | Client | How | Wire format | Capture |
 |---|---|---|---|
-| **Claude Code** | `ANTHROPIC_BASE_URL=http://127.0.0.1:8910` (env or `~/.claude/settings.json` env block) | Anthropic | ✅ (or keep using hooks — don't run both, you'd double-capture) |
+| **Claude Code** | prefer **hooks** (`memnos agent-setup claude-code`); proxy possible via `ANTHROPIC_BASE_URL` but not recommended | Anthropic | ✅ via hooks |
 | **Hermes Agent** | `custom_providers:` entry with `base_url: http://127.0.0.1:8910/v1` | OpenAI | ✅ |
 | **OpenClaw** | `models.providers` → `"baseUrl": "http://127.0.0.1:8910/v1"` | OpenAI | ✅ |
 | **Open WebUI** | `OPENAI_API_BASE_URL=http://127.0.0.1:8910/v1` | OpenAI | ✅ |
@@ -91,10 +97,36 @@ the Claude Code hooks.
   it before forwarding upstream). Default namespace: `user:<you>` or `--namespace`.
 - `GET /healthz` shows capture stats (`captured` / `skipped` / `errors`).
 
+## Knowing it's working — no blind spots
+
+A proxy in the request path is a critical dependency, so memnos makes its state visible
+everywhere:
+
+- **`memnos status`** shows the proxy: running or not, plus live counters
+  (`captured / skipped / errors`) and the last capture error.
+- **Claude Code sessions show a status line at start** (SessionStart hook, wired by
+  `agent-setup claude-code`): `memnos: memory ACTIVE → user:you · capture proxy ACTIVE` —
+  or a loud `⚠ memory OFF` warning with the fix. You never silently lose memory after a
+  reboot.
+- **Survive reboots:** `memnos autostart --proxy` installs login services for BOTH the
+  server and the proxy (launchd/systemd) — clients pointed at the proxy keep working after
+  every restart without you thinking about it.
+- **Unambiguous errors.** If a request fails, the error body tells you exactly who failed:
+  - LLM provider errors (bad key, rate limit, model) are **relayed verbatim** with the
+    provider's own status and body — if you see those, it's the LLM, not the proxy.
+  - Network/proxy failures return a distinct shape with `"source": "memnos-proxy"` and a
+    typed reason: `upstream_connect_timeout` (no answer in 15s — firewall/DNS/offline),
+    `upstream_unreachable` (connection refused), `upstream_read_timeout` (provider went
+    silent), or `proxy_error` (our bug). Each message states it is **not** an LLM error and
+    how to bypass the proxy if needed.
+
 ## Reliability & limits — read this
 
 - **Fail-open by design:** if memnos is down or capture errors, the relay continues
-  untouched. Memory can degrade; your agent never does.
+  untouched. Memory can degrade — visibly, via `memnos status` and the session status
+  line — but your agent never breaks. For autonomous agents (Hermes, OpenClaw) this is the
+  contract that matters: the proxy never modifies a response, never injects content, and
+  never converts a capture problem into an agent failure.
 - **Added latency is one local hop** (~ms). Streaming is relayed chunk-by-chunk before any
   parsing happens.
 - The gates are heuristics: rare agent shapes (a final answer that legitimately ends with

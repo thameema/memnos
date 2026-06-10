@@ -235,7 +235,7 @@ class CaptureWorker:
     def __init__(self):
         self.q = queue.Queue(maxsize=256)
         self.lru = _LRU()
-        self.stats = {"captured": 0, "skipped": 0, "errors": 0}
+        self.stats = {"captured": 0, "skipped": 0, "errors": 0, "relay_errors": 0, "last_error": None}
         threading.Thread(target=self._run, name="memnos-proxy-capture", daemon=True).start()
 
     def submit(self, req, resp_summary, fmt, namespace):
@@ -268,6 +268,7 @@ class CaptureWorker:
                 self._remember(summary["text"].strip(), "assistant", ns, sid)
             except Exception as e:
                 self.stats["errors"] += 1
+                self.stats["last_error"] = f"capture: {type(e).__name__}: {e}"
                 print(f"[memnos-proxy] capture error (relay unaffected): {type(e).__name__}: {e}",
                       flush=True)
 
@@ -352,10 +353,30 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return                               # client gave up mid-stream — drop capture
         except Exception as e:
-            err = json.dumps({"error": {"type": "upstream_unreachable",
-                                        "message": f"memnos-proxy could not reach {upstream}: {e}"}}).encode()
+            # unambiguous error taxonomy: the caller must always know WHO failed.
+            # Provider errors (auth, rate limit, model) are relayed verbatim above with the
+            # provider's own status/body — anything HERE is proxy↔upstream plumbing.
+            if isinstance(e, httpx.ConnectTimeout):
+                etype, msg = "upstream_connect_timeout", \
+                    f"network: no answer from {upstream} within 15s (firewall/DNS/offline?)"
+            elif isinstance(e, httpx.ConnectError):
+                etype, msg = "upstream_unreachable", \
+                    f"network: could not connect to {upstream} ({e})"
+            elif isinstance(e, httpx.ReadTimeout):
+                etype, msg = "upstream_read_timeout", \
+                    f"network: {upstream} accepted the request but stopped responding (read timeout 600s)"
+            else:
+                etype, msg = "proxy_error", f"memnos-proxy internal error: {type(e).__name__}: {e}"
+            if WORKER is not None:
+                WORKER.stats["relay_errors"] = WORKER.stats.get("relay_errors", 0) + 1
+                WORKER.stats["last_error"] = f"{etype}: {msg}"
+            print(f"[memnos-proxy] {etype}: {msg}", flush=True)
+            err = json.dumps({"error": {"type": etype, "source": "memnos-proxy",
+                                        "message": msg + " — this is NOT an error from the "
+                                        "LLM provider; check the proxy/network, or bypass the "
+                                        "proxy by restoring the original base URL"}}).encode()
             try:
-                self.send_response(502)
+                self.send_response(502 if etype != "proxy_error" else 500)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(err)))
                 self.end_headers()

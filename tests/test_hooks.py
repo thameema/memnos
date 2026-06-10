@@ -24,6 +24,13 @@ captured = []
 
 
 class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b'{"ok": true}'
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
         captured.append((self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
         body = b'{"context": "stub"}'
@@ -106,6 +113,18 @@ def main():
                       "transcript_path": tp})
     check("remember: trivial assistant reply skipped, user kept",
           [b["speaker"] for _, b in captured] == ["user"])
+
+    # --- status (SessionStart): visible memory-ON line; warns when server down ---
+    r = hook("status", {"source": "startup"})
+    check("status: server up → memory ACTIVE systemMessage",
+          "systemMessage" in r.stdout and "memory ACTIVE" in r.stdout)
+    env = dict(os.environ, MEMNOS_URL="http://127.0.0.1:9", MEMNOS_NS="t", MEMNOS_TOKEN="mnk_x",
+               HOME=tempfile.mkdtemp(prefix="memnos_hooks_"))
+    r = subprocess.run([PY, os.path.join(ROOT, "memnos_cli.py"), "hook", "status"],
+                       input=json.dumps({"source": "startup"}), capture_output=True, text=True,
+                       env=env, timeout=30)
+    check("status: server down → visible OFF warning",
+          "memory OFF" in r.stdout and "memnos start" in r.stdout)
 
     # --- recall: posts the prompt, emits context ---
     captured.clear()
