@@ -127,9 +127,15 @@ def _post(cfg, path, payload, token):
     try:
         return json.loads(urllib.request.urlopen(req, timeout=30).read() or b"{}")
     except urllib.error.HTTPError as e:
-        sys.exit(f"server error {e.code}: {json.loads(e.read() or b'{}').get('error', '?')}")
-    except urllib.error.URLError as e:
-        sys.exit(f"cannot reach server at {_server_url(cfg)} — is it running? ({e})")
+        try:                                   # error body may be truncated / non-JSON
+            msg = json.loads(e.read() or b"{}").get("error", "?")
+        except Exception:
+            msg = "?"
+        hint = "  (no/invalid token — pass --token, or re-run `memnos setup`)" if e.code == 401 else ""
+        sys.exit(f"server error {e.code}: {msg}{hint}")
+    except Exception as e:                     # URLError, TimeoutError (3.11+), reset, bad JSON
+        sys.exit(f"cannot reach server at {_server_url(cfg)} — is it running? "
+                 f"({type(e).__name__}: {e})\nstart it with:  memnos start")
 
 
 # ---- setup wizard -----------------------------------------------------------
@@ -422,7 +428,10 @@ def cmd_setup(args, cfg):
     pid = Control.create_principal(conn, "admin", "service")
     Control.grant(conn, pid, "*")
     tok = Control.mint_token(conn, pid, "console")
-    cfg.update({"dsn": dsn, "port": cfg.get("port", 8900), "secret_key": secret_key})
+    # persist the admin token (config is already 0600 and holds the vault master key) so
+    # `memnos recall/remember` work out of the box — without it every CLI call 401s
+    cfg.update({"dsn": dsn, "port": cfg.get("port", 8900), "secret_key": secret_key,
+                "admin_token": tok})
     save_config(cfg)
     print(f"\n✓ schema + control plane created (embedding dim {dim}"
           f"{' — OpenAI key stored in the encrypted vault' if openai_key else ''})")
@@ -1039,7 +1048,8 @@ def cmd_ns(args, cfg):
 def cmd_remember(args, cfg):
     import nsresolve
     ns = args.namespace if args.namespace and args.namespace != "auto" else nsresolve.resolve()
-    out = _post(cfg, "/remember", {"namespace": ns, "text": args.text}, args.token or cfg.get("admin_token"))
+    out = _post(cfg, "/remember", {"namespace": ns, "text": args.text},
+                args.token or os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token"))
     print(json.dumps(out))
 
 
@@ -1049,7 +1059,8 @@ def cmd_recall(args, cfg):
     body = {"namespace": ns, "query": args.query}
     if getattr(args, "scope", None) in ("all", "wide"):
         body["scope"] = "all"
-    out = _post(cfg, "/recall", body, args.token or cfg.get("admin_token"))
+    out = _post(cfg, "/recall", body,
+                args.token or os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token"))
     if out.get("namespaces_searched"):
         print(f"[searched: {', '.join(out['namespaces_searched'])}]")
     print(out.get("context", json.dumps(out)))
@@ -1126,8 +1137,9 @@ def cmd_claude_setup(args, cfg):
         d = json.load(open(cj)) if os.path.exists(cj) else {}
     except Exception:
         d = {}
+    cmd, cargs = _mcp_launcher()               # absolute path — GUI/min-PATH launches
     d.setdefault("mcpServers", {})["memnos"] = {
-        "command": "memnos", "args": ["mcp"],
+        "command": cmd, "args": cargs,
         "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns}}
     _backup(cj); json.dump(d, open(cj, "w"), indent=2)
 
@@ -1200,6 +1212,17 @@ _AGENTS = {
 }
 
 
+def _mcp_launcher():
+    """(command, args) for spawning the memnos MCP adapter — ABSOLUTE command path, because
+    GUI apps launch MCP servers with a minimal PATH. Falls back to `python memnos_cli.py mcp`
+    for source checkouts where no `memnos` executable is installed."""
+    import shutil
+    exe = shutil.which("memnos")
+    if exe:
+        return exe, ["mcp"]
+    return sys.executable, [os.path.abspath(__file__), "mcp"]
+
+
 def cmd_agent_setup(args, cfg):
     """Wire memnos into another MCP-capable agent (codex/cursor/windsurf/claude-desktop/
     openclaw/hermes). Writes its MCP server config (+ an AGENTS.md instruction for codex).
@@ -1223,9 +1246,8 @@ def cmd_agent_setup(args, cfg):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     # absolute command path: GUI apps (Claude Desktop especially) spawn MCP servers with a
     # minimal PATH that doesn't include ~/.local/bin — a bare "memnos" fails to resolve there
-    import shutil
-    exe = shutil.which("memnos") or "memnos"
-    entry = {"command": exe, "args": ["mcp"],
+    cmd, cargs = _mcp_launcher()
+    entry = {"command": cmd, "args": cargs,
              "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns}}
 
     if spec["fmt"] == "json":
@@ -1254,7 +1276,8 @@ def cmd_agent_setup(args, cfg):
             yaml.safe_dump(d, f, sort_keys=False, default_flow_style=False)
     else:  # toml (codex)
         existing = open(path).read() if os.path.exists(path) else ""
-        block = (f'\n[mcp_servers.memnos]\ncommand = "{exe}"\nargs = ["mcp"]\n\n'
+        targs = ", ".join(f'"{a}"' for a in cargs)
+        block = (f'\n[mcp_servers.memnos]\ncommand = "{cmd}"\nargs = [{targs}]\n\n'
                  f'[mcp_servers.memnos.env]\nMEMNOS_URL = "{url}"\n'
                  f'MEMNOS_TOKEN = "{token}"\nMEMNOS_NS = "{ns}"\n')
         if "[mcp_servers.memnos]" in existing:
