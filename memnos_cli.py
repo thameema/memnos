@@ -562,6 +562,104 @@ def cmd_upgrade(args, cfg):
                  "(or: pip install -U memnos)")
 
 
+# tables whose `embedding` column is derived from a stored text column (+ its HNSW index)
+_EMB_TABLES = [("raw_turns", "text", "raw_hnsw"), ("episodic", "text", "epi_hnsw"),
+               ("semantic", "statement", "sem_hnsw"), ("entities", "name", "ent_hnsw")]
+
+
+def _emb_dim(conn, schema, table="raw_turns"):
+    import re
+    with conn.cursor() as c:
+        c.execute("SELECT format_type(a.atttypid, a.atttypmod) AS t FROM pg_attribute a "
+                  "JOIN pg_class c ON a.attrelid=c.oid JOIN pg_namespace n ON c.relnamespace=n.oid "
+                  "WHERE n.nspname=%s AND c.relname=%s AND a.attname='embedding'", (schema, table))
+        row = c.fetchone()
+    m = re.search(r"\((\d+)\)", row["t"]) if row else None
+    return int(m.group(1)) if m else None
+
+
+def _embedder_for(target, conn):
+    """Return a callable text->list[float] for the target dim, or None if unavailable."""
+    if target == 384:
+        from core import local_models
+        return local_models.embed
+    from core.vault import Vault
+    key = os.environ.get("OPENAI_API_KEY", "")
+    if key.startswith("secret://"):
+        try:
+            key = Vault.resolve(conn, key)
+        except Exception:
+            key = ""
+    if not key or key.startswith("secret://"):
+        return None
+    os.environ["OPENAI_API_KEY"] = key
+    from openai import OpenAI
+    from core.embed import CachedEmbedder
+    from core.usage import TSCostMeter
+    return CachedEmbedder(OpenAI(timeout=60, max_retries=3), TSCostMeter())
+
+
+def cmd_migrate_embeddings(args, cfg):
+    import psycopg
+    from psycopg.rows import dict_row
+    from core.store import vlit
+    _apply_env(cfg)
+    dsn = cfg.get("dsn") or os.environ.get("MEMNOS_DSN")
+    if not dsn:
+        sys.exit("not configured — run `memnos setup` first.")
+    schema = "tenant_memnos"
+    conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
+    cur = _emb_dim(conn, schema)
+    if cur is None:
+        sys.exit("no memnos schema found in this database (run `memnos setup` first).")
+    target = int(args.to) if args.to else (1536 if (cfg.get("openai") or os.environ.get("OPENAI_API_KEY")) else 384)
+    if target not in (384, 1536):
+        sys.exit("--to must be 384 (local) or 1536 (OpenAI).")
+    if cur == target:
+        print(f"[memnos] embeddings are already {cur}-d — nothing to migrate.")
+        return
+    embed = _embedder_for(target, conn)
+    if embed is None:
+        sys.exit("migrating to 1536-d needs an OpenAI key. Set it first:  memnos secret set openai")
+
+    total = 0
+    with conn.cursor() as c:
+        for tbl, _, _ in _EMB_TABLES:
+            c.execute(f'SELECT count(*) AS n FROM "{schema}"."{tbl}"')
+            total += c.fetchone()["n"]
+    print(f"[memnos] migrate embeddings  {cur}-d → {target}-d   ·   ~{total} rows to re-embed")
+    if target == 1536:
+        print("  ⚠ this calls the OpenAI embeddings API for every row (incurs usage cost).")
+    if _server_up(f"http://127.0.0.1:{cfg.get('port', 8900)}"):
+        print("  ⚠ the server is RUNNING — stop it first (`memnos stop`) so nothing writes at the old dim.")
+    if not args.yes and (input("  proceed? [y/N]: ").strip().lower() not in ("y", "yes")):
+        return
+
+    fn = embed.embed if hasattr(embed, "embed") else embed
+    for tbl, txtcol, idx in _EMB_TABLES:
+        with conn.cursor() as c:
+            c.execute(f'DROP INDEX IF EXISTS "{schema}"."{idx}"')
+            c.execute(f'ALTER TABLE "{schema}"."{tbl}" ALTER COLUMN embedding TYPE halfvec({target}) USING NULL')
+            c.execute(f'SELECT id, {txtcol} AS t FROM "{schema}"."{tbl}" WHERE {txtcol} IS NOT NULL')
+            rows = c.fetchall()
+        if hasattr(embed, "prime"):
+            embed.prime([r["t"] for r in rows])          # batch the OpenAI calls
+        with conn.cursor() as c:
+            for r in rows:
+                c.execute(f'UPDATE "{schema}"."{tbl}" SET embedding=%s::halfvec WHERE id=%s', (vlit(fn(r["t"])), r["id"]))
+            c.execute(f'CREATE INDEX IF NOT EXISTS "{idx}" ON "{schema}"."{tbl}" '
+                      f'USING hnsw (embedding halfvec_cosine_ops)')
+        print(f"    ✓ {tbl}: re-embedded {len(rows)} rows")
+
+    # keep the server's embedding mode consistent with the new dim
+    if target == 1536:
+        cfg["openai"] = "secret://openai"
+    else:
+        cfg.pop("openai", None)
+    save_config(cfg)
+    print(f"\n✓ migration complete — embeddings are now {target}-d. Restart the server:  memnos restart")
+
+
 def cmd_mcp(args, cfg):
     # stdio MCP adapter for Claude Code / Cursor / Windsurf / any MCP client.
     # MEMNOS_URL / MEMNOS_TOKEN / MEMNOS_NS come from the client's env block;
@@ -1002,6 +1100,10 @@ def main():
     p = sub.add_parser("upgrade", help="check the repo for a newer version and install it")
     p.add_argument("--check", action="store_true", help="only check; don't install")
     p.set_defaults(fn=cmd_upgrade)
+    p = sub.add_parser("migrate-embeddings", help="re-embed all memories to a different dimension (384 local ↔ 1536 OpenAI)")
+    p.add_argument("--to", choices=["384", "1536"], help="target dimension (default: inferred from your OpenAI-key setup)")
+    p.add_argument("--yes", "-y", action="store_true", help="skip the confirmation prompt")
+    p.set_defaults(fn=cmd_migrate_embeddings)
     sub.add_parser("help", help="show this help").set_defaults(fn=lambda a, c: ap.print_help())
 
     args = ap.parse_args()
