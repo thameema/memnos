@@ -902,6 +902,45 @@ def cmd_migrate_embeddings(args, cfg):
     print(f"\n✓ migration complete — embeddings are now {target}-d. Restart the server:  memnos restart")
 
 
+def _ensure_proxy_token(cfg):
+    """A dedicated, audited, revocable principal for proxy capture (mint once, persist)."""
+    if cfg.get("proxy_token"):
+        return cfg["proxy_token"]
+    from core.control import Control
+    conn = _conn(cfg)
+    Control.init(conn)
+    try:
+        pid = _principal_id(conn, "proxy")
+    except SystemExit:
+        pid = Control.create_principal(conn, "proxy", "service")
+    name = (os.environ.get("USER") or "me").split()[0]
+    Control.grant(conn, pid, f"user:{name}")
+    Control.grant(conn, pid, "proj:*")
+    tok = Control.mint_token(conn, pid, "capture-proxy")
+    cfg["proxy_token"] = tok
+    save_config(cfg)
+    return tok
+
+
+def cmd_proxy(args, cfg):
+    """Run the LLM-API capture proxy (foreground). Point any OpenAI/Anthropic-compatible
+    client's base URL at it and full conversations (both speakers) are captured."""
+    _apply_env(cfg)
+    os.environ.setdefault("MEMNOS_URL", f"http://127.0.0.1:{cfg.get('port', 8900)}")
+    try:
+        os.environ.setdefault("MEMNOS_TOKEN", _ensure_proxy_token(cfg))
+    except Exception as e:
+        print(f"[memnos] WARN: could not mint a proxy token ({e}) — capture will fail "
+              "until the database is reachable. Relay still works.")
+    if args.namespace:
+        os.environ["MEMNOS_NS"] = args.namespace
+    import memnos_proxy
+    memnos_proxy.CFG = memnos_proxy._load_cfg()         # re-read with env applied
+    if args.no_capture:
+        memnos_proxy.CFG["capture"] = False
+    memnos_proxy.serve(port=args.port)
+
+
 def cmd_mcp(args, cfg):
     # stdio MCP adapter for Claude Code / Cursor / Windsurf / any MCP client.
     # MEMNOS_URL / MEMNOS_TOKEN / MEMNOS_NS come from the client's env block;
@@ -1417,6 +1456,12 @@ def main():
     p = sub.add_parser("serve", help="run the server in the FOREGROUND (process managers / Docker / debug)")
     p.add_argument("--port", type=int); p.set_defaults(fn=cmd_serve)
     p = sub.add_parser("mcp"); p.add_argument("--namespace"); p.set_defaults(fn=cmd_mcp)
+    p = sub.add_parser("proxy", help="LLM-API capture proxy — point ANTHROPIC_BASE_URL/OPENAI_BASE_URL "
+                                     "at it; both sides of every conversation are remembered")
+    p.add_argument("--port", type=int)
+    p.add_argument("--namespace", help="namespace captured turns go to (default user:<you>)")
+    p.add_argument("--no-capture", action="store_true", help="relay only, capture off")
+    p.set_defaults(fn=cmd_proxy)
     p = sub.add_parser("admin"); p.set_defaults(fn=cmd_admin)
     p = sub.add_parser("principal"); p.add_argument("name"); p.add_argument("--kind", default="user"); p.set_defaults(fn=cmd_principal)
     p = sub.add_parser("token"); p.add_argument("principal"); p.add_argument("--label"); p.add_argument("--ttl-days", type=int); p.set_defaults(fn=cmd_token)
