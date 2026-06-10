@@ -17,7 +17,7 @@ the server command is just `memnos mcp`.
 
 ## Prerequisites
 
-- memnos running (`memnos serve`, default `http://127.0.0.1:8900`) — see [quickstart](../quickstart.md).
+- memnos running (`memnos start`, default `http://127.0.0.1:8900`) — see [quickstart](../quickstart.md).
 - A scoped token + namespace:
   ```bash
   memnos namespace add user:alice

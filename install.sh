@@ -53,7 +53,7 @@ cat <<EOF
 
 Next steps (a PostgreSQL with the pgvector extension is a prerequisite — not installed for you):
   memnos setup     # enter your Postgres connection — creates the schema + an admin token
-  memnos serve     # start the server, then open http://127.0.0.1:8900/admin
+  memnos start     # start the server, then open http://127.0.0.1:8900/admin
 
 New terminals will have 'memnos' on PATH. If one doesn't, open a fresh terminal (the installer
 already updated your shell profile).

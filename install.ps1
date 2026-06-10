@@ -37,7 +37,7 @@ Write-Host @"
 
 Next steps (a PostgreSQL with the pgvector extension is a prerequisite - not installed for you):
   memnos setup     # enter your Postgres connection - creates the schema + an admin token
-  memnos serve     # start the server, then open http://127.0.0.1:8900/admin
+  memnos start     # start the server, then open http://127.0.0.1:8900/admin
 
 Every new terminal will have 'memnos' on PATH.
 "@

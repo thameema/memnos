@@ -1009,12 +1009,19 @@ _AGENTS = {
     "cursor":         {"path": "~/.cursor/mcp.json",                           "fmt": "json"},
     "windsurf":       {"path": "~/.codeium/windsurf/mcp_config.json",          "fmt": "json"},
     "claude-desktop": {"path": "~/Library/Application Support/Claude/claude_desktop_config.json", "fmt": "json"},
+    # OpenClaw keeps MCP servers under mcp.servers in its main config
+    "openclaw":       {"path": "~/.openclaw/openclaw.json",                    "fmt": "json", "key": ("mcp", "servers"),
+                       "note": "restart the OpenClaw gateway, then verify with: openclaw mcp list"},
+    # Hermes Agent (Nous Research) — YAML config, stdio MCP client since v0.2.0
+    "hermes":         {"path": "~/.hermes/config.yaml",                        "fmt": "yaml", "key": ("mcp_servers",),
+                       "note": "run /reload-mcp inside Hermes (or restart it), then check the tool list"},
 }
 
 
 def cmd_agent_setup(args, cfg):
-    """Wire memnos into another MCP-capable agent (codex/cursor/windsurf/claude-desktop).
-    Writes its MCP server config (+ an AGENTS.md instruction for codex). Idempotent; backs up."""
+    """Wire memnos into another MCP-capable agent (codex/cursor/windsurf/claude-desktop/
+    openclaw/hermes). Writes its MCP server config (+ an AGENTS.md instruction for codex).
+    Idempotent; backs up."""
     spec = _AGENTS.get(args.agent)
     if not spec:
         sys.exit(f"unknown agent '{args.agent}' — choose: {', '.join(_AGENTS)}")
@@ -1023,16 +1030,33 @@ def cmd_agent_setup(args, cfg):
     ns = args.namespace or default_ns
     path = os.path.expanduser(spec["path"])
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    entry = {"command": "memnos", "args": ["mcp"],
+             "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns}}
 
     if spec["fmt"] == "json":
         try:
             d = json.load(open(path)) if os.path.exists(path) else {}
         except Exception:
             d = {}
-        d.setdefault("mcpServers", {})["memnos"] = {
-            "command": "memnos", "args": ["mcp"],
-            "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns}}
+        node = d
+        for k in spec.get("key", ("mcpServers",)):
+            node = node.setdefault(k, {})
+        node["memnos"] = entry
         _backup(path); json.dump(d, open(path, "w"), indent=2)
+    elif spec["fmt"] == "yaml":
+        import yaml
+        try:
+            d = yaml.safe_load(open(path)) if os.path.exists(path) else {}
+            d = d if isinstance(d, dict) else {}
+        except Exception:
+            d = {}
+        node = d
+        for k in spec.get("key", ("mcp_servers",)):
+            node = node.setdefault(k, {})
+        node["memnos"] = entry
+        _backup(path)
+        with open(path, "w") as f:
+            yaml.safe_dump(d, f, sort_keys=False, default_flow_style=False)
     else:  # toml (codex)
         existing = open(path).read() if os.path.exists(path) else ""
         block = (f'\n[mcp_servers.memnos]\ncommand = "memnos"\nargs = ["mcp"]\n\n'
@@ -1057,6 +1081,8 @@ def cmd_agent_setup(args, cfg):
         print(f"          + instructions -> {spec['agents_md']}")
     print("  Note: this agent uses the memnos MCP *tools* (recall/remember/reconcile_claim) — "
           "no auto inject/save hooks (those are Claude Code only). Restart the agent to load it.")
+    if spec.get("note"):
+        print(f"  Next: {spec['note']}")
 
 
 # ---- Claude Code hook entry (`memnos hook recall|remember`) ------------------
