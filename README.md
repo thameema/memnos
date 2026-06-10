@@ -73,6 +73,9 @@ memnos setup                  # enter your Postgres connection → creates schem
 memnos serve                  # start the server → open http://127.0.0.1:8900/admin
 ```
 
+> **Alternative (needs Docker):** `memnos setup --docker` spins up a pgvector Postgres for you
+> — no Postgres install or pgvector version-matching. Then `memnos serve`.
+
 > Inside your own virtualenv, plain `pip install memnos` is fine too —
 > `python -m venv .venv && .venv/bin/pip install memnos`.
 

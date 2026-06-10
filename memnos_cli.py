@@ -88,6 +88,97 @@ def _post(cfg, path, payload, token):
 MIN_PG_MAJOR = 13          # generated STORED columns need 12; 13 is our tested floor
 MIN_PGVECTOR = (0, 7, 0)   # halfvec + halfvec HNSW
 
+DOCKER_PG_CONTAINER = "memnos-pg"
+DOCKER_PG_IMAGE = "pgvector/pgvector:pg16"   # Postgres + pgvector pre-baked, version-matched
+
+
+def _ensure_docker_pg():
+    """Provision (or reuse) a pgvector Postgres in Docker and return a DSN to it. The image
+    ships pgvector pre-installed for its PG version, so there's no version-matching to do."""
+    import shutil
+    import subprocess
+    import secrets
+    import time
+    if not shutil.which("docker"):
+        sys.exit("--docker needs Docker, which isn't installed.\n"
+                 "  Install Docker Desktop (https://docker.com), or run `memnos setup --dsn ...` "
+                 "against your own Postgres.")
+    try:
+        subprocess.run(["docker", "info"], capture_output=True, check=True)
+    except Exception:
+        sys.exit("Docker is installed but not running — start Docker Desktop and re-run "
+                 "`memnos setup --docker`.")
+    name, image, user, db = DOCKER_PG_CONTAINER, DOCKER_PG_IMAGE, "memnos", "memnos"
+
+    def _port():  # host port mapped to the container's 5432
+        out = subprocess.run(["docker", "port", name, "5432/tcp"], capture_output=True, text=True).stdout.strip()
+        return out.rsplit(":", 1)[-1] if out else None
+
+    def _env(key):
+        out = subprocess.run(["docker", "inspect", "--format",
+                              "{{range .Config.Env}}{{println .}}{{end}}", name],
+                             capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            if line.startswith(key + "="):
+                return line.split("=", 1)[1]
+        return None
+
+    running = subprocess.run(["docker", "ps", "-q", "-f", f"name=^{name}$"],
+                             capture_output=True, text=True).stdout.strip()
+    exists = subprocess.run(["docker", "ps", "-aq", "-f", f"name=^{name}$"],
+                            capture_output=True, text=True).stdout.strip()
+    if not running and exists:
+        subprocess.run(["docker", "start", name], capture_output=True, check=True)
+        running = exists
+    if running:
+        port, pw = _port(), _env("POSTGRES_PASSWORD")
+        if port and pw:
+            dsn = f"postgresql://{user}:{pw}@localhost:{port}/{db}"
+            print(f"[memnos] reusing pgvector container '{name}' on localhost:{port}")
+            _wait_dsn(dsn)
+            return dsn
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)   # malformed — recreate
+
+    port = _free_port([5432, 5433, 5434])
+    pw = secrets.token_hex(12)
+    print(f"[memnos] starting pgvector container '{name}' ({image}) on localhost:{port} ...")
+    subprocess.run(["docker", "run", "-d", "--name", name, "-p", f"{port}:5432",
+                    "-e", f"POSTGRES_USER={user}", "-e", f"POSTGRES_PASSWORD={pw}",
+                    "-e", f"POSTGRES_DB={db}", image], capture_output=True, check=True)
+    dsn = f"postgresql://{user}:{pw}@localhost:{port}/{db}"
+    _wait_dsn(dsn)
+    print(f"[memnos] ✓ pgvector Postgres ready on localhost:{port}")
+    return dsn
+
+
+def _wait_dsn(dsn, tries=90):
+    """Wait until a real host-side connection succeeds — the official PG image flaps the TCP
+    listener during first-boot init, so pg_isready isn't enough; only a clean connect is."""
+    import time
+    import psycopg
+    last = None
+    for _ in range(tries):
+        try:
+            psycopg.connect(dsn, connect_timeout=3).close()
+            return
+        except Exception as e:
+            last = e
+            time.sleep(1)
+    sys.exit(f"Postgres container didn't accept connections in time: {last}\n"
+             f"Check `docker logs {DOCKER_PG_CONTAINER}`.")
+
+
+def _free_port(prefer):
+    import socket
+    for p in prefer:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", p)) != 0:   # nothing listening -> free
+                return p
+    # fall back to an ephemeral free port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
 
 def _vtuple(v):
     """'0.8.2' -> (0,8,2); tolerant of junk."""
@@ -103,12 +194,16 @@ def _vtuple(v):
 def _pgvector_install_hint(pg_major=None):
     maj = pg_major or "16"
     if sys.platform == "darwin":
-        return ("  macOS (Homebrew):  brew install pgvector\n"
-                f"    then restart Postgres:  brew services restart postgresql@{maj}")
+        return (f"  macOS (Homebrew):  brew install pgvector  &&  brew services restart postgresql@{maj}\n"
+                "    ⚠ `brew install pgvector` builds for ONE Postgres version. If you already\n"
+                "      installed it but still see this, it was built for a DIFFERENT version than\n"
+                f"      the @{maj} you're connecting to. Build it for this one:\n"
+                f"        cd /tmp && git clone --branch v0.8.2 https://github.com/pgvector/pgvector\n"
+                f"        cd pgvector && make install PG_CONFIG=$(brew --prefix postgresql@{maj})/bin/pg_config\n"
+                f"        brew services restart postgresql@{maj}")
     if sys.platform.startswith("linux"):
         return (f"  Debian/Ubuntu:  sudo apt install postgresql-{maj}-pgvector\n"
-                f"  RHEL/Fedora:    sudo dnf install pgvector_{maj}\n"
-                "  (or use the pgvector/pgvector Docker image)")
+                f"  RHEL/Fedora:    sudo dnf install pgvector_{maj}")
     return "  See https://github.com/pgvector/pgvector#installation"
 
 
@@ -117,7 +212,8 @@ def _pg_not_reachable_hint(host, port):
             "it connects to yours.\n")
     if sys.platform == "darwin":
         return base + ("  Is it running?   brew services start postgresql@16\n"
-                       "  Not installed?   brew install postgresql@16 && brew install pgvector")
+                       "  Not installed?   brew install postgresql@16 && brew install pgvector\n"
+                       "  (Alternative: memnos setup --docker runs a pgvector Postgres for you.)")
     if sys.platform.startswith("linux"):
         return base + ("  Is it running?   sudo systemctl start postgresql\n"
                        "  Not installed?   sudo apt install postgresql postgresql-16-pgvector")
@@ -140,9 +236,11 @@ def _preflight_postgres(conn):
         c.execute("SELECT installed_version FROM pg_available_extensions WHERE name = 'vector'")
         avail = c.fetchone()
         if not avail:
-            sys.exit("pgvector is NOT installed on this PostgreSQL server.\n"
-                     "memnos needs the 'vector' extension (>= 0.7, for halfvec). Install it:\n"
-                     + _pgvector_install_hint(pg_major) + "\nthen re-run `memnos setup`.")
+            sys.exit("pgvector (the 'vector' extension, >= 0.7) is NOT available to THIS Postgres server.\n"
+                     "Install it for this server, then re-run `memnos setup`:\n"
+                     + _pgvector_install_hint(pg_major) +
+                     "\n\n  (Alternative — let memnos run a pre-configured pgvector Postgres in Docker:"
+                     "  memnos setup --docker)")
         try:
             c.execute("CREATE EXTENSION IF NOT EXISTS vector")
         except Exception as e:
@@ -163,6 +261,8 @@ def _preflight_postgres(conn):
 def cmd_setup(args, cfg):
     print("=== memnos setup (Postgres is a prerequisite — this only creates objects in it) ===")
     dsn = args.dsn or os.environ.get("MEMNOS_DSN")
+    if getattr(args, "docker", False) and not dsn:
+        dsn = _ensure_docker_pg()       # memnos provisions a pgvector Postgres for you
     if not dsn:
         host = input("Postgres host [localhost]: ").strip() or "localhost"
         port = input("Postgres port [5432]: ").strip() or "5432"
@@ -642,7 +742,10 @@ def main():
     ap = argparse.ArgumentParser(prog="memnos", description="memnos memory platform CLI")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("setup"); p.add_argument("--dsn"); p.set_defaults(fn=cmd_setup)
+    p = sub.add_parser("setup"); p.add_argument("--dsn")
+    p.add_argument("--docker", action="store_true",
+                   help="provision a pgvector Postgres in Docker (no Postgres setup needed)")
+    p.set_defaults(fn=cmd_setup)
     p = sub.add_parser("serve"); p.add_argument("--port", type=int); p.set_defaults(fn=cmd_serve)
     p = sub.add_parser("mcp"); p.add_argument("--namespace"); p.set_defaults(fn=cmd_mcp)
     p = sub.add_parser("admin"); p.set_defaults(fn=cmd_admin)

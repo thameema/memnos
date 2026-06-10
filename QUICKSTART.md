@@ -58,8 +58,12 @@ memnos setup
 The wizard asks for your Postgres connection (or pass `--dsn postgresql://user:pass@host:5432/db`).
 It then enables `pgvector`, creates the memnos schema + the governance control plane,
 generates your encrypted-vault key, mints a one-time **admin token** (copy it — shown once),
-and writes everything to `~/.memnos/config.json`. If it detects Claude Code it offers to
+and writes everything to `~/.memnos/config.json`. If pgvector is missing or built for the
+wrong PG version, it tells you exactly how to fix it. If it detects Claude Code it offers to
 wire it up (`memnos claude-setup`).
+
+> **Alternative (needs Docker):** `memnos setup --docker` runs a pre-configured pgvector
+> Postgres for you — no Postgres install or version-matching. Then continue to step 3.
 
 ---
 
