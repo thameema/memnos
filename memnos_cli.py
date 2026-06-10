@@ -497,16 +497,33 @@ def _serve_background(port):
     with open(PID_PATH, "w") as f:
         f.write(str(proc.pid))
     print(f"[memnos] starting server in the background (pid {proc.pid}) ...")
-    for _ in range(40):
+    last_line = ""
+    for i in range(240):                      # up to ~6 min — first start downloads models
         if _server_up(url):
             print(f"[memnos] ✓ server running at {url}   ·   console: {url}/admin")
             print(f"         logs:  {LOG_PATH}")
             print(f"         stop:  memnos stop")
             return
         if proc.poll() is not None:
-            sys.exit(f"server exited on startup — see the log:  tail {LOG_PATH}")
+            tail = ""
+            try:
+                tail = "".join(open(LOG_PATH).readlines()[-12:])
+            except Exception:
+                pass
+            sys.exit(f"server exited on startup — last log lines:\n{tail}\n(full log: {LOG_PATH})")
+        if i == 4:
+            print("  · still starting — a FIRST start downloads the local embedding/reranker")
+            print(f"    models (~1 GB), which can take a few minutes. Watching {LOG_PATH}:")
+        if i >= 4:                            # surface log progress so it never looks hung
+            try:
+                cur = open(LOG_PATH).readlines()[-1].replace("\r", " ").strip()
+                if cur and cur != last_line:
+                    print(f"    · {cur[:110]}")
+                    last_line = cur
+            except Exception:
+                pass
         time.sleep(1.5)
-    print(f"[memnos] server is starting (still loading models?) — check `memnos status` / {LOG_PATH}")
+    sys.exit(f"[memnos] server still not up after ~6 min — check `memnos status` and:  tail {LOG_PATH}")
 
 
 def _server_up(url, timeout=2):
