@@ -1537,8 +1537,11 @@ def cmd_hook(args, cfg):
 
     def _save(t, speaker):
         try:
+            # async: the hook never reads the fact count — the server stores the raw
+            # turn and queues extraction, so the Stop hook returns in ~200ms
             req = urllib.request.Request(f"{url}/remember", method="POST",
-                data=json.dumps({"namespace": ns, "text": t, "speaker": speaker}).encode(), headers=hdr)
+                data=json.dumps({"namespace": ns, "text": t, "speaker": speaker,
+                                 "async": True}).encode(), headers=hdr)
             urllib.request.urlopen(req, timeout=12).read()
         except Exception:
             pass

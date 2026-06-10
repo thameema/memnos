@@ -83,19 +83,46 @@ class MemnosMemory:
         extraction (optional, offline LLM). Each fact is stored with
         subject/predicate/object so belief-change SUPERSESSION fires (close out the
         prior value for the same subject+predicate) and the entity GRAPH is populated
-        — parity with the validated phaseA engine. Returns ids + supersession count."""
+        — parity with the validated phaseA engine. Returns ids + supersession count.
+
+        NOTE for pooled callers (the server): this convenience method holds the store's
+        connection across the LLM extraction call. Use the split phases below
+        (remember_turn / extract_facts / write_facts) so a pool connection is never
+        pinned for the seconds an LLM call takes — that starves the pool under
+        concurrent sessions (field: 30s queueing, BrokenPipes)."""
+        observed_at = observed_at or datetime.now(timezone.utc)
+        tid, text, observed_at = self.remember_turn(namespace, text, speaker=speaker,
+                                                    session_id=session_id, observed_at=observed_at)
+        n_facts = n_super = 0
+        if extract and (self.llm is not None or self.extract_fn is not None):
+            facts = self.extract_facts(text, observed_at)
+            n_facts, n_super = self.write_facts(namespace, facts, observed_at, tid)
+        return {"turn_id": tid, "facts": n_facts, "superseded": n_super}
+
+    def remember_turn(self, namespace: str, text: str, *, speaker=None, session_id=None,
+                      observed_at=None):
+        """Phase 1 (fast, DB only): redact + store the verbatim raw turn. Returns
+        (turn_id, redacted_text, observed_at) for the later extraction phases."""
         observed_at = observed_at or datetime.now(timezone.utc)
         if self.redact:
             from .redact import redact as _redact
             text, _ = _redact(text)             # strip secrets BEFORE storage + extraction
         tid = self.store.insert_raw_turn(self.schema, namespace, session_id, speaker,
                                          text, observed_at, self.embed(text))
+        return tid, text, observed_at
+
+    def extract_facts(self, text, observed_at):
+        """Phase 2 (slow, NO database use): LLM fact extraction. Safe to run with no
+        connection held — pure model I/O."""
+        return self._extract(text, observed_at)
+
+    def write_facts(self, namespace, facts, observed_at, turn_id) -> tuple:
+        """Phase 3 (fast, DB only): supersession + store + graph for extracted facts."""
         n_facts = n_super = 0
-        if extract and self.llm is not None:
-            for f in self._extract(text, observed_at):
-                df, ds = self._write_fact(namespace, f, observed_at, source_turn_ids=[tid])
-                n_facts += df; n_super += ds
-        return {"turn_id": tid, "facts": n_facts, "superseded": n_super}
+        for f in facts:
+            df, ds = self._write_fact(namespace, f, observed_at, source_turn_ids=[turn_id])
+            n_facts += df; n_super += ds
+        return n_facts, n_super
 
     def ingest_session(self, namespace: str, turns, *, session_date, session_id=None,
                        extract=True) -> dict:
