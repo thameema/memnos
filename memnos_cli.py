@@ -822,11 +822,40 @@ def cmd_upgrade(args, cfg):
     cmd = _upgrade_cmd()
     print(f"  upgrading ... ({' '.join(cmd)})")
     rc = subprocess.run(cmd).returncode
-    if rc == 0:
-        print(f"[memnos] ✓ upgraded to v{latest}. (restart the server: memnos restart)")
-    else:
+    if rc != 0:
         sys.exit(f"upgrade failed (exit {rc}). Try manually:  uv tool upgrade memnos  "
                  "(or: pip install -U memnos)")
+    print(f"[memnos] ✓ upgraded to v{latest}.")
+    _refresh_integrations()
+    print("  restart the server to run the new code:  memnos restart")
+
+
+def _refresh_integrations():
+    """After an upgrade, re-wire previously-installed integrations so new hooks/skills
+    actually reach the agents — upgrading the package alone never touches their config."""
+    import shutil
+    import subprocess
+    exe = shutil.which("memnos")
+    if not exe:
+        return
+    home = os.path.expanduser("~")
+    sj = os.path.join(home, ".claude", "settings.json")
+    try:
+        if os.path.exists(sj) and "memnos hook" in open(sj).read():
+            print("  refreshing Claude Code wiring (hooks/MCP/skill may have changed) ...")
+            r = subprocess.run([exe, "agent-setup", "claude-code"], capture_output=True, text=True)
+            print("  ✓ Claude Code re-wired" if r.returncode == 0 else
+                  "  ⚠ re-wiring failed — run manually:  memnos agent-setup claude-code")
+    except Exception:
+        pass
+    # other agents: configs are static MCP entries — only nudge if present
+    cd = os.path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json") \
+        if sys.platform == "darwin" else os.path.join(home, ".config", "Claude", "claude_desktop_config.json")
+    try:
+        if os.path.exists(cd) and "memnos" in open(cd).read():
+            print("  tip: refresh the Desktop skill too:  memnos agent-setup claude-desktop")
+    except Exception:
+        pass
 
 
 # tables whose `embedding` column is derived from a stored text column (+ its HNSW index)
