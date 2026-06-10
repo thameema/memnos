@@ -45,7 +45,7 @@ command is just `memnos mcp`.
 }
 ```
 
-> If `memnos` isn't found, use the absolute path from `which memnos` (pipx installs to
+> If `memnos` isn't found, use the absolute path from `which memnos` (uv and pipx install to
 > `~/.local/bin/memnos`).
 
 Reload Cursor. In the MCP settings you should see **memnos** connected with three tools:

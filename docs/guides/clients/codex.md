@@ -36,7 +36,7 @@ If you're on a Codex build without MCP, use the REST API or the SDK directly.
 ### Python SDK
 
 ```bash
-pip install memnos-sdk
+uv pip install memnos-sdk        # (or: pip install memnos-sdk)
 ```
 ```python
 from memnos_sdk import MemnosClient

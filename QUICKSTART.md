@@ -14,7 +14,7 @@ five minutes — one package, one command.
 - **PostgreSQL 13+** with the **pgvector ≥ 0.7** extension available. memnos **does not install
   Postgres** — it connects to yours and creates its own schema. (For local dev, the
   `pgvector/pgvector` Docker image is easiest: `docker compose -f docker-compose.dev.yml up -d`.)
-- **Python 3.10+** (for `pipx` / `pip`).
+- **Python 3.10+** (for `uv` / `pip`).
 - *Optional:* an **OpenAI API key** for 1536-d embeddings + fact extraction. Without one,
   memnos runs in free **local 384-d** mode (embeddings only, no extraction).
 

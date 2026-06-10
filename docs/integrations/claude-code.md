@@ -29,7 +29,7 @@ The manual paths below are the same wiring, by hand, if you'd rather not run the
 
 ## Option A — MCP server (explicit tools)
 
-If you installed the package (`pipx install memnos`), the MCP server is just `memnos mcp`:
+If you installed the package (`uv tool install memnos`), the MCP server is just `memnos mcp`:
 ```jsonc
 {
   "mcpServers": {

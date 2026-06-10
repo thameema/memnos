@@ -47,7 +47,7 @@ Edit **`~/.codeium/windsurf/mcp_config.json`** (Windsurf → Settings → Cascad
 ```
 
 > If `memnos` isn't found on Windsurf's PATH, use the absolute path from `which memnos`
-> (pipx installs to `~/.local/bin/memnos`).
+> (uv and pipx install to `~/.local/bin/memnos`).
 
 Click **Refresh** in the MCP panel. memnos appears with three tools:
 
