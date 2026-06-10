@@ -1184,7 +1184,10 @@ _AGENTS = {
     "codex":          {"path": "~/.codex/config.toml",                         "fmt": "toml", "agents_md": "~/.codex/AGENTS.md"},
     "cursor":         {"path": "~/.cursor/mcp.json",                           "fmt": "json"},
     "windsurf":       {"path": "~/.codeium/windsurf/mcp_config.json",          "fmt": "json"},
-    "claude-desktop": {"path": "~/Library/Application Support/Claude/claude_desktop_config.json", "fmt": "json"},
+    # Claude Desktop's config lives in a platform-specific app-data dir (resolved below)
+    "claude-desktop": {"path": "~/Library/Application Support/Claude/claude_desktop_config.json", "fmt": "json",
+                       "note": "fully quit Claude Desktop (Cmd-Q / system tray) and reopen — the tools "
+                               "appear under the search-and-tools icon"},
     # OpenClaw keeps MCP servers under mcp.servers in its main config
     "openclaw":       {"path": "~/.openclaw/openclaw.json",                    "fmt": "json", "key": ("mcp", "servers"),
                        "note": "restart the OpenClaw gateway, then verify with: openclaw mcp list"},
@@ -1201,12 +1204,22 @@ def cmd_agent_setup(args, cfg):
     spec = _AGENTS.get(args.agent)
     if not spec:
         sys.exit(f"unknown agent '{args.agent}' — choose: {', '.join(_AGENTS)}")
+    spec = dict(spec)
+    if args.agent == "claude-desktop":        # app-data dir is platform-specific
+        if sys.platform == "win32":
+            spec["path"] = os.path.join(os.environ.get("APPDATA", "~"), "Claude", "claude_desktop_config.json")
+        elif sys.platform.startswith("linux"):
+            spec["path"] = "~/.config/Claude/claude_desktop_config.json"
     url = os.environ.get("MEMNOS_URL") or f"http://127.0.0.1:{cfg.get('port', 8900)}"
     token, default_ns = _ensure_claude_token(cfg)
     ns = args.namespace or default_ns
     path = os.path.expanduser(spec["path"])
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    entry = {"command": "memnos", "args": ["mcp"],
+    # absolute command path: GUI apps (Claude Desktop especially) spawn MCP servers with a
+    # minimal PATH that doesn't include ~/.local/bin — a bare "memnos" fails to resolve there
+    import shutil
+    exe = shutil.which("memnos") or "memnos"
+    entry = {"command": exe, "args": ["mcp"],
              "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns}}
 
     if spec["fmt"] == "json":
@@ -1235,7 +1248,7 @@ def cmd_agent_setup(args, cfg):
             yaml.safe_dump(d, f, sort_keys=False, default_flow_style=False)
     else:  # toml (codex)
         existing = open(path).read() if os.path.exists(path) else ""
-        block = (f'\n[mcp_servers.memnos]\ncommand = "memnos"\nargs = ["mcp"]\n\n'
+        block = (f'\n[mcp_servers.memnos]\ncommand = "{exe}"\nargs = ["mcp"]\n\n'
                  f'[mcp_servers.memnos.env]\nMEMNOS_URL = "{url}"\n'
                  f'MEMNOS_TOKEN = "{token}"\nMEMNOS_NS = "{ns}"\n')
         if "[mcp_servers.memnos]" in existing:

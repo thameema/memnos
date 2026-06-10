@@ -30,6 +30,7 @@ the `memnos-sdk`.
 | Client | Connection | Guide |
 |--------|-----------|-------|
 | Claude Code | MCP (`memnos mcp`) + automatic hooks | [Setup](../claude-code-setup.md) |
+| Claude Desktop | MCP (`memnos mcp`, stdio) | [Setup](claude-desktop.md) |
 | Cursor | MCP (`memnos mcp`, stdio) | [Setup](cursor.md) |
 | Windsurf | MCP (`memnos mcp`, stdio) | [Setup](windsurf.md) |
 | Cline (VS Code) | MCP (`memnos mcp`, stdio) | [Setup](cline.md) |
