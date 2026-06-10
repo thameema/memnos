@@ -1470,15 +1470,15 @@ def cmd_hook(args, cfg):
     if args.which == "status":
         # SessionStart: ONE visible line so the user always knows whether memory is on —
         # no silent loss of capture after a reboot.
-        parts = []
-        if _server_up(url):
+        parts = []                                  # 1s health timeouts — session start must
+        if _server_up(url, timeout=1):              # never feel slowed by this hook
             parts.append(f"memory ACTIVE → {ns}")
         else:
             parts.append(f"⚠ memory OFF — server unreachable at {url}. Run `memnos start` "
                          "(`memnos autostart` makes it survive reboots)")
         if cfg.get("proxy_token"):                  # proxy configured on this machine
             pport = (cfg.get("proxy") or {}).get("port", 8910)
-            parts.append("capture proxy ACTIVE" if _server_up(f"http://127.0.0.1:{pport}")
+            parts.append("capture proxy ACTIVE" if _server_up(f"http://127.0.0.1:{pport}", timeout=1)
                          else f"⚠ capture proxy DOWN (:{pport}) — run `memnos proxy`")
         print(json.dumps({"systemMessage": "memnos: " + "  ·  ".join(parts)}))
         return
