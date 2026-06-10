@@ -117,8 +117,17 @@ memnos agent-setup hermes          # Hermes Agent (Nous Research)
 Each mints a scoped token, is idempotent, and backs up edited files; `memnos setup` wires
 Claude Code automatically when it detects it (`memnos claude-setup` still works as an
 alias). **Claude Code** is the only agent with lifecycle **hooks** (auto-recall before each
-prompt, auto-save after); every other agent gets the memnos MCP **tools** (`recall`,
-`recall_wide`, `remember`, `reconcile_claim`, …).
+prompt, auto-save after — both the user's message and the assistant's reply); every other
+agent gets the memnos MCP **tools** (`recall`, `recall_wide`, `remember`,
+`reconcile_claim`, …).
+
+**Guaranteed capture for everything else — `memnos proxy`:** MCP tools are called at the
+model's discretion, so for deterministic capture point any OpenAI- or Anthropic-compatible
+client's base URL at the proxy (`ANTHROPIC_BASE_URL=http://127.0.0.1:8910`) — it relays
+every request untouched (streaming included, keys forwarded, never stored) and captures
+**both sides** of each completed exchange into governed memory, with agent-loop noise
+filtered out. Works with Claude Code, Hermes, OpenClaw, Open WebUI, and any SDK app.
+[Full guide + capability matrix](docs/guides/proxy.md).
 
 - **REST** — `POST /remember`, `POST /recall` (Bearer token, namespace-scoped).
 - **CLI / SDK** — `memnos remember/recall`, or `uv pip install memnos-sdk` (LangChain / LangGraph

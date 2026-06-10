@@ -163,6 +163,15 @@ memnos agent-setup hermes          # Hermes Agent (Nous Research — ~/.hermes/c
 
 (`memnos claude-setup` still works — it's an alias of `agent-setup claude-code`.)
 
+> **Capture tiers — know what you're getting.** Claude Code gets lifecycle **hooks**
+> (deterministic auto recall/save, both speakers). Every other MCP client gets **tools**
+> the model calls at its own discretion. For deterministic capture with any client that
+> allows a base-URL override, run **`memnos proxy`** and point the client's
+> `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL` at it — both sides of every completed exchange
+> are captured automatically, agent-loop noise filtered. See
+> [`docs/guides/proxy.md`](docs/guides/proxy.md) (includes the honest capability matrix —
+> e.g. Claude Desktop has no override and stays tools-only).
+
 Each mints a scoped token, is idempotent, and backs up files it edits. **Restart the agent
 afterward.** Claude Code is the only agent with lifecycle **hooks** (auto-recall before each
 prompt, auto-save after); the rest get the memnos MCP **tools** (`recall`, `recall_wide`,
