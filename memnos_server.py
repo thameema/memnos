@@ -667,6 +667,7 @@ class Handler(BaseHTTPRequestHandler):
         run_async = bool(req.get("async"))
         usage = _UsageAcc()
         cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
+        principal = None                               # bound for the failure-audit path
         try:
             principal, err = self._auth_short(ns, token, write=True, action=action)  # P0
             if err:
@@ -709,8 +710,17 @@ class Handler(BaseHTTPRequestHandler):
         except (PoolTimeout, OperationalError) as e:
             print(f"[memnos] DB unreachable ({type(e).__name__}): {e}", flush=True)
             return self._send(503, {"error": "database unreachable — is Postgres running?"})
-        except Exception:
+        except Exception as op_err:
             traceback.print_exc()
+            # audit-parity with the pre-phased handler: a failed remember MUST leave an
+            # audit row with what broke (actionable via `memnos_admin.py errors`)
+            try:
+                with POOL.connection() as conn:
+                    Control.audit(conn, principal, action, ns, False,
+                                  {"error": type(op_err).__name__, "msg": str(op_err)[:300]},
+                                  latency_ms=int((time.perf_counter() - t0) * 1000), status=500)
+            except Exception:
+                pass                                   # DB down — the 500 still reaches the client
             return self._send(500, {"error": "internal error"})
 
     def _phased(self, req, ns, token, t0):
@@ -901,6 +911,16 @@ def _ingest_worker():
         except Exception as e:
             print(f"[memnos] async ingest failed for turn {tid} (raw turn IS stored): "
                   f"{type(e).__name__}: {e}", flush=True)
+            # audit-parity with the sync path: async extraction failures must be visible
+            # in the audit log, not only in the server's stdout
+            try:
+                with POOL.connection() as conn:
+                    Control.audit(conn, principal, "remember", ns, False,
+                                  {"async": True, "turn_id": tid, "error": type(e).__name__,
+                                   "msg": str(e)[:300]},
+                                  latency_ms=int((time.perf_counter() - t0) * 1000), status=500)
+            except Exception:
+                pass
 
 
 def _set_proc_title(title):

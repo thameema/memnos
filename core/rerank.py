@@ -12,9 +12,15 @@ from __future__ import annotations
 
 import functools
 import math
+import os
 
-# Default reranker. Override per deployment (e.g. BAAI/bge-reranker-large for max accuracy).
-DEFAULT_RERANKER = "BAAI/bge-reranker-base"      # ~278M params, ONNX
+# Default reranker. Override per deployment via MEMNOS_RERANKER (e.g.
+# BAAI/bge-reranker-large for max accuracy, or Xenova/ms-marco-MiniLM-L-6-v2 for a
+# small-RAM host: bge-reranker-base is a 1.0 GB fp32 ONNX whose working set is ~1.9 GB
+# resident while hot — the RSS "sawtooth" of issue #8 is this model paging in on recall
+# bursts and being reclaimed by the OS at idle). Changing the model changes ranking
+# quality — re-run the LoCoMo benchmark before switching a production deployment.
+DEFAULT_RERANKER = os.environ.get("MEMNOS_RERANKER", "BAAI/bge-reranker-base")  # ~278M params, ONNX
 
 
 def _sigmoid(x: float) -> float:

@@ -129,5 +129,17 @@ BEGIN
   EXECUTE format('CREATE INDEX IF NOT EXISTS raw_ns ON %I.raw_turns (namespace)', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS epi_ns ON %I.episodic (namespace)', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS sem_ns ON %I.semantic (namespace)', s);
+  -- SUPERSESSION indexes (issue #8): every single-valued fact write runs
+  -- supersede_predicate (lower(subject)+lower(predicate) over live rows) and
+  -- consolidation runs supersede_subject/_similar (exact subject over live rows).
+  -- Without these each call seq-scans the whole embedding-heavy namespace heap
+  -- (measured: 95K rows filtered + ~195K buffers touched PER FACT WRITE). Partial
+  -- btrees over live rows make both an index scan; UPDATE semantics are unchanged.
+  EXECUTE format('CREATE INDEX IF NOT EXISTS sem_supersede_pred ON %I.semantic '
+                 '(namespace, lower(subject_entity), lower(predicate)) '
+                 'WHERE valid_to IS NULL AND expired_at IS NULL', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS sem_supersede_subj ON %I.semantic '
+                 '(namespace, subject_entity) '
+                 'WHERE valid_to IS NULL AND expired_at IS NULL', s);
 END
 $fn$;
