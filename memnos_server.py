@@ -173,6 +173,7 @@ UI_DIR = _find_ui_dir()
 _CTYPE = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}
 
 POOL = None
+_NS_CACHE = {"t": 0.0, "data": None}    # namespace-census cache (10s TTL, write-invalidated)
 EMBED = None
 LLM = None
 DIM = 384
@@ -270,18 +271,26 @@ class Handler(BaseHTTPRequestHandler):
             body = body or {}
             try:
                 if sub == "namespaces" and method == "GET":
-                    return 200, {"namespaces": Control.list_namespaces(conn)}
+                    # short TTL cache: the console fires several parallel calls on page
+                    # load; the namespace census aggregates large tables — compute once
+                    now = time.monotonic()
+                    if _NS_CACHE["data"] is None or now - _NS_CACHE["t"] > 10:
+                        _NS_CACHE["data"] = Control.list_namespaces(conn)
+                        _NS_CACHE["t"] = now
+                    return 200, {"namespaces": _NS_CACHE["data"]}
                 if sub == "namespaces" and method == "POST":
                     name = str(body.get("name", "")).strip()
                     if not name or len(name) > 200:
                         return 400, {"error": "name required (<=200 chars)"}
                     Control.create_namespace(conn, name, created_by=pid, description=body.get("description"))
+                    _NS_CACHE["data"] = None
                     return 200, {"ok": True, "name": name}
                 if sub == "namespaces" and method == "DELETE":
                     name = (qs.get("name", [""])[0]).strip()
                     if not name:
                         return 400, {"error": "name required"}
                     Control.delete_namespace(conn, name, purge_data=qs.get("purge", ["0"])[0] == "1")
+                    _NS_CACHE["data"] = None
                     return 200, {"ok": True}
                 if sub == "principals" and method == "GET":
                     return 200, {"principals": Control.list_principals(conn)}
@@ -693,8 +702,10 @@ def serve(port=None):
     brain_rerank.rerank("warm", ["a", "b"])
     # timeout=5: a request against a dead DB fails in 5s with a clear 503 — clients
     # (hooks/MCP/agents) must never sit behind a 30s pool wait.
+    # max_idle=60: shrink back to min_size within a minute after bursts — a congested
+    # period must not leave a wall of idle postgres backends behind (field: 22 procs)
     POOL = ConnectionPool(DSN, min_size=2, max_size=POOL_MAX, open=True, timeout=5,
-                          kwargs={"autocommit": True, "row_factory": dict_row})
+                          max_idle=60, kwargs={"autocommit": True, "row_factory": dict_row})
     # wait for Postgres instead of crashing: under autostart (launchd/systemd) at login,
     # PG often isn't up yet — keep retrying with a clear, single-line heartbeat.
     while True:

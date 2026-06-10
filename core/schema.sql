@@ -120,5 +120,11 @@ BEGIN
   EXECUTE format('CREATE INDEX IF NOT EXISTS men_ent  ON %I.mentions (entity_id)', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS men_mem  ON %I.mentions (memory_id)', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS prov_sem ON %I.provenance (semantic_id)', s);
+  -- namespace b-trees: every recall/list/stat filters or groups by namespace; without
+  -- these, namespace queries seq-scan embedding-heavy tables (field: 2-min admin loads
+  -- + 4-8s blocked writes at 35k turns / 95k facts)
+  EXECUTE format('CREATE INDEX IF NOT EXISTS raw_ns ON %I.raw_turns (namespace)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS epi_ns ON %I.episodic (namespace)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS sem_ns ON %I.semantic (namespace)', s);
 END
 $fn$;
