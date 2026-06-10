@@ -1346,8 +1346,11 @@ def cmd_hook(args, cfg):
                   "additionalContext": "## Relevant memories (memnos)\n" + ctx}}))
         return
 
-    # remember (Stop): prefer the last user message from the transcript
+    # remember (Stop): save the last user message AND the assistant's reply to it.
+    # The reply is where conclusions live (decisions, ticket IDs, outcomes) — capturing
+    # only the question made everything the agent said invisible across sessions.
     text = data.get("prompt", "")
+    a_text = ""
     tp = data.get("transcript_path", "")
     if tp and os.path.exists(tp):
         try:
@@ -1356,24 +1359,38 @@ def cmd_hook(args, cfg):
                 for line in f:
                     ev = json.loads(line); c = ev.get("message", {}).get("content")
                     if ev.get("type") == "user" and isinstance(c, str):
-                        last = c
+                        last = c; a_text = ""          # keep only the reply AFTER the last user msg
+                    elif ev.get("type") == "assistant" and isinstance(c, list):
+                        t = "".join(b.get("text", "") for b in c
+                                    if isinstance(b, dict) and b.get("type") == "text")
+                        if t.strip():
+                            a_text = (a_text + "\n" + t.strip()) if a_text else t.strip()
             text = last or text
         except Exception:
             pass
+
+    def _save(t, speaker):
+        try:
+            req = urllib.request.Request(f"{url}/remember", method="POST",
+                data=json.dumps({"namespace": ns, "text": t, "speaker": speaker}).encode(), headers=hdr)
+            urllib.request.urlopen(req, timeout=12).read()
+        except Exception:
+            pass
+
     text = (text or "").strip()
     low = text.lower()
-    if not text or low.startswith("<") or text.startswith("# ") or "<<autonomous-loop" in low \
-            or low.startswith("# autonomous loop") or "</task-notification" in low \
-            or "this is an automated background-task event" in low \
-            or "reference answer:" in low or "reply with only" in low or low.startswith("question:") \
-            or len(text) < 15 or len(text.split()) < 3:
-        return
-    try:
-        req = urllib.request.Request(f"{url}/remember", method="POST",
-            data=json.dumps({"namespace": ns, "text": text, "speaker": "user"}).encode(), headers=hdr)
-        urllib.request.urlopen(req, timeout=12).read()
-    except Exception:
-        pass
+    user_noise = (not text or low.startswith("<") or text.startswith("# ") or "<<autonomous-loop" in low
+                  or low.startswith("# autonomous loop") or "</task-notification" in low
+                  or "this is an automated background-task event" in low
+                  or "reference answer:" in low or "reply with only" in low or low.startswith("question:")
+                  or len(text) < 15 or len(text.split()) < 3)
+    if not user_noise:
+        _save(text, "user")
+        a_text = a_text.strip()
+        if len(a_text) >= 30:                          # the answer to a noise prompt is noise too
+            if len(a_text) > 8000:                     # cap extraction cost on huge agent replies
+                a_text = a_text[:8000] + " …[truncated]"
+            _save(a_text, "assistant")
 
 
 def main():

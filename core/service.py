@@ -174,11 +174,14 @@ class MemnosMemory:
                 model=self.extract_model, temperature=0, max_tokens=2000,
                 response_format={"type": "json_object"},
                 messages=[{"role": "system", "content":
-                           f"DATE: {date}. Extract EVERY atomic, self-contained FACT about any person in "
-                           "this conversation — be EXHAUSTIVE, do not skip minor details. Cover: hobbies & "
-                           "activities, experiences & events, preferences & opinions, possessions, "
-                           "relationships & who they met, places been/lived, jobs & education, plans, and "
-                           "feelings/values. List EACH distinct item separately (e.g. one fact per martial "
+                           f"DATE: {date}. Extract EVERY atomic, self-contained FACT about any person, "
+                           "project, or work item in this conversation — be EXHAUSTIVE, do not skip minor "
+                           "details. Cover: hobbies & activities, experiences & events, preferences & "
+                           "opinions, possessions, relationships & who they met, places been/lived, jobs & "
+                           "education, plans, feelings/values, and decisions/outcomes/identifiers from work "
+                           "discussions. PRESERVE identifiers VERBATIM in statements — ticket keys (ABC-123), "
+                           "PR/MR numbers, version numbers, URLs, file/host names — never paraphrase them "
+                           "away. List EACH distinct item separately (e.g. one fact per martial "
                            "art, per dessert, per country). RESOLVE relative dates ('yesterday','last "
                            "Saturday') to ABSOLUTE using DATE, and pronouns to named people. For each fact: "
                            "statement = a full self-contained sentence (with the date if known); subject = "
