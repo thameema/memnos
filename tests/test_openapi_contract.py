@@ -204,6 +204,14 @@ def main():
     call("GET", "/admin/api/stats", token=TADM, query="hours=24", expect=200)
     call("GET", "/admin/api/usage", token=TADM, expect=200)
     call("GET", "/admin/api/audit", token=TADM, query="limit=10&offset=0", expect=200)
+    call("GET", "/admin/api/memory/feed", token=TADM, query="limit=10&offset=0", expect=200)
+    call("GET", "/admin/api/memory/feed", token=TADM,
+         query="limit=10&offset=0&namespace=" + NS.replace(":", "%3A") + "&type=constraint",
+         expect=200, name="GET /admin/api/memory/feed (filters)")
+    call("GET", "/admin/api/memory/feed", token=TADM, query="type=bogus", expect=400,
+         name="GET /admin/api/memory/feed (unknown type)")
+    call("GET", "/admin/api/memory/feed", token=TLIM, expect=403,
+         name="GET /admin/api/memory/feed (non-admin)")
     call("GET", "/admin/api/health", token=TADM, expect=200)
     call("GET", "/admin/api/quality", token=TADM, expect=200)
     call("GET", "/admin/api/subscriptions", token=TADM, expect=200)
@@ -230,8 +238,13 @@ def main():
          expect=403, name="POST /remember (forbidden ns)")
     call("POST", "/remember", body={"namespace": NS}, token=TADM, expect=400,
          name="POST /remember (missing text)")
-    call("POST", "/memory/write", body={"namespace": NS, "content": "Bob prefers tea over coffee."},
-         token=TADM, expect=200)
+    call("POST", "/remember", body={"namespace": NS, "type": "wrongtype", "text": "x"},
+         token=TADM, expect=400, name="POST /remember (unknown type)")
+    call("POST", "/remember", body={"namespace": NS, "type": "constraint",
+         "text": "All deploys MUST be approved by two engineers."}, token=TADM, expect=200,
+         name="POST /remember (typed constraint)")
+    call("POST", "/memory/write", body={"namespace": NS, "content": "Bob prefers tea over coffee.",
+         "type": "decision"}, token=TADM, expect=200)
     # knowledge namespace content for grounded recall
     st, _ = call("POST", "/corpus/ingest", token=TADM, expect=200,
                  body={"namespace": NSK, "name": "arch.md", "kind": "doc",
@@ -248,6 +261,18 @@ def main():
          expect=200, name="POST /recall (scope=all)")
     call("POST", "/recall", token=TADM, body={"namespace": NS}, expect=400,
          name="POST /recall (missing query)")
+    st, recp = call("POST", "/recall", token=TADM,
+                    body={"namespace": NS, "query": "completely unrelated topic",
+                          "type": "decision", "constraint_cap": 5},
+                    expect=200, name="POST /recall (type filter + constraint pinning)")
+    pins = [m for m in (recp or {}).get("memories", []) if m.get("pinned")]
+    check("constraint pinned despite unrelated query + type filter",
+          pins and all(m.get("type") == "constraint" for m in pins))
+    check("pinned constraints lead the context block",
+          (recp or {}).get("context", "").startswith("CONSTRAINT:"))
+    call("POST", "/recall", token=TADM,
+         body={"namespace": NS, "query": "Ada", "type": "nope"}, expect=400,
+         name="POST /recall (unknown type)")
     call("POST", "/memory/search", token=TADM, body={"namespace": NS, "query": "Ada"}, expect=200)
     call("POST", "/recall_v2", token=TADM, body={"namespace": NS, "query": "Ada"}, expect=200)
     call("POST", "/memory/context", token=TADM, body={"namespace": NS, "query": "Ada", "max_chars": 500},

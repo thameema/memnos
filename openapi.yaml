@@ -115,6 +115,9 @@ paths:
         immediately after the raw turn is stored (`"extraction": "queued"`, `facts: null`).
         In local-embedding mode there is no extraction and `facts` is always `0`.
         The memory's author is ALWAYS the authenticated principal — never client-supplied.
+        An optional `type` (decision | incident | constraint | skill | fact) classifies
+        the memory; extracted facts inherit the turn's type, and `constraint` memories
+        are pinned into every recall on the namespace.
       requestBody:
         required: true
         content:
@@ -164,7 +167,11 @@ paths:
         links to knowledge namespaces, linked namespaces the CALLER may read are searched
         too — `grounded_in` lists those used, `links_skipped` those denied by grants (both
         keys appear only when links exist). `author` filters results to one writer
-        (matched against the server-stamped author).
+        (matched against the server-stamped author). `type` filters results to one memory
+        type. **Pinned constraints**: memories typed `constraint` in the target namespace
+        (and its grant-readable linked namespaces) are ALWAYS included — first in the
+        output and rendered as leading `CONSTRAINT: ...` context lines — regardless of
+        query similarity; cap with `constraint_cap` (default 10, 0 disables).
       requestBody:
         required: true
         content:
@@ -1003,6 +1010,32 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/memory/feed:
+    get:
+      tags: [admin]
+      summary: Recent memories across ALL namespaces (`?limit=` 1..200, `&offset=`, `&namespace=`, `&type=`)
+      description: |
+        Newest-first feed of remembered turns across every namespace — the console's
+        live view of what the platform is remembering (type badge + author + age).
+        Optional `namespace` and `type` filters; unknown `type` values are rejected.
+      parameters:
+        - { name: limit, in: query, required: false, schema: { type: integer } }
+        - { name: offset, in: query, required: false, schema: { type: integer } }
+        - { name: namespace, in: query, required: false, schema: { type: string } }
+        - name: type
+          in: query
+          required: false
+          schema: { type: string, enum: [decision, incident, constraint, skill, fact] }
+      responses:
+        "200":
+          description: recent memories page
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminMemoryFeedResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
   /admin/api/audit:
     get:
       tags: [admin]
@@ -1253,6 +1286,13 @@ components:
         text: { type: string, maxLength: 20000 }
         speaker: { type: string, description: "e.g. user / assistant" }
         session_id: { type: string }
+        type:
+          type: string
+          enum: [decision, incident, constraint, skill, fact]
+          description: >
+            classify the memory; facts extracted from the turn inherit it. Unknown
+            values are rejected (400). `constraint` memories are PINNED into every
+            recall on the namespace.
         async:
           type: boolean
           description: defer fact extraction to background workers (fast return)
@@ -1266,6 +1306,9 @@ components:
         content: { type: string, maxLength: 20000 }
         speaker: { type: string }
         session_id: { type: string }
+        type:
+          type: string
+          enum: [decision, incident, constraint, skill, fact]
         async: { type: boolean }
     RecallRequest:
       type: object
@@ -1280,6 +1323,17 @@ components:
         author:
           type: string
           description: only memories written by this principal (server-stamped author)
+        type:
+          type: string
+          enum: [decision, incident, constraint, skill, fact]
+          description: >
+            only memories of this type. Pinned constraints are exempt — they are always
+            injected (disable with constraint_cap=0).
+        constraint_cap:
+          type: integer
+          description: >
+            max pinned constraints injected (default 10, clamped 0..50; 0 disables
+            pinning). Pinned rows are ADDED ahead of ranked results, never replace them.
         raw_quota: { type: integer, description: max verbatim turns returned }
         fact_quota: { type: integer, description: max facts returned }
         max_chars: { type: integer, description: context block size cap (default 9000) }
@@ -1430,6 +1484,15 @@ components:
         date: { type: [string, "null"], description: fact valid_from (YYYY-MM-DD) }
         author: { type: string, description: server-stamped writing principal }
         namespace: { type: string, description: source namespace (wide/grounded rows) }
+        type:
+          type: string
+          enum: [decision, incident, constraint, skill, fact]
+          description: memory type (absent = untyped)
+        pinned:
+          type: boolean
+          description: >
+            true on injected constraint rows — present regardless of query similarity,
+            rendered first in the context block as "CONSTRAINT: ..." lines
     RecallResponse:
       type: object
       required: [memories, context]
@@ -1963,6 +2026,27 @@ components:
               result_count: { type: [integer, "null"] }
         total: { type: integer, description: planner ESTIMATE }
         total_estimated: { type: boolean }
+        limit: { type: integer }
+        offset: { type: integer }
+    AdminMemoryFeedResponse:
+      type: object
+      required: [memories, limit, offset]
+      properties:
+        memories:
+          type: array
+          items:
+            type: object
+            required: [id, namespace, content]
+            properties:
+              id: { type: integer }
+              namespace: { type: string }
+              speaker: { type: [string, "null"] }
+              content: { type: string }
+              type:
+                type: [string, "null"]
+                description: memory type badge (null = untyped)
+              author: { type: [string, "null"], description: server-stamped writing principal }
+              observed_at: { $ref: "#/components/schemas/DateTime" }
         limit: { type: integer }
         offset: { type: integer }
     AdminHealthResponse:

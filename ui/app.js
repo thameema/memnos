@@ -113,6 +113,42 @@ $("#ns-create").onclick = async () => {
   catch (e) { alert(e.message); }
 };
 
+// ---- memory feed (recent memories across namespaces, paginated) ----
+const FEED_PAGE = 50;
+let feedOffset = 0;
+const age = (t) => {
+  if (!t) return "—";
+  const s = Math.max(0, (Date.now() - new Date(t).getTime()) / 1000);
+  if (s < 60) return Math.floor(s) + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m";
+  if (s < 86400) return Math.floor(s / 3600) + "h";
+  return Math.floor(s / 86400) + "d";
+};
+async function loadFeed() {
+  const tbody = $("#feed-table tbody");
+  const ns = $("#feed-ns").value.trim(), ty = $("#feed-type").value;
+  const qs = `memory/feed?limit=${FEED_PAGE}&offset=${feedOffset}`
+    + (ns ? "&namespace=" + encodeURIComponent(ns) : "") + (ty ? "&type=" + ty : "");
+  await loadTable(tbody, () => api("GET", qs), ({ memories }) => {
+    tbody.innerHTML = memories.map(m => `<tr>
+      <td title="${esc(m.observed_at || "")}">${age(m.observed_at)}</td>
+      <td><code>${esc(m.namespace)}</code></td>
+      <td>${m.type ? `<span class="pill ${m.type === "constraint" ? "no" : "ok"}">${esc(m.type)}</span>` : ""}</td>
+      <td>${esc(m.author || "—")}</td>
+      <td>${esc(m.content)}</td></tr>`).join("")
+      || emptyRow(5, `No memories yet — they appear here as clients call <code>/remember</code>.`);
+    const page = Math.floor(feedOffset / FEED_PAGE) + 1;
+    $("#feed-info").textContent = `page ${page}`;
+    $("#feed-prev").disabled = feedOffset === 0;
+    $("#feed-next").disabled = memories.length < FEED_PAGE;
+  }, loadFeed);
+}
+$("#feed-prev").onclick = () => { feedOffset = Math.max(0, feedOffset - FEED_PAGE); loadFeed(); };
+$("#feed-next").onclick = () => { feedOffset += FEED_PAGE; loadFeed(); };
+$("#feed-refresh").onclick = () => { feedOffset = 0; loadFeed(); };
+$("#feed-type").onchange = () => { feedOffset = 0; loadFeed(); };
+$("#feed-ns").addEventListener("keydown", e => { if (e.key === "Enter") { feedOffset = 0; loadFeed(); } });
+
 // ---- principals + grants ----
 async function loadPrincipals() {
   const tbody = $("#pr-table tbody");
@@ -304,6 +340,7 @@ async function loadCliRef() {
 }
 
 $$(".tabs button").forEach(b => b.addEventListener("click", () => {
+  if (b.dataset.tab === "feed") { feedOffset = 0; loadFeed(); }
   if (b.dataset.tab === "dashboard") loadDashboard();
   if (b.dataset.tab === "secrets") loadSecrets();
   if (b.dataset.tab === "cli") loadCliRef();

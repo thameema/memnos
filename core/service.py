@@ -90,7 +90,7 @@ class MemnosMemory:
 
     # --- WRITE -------------------------------------------------------------
     def remember(self, namespace: str, text: str, *, speaker=None, session_id=None,
-                 observed_at=None, extract=True) -> dict:
+                 observed_at=None, extract=True, memory_type=None) -> dict:
         """Store a message: raw turn (always) + STRUCTURED date-aware SPO fact
         extraction (optional, offline LLM). Each fact is stored with
         subject/predicate/object so belief-change SUPERSESSION fires (close out the
@@ -104,15 +104,17 @@ class MemnosMemory:
         concurrent sessions (field: 30s queueing, BrokenPipes)."""
         observed_at = observed_at or datetime.now(timezone.utc)
         tid, text, observed_at = self.remember_turn(namespace, text, speaker=speaker,
-                                                    session_id=session_id, observed_at=observed_at)
+                                                    session_id=session_id, observed_at=observed_at,
+                                                    memory_type=memory_type)
         n_facts = n_super = 0
         if extract and (self.llm is not None or self.extract_fn is not None):
             facts = self.extract_facts(text, observed_at)
-            n_facts, n_super = self.write_facts(namespace, facts, observed_at, tid)
+            n_facts, n_super = self.write_facts(namespace, facts, observed_at, tid,
+                                                memory_type=memory_type)
         return {"turn_id": tid, "facts": n_facts, "superseded": n_super}
 
     def remember_turn(self, namespace: str, text: str, *, speaker=None, session_id=None,
-                      observed_at=None, vec=None):
+                      observed_at=None, vec=None, memory_type=None):
         """Phase 1 (fast, DB only): redact + store the verbatim raw turn. Returns
         (turn_id, redacted_text, observed_at) for the later extraction phases.
 
@@ -127,7 +129,7 @@ class MemnosMemory:
         tid = self.store.insert_raw_turn(self.schema, namespace, session_id, speaker,
                                          text, observed_at,
                                          vec if vec is not None else self.embed(text),
-                                         author=self.author)
+                                         author=self.author, memory_type=memory_type)
         return tid, text, observed_at
 
     def extract_facts(self, text, observed_at):
@@ -135,11 +137,13 @@ class MemnosMemory:
         connection held — pure model I/O."""
         return self._extract(text, observed_at)
 
-    def write_facts(self, namespace, facts, observed_at, turn_id) -> tuple:
-        """Phase 3 (fast, DB only): supersession + store + graph for extracted facts."""
+    def write_facts(self, namespace, facts, observed_at, turn_id, *, memory_type=None) -> tuple:
+        """Phase 3 (fast, DB only): supersession + store + graph for extracted facts.
+        `memory_type` = the source TURN's type — derived facts INHERIT it."""
         n_facts = n_super = 0
         for f in facts:
-            df, ds = self._write_fact(namespace, f, observed_at, source_turn_ids=[turn_id])
+            df, ds = self._write_fact(namespace, f, observed_at, source_turn_ids=[turn_id],
+                                      memory_type=memory_type)
             n_facts += df; n_super += ds
         return n_facts, n_super
 
@@ -172,7 +176,8 @@ class MemnosMemory:
                 n_facts += df; n_super += ds
         return {"turns": len(turns), "facts": n_facts, "superseded": n_super}
 
-    def _write_fact(self, namespace, f, fallback_date, *, source_turn_ids=()):
+    def _write_fact(self, namespace, f, fallback_date, *, source_turn_ids=(),
+                    memory_type=None):
         """Write ONE SPO fact: absolute event date → belief-change supersession → store
         with subject/predicate/object (+ provenance to its source turn) → populate the
         entity graph. Shared by remember() and ingest_session() so the write path can
@@ -190,7 +195,8 @@ class MemnosMemory:
         fid = self.store.insert_semantic(self.schema, namespace, "fact", stmt,
                                          subject=subj, predicate=pred, obj=obj,
                                          valid_from=ev, salience=0.5, vec=vec,
-                                         source_turn_ids=source_turn_ids, author=self.author)
+                                         source_turn_ids=source_turn_ids, author=self.author,
+                                         memory_type=memory_type)
         # populate the ENTITY GRAPH from the SPO triple (every fact is an edge)
         if subj:
             se = self.store.upsert_entity(self.schema, namespace, subj)
@@ -329,6 +335,8 @@ class MemnosMemory:
                     row["date"] = items[i]["valid_from"].date().isoformat()
                 if items[i].get("author"):                    # who wrote this memory
                     row["author"] = items[i]["author"]
+                if items[i].get("memory_type"):               # typed memory (0.1.6)
+                    row["type"] = items[i]["memory_type"]
                 if items[i].get("_ns"):                       # grounded: source namespace
                     row["namespace"] = items[i]["_ns"]
                 out.append(row)
@@ -348,6 +356,8 @@ class MemnosMemory:
                        "date": r["valid_from"].date().isoformat() if r.get("valid_from") else None}
                 if r.get("author"):
                     row["author"] = r["author"]
+                if r.get("memory_type"):
+                    row["type"] = r["memory_type"]
                 eg.append(row)
             sem_rows = [r for r in sem_rows if r["content"] not in seen]
             return rr(b["raw"], "turn")[:raw_quota] + eg[:entity_quota] + sem_rows[:fact_quota]
@@ -362,6 +372,8 @@ class MemnosMemory:
                    "date": r["valid_from"].date().isoformat() if r.get("valid_from") else None}
             if r.get("author"):
                 row["author"] = r["author"]
+            if r.get("memory_type"):
+                row["type"] = r["memory_type"]
             tl_rows.append(row)
         sem_rows = [r for r in rr(b["sem"], "fact") if r["content"] not in tl_seen]
         # small raw + GUARANTEED timeline + a few reranked relevance facts
@@ -410,6 +422,8 @@ class MemnosMemory:
                     row["date"] = it["valid_from"].date().isoformat()
                 if it.get("author"):
                     row["author"] = it["author"]
+                if it.get("memory_type"):
+                    row["type"] = it["memory_type"]
                 out.append(row)
             return out
 
@@ -427,17 +441,23 @@ class MemnosMemory:
         differs from `viewer` (the calling principal's name). Single-user contexts —
         where everything was written by the caller — stay clean; memories written by
         OTHER principals (bots, teammates) into a shared namespace are visibly
-        attributed. viewer=None (legacy callers) never tags."""
+        attributed. viewer=None (legacy callers) never tags.
+
+        TYPED MEMORIES (0.1.6): a row's `type` replaces the generic fact/said label —
+        '- (decision, 2026-06-10, by arch-agent) ...'. PINNED constraint rows render as
+        'CONSTRAINT: ...' lines; the server puts them first in `rows`, so they lead the
+        context block ahead of every ranked result."""
         out, used = [], 0
         for r in rows:
             tag = f" [{r['namespace']}]" if r.get("namespace") else ""
             by = (f", by {r['author']}"
                   if viewer is not None and r.get("author") and r["author"] != viewer else "")
-            if r["kind"] == "fact":
-                d = f", {r['date']}" if r.get("date") else ""
-                line = f"- (fact{d}{by}){tag} {r['content']}"
+            if r.get("pinned"):
+                line = f"CONSTRAINT:{tag} {r['content']}"
             else:
-                line = f"- (said{by}){tag} {r['content']}"
+                label = r.get("type") or ("fact" if r["kind"] == "fact" else "said")
+                d = f", {r['date']}" if (r["kind"] == "fact" and r.get("date")) else ""
+                line = f"- ({label}{d}{by}){tag} {r['content']}"
             if used + len(line) > max_chars:
                 break
             out.append(line); used += len(line)

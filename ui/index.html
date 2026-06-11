@@ -27,6 +27,7 @@
   <main id="app" hidden>
     <nav class="tabs">
       <button data-tab="namespaces" class="active">Namespaces</button>
+      <button data-tab="feed">Memory feed</button>
       <button data-tab="tokens">Tokens</button>
       <button data-tab="access">Principals &amp; Grants</button>
       <button data-tab="dashboard">Dashboard</button>
@@ -46,6 +47,27 @@
         <p class="muted">A namespace isolates memory. You create them here — nothing is auto-created.</p>
       </div>
       <div class="card"><table id="ns-table"><thead><tr><th>Namespace</th><th>Description</th><th>Turns</th><th>Facts</th><th>Created</th><th></th></tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section id="tab-feed" class="tab" hidden>
+      <div class="card">
+        <h3>Memory feed <span class="muted">· newest first, across all namespaces</span></h3>
+        <div class="row">
+          <input id="feed-ns" placeholder="filter by namespace (optional)">
+          <select id="feed-type">
+            <option value="">all types</option>
+            <option>decision</option><option>incident</option><option>constraint</option>
+            <option>skill</option><option>fact</option>
+          </select>
+          <button id="feed-refresh">Refresh</button>
+        </div>
+        <table id="feed-table"><thead><tr><th>Age</th><th>Namespace</th><th>Type</th><th>Author</th><th>Memory</th></tr></thead><tbody></tbody></table>
+        <div class="pager">
+          <button id="feed-prev" class="ghost">‹ newer</button>
+          <span id="feed-info" class="muted"></span>
+          <button id="feed-next" class="ghost">older ›</button>
+        </div>
+      </div>
     </section>
 
     <section id="tab-tokens" class="tab" hidden>

@@ -54,14 +54,14 @@ class BrainStore:
 
     # --- sensory / verbatim ----------------------------------------------
     def insert_raw_turn(self, schema, ns, session_id, speaker, text, observed_at, vec,
-                        author=None) -> int:
+                        author=None, memory_type=None) -> int:
         self._chk(schema)
         with self.conn.cursor() as c:
             c.execute(
-                f"INSERT INTO {schema}.raw_turns(namespace,session_id,speaker,text,observed_at,embedding,author_principal) "
-                f"VALUES(%s,%s,%s,%s,%s,%s::halfvec,%s) RETURNING id",
+                f"INSERT INTO {schema}.raw_turns(namespace,session_id,speaker,text,observed_at,embedding,author_principal,memory_type) "
+                f"VALUES(%s,%s,%s,%s,%s,%s::halfvec,%s,%s) RETURNING id",
                 (ns, session_id, speaker, text, observed_at,
-                 vlit(vec) if vec is not None else None, author))
+                 vlit(vec) if vec is not None else None, author, memory_type))
             return c.fetchone()["id"]
 
     # --- episodic ---------------------------------------------------------
@@ -185,16 +185,17 @@ class BrainStore:
     def insert_semantic(self, schema, ns, kind, statement, *, subject=None, predicate=None,
                         obj=None, valid_from=None, valid_to=None, confidence=1.0,
                         salience=0.0, vec=None, source_turn_ids: Iterable[int] = (),
-                        author=None) -> int:
+                        author=None, memory_type=None) -> int:
         self._chk(schema)
         src = list(source_turn_ids) if source_turn_ids else None
         with self.conn.cursor() as c:
             c.execute(
                 f"INSERT INTO {schema}.semantic"
-                f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding,source_turn_ids,author_principal) "
-                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::halfvec,%s,%s) RETURNING id",
+                f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding,source_turn_ids,author_principal,memory_type) "
+                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::halfvec,%s,%s,%s) RETURNING id",
                 (ns, kind, statement, subject, predicate, obj, valid_from, valid_to,
-                 confidence, salience, vlit(vec) if vec is not None else None, src, author))
+                 confidence, salience, vlit(vec) if vec is not None else None, src, author,
+                 memory_type))
             return c.fetchone()["id"]
 
     def provenance_of(self, schema, ns, semantic_id) -> dict | None:
@@ -342,15 +343,15 @@ class BrainStore:
         """Hybrid RRF (vector+FTS) over RAW TURNS — the strong open/single-hop layer."""
         self._chk(schema)
         sql = f"""
-        WITH vec AS (SELECT id, text, observed_at, author_principal, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
+        WITH vec AS (SELECT id, text, observed_at, author_principal, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
                      FROM {schema}.raw_turns WHERE namespace=%(ns)s ORDER BY embedding <=> %(qv)s::halfvec LIMIT %(k)s),
-        fts AS (SELECT id, text, observed_at, author_principal, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
+        fts AS (SELECT id, text, observed_at, author_principal, memory_type, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
                 FROM {schema}.raw_turns, websearch_to_tsquery('english',%(qt)s) q
                 WHERE namespace=%(ns)s AND fts @@ q ORDER BY ts_rank(fts,q) DESC LIMIT %(k)s),
-        fused AS (SELECT id, text, observed_at, author_principal, SUM(1.0/(60+rnk)) score
-                  FROM (SELECT id,text,observed_at,author_principal,rnk FROM vec UNION ALL SELECT id,text,observed_at,author_principal,rnk FROM fts) r
-                  GROUP BY id,text,observed_at,author_principal)
-        SELECT id, text AS content, observed_at, author_principal AS author, score FROM fused ORDER BY score DESC LIMIT %(k)s;"""
+        fused AS (SELECT id, text, observed_at, author_principal, memory_type, SUM(1.0/(60+rnk)) score
+                  FROM (SELECT id,text,observed_at,author_principal,memory_type,rnk FROM vec UNION ALL SELECT id,text,observed_at,author_principal,memory_type,rnk FROM fts) r
+                  GROUP BY id,text,observed_at,author_principal,memory_type)
+        SELECT id, text AS content, observed_at, author_principal AS author, memory_type, score FROM fused ORDER BY score DESC LIMIT %(k)s;"""
         with self.conn.cursor() as c:
             c.execute(sql, {"qv": vlit(qvec), "qt": qtext, "ns": ns, "k": k})
             return c.fetchall()
@@ -360,15 +361,15 @@ class BrainStore:
         self._chk(schema)
         valid = "AND valid_to IS NULL" if current_only else ""
         sql = f"""
-        WITH vec AS (SELECT id, statement, valid_from, author_principal, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
+        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
                      FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {valid} ORDER BY embedding <=> %(qv)s::halfvec LIMIT %(k)s),
-        fts AS (SELECT id, statement, valid_from, author_principal, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
+        fts AS (SELECT id, statement, valid_from, author_principal, memory_type, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
                 FROM {schema}.semantic, websearch_to_tsquery('english',%(qt)s) q
                 WHERE namespace=%(ns)s AND expired_at IS NULL {valid} AND fts @@ q ORDER BY ts_rank(fts,q) DESC LIMIT %(k)s),
-        fused AS (SELECT id, statement, valid_from, author_principal, SUM(1.0/(60+rnk)) score
-                  FROM (SELECT id,statement,valid_from,author_principal,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,rnk FROM fts) r
-                  GROUP BY id,statement,valid_from,author_principal)
-        SELECT id, statement AS content, valid_from, author_principal AS author, score FROM fused ORDER BY score DESC LIMIT %(k)s;"""
+        fused AS (SELECT id, statement, valid_from, author_principal, memory_type, SUM(1.0/(60+rnk)) score
+                  FROM (SELECT id,statement,valid_from,author_principal,memory_type,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,rnk FROM fts) r
+                  GROUP BY id,statement,valid_from,author_principal,memory_type)
+        SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, score FROM fused ORDER BY score DESC LIMIT %(k)s;"""
         with self.conn.cursor() as c:
             c.execute(sql, {"qv": vlit(qvec), "qt": qtext, "ns": ns, "k": k})
             return c.fetchall()
@@ -382,15 +383,15 @@ class BrainStore:
         self._chk(schema)
         cur = "AND valid_to IS NULL" if current_only else ""
         base = f"""
-        WITH vec AS (SELECT id, statement, valid_from, author_principal, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
+        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
                      FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {cur} ORDER BY embedding <=> %(qv)s::halfvec LIMIT %(k)s),
-        fts AS (SELECT id, statement, valid_from, author_principal, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
+        fts AS (SELECT id, statement, valid_from, author_principal, memory_type, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
                 FROM {schema}.semantic, websearch_to_tsquery('english',%(qt)s) q
                 WHERE namespace=%(ns)s AND expired_at IS NULL {cur} AND fts @@ q ORDER BY ts_rank(fts,q) DESC LIMIT %(k)s),
-        fused AS (SELECT id, statement, valid_from, author_principal, SUM(1.0/(60+rnk)) score
-                  FROM (SELECT id,statement,valid_from,author_principal,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,rnk FROM fts) r
-                  GROUP BY id,statement,valid_from,author_principal)
-        SELECT id, statement AS content, valid_from, author_principal AS author FROM fused ORDER BY score DESC LIMIT %(k)s"""
+        fused AS (SELECT id, statement, valid_from, author_principal, memory_type, SUM(1.0/(60+rnk)) score
+                  FROM (SELECT id,statement,valid_from,author_principal,memory_type,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,rnk FROM fts) r
+                  GROUP BY id,statement,valid_from,author_principal,memory_type)
+        SELECT id, statement AS content, valid_from, author_principal AS author, memory_type FROM fused ORDER BY score DESC LIMIT %(k)s"""
         params = {"qv": vlit(qvec), "qt": qtext, "ns": ns, "k": k}
         rows, seen = [], set()
         with self.conn.cursor() as c:
@@ -400,7 +401,7 @@ class BrainStore:
                     seen.add(r["id"]); rows.append(r)
             # event-time window guarantee
             if start and end:
-                c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author "
+                c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author, memory_type "
                           f"FROM {schema}.semantic "
                           f"WHERE namespace=%s AND expired_at IS NULL AND valid_from >= %s AND valid_from < %s "
                           f"ORDER BY valid_from LIMIT %s", (ns, start, end, k))
@@ -409,7 +410,7 @@ class BrainStore:
                         seen.add(r["id"]); rows.append(r)
             # first/last boundary facts
             if order in ("asc", "desc"):
-                c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author "
+                c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author, memory_type "
                           f"FROM {schema}.semantic "
                           f"WHERE namespace=%s AND expired_at IS NULL AND valid_from IS NOT NULL "
                           f"ORDER BY valid_from {('ASC' if order=='asc' else 'DESC')} LIMIT 6", (ns,))
@@ -439,7 +440,7 @@ class BrainStore:
         direction = "ASC" if order != "desc" else "DESC"
         params.append(limit)
         with self.conn.cursor() as c:
-            c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author "
+            c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author, memory_type "
                       f"FROM {schema}.semantic "
                       f"WHERE {' AND '.join(where)} ORDER BY valid_from {direction} LIMIT %s", params)
             return c.fetchall()
@@ -604,6 +605,41 @@ class BrainStore:
             c.execute(f"SELECT id, statement, expired_at FROM {schema}.semantic WHERE id=%s AND namespace=%s",
                       (semantic_id, ns))
             return c.fetchone()
+
+    def pinned_constraints(self, schema, namespaces, *, cap=10) -> list[dict]:
+        """PINNED CONSTRAINT INJECTION (0.1.6): every LIVE memory typed 'constraint' in the
+        given namespaces — regardless of query similarity. Covers BOTH stores: semantic
+        facts (extraction inheritance / direct fact writes) and raw turns (local mode has
+        no extraction, so the verbatim typed turn IS the constraint). Oldest-first
+        (constraints are durable ground rules — earliest laid down come first), deduped on
+        content, capped. Pure SQL, no embedding involved."""
+        self._chk(schema)
+        nss = [ns for ns in namespaces if ns]
+        if not nss or cap <= 0:
+            return []
+        with self.conn.cursor() as c:
+            c.execute(
+                f"SELECT content, kind, ts, author, namespace FROM ("
+                f"  SELECT statement AS content, 'fact'::text AS kind,"
+                f"         COALESCE(valid_from, created_at) AS ts,"
+                f"         author_principal AS author, namespace"
+                f"  FROM {schema}.semantic WHERE namespace = ANY(%(nss)s)"
+                f"    AND memory_type='constraint' AND valid_to IS NULL AND expired_at IS NULL"
+                f"  UNION ALL"
+                f"  SELECT text AS content, 'turn'::text AS kind, observed_at AS ts,"
+                f"         author_principal AS author, namespace"
+                f"  FROM {schema}.raw_turns WHERE namespace = ANY(%(nss)s) AND memory_type='constraint'"
+                f") u ORDER BY ts, content LIMIT %(lim)s",
+                {"nss": nss, "lim": cap * 3})        # over-fetch: dedupe may drop rows
+            # dedupe on content (a turn + its identical extracted fact), keep oldest, cap
+            rows, seen = [], set()
+            for r in c.fetchall():
+                if r["content"] in seen:
+                    continue
+                seen.add(r["content"]); rows.append(r)
+                if len(rows) >= cap:
+                    break
+        return rows
 
     _CONSTRAINT_RE = re.compile(
         r"\b(SHALL NOT|MUST NOT|SHOULD NOT|MAY NOT|SHALL|MUST|REQUIRED|SHOULD|PROHIBITED|FORBIDDEN)\b")

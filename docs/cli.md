@@ -39,6 +39,7 @@ save a memory (data client — talks to the server)
 |---|---|
 | `text` | the text to remember |
 | `--namespace` | target namespace (default: auto-resolve for this folder) |
+| `--type` | classify the memory (constraints are pinned into every recall) (one of: `decision`, `incident`, `constraint`, `skill`, `fact`) |
 | `--token` | bearer token (default: MEMNOS_TOKEN or the config admin token) |
 
 ```bash
@@ -54,6 +55,7 @@ recall relevant memories (data client)
 | `query` | what to recall |
 | `--namespace` | namespace to search (default: auto-resolve) |
 | `--scope` | widen across every namespace your token may read (one of: `all`, `wide`) |
+| `--type` | only memories of this type (pinned constraints always included) (one of: `decision`, `incident`, `constraint`, `skill`, `fact`) |
 | `--token` | bearer token (default: MEMNOS_TOKEN or the config admin token) |
 
 ```bash

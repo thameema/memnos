@@ -25,6 +25,7 @@ throwaway namespaces it creates.
 | `test_wide_recall_api.py` | cross-namespace (`scope:"all"`) recall |
 | `test_author_attribution.py` | server-stamped `author_principal` + `(by ...)` context tags + author filter |
 | `test_grounded_recall.py` | knowledge namespaces, namespace links, grounded `/recall` fan-out |
+| `test_memory_types.py` | typed memories (`type` on write/recall), pinned constraint injection, admin memory feed |
 
 ## Running locally
 
