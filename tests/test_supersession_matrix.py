@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.store import BrainStore
-from core.service import MemnosMemory, _is_single_valued
+from core.service import MemnosMemory, _is_single_valued, _supersedable
 
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
 PASS = FAIL = 0
@@ -191,16 +191,69 @@ def main():
     check("6. FP guard: backdated HISTORICAL statement does not supersede",
           nsup == 0 and seattle["valid_to"] is None)
 
+    # --- 7. VALUE-ATTRIBUTE CUE (issue #10 residual A: rate_limit 100 -> 200 rps) --------
+    ns = "test:matrix:7"; reset(ns)
+    tid = store.insert_raw_turn(schema, ns, None, "u", "seed", d1, crafted_embed("seed"))
+    mem.write_facts(ns, [{"subject": "zeta API", "predicate": "rate_limit",
+                          "object": "100 requests per second",
+                          "statement": "The zeta API rate limit is 100 requests per second."}], d1, tid)
+    nf, nsup = mem.write_facts(ns, [{"subject": "zeta API", "predicate": "rate_limit",
+                                     "object": "200 requests per second",
+                                     "statement": "The zeta API rate limit was changed to 200 requests per second."}], d2, tid)
+    r = rows(ns, predicate="rate_limit")
+    check("7. rate_limit value update supersedes", nsup == 1
+          and r[0]["valid_to"] is not None and r[1]["valid_to"] is None)
+    check("7. superseded_by links 100 -> 200", r[0]["superseded_by"] == r[1]["id"])
+
+    # --- 8. QUANTIFIED-OBJECT DEFAULT (same subj + same pred + numeric NEW object) -------
+    # 'concurrency' is in NO cue list — only the quantified-object rule can fire here.
+    ns = "test:matrix:8"; reset(ns)
+    check("8. precondition: 'concurrency' matches no cue", not _is_single_valued("concurrency"))
+    tid = store.insert_raw_turn(schema, ns, None, "u", "seed", d1, crafted_embed("seed"))
+    mem.write_facts(ns, [{"subject": "ingest worker", "predicate": "concurrency",
+                          "object": "8 threads",
+                          "statement": "The ingest worker concurrency is 8 threads."}], d1, tid)
+    nf, nsup = mem.write_facts(ns, [{"subject": "ingest worker", "predicate": "concurrency",
+                                     "object": "32 threads",
+                                     "statement": "The ingest worker concurrency was raised to 32 threads."}], d2, tid)
+    r = rows(ns, predicate="concurrency")
+    check("8. quantified object supersedes without a cue", nsup == 1
+          and r[0]["valid_to"] is not None and r[1]["valid_to"] is None)
+    # MULTI-VALUED guards: additive relations must stay additive
+    mem.write_facts(ns, [{"subject": "Alice", "predicate": "visited", "object": "Paris",
+                          "statement": "Alice visited Paris."}], d1, tid)
+    nf, nsup = mem.write_facts(ns, [{"subject": "Alice", "predicate": "visited", "object": "Rome",
+                                     "statement": "Alice visited Rome."}], d2, tid)
+    paris = [x for x in rows(ns, predicate="visited") if x["object"] == "Paris"][0]
+    check("8. FP guard: visited Paris -> visited Rome stays additive",
+          nsup == 0 and paris["valid_to"] is None)
+    # quantified object on an additive predicate must NOT trigger the default rule
+    mem.write_facts(ns, [{"subject": "Alice", "predicate": "did_activity", "object": "5 km run",
+                          "statement": "Alice ran 5 km on Saturday morning."}], d1, tid)
+    nf, nsup = mem.write_facts(ns, [{"subject": "Alice", "predicate": "did_activity", "object": "10 km run",
+                                     "statement": "Alice ran 10 km on Sunday afternoon."}], d2, tid)
+    run5 = [x for x in rows(ns, predicate="did_activity") if x["object"] == "5 km run"][0]
+    check("8. FP guard: quantified object on additive predicate stays additive",
+          nsup == 0 and run5["valid_to"] is None)
+
     # --- cue-list review guards ----------------------------------------------------------
     for p in ("is_blocked_by", "uses", "runs_on", "can_handle", "recommended_action",
-              "status", "version", "lives_in", "works_at", "deployed_version"):
+              "status", "version", "lives_in", "works_at", "deployed_version",
+              "rate_limit", "request_quota", "alert_threshold", "connection_timeout",
+              "max_connections", "min_replicas", "count_of_nodes"):
         check(f"cue: '{p}' is single-valued", _is_single_valued(p))
     for p in ("causes", "houses", "did_activity", "visited", "likes", "met_person",
-              "owns", "recommended_books", ""):
+              "owns", "recommended_books", "operates_in", "celebrates", "", None):
         check(f"cue: '{p}' stays additive", not _is_single_valued(p))
+    # quantified-object rule unit guards
+    check("quantified: non-cue pred + numeric object is supersedable",
+          _supersedable("concurrency", "32 threads"))
+    check("quantified: non-cue pred + textual object is NOT", not _supersedable("concurrency", "high"))
+    check("quantified: additive pred + numeric object is NOT", not _supersedable("did_activity", "10 km run"))
+    check("quantified: no predicate is never supersedable", not _supersedable("", "10 km"))
 
     # cleanup
-    for i in range(1, 7):
+    for i in range(1, 9):
         reset(f"test:matrix:{i}")
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)

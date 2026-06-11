@@ -26,6 +26,9 @@ throwaway namespaces it creates.
 | `test_author_attribution.py` | server-stamped `author_principal` + `(by ...)` context tags + author filter |
 | `test_grounded_recall.py` | knowledge namespaces, namespace links, grounded `/recall` fan-out |
 | `test_memory_types.py` | typed memories (`type` on write/recall), pinned constraint injection, admin memory feed |
+| `test_supersession.py` / `test_supersession_matrix.py` | bi-temporal write-path supersession: SPO, negation close-out, dedupe, backdating, value-update cues, quantified-object rule |
+| `test_recall_staleness.py` | stale RAW TURNS in recall — `superseded`/`superseded_at` annotation + demotion below current facts |
+| `test_namespace_reconcile.py` | `memnos namespace reconcile` backfill: dry-run counts, close/dedupe, idempotency, `--limit` |
 
 ## Running locally
 

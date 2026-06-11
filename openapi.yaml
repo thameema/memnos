@@ -1493,6 +1493,18 @@ components:
           description: >
             true on injected constraint rows — present regardless of query similarity,
             rendered first in the context block as "CONSTRAINT: ..." lines
+        superseded:
+          type: boolean
+          description: >
+            turn rows only — true when EVERY semantic fact derived from this turn has
+            been superseded (the turn is verbatim history of a state that no longer
+            holds). Such turns are demoted below current facts in the ranking and
+            rendered as "- (said, superseded as of <date>) ..." in the context block.
+        superseded_at:
+          type: string
+          description: >
+            turn rows only, with `superseded` — close-out date (YYYY-MM-DD) of the
+            latest superseding transition
     RecallResponse:
       type: object
       required: [memories, context]

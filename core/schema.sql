@@ -174,5 +174,11 @@ BEGIN
                  '(namespace, memory_type) WHERE memory_type IS NOT NULL', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS epi_mtype ON %I.episodic '
                  '(namespace, memory_type) WHERE memory_type IS NOT NULL', s);
+  -- STALE-TURN lookup (issue #10 residual B): recall checks, for the retrieved turn ids
+  -- only, whether ALL semantic facts derived from a turn are superseded
+  -- (semantic.source_turn_ids @> ARRAY[turn_id]). GIN makes that containment probe an
+  -- index scan; additive, rolling-safe.
+  EXECUTE format('CREATE INDEX IF NOT EXISTS sem_src_turns ON %I.semantic '
+                 'USING gin (source_turn_ids)', s);
 END
 $fn$;

@@ -299,11 +299,11 @@ memnos whoami mnk_...
 
 ### `memnos namespace`
 
-manage namespaces: add | ls | rm | set | link | unlink | links | copy | move
+manage namespaces: add | ls | rm | set | link | unlink | links | copy | move | reconcile
 
 | argument | description |
 |---|---|
-| `action` | what to do (one of: `add`, `ls`, `rm`, `copy`, `move`, `set`, `link`, `unlink`, `links`) |
+| `action` | what to do (one of: `add`, `ls`, `rm`, `copy`, `move`, `set`, `link`, `unlink`, `links`, `reconcile`) |
 | `name` | namespace (or copy/move SOURCE, or link SRC) (optional) |
 | `dst` | link/unlink destination namespace (optional) |
 | `--to` | copy/move destination namespace |
@@ -311,6 +311,8 @@ manage namespaces: add | ls | rm | set | link | unlink | links | copy | move
 | `--desc` | add: description |
 | `--kind` | set: namespace kind (one of: `memory`, `knowledge`) |
 | `--purge` | rm: also delete the stored memories |
+| `--dry-run` | reconcile: report would-close/would-dedupe counts, write nothing |
+| `--limit` | reconcile: cap the number of facts walked this run (newest first) |
 
 ```bash
 memnos namespace add proj:myapp --desc 'my app'
