@@ -8,6 +8,7 @@ Multi-tenant: ONE schema (tenant_memnos) with a `namespace` column per the desig
 from __future__ import annotations
 
 import math
+import os
 import re
 from datetime import datetime, timezone, timedelta
 
@@ -22,13 +23,63 @@ _PROPER = re.compile(r"\b[A-Z][a-zA-Z]{2,}\b")
 # ('did_activity','met_person','visited','likes','owns') are ADDITIVE — a new martial art
 # does NOT replace a previous one. Over-superseding list items corrupts aggregation +
 # temporal recall, so default is ADDITIVE unless the predicate matches a single-valued cue.
-_SINGLE_VALUED_CUES = ("live", "reside", "home", "based", "located", "current_city",
+_SINGLE_VALUED_CUES = ("live", "reside", "home", "based", "located", "current_",
                        "work_at", "works_at", "employ", "employer", "job_title", "occupation",
-                       "role_at", "age", "marital", "married", "spouse", "status")
+                       "role_at", "age", "marital", "married", "spouse", "status",
+                       # work/ops functional attributes (field issue: ops facts were never
+                       # superseded — the cue list was LoCoMo-personal-tuned). Each reviewed
+                       # against multi-valued corruption: all describe ONE current state of a
+                       # system/work item. did/visited/likes/met/owns stay additive.
+                       "blocked",            # is_blocked_by / blocked_on — one current blocker state
+                       "runs_on", "can_handle", "capacity", "deployed_", "version",
+                       "recommended_action")
+# Exact-match-only cues: substring matching would be unsafe ('uses' is inside 'causes' /
+# 'houses'; bare 'recommended' is inside plausibly multi-valued 'recommended_books').
+_SINGLE_VALUED_EXACT = {"uses", "recommended", "recommendation"}
+
+# Past-state markers: a statement asserting where things STOOD in the past ("Alice lived in
+# Boston in 2019"), as opposed to a change-of-state assertion that implies a new CURRENT
+# state ("Alice moved to Seattle last week" — 'moved' is deliberately NOT in this list).
+# Used to gate backdated supersession — see _write_fact's bi-temporal note.
+_HISTORICAL_RE = re.compile(
+    r"\b(lived|resided|worked|was|were|used to|had been|formerly|previously|originally|"
+    r"back in|at the time|grew up)\b", re.I)
+
+# Reversal/negation cues: the NEW statement explicitly closes out a prior state. Kept
+# high-precision (each must clearly assert that something stopped being true).
+_REVERSAL_RE = re.compile(
+    r"\b(no longer|not anymore|declined|rejected|not recommended|instead|switched to|"
+    r"switching to|resolved|unblocked|cancelled|canceled|called off|reverted|rolled back)\b",
+    re.I)
+
+# Salient-token extraction for the negation overlap guard: content words only.
+_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]{3,}")
+_TOKEN_STOP = {"this", "that", "with", "from", "have", "been", "were", "will", "longer",
+               "anymore", "after", "before", "into", "over", "under", "they", "them",
+               "their", "there", "when", "what", "which", "while", "would", "could",
+               "should", "about", "because", "very", "more", "most", "some", "such",
+               "than", "then", "only", "also", "just", "like", "being", "does", "doing",
+               "still", "instead", "switched", "switching", "resolved", "unblocked",
+               "cancelled", "canceled", "called", "reverted", "rolled", "declined",
+               "rejected", "recommended"}
+
+
+def _salient_tokens(text: str) -> set[str]:
+    return {t for t in _TOKEN_RE.findall((text or "").lower()) if t not in _TOKEN_STOP}
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
 
 
 def _is_single_valued(pred: str) -> bool:
-    return bool(pred) and any(cue in pred for cue in _SINGLE_VALUED_CUES)
+    if not pred:
+        return False
+    p = pred.lower()
+    return p in _SINGLE_VALUED_EXACT or any(cue in p for cue in _SINGLE_VALUED_CUES)
 
 
 def _dossier_text(x) -> str:
@@ -178,25 +229,92 @@ class MemnosMemory:
 
     def _write_fact(self, namespace, f, fallback_date, *, source_turn_ids=(),
                     memory_type=None):
-        """Write ONE SPO fact: absolute event date → belief-change supersession → store
-        with subject/predicate/object (+ provenance to its source turn) → populate the
+        """Write ONE SPO fact: near-duplicate collapse → absolute event date →
+        belief-change supersession (SPO + reversal/negation close-out) → store with
+        subject/predicate/object (+ provenance to its source turn) → populate the
         entity graph. Shared by remember() and ingest_session() so the write path can
-        never drift between them. Returns (facts_written, superseded_count)."""
+        never drift between them. Returns (facts_written, superseded_count).
+
+        BI-TEMPORAL SEMANTICS (chosen, documented): supersession is a BELIEF change, so
+        it is keyed on the OBSERVATION axis (`fallback_date` = when we learned the fact;
+        stored as semantic.observed_at), not on event order alone. A fact observed LATER
+        supersedes an earlier-observed value even when its EVENT date backdates ("Alice
+        moved to Seattle last week" arriving after "Alice lives in Austin": the knowledge
+        is newer even though the move predates the Austin fact's valid_from stamp).
+        The one exception is a backdated HISTORICAL statement — past-state wording
+        ("Alice lived in Boston in 2019", _HISTORICAL_RE) with an event date older than
+        the current value's valid_from: that describes the past, it does not change the
+        current belief, so it must NOT supersede. valid_to on the closed fact is the new
+        fact's event date (or observed date when no event date), clamped to never precede
+        the closed fact's own valid_from. Deterministic; no LLM at this layer."""
         from .temporal import parse_event_date
         stmt = f["statement"]
         subj = (f["subject"][:100] if f["subject"] else None)
         pred = f["predicate"] or None
         obj = f["object"] or None
         ev = parse_event_date(stmt, fallback_date)          # relative → absolute event date
-        n_super = 0
-        if subj and pred and _is_single_valued(pred):        # belief-change ONLY for single-valued attrs
-            n_super = self.store.supersede_predicate(self.schema, namespace, subj, pred, obj, ev)
+        obs = fallback_date                                  # observation/knowledge axis
         vec = self.embed(stmt)
+
+        # WRITE-PATH DEDUPE (issue #10 density half): a verbatim/near restatement of a
+        # LIVE fact does not insert a new row — it reinforces the existing one (salience
+        # bump + restatements counter + provenance union). MEMNOS_DEDUPE_THRESHOLD=0 disables.
+        dedupe_thresh = _env_float("MEMNOS_DEDUPE_THRESHOLD", 0.03)
+        if dedupe_thresh > 0:
+            dup = self.store.find_near_duplicate(self.schema, namespace, vec, subj,
+                                                 dedupe_thresh)
+            if dup is not None:
+                self.store.bump_restatement(self.schema, dup["id"], source_turn_ids)
+                return 0, 0
+
+        # HISTORICAL gate: a past-state statement may only supersede when it carries an
+        # EXPLICIT in-statement event date (parse_event_date with no fallback) — the SQL
+        # guard then requires that date to be >= the old fact's valid_from. A historical
+        # statement with NO parseable event date never supersedes (most conservative:
+        # "Alice lived in Boston in 2019" — bare years don't parse — describes the past).
+        hist = bool(_HISTORICAL_RE.search(stmt))
+        explicit_ev = parse_event_date(stmt, None) if hist else None
+        superseded_ids = []
+        if (subj and pred and _is_single_valued(pred)        # belief-change ONLY for single-valued attrs
+                and not (hist and explicit_ev is None)):
+            superseded_ids = self.store.supersede_predicate(
+                self.schema, namespace, subj, pred, obj, ev, observed_at=obs,
+                historical=hist, event_date=explicit_ev)
         fid = self.store.insert_semantic(self.schema, namespace, "fact", stmt,
                                          subject=subj, predicate=pred, obj=obj,
                                          valid_from=ev, salience=0.5, vec=vec,
                                          source_turn_ids=source_turn_ids, author=self.author,
-                                         memory_type=memory_type)
+                                         memory_type=memory_type, observed_at=obs)
+        if superseded_ids:
+            self.store.mark_superseded_by(self.schema, superseded_ids, fid)
+        n_super = len(superseded_ids)
+
+        # REVERSAL/NEGATION close-out: extraction often emits reversals with no usable
+        # predicate ("The zeta deployment is no longer blocked." → pred=None), so SPO
+        # supersession structurally can't fire. When the NEW statement carries an explicit
+        # reversal cue, close out the semantically-nearest LIVE facts — HIGH PRECISION:
+        # require cue AND vector similarity AND salient-token overlap (≥2 shared content
+        # words, at least one of which is NOT a subject-name token — same-entity-but-
+        # unrelated facts share only the entity name) AND subject agreement when both
+        # sides carry one. MEMNOS_NEGATION_THRESHOLD=0 disables.
+        neg_thresh = _env_float("MEMNOS_NEGATION_THRESHOLD", 0.40)
+        if n_super == 0 and neg_thresh > 0 and _REVERSAL_RE.search(stmt):
+            new_toks = _salient_tokens(stmt)
+            subj_toks = _salient_tokens(subj or "")
+            for cand in self.store.nearest_live_facts(self.schema, namespace, vec, k=8,
+                                                      exclude_id=fid, observed_before=obs):
+                if cand["dist"] is None or float(cand["dist"]) > neg_thresh:
+                    continue
+                cs = cand.get("subject_entity")
+                if subj and cs and cs.lower() != subj.lower():
+                    continue
+                cand_subj_toks = subj_toks | _salient_tokens(cs or "")
+                overlap = new_toks & _salient_tokens(cand["statement"])
+                if len(overlap) < 2 or not (overlap - cand_subj_toks):
+                    continue
+                n_super += self.store.close_out(self.schema, namespace, cand["id"],
+                                                valid_to=(ev or obs), superseded_by=fid)
+
         # populate the ENTITY GRAPH from the SPO triple (every fact is an edge)
         if subj:
             se = self.store.upsert_entity(self.schema, namespace, subj)
@@ -238,9 +356,15 @@ class MemnosMemory:
                            "art, per dessert, per country). RESOLVE relative dates ('yesterday','last "
                            "Saturday') to ABSOLUTE using DATE, and pronouns to named people. For each fact: "
                            "statement = a full self-contained sentence (with the date if known); subject = "
-                           "the named person it's about; predicate = a short normalized relation "
-                           "('lives_in','works_at','did_activity','met_person','visited','likes') or '' if it "
-                           "doesn't fit; object = the value or ''. ALWAYS include a statement even when "
+                           "the named person OR work item/system it's about; predicate = a short normalized "
+                           "relation ('lives_in','works_at','did_activity','met_person','visited','likes'; "
+                           "for work items: 'uses','status','is_blocked_by','can_handle','runs_on') or '' if "
+                           "it doesn't fit; object = the value or ''. When a fact CHANGES or REVERSES a "
+                           "previous state ('switched to','no longer','now handles'), fill subject and the "
+                           "SAME predicate the prior fact would use, with the NEW value as object — e.g. 'we "
+                           'switched the pipeline to MySQL\' -> {"subject":"pipeline","predicate":"uses",'
+                           '"object":"MySQL","statement":"The pipeline uses MySQL."}. EVERY fact object MUST '
+                           "have all four keys. ALWAYS include a statement even when "
                            'subject/predicate/object are empty. JSON {"facts":[{"subject":"","predicate":"",'
                            '"object":"","statement":"..."}]}.'},
                           {"role": "user", "content": text}])
