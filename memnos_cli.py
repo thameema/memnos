@@ -5,6 +5,8 @@
     memnos token <principal>     # mint a bearer token
     memnos grant <p> <ns>        # grant namespace access
     memnos namespace add <ns>    # create a namespace
+    memnos namespace set <ns> --kind knowledge   # mark as a knowledge namespace
+    memnos namespace link <src> <dst>            # ground recall on src in dst
     memnos secret set <name>     # store an encrypted secret (vault)
     memnos secret rotate         # rotate the vault master key
     memnos remember/recall ...   # data client (talks to the server over HTTP)
@@ -1066,11 +1068,32 @@ def cmd_principal(args, cfg):
     print(f"principal '{args.name}' id={pid}")
 
 
+def cmd_principal_ls(args, cfg):
+    from core.control import Control
+    for p in Control.list_principals(_conn(cfg)):
+        print(f"  {p['id']:<5} {p['name']:<24} {p['kind']:<8} active_tokens={p['active_tokens']}")
+
+
 def cmd_token(args, cfg):
     from core.control import Control
     conn = _conn(cfg)
     tok = Control.mint_token(conn, _principal_id(conn, args.principal), args.label, args.ttl_days)
     print("TOKEN (shown once):\n  " + tok)
+
+
+def cmd_token_ls(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    for t in Control.list_tokens(conn, _principal_id(conn, args.principal)):
+        state = "revoked" if t["revoked"] else "active"
+        print(f"  {t['id']:<5} {t['hint'] or '—':<16} {t['label'] or '':<16} {state:<8} "
+              f"expires={t['expires_at'] or 'never'}")
+
+
+def cmd_token_revoke(args, cfg):
+    from core.control import Control
+    Control.revoke_token_by_id(_conn(cfg), args.id)
+    print(f"token {args.id} revoked")
 
 
 def cmd_grant(args, cfg):
@@ -1079,6 +1102,21 @@ def cmd_grant(args, cfg):
     Control.grant(conn, _principal_id(conn, args.principal), args.namespace,
                   can_read=True, can_write=not args.read_only)
     print(f"granted {args.principal} -> {args.namespace} ({'read' if args.read_only else 'read+write'})")
+
+
+def cmd_grant_ls(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    for g in Control.authorized_namespaces(conn, _principal_id(conn, args.principal)):
+        mode = ("read" if g["can_read"] else "") + ("+write" if g["can_write"] else "")
+        print(f"  {g['namespace']:<32} {mode.lstrip('+') or 'none'}")
+
+
+def cmd_grant_rm(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    Control.revoke_grant(conn, _principal_id(conn, args.principal), args.namespace)
+    print(f"revoked {args.principal} -> {args.namespace}")
 
 
 def cmd_namespace(args, cfg):
@@ -1103,9 +1141,37 @@ def cmd_namespace(args, cfg):
                                                       mode=args.action, like=args.like)
         print(f"{out['mode']}d {out['facts']} facts + {out['raw_turns']} turns "
               f"from {args.name} -> {args.to}")
+    elif args.action == "set":
+        if not args.name or not args.kind:
+            sys.exit("usage: memnos namespace set <ns> --kind memory|knowledge")
+        Control.set_namespace_kind(conn, args.name, args.kind)
+        print(f"namespace '{args.name}' kind set to '{args.kind}'")
+    elif args.action == "link":
+        if not args.name or not args.dst:
+            sys.exit("usage: memnos namespace link <src> <dst>")
+        created_by = None
+        try:
+            created_by = _principal_id(conn, "admin")
+        except SystemExit:
+            pass
+        Control.link_namespaces(conn, args.name, args.dst, created_by=created_by)
+        print(f"linked {args.name} -> {args.dst} (recall on '{args.name}' will also "
+              f"ground in '{args.dst}' for callers with a read grant on it)")
+    elif args.action == "unlink":
+        if not args.name or not args.dst:
+            sys.exit("usage: memnos namespace unlink <src> <dst>")
+        removed = Control.unlink_namespaces(conn, args.name, args.dst)
+        print(f"unlinked {args.name} -> {args.dst}" if removed else "no such link")
+    elif args.action == "links":
+        rows = Control.list_links(conn, args.name)
+        if not rows:
+            print("no links" + (f" from '{args.name}'" if args.name else ""))
+        for l in rows:
+            print(f"  {l['src_ns']} -> {l['dst_ns']}  (by {l['created_by'] or '?'}, {l['created_at']:%Y-%m-%d})")
     else:  # ls
         for n in Control.list_namespaces(conn):
-            print(f"  {n['name']:<28} turns={n['turns']} facts={n['facts']}  {n['description'] or ''}")
+            kind = " [knowledge]" if n.get("kind") == "knowledge" else ""
+            print(f"  {n['name']:<28} turns={n['turns']} facts={n['facts']}{kind}  {n['description'] or ''}")
 
 
 def cmd_secret(args, cfg):
@@ -1174,7 +1240,10 @@ def cmd_ns(args, cfg):
 def cmd_remember(args, cfg):
     import nsresolve
     ns = args.namespace if args.namespace and args.namespace != "auto" else nsresolve.resolve()
-    out = _post(cfg, "/remember", {"namespace": ns, "text": args.text},
+    body = {"namespace": ns, "text": args.text}
+    if getattr(args, "type", None):
+        body["type"] = args.type
+    out = _post(cfg, "/remember", body,
                 args.token or os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token"))
     print(json.dumps(out))
 
@@ -1185,6 +1254,8 @@ def cmd_recall(args, cfg):
     body = {"namespace": ns, "query": args.query}
     if getattr(args, "scope", None) in ("all", "wide"):
         body["scope"] = "all"
+    if getattr(args, "type", None):
+        body["type"] = args.type
     out = _post(cfg, "/recall", body,
                 args.token or os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token"))
     if out.get("namespaces_searched"):
@@ -1590,65 +1661,396 @@ def cmd_hook(args, cfg):
             _save(a_text, "assistant")
 
 
-def main():
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    cfg = load_config()
-    ap = argparse.ArgumentParser(prog="memnos", description="memnos memory platform CLI")
-    ap.add_argument("-V", "--version", action="version", version=f"memnos {_version()}")
-    sub = ap.add_subparsers(dest="cmd")   # not required — bare `memnos` prints help
+# ---- CLI grammar -------------------------------------------------------------
+# Noun-verb grammar (0.1.6): heroes (remember/recall) + lifecycle verbs stay top-level;
+# identity/access management is `noun verb`: principal create|ls, token mint|ls|revoke,
+# grant add|ls|rm, secret set|ls|rm|rotate|keygen, namespace add|ls|rm|set|link|unlink|
+# links|copy|move. The PRE-0.1.6 forms keep working forever as HIDDEN aliases
+# (`memnos principal <name>`, `memnos token <principal>`, `memnos grant <p> <ns>`) —
+# scripts/hooks/agents in the field must never break — but help teaches only the new
+# grammar.
+_NOUN_DEFAULT_VERB = {"principal": ("create", {"create", "ls"}),
+                      "token": ("mint", {"mint", "ls", "revoke"}),
+                      "grant": ("add", {"add", "ls", "rm"})}
 
+# one runnable example per command — rendered into docs/cli.md + the console reference
+EXAMPLES = {
+    "remember": 'memnos remember "We chose Postgres 16 for staging" --namespace proj:myapp',
+    "recall": 'memnos recall "what did we decide about staging?" --scope all',
+    "setup": "memnos setup --docker",
+    "start": "memnos start",
+    "stop": "memnos stop",
+    "restart": "memnos restart",
+    "status": "memnos status",
+    "serve": "memnos serve --port 8900",
+    "autostart": "memnos autostart",
+    "upgrade": "memnos upgrade --check",
+    "proxy": "memnos proxy --namespace user:me",
+    "mcp": "memnos mcp --namespace proj:myapp",
+    "hook": "echo '{}' | memnos hook status",
+    "claude-setup": "memnos claude-setup",
+    "agent-setup": "memnos agent-setup claude-code",
+    "principal create": "memnos principal create ci-bot --kind service",
+    "principal ls": "memnos principal ls",
+    "token mint": "memnos token mint ci-bot --label deploy --ttl-days 90",
+    "token ls": "memnos token ls ci-bot",
+    "token revoke": "memnos token revoke 42",
+    "grant add": "memnos grant add ci-bot proj:myapp --read-only",
+    "grant ls": "memnos grant ls ci-bot",
+    "grant rm": "memnos grant rm ci-bot proj:myapp",
+    "namespace": "memnos namespace add proj:myapp --desc 'my app'",
+    "secret": "memnos secret set openai",
+    "stats": "memnos stats",
+    "health": "memnos health",
+    "whoami": "memnos whoami mnk_...",
+    "ns": "memnos ns proj:myapp",
+    "admin": "memnos admin",
+    "migrate-embeddings": "memnos migrate-embeddings --to 1536",
+    "help": "memnos help",
+}
+
+
+def build_parser():
+    """The complete argparse tree — shared by main() and `memnos docs-gen` (which renders
+    docs/cli.md + the console CLI reference from it, so docs can never drift)."""
+    ap = argparse.ArgumentParser(
+        prog="memnos", description="memnos memory platform CLI",
+        epilog="Remote use: set MEMNOS_URL and MEMNOS_TOKEN to point the data commands "
+               "(remember/recall) at a remote memnos server.")
+    ap.add_argument("-V", "--version", action="version", version=f"memnos {_version()}")
+    sub = ap.add_subparsers(dest="cmd", metavar="<command>")   # not required — bare `memnos` prints help
+
+    # ---- heroes ----
+    p = sub.add_parser("remember", help="save a memory (data client — talks to the server)")
+    p.add_argument("text", help="the text to remember")
+    p.add_argument("--namespace", default="auto", help="target namespace (default: auto-resolve for this folder)")
+    p.add_argument("--type", choices=["decision", "incident", "constraint", "skill", "fact"],
+                   help="classify the memory (constraints are pinned into every recall)")
+    p.add_argument("--token", help="bearer token (default: MEMNOS_TOKEN or the config admin token)")
+    p.set_defaults(fn=cmd_remember)
+    p = sub.add_parser("recall", help="recall relevant memories (data client)")
+    p.add_argument("query", help="what to recall")
+    p.add_argument("--namespace", default="auto", help="namespace to search (default: auto-resolve)")
+    p.add_argument("--scope", choices=["all", "wide"], help="widen across every namespace your token may read")
+    p.add_argument("--type", choices=["decision", "incident", "constraint", "skill", "fact"],
+                   help="only memories of this type (pinned constraints always included)")
+    p.add_argument("--token", help="bearer token (default: MEMNOS_TOKEN or the config admin token)")
+    p.set_defaults(fn=cmd_recall)
+
+    # ---- lifecycle ----
     p = sub.add_parser("setup", help="connect to Postgres, create schema + admin token")
-    p.add_argument("--dsn")
+    p.add_argument("--dsn", help="Postgres DSN (skips the interactive wizard)")
     p.add_argument("--docker", action="store_true",
                    help="provision a pgvector Postgres in Docker (no Postgres setup needed)")
     p.set_defaults(fn=cmd_setup)
     p = sub.add_parser("start", help="start the memory server in the background")
-    p.add_argument("--port", type=int); p.set_defaults(fn=cmd_start)
+    p.add_argument("--port", type=int, help="HTTP port (default: config / 8900)")
+    p.set_defaults(fn=cmd_start)
     sub.add_parser("stop", help="stop the background server").set_defaults(fn=cmd_stop)
     p = sub.add_parser("restart", help="restart the background server")
-    p.add_argument("--port", type=int); p.set_defaults(fn=cmd_restart)
+    p.add_argument("--port", type=int, help="HTTP port (default: config / 8900)")
+    p.set_defaults(fn=cmd_restart)
     sub.add_parser("status", help="show server + config + embedding mode").set_defaults(fn=cmd_status)
     p = sub.add_parser("autostart", help="install a login service (launchd/systemd) so the server always runs")
     p.add_argument("--remove", action="store_true", help="uninstall the login service(s)")
     p.add_argument("--proxy", action="store_true", help="also keep the LLM capture proxy running at login")
     p.set_defaults(fn=cmd_autostart)
     p = sub.add_parser("serve", help="run the server in the FOREGROUND (process managers / Docker / debug)")
-    p.add_argument("--port", type=int); p.set_defaults(fn=cmd_serve)
-    p = sub.add_parser("mcp"); p.add_argument("--namespace"); p.set_defaults(fn=cmd_mcp)
+    p.add_argument("--port", type=int, help="HTTP port (default: config / 8900)")
+    p.set_defaults(fn=cmd_serve)
+    p = sub.add_parser("mcp", help="run the stdio MCP adapter (Claude Code / Cursor / Windsurf config)")
+    p.add_argument("--namespace", help="default namespace for the MCP tools")
+    p.set_defaults(fn=cmd_mcp)
     p = sub.add_parser("proxy", help="LLM-API capture proxy — point ANTHROPIC_BASE_URL/OPENAI_BASE_URL "
                                      "at it; both sides of every conversation are remembered")
-    p.add_argument("--port", type=int)
+    p.add_argument("--port", type=int, help="proxy port (default 8910)")
     p.add_argument("--namespace", help="namespace captured turns go to (default user:<you>)")
     p.add_argument("--no-capture", action="store_true", help="relay only, capture off")
     p.set_defaults(fn=cmd_proxy)
-    p = sub.add_parser("admin"); p.set_defaults(fn=cmd_admin)
-    p = sub.add_parser("principal"); p.add_argument("name"); p.add_argument("--kind", default="user"); p.set_defaults(fn=cmd_principal)
-    p = sub.add_parser("token"); p.add_argument("principal"); p.add_argument("--label"); p.add_argument("--ttl-days", type=int); p.set_defaults(fn=cmd_token)
-    p = sub.add_parser("grant"); p.add_argument("principal"); p.add_argument("namespace"); p.add_argument("--read-only", action="store_true"); p.set_defaults(fn=cmd_grant)
-    p = sub.add_parser("namespace"); p.add_argument("action", choices=["add", "ls", "rm", "copy", "move"]); p.add_argument("name", nargs="?"); p.add_argument("--to"); p.add_argument("--like"); p.add_argument("--desc"); p.add_argument("--purge", action="store_true"); p.set_defaults(fn=cmd_namespace)
-    p = sub.add_parser("secret"); p.add_argument("action", choices=["set", "ls", "rm", "keygen", "rotate"]); p.add_argument("name", nargs="?"); p.add_argument("--value"); p.add_argument("--desc"); p.set_defaults(fn=cmd_secret)
-    p = sub.add_parser("stats"); p.set_defaults(fn=cmd_stats)
-    p = sub.add_parser("health"); p.set_defaults(fn=cmd_health)
-    p = sub.add_parser("whoami"); p.add_argument("token"); p.set_defaults(fn=cmd_whoami)
-    p = sub.add_parser("ns"); p.add_argument("value", nargs="?"); p.set_defaults(fn=cmd_ns)
-    p = sub.add_parser("remember"); p.add_argument("text"); p.add_argument("--namespace", default="auto"); p.add_argument("--token"); p.set_defaults(fn=cmd_remember)
-    p = sub.add_parser("recall"); p.add_argument("query"); p.add_argument("--namespace", default="auto"); p.add_argument("--scope", choices=["all", "wide"]); p.add_argument("--token"); p.set_defaults(fn=cmd_recall)
-    p = sub.add_parser("hook"); p.add_argument("which", choices=["recall", "remember", "status"]); p.set_defaults(fn=cmd_hook)
-    p = sub.add_parser("claude-setup", help="(alias of: memnos agent-setup claude-code)")
-    p.add_argument("--namespace"); p.add_argument("--force", action="store_true"); p.set_defaults(fn=cmd_claude_setup)
-    p = sub.add_parser("agent-setup", help="wire memnos into an agent (claude-code, codex, cursor, ...)")
-    p.add_argument("agent", choices=list(_AGENTS)); p.add_argument("--namespace")
-    p.add_argument("--force", action="store_true"); p.set_defaults(fn=cmd_agent_setup)
-    p = sub.add_parser("upgrade", help="check the repo for a newer version and install it")
+    p = sub.add_parser("upgrade", help="check PyPI for a newer version and install it")
     p.add_argument("--check", action="store_true", help="only check; don't install")
     p.set_defaults(fn=cmd_upgrade)
-    p = sub.add_parser("migrate-embeddings", help="re-embed all memories to a different dimension (384 local ↔ 1536 OpenAI)")
-    p.add_argument("--to", choices=["384", "1536"], help="target dimension (default: inferred from your OpenAI-key setup)")
+
+    # ---- identity & access (noun-verb) ----
+    p = sub.add_parser("principal", help="manage principals (identities): create | ls")
+    p.set_defaults(fn=lambda a, c, _p=p: _p.print_help())
+    ps = p.add_subparsers(dest="verb", metavar="<verb>")
+    v = ps.add_parser("create", help="create a principal (user / agent / service)")
+    v.add_argument("name", help="principal name")
+    v.add_argument("--kind", default="user", help="user | agent | service (default user)")
+    v.set_defaults(fn=cmd_principal)
+    ps.add_parser("ls", help="list principals").set_defaults(fn=cmd_principal_ls)
+
+    p = sub.add_parser("token", help="manage bearer tokens: mint | ls | revoke")
+    p.set_defaults(fn=lambda a, c, _p=p: _p.print_help())
+    ps = p.add_subparsers(dest="verb", metavar="<verb>")
+    v = ps.add_parser("mint", help="mint a token for a principal (plaintext shown ONCE)")
+    v.add_argument("principal", help="principal name")
+    v.add_argument("--label", help="label (e.g. 'ci', 'laptop')")
+    v.add_argument("--ttl-days", type=int, help="expiry in days (default: never)")
+    v.set_defaults(fn=cmd_token)
+    v = ps.add_parser("ls", help="list a principal's tokens (metadata only, never the secret)")
+    v.add_argument("principal", help="principal name")
+    v.set_defaults(fn=cmd_token_ls)
+    v = ps.add_parser("revoke", help="revoke a token by id (see: memnos token ls)")
+    v.add_argument("id", type=int, help="token id")
+    v.set_defaults(fn=cmd_token_revoke)
+
+    p = sub.add_parser("grant", help="manage namespace grants: add | ls | rm")
+    p.set_defaults(fn=lambda a, c, _p=p: _p.print_help())
+    ps = p.add_subparsers(dest="verb", metavar="<verb>")
+    v = ps.add_parser("add", help="grant a principal access to a namespace")
+    v.add_argument("principal", help="principal name")
+    v.add_argument("namespace", help="namespace (exact, prefix like team:*, or *)")
+    v.add_argument("--read-only", action="store_true", help="read access only (default read+write)")
+    v.set_defaults(fn=cmd_grant)
+    v = ps.add_parser("ls", help="list a principal's grants")
+    v.add_argument("principal", help="principal name")
+    v.set_defaults(fn=cmd_grant_ls)
+    v = ps.add_parser("rm", help="revoke a grant")
+    v.add_argument("principal", help="principal name")
+    v.add_argument("namespace", help="namespace of the grant to revoke")
+    v.set_defaults(fn=cmd_grant_rm)
+
+    # ---- namespaces & secrets (already noun-verb via the action positional) ----
+    p = sub.add_parser("namespace", help="manage namespaces: add | ls | rm | set | link | unlink | links | copy | move")
+    p.add_argument("action", choices=["add", "ls", "rm", "copy", "move", "set", "link", "unlink", "links"],
+                   help="what to do")
+    p.add_argument("name", nargs="?", help="namespace (or copy/move SOURCE, or link SRC)")
+    p.add_argument("dst", nargs="?", help="link/unlink destination namespace")
+    p.add_argument("--to", help="copy/move destination namespace")
+    p.add_argument("--like", help="copy/move: only memories containing this substring")
+    p.add_argument("--desc", help="add: description")
+    p.add_argument("--kind", choices=["memory", "knowledge"], help="set: namespace kind")
+    p.add_argument("--purge", action="store_true", help="rm: also delete the stored memories")
+    p.set_defaults(fn=cmd_namespace)
+    p = sub.add_parser("secret", help="encrypted secret vault: set | ls | rm | rotate | keygen")
+    p.add_argument("action", choices=["set", "ls", "rm", "keygen", "rotate"], help="what to do")
+    p.add_argument("name", nargs="?", help="secret name (set/rm)")
+    p.add_argument("--value", help="set: the value (omit to be prompted, hidden)")
+    p.add_argument("--desc", help="set: description")
+    p.set_defaults(fn=cmd_secret)
+    p = sub.add_parser("ns", help="show or pin this folder's namespace (ns <value> | ns clear)")
+    p.add_argument("value", nargs="?", help="namespace to pin for this folder ('clear' reverts)")
+    p.set_defaults(fn=cmd_ns)
+
+    # ---- observability ----
+    sub.add_parser("stats", help="per-op reliability stats (last 24h)").set_defaults(fn=cmd_stats)
+    sub.add_parser("health", help="actionable findings (the platform doctor)").set_defaults(fn=cmd_health)
+    p = sub.add_parser("whoami", help="validate a token and show its grants")
+    p.add_argument("token", help="bearer token to check")
+    p.set_defaults(fn=cmd_whoami)
+
+    # ---- integrations ----
+    p = sub.add_parser("agent-setup", help="wire memnos into an agent (claude-code, codex, cursor, ...)")
+    p.add_argument("agent", choices=list(_AGENTS), help="which agent to wire")
+    p.add_argument("--namespace", help="default namespace for the agent")
+    p.add_argument("--force", action="store_true", help="set up even if the agent isn't detected")
+    p.set_defaults(fn=cmd_agent_setup)
+    p = sub.add_parser("claude-setup", help="(alias of: memnos agent-setup claude-code)")
+    p.add_argument("--namespace", help="default namespace for Claude Code")
+    p.add_argument("--force", action="store_true", help="set up even if ~/.claude is missing")
+    p.set_defaults(fn=cmd_claude_setup)
+    p = sub.add_parser("hook", help="Claude Code hook entry (stdin JSON; wired by agent-setup)")
+    p.add_argument("which", choices=["recall", "remember", "status"], help="which hook")
+    p.set_defaults(fn=cmd_hook)
+
+    # ---- maintenance ----
+    p = sub.add_parser("admin", help="mint a fresh admin token (direct DB, no server needed)")
+    p.set_defaults(fn=cmd_admin)
+    p = sub.add_parser("migrate-embeddings",
+                       help="re-embed all memories to a different dimension (384 local ↔ 1536 OpenAI)")
+    p.add_argument("--to", choices=["384", "1536"],
+                   help="target dimension (default: inferred from your OpenAI-key setup)")
     p.add_argument("--yes", "-y", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(fn=cmd_migrate_embeddings)
     sub.add_parser("help", help="show this help").set_defaults(fn=lambda a, c: ap.print_help())
 
-    args = ap.parse_args()
+    # hidden (no help= → excluded from docs + help): docs generator / CI staleness check
+    p = sub.add_parser("docs-gen")
+    p.add_argument("--check", action="store_true")
+    p.set_defaults(fn=cmd_docs_gen)
+    return ap
+
+
+def _normalize_argv(argv):
+    """Legacy alias forms → new grammar (hidden, permanent):
+         memnos principal <name>        → memnos principal create <name>
+         memnos token <principal>       → memnos token mint <principal>
+         memnos grant <p> <namespace>   → memnos grant add <p> <namespace>"""
+    if len(argv) >= 2 and argv[0] in _NOUN_DEFAULT_VERB and not argv[1].startswith("-"):
+        default_verb, verbs = _NOUN_DEFAULT_VERB[argv[0]]
+        if argv[1] not in verbs:
+            return [argv[0], default_verb] + argv[1:]
+    return argv
+
+
+# ---- docs generation (docs/cli.md + ui/cli-reference.json) -------------------
+_DOC_GROUPS = [
+    ("Memory (heroes)", ["remember", "recall"]),
+    ("Server lifecycle", ["setup", "start", "stop", "restart", "status", "serve",
+                          "autostart", "upgrade", "proxy", "mcp"]),
+    ("Identity & access", ["principal create", "principal ls", "token mint", "token ls",
+                           "token revoke", "grant add", "grant ls", "grant rm", "whoami"]),
+    ("Namespaces", ["namespace", "ns"]),
+    ("Secrets", ["secret"]),
+    ("Observability", ["stats", "health"]),
+    ("Agent integrations", ["agent-setup", "claude-setup", "hook"]),
+    ("Maintenance", ["admin", "migrate-embeddings", "help"]),
+]
+
+_CLI_MD_PREAMBLE = """# memnos CLI reference
+
+> AUTO-GENERATED by `memnos docs-gen` from the CLI's argparse tree — do not edit by
+> hand. CI fails if this file is stale (`tests/test_cli_docs.py`).
+
+One cross-platform `memnos` command covers the whole platform: server lifecycle,
+identity/access administration, namespaces, secrets, and a data client.
+
+**Grammar:** heroes (`remember`, `recall`) and lifecycle verbs are top-level; management
+is noun-verb (`principal create`, `token mint`, `grant add`, `namespace link`,
+`secret set`). Pre-0.1.6 forms (`memnos principal <name>`, `memnos token <principal>`,
+`memnos grant <p> <ns>`) keep working as permanent hidden aliases.
+
+## Remote use
+
+The data commands (`remember`, `recall`) and the MCP adapter talk to a memnos server
+over HTTP — which doesn't have to be local. Point the CLI at any reachable server:
+
+```bash
+export MEMNOS_URL=https://memnos.internal.example.com:8900
+export MEMNOS_TOKEN=mnk_...        # a token minted for you by the server admin
+memnos recall "what did the team decide about retries?"
+```
+
+`MEMNOS_URL`/`MEMNOS_TOKEN` always win over the local `~/.memnos/config.json`.
+Admin commands (`principal`, `token`, `grant`, `namespace`, `secret`, `stats`,
+`health`) connect to Postgres directly via `MEMNOS_DSN` and are for the operator
+of the server, not remote clients — remote administration goes through the
+`/admin` console or the [REST API](api.md).
+"""
+
+
+def _walk_commands(parser, prefix=""):
+    """Flatten the argparse tree into documented command entries. A subcommand with no
+    help= is hidden (excluded). Nouns with verbs (principal/token/grant) contribute their
+    `noun verb` children, not themselves."""
+    sa = next((a for a in parser._actions if isinstance(a, argparse._SubParsersAction)), None)
+    if sa is None:
+        return []
+    helps = {ca.dest: ca.help for ca in sa._choices_actions}
+    out, seen = [], set()
+    for name, sp in sa.choices.items():
+        if id(sp) in seen:
+            continue
+        seen.add(id(sp))
+        full = f"{prefix} {name}".strip()
+        if helps.get(name) is None:                      # hidden (e.g. docs-gen)
+            continue
+        children = _walk_commands(sp, full)
+        if children:
+            out.extend(children)
+            continue
+        args = []
+        for a in sp._actions:
+            if isinstance(a, (argparse._HelpAction, argparse._VersionAction,
+                              argparse._SubParsersAction)):
+                continue
+            if a.option_strings:
+                spec = {"arg": ", ".join(a.option_strings), "positional": False,
+                        "required": bool(a.required)}
+            else:
+                spec = {"arg": a.dest, "positional": True, "required": a.nargs not in ("?", "*")}
+            spec["help"] = a.help or ""
+            if a.choices:
+                spec["choices"] = [str(c) for c in a.choices]
+            if a.default not in (None, False, argparse.SUPPRESS):
+                spec["default"] = str(a.default)
+            args.append(spec)
+        out.append({"command": full, "help": helps[name], "args": args,
+                    "example": EXAMPLES.get(full)})
+    return out
+
+
+def _docs_payload():
+    cmds = {c["command"]: c for c in _walk_commands(build_parser())}
+    groups, used = [], set()
+    for title, names in _DOC_GROUPS:
+        items = [cmds[n] for n in names if n in cmds]
+        used.update(c["command"] for c in items)
+        if items:
+            groups.append({"title": title, "commands": items})
+    leftover = [c for n, c in sorted(cmds.items()) if n not in used]
+    if leftover:
+        groups.append({"title": "Other", "commands": leftover})
+    return groups
+
+
+def _render_cli_md(groups):
+    lines = [_CLI_MD_PREAMBLE]
+    for g in groups:
+        lines.append(f"\n## {g['title']}\n")
+        for c in g["commands"]:
+            lines.append(f"### `memnos {c['command']}`\n")
+            lines.append(c["help"] + "\n")
+            if c["args"]:
+                lines.append("| argument | description |")
+                lines.append("|---|---|")
+                for a in c["args"]:
+                    name = f"`{a['arg']}`" if a["positional"] else f"`{a['arg']}`"
+                    extra = []
+                    if a["positional"] and not a["required"]:
+                        extra.append("optional")
+                    if a.get("choices"):
+                        extra.append("one of: " + ", ".join(f"`{x}`" for x in a["choices"]))
+                    if a.get("default") not in (None, "auto") and not a["positional"]:
+                        extra.append(f"default `{a['default']}`")
+                    desc = a["help"] or ""
+                    if extra:
+                        desc = (desc + " " if desc else "") + "(" + "; ".join(extra) + ")"
+                    lines.append(f"| {name} | {desc} |")
+                lines.append("")
+            if c.get("example"):
+                lines.append("```bash\n" + c["example"] + "\n```\n")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def cmd_docs_gen(args, cfg):
+    """(hidden) Regenerate docs/cli.md + ui/cli-reference.json from the argparse tree.
+    --check: exit 1 if the committed files are stale (CI staleness gate)."""
+    root = os.path.dirname(os.path.abspath(__file__))
+    groups = _docs_payload()
+    md = _render_cli_md(groups)
+    js = json.dumps({"_generated": "memnos docs-gen — do not edit", "groups": groups},
+                    indent=1, sort_keys=True) + "\n"
+    targets = [(os.path.join(root, "docs", "cli.md"), md),
+               (os.path.join(root, "ui", "cli-reference.json"), js)]
+    if getattr(args, "check", False):
+        stale = []
+        for path, want in targets:
+            try:
+                cur = open(path, encoding="utf-8").read()
+            except FileNotFoundError:
+                cur = ""
+            if cur != want:
+                stale.append(os.path.relpath(path, root))
+        if stale:
+            sys.exit("CLI docs STALE vs the argparse tree: " + ", ".join(stale) +
+                     "\n  regenerate + commit:  memnos docs-gen")
+        print("CLI docs up to date.")
+        return
+    for path, want in targets:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(want)
+        print(f"wrote {os.path.relpath(path, root)}")
+
+
+def main():
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    cfg = load_config()
+    ap = build_parser()
+    args = ap.parse_args(_normalize_argv(sys.argv[1:]))
     if not getattr(args, "cmd", None):     # bare `memnos` → version + help (like Claude Code)
         cur, lk = _installed_version(), cfg.get("latest_known")
         hint = f"   ↑ v{lk} available — run: memnos upgrade" if (cur and lk and _vparts(lk) > _vparts(cur)) else ""

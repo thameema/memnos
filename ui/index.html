@@ -27,10 +27,12 @@
   <main id="app" hidden>
     <nav class="tabs">
       <button data-tab="namespaces" class="active">Namespaces</button>
+      <button data-tab="feed">Memory feed</button>
       <button data-tab="tokens">Tokens</button>
       <button data-tab="access">Principals &amp; Grants</button>
       <button data-tab="dashboard">Dashboard</button>
       <button data-tab="secrets">Secrets</button>
+      <button data-tab="cli">CLI Reference</button>
       <button data-tab="settings">Settings</button>
     </nav>
 
@@ -45,6 +47,27 @@
         <p class="muted">A namespace isolates memory. You create them here — nothing is auto-created.</p>
       </div>
       <div class="card"><table id="ns-table"><thead><tr><th>Namespace</th><th>Description</th><th>Turns</th><th>Facts</th><th>Created</th><th></th></tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section id="tab-feed" class="tab" hidden>
+      <div class="card">
+        <h3>Memory feed <span class="muted">· newest first, across all namespaces</span></h3>
+        <div class="row">
+          <input id="feed-ns" placeholder="filter by namespace (optional)">
+          <select id="feed-type">
+            <option value="">all types</option>
+            <option>decision</option><option>incident</option><option>constraint</option>
+            <option>skill</option><option>fact</option>
+          </select>
+          <button id="feed-refresh">Refresh</button>
+        </div>
+        <table id="feed-table"><thead><tr><th>Age</th><th>Namespace</th><th>Type</th><th>Author</th><th>Memory</th></tr></thead><tbody></tbody></table>
+        <div class="pager">
+          <button id="feed-prev" class="ghost">‹ newer</button>
+          <span id="feed-info" class="muted"></span>
+          <button id="feed-next" class="ghost">older ›</button>
+        </div>
+      </div>
     </section>
 
     <section id="tab-tokens" class="tab" hidden>
@@ -114,6 +137,17 @@
         <p id="sec-err" class="err"></p>
       </div>
       <div class="card"><table id="sec-table"><thead><tr><th>Name</th><th>Description</th><th>Updated</th><th></th></tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section id="tab-cli" class="tab" hidden>
+      <div class="card">
+        <h3>CLI reference</h3>
+        <p class="muted">Generated from the <code>memnos</code> CLI itself (<code>memnos docs-gen</code>) —
+          always in sync with the installed version. Remote use: set <code>MEMNOS_URL</code> and
+          <code>MEMNOS_TOKEN</code> to point <code>memnos remember/recall</code> at this server from
+          another machine.</p>
+        <div id="cli-ref"></div>
+      </div>
     </section>
 
     <section id="tab-settings" class="tab" hidden>
