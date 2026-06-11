@@ -472,6 +472,27 @@ class Control:
                       (principal_id, namespace))
 
     @staticmethod
+    def memory_feed(conn, limit=50, offset=0, namespace=None, memory_type=None):
+        """ADMIN MEMORY FEED (0.1.6): the most recent memories (verbatim raw turns) across
+        ALL namespaces, newest first, paginated — the console's live view of what the
+        platform is remembering. Optional namespace / type filters. Admin-only at the
+        endpoint (this is a cross-namespace read, so it must sit behind the '*' grant)."""
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        where, params = [], []
+        if namespace:
+            where.append("namespace=%s"); params.append(namespace)
+        if memory_type:
+            where.append("memory_type=%s"); params.append(memory_type)
+        cond = ("WHERE " + " AND ".join(where)) if where else ""
+        with conn.cursor() as c:
+            c.execute(f"SELECT id, namespace, speaker, text AS content, memory_type AS type, "
+                      f"author_principal AS author, observed_at "
+                      f"FROM tenant_memnos.raw_turns {cond} "
+                      f"ORDER BY id DESC LIMIT %s OFFSET %s", (*params, limit, offset))
+            return c.fetchall()
+
+    @staticmethod
     def recent_audit(conn, limit=50, offset=0):
         """Paginated audit page (newest first). limit clamped to 1..1000 and offset >= 0
         so a console (or a bad client) can never pull the whole log in one response."""

@@ -19,6 +19,19 @@
        "required": false
       },
       {
+       "arg": "--type",
+       "choices": [
+        "decision",
+        "incident",
+        "constraint",
+        "skill",
+        "fact"
+       ],
+       "help": "classify the memory (constraints are pinned into every recall)",
+       "positional": false,
+       "required": false
+      },
+      {
        "arg": "--token",
        "help": "bearer token (default: MEMNOS_TOKEN or the config admin token)",
        "positional": false,
@@ -51,6 +64,19 @@
         "wide"
        ],
        "help": "widen across every namespace your token may read",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--type",
+       "choices": [
+        "decision",
+        "incident",
+        "constraint",
+        "skill",
+        "fact"
+       ],
+       "help": "only memories of this type (pinned constraints always included)",
        "positional": false,
        "required": false
       },

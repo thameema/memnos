@@ -90,6 +90,22 @@ WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/c
 # I/O. Everything left in the generic do_POST block below is pure SQL.
 PHASED_OPS = {"/recall", "/memory/search", "/recall_v2", "/memory/context", "/consolidate",
               "/ingest/file", "/episode/segment", "/episode/recall", "/reconcile"}
+# TYPED MEMORIES (0.1.6): the closed set of memory types. Validated server-side on every
+# write (400 on anything else) so the column can never accumulate junk labels.
+# type='constraint' memories are PINNED into /recall (see _phased_op).
+ALLOWED_MEMORY_TYPES = ("decision", "incident", "constraint", "skill", "fact")
+
+
+def _memory_type(req):
+    """Parse + validate the optional `type` field. Returns (ok, value_or_error_obj):
+    (True, None) when absent, (True, t) when valid, (False, {error}) on an unknown type."""
+    t = req.get("type")
+    if t is None or str(t).strip() == "":
+        return True, None
+    t = str(t).strip().lower()
+    if t not in ALLOWED_MEMORY_TYPES:
+        return False, {"error": "unknown type %r (allowed: %s)" % (t, " | ".join(ALLOWED_MEMORY_TYPES))}
+    return True, t
 
 
 def _chunk_text(text, size=1200, overlap=150):
@@ -365,6 +381,17 @@ class Handler(BaseHTTPRequestHandler):
                     hours = qs.get("hours", [None])[0]   # optional window; default all-time
                     hours = max(1, min(int(hours), 8760)) if hours else None
                     return 200, {"usage": Control.usage_rollup(conn, hours), "window_hours": hours}
+                if sub == "memory/feed" and method == "GET":
+                    # recent memories across ALL namespaces (admin-only, paginated)
+                    limit = max(1, min(int(qs.get("limit", [50])[0]), 200))
+                    offset = max(0, int(qs.get("offset", [0])[0]))
+                    fns = (qs.get("namespace", [""])[0]).strip() or None
+                    ftype = (qs.get("type", [""])[0]).strip().lower() or None
+                    if ftype and ftype not in ALLOWED_MEMORY_TYPES:
+                        return 400, {"error": "unknown type %r (allowed: %s)"
+                                     % (ftype, " | ".join(ALLOWED_MEMORY_TYPES))}
+                    return 200, {"memories": Control.memory_feed(conn, limit, offset, fns, ftype),
+                                 "limit": limit, "offset": offset}
                 if sub == "audit" and method == "GET":
                     # server-side pagination: limit clamped 1..1000, total is APPROXIMATE
                     # (planner stats) so the endpoint stays O(page) as the log grows
@@ -698,6 +725,9 @@ class Handler(BaseHTTPRequestHandler):
         text = str(req.get("text", "")).strip()
         if not text or len(text) > 20000:
             return self._send(400, {"error": "text required (<=20000 chars)"})
+        ok, mtype = _memory_type(req)              # typed memory (decision|incident|...)
+        if not ok:
+            return self._send(400, mtype)
         run_async = bool(req.get("async"))
         usage = _UsageAcc()
         cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
@@ -714,7 +744,8 @@ class Handler(BaseHTTPRequestHandler):
                 mem = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
                                    on_usage=usage, author=pname)
                 tid, rtext, obs = mem.remember_turn(ns, rtext0, speaker=req.get("speaker"),
-                                                    session_id=req.get("session_id"), vec=vec)
+                                                    session_id=req.get("session_id"), vec=vec,
+                                                    memory_type=mtype)
             # conn is back in the pool. `mem` is reused ONLY for extract_facts below,
             # which never touches its store.
             if LLM is None:                                       # local mode: no extraction
@@ -725,7 +756,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"turn_id": tid, "facts": 0, "superseded": 0})
             if run_async:
                 try:
-                    _INGEST_Q.put_nowait((ns, rtext, obs, tid, principal, mem, cost0, t0))
+                    _INGEST_Q.put_nowait((ns, rtext, obs, tid, principal, mem, cost0, t0, mtype))
                     return self._send(200, {"turn_id": tid, "facts": None,
                                             "extraction": "queued"})
                 except Exception:                                  # queue full → fall through to sync
@@ -736,7 +767,7 @@ class Handler(BaseHTTPRequestHandler):
             with POOL.connection() as conn:                       # P3
                 mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
                                     on_usage=usage, author=pname)
-                nf, nsup = mem3.write_facts(ns, facts, obs, tid)
+                nf, nsup = mem3.write_facts(ns, facts, obs, tid, memory_type=mtype)
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 Control.record_usage(conn, principal, ns, action, mem3.extract_model,
                                      usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))
@@ -822,6 +853,13 @@ class Handler(BaseHTTPRequestHandler):
             q = str(req.get("query", "")).strip()
             if not q or len(q) > 4000:
                 return 400, {"error": "query required (<=4000 chars)"}
+            ok, mtype = _memory_type(req)          # optional `type` result filter
+            if not ok:
+                return 400, mtype
+            try:                                   # pinned-constraint cap (0 disables)
+                pin_cap = max(0, min(int(req.get("constraint_cap", 10)), 50))
+            except (TypeError, ValueError):
+                return 400, {"error": "constraint_cap must be an integer"}
             # engine's CANONICAL (benchmarked) defaults; only override when the client
             # explicitly supplies a value — no server-side drift.
             rkw = {}
@@ -837,6 +875,7 @@ class Handler(BaseHTTPRequestHandler):
                     # WIDEN across every namespace this key may read (ACL-bounded)
                     nss = Control.readable_namespaces(conn, principal)
                     raw_c, sem_c = mem.recall_wide_fetch(nss, q, qv=qv)
+                    pin_nss = [ns]                 # pin the TARGET namespace's constraints
                 else:
                     # GROUNDED RECALL: fan out to LINKED knowledge namespaces, but only
                     # those the CALLER may read (link = policy, grant = permission —
@@ -846,17 +885,36 @@ class Handler(BaseHTTPRequestHandler):
                         (grounded if Control.authorize(conn, principal, kns, write=False)
                          else skipped).append(kns)
                     bundle = mem.recall_fetch(ns, q, qv=qv, extra_namespaces=grounded)
+                    pin_nss = [ns] + grounded
+                # PINNED CONSTRAINT INJECTION: type='constraint' memories are ALWAYS in
+                # the output, regardless of query similarity (cap via constraint_cap)
+                pins = mem.store.pinned_constraints(mem.schema, pin_nss, cap=pin_cap)
                 mem.store = None
+            pin_rows = []
+            for p in pins:
+                row = {"content": p["content"], "kind": p["kind"], "type": "constraint",
+                       "pinned": True}
+                if p.get("author"):
+                    row["author"] = p["author"]
+                if p["namespace"] != ns:           # grounded source — tagged like ranked rows
+                    row["namespace"] = p["namespace"]
+                pin_rows.append(row)
             # CPU rerank phase — NO conn (ranking identical to pre-split recall)
             if wide:
                 rows = mem.recall_wide_rank(q, raw_c, sem_c, **rkw)
-                rows = self._author_filter(rows, req)
+            else:
+                rows = mem.recall_rank(q, bundle, **rkw)
+            rows = self._author_filter(rows, req)
+            if mtype:                              # type filter (pins are exempt — always on)
+                rows = [r for r in rows if r.get("type") == mtype]
+            if pin_rows:                           # constraints FIRST; add, don't replace
+                pinned_contents = {p["content"] for p in pin_rows}
+                rows = pin_rows + [r for r in rows if r["content"] not in pinned_contents]
+            if wide:
                 out = {"memories": rows,
                        "context": mem.render_context(rows, viewer=mem.author, **ckw),
                        "namespaces_searched": nss}
             else:
-                rows = mem.recall_rank(q, bundle, **rkw)
-                rows = self._author_filter(rows, req)
                 if path == "/recall":
                     out = {"memories": rows,
                            "context": mem.render_context(rows, viewer=mem.author, **ckw)}
@@ -955,7 +1013,7 @@ def _ingest_worker():
     so a burst of async remembers doesn't serialize behind one extraction at a time —
     each worker's P2 is pure model I/O, so they overlap cleanly."""
     while True:
-        ns, rtext, obs, tid, principal, mem, cost0, t0 = _INGEST_Q.get()
+        ns, rtext, obs, tid, principal, mem, cost0, t0, mtype = _INGEST_Q.get()
         try:
             usage = _UsageAcc()
             mem.on_usage = usage
@@ -964,7 +1022,7 @@ def _ingest_worker():
                 # mem.author carries the AUTHENTICATED principal's name from the request
                 mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
                                     on_usage=usage, author=mem.author)
-                nf, nsup = mem3.write_facts(ns, facts, obs, tid)
+                nf, nsup = mem3.write_facts(ns, facts, obs, tid, memory_type=mtype)
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 Control.record_usage(conn, principal, ns, "remember", mem3.extract_model,
                                      usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))

@@ -1240,7 +1240,10 @@ def cmd_ns(args, cfg):
 def cmd_remember(args, cfg):
     import nsresolve
     ns = args.namespace if args.namespace and args.namespace != "auto" else nsresolve.resolve()
-    out = _post(cfg, "/remember", {"namespace": ns, "text": args.text},
+    body = {"namespace": ns, "text": args.text}
+    if getattr(args, "type", None):
+        body["type"] = args.type
+    out = _post(cfg, "/remember", body,
                 args.token or os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token"))
     print(json.dumps(out))
 
@@ -1251,6 +1254,8 @@ def cmd_recall(args, cfg):
     body = {"namespace": ns, "query": args.query}
     if getattr(args, "scope", None) in ("all", "wide"):
         body["scope"] = "all"
+    if getattr(args, "type", None):
+        body["type"] = args.type
     out = _post(cfg, "/recall", body,
                 args.token or os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token"))
     if out.get("namespaces_searched"):
@@ -1719,12 +1724,16 @@ def build_parser():
     p = sub.add_parser("remember", help="save a memory (data client — talks to the server)")
     p.add_argument("text", help="the text to remember")
     p.add_argument("--namespace", default="auto", help="target namespace (default: auto-resolve for this folder)")
+    p.add_argument("--type", choices=["decision", "incident", "constraint", "skill", "fact"],
+                   help="classify the memory (constraints are pinned into every recall)")
     p.add_argument("--token", help="bearer token (default: MEMNOS_TOKEN or the config admin token)")
     p.set_defaults(fn=cmd_remember)
     p = sub.add_parser("recall", help="recall relevant memories (data client)")
     p.add_argument("query", help="what to recall")
     p.add_argument("--namespace", default="auto", help="namespace to search (default: auto-resolve)")
     p.add_argument("--scope", choices=["all", "wide"], help="widen across every namespace your token may read")
+    p.add_argument("--type", choices=["decision", "incident", "constraint", "skill", "fact"],
+                   help="only memories of this type (pinned constraints always included)")
     p.add_argument("--token", help="bearer token (default: MEMNOS_TOKEN or the config admin token)")
     p.set_defaults(fn=cmd_recall)
 

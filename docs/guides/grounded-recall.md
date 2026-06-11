@@ -67,6 +67,29 @@ DELETE /admin/api/namespaces/links?src=...&dst=...
 POST   /admin/api/namespaces/kind  {"name": "...", "kind": "knowledge"}
 ```
 
+## Typed memories & pinned constraints (related, 0.1.6)
+
+Memories can carry an optional **type** — `decision | incident | constraint | skill |
+fact` (validated server-side; unknown types are rejected with a 400). Facts extracted
+from a typed turn inherit the turn's type, recall rows include `type`, and context lines
+are labelled with it: `- (decision, 2026-06-10, by arch-agent) ...`. Filter recall to one
+type with `{"type": "decision"}` (CLI: `memnos recall "..." --type decision`).
+
+```bash
+memnos remember "We chose Postgres over ArcadeDB." --type decision
+memnos remember "Schema identifiers MUST be validated." --type constraint
+```
+
+**Pinned constraint injection** — memories typed `constraint` in the target namespace
+*and its grant-readable linked knowledge namespaces* are ALWAYS included in `/recall`,
+regardless of query similarity. They lead the response (`"pinned": true` rows first) and
+the context block renders them ahead of every ranked result as `CONSTRAINT: ...` lines —
+so an agent can never "forget" its ground rules just because the query didn't resemble
+them. They are additive (ranked results are never displaced) and capped by
+`constraint_cap` (default 10, oldest first; `0` disables). Combined with links, a
+knowledge namespace becomes a constraint corpus that pins into every project grounded
+in it.
+
 ## Author attribution (related, 0.1.6)
 
 Every memory written through the server is stamped with the **authenticated** principal's
