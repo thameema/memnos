@@ -1,0 +1,633 @@
+{
+ "_generated": "memnos docs-gen \u2014 do not edit",
+ "groups": [
+  {
+   "commands": [
+    {
+     "args": [
+      {
+       "arg": "text",
+       "help": "the text to remember",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "target namespace (default: auto-resolve for this folder)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "bearer token (default: MEMNOS_TOKEN or the config admin token)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "remember",
+     "example": "memnos remember \"We chose Postgres 16 for staging\" --namespace proj:myapp",
+     "help": "save a memory (data client \u2014 talks to the server)"
+    },
+    {
+     "args": [
+      {
+       "arg": "query",
+       "help": "what to recall",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "namespace to search (default: auto-resolve)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--scope",
+       "choices": [
+        "all",
+        "wide"
+       ],
+       "help": "widen across every namespace your token may read",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "bearer token (default: MEMNOS_TOKEN or the config admin token)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "recall",
+     "example": "memnos recall \"what did we decide about staging?\" --scope all",
+     "help": "recall relevant memories (data client)"
+    }
+   ],
+   "title": "Memory (heroes)"
+  },
+  {
+   "commands": [
+    {
+     "args": [
+      {
+       "arg": "--dsn",
+       "help": "Postgres DSN (skips the interactive wizard)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--docker",
+       "help": "provision a pgvector Postgres in Docker (no Postgres setup needed)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "setup",
+     "example": "memnos setup --docker",
+     "help": "connect to Postgres, create schema + admin token"
+    },
+    {
+     "args": [
+      {
+       "arg": "--port",
+       "help": "HTTP port (default: config / 8900)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "start",
+     "example": "memnos start",
+     "help": "start the memory server in the background"
+    },
+    {
+     "args": [],
+     "command": "stop",
+     "example": "memnos stop",
+     "help": "stop the background server"
+    },
+    {
+     "args": [
+      {
+       "arg": "--port",
+       "help": "HTTP port (default: config / 8900)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "restart",
+     "example": "memnos restart",
+     "help": "restart the background server"
+    },
+    {
+     "args": [],
+     "command": "status",
+     "example": "memnos status",
+     "help": "show server + config + embedding mode"
+    },
+    {
+     "args": [
+      {
+       "arg": "--port",
+       "help": "HTTP port (default: config / 8900)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "serve",
+     "example": "memnos serve --port 8900",
+     "help": "run the server in the FOREGROUND (process managers / Docker / debug)"
+    },
+    {
+     "args": [
+      {
+       "arg": "--remove",
+       "help": "uninstall the login service(s)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--proxy",
+       "help": "also keep the LLM capture proxy running at login",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "autostart",
+     "example": "memnos autostart",
+     "help": "install a login service (launchd/systemd) so the server always runs"
+    },
+    {
+     "args": [
+      {
+       "arg": "--check",
+       "help": "only check; don't install",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "upgrade",
+     "example": "memnos upgrade --check",
+     "help": "check PyPI for a newer version and install it"
+    },
+    {
+     "args": [
+      {
+       "arg": "--port",
+       "help": "proxy port (default 8910)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--namespace",
+       "help": "namespace captured turns go to (default user:<you>)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--no-capture",
+       "help": "relay only, capture off",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "proxy",
+     "example": "memnos proxy --namespace user:me",
+     "help": "LLM-API capture proxy \u2014 point ANTHROPIC_BASE_URL/OPENAI_BASE_URL at it; both sides of every conversation are remembered"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "help": "default namespace for the MCP tools",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "mcp",
+     "example": "memnos mcp --namespace proj:myapp",
+     "help": "run the stdio MCP adapter (Claude Code / Cursor / Windsurf config)"
+    }
+   ],
+   "title": "Server lifecycle"
+  },
+  {
+   "commands": [
+    {
+     "args": [
+      {
+       "arg": "name",
+       "help": "principal name",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--kind",
+       "default": "user",
+       "help": "user | agent | service (default user)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "principal create",
+     "example": "memnos principal create ci-bot --kind service",
+     "help": "create a principal (user / agent / service)"
+    },
+    {
+     "args": [],
+     "command": "principal ls",
+     "example": "memnos principal ls",
+     "help": "list principals"
+    },
+    {
+     "args": [
+      {
+       "arg": "principal",
+       "help": "principal name",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--label",
+       "help": "label (e.g. 'ci', 'laptop')",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--ttl-days",
+       "help": "expiry in days (default: never)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "token mint",
+     "example": "memnos token mint ci-bot --label deploy --ttl-days 90",
+     "help": "mint a token for a principal (plaintext shown ONCE)"
+    },
+    {
+     "args": [
+      {
+       "arg": "principal",
+       "help": "principal name",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "token ls",
+     "example": "memnos token ls ci-bot",
+     "help": "list a principal's tokens (metadata only, never the secret)"
+    },
+    {
+     "args": [
+      {
+       "arg": "id",
+       "help": "token id",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "token revoke",
+     "example": "memnos token revoke 42",
+     "help": "revoke a token by id (see: memnos token ls)"
+    },
+    {
+     "args": [
+      {
+       "arg": "principal",
+       "help": "principal name",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "namespace",
+       "help": "namespace (exact, prefix like team:*, or *)",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--read-only",
+       "help": "read access only (default read+write)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "grant add",
+     "example": "memnos grant add ci-bot proj:myapp --read-only",
+     "help": "grant a principal access to a namespace"
+    },
+    {
+     "args": [
+      {
+       "arg": "principal",
+       "help": "principal name",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "grant ls",
+     "example": "memnos grant ls ci-bot",
+     "help": "list a principal's grants"
+    },
+    {
+     "args": [
+      {
+       "arg": "principal",
+       "help": "principal name",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "namespace",
+       "help": "namespace of the grant to revoke",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "grant rm",
+     "example": "memnos grant rm ci-bot proj:myapp",
+     "help": "revoke a grant"
+    },
+    {
+     "args": [
+      {
+       "arg": "token",
+       "help": "bearer token to check",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "whoami",
+     "example": "memnos whoami mnk_...",
+     "help": "validate a token and show its grants"
+    }
+   ],
+   "title": "Identity & access"
+  },
+  {
+   "commands": [
+    {
+     "args": [
+      {
+       "arg": "action",
+       "choices": [
+        "add",
+        "ls",
+        "rm",
+        "copy",
+        "move",
+        "set",
+        "link",
+        "unlink",
+        "links"
+       ],
+       "help": "what to do",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "name",
+       "help": "namespace (or copy/move SOURCE, or link SRC)",
+       "positional": true,
+       "required": false
+      },
+      {
+       "arg": "dst",
+       "help": "link/unlink destination namespace",
+       "positional": true,
+       "required": false
+      },
+      {
+       "arg": "--to",
+       "help": "copy/move destination namespace",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--like",
+       "help": "copy/move: only memories containing this substring",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--desc",
+       "help": "add: description",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--kind",
+       "choices": [
+        "memory",
+        "knowledge"
+       ],
+       "help": "set: namespace kind",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--purge",
+       "help": "rm: also delete the stored memories",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "namespace",
+     "example": "memnos namespace add proj:myapp --desc 'my app'",
+     "help": "manage namespaces: add | ls | rm | set | link | unlink | links | copy | move"
+    },
+    {
+     "args": [
+      {
+       "arg": "value",
+       "help": "namespace to pin for this folder ('clear' reverts)",
+       "positional": true,
+       "required": false
+      }
+     ],
+     "command": "ns",
+     "example": "memnos ns proj:myapp",
+     "help": "show or pin this folder's namespace (ns <value> | ns clear)"
+    }
+   ],
+   "title": "Namespaces"
+  },
+  {
+   "commands": [
+    {
+     "args": [
+      {
+       "arg": "action",
+       "choices": [
+        "set",
+        "ls",
+        "rm",
+        "keygen",
+        "rotate"
+       ],
+       "help": "what to do",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "name",
+       "help": "secret name (set/rm)",
+       "positional": true,
+       "required": false
+      },
+      {
+       "arg": "--value",
+       "help": "set: the value (omit to be prompted, hidden)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--desc",
+       "help": "set: description",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "secret",
+     "example": "memnos secret set openai",
+     "help": "encrypted secret vault: set | ls | rm | rotate | keygen"
+    }
+   ],
+   "title": "Secrets"
+  },
+  {
+   "commands": [
+    {
+     "args": [],
+     "command": "stats",
+     "example": "memnos stats",
+     "help": "per-op reliability stats (last 24h)"
+    },
+    {
+     "args": [],
+     "command": "health",
+     "example": "memnos health",
+     "help": "actionable findings (the platform doctor)"
+    }
+   ],
+   "title": "Observability"
+  },
+  {
+   "commands": [
+    {
+     "args": [
+      {
+       "arg": "agent",
+       "choices": [
+        "claude-code",
+        "codex",
+        "cursor",
+        "windsurf",
+        "claude-desktop",
+        "openclaw",
+        "hermes"
+       ],
+       "help": "which agent to wire",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--namespace",
+       "help": "default namespace for the agent",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--force",
+       "help": "set up even if the agent isn't detected",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "agent-setup",
+     "example": "memnos agent-setup claude-code",
+     "help": "wire memnos into an agent (claude-code, codex, cursor, ...)"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "help": "default namespace for Claude Code",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--force",
+       "help": "set up even if ~/.claude is missing",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "claude-setup",
+     "example": "memnos claude-setup",
+     "help": "(alias of: memnos agent-setup claude-code)"
+    },
+    {
+     "args": [
+      {
+       "arg": "which",
+       "choices": [
+        "recall",
+        "remember",
+        "status"
+       ],
+       "help": "which hook",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "hook",
+     "example": "echo '{}' | memnos hook status",
+     "help": "Claude Code hook entry (stdin JSON; wired by agent-setup)"
+    }
+   ],
+   "title": "Agent integrations"
+  },
+  {
+   "commands": [
+    {
+     "args": [],
+     "command": "admin",
+     "example": "memnos admin",
+     "help": "mint a fresh admin token (direct DB, no server needed)"
+    },
+    {
+     "args": [
+      {
+       "arg": "--to",
+       "choices": [
+        "384",
+        "1536"
+       ],
+       "help": "target dimension (default: inferred from your OpenAI-key setup)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--yes, -y",
+       "help": "skip the confirmation prompt",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "migrate-embeddings",
+     "example": "memnos migrate-embeddings --to 1536",
+     "help": "re-embed all memories to a different dimension (384 local \u2194 1536 OpenAI)"
+    },
+    {
+     "args": [],
+     "command": "help",
+     "example": "memnos help",
+     "help": "show this help"
+    }
+   ],
+   "title": "Maintenance"
+  }
+ ]
+}
