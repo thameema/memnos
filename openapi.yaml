@@ -1,0 +1,2051 @@
+openapi: "3.1.0"
+info:
+  title: memnos API
+  version: "0.1.6"
+  description: |
+    The complete public REST surface of the memnos memory server (`memnos_server.py`).
+
+    Three groups:
+    - **Data plane** — `POST` JSON endpoints for remembering, recalling, and managing
+      memories. Every request body carries a `namespace`; access is clamped server-side
+      to the authenticated principal's grants.
+    - **Health** — unauthenticated liveness (`/healthz`) and readiness (`/readyz`),
+      plus an authenticated `/metrics` rollup.
+    - **Admin plane** — `/admin/api/*` management endpoints. These require a token whose
+      principal holds the `*` grant (an *admin* token).
+
+    ### Authentication
+    `Authorization: Bearer mnk_...` on every endpoint except `/healthz` and `/readyz`.
+    Tokens are minted server-side (`memnos token mint <principal>`); only a hash is stored.
+
+    ### Error taxonomy
+    Every error is a JSON object `{"error": "...", "msg"?: "..."}`:
+    - `400` — malformed JSON, missing/oversized required fields, bad content-length.
+    - `401` — missing/invalid/revoked/expired bearer token.
+    - `403` — authenticated, but the namespace is outside the principal's grants
+      (or a non-admin token on the admin plane). Denials are audited.
+    - `404` — unknown route, or the referenced object is not in this namespace.
+    - `409` — admin secrets endpoints only: the vault is locked (no `MEMNOS_SECRET_KEY`).
+    - `413` — request body over the 256 KB cap (`/ingest/file`: extracted text over 2 MB).
+    - `415` — `/ingest/file` only: binary upload whose text cannot be extracted.
+    - `429` — **not used**: the server has no rate limiting; put a reverse proxy in front
+      if you need one.
+    - `500` — internal fault. Audited with the error type; details are never leaked.
+    - `503` — database unreachable (`{"error": "database unreachable — is Postgres
+      running?"}`). Clients should fail fast, not retry-storm.
+
+    ### Out of scope
+    - The **capture proxy** (`memnos proxy`, default :8910) is a separate relay process.
+      Its surface is vendor-shaped passthrough (`/v1/chat/completions`, `/v1/messages`,
+      …) plus its own `/healthz`; it is deliberately NOT part of this contract.
+    - The `/admin` static console (HTML/JS/CSS) — UI assets, not API.
+  license:
+    name: Apache-2.0
+servers:
+  - url: http://127.0.0.1:8900
+security:
+  - bearerAuth: []
+
+tags:
+  - name: memory
+    description: Remember / recall / memory CRUD
+  - name: graph
+    description: Entity graph, communities, contradictions, knowledge health
+  - name: episodes
+    description: Episodic tier (segmentation, recall, decay)
+  - name: corpus
+    description: Architecture-constraint corpus
+  - name: pubsub
+    description: Namespace subscriptions (poll feed + webhooks)
+  - name: health
+    description: Liveness / readiness / metrics
+  - name: admin
+    description: Management plane (`*`-grant token required)
+
+paths:
+  # ───────────────────────── health ─────────────────────────
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness — process is up
+      security: []
+      responses:
+        "200":
+          description: alive
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Healthz" }
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness — database reachable
+      security: []
+      responses:
+        "200":
+          description: ready
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readyz" }
+        "503":
+          description: database unreachable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readyz" }
+  /metrics:
+    get:
+      tags: [health]
+      summary: 24h reliability rollup (any valid token)
+      responses:
+        "200":
+          description: per-op stats over the last 24h
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Metrics" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  # ───────────────────────── memory ─────────────────────────
+  /remember:
+    post:
+      tags: [memory]
+      summary: Store a conversational turn (+ LLM fact extraction in OpenAI mode)
+      description: |
+        Stores the redacted verbatim turn, then (OpenAI mode only) extracts bi-temporal
+        facts. `{"async": true}` defers extraction to background workers and returns
+        immediately after the raw turn is stored (`"extraction": "queued"`, `facts: null`).
+        In local-embedding mode there is no extraction and `facts` is always `0`.
+        The memory's author is ALWAYS the authenticated principal — never client-supplied.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RememberRequest" }
+      responses:
+        "200":
+          description: turn stored (facts extracted, or queued when async)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RememberResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /memory/write:
+    post:
+      tags: [memory]
+      summary: Alias of /remember (accepts `text` or `content`)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemoryWriteRequest" }
+      responses:
+        "200":
+          description: turn stored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RememberResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /recall:
+    post:
+      tags: [memory]
+      summary: Hybrid recall (memories + paste-ready context)
+      description: |
+        Hybrid vector+FTS retrieval with cross-encoder rerank. With `"scope": "all"` (or
+        `"wide"`) recall widens across every namespace the token may read and the response
+        gains `namespaces_searched`. **Grounded recall**: when the namespace has admin-made
+        links to knowledge namespaces, linked namespaces the CALLER may read are searched
+        too — `grounded_in` lists those used, `links_skipped` those denied by grants (both
+        keys appear only when links exist). `author` filters results to one writer
+        (matched against the server-stamped author).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecallRequest" }
+      responses:
+        "200":
+          description: ranked memories + rendered context
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecallResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /memory/search:
+    post:
+      tags: [memory]
+      summary: Recall, memories only (no context block)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecallRequest" }
+      responses:
+        "200":
+          description: ranked memories
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoriesResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /recall_v2:
+    post:
+      tags: [memory]
+      summary: Alias of /memory/search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecallRequest" }
+      responses:
+        "200":
+          description: ranked memories
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoriesResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /memory/context:
+    post:
+      tags: [memory]
+      summary: Recall, context block only
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecallRequest" }
+      responses:
+        "200":
+          description: rendered context
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContextResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /memory/delete:
+    post:
+      tags: [memory]
+      summary: Expire a semantic fact by id (system-time delete)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdRequest" }
+      responses:
+        "200":
+          description: fact expired
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeleteResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /consolidate:
+    post:
+      tags: [memory]
+      summary: Build entity dossiers from stored facts (offline LLM pass)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NamespaceOnlyRequest" }
+      responses:
+        "200":
+          description: dossiers written (0 in local mode — needs an LLM)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConsolidateResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /feedback:
+    post:
+      tags: [memory]
+      summary: Record whether a recall was helpful (quality signal)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FeedbackRequest" }
+      responses:
+        "200":
+          description: recorded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /reconcile:
+    post:
+      tags: [memory]
+      summary: Reconcile an external claim against stored facts (staleness check)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReconcileRequest" }
+      responses:
+        "200":
+          description: matches + conflicts + staleness verdict
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReconcileResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /ingest/file:
+    post:
+      tags: [memory]
+      summary: Ingest a document (text or base64 PDF/DOCX) as chunked memories
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IngestFileRequest" }
+      responses:
+        "200":
+          description: chunks stored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IngestFileResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415":
+          description: cannot extract text from the upload
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /namespace/copy:
+    post:
+      tags: [memory]
+      summary: Copy or move memories between namespaces
+      description: |
+        `namespace` is the DESTINATION (write grant required); `src` needs a read grant.
+        `mode` is `copy` (default) or `move`; `like` filters by substring.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NamespaceCopyRequest" }
+      responses:
+        "200":
+          description: migration counts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NamespaceCopyResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+
+  # ───────────────────────── graph ─────────────────────────
+  /entity:
+    post:
+      tags: [graph]
+      summary: Entity + neighbourhood + facts that mention it
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EntityRequest" }
+      responses:
+        "200":
+          description: entity dossier
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EntityResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /provenance:
+    post:
+      tags: [graph]
+      summary: Evidence chain for a fact (verbatim source turns)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdRequest" }
+      responses:
+        "200":
+          description: fact + sources
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProvenanceResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /related:
+    post:
+      tags: [graph]
+      summary: Direct graph neighbours of an entity (weight-ranked)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NameRequest" }
+      responses:
+        "200":
+          description: adjacency list
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RelatedResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /graph:
+    post:
+      tags: [graph]
+      summary: N-hop graph expansion → facts about the reachable entity set
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GraphRequest" }
+      responses:
+        "200":
+          description: facts reachable from the seed entities
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GraphResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /community:
+    post:
+      tags: [graph]
+      summary: Connected component (community) an entity belongs to
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NameRequest" }
+      responses:
+        "200":
+          description: community members
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CommunityResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /contradictions:
+    post:
+      tags: [graph]
+      summary: Same subject+predicate with multiple current objects
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NamespaceOnlyRequest" }
+      responses:
+        "200":
+          description: potential contradictions
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContradictionsResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /knowledge/health:
+    post:
+      tags: [graph]
+      summary: 0-100 structural health score for a namespace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NamespaceOnlyRequest" }
+      responses:
+        "200":
+          description: health metrics
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KnowledgeHealthResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+
+  # ───────────────────────── episodes ─────────────────────────
+  /episode:
+    post:
+      tags: [episodes]
+      summary: Fetch one episode (+ turns + derived facts) by id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdRequest" }
+      responses:
+        "200":
+          description: the episode
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EpisodeResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /episode/segment:
+    post:
+      tags: [episodes]
+      summary: Segment uncovered raw turns into episodes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EpisodeSegmentRequest" }
+      responses:
+        "200":
+          description: number of episodes created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EpisodeSegmentResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /episode/recall:
+    post:
+      tags: [episodes]
+      summary: Semantic search over episodes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EpisodeRecallRequest" }
+      responses:
+        "200":
+          description: matching episodes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EpisodeRecallResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /episode/decay:
+    post:
+      tags: [episodes]
+      summary: Recompute episode salience (half-life decay + access boost)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EpisodeDecayRequest" }
+      responses:
+        "200":
+          description: episodes updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EpisodeDecayResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+
+  # ───────────────────────── corpus ─────────────────────────
+  /corpus/ingest:
+    post:
+      tags: [corpus]
+      summary: Parse RFC-2119 constraints out of a doc into facts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CorpusIngestRequest" }
+      responses:
+        "200":
+          description: constraints stored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CorpusIngestResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /corpus/check:
+    post:
+      tags: [corpus]
+      summary: Constraints relevant to a code snippet (FTS)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CorpusCheckRequest" }
+      responses:
+        "200":
+          description: relevant constraints
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CorpusCheckResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /corpus/list:
+    post:
+      tags: [corpus]
+      summary: Registered corpus sources for a namespace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NamespaceOnlyRequest" }
+      responses:
+        "200":
+          description: source registry
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CorpusListResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+
+  # ───────────────────────── pubsub ─────────────────────────
+  /subscribe:
+    post:
+      tags: [pubsub]
+      summary: Subscribe to a namespace (poll cursor, optional webhook)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubscribeRequest" }
+      responses:
+        "200":
+          description: subscription created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscribeResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /feed:
+    post:
+      tags: [pubsub]
+      summary: Poll new memories since the subscription cursor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FeedRequest" }
+      responses:
+        "200":
+          description: new items; cursor advanced
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeedResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /unsubscribe:
+    post:
+      tags: [pubsub]
+      summary: Remove a subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UnsubscribeRequest" }
+      responses:
+        "200":
+          description: removal result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UnsubscribeResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+
+  # ───────────────────────── admin plane ─────────────────────────
+  /admin/api/namespaces:
+    get:
+      tags: [admin]
+      summary: List all namespaces (registry ∪ discovered)
+      responses:
+        "200":
+          description: namespace census (10s server-side cache)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminNamespacesResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [admin]
+      summary: Create (register) a namespace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminNamespaceCreateRequest" }
+      responses:
+        "200":
+          description: created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkNameResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      tags: [admin]
+      summary: Delete a namespace (`?name=` + optional `&purge=1`)
+      parameters:
+        - { name: name, in: query, required: true, schema: { type: string } }
+        - { name: purge, in: query, required: false, schema: { type: string, enum: ["0", "1"] } }
+      responses:
+        "200":
+          description: deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/namespaces/links:
+    get:
+      tags: [admin]
+      summary: List namespace links (grounded recall), optional `?ns=` filter
+      parameters:
+        - { name: ns, in: query, required: false, schema: { type: string } }
+      responses:
+        "200":
+          description: links
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminLinksResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [admin]
+      summary: Link src → dst (recall on src also grounds in dst)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminLinkRequest" }
+      responses:
+        "200":
+          description: linked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminLinkResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      tags: [admin]
+      summary: Remove a link (`?src=&dst=`)
+      parameters:
+        - { name: src, in: query, required: true, schema: { type: string } }
+        - { name: dst, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: unlink result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUnlinkResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/namespaces/kind:
+    post:
+      tags: [admin]
+      summary: Set a namespace's kind (`memory` | `knowledge`)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminKindRequest" }
+      responses:
+        "200":
+          description: kind set
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminKindResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/principals:
+    get:
+      tags: [admin]
+      summary: List principals
+      responses:
+        "200":
+          description: principals
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminPrincipalsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [admin]
+      summary: Create a principal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminPrincipalCreateRequest" }
+      responses:
+        "200":
+          description: created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkIdResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/tokens:
+    get:
+      tags: [admin]
+      summary: List token metadata for a principal (`?principal=<id>`)
+      parameters:
+        - { name: principal, in: query, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: token metadata (never the secret)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTokensResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [admin]
+      summary: Mint a token (plaintext returned ONCE)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminTokenMintRequest" }
+      responses:
+        "200":
+          description: the plaintext token — shown once, only a hash is stored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTokenMintResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/tokens/revoke:
+    post:
+      tags: [admin]
+      summary: Revoke a token by id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminTokenRevokeRequest" }
+      responses:
+        "200":
+          description: revoked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/grants:
+    get:
+      tags: [admin]
+      summary: List grants for a principal (`?principal=<id>`)
+      parameters:
+        - { name: principal, in: query, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: grants
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminGrantsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [admin]
+      summary: Grant namespace access to a principal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminGrantRequest" }
+      responses:
+        "200":
+          description: granted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      tags: [admin]
+      summary: Revoke a grant (`?principal=<id>&namespace=`)
+      parameters:
+        - { name: principal, in: query, required: true, schema: { type: integer } }
+        - { name: namespace, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: revoked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/stats:
+    get:
+      tags: [admin]
+      summary: Reliability rollup by op (`?hours=`, 1..720, default 24)
+      parameters:
+        - { name: hours, in: query, required: false, schema: { type: integer } }
+      responses:
+        "200":
+          description: per-op stats
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Metrics" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/usage:
+    get:
+      tags: [admin]
+      summary: Token/cost rollup by op (`?hours=` optional; default all-time)
+      parameters:
+        - { name: hours, in: query, required: false, schema: { type: integer } }
+      responses:
+        "200":
+          description: usage ledger rollup
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUsageResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/audit:
+    get:
+      tags: [admin]
+      summary: Paginated audit log (`?limit=` 1..1000, `&offset=`)
+      parameters:
+        - { name: limit, in: query, required: false, schema: { type: integer } }
+        - { name: offset, in: query, required: false, schema: { type: integer } }
+      responses:
+        "200":
+          description: audit page; `total` is a planner ESTIMATE
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminAuditResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/health:
+    get:
+      tags: [admin]
+      summary: Actionable findings (the platform 'doctor')
+      responses:
+        "200":
+          description: findings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminHealthResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/quality:
+    get:
+      tags: [admin]
+      summary: Stale-suppression quality-canary trend
+      responses:
+        "200":
+          description: eval trend rows
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminQualityResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/subscriptions:
+    get:
+      tags: [admin]
+      summary: List subscriptions (`?principal=<id>`, default the caller)
+      parameters:
+        - { name: principal, in: query, required: false, schema: { type: integer } }
+      responses:
+        "200":
+          description: subscriptions
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminSubscriptionsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/deliver:
+    post:
+      tags: [admin]
+      summary: Run a webhook delivery pass now
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: per-subscription delivery results
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminDeliverResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/provider:
+    get:
+      tags: [admin]
+      summary: Embedding/extraction provider status
+      responses:
+        "200":
+          description: provider mode + dim + vault state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminProviderResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/secrets:
+    get:
+      tags: [admin]
+      summary: List secret metadata (plaintext never returned)
+      responses:
+        "200":
+          description: secret names + vault state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminSecretsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/VaultLocked" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [admin]
+      summary: Store a secret (AES-256-GCM, encrypted at rest)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminSecretSetRequest" }
+      responses:
+        "200":
+          description: stored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkNameResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/VaultLocked" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      tags: [admin]
+      summary: Delete a secret (`?name=`)
+      parameters:
+        - { name: name, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/VaultLocked" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: "mnk_<token>"
+
+  responses:
+    BadRequest:
+      description: malformed request (missing/oversized field, invalid JSON)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: missing/invalid/revoked bearer token
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: namespace (or admin plane) outside the principal's grants
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: object not found in this namespace (or unknown route)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooLarge:
+      description: payload over the size cap (256 KB request / 2 MB extracted text)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    VaultLocked:
+      description: secret vault locked — MEMNOS_SECRET_KEY not set
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Internal:
+      description: internal fault (audited; no details leaked)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    DbDown:
+      description: database unreachable — fail fast, check Postgres
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    # NUMERIC NOTE: SQL aggregates (round/avg/sum) surface as Postgres `numeric` →
+    # Python Decimal → serialized by `json.dumps(default=str)` as a STRING. Fields fed
+    # by such aggregates are therefore typed as number-or-string. Same for timestamps:
+    # datetime → ISO-ish string.
+    SqlNumber:
+      description: numeric that may serialize as a JSON string (Postgres numeric/Decimal)
+      type: [number, integer, string, "null"]
+    DateTime:
+      description: timestamp serialized as a string (str(datetime))
+      type: [string, "null"]
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        msg: { type: string }
+
+    Healthz:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+    Readyz:
+      type: object
+      required: [ready]
+      properties:
+        ready: { type: boolean }
+    Metrics:
+      type: object
+      required: [window_hours, ops]
+      properties:
+        window_hours: { type: integer }
+        ops:
+          type: array
+          items: { $ref: "#/components/schemas/OpStats" }
+    OpStats:
+      type: object
+      required: [action, calls]
+      properties:
+        action: { type: string }
+        calls: { type: integer }
+        error_pct: { $ref: "#/components/schemas/SqlNumber" }
+        acl_denied_pct: { $ref: "#/components/schemas/SqlNumber" }
+        p50_ms: { type: [integer, "null"] }
+        p95_ms: { type: [integer, "null"] }
+        recall_empty_pct: { $ref: "#/components/schemas/SqlNumber" }
+
+    # ── requests ──
+    NamespaceOnlyRequest:
+      type: object
+      required: [namespace]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+    RememberRequest:
+      type: object
+      required: [namespace, text]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        text: { type: string, maxLength: 20000 }
+        speaker: { type: string, description: "e.g. user / assistant" }
+        session_id: { type: string }
+        async:
+          type: boolean
+          description: defer fact extraction to background workers (fast return)
+    MemoryWriteRequest:
+      type: object
+      required: [namespace]
+      description: alias body — `text` or `content` (one required)
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        text: { type: string, maxLength: 20000 }
+        content: { type: string, maxLength: 20000 }
+        speaker: { type: string }
+        session_id: { type: string }
+        async: { type: boolean }
+    RecallRequest:
+      type: object
+      required: [namespace, query]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        query: { type: string, maxLength: 4000 }
+        scope:
+          type: string
+          enum: [all, wide]
+          description: "/recall only: widen across every readable namespace"
+        author:
+          type: string
+          description: only memories written by this principal (server-stamped author)
+        raw_quota: { type: integer, description: max verbatim turns returned }
+        fact_quota: { type: integer, description: max facts returned }
+        max_chars: { type: integer, description: context block size cap (default 9000) }
+    IdRequest:
+      type: object
+      required: [namespace, id]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        id: { type: integer }
+    NameRequest:
+      type: object
+      required: [namespace, name]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        name: { type: string }
+    EntityRequest:
+      type: object
+      required: [namespace, name]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        name: { type: string }
+        depth: { type: integer, minimum: 1, maximum: 3 }
+    GraphRequest:
+      type: object
+      required: [namespace]
+      description: seed with `entities[]` or a single `name`
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        entities:
+          type: array
+          items: { type: string }
+          maxItems: 10
+        name: { type: string }
+        hops: { type: integer, minimum: 1, maximum: 3 }
+        limit: { type: integer }
+    FeedbackRequest:
+      type: object
+      required: [namespace, helpful]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        query: { type: string, maxLength: 1000 }
+        helpful: { type: boolean }
+        note: { type: string }
+    ReconcileRequest:
+      type: object
+      required: [namespace, statement]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        statement: { type: string, maxLength: 4000 }
+        subject: { type: string }
+        predicate: { type: string }
+    IngestFileRequest:
+      type: object
+      required: [namespace]
+      description: send extracted `text`, or `content_b64` (PDF/DOCX need pypdf/python-docx)
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        filename: { type: string }
+        text: { type: string }
+        content_b64: { type: string, contentEncoding: base64 }
+        extract: { type: boolean, description: also run LLM fact extraction per chunk }
+        chunk_size: { type: integer }
+    NamespaceCopyRequest:
+      type: object
+      required: [namespace, src]
+      properties:
+        namespace: { type: string, maxLength: 200, description: DESTINATION namespace }
+        src: { type: string, description: source namespace (read grant required) }
+        mode: { type: string, enum: [copy, move] }
+        like: { type: string, description: substring filter }
+    EpisodeSegmentRequest:
+      type: object
+      required: [namespace]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        gap_minutes: { type: integer }
+    EpisodeRecallRequest:
+      type: object
+      required: [namespace, query]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        query: { type: string, maxLength: 4000 }
+        k: { type: integer }
+    EpisodeDecayRequest:
+      type: object
+      required: [namespace]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        half_life_days: { type: number }
+    CorpusIngestRequest:
+      type: object
+      required: [namespace, name, text]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        name: { type: string, description: source name (re-ingest replaces) }
+        text: { type: string }
+        kind: { type: string, description: "default 'doc'" }
+        git_sha: { type: string }
+    CorpusCheckRequest:
+      type: object
+      required: [namespace]
+      description: "`snippet` or `code` (one required)"
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        snippet: { type: string }
+        code: { type: string }
+    SubscribeRequest:
+      type: object
+      required: [namespace]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        webhook: { type: string, description: optional push URL }
+    FeedRequest:
+      type: object
+      required: [namespace, subscription_id]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        subscription_id: { type: integer }
+        limit: { type: integer }
+    UnsubscribeRequest:
+      type: object
+      required: [namespace, subscription_id]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        subscription_id: { type: integer }
+
+    # ── data-plane responses ──
+    RememberResponse:
+      type: object
+      required: [turn_id, facts]
+      properties:
+        turn_id: { type: integer }
+        facts:
+          type: [integer, "null"]
+          description: "null when extraction was queued (async)"
+        superseded: { type: integer }
+        extraction:
+          type: string
+          enum: [queued]
+          description: present only on the async path
+    MemoryRow:
+      type: object
+      required: [content, kind]
+      properties:
+        content: { type: string }
+        kind: { type: string, enum: [turn, fact] }
+        score: { type: number }
+        date: { type: [string, "null"], description: fact valid_from (YYYY-MM-DD) }
+        author: { type: string, description: server-stamped writing principal }
+        namespace: { type: string, description: source namespace (wide/grounded rows) }
+    RecallResponse:
+      type: object
+      required: [memories, context]
+      properties:
+        memories:
+          type: array
+          items: { $ref: "#/components/schemas/MemoryRow" }
+        context: { type: string }
+        grounded_in:
+          type: array
+          items: { type: string }
+          description: linked knowledge namespaces searched (only when links exist)
+        links_skipped:
+          type: array
+          items: { type: string }
+          description: linked namespaces skipped — caller lacks a read grant
+        namespaces_searched:
+          type: array
+          items: { type: string }
+          description: wide scope only
+    MemoriesResponse:
+      type: object
+      required: [memories]
+      properties:
+        memories:
+          type: array
+          items: { $ref: "#/components/schemas/MemoryRow" }
+        grounded_in:
+          type: array
+          items: { type: string }
+        links_skipped:
+          type: array
+          items: { type: string }
+    ContextResponse:
+      type: object
+      required: [context]
+      properties:
+        context: { type: string }
+        grounded_in:
+          type: array
+          items: { type: string }
+        links_skipped:
+          type: array
+          items: { type: string }
+    ConsolidateResponse:
+      type: object
+      required: [dossiers]
+      properties:
+        dossiers: { type: integer }
+    OkResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+    DeleteResponse:
+      type: object
+      required: [deleted]
+      properties:
+        deleted: { type: integer }
+        statement: { type: [string, "null"] }
+    EntityResponse:
+      type: object
+      required: [entity, related, facts]
+      properties:
+        entity:
+          type: object
+          required: [id, name]
+          properties:
+            id: { type: integer }
+            name: { type: string }
+        related:
+          type: array
+          items: { $ref: "#/components/schemas/RelatedRow" }
+        facts:
+          type: array
+          items:
+            type: object
+            required: [id, content]
+            properties:
+              id: { type: integer }
+              content: { type: string }
+              valid_from: { $ref: "#/components/schemas/DateTime" }
+              valid_to: { $ref: "#/components/schemas/DateTime" }
+    RelatedRow:
+      type: object
+      required: [name, weight]
+      properties:
+        name: { type: string }
+        weight: { type: number }
+    RelatedResponse:
+      type: object
+      required: [name, related]
+      properties:
+        name: { type: string }
+        related:
+          type: array
+          items: { $ref: "#/components/schemas/RelatedRow" }
+    GraphResponse:
+      type: object
+      required: [facts]
+      properties:
+        facts:
+          type: array
+          items:
+            type: object
+            required: [id, content]
+            properties:
+              id: { type: integer }
+              content: { type: string }
+              valid_from: { $ref: "#/components/schemas/DateTime" }
+    ProvenanceResponse:
+      type: object
+      required: [fact, source_turn_ids, sources]
+      properties:
+        fact:
+          type: object
+          required: [id, kind, statement]
+          properties:
+            id: { type: integer }
+            kind: { type: string }
+            statement: { type: string }
+            valid_from: { $ref: "#/components/schemas/DateTime" }
+            valid_to: { $ref: "#/components/schemas/DateTime" }
+        source_turn_ids:
+          type: array
+          items: { type: integer }
+        sources:
+          type: array
+          items: { $ref: "#/components/schemas/TurnRow" }
+    TurnRow:
+      type: object
+      required: [id, content]
+      properties:
+        id: { type: integer }
+        speaker: { type: [string, "null"] }
+        content: { type: string }
+        observed_at: { $ref: "#/components/schemas/DateTime" }
+    CommunityResponse:
+      type: object
+      required: [entity, community, size]
+      properties:
+        entity: { type: string }
+        community:
+          type: array
+          items: { type: string }
+        size: { type: integer }
+    ContradictionsResponse:
+      type: object
+      required: [contradictions]
+      properties:
+        contradictions:
+          type: array
+          items:
+            type: object
+            required: [subject, predicate, objects, ids]
+            properties:
+              subject: { type: string }
+              predicate: { type: string }
+              objects:
+                type: array
+                items: { type: string }
+              ids:
+                type: array
+                items: { type: integer }
+    KnowledgeHealthResponse:
+      type: object
+      required: [score, facts_current, facts_superseded, facts_expired, entities,
+                 orphan_entities, contradiction_groups]
+      properties:
+        score: { type: integer, minimum: 0, maximum: 100 }
+        facts_current: { type: integer }
+        facts_superseded: { type: integer }
+        facts_expired: { type: integer }
+        entities: { type: integer }
+        orphan_entities: { type: integer }
+        contradiction_groups: { type: integer }
+    NamespaceCopyResponse:
+      type: object
+      required: [mode, src, dst, raw_turns, facts, episodes]
+      properties:
+        mode: { type: string, enum: [copy, move] }
+        src: { type: string }
+        dst: { type: string }
+        raw_turns: { type: integer }
+        facts: { type: integer }
+        episodes: { type: integer }
+    EpisodeResponse:
+      type: object
+      required: [episode, turns, facts]
+      properties:
+        episode:
+          type: object
+          required: [id]
+          properties:
+            id: { type: integer }
+            session_id: { type: [string, "null"] }
+            summary: { type: [string, "null"] }
+            text: { type: string }
+            t_start: { $ref: "#/components/schemas/DateTime" }
+            t_end: { $ref: "#/components/schemas/DateTime" }
+            salience: { type: number }
+            access_count: { type: integer }
+            source_turn_ids:
+              type: array
+              items: { type: integer }
+        turns:
+          type: array
+          items: { $ref: "#/components/schemas/TurnRow" }
+        facts:
+          type: array
+          items:
+            type: object
+            required: [id, statement]
+            properties:
+              id: { type: integer }
+              statement: { type: string }
+    EpisodeSegmentResponse:
+      type: object
+      required: [episodes]
+      properties:
+        episodes: { type: integer, description: episodes created }
+    EpisodeRecallResponse:
+      type: object
+      required: [episodes]
+      properties:
+        episodes:
+          type: array
+          items:
+            type: object
+            required: [id]
+            properties:
+              id: { type: integer }
+              summary: { type: [string, "null"] }
+              content: { type: string }
+              t_start: { $ref: "#/components/schemas/DateTime" }
+              t_end: { $ref: "#/components/schemas/DateTime" }
+              salience: { type: number }
+              score:
+                $ref: "#/components/schemas/SqlNumber"
+    EpisodeDecayResponse:
+      type: object
+      required: [updated]
+      properties:
+        updated: { type: integer }
+    ReconcileResponse:
+      type: object
+      required: [claim, matches, conflicts, stale]
+      properties:
+        claim: { type: string }
+        matches:
+          type: array
+          items: { $ref: "#/components/schemas/ReconcileMatch" }
+        conflicts:
+          type: array
+          items: { $ref: "#/components/schemas/ReconcileMatch" }
+        stale: { type: boolean }
+    ReconcileMatch:
+      type: object
+      required: [id, statement, conflict]
+      properties:
+        id: { type: integer }
+        statement: { type: string }
+        subject: { type: [string, "null"] }
+        predicate: { type: [string, "null"] }
+        object: { type: [string, "null"] }
+        valid_from: { $ref: "#/components/schemas/DateTime" }
+        conflict: { type: boolean }
+    IngestFileResponse:
+      type: object
+      required: [filename, chunks, turn_ids]
+      properties:
+        filename: { type: string }
+        chunks: { type: integer }
+        turn_ids:
+          type: array
+          items: { type: integer }
+    CorpusIngestResponse:
+      type: object
+      required: [source, constraints, ids]
+      properties:
+        source: { type: string }
+        constraints: { type: integer }
+        ids:
+          type: array
+          items: { type: integer }
+    CorpusCheckResponse:
+      type: object
+      required: [constraints]
+      properties:
+        constraints:
+          type: array
+          items:
+            type: object
+            required: [id, content, source]
+            properties:
+              id: { type: integer }
+              content: { type: string }
+              source: { type: string }
+              score: { type: number }
+    CorpusListResponse:
+      type: object
+      required: [sources]
+      properties:
+        sources:
+          type: array
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: { type: integer }
+              name: { type: string }
+              kind: { type: [string, "null"] }
+              git_sha: { type: [string, "null"] }
+              constraint_count: { type: integer }
+              ingested_at: { $ref: "#/components/schemas/DateTime" }
+    SubscribeResponse:
+      type: object
+      required: [subscription_id, namespace, cursor]
+      properties:
+        subscription_id: { type: integer }
+        namespace: { type: string }
+        cursor: { type: integer }
+        webhook: { type: [string, "null"] }
+    FeedResponse:
+      type: object
+      required: [subscription_id, items, cursor]
+      properties:
+        subscription_id: { type: integer }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/TurnRow" }
+        cursor: { type: integer }
+    UnsubscribeResponse:
+      type: object
+      required: [unsubscribed]
+      properties:
+        unsubscribed: { type: boolean }
+
+    # ── admin responses ──
+    OkNameResponse:
+      type: object
+      required: [ok, name]
+      properties:
+        ok: { type: boolean }
+        name: { type: string }
+    OkIdResponse:
+      type: object
+      required: [ok, id]
+      properties:
+        ok: { type: boolean }
+        id: { type: integer }
+    AdminNamespaceCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 200 }
+        description: { type: string }
+        kind: { type: string, enum: [memory, knowledge] }
+    AdminNamespacesResponse:
+      type: object
+      required: [namespaces]
+      properties:
+        namespaces:
+          type: array
+          items:
+            type: object
+            required: [name, kind, turns, facts, registered]
+            properties:
+              name: { type: string }
+              description: { type: [string, "null"] }
+              created_at: { $ref: "#/components/schemas/DateTime" }
+              created_by: { type: [string, "null"] }
+              kind: { type: string, enum: [memory, knowledge] }
+              turns: { type: integer }
+              facts: { type: integer }
+              registered: { type: boolean }
+    AdminLinkRequest:
+      type: object
+      required: [src, dst]
+      properties:
+        src: { type: string }
+        dst: { type: string }
+    AdminLinkResponse:
+      type: object
+      required: [ok, src, dst]
+      properties:
+        ok: { type: boolean }
+        src: { type: string }
+        dst: { type: string }
+    AdminUnlinkResponse:
+      type: object
+      required: [ok, removed]
+      properties:
+        ok: { type: boolean }
+        removed: { type: boolean }
+    AdminLinksResponse:
+      type: object
+      required: [links]
+      properties:
+        links:
+          type: array
+          items:
+            type: object
+            required: [src_ns, dst_ns]
+            properties:
+              src_ns: { type: string }
+              dst_ns: { type: string }
+              created_at: { $ref: "#/components/schemas/DateTime" }
+              created_by: { type: [string, "null"] }
+    AdminKindRequest:
+      type: object
+      required: [name, kind]
+      properties:
+        name: { type: string }
+        kind: { type: string, enum: [memory, knowledge] }
+    AdminKindResponse:
+      type: object
+      required: [ok, name, kind]
+      properties:
+        ok: { type: boolean }
+        name: { type: string }
+        kind: { type: string, enum: [memory, knowledge] }
+    AdminPrincipalCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        kind: { type: string, description: "user | agent | service (default user)" }
+    AdminPrincipalsResponse:
+      type: object
+      required: [principals]
+      properties:
+        principals:
+          type: array
+          items:
+            type: object
+            required: [id, name, kind]
+            properties:
+              id: { type: integer }
+              name: { type: string }
+              kind: { type: string }
+              created_at: { $ref: "#/components/schemas/DateTime" }
+              active_tokens: { type: integer }
+    AdminTokenMintRequest:
+      type: object
+      required: [principal_id]
+      properties:
+        principal_id: { type: integer }
+        label: { type: [string, "null"] }
+        ttl_days: { type: [integer, "null"] }
+    AdminTokenMintResponse:
+      type: object
+      required: [token]
+      properties:
+        token: { type: string, description: plaintext — shown once }
+    AdminTokensResponse:
+      type: object
+      required: [tokens]
+      properties:
+        tokens:
+          type: array
+          items:
+            type: object
+            required: [id, revoked]
+            properties:
+              id: { type: integer }
+              label: { type: [string, "null"] }
+              hint: { type: [string, "null"] }
+              created_at: { $ref: "#/components/schemas/DateTime" }
+              expires_at: { $ref: "#/components/schemas/DateTime" }
+              revoked: { type: boolean }
+    AdminTokenRevokeRequest:
+      type: object
+      required: [id]
+      properties:
+        id: { type: integer }
+    AdminGrantRequest:
+      type: object
+      required: [principal_id, namespace]
+      properties:
+        principal_id: { type: integer }
+        namespace: { type: string, description: "exact, prefix `p:*`, or `*`" }
+        can_read: { type: boolean }
+        can_write: { type: boolean }
+    AdminGrantsResponse:
+      type: object
+      required: [grants]
+      properties:
+        grants:
+          type: array
+          items:
+            type: object
+            required: [namespace, can_read, can_write]
+            properties:
+              namespace: { type: string }
+              can_read: { type: boolean }
+              can_write: { type: boolean }
+    AdminUsageResponse:
+      type: object
+      required: [usage]
+      properties:
+        usage:
+          type: array
+          items:
+            type: object
+            required: [op, n]
+            properties:
+              op: { type: string }
+              n: { type: integer }
+              cost: { $ref: "#/components/schemas/SqlNumber" }
+              tin: { type: [integer, "null"] }
+              tout: { type: [integer, "null"] }
+        window_hours: { type: [integer, "null"] }
+    AdminAuditResponse:
+      type: object
+      required: [audit, total, limit, offset]
+      properties:
+        audit:
+          type: array
+          items:
+            type: object
+            required: [ts, action]
+            properties:
+              ts: { $ref: "#/components/schemas/DateTime" }
+              principal_id: { type: [integer, "null"] }
+              action: { type: string }
+              namespace: { type: [string, "null"] }
+              ok: { type: boolean }
+              status: { type: [integer, "null"] }
+              latency_ms: { type: [integer, "null"] }
+              result_count: { type: [integer, "null"] }
+        total: { type: integer, description: planner ESTIMATE }
+        total_estimated: { type: boolean }
+        limit: { type: integer }
+        offset: { type: integer }
+    AdminHealthResponse:
+      type: object
+      required: [findings]
+      properties:
+        findings:
+          type: array
+          items:
+            type: object
+            required: [level, msg]
+            properties:
+              level: { type: string, enum: [OK, INFO, WARN, CRITICAL] }
+              msg: { type: string }
+    AdminQualityResponse:
+      type: object
+      required: [trend]
+      properties:
+        trend:
+          type: array
+          items: { type: object }
+    AdminSubscriptionsResponse:
+      type: object
+      required: [subscriptions]
+      properties:
+        subscriptions:
+          type: array
+          items:
+            type: object
+            required: [id, namespace, active]
+            properties:
+              id: { type: integer }
+              namespace: { type: string }
+              webhook: { type: [string, "null"] }
+              cursor: { type: integer }
+              active: { type: boolean }
+              delivery_failures: { type: integer }
+              created_at: { $ref: "#/components/schemas/DateTime" }
+              last_polled_at: { $ref: "#/components/schemas/DateTime" }
+              last_delivery_at: { $ref: "#/components/schemas/DateTime" }
+    AdminDeliverResponse:
+      type: object
+      required: [delivered]
+      properties:
+        delivered:
+          type: array
+          items:
+            type: object
+            required: [subscription_id]
+            properties:
+              subscription_id: { type: integer }
+              delivered: { type: integer }
+              cursor: { type: integer }
+              error: { type: string }
+              failures: { type: integer }
+              active: { type: boolean }
+    AdminProviderResponse:
+      type: object
+      required: [mode, dim, key_present, extract_model, vault_unlocked]
+      properties:
+        mode: { type: string, enum: [openai, local] }
+        dim: { type: integer }
+        key_present: { type: boolean }
+        extract_model: { type: string }
+        vault_unlocked: { type: boolean }
+    AdminSecretSetRequest:
+      type: object
+      required: [name, value]
+      properties:
+        name: { type: string }
+        value: { type: string }
+        description: { type: [string, "null"] }
+    AdminSecretsResponse:
+      type: object
+      required: [secrets, unlocked]
+      properties:
+        secrets:
+          type: array
+          items:
+            type: object
+            required: [name]
+            properties:
+              name: { type: string }
+              description: { type: [string, "null"] }
+              updated_at: { $ref: "#/components/schemas/DateTime" }
+        unlocked: { type: boolean }
