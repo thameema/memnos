@@ -31,6 +31,7 @@
       <button data-tab="access">Principals &amp; Grants</button>
       <button data-tab="dashboard">Dashboard</button>
       <button data-tab="secrets">Secrets</button>
+      <button data-tab="cli">CLI Reference</button>
       <button data-tab="settings">Settings</button>
     </nav>
 
@@ -114,6 +115,17 @@
         <p id="sec-err" class="err"></p>
       </div>
       <div class="card"><table id="sec-table"><thead><tr><th>Name</th><th>Description</th><th>Updated</th><th></th></tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section id="tab-cli" class="tab" hidden>
+      <div class="card">
+        <h3>CLI reference</h3>
+        <p class="muted">Generated from the <code>memnos</code> CLI itself (<code>memnos docs-gen</code>) —
+          always in sync with the installed version. Remote use: set <code>MEMNOS_URL</code> and
+          <code>MEMNOS_TOKEN</code> to point <code>memnos remember/recall</code> at this server from
+          another machine.</p>
+        <div id="cli-ref"></div>
+      </div>
     </section>
 
     <section id="tab-settings" class="tab" hidden>

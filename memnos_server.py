@@ -178,7 +178,8 @@ def _find_ui_dir():
 
 
 UI_DIR = _find_ui_dir()
-_CTYPE = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}
+_CTYPE = {".html": "text/html", ".js": "text/javascript", ".css": "text/css",
+          ".json": "application/json"}
 
 POOL = None
 _NS_CACHE = {"t": 0.0, "data": None}    # namespace-census cache (10s TTL, write-invalidated)
