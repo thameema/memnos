@@ -54,14 +54,20 @@ class Retriever:
         cands = []
         for r in epi:
             rec = self._recency(now, r.get("observed_at"))
-            cands.append({"content": r["content"], "kind": "episodic", "id": r["id"],
-                          "recency": rec, "weight": self.floor + (1 - self.floor) * rec})
+            row = {"content": r["content"], "kind": "episodic", "id": r["id"],
+                   "recency": rec, "weight": self.floor + (1 - self.floor) * rec}
+            if r.get("memory_type"):                  # typed memory (unanimous inherit)
+                row["type"] = r["memory_type"]
+            cands.append(row)
         for r in sem:
             # semantic is durable; give a mild recency nudge by valid_from so a freshly
             # consolidated fact edges out a stale one, but floored at w_semantic.
             rec = self._recency(now, r.get("valid_from"))
-            cands.append({"content": r["content"], "kind": "semantic", "id": r["id"],
-                          "recency": rec, "weight": self.w_sem * (0.85 + 0.15 * rec)})
+            row = {"content": r["content"], "kind": "semantic", "id": r["id"],
+                   "recency": rec, "weight": self.w_sem * (0.85 + 0.15 * rec)}
+            if r.get("memory_type"):
+                row["type"] = r["memory_type"]
+            cands.append(row)
         if not cands:
             return []
 

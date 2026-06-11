@@ -9,6 +9,9 @@
   `constraint_cap` bounds them (default 10, 0 disables); they ADD to ranked results.
 - `type` on /recall filters ranked results (pins are exempt); recall rows carry `type`
   and render_context labels typed lines '- (decision, ...)'.
+- EPISODIC tier: an episode INHERITS a memory_type only when ALL its source turns share
+  one non-null type (unanimous — mixed or partly-typed groups stay NULL); /episode/recall
+  rows emit memory_type; constraint-typed episodes are pinned into /recall too.
 - CLI: `memnos remember --type ...` / `memnos recall --type ...`.
 - Admin memory feed: GET /admin/api/memory/feed (admin-only, paginated, type filter).
 
@@ -35,6 +38,7 @@ SCHEMA = "tenant_memnos"
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 NSX, NSK, NSE = "test:mt", "test:mt:kb", "test:mt:extract"
+NSP = "test:mt:episodes"
 PASS = FAIL = 0
 
 
@@ -67,12 +71,16 @@ def check(name, cond):
 
 def cleanup(conn):
     with conn.cursor() as c:
-        for ns in (NSX, NSK, NSE):
+        for ns in (NSX, NSK, NSE, NSP):
             c.execute(f"SELECT id FROM {SCHEMA}.entities WHERE namespace=%s", (ns,))
             eids = [r["id"] for r in c.fetchall()]
             if eids:
                 c.execute(f"DELETE FROM {SCHEMA}.mentions WHERE entity_id = ANY(%s)", (eids,))
-            for t in ("edges", "entities", "semantic", "raw_turns"):
+            c.execute(f"DELETE FROM {SCHEMA}.provenance WHERE episodic_id IN "
+                      f"(SELECT id FROM {SCHEMA}.episodic WHERE namespace=%s)", (ns,))
+            c.execute(f"DELETE FROM {SCHEMA}.provenance WHERE semantic_id IN "
+                      f"(SELECT id FROM {SCHEMA}.semantic WHERE namespace=%s)", (ns,))
+            for t in ("edges", "entities", "semantic", "episodic", "raw_turns"):
                 c.execute(f"DELETE FROM {SCHEMA}.{t} WHERE namespace=%s", (ns,))
             c.execute("DELETE FROM memnos_control.namespace_links WHERE src_ns=%s OR dst_ns=%s",
                       (ns, ns))
@@ -194,6 +202,61 @@ def main():
         c.execute(f"SELECT memory_type FROM {SCHEMA}.semantic WHERE namespace=%s "
                   f"AND kind='fact' AND memory_type IS NULL", (NSE,))
         check("untyped turn yields untyped facts", c.fetchone() is not None)
+
+    print("=== episodic tier: unanimous type inheritance + pinning + recall arm ===")
+    t0 = datetime.now(timezone.utc) - timedelta(hours=2)
+    # session A: ALL turns typed constraint → episode inherits 'constraint'
+    for i, txt in enumerate(["Glorp tokens MUST never leave the enclave.",
+                             "Glorp writes MUST be idempotent on retry."]):
+        store.insert_raw_turn(SCHEMA, NSP, "ep-constraint", "user", txt,
+                              t0 + timedelta(minutes=i), None, memory_type="constraint")
+    # session B: mixed non-null types (decision + incident) → NULL
+    store.insert_raw_turn(SCHEMA, NSP, "ep-mixed", "user",
+                          "We chose the glorp scheduler.", t0 + timedelta(minutes=10),
+                          None, memory_type="decision")
+    store.insert_raw_turn(SCHEMA, NSP, "ep-mixed", "user",
+                          "The glorp scheduler crashed at noon.", t0 + timedelta(minutes=11),
+                          None, memory_type="incident")
+    # session C: partly typed (decision + untyped) → NULL (unanimity is conservative)
+    store.insert_raw_turn(SCHEMA, NSP, "ep-partial", "user",
+                          "Decided to ship glorp v2 on Friday.", t0 + timedelta(minutes=20),
+                          None, memory_type="decision")
+    store.insert_raw_turn(SCHEMA, NSP, "ep-partial", "user",
+                          "Also the weather was nice.", t0 + timedelta(minutes=21), None)
+    # session D: single decision turn → unanimous 'decision'
+    store.insert_raw_turn(SCHEMA, NSP, "ep-decision", "user",
+                          "We will standardize on halfvec embeddings.",
+                          t0 + timedelta(minutes=30), None, memory_type="decision")
+    s, j = call("/episode/segment", TADM, {"namespace": NSP, "gap_minutes": 5})
+    check("segmentation created 4 episodes", s == 200 and j.get("episodes") == 4)
+    with conn.cursor() as c:
+        c.execute(f"SELECT session_id, memory_type FROM {SCHEMA}.episodic "
+                  f"WHERE namespace=%s ORDER BY id", (NSP,))
+        by_sess = {r["session_id"]: r["memory_type"] for r in c.fetchall()}
+    check("unanimous constraint turns => episode inherits 'constraint'",
+          by_sess.get("ep-constraint") == "constraint")
+    check("mixed types => episode memory_type NULL", by_sess.get("ep-mixed") is None)
+    check("partly-typed group => episode memory_type NULL (conservative)",
+          by_sess.get("ep-partial") is None)
+    check("unanimous decision turn => episode inherits 'decision'",
+          by_sess.get("ep-decision") == "decision")
+    s, j = call("/episode/recall", TADM, {"namespace": NSP, "query": "glorp enclave tokens",
+                                          "k": 8})
+    eps = j.get("episodes", [])
+    check("/episode/recall rows emit memory_type", s == 200 and eps
+          and all("memory_type" in e for e in eps))
+    check("constraint episode carries its type in recall",
+          any(e.get("memory_type") == "constraint" and "enclave" in e.get("content", "")
+              for e in eps))
+    s, j = call("/recall", TADM, {"namespace": NSP, "query": "weather on the moon next tuesday"})
+    pins = [m for m in j.get("memories", []) if m.get("pinned")]
+    check("constraint-typed EPISODE pinned into /recall (kind=episode)",
+          any(m.get("kind") == "episode" and "enclave" in m.get("content", "") for m in pins))
+    check("non-constraint episodes are NOT pinned",
+          not any(m.get("kind") == "episode" and "halfvec" in m.get("content", "")
+                  for m in pins))
+    check("episodic pins are typed constraint",
+          all(m.get("type") == "constraint" for m in pins))
 
     print("=== grounded pinning (linked knowledge namespace) ===")
     store.insert_raw_turn(SCHEMA, NSK, None, "user",

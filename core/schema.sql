@@ -83,6 +83,9 @@ BEGIN
   -- memories are PINNED into every /recall on their namespace (additive, rolling-safe).
   EXECUTE format('ALTER TABLE %I.raw_turns ADD COLUMN IF NOT EXISTS memory_type text', s);
   EXECUTE format('ALTER TABLE %I.semantic  ADD COLUMN IF NOT EXISTS memory_type text', s);
+  -- Episodes INHERIT a type only when ALL their source turns share one non-null type
+  -- (unanimous — conservative; mixed/partly-typed groups stay NULL).
+  EXECUTE format('ALTER TABLE %I.episodic  ADD COLUMN IF NOT EXISTS memory_type text', s);
 
   -- ASSOCIATIVE GRAPH
   EXECUTE format($t$
@@ -160,6 +163,8 @@ BEGIN
   EXECUTE format('CREATE INDEX IF NOT EXISTS raw_mtype ON %I.raw_turns '
                  '(namespace, memory_type) WHERE memory_type IS NOT NULL', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS sem_mtype ON %I.semantic '
+                 '(namespace, memory_type) WHERE memory_type IS NOT NULL', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS epi_mtype ON %I.episodic '
                  '(namespace, memory_type) WHERE memory_type IS NOT NULL', s);
 END
 $fn$;
