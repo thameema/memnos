@@ -246,7 +246,7 @@
           </div>
           <div class="before-after-card after-card">
             <p class="text-xs text-green-400 font-medium mb-1 uppercase tracking-wide">With memnos</p>
-            <p class="text-sm text-gray-300 leading-relaxed">Shared memory store means every developer's AI session starts with the team's full institutional context. Architecture constraints inject automatically. Senior decisions propagate to the whole team in real time.</p>
+            <p class="text-sm text-gray-300 leading-relaxed">Shared memory store means every developer's AI session starts with the team's full institutional context. Stored architecture constraints surface in recall whenever they're relevant. Senior decisions propagate to the whole team.</p>
           </div>
         </div>
       </div>
@@ -525,7 +525,7 @@ correlation IDs in all log entries.
       <div class="glass rounded-2xl p-6 text-center">
         <div class="text-4xl font-bold gradient-text mb-2">Day 3</div>
         <h4 class="text-white font-semibold mb-3">Contributing confidently</h4>
-        <p class="text-sm text-gray-400 leading-relaxed">Because architecture constraints auto-inject, the new hire's AI assistant naturally follows team conventions. They write code that fits the codebase style, avoids known pitfalls, and respects architectural rules — automatically.</p>
+        <p class="text-sm text-gray-400 leading-relaxed">Because stored constraints surface in recall alongside other memories, the new hire's AI assistant naturally follows team conventions. They write code that fits the codebase style, avoids known pitfalls, and respects architectural rules — automatically.</p>
       </div>
       <div class="glass rounded-2xl p-6 text-center">
         <div class="text-4xl font-bold gradient-text mb-2">Week 1</div>
@@ -554,12 +554,12 @@ correlation IDs in all log entries.
     <span class="token-str">"how does the auth service work"</span>,
     namespace<span class="token-kw">=</span><span class="token-str">"org:acme:engineering"</span>,
 )
-<span class="token-cmt"># Returns:
-# [decision] Chose JWT over sessions (ARCH-12)
-# [constraint] Tokens expire in 15min (security.md)
-# [incident] Token refresh race condition fix
-# [skill] Use auth.verify_token() not raw JWT
-# [ADR] PKCE flow for all OAuth2 clients</span></code></pre>
+<span class="token-cmt"># Returns (facts + episodes, reranked):
+# Chose JWT over sessions for the auth service
+# Tokens expire in 15min (constraint, security.md)
+# Token refresh race condition — fixed 2026-02-11
+# Use auth.verify_token(), not raw JWT decode
+# PKCE flow required for all OAuth2 clients</span></code></pre>
           </div>
         </div>
       </div>
@@ -698,7 +698,7 @@ correlation IDs in all log entries.
             <p class="text-gray-400 text-sm leading-relaxed mb-4">Developers open multiple Claude Code windows to parallelize work. But each window is isolated — it has no idea what the others are doing. Agent A might choose Postgres while Agent B chooses SQLite for the same service. Agent C might refactor a function that Agent D is currently depending on. Without a shared memory layer, parallel agents create more problems than they solve.</p>
             <div class="bg-purple-900/20 border border-purple-500/20 rounded-xl p-4">
               <p class="text-purple-300 text-sm font-medium mb-1">How memnos fixes it</p>
-              <p class="text-gray-400 text-sm leading-relaxed">All agents share the same memnos namespace. When Agent A writes a decision, Agent B sees it in the next memory injection — within seconds. Use <code class="text-xs bg-purple-900/30 px-1 rounded">spawn_task</code> to fan out work to background agents and retrieve results, or let multiple windows share a live namespace. One source of truth, all agents synchronized.</p>
+              <p class="text-gray-400 text-sm leading-relaxed">All agents share the same memnos namespace. When Agent A writes a decision, Agent B sees it in the next memory injection — within seconds. Agents can also subscribe to a namespace and pick up new memories by webhook push or cursor polling. One source of truth, all agents synchronized.</p>
             </div>
           </div>
         </div>
@@ -713,7 +713,7 @@ correlation IDs in all log entries.
             <p class="text-gray-400 text-sm leading-relaxed mb-4">Developers paste API keys, database passwords, and credentials directly into Claude Code prompts because it is the fastest way to give the agent what it needs. Those secrets now live in the transcript — a plaintext JSONL file on disk, visible to any process that reads it. Some end up in CLAUDE.md files committed to version control. Some get summarized into compaction blobs and persist indefinitely.</p>
             <div class="bg-purple-900/20 border border-purple-500/20 rounded-xl p-4">
               <p class="text-purple-300 text-sm font-medium mb-1">How memnos fixes it</p>
-              <p class="text-gray-400 text-sm leading-relaxed">The inject hook scans every prompt for credential patterns (API keys, JWTs, PEM keys, AWS access keys) before Claude sees them. Detected credentials trigger an alert to store in the memnos vault instead — AES-256-GCM encrypted, never stored in plaintext, with a full access audit log. The vault is accessible via <code class="text-xs bg-purple-900/30 px-1 rounded">vault_secret_get</code> in any Claude session.</p>
+              <p class="text-gray-400 text-sm leading-relaxed">memnos redacts credential patterns (API keys, JWTs, PEM blocks, passwords) at write time — before any text enters memory — so a pasted secret never lands in the store in plaintext. Secrets that should persist go in the AES-256-GCM encrypted vault (<code class="text-xs bg-purple-900/30 px-1 rounded">memnos secret set</code>), behind the same authenticated, audit-logged control plane.</p>
             </div>
           </div>
         </div>
@@ -728,7 +728,7 @@ correlation IDs in all log entries.
             <p class="text-gray-400 text-sm leading-relaxed mb-4">You tell Claude "we use snake_case for all Python variables." Next week you repeat it. The week after, same thing. System prompts and CLAUDE.md files are static text — they do not update as decisions evolve, they are invisible to new sessions, and they cannot be queried semantically. Agents drift. They re-introduce patterns you explicitly banned. They propose dependencies you already rejected.</p>
             <div class="bg-purple-900/20 border border-purple-500/20 rounded-xl p-4">
               <p class="text-purple-300 text-sm font-medium mb-1">How memnos fixes it</p>
-              <p class="text-gray-400 text-sm leading-relaxed">Architecture constraints stored in memnos are auto-injected by the search hook whenever a relevant prompt is made — no manual inclusion required. The corpus ingestion feature ingests your existing ADRs, RFC documents, and architecture files directly. The CI integration blocks PRs that violate stored MUST/SHALL constraints before they can merge.</p>
+              <p class="text-gray-400 text-sm leading-relaxed">Architecture constraints stored in memnos are searchable facts — when a prompt touches their topic, the recall hook surfaces them with the rest of memory, no manual inclusion required. Corpus ingestion parses your existing ADRs, RFC documents and architecture files into SHALL/SHOULD/MAY rules, and a /corpus/check call from CI returns the rules relevant to a PR diff — annotate the PR or fail the build on your own policy.</p>
             </div>
           </div>
         </div>

@@ -216,7 +216,7 @@
       How memnos compares to<br /><span class="gradient-text">other memory tools</span>
     </h1>
     <p class="text-gray-400 text-lg leading-relaxed max-w-3xl mx-auto">
-      Memory for AI is a fast-growing space — Mem0, Zep and Graphiti are the serious players. Here's how memnos fits in, honestly. The short version: memnos remembers <span class="text-gray-200">deterministically</span> (no LLM guessing what to keep), is fully <span class="text-gray-200">governed</span> (auth · ACL · audit · encrypted vault), runs as <span class="text-gray-200">one self-hostable engine</span>, and we publish <span class="text-gray-200">independently-judged</span> benchmarks instead of self-graded ones.
+      Memory for AI is a fast-growing space — Mem0, Zep and Graphiti are the serious players. Here's how memnos fits in, honestly. The short version: memnos remembers <span class="text-gray-200">deterministically</span> (no LLM guessing what to keep), is fully <span class="text-gray-200">governed</span> (auth · ACL · audit · encrypted vault), runs as <span class="text-gray-200">one self-hostable engine</span>, and we publish <span class="text-gray-200">judge-transparent</span> benchmarks — the full strict-to-lenient judge band, with per-question predictions in the repo — instead of one self-graded number.
     </p>
   </div>
 </section>
@@ -252,7 +252,7 @@
             <tr>
               <td>Structured fact extraction (typed subject–predicate–object)</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">graph option</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
             </tr>
@@ -391,7 +391,7 @@
               <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">Apache-2.0</span></td>
             </tr>
             <tr>
-              <td>Benchmark scored by an <em>independent</em> judge (not self-graded)</td>
+              <td>Benchmark with per-question predictions published + open harness</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
@@ -404,6 +404,7 @@
     <div class="max-w-4xl mx-auto mt-4 space-y-1.5">
       <p class="text-xs text-gray-600 text-center">~ = partial / limited / opt-in support. Verified from official docs against <span class="text-gray-500">Mem0 v2.0.4, Graphiti v0.29.x, and Zep Cloud, June 2026</span>. Vendors evolve — check each project's current docs.</p>
       <p class="text-xs text-gray-600 text-center"><sup>†</sup> Zep's open-source Community Edition was <span class="text-gray-500">deprecated April 2025</span>; Zep is now a hosted Cloud product whose open-source engine is <span class="text-gray-500">Graphiti</span> (shown separately). Cloud-only features are marked ~ for self-hosters.</p>
+      <p class="text-xs text-gray-600 text-center">Honest gaps, conceded (as of June 2026): memnos has no SaaS connectors (Drive / Gmail / Notion), no multimodal ingestion (OCR / video), and a smaller community than Mem0 or Zep. If you need those today, they are real reasons to pick another tool.</p>
     </div>
   </div>
 </section>
@@ -562,16 +563,52 @@ memnos secret set openai   <span class="token-cmt"># AES-256-GCM vault</span>
             <svg class="w-6 h-6 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z"/></svg>
           </div>
           <h3 class="text-white font-bold text-xl mb-3">Honest benchmarks</h3>
-          <p class="text-gray-400 text-sm leading-relaxed mb-4">We score LoCoMo under an <em>independent</em> judge (one provider grading another's answers), not self-graded — and publish the full judge band so you see how much the rubric moves any number. The harness is open; reproduce it yourself.</p>
+          <p class="text-gray-400 text-sm leading-relaxed mb-4">We publish the full judge band — the same answers under strict, standard and lenient rubrics — plus per-question predictions in the repo, so you can see exactly how much the grader moves any number. The harness is open; reproduce it yourself.</p>
           <div class="code-block p-4 mt-4">
             <pre class="text-xs leading-relaxed"><code><span class="token-cmt"># LoCoMo, full 10 conversations — from scratch</span>
-gpt-4o judge      : <span class="token-num">57–61%</span>
-independent judge : <span class="token-num">58%</span>
+gpt-4o judge : <span class="token-num">64–65%</span>  <span class="token-cmt"># 3 independent ingests; predictions published</span>
 <span class="token-cmt"># same answers, judge band: 44% .. 88%</span>
 $ python benchmarks/locomo_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9</code></pre>
           </div>
           <p class="text-xs text-green-400 mt-4 font-medium">Reproducible, not self-graded. <a href="benchmarks.html" class="underline underline-offset-2 hover:text-green-300">How benchmarks are really measured &rarr;</a></p>
         </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ── SUPERMEMORY & LETTA (verified as of 2026-06-10) ───────────────── -->
+<section id="vs-others" class="relative z-10 py-20 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <h2 class="text-3xl font-bold text-white mb-4">What about Supermemory and Letta?</h2>
+      <p class="text-gray-400 max-w-xl mx-auto">Two more serious players, placed honestly. Facts verified against their published repos, docs and pricing as of <span class="text-gray-300">June 10, 2026</span> — vendors move fast; re-check their current docs.</p>
+    </div>
+    <div class="grid md:grid-cols-2 gap-8 mb-10">
+      <div class="vs-card">
+        <h3 class="text-white font-semibold mb-1">Supermemory</h3>
+        <p class="text-xs text-gray-500 mb-4">Hosted memory platform with a local launcher</p>
+        <ul class="space-y-2 text-sm text-gray-400">
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>As of June 2026, the engine&rsquo;s source is not published — the MIT repo contains SDKs, apps and docs; <code class="text-xs">npx supermemory local</code> downloads a closed-source precompiled binary (first stable binary released June 2026).</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Local mode (per their own docs): embedded file store with no Postgres option, a single auto-generated API key, and server-logs-only observability. ACL, audit and air-gapped SOC2/HIPAA deployment are paid Scale/Enterprise features.</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>The Claude Code plugin and the Drive/Gmail/Notion connectors require the paid cloud.</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span><span>Where it beats memnos today, honestly: those connectors, multimodal ingestion (OCR, video), one-command DX, and an open MIT benchmark harness (MemoryBench).</span></li>
+        </ul>
+      </div>
+      <div class="vs-card">
+        <h3 class="text-white font-semibold mb-1">Letta (MemGPT)</h3>
+        <p class="text-xs text-gray-500 mb-4">An agent runtime — a different category</p>
+        <ul class="space-y-2 text-sm text-gray-400">
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Letta <em>is</em> the agent: memory capture is complete because everything runs inside its runtime.</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>The flip side: it can&rsquo;t add memory to tools it doesn&rsquo;t run — Claude Code, Claude Desktop and Cursor stay outside.</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span><span>memnos is memory infrastructure for the agents you already use, not a runtime to migrate into. If you&rsquo;re all-in on one runtime, Letta is a strong choice.</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="gradient-border">
+      <div class="gradient-border-inner px-8 py-5 rounded-2xl">
+        <p class="text-gray-300 text-sm leading-relaxed text-center"><strong class="text-white">A note on capture:</strong> no memory product — ours included — can capture automatically through MCP alone; the MCP spec has no post-response event, so MCP capture is always at the model&rsquo;s discretion. memnos ships deterministic capture where the platform allows it (Claude Code hooks, the <code class="text-xs">memnos proxy</code> for base-URL clients) and best-effort MCP tools everywhere else. Claude Desktop allows tools only — for every vendor.</p>
       </div>
     </div>
   </div>

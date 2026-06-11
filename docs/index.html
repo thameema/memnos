@@ -12,7 +12,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>memnos — Memory for AI that remembers you | persistent, private, portable</title>
-  <meta name="description" content="Your AI forgets you every chat. memnos is the memory layer that remembers — persistent, private and portable across Claude, ChatGPT, Cursor and any AI. Self-hostable, governed; works via MCP, REST and a Python SDK." />
+  <meta name="description" content="Your AI forgets everything. memnos makes it remember — everything you and your AI figure out, saved, searchable, and there next time, in every AI you use. Yours, not a vendor's. Self-hostable, governed; MCP, REST and a Python SDK." />
   <meta name="keywords" content="persistent memory AI agents, LLM memory, MCP server, Claude Code memory, Cursor AI memory, agent context persistence, memory store AI, RAG memory, memnos, AI agent SDK" />
   <link rel="canonical" href="https://memnos.net/" />
   <!-- Open Graph -->
@@ -197,14 +197,14 @@
         Apache-2.0 · Self-hostable · Private · Works with Claude, GPT-5, Llama, Gemini
       </div>
       <h1 class="hero-display text-5xl md:text-6xl font-bold text-white leading-[1.05] mb-6">
-        Your AI forgets you.<br />
-        <span class="gradient-text">memnos remembers.</span>
+        Your AI forgets everything.<br />
+        <span class="gradient-text">memnos makes it remember.</span>
       </h1>
       <p class="text-gray-400 text-lg leading-relaxed mb-6 max-w-lg">
-        Every AI tool forgets you the moment a chat ends. memnos is the memory layer that remembers — what you decided, what you prefer, what your team knows — and feeds it back to any AI, automatically. Yours, private, and portable across every tool.
+        Everything you and your AI figure out — saved, searchable, and there next time. In every AI you use. Yours, not a vendor&rsquo;s.
       </p>
       <p class="text-gray-300 text-base leading-relaxed mb-8 max-w-lg">
-        <span class="text-white font-semibold">How we're different:</span> other memory tools lock you into their cloud, or let an LLM <em>guess</em> what to keep and forget. memnos is yours to self-host, remembers <span class="text-white">deterministically</span> (no LLM guessing), is fully governed and audited — and we publish <span class="text-white">honest, independently-judged</span> benchmarks.
+        <span class="text-white font-semibold">How we're different:</span> other memory tools lock you into their cloud, or let an LLM <em>guess</em> what to keep and forget. memnos is yours to self-host, remembers <span class="text-white">deterministically</span> (no LLM guessing), is fully governed and audited — and we publish <span class="text-white">honest, judge-transparent</span> benchmarks: the full judge band, per-question predictions in the repo.
       </p>
       <div class="flex flex-wrap items-center gap-3">
         <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white font-semibold px-6 py-3 rounded-full text-sm whitespace-nowrap">Deploy free</a>
@@ -217,8 +217,8 @@
       <!-- Stats row -->
       <div class="mt-14 grid grid-cols-2 gap-x-8 gap-y-6 border-t border-gray-800 pt-8">
         <div>
-          <div class="text-2xl font-bold text-white">57–61%</div>
-          <div class="text-xs text-gray-500 mt-0.5">LoCoMo (full 10) — gpt-4o judge, reproduced from scratch; 58% under an <em>independent</em> judge</div>
+          <div class="text-2xl font-bold text-white">64–65%</div>
+          <div class="text-xs text-gray-500 mt-0.5">LoCoMo (full 10) — gpt-4o judge, three independent from-scratch ingests (65 / 64 / 65); every prediction published</div>
         </div>
         <div>
           <div class="text-2xl font-bold text-white">Yours</div>
@@ -240,42 +240,40 @@
       <div class="glass rounded-2xl p-5 space-y-3 max-w-md ml-auto">
         <div class="flex items-center justify-between mb-4">
           <span class="text-xs text-gray-500 font-mono">namespace: org:acme:engineering</span>
-          <span class="flex items-center gap-1.5 text-xs text-green-400">
-            <span class="w-1.5 h-1.5 bg-green-400 rounded-full pulse-dot"></span> live
-          </span>
+          <span class="text-xs text-gray-500">recent</span>
         </div>
         <div class="glass rounded-xl p-3.5 space-y-1">
           <div class="flex items-center gap-2">
-            <span class="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full font-mono">decision</span>
-            <span class="text-xs text-gray-500">arch-agent · 2h ago</span>
+            <span class="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full font-mono">fact</span>
+            <span class="text-xs text-gray-500">2h ago</span>
           </div>
           <p class="text-sm text-gray-200">Chose one PostgreSQL + pgvector over a separate graph + vector DB — simpler ops, ACID, bi-temporal facts.</p>
         </div>
         <div class="glass rounded-xl p-3.5 space-y-1">
           <div class="flex items-center gap-2">
-            <span class="text-xs bg-red-500/20 text-red-300 px-2 py-0.5 rounded-full font-mono">incident</span>
-            <span class="text-xs text-gray-500">oncall-agent · 6h ago</span>
+            <span class="text-xs bg-red-500/20 text-red-300 px-2 py-0.5 rounded-full font-mono">fact</span>
+            <span class="text-xs text-gray-500">6h ago</span>
           </div>
           <p class="text-sm text-gray-200">Redis OOM on prod-02. Resolved by setting maxmemory-policy=allkeys-lru.</p>
         </div>
         <div class="glass rounded-xl p-3.5 space-y-1">
           <div class="flex items-center gap-2">
             <span class="text-xs bg-orange-500/20 text-orange-300 px-2 py-0.5 rounded-full font-mono">constraint</span>
-            <span class="text-xs text-gray-500">auto-injected</span>
+            <span class="text-xs text-gray-500">corpus: security-arch.md</span>
           </div>
           <p class="text-sm text-gray-200">CONSTRAINT: All database queries must go through the ORM layer. Direct SQL is prohibited.</p>
         </div>
         <div class="glass rounded-xl p-3.5 space-y-1">
           <div class="flex items-center gap-2">
-            <span class="text-xs bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full font-mono">skill</span>
-            <span class="text-xs text-gray-500">skill-coach · just now</span>
+            <span class="text-xs bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full font-mono">fact</span>
+            <span class="text-xs text-gray-500">superseded · as-of queryable</span>
           </div>
-          <p class="text-sm text-gray-200">Use <code class="text-blue-300 font-mono text-xs bg-blue-950/50 px-1 rounded">gh pr create --fill</code> to open a PR with auto-filled title and body.</p>
+          <p class="text-sm text-gray-200">Alex moved to Seattle — the earlier "lives in Austin" fact is closed with <code class="text-blue-300 font-mono text-xs bg-blue-950/50 px-1 rounded">valid_to</code>, not deleted.</p>
         </div>
         <div class="glass rounded-xl p-3.5 space-y-1">
           <div class="flex items-center gap-2">
             <span class="text-xs bg-yellow-500/20 text-yellow-300 px-2 py-0.5 rounded-full font-mono">constraint</span>
-            <span class="text-xs text-gray-500">auto-injected</span>
+            <span class="text-xs text-gray-500">corpus: arch-docs.md</span>
           </div>
           <p class="text-sm text-gray-200">CONSTRAINT: All PHI data MUST be encrypted at rest using AES-256. Direct database access from service layers is PROHIBITED.</p>
         </div>
@@ -285,6 +283,45 @@
 </section>
 
 <!-- ── PROBLEM ──────────────────────────────────────────────────────── -->
+<!-- ── PROOF STRIP ─────────────────────────────────────────────────── -->
+<section class="relative z-10 py-6 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="glass rounded-2xl px-8 py-4 text-center">
+      <p class="text-sm text-gray-300 leading-relaxed"><span class="text-white font-semibold">64–65%</span> on full LoCoMo across three independent ingests — every prediction published <span class="text-gray-600">·</span> No LLM at query time <span class="text-gray-600">·</span> Apache-2.0, full engine source <span class="text-gray-600">·</span> Runs on PostgreSQL.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── PILLARS (developer layer) ───────────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div class="glass rounded-2xl p-6">
+        <h3 class="text-white font-semibold mb-2">Never lose a decision</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">memnos captures both sides — what you asked and what your AI concluded — deterministically, through hooks and the capture proxy, not the model&rsquo;s discretion. Decisions land in memory the moment they&rsquo;re made.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="flex items-center gap-2 mb-2">
+          <h3 class="text-white font-semibold">Every memory signed</h3>
+          <span class="text-[10px] uppercase tracking-wide bg-purple-500/15 border border-purple-500/25 text-purple-300 px-2 py-0.5 rounded-full whitespace-nowrap">new in 0.1.6</span>
+        </div>
+        <p class="text-sm text-gray-400 leading-relaxed">Author attribution on every write — know which agent or person wrote each memory, and when. Today, every operation is already audit-logged by principal.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="flex items-center gap-2 mb-2">
+          <h3 class="text-white font-semibold">Rules that can&rsquo;t be forgotten</h3>
+          <span class="text-[10px] uppercase tracking-wide bg-purple-500/15 border border-purple-500/25 text-purple-300 px-2 py-0.5 rounded-full whitespace-nowrap">new in 0.1.6</span>
+        </div>
+        <p class="text-sm text-gray-400 leading-relaxed">Pinned constraints that ride along with every recall, so your rules never fall out of context. Today: constraints are searchable facts, and <code class="text-purple-300 font-mono text-xs">/corpus/check</code> tests any diff against them — deterministic, no LLM.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <h3 class="text-white font-semibold mb-2">Trust, then verify</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Shipped today: token auth, namespace ACLs, a full audit log, and an AES-256-GCM secret vault with write-time credential redaction. Every claim checkable in the open source.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section class="relative z-10 py-14 fade-in">
   <div class="max-w-6xl mx-auto px-6">
     <div class="text-center mb-12">
@@ -407,7 +444,7 @@
           <svg class="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
         </div>
         <h3 class="text-white font-semibold mb-2">Temporal Memory</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Every memory carries valid_from / valid_until timestamps. Query the memory store as_of any past date — "what did we know about the auth service on March 15th?" Only memnos does this.</p>
+        <p class="text-sm text-gray-400 leading-relaxed">Every memory carries valid_from / valid_until timestamps. Query the memory store as_of any past date — "what did we know about the auth service on March 15th?" Zep/Graphiti are bi-temporal too; memnos is the one that does it on a single plain PostgreSQL.</p>
       </div>
 
       <div class="glass rounded-2xl p-6">
@@ -423,7 +460,7 @@
           <svg class="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
         </div>
         <h3 class="text-white font-semibold mb-2">Architecture Enforcement</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Ingest your architecture docs as typed constraint nodes. Every agent's search results automatically include relevant constraints — your documented rules enforce themselves without re-prompting.</p>
+        <p class="text-sm text-gray-400 leading-relaxed">Ingest your architecture docs — memnos parses RFC-2119 rules (SHALL / SHOULD / MAY) into constraint facts. They surface in recall like any memory, and <code class="text-purple-300 font-mono text-xs">corpus_check</code> returns the rules relevant to any code snippet or diff — deterministic, no LLM.</p>
       </div>
 
       <div class="glass rounded-2xl p-6">
@@ -431,7 +468,7 @@
           <svg class="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z"/></svg>
         </div>
         <h3 class="text-white font-semibold mb-2">Agent Memory Policies &amp; Audit Trail</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Every memory write carries agent_id, tool, git_commit, JIRA ticket, and timestamp. Know which agent made which decision and why, forever queryable. Full compliance-grade audit log.</p>
+        <p class="text-sm text-gray-400 leading-relaxed">Every operation is token-authenticated, namespace-scoped and audit-logged — principal, operation, latency, result count. Every consolidated fact keeps provenance links to the raw episodes behind it. (Per-author memory attribution ships in v0.1.6.)</p>
       </div>
 
       <div class="glass rounded-2xl p-6">
@@ -439,7 +476,7 @@
           <svg class="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/></svg>
         </div>
         <h3 class="text-white font-semibold mb-2">Multi-Agent Coordination</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Real-time pub/sub across agents — SSE stream, webhook, and cursor delivery modes. When one agent writes a discovery, every subscribed agent knows in milliseconds.</p>
+        <p class="text-sm text-gray-400 leading-relaxed">Pub/sub across agents — webhook push and cursor-based polling, delivered at-least-once. When one agent writes a discovery, subscribed agents hear about it on the next delivery pass.</p>
       </div>
 
       <div class="glass rounded-2xl p-6">
@@ -463,23 +500,23 @@
           <svg class="w-5 h-5 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"/></svg>
         </div>
         <h3 class="text-white font-semibold mb-2">Secret Vault</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">AES-256-GCM encrypted vault for secrets, credentials, and keys stored alongside memories. Automatic credential rotation, audit-logged access. Stop putting secrets in environment variables.</p>
+        <p class="text-sm text-gray-400 leading-relaxed">AES-256-GCM encrypted vault for secrets and keys, stored alongside memories, with master-key rotation built in. Ingest redaction strips credential patterns before they ever land in memory.</p>
       </div>
 
       <div class="glass rounded-2xl p-6">
         <div class="w-10 h-10 bg-orange-500/10 border border-orange-500/20 rounded-xl flex items-center justify-center mb-5">
           <svg class="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12"/></svg>
         </div>
-        <h3 class="text-white font-semibold mb-2">Constraint Injection</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Write an architecture rule or policy once. It auto-injects into every future search result — a guardrail that propagates to your entire agent fleet without any re-prompting or system prompt updates.</p>
+        <h3 class="text-white font-semibold mb-2">Constraint Checks</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Write an architecture rule once — or ingest a whole doc. Stored rules are searchable by every agent, and <code class="text-purple-300 font-mono text-xs">/corpus/check</code> returns the rules relevant to any snippet or diff — in CI, code review, or your editor.</p>
       </div>
 
       <div class="glass rounded-2xl p-6">
         <div class="w-10 h-10 bg-cyan-500/10 border border-cyan-500/20 rounded-xl flex items-center justify-center mb-5">
           <svg class="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18v-5.25m0 0a6.01 6.01 0 001.5-.189m-1.5.189a6.01 6.01 0 01-1.5-.189m3.75 7.478a12.06 12.06 0 01-4.5 0m3.75 2.383a14.406 14.406 0 01-3 0M14.25 18v-.192c0-.983.658-1.823 1.508-2.316a7.5 7.5 0 10-7.517 0c.85.493 1.509 1.333 1.509 2.316V18"/></svg>
         </div>
-        <h3 class="text-white font-semibold mb-2">Skill Discovery</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Built-in skill catalogs for Claude Code, GitHub CLI, Docker, kubectl. Teams author and share reusable skills. Any agent can discover what any tool or teammate knows how to do.</p>
+        <h3 class="text-white font-semibold mb-2">Deterministic Capture Proxy</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Point <code class="text-purple-300 font-mono text-xs">ANTHROPIC_BASE_URL</code> / <code class="text-purple-300 font-mono text-xs">OPENAI_BASE_URL</code> at <code class="text-purple-300 font-mono text-xs">memnos proxy</code> and every conversation is captured deterministically — not left to the model's discretion like MCP-only memory.</p>
       </div>
 
       <div class="glass rounded-2xl p-6">
@@ -487,7 +524,7 @@
           <svg class="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 7.5h-.75A2.25 2.25 0 004.5 9.75v7.5a2.25 2.25 0 002.25 2.25h7.5a2.25 2.25 0 002.25-2.25v-7.5a2.25 2.25 0 00-2.25-2.25h-.75m-6 3.75l3 3m0 0l3-3m-3 3V1.5m6 9h.75a2.25 2.25 0 012.25 2.25v7.5a2.25 2.25 0 01-2.25 2.25h-7.5a2.25 2.25 0 01-2.25-2.25v-.75"/></svg>
         </div>
         <h3 class="text-white font-semibold mb-2">Portable Memory</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Full namespace export/import. Move your entire memory store between installations, environments, or cloud regions. Your team's memory travels with your infrastructure.</p>
+        <p class="text-sm text-gray-400 leading-relaxed">Copy or move whole namespaces with one command, and back up everything with standard PostgreSQL tooling (pg_dump). It’s your database — your memory travels with your infrastructure.</p>
       </div>
 
     </div>
@@ -554,7 +591,7 @@
             <div class="space-y-3 mb-8">
               <div class="flex items-center gap-3">
                 <svg class="w-5 h-5 text-green-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
-                <span class="text-gray-300 text-sm">Complete audit trail — every write carries agent, tool, commit, and ticket</span>
+                <span class="text-gray-300 text-sm">Complete audit trail — every operation logged with principal, namespace and outcome</span>
               </div>
               <div class="flex items-center gap-3">
                 <svg class="w-5 h-5 text-green-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
@@ -562,7 +599,7 @@
               </div>
               <div class="flex items-center gap-3">
                 <svg class="w-5 h-5 text-green-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
-                <span class="text-gray-300 text-sm">Architecture enforcement — documented rules enforced automatically in CI</span>
+                <span class="text-gray-300 text-sm">Architecture checks — stored rules checked against any diff from CI</span>
               </div>
             </div>
             <a href="governance.html" class="inline-flex items-center gap-2 text-sm text-purple-400 hover:text-purple-300 transition-colors font-medium">Learn about policies &rarr;</a>
@@ -575,16 +612,13 @@
               <span class="ml-3 text-xs text-gray-600">audit_record.json</span>
             </div>
             <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-var">{</span>
-  <span class="token-str">"id"</span>: <span class="token-str">"mem_a4f2b91"</span>,
-  <span class="token-str">"content"</span>: <span class="token-str">"Chose PostgreSQL + pgvector over Neo4j"</span>,
-  <span class="token-str">"memory_type"</span>: <span class="token-str">"decision"</span>,
-  <span class="token-str">"provenance"</span>: {
-    <span class="token-str">"agent_id"</span>: <span class="token-str">"arch-agent-01"</span>,
-    <span class="token-str">"tool"</span>: <span class="token-str">"claude-code"</span>,
-    <span class="token-str">"git_commit"</span>: <span class="token-str">"a4f2b91"</span>,
-    <span class="token-str">"ticket"</span>: <span class="token-str">"ARCH-42"</span>
-  },
-  <span class="token-str">"created_at"</span>: <span class="token-str">"2026-03-15T10:23:44Z"</span>,
+  <span class="token-str">"id"</span>: <span class="token-num">48121</span>,
+  <span class="token-str">"text"</span>: <span class="token-str">"Chose PostgreSQL + pgvector over Neo4j"</span>,
+  <span class="token-str">"kind"</span>: <span class="token-str">"proposition"</span>,
+  <span class="token-str">"valid_from"</span>: <span class="token-str">"2026-03-15T10:23:44Z"</span>,
+  <span class="token-str">"valid_to"</span>: <span class="token-kw">null</span>,
+  <span class="token-str">"provenance"</span>: { <span class="token-str">"episodes"</span>: [<span class="token-num">9143</span>, <span class="token-num">9150</span>] },
+  <span class="token-str">"audit"</span>: { <span class="token-str">"principal"</span>: <span class="token-str">"arch-agent"</span>, <span class="token-str">"op"</span>: <span class="token-str">"/remember"</span> },
   <span class="token-str">"namespace"</span>: <span class="token-str">"org:acme:architecture"</span>
 <span class="token-var">}</span></code></pre>
           </div>
@@ -651,7 +685,7 @@
             <tr>
               <td>Self-hostable, 100% local</td>
               <td><span class="check-green">&#10003;</span></td>
-              <td><span class="check-yellow">~</span></td>
+              <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-red">&#10007;</span></td>
@@ -680,7 +714,7 @@
     <div class="text-center mb-12">
       <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Install &amp; integrate</span>
       <h2 class="text-3xl font-bold text-white mt-3 mb-4">One command. Then use it from anywhere.</h2>
-      <p class="text-gray-400 max-w-2xl mx-auto">A cross-platform <code class="text-green-300">memnos</code> CLI (server + client in one), an MCP server for Claude Code / Cursor / Windsurf, and a plain REST API. PostgreSQL is the only prerequisite. <span class="text-gray-500">(Plus a Python SDK — <code class="text-green-300">memnos-sdk</code> — with LangChain &amp; LangGraph adapters; PyPI release pending.)</span></p>
+      <p class="text-gray-400 max-w-2xl mx-auto">A cross-platform <code class="text-green-300">memnos</code> CLI (server + client in one), an MCP server for Claude Code / Cursor / Windsurf, and a plain REST API. PostgreSQL is the only prerequisite. <span class="text-gray-500">(Plus a Python SDK on PyPI — <code class="text-green-300">memnos-sdk</code> — with LangChain, LangGraph &amp; LlamaIndex retriever adapters.)</span></p>
     </div>
 
     <!-- Install pills -->
@@ -751,28 +785,21 @@ memnos recall   <span class="token-str">"token expiry policy"</span> --namespace
           <div class="w-2.5 h-2.5 rounded-full bg-red-500/60"></div>
           <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/60"></div>
           <div class="w-2.5 h-2.5 rounded-full bg-green-500/60"></div>
-          <span class="ml-2 text-xs text-gray-600">chain.py — LangChain memory backend</span>
+          <span class="ml-2 text-xs text-gray-600">retriever.py — LangChain / LangGraph adapters</span>
         </div>
         <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># uv pip install 'memnos-sdk[langchain]'</span>
-<span class="token-kw">from</span> <span class="token-var">langchain.chains</span> <span class="token-kw">import</span> <span class="token-fn">ConversationChain</span>
 <span class="token-kw">from</span> <span class="token-var">memnos_sdk</span> <span class="token-kw">import</span> <span class="token-fn">MemnosClient</span>
-<span class="token-kw">from</span> <span class="token-var">memnos_sdk.integrations.langchain</span> <span class="token-kw">import</span> <span class="token-fn">MemnosMemory</span>
+<span class="token-kw">from</span> <span class="token-var">memnos_sdk.integrations.langchain</span> <span class="token-kw">import</span> <span class="token-fn">MemnosRetriever</span>
 
-<span class="token-var">client</span> <span class="token-kw">=</span> <span class="token-fn">MemnosClient</span>(url<span class="token-kw">=</span><span class="token-str">"http://localhost:8900"</span>, api_key<span class="token-kw">=</span><span class="token-str">"..."</span>)
+<span class="token-var">client</span> <span class="token-kw">=</span> <span class="token-fn">MemnosClient</span>(base_url<span class="token-kw">=</span><span class="token-str">"http://127.0.0.1:8900"</span>, token<span class="token-kw">=</span><span class="token-str">"..."</span>)
 
-<span class="token-cmt"># Drop in as a LangChain memory backend</span>
-<span class="token-cmt"># Every conversation is persisted in memnos across sessions</span>
-<span class="token-var">memory</span> <span class="token-kw">=</span> <span class="token-fn">MemnosMemory</span>(
-    client<span class="token-kw">=</span><span class="token-var">client</span>,
-    namespace<span class="token-kw">=</span><span class="token-str">"org:acme:agents"</span>,
-    session_id<span class="token-kw">=</span><span class="token-str">"session-42"</span>,
-)
+<span class="token-cmt"># Drop-in LangChain retriever over your team's memory</span>
+<span class="token-var">retriever</span> <span class="token-kw">=</span> <span class="token-fn">MemnosRetriever</span>(client<span class="token-kw">=</span><span class="token-var">client</span>, namespace<span class="token-kw">=</span><span class="token-str">"org:acme:agents"</span>)
+<span class="token-var">docs</span> <span class="token-kw">=</span> <span class="token-var">retriever</span>.<span class="token-fn">invoke</span>(<span class="token-str">"What database did we pick for the user service?"</span>)
 
-<span class="token-var">chain</span> <span class="token-kw">=</span> <span class="token-fn">ConversationChain</span>(llm<span class="token-kw">=</span><span class="token-var">your_llm</span>, memory<span class="token-kw">=</span><span class="token-var">memory</span>)
-
-<span class="token-cmt"># Past sessions are auto-injected as context — no extra code needed</span>
-<span class="token-var">chain</span>.<span class="token-fn">run</span>(<span class="token-str">"What database did we pick for the user service?"</span>)
-<span class="token-cmt"># → remembers decisions made weeks ago across all prior sessions</span></code></pre>
+<span class="token-cmt"># Or a LangGraph BaseStore backed by memnos</span>
+<span class="token-kw">from</span> <span class="token-var">memnos_sdk.integrations.langgraph</span> <span class="token-kw">import</span> <span class="token-fn">MemnosStore</span>
+<span class="token-var">store</span> <span class="token-kw">=</span> <span class="token-fn">MemnosStore</span>(client<span class="token-kw">=</span><span class="token-var">client</span>, namespace<span class="token-kw">=</span><span class="token-str">"org:acme:agents"</span>)</code></pre>
       </div>
 
       <div id="tab-llamaindex" class="sdk-panel hidden code-block p-6 rounded-tl-none">
@@ -780,26 +807,19 @@ memnos recall   <span class="token-str">"token expiry policy"</span> --namespace
           <div class="w-2.5 h-2.5 rounded-full bg-red-500/60"></div>
           <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/60"></div>
           <div class="w-2.5 h-2.5 rounded-full bg-green-500/60"></div>
-          <span class="ml-2 text-xs text-gray-600">rag_pipeline.py — LlamaIndex reader</span>
+          <span class="ml-2 text-xs text-gray-600">rag_pipeline.py — LlamaIndex retriever</span>
         </div>
         <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># uv pip install 'memnos-sdk[llamaindex]'</span>
-<span class="token-kw">from</span> <span class="token-var">llama_index.core</span> <span class="token-kw">import</span> <span class="token-fn">VectorStoreIndex</span>
 <span class="token-kw">from</span> <span class="token-var">memnos_sdk</span> <span class="token-kw">import</span> <span class="token-fn">MemnosClient</span>
-<span class="token-kw">from</span> <span class="token-var">memnos_sdk.integrations.llamaindex</span> <span class="token-kw">import</span> <span class="token-fn">MemnosReader</span>
+<span class="token-kw">from</span> <span class="token-var">memnos_sdk.integrations.llamaindex</span> <span class="token-kw">import</span> <span class="token-fn">MemnosRetriever</span>
 
-<span class="token-var">client</span> <span class="token-kw">=</span> <span class="token-fn">MemnosClient</span>(url<span class="token-kw">=</span><span class="token-str">"http://localhost:8900"</span>, api_key<span class="token-kw">=</span><span class="token-str">"..."</span>)
-<span class="token-var">reader</span> <span class="token-kw">=</span> <span class="token-fn">MemnosReader</span>(client<span class="token-kw">=</span><span class="token-var">client</span>, namespace<span class="token-kw">=</span><span class="token-str">"org:acme:engineering"</span>)
+<span class="token-var">client</span> <span class="token-kw">=</span> <span class="token-fn">MemnosClient</span>(base_url<span class="token-kw">=</span><span class="token-str">"http://127.0.0.1:8900"</span>, token<span class="token-kw">=</span><span class="token-str">"..."</span>)
+<span class="token-var">retriever</span> <span class="token-kw">=</span> <span class="token-fn">MemnosRetriever</span>(client<span class="token-kw">=</span><span class="token-var">client</span>, namespace<span class="token-kw">=</span><span class="token-str">"org:acme:engineering"</span>)
 
-<span class="token-cmt"># Load memnos memories as LlamaIndex Documents</span>
-<span class="token-var">documents</span> <span class="token-kw">=</span> <span class="token-var">reader</span>.<span class="token-fn">load_data</span>(
-    query<span class="token-kw">=</span><span class="token-str">"database and infrastructure decisions"</span>,
-    top_k<span class="token-kw">=</span><span class="token-num">20</span>,
-)
-
-<span class="token-cmt"># Build a RAG index on top of your team's living memory</span>
-<span class="token-var">index</span> <span class="token-kw">=</span> <span class="token-fn">VectorStoreIndex</span>.<span class="token-fn">from_documents</span>(<span class="token-var">documents</span>)
-<span class="token-var">engine</span> <span class="token-kw">=</span> <span class="token-var">index</span>.<span class="token-fn">as_query_engine</span>()
-<span class="token-fn">print</span>(<span class="token-var">engine</span>.<span class="token-fn">query</span>(<span class="token-str">"What auth approach did we choose and why?"</span>))</code></pre>
+<span class="token-cmt"># memnos memories as LlamaIndex nodes, ranked by hybrid recall</span>
+<span class="token-var">nodes</span> <span class="token-kw">=</span> <span class="token-var">retriever</span>.<span class="token-fn">retrieve</span>(<span class="token-str">"database and infrastructure decisions"</span>)
+<span class="token-kw">for</span> <span class="token-var">n</span> <span class="token-kw">in</span> <span class="token-var">nodes</span>:
+    <span class="token-fn">print</span>(<span class="token-var">n</span>.<span class="token-var">score</span>, <span class="token-var">n</span>.<span class="token-var">text</span>)</code></pre>
       </div>
 
       <div id="tab-corpus" class="sdk-panel hidden code-block p-6 rounded-tl-none">
@@ -807,27 +827,19 @@ memnos recall   <span class="token-str">"token expiry policy"</span> --namespace
           <div class="w-2.5 h-2.5 rounded-full bg-red-500/60"></div>
           <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/60"></div>
           <div class="w-2.5 h-2.5 rounded-full bg-green-500/60"></div>
-          <span class="ml-2 text-xs text-gray-600">ci_gate.py — architecture enforcement in CI</span>
+          <span class="ml-2 text-xs text-gray-600">ci_gate.sh — architecture checks in CI</span>
         </div>
-        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-kw">from</span> <span class="token-var">memnos_sdk</span> <span class="token-kw">import</span> <span class="token-fn">MemnosClient</span>
+        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># Ingest an architecture doc — RFC-2119 rules become constraint facts</span>
+curl -X POST http://127.0.0.1:8900/corpus/ingest \
+  -H <span class="token-str">"Authorization: Bearer $MEMNOS_TOKEN"</span> -H <span class="token-str">"Content-Type: application/json"</span> \
+  -d <span class="token-str">'{"namespace":"org:acme:arch","name":"arch-docs.md","text":"...ADR text..."}'</span>
 
-<span class="token-kw">with</span> <span class="token-fn">MemnosClient</span>(url<span class="token-kw">=</span><span class="token-str">"http://localhost:8900"</span>, api_key<span class="token-kw">=</span><span class="token-str">"..."</span>) <span class="token-kw">as</span> <span class="token-var">client</span>:
-    <span class="token-cmt"># Check a PR diff against your architecture constraints</span>
-    <span class="token-var">result</span> <span class="token-kw">=</span> <span class="token-var">client</span>.<span class="token-var">corpus</span>.<span class="token-fn">check</span>(
-        corpus_id<span class="token-kw">=</span><span class="token-str">"arch-docs"</span>,
-        content<span class="token-kw">=</span><span class="token-var">pull_request_diff</span>,
-    )
-
-    <span class="token-cmt"># SHALL violations = hard failures → block the merge</span>
-    <span class="token-kw">if</span> <span class="token-var">result</span>.<span class="token-var">shall_violations</span>:
-        <span class="token-fn">print</span>(<span class="token-var">result</span>.<span class="token-fn">format</span>())
-        <span class="token-fn">raise</span> <span class="token-fn">SystemExit</span>(<span class="token-num">1</span>)
-
-    <span class="token-cmt"># SHOULD violations = warnings → annotate the PR</span>
-    <span class="token-kw">for</span> <span class="token-var">v</span> <span class="token-kw">in</span> <span class="token-var">result</span>.<span class="token-var">should_violations</span>:
-        <span class="token-fn">print</span>(<span class="token-str">f"⚠ {v.rule}"</span>)
-
-<span class="token-cmt"># Severity: SHALL/MUST NOT → block · SHOULD → warn · MAY → info</span></code></pre>
+<span class="token-cmt"># In CI: check a PR diff against the stored rules (deterministic, no LLM)</span>
+curl -X POST http://127.0.0.1:8900/corpus/check \
+  -H <span class="token-str">"Authorization: Bearer $MEMNOS_TOKEN"</span> -H <span class="token-str">"Content-Type: application/json"</span> \
+  -d <span class="token-str">'{"namespace":"org:acme:arch","snippet":"&lt;PR diff&gt;"}'</span>
+<span class="token-cmt"># → the SHALL / SHOULD / MAY rules most relevant to this diff, ranked —</span>
+<span class="token-cmt">#   annotate the PR, or fail the build on your own policy</span></code></pre>
       </div>
     </div>
 
@@ -878,8 +890,8 @@ memnos recall   <span class="token-str">"token expiry policy"</span> --namespace
             <div class="w-px flex-1 mt-3 step-line min-h-[40px]"></div>
           </div>
           <div class="pb-8">
-            <h3 class="text-white font-semibold mb-2">Search — constraints auto-inject</h3>
-            <p class="text-sm text-gray-400 leading-relaxed">Agents search and write as they work. Every search result automatically includes relevant architecture constraints — your rules propagate without re-prompting or system prompt updates.</p>
+            <h3 class="text-white font-semibold mb-2">Recall — ranked, governed memory</h3>
+            <p class="text-sm text-gray-400 leading-relaxed">Agents recall and write as they work. Hybrid search (vector + BM25 + RRF) with a cross-encoder reranker returns the most relevant facts and episodes — including any stored constraint facts that match.</p>
           </div>
         </div>
         <div class="flex gap-5">
@@ -889,7 +901,7 @@ memnos recall   <span class="token-str">"token expiry policy"</span> --namespace
           </div>
           <div class="pb-8">
             <h3 class="text-white font-semibold mb-2">Enforce in CI</h3>
-            <p class="text-sm text-gray-400 leading-relaxed">Run corpus.check_all() on every PR diff. SHALL violations block the merge. SHOULD violations annotate it. Architecture governance runs automatically in your pipeline.</p>
+            <p class="text-sm text-gray-400 leading-relaxed">Call /corpus/check with every PR diff. It returns the stored SHALL / SHOULD / MAY rules relevant to the change — annotate the PR, or fail the build on your own policy.</p>
           </div>
         </div>
         <div class="flex gap-5">
@@ -898,7 +910,7 @@ memnos recall   <span class="token-str">"token expiry policy"</span> --namespace
           </div>
           <div>
             <h3 class="text-white font-semibold mb-2">Write with full provenance</h3>
-            <p class="text-sm text-gray-400 leading-relaxed">Every memory write carries agent_id, tool, git_commit, and JIRA ticket. The audit trail is built in — no extra work. Query any decision, trace any incident, prove any action forever.</p>
+            <p class="text-sm text-gray-400 leading-relaxed">Every call is token-authenticated and audit-logged; every consolidated fact keeps provenance links to its source episodes. Per-author attribution on each memory lands in v0.1.6.</p>
           </div>
         </div>
       </div>
@@ -908,40 +920,28 @@ memnos recall   <span class="token-str">"token expiry policy"</span> --namespace
           <div class="w-3 h-3 rounded-full bg-red-500/60"></div>
           <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
           <div class="w-3 h-3 rounded-full bg-green-500/60"></div>
-          <span class="ml-3 text-xs text-gray-600">ci_check.py</span>
+          <span class="ml-3 text-xs text-gray-600">client.py</span>
         </div>
         <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-kw">from</span> <span class="token-var">memnos_sdk</span> <span class="token-kw">import</span> <span class="token-fn">MemnosClient</span>
 
-<span class="token-kw">async with</span> <span class="token-fn">MemnosClient</span>(
-    url<span class="token-kw">=</span><span class="token-str">"https://memnos.acme.com"</span>,
-    api_key<span class="token-kw">=</span><span class="token-str">"..."</span>,
+<span class="token-kw">with</span> <span class="token-fn">MemnosClient</span>(
+    base_url<span class="token-kw">=</span><span class="token-str">"https://memnos.acme.com"</span>,
+    token<span class="token-kw">=</span><span class="token-str">"..."</span>,
 ) <span class="token-kw">as</span> <span class="token-var">client</span>:
 
-    <span class="token-cmt"># Search — constraints auto-inject with every result</span>
-    <span class="token-var">memories</span> <span class="token-kw">=</span> <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-fn">search</span>(
+    <span class="token-cmt"># Hybrid recall — facts + episodes, reranked</span>
+    <span class="token-var">out</span> <span class="token-kw">=</span> <span class="token-var">client</span>.<span class="token-fn">recall</span>(
         <span class="token-str">"how do we handle patient data encryption"</span>,
         namespace<span class="token-kw">=</span><span class="token-str">"org:acme:engineering"</span>,
     )
-    <span class="token-cmt"># → facts + auto-injected constraints</span>
 
-    <span class="token-cmt"># Architecture enforcement in CI</span>
-    <span class="token-var">result</span> <span class="token-kw">=</span> <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-var">corpus</span>.<span class="token-fn">check_all</span>(
-        code<span class="token-kw">=</span><span class="token-var">pull_request_diff</span>,
-        context<span class="token-kw">=</span><span class="token-str">"patient-access consent validation"</span>,
-    )
-    <span class="token-kw">if</span> <span class="token-var">result</span>[<span class="token-num">0</span>].<span class="token-var">shall_violations</span>:
-        <span class="token-kw">raise</span> <span class="token-fn">ArchitectureViolation</span>(<span class="token-var">result</span>[<span class="token-num">0</span>].<span class="token-fn">format</span>())
+    <span class="token-cmt"># One prompt-ready context string</span>
+    <span class="token-var">ctx</span> <span class="token-kw">=</span> <span class="token-var">client</span>.<span class="token-fn">context</span>(<span class="token-str">"auth service decisions"</span>)
 
-    <span class="token-cmt"># Write with full audit provenance</span>
-    <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-fn">write</span>(
-        content<span class="token-kw">=</span><span class="token-str">"Selected PostgreSQL + pgvector — single engine"</span>,
+    <span class="token-cmt"># Write — authed, namespaced, audit-logged</span>
+    <span class="token-var">client</span>.<span class="token-fn">remember</span>(
+        <span class="token-str">"Selected PostgreSQL + pgvector — single engine"</span>,
         namespace<span class="token-kw">=</span><span class="token-str">"org:acme:architecture"</span>,
-        memory_type<span class="token-kw">=</span><span class="token-str">"decision"</span>,
-        author<span class="token-kw">=</span><span class="token-str">"arch-agent"</span>,
-        metadata<span class="token-kw">=</span>{
-            <span class="token-str">"ticket"</span>: <span class="token-str">"ARCH-42"</span>,
-            <span class="token-str">"git_commit"</span>: <span class="token-str">"a4f2b91"</span>,
-        },
     )</code></pre>
       </div>
     </div>
@@ -966,25 +966,22 @@ memnos recall   <span class="token-str">"token expiry policy"</span> --namespace
             <p class="text-xs text-gray-600 font-mono mb-4">// actual memories from building memnos</p>
             <div class="glass rounded-xl p-4">
               <div class="flex items-center justify-between mb-2">
-                <span class="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full font-mono">decision</span>
-                <span class="text-xs text-gray-600">arch-agent · 2025-11-03</span>
+                <span class="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full font-mono">fact</span>
+                <span class="text-xs text-gray-600">2025-11-03</span>
               </div>
               <p class="text-sm text-gray-200">Chose PostgreSQL + pgvector over Neo4j + Qdrant. One engine eliminates two services and gives vector + full-text search without a second database.</p>
-              <div class="mt-2 flex items-center gap-2 text-xs text-gray-600">
-                <span class="font-mono">git:a4f2b91</span><span>·</span><span>ARCH-42</span>
-              </div>
-            </div>
+                          </div>
             <div class="glass rounded-xl p-4">
               <div class="flex items-center justify-between mb-2">
-                <span class="text-xs bg-red-500/20 text-red-300 px-2 py-0.5 rounded-full font-mono">incident</span>
-                <span class="text-xs text-gray-600">oncall-agent · 2025-12-14</span>
+                <span class="text-xs bg-red-500/20 text-red-300 px-2 py-0.5 rounded-full font-mono">fact</span>
+                <span class="text-xs text-gray-600">2025-12-14</span>
               </div>
               <p class="text-sm text-gray-200">E2E stack stuck at "Created" — Postgres container never became healthy. Root cause: <code class="text-blue-300 font-mono text-xs">~</code> in .env file not expanded by docker-compose. Fixed by injecting MEMNOS_DATA_DIR as shell env var.</p>
             </div>
             <div class="glass rounded-xl p-4">
               <div class="flex items-center justify-between mb-2">
                 <span class="text-xs bg-orange-500/20 text-orange-300 px-2 py-0.5 rounded-full font-mono">constraint</span>
-                <span class="text-xs text-gray-600">auto-injected to all agents</span>
+                <span class="text-xs text-gray-600">corpus constraint — searchable by all agents</span>
               </div>
               <p class="text-sm text-gray-200">CONSTRAINT: Source directories are READ-ONLY. All memory and learnings go to vaults only. Never write markdown in source repos.</p>
             </div>
@@ -1002,7 +999,7 @@ memnos recall   <span class="token-str">"token expiry policy"</span> --namespace
       <div class="w-96 h-96 bg-purple-600 rounded-full blur-[160px] opacity-8"></div>
     </div>
     <h2 class="text-4xl font-bold text-white mb-5 relative">One tool. Every agent.<br /><span class="gradient-text">Zero lost context.</span></h2>
-    <p class="text-gray-400 mb-10 relative">Self-host with Docker in 90 seconds, or connect to the managed API. Apache-2.0 licensed. No lock-in.</p>
+    <p class="text-gray-400 mb-10 relative">Self-host in minutes — one installer script or Docker, on a PostgreSQL you already run. Apache-2.0 licensed. No lock-in.</p>
     <div class="flex items-center justify-center gap-4 relative">
       <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white font-semibold px-8 py-3.5 rounded-full text-sm">Deploy Free</a>
       <a href="https://github.com/thameema/memnos" class="text-sm text-gray-300 hover:text-white border border-gray-700 hover:border-gray-500 px-8 py-3.5 rounded-full transition-colors flex items-center gap-2">
