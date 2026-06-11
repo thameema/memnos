@@ -11,19 +11,19 @@
   </script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>memnos vs CLAUDE.md vs mem0 vs Context7 — AI Agent Memory Compared</title>
-  <meta name="description" content="How memnos compares to CLAUDE.md files, mem0, Context7 and custom RAG pipelines for AI agent memory. Persistent, searchable memory across Claude Code, Cursor and Windsurf." />
-  <meta name="keywords" content="memnos vs mem0, memnos vs CLAUDE.md, AI agent memory comparison, LLM memory tools, persistent memory alternatives, MCP memory server" />
+  <title>memnos vs Mem0 vs Zep vs Supermemory — AI Agent Memory Compared</title>
+  <meta name="description" content="How memnos compares to Mem0, Zep, Graphiti, Supermemory and Letta for AI agent memory — open engine, governance in the free tier, and your own PostgreSQL. Verified facts, as-of dates, honest gaps." />
+  <meta name="keywords" content="memnos vs mem0, memnos vs zep, memnos vs supermemory, AI agent memory comparison, LLM memory tools, persistent memory alternatives, MCP memory server" />
   <link rel="canonical" href="https://memnos.net/compare.html" />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://memnos.net/compare.html" />
-  <meta property="og:title" content="memnos vs CLAUDE.md vs mem0 — AI Agent Memory Compared" />
-  <meta property="og:description" content="How memnos compares to CLAUDE.md files, mem0, Context7 and custom RAG for persistent AI agent memory." />
+  <meta property="og:title" content="memnos vs Mem0 vs Zep vs Supermemory — AI Agent Memory Compared" />
+  <meta property="og:description" content="How memnos compares to Mem0, Zep, Graphiti, Supermemory and Letta for persistent AI agent memory — verified facts, honest gaps." />
   <meta property="og:image" content="https://memnos.net/og-image.png" />
   <meta property="og:site_name" content="memnos" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="memnos vs CLAUDE.md vs mem0 — AI Agent Memory Compared" />
-  <meta name="twitter:description" content="How memnos compares to CLAUDE.md files, mem0, Context7 and custom RAG for persistent AI agent memory." />
+  <meta name="twitter:title" content="memnos vs Mem0 vs Zep vs Supermemory — AI Agent Memory Compared" />
+  <meta name="twitter:description" content="How memnos compares to Mem0, Zep, Graphiti, Supermemory and Letta for persistent AI agent memory — verified facts, honest gaps." />
   <meta name="twitter:image" content="https://memnos.net/og-image.png" />
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -98,6 +98,7 @@
     .check-green  { color: #4ade80; font-weight: 700; font-size: 1rem; }
     .check-red    { color: #f87171; font-weight: 700; font-size: 1rem; }
     .check-yellow { color: #facc15; font-weight: 700; font-size: 0.85rem; }
+    .check-unk    { color: #6b7280; font-weight: 700; font-size: 0.9rem; }
     /* Main comparison table */
     .big-compare { border-collapse: collapse; width: 100%; }
     .big-compare thead th {
@@ -216,7 +217,7 @@
       How memnos compares to<br /><span class="gradient-text">other memory tools</span>
     </h1>
     <p class="text-gray-400 text-lg leading-relaxed max-w-3xl mx-auto">
-      Memory for AI is a fast-growing space — Mem0, Zep and Graphiti are the serious players. Here's how memnos fits in, honestly. The short version: memnos remembers <span class="text-gray-200">deterministically</span> (no LLM guessing what to keep), is fully <span class="text-gray-200">governed</span> (auth · ACL · audit · encrypted vault), runs as <span class="text-gray-200">one self-hostable engine</span>, and we publish <span class="text-gray-200">judge-transparent</span> benchmarks — the full strict-to-lenient judge band, with per-question predictions in the repo — instead of one self-graded number.
+      Memory for AI is a fast-growing space — Mem0, Zep/Graphiti and Supermemory are the serious players. Here's how memnos fits in, honestly. The short version: memnos remembers <span class="text-gray-200">deterministically</span> (no LLM guessing what to keep), is fully <span class="text-gray-200">governed</span> (auth · ACL · audit · encrypted vault), runs as <span class="text-gray-200">one self-hostable engine</span>, and we publish <span class="text-gray-200">judge-transparent</span> benchmarks — the full strict-to-lenient judge band, with per-question predictions in the repo — instead of one self-graded number.
     </p>
   </div>
 </section>
@@ -225,8 +226,8 @@
 <section class="relative z-10 py-12 fade-in">
   <div class="max-w-7xl mx-auto px-6">
     <div class="text-center mb-10">
-      <h2 class="text-2xl font-bold text-white mb-3">Full feature matrix</h2>
-      <p class="text-gray-500 text-sm">&#10003; = supported &nbsp;&nbsp; &#10007; = not supported &nbsp;&nbsp; ~ = partial or limited support</p>
+      <h2 class="text-2xl font-bold text-white mb-3">Full feature matrix <span class="text-gray-500 text-base font-normal">(as of June 2026)</span></h2>
+      <p class="text-gray-500 text-sm">&#10003; = supported &nbsp;&nbsp; &#10007; = not supported &nbsp;&nbsp; ~ = partial or limited support &nbsp;&nbsp; &#8225; = unverifiable — engine source not published</p>
     </div>
 
     <div class="glass rounded-2xl overflow-hidden">
@@ -244,17 +245,19 @@
               <th style="min-width:95px;">Mem0<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">v2.0.4</span></th>
               <th style="min-width:95px;">Zep<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">Cloud<sup>†</sup></span></th>
               <th style="min-width:95px;">Graphiti<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">v0.29</span></th>
+              <th style="min-width:110px;">Supermemory<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">June 2026<sup>&#8225;</sup></span></th>
             </tr>
           </thead>
           <tbody>
             <!-- Ingestion & memory model -->
-            <tr class="section-header"><td colspan="5">Ingestion &amp; memory model</td></tr>
+            <tr class="section-header"><td colspan="6">Ingestion &amp; memory model</td></tr>
             <tr>
               <td>Structured fact extraction (typed subject–predicate–object)</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">graph option</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-unk">&#8225;</span></td>
             </tr>
             <tr>
               <td>Bi-temporal facts (valid-time + as-of queries)</td>
@@ -262,6 +265,7 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-unk">&#8225;</span></td>
             </tr>
             <tr>
               <td>Deterministic conflict resolution at write — <em>no LLM</em></td>
@@ -269,6 +273,7 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-unk">&#8225;</span></td>
             </tr>
             <tr>
               <td>Single- vs multi-valued attribute logic (supersede vs accumulate)</td>
@@ -276,6 +281,7 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-unk">&#8225;</span></td>
             </tr>
             <tr>
               <td>Offline consolidation into entity dossiers / communities</td>
@@ -283,15 +289,25 @@
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-unk">&#8225;</span></td>
+            </tr>
+            <tr>
+              <td>Deterministic auto-capture from your existing AI tools (hooks / proxy — not model-discretionary)</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">MCP only</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">plugin = paid cloud</span></td>
             </tr>
             <!-- Retrieval & ranking -->
-            <tr class="section-header"><td colspan="5">Retrieval &amp; ranking</td></tr>
+            <tr class="section-header"><td colspan="6">Retrieval &amp; ranking</td></tr>
             <tr>
               <td>Hybrid retrieval (vector + BM25 keyword)</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-unk">&#8225;</span></td>
             </tr>
             <tr>
               <td>Reciprocal Rank Fusion (RRF)</td>
@@ -299,6 +315,7 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-unk">&#8225;</span></td>
             </tr>
             <tr>
               <td>Cross-encoder reranking on recall</td>
@@ -306,6 +323,7 @@
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">opt-in</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">opt-in</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">opt-in</span></td>
+              <td><span class="check-unk">&#8225;</span></td>
             </tr>
             <tr>
               <td>Entity-guarantee + timeline retrieval arms (answer completeness)</td>
@@ -313,6 +331,15 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-unk">&#8225;</span></td>
+            </tr>
+            <tr>
+              <td>Grounded recall — admin-linked knowledge namespaces consulted on every recall</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">0.1.6</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-unk">&#8225;</span></td>
             </tr>
             <tr>
               <td>No LLM at query time</td>
@@ -320,22 +347,33 @@
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">LLM reranker default</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">LLM reranker default</span></td>
+              <td><span class="check-unk">&#8225;</span></td>
             </tr>
             <!-- Architecture & deploy -->
-            <tr class="section-header"><td colspan="5">Architecture &amp; deploy</td></tr>
+            <tr class="section-header"><td colspan="6">Architecture &amp; deploy</td></tr>
+            <tr>
+              <td>Deployment model</td>
+              <td class="col-memnos"><span style="font-size:0.7rem;color:#c4b5fd;">Self-host,<br>your Postgres</span></td>
+              <td><span style="font-size:0.7rem;color:#9ca3af;">Self-host<br>or cloud</span></td>
+              <td><span style="font-size:0.7rem;color:#9ca3af;">Hosted cloud</span></td>
+              <td><span style="font-size:0.7rem;color:#9ca3af;">Library +<br>graph DB</span></td>
+              <td><span style="font-size:0.7rem;color:#9ca3af;">Cloud (local =<br>closed binary)</span></td>
+            </tr>
             <tr>
               <td>Single store — no separate graph database required</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">local file store</span></td>
             </tr>
             <tr>
-              <td>Runs on standard PostgreSQL + pgvector</td>
+              <td>Runs on standard PostgreSQL + pgvector — <em>your</em> database</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">no Postgres option</span></td>
             </tr>
             <tr>
               <td>MCP server (any MCP client)</td>
@@ -343,6 +381,7 @@
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">cloud-only</span></td>
             </tr>
             <tr>
               <td>Python SDK (LangChain / LangGraph)</td>
@@ -350,15 +389,17 @@
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">DIY</span></td>
+              <td><span class="check-green">&#10003;</span></td>
             </tr>
             <!-- Governance & security -->
-            <tr class="section-header"><td colspan="5">Governance &amp; security</td></tr>
+            <tr class="section-header"><td colspan="6">Governance &amp; security — in the free, self-hosted tier</td></tr>
             <tr>
               <td>Token auth + namespace access control</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-yellow">~</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">single API key locally</span></td>
             </tr>
             <tr>
               <td>Audit trail + usage / cost ledger</td>
@@ -366,10 +407,20 @@
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">server logs only locally</span></td>
+            </tr>
+            <tr>
+              <td>Author-attributed memories — author server-signed, never client-supplied</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">0.1.6</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">client-supplied IDs</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">client-supplied IDs</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">client-supplied IDs</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">single key locally</span></td>
             </tr>
             <tr>
               <td>Encrypted secret vault + ingest secret-redaction</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
@@ -380,15 +431,25 @@
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">cloud</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">cloud</span></td>
             </tr>
             <!-- Trust -->
-            <tr class="section-header"><td colspan="5">Trust &amp; licensing</td></tr>
+            <tr class="section-header"><td colspan="6">Trust &amp; licensing</td></tr>
             <tr>
-              <td>Open source — actively maintained</td>
-              <td class="col-memnos"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">Apache-2.0</span></td>
-              <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">Apache-2.0</span></td>
-              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">CE deprecated</span></td>
-              <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">Apache-2.0</span></td>
+              <td>Engine source published — read every line that touches your data</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">cloud</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">engine unpublished</span></td>
+            </tr>
+            <tr>
+              <td>License</td>
+              <td class="col-memnos"><span style="font-size:0.7rem;color:#c4b5fd;">Apache-2.0</span></td>
+              <td><span style="font-size:0.7rem;color:#9ca3af;">Apache-2.0</span></td>
+              <td><span style="font-size:0.7rem;color:#9ca3af;">Proprietary<br>(CE deprecated)</span></td>
+              <td><span style="font-size:0.7rem;color:#9ca3af;">Apache-2.0</span></td>
+              <td><span style="font-size:0.7rem;color:#9ca3af;">MIT (SDKs/apps);<br>engine closed</span></td>
             </tr>
             <tr>
               <td>Benchmark with per-question predictions published + open harness</td>
@@ -396,15 +457,17 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">open harness, no predictions</span></td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
     <div class="max-w-4xl mx-auto mt-4 space-y-1.5">
-      <p class="text-xs text-gray-600 text-center">~ = partial / limited / opt-in support. Verified from official docs against <span class="text-gray-500">Mem0 v2.0.4, Graphiti v0.29.x, and Zep Cloud, June 2026</span>. Vendors evolve — check each project's current docs.</p>
+      <p class="text-xs text-gray-600 text-center">~ = partial / limited / opt-in support. Verified from official docs, repos and pricing pages against <span class="text-gray-500">Mem0 v2.0.4, Graphiti v0.29.x, Zep Cloud, and Supermemory, June 2026</span>. Vendors evolve — check each project's current docs.</p>
       <p class="text-xs text-gray-600 text-center"><sup>†</sup> Zep's open-source Community Edition was <span class="text-gray-500">deprecated April 2025</span>; Zep is now a hosted Cloud product whose open-source engine is <span class="text-gray-500">Graphiti</span> (shown separately). Cloud-only features are marked ~ for self-hosters.</p>
-      <p class="text-xs text-gray-600 text-center">Honest gaps, conceded (as of June 2026): memnos has no SaaS connectors (Drive / Gmail / Notion), no multimodal ingestion (OCR / video), and a smaller community than Mem0 or Zep. If you need those today, they are real reasons to pick another tool.</p>
+      <p class="text-xs text-gray-600 text-center"><sup>&#8225;</sup> As of June 2026, Supermemory's engine source is not published — the MIT repo contains SDKs, apps and docs, and <code>npx supermemory local</code> downloads a closed-source precompiled binary. Engine-internal rows marked &#8225; cannot be independently verified from source; local-mode facts (file store, single API key, logs-only observability) and paid-tier gates (org air-gap, SOC2/HIPAA, ACL, connectors, the Claude Code plugin) are from their own published docs and pricing.</p>
+      <p class="text-xs text-gray-600 text-center">Honest gaps, conceded (as of June 2026): memnos has no SaaS connectors (Drive / Gmail / Notion), no multimodal ingestion (OCR / video), no one-command <code>npx</code>-style launcher, and a smaller community than Mem0, Zep or Supermemory. Supermemory also publishes an open MIT benchmark harness (MemoryBench). If you need those today, they are real reasons to pick another tool.</p>
     </div>
   </div>
 </section>
@@ -644,6 +707,8 @@ $ python benchmarks/locomo_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9</code></pre>
     </div>
     <div class="flex items-center gap-8 text-sm text-gray-500">
       <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="hover:text-gray-300 transition-colors">Docs</a>
+      <a href="https://github.com/thameema/memnos/blob/master/docs/api.md" class="hover:text-gray-300 transition-colors">API Reference</a>
+      <a href="https://github.com/thameema/memnos/blob/master/docs/cli.md" class="hover:text-gray-300 transition-colors">CLI Reference</a>
       <a href="https://github.com/thameema/memnos" class="hover:text-gray-300 transition-colors">GitHub</a>
       <a href="use-cases.html" class="hover:text-gray-300 transition-colors">Use Cases</a>
       <a href="governance.html" class="hover:text-gray-300 transition-colors">Policies</a>
