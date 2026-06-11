@@ -60,4 +60,4 @@ py-modules = ["memnos_cli", "memnos_server", "memnos_admin", "memnos_mcp", "memn
 core = ["schema.sql"]
 
 [tool.setuptools.data-files]
-"share/memnos/ui" = ["ui/index.html", "ui/app.js", "ui/app.css"]
+"share/memnos/ui" = ["ui/index.html", "ui/app.js", "ui/app.css", "ui/cli-reference.json"]

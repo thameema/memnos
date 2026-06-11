@@ -52,6 +52,17 @@ CREATE TABLE IF NOT EXISTS memnos_control.feedback(
 CREATE TABLE IF NOT EXISTS memnos_control.namespaces(
     name text PRIMARY KEY, created_by bigint REFERENCES memnos_control.principals(id),
     created_at timestamptz NOT NULL DEFAULT now(), description text);
+-- namespace KIND (0.1.6): 'memory' (default, conversational) or 'knowledge' (curated
+-- reference corpus meant to GROUND other namespaces' recall via namespace_links).
+ALTER TABLE memnos_control.namespaces ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'memory';
+-- GROUNDED RECALL links (0.1.6): recall on src_ns ALSO searches dst_ns — but only if the
+-- CALLING principal holds a read grant on dst_ns (link = policy, grant = permission;
+-- BOTH required). Skipped links are surfaced in the /recall response (links_skipped).
+CREATE TABLE IF NOT EXISTS memnos_control.namespace_links(
+    src_ns text NOT NULL, dst_ns text NOT NULL,
+    created_by bigint REFERENCES memnos_control.principals(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(src_ns, dst_ns));
 -- encrypted secret vault: AES-256-GCM ciphertext only (plaintext NEVER stored).
 -- Referenced as value-refs (secret://name); resolved at use-time, never logged.
 CREATE TABLE IF NOT EXISTS memnos_control.secrets(
@@ -260,6 +271,16 @@ class Control:
             return r["principal_id"] if r else None
 
     @staticmethod
+    def principal_info(conn, principal_id):
+        """Name + kind of a principal — the server stamps `author_principal` on every
+        write from this (token-derived) identity, never from the request body."""
+        if principal_id is None:
+            return None
+        with conn.cursor() as c:
+            c.execute("SELECT name, kind FROM memnos_control.principals WHERE id=%s", (principal_id,))
+            return c.fetchone()
+
+    @staticmethod
     def authorize(conn, principal_id, namespace, write=False) -> bool:
         """A grant on the exact namespace, a parent prefix ('team:eng:*'), or '*' (admin)."""
         col = "can_write" if write else "can_read"
@@ -329,6 +350,56 @@ class Control:
             Control.grant(conn, created_by, name)
 
     @staticmethod
+    def set_namespace_kind(conn, name, kind):
+        """Set a namespace's kind: 'memory' (default) or 'knowledge' (a curated corpus
+        that grounds other namespaces via links). Registers the namespace if needed."""
+        if kind not in ("memory", "knowledge"):
+            raise ValueError("kind must be 'memory' or 'knowledge'")
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.namespaces(name, kind) VALUES(%s,%s) "
+                      "ON CONFLICT (name) DO UPDATE SET kind=EXCLUDED.kind", (name, kind))
+
+    @staticmethod
+    def link_namespaces(conn, src, dst, created_by=None):
+        """Declare that recall on `src` should also be GROUNDED in `dst` (policy only —
+        each caller still needs a read grant on `dst` for the fan-out to happen)."""
+        if src == dst:
+            raise ValueError("src and dst must differ")
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.namespace_links(src_ns,dst_ns,created_by) "
+                      "VALUES(%s,%s,%s) ON CONFLICT (src_ns,dst_ns) DO NOTHING", (src, dst, created_by))
+
+    @staticmethod
+    def unlink_namespaces(conn, src, dst) -> bool:
+        with conn.cursor() as c:
+            c.execute("DELETE FROM memnos_control.namespace_links WHERE src_ns=%s AND dst_ns=%s",
+                      (src, dst))
+            return c.rowcount > 0
+
+    @staticmethod
+    def linked_namespaces(conn, src):
+        """The dst namespaces linked FROM `src` (recall fan-out targets), stable order."""
+        with conn.cursor() as c:
+            c.execute("SELECT dst_ns FROM memnos_control.namespace_links WHERE src_ns=%s "
+                      "ORDER BY dst_ns", (src,))
+            return [r["dst_ns"] for r in c.fetchall()]
+
+    @staticmethod
+    def list_links(conn, src=None):
+        with conn.cursor() as c:
+            if src:
+                c.execute("SELECT l.src_ns, l.dst_ns, l.created_at, p.name AS created_by "
+                          "FROM memnos_control.namespace_links l "
+                          "LEFT JOIN memnos_control.principals p ON p.id=l.created_by "
+                          "WHERE l.src_ns=%s ORDER BY l.dst_ns", (src,))
+            else:
+                c.execute("SELECT l.src_ns, l.dst_ns, l.created_at, p.name AS created_by "
+                          "FROM memnos_control.namespace_links l "
+                          "LEFT JOIN memnos_control.principals p ON p.id=l.created_by "
+                          "ORDER BY l.src_ns, l.dst_ns")
+            return c.fetchall()
+
+    @staticmethod
     def list_namespaces(conn):
         """ALL real namespaces: the explicit registry UNION any namespace that has data
         (raw_turns/semantic) or a concrete grant — so implicitly-created namespaces (e.g.
@@ -343,6 +414,7 @@ class Control:
                       WHERE namespace <> '*' AND namespace NOT LIKE '%*'
                 )
                 SELECT nm.name, n.description, n.created_at, p.name AS created_by,
+                  COALESCE(n.kind, 'memory') AS kind,
                   COALESCE(rt.cnt,0) AS turns, COALESCE(sm.cnt,0) AS facts,
                   (n.name IS NOT NULL) AS registered
                 FROM names nm
@@ -361,6 +433,8 @@ class Control:
         with conn.cursor() as c:
             c.execute("DELETE FROM memnos_control.namespaces WHERE name=%s", (name,))
             c.execute("DELETE FROM memnos_control.grants WHERE namespace=%s", (name,))
+            c.execute("DELETE FROM memnos_control.namespace_links WHERE src_ns=%s OR dst_ns=%s",
+                      (name, name))
             if purge_data:
                 c.execute("DELETE FROM tenant_memnos.mentions m USING tenant_memnos.entities e "
                           "WHERE m.entity_id=e.id AND e.namespace=%s", (name,))
@@ -396,6 +470,27 @@ class Control:
         with conn.cursor() as c:
             c.execute("DELETE FROM memnos_control.grants WHERE principal_id=%s AND namespace=%s",
                       (principal_id, namespace))
+
+    @staticmethod
+    def memory_feed(conn, limit=50, offset=0, namespace=None, memory_type=None):
+        """ADMIN MEMORY FEED (0.1.6): the most recent memories (verbatim raw turns) across
+        ALL namespaces, newest first, paginated — the console's live view of what the
+        platform is remembering. Optional namespace / type filters. Admin-only at the
+        endpoint (this is a cross-namespace read, so it must sit behind the '*' grant)."""
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        where, params = [], []
+        if namespace:
+            where.append("namespace=%s"); params.append(namespace)
+        if memory_type:
+            where.append("memory_type=%s"); params.append(memory_type)
+        cond = ("WHERE " + " AND ".join(where)) if where else ""
+        with conn.cursor() as c:
+            c.execute(f"SELECT id, namespace, speaker, text AS content, memory_type AS type, "
+                      f"author_principal AS author, observed_at "
+                      f"FROM tenant_memnos.raw_turns {cond} "
+                      f"ORDER BY id DESC LIMIT %s OFFSET %s", (*params, limit, offset))
+            return c.fetchall()
 
     @staticmethod
     def recent_audit(conn, limit=50, offset=0):

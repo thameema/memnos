@@ -70,6 +70,20 @@ BEGIN
   -- from. Auditable evidence chain — "why do you believe this?" (additive, rolling-safe).
   EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS source_turn_ids bigint[]', s);
 
+  -- AUTHOR ATTRIBUTION (0.1.6): name of the AUTHENTICATED principal that wrote the row.
+  -- Stamped server-side from the bearer token — never read from a request body, so it
+  -- is non-spoofable. NULL on legacy rows / direct-DB writes. (additive, rolling-safe)
+  EXECUTE format('ALTER TABLE %I.raw_turns ADD COLUMN IF NOT EXISTS author_principal text', s);
+  EXECUTE format('ALTER TABLE %I.episodic  ADD COLUMN IF NOT EXISTS author_principal text', s);
+  EXECUTE format('ALTER TABLE %I.semantic  ADD COLUMN IF NOT EXISTS author_principal text', s);
+
+  -- TYPED MEMORIES (0.1.6): optional classification of a memory —
+  -- decision | incident | constraint | skill | fact. NULL = untyped (legacy/plain).
+  -- Facts extracted from a typed turn INHERIT the turn's type. type='constraint'
+  -- memories are PINNED into every /recall on their namespace (additive, rolling-safe).
+  EXECUTE format('ALTER TABLE %I.raw_turns ADD COLUMN IF NOT EXISTS memory_type text', s);
+  EXECUTE format('ALTER TABLE %I.semantic  ADD COLUMN IF NOT EXISTS memory_type text', s);
+
   -- ASSOCIATIVE GRAPH
   EXECUTE format($t$
     CREATE TABLE IF NOT EXISTS %I.entities(
@@ -141,5 +155,11 @@ BEGIN
   EXECUTE format('CREATE INDEX IF NOT EXISTS sem_supersede_subj ON %I.semantic '
                  '(namespace, subject_entity) '
                  'WHERE valid_to IS NULL AND expired_at IS NULL', s);
+  -- TYPED-MEMORY indexes: pinned-constraint fetch + type filters scan by
+  -- (namespace, memory_type); partial — typed rows are a small minority.
+  EXECUTE format('CREATE INDEX IF NOT EXISTS raw_mtype ON %I.raw_turns '
+                 '(namespace, memory_type) WHERE memory_type IS NOT NULL', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS sem_mtype ON %I.semantic '
+                 '(namespace, memory_type) WHERE memory_type IS NOT NULL', s);
 END
 $fn$;

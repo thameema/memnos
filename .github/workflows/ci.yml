@@ -78,3 +78,29 @@ jobs:
             echo "::endgroup::"
           done
           exit $fail
+
+  cli-smoke:
+    # Cross-platform CLI smoke: the installed `memnos` entry point must render help,
+    # report a version, pass the docs-staleness gate, and parse --help for EVERY public
+    # subcommand — on Linux, macOS, and Windows. No database needed; the PG-backed
+    # suite stays on the ubuntu server-tests job above.
+    name: CLI smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Install the package
+        run: pip install .
+      - name: Help + version render
+        shell: bash
+        run: |
+          memnos --help
+          memnos -V
+      - name: Docs staleness + per-subcommand parse checks
+        shell: bash
+        run: python tests/test_cli_docs.py
