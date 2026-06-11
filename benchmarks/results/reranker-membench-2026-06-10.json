@@ -1,0 +1,62 @@
+{
+ "date": "2026-06-10",
+ "host": "personal MacBook (aarch64, macOS 25.1)",
+ "method": "fresh process per model; RSS via ps after warmup rerank; cold_start = TextCrossEncoder init from local HF cache (download excluded); latency = median of 5 reranks of 80 x ~230-char candidates via core.rerank.rerank (ONNX Runtime / fastembed)",
+ "note": "accuracy A/B NOT run: OPENAI key insufficient_quota (project budget exhausted) on 2026-06-10; LoCoMo Score A aborted after conversation 0 ($0.17 spent). Bench script: /tmp/rerank_membench.py",
+ "models": [
+  {
+   "model": "BAAI/bge-reranker-base",
+   "rss_base_mb": 34.6,
+   "rss_loaded_mb": 1038.0,
+   "rss_delta_mb": 1003.4,
+   "cold_start_load_s": 1.54,
+   "first_rerank_warmup_s": 1.05,
+   "rerank80_median_ms": 985.8,
+   "rerank80_all_ms": [
+    1010.4,
+    977.7,
+    985.8,
+    1009.0,
+    950.1
+   ],
+   "ru_maxrss_mb": 1736.1,
+   "onnx_size_gb": 1.04
+  },
+  {
+   "model": "Xenova/ms-marco-MiniLM-L-6-v2",
+   "rss_base_mb": 34.5,
+   "rss_loaded_mb": 379.6,
+   "rss_delta_mb": 345.1,
+   "cold_start_load_s": 0.23,
+   "first_rerank_warmup_s": 0.12,
+   "rerank80_median_ms": 118.0,
+   "rerank80_all_ms": [
+    115.6,
+    120.9,
+    118.0,
+    134.3,
+    110.0
+   ],
+   "ru_maxrss_mb": 395.3,
+   "onnx_size_gb": 0.08
+  },
+  {
+   "model": "jinaai/jina-reranker-v1-turbo-en",
+   "rss_base_mb": 34.6,
+   "rss_loaded_mb": 523.6,
+   "rss_delta_mb": 489.1,
+   "cold_start_load_s": 0.25,
+   "first_rerank_warmup_s": 0.16,
+   "rerank80_median_ms": 188.5,
+   "rerank80_all_ms": [
+    225.5,
+    190.9,
+    154.4,
+    188.5,
+    174.4
+   ],
+   "ru_maxrss_mb": 613.2,
+   "onnx_size_gb": 0.15
+  }
+ ]
+}

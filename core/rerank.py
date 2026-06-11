@@ -20,7 +20,11 @@ import os
 # resident while hot — the RSS "sawtooth" of issue #8 is this model paging in on recall
 # bursts and being reclaimed by the OS at idle). Changing the model changes ranking
 # quality — re-run the LoCoMo benchmark before switching a production deployment.
-DEFAULT_RERANKER = os.environ.get("MEMNOS_RERANKER", "BAAI/bge-reranker-base")  # ~278M params, ONNX
+# Default chosen by measured LoCoMo A/B on the IDENTICAL full-10 corpus (2026-06-10,
+# n=1542, same answer+judge): MiniLM-L-6 65% vs bge-reranker-base 59% — the 80MB model
+# BEAT the 1.04GB one by +6pp while being 8.4x faster (118ms vs 986ms / 80 candidates),
+# ~660MB lighter resident, 0.23s vs 1.5s cold start. Override: MEMNOS_RERANKER.
+DEFAULT_RERANKER = os.environ.get("MEMNOS_RERANKER", "Xenova/ms-marco-MiniLM-L-6-v2")
 
 
 def _sigmoid(x: float) -> float:
