@@ -538,19 +538,21 @@ class BrainStore:
             return c.fetchall()
 
     def search_semantic(self, schema, ns, qvec, qtext, k=40, current_only=False) -> list[dict]:
-        """Hybrid RRF (vector+FTS) over SEMANTIC; current_only filters superseded facts."""
+        """Hybrid RRF (vector+FTS) over SEMANTIC; current_only filters superseded facts.
+        Returns restatements + salience too — rank-time reinforcement signals for the
+        fact arm (issue #11). ADDITIVE columns only; fetch semantics unchanged."""
         self._chk(schema)
         valid = "AND valid_to IS NULL" if current_only else ""
         sql = f"""
-        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
+        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
                      FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {valid} ORDER BY embedding <=> %(qv)s::halfvec LIMIT %(k)s),
-        fts AS (SELECT id, statement, valid_from, author_principal, memory_type, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
+        fts AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
                 FROM {schema}.semantic, websearch_to_tsquery('english',%(qt)s) q
                 WHERE namespace=%(ns)s AND expired_at IS NULL {valid} AND fts @@ q ORDER BY ts_rank(fts,q) DESC LIMIT %(k)s),
-        fused AS (SELECT id, statement, valid_from, author_principal, memory_type, SUM(1.0/(60+rnk)) score
-                  FROM (SELECT id,statement,valid_from,author_principal,memory_type,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,rnk FROM fts) r
-                  GROUP BY id,statement,valid_from,author_principal,memory_type)
-        SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, score FROM fused ORDER BY score DESC LIMIT %(k)s;"""
+        fused AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, SUM(1.0/(60+rnk)) score
+                  FROM (SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM fts) r
+                  GROUP BY id,statement,valid_from,author_principal,memory_type,restatements,salience)
+        SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience, score FROM fused ORDER BY score DESC LIMIT %(k)s;"""
         with self.conn.cursor() as c:
             c.execute(sql, {"qv": vlit(qvec), "qt": qtext, "ns": ns, "k": k})
             return c.fetchall()
@@ -564,15 +566,15 @@ class BrainStore:
         self._chk(schema)
         cur = "AND valid_to IS NULL" if current_only else ""
         base = f"""
-        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
+        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
                      FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {cur} ORDER BY embedding <=> %(qv)s::halfvec LIMIT %(k)s),
-        fts AS (SELECT id, statement, valid_from, author_principal, memory_type, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
+        fts AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
                 FROM {schema}.semantic, websearch_to_tsquery('english',%(qt)s) q
                 WHERE namespace=%(ns)s AND expired_at IS NULL {cur} AND fts @@ q ORDER BY ts_rank(fts,q) DESC LIMIT %(k)s),
-        fused AS (SELECT id, statement, valid_from, author_principal, memory_type, SUM(1.0/(60+rnk)) score
-                  FROM (SELECT id,statement,valid_from,author_principal,memory_type,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,rnk FROM fts) r
-                  GROUP BY id,statement,valid_from,author_principal,memory_type)
-        SELECT id, statement AS content, valid_from, author_principal AS author, memory_type FROM fused ORDER BY score DESC LIMIT %(k)s"""
+        fused AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, SUM(1.0/(60+rnk)) score
+                  FROM (SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM fts) r
+                  GROUP BY id,statement,valid_from,author_principal,memory_type,restatements,salience)
+        SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience FROM fused ORDER BY score DESC LIMIT %(k)s"""
         params = {"qv": vlit(qvec), "qt": qtext, "ns": ns, "k": k}
         rows, seen = [], set()
         with self.conn.cursor() as c:
@@ -582,7 +584,7 @@ class BrainStore:
                     seen.add(r["id"]); rows.append(r)
             # event-time window guarantee
             if start and end:
-                c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author, memory_type "
+                c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience "
                           f"FROM {schema}.semantic "
                           f"WHERE namespace=%s AND expired_at IS NULL AND valid_from >= %s AND valid_from < %s "
                           f"ORDER BY valid_from LIMIT %s", (ns, start, end, k))
@@ -591,7 +593,7 @@ class BrainStore:
                         seen.add(r["id"]); rows.append(r)
             # first/last boundary facts
             if order in ("asc", "desc"):
-                c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author, memory_type "
+                c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience "
                           f"FROM {schema}.semantic "
                           f"WHERE namespace=%s AND expired_at IS NULL AND valid_from IS NOT NULL "
                           f"ORDER BY valid_from {('ASC' if order=='asc' else 'DESC')} LIMIT 6", (ns,))
