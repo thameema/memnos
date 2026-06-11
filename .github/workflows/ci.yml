@@ -86,6 +86,8 @@ jobs:
     # suite stays on the ubuntu server-tests job above.
     name: CLI smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: "1"     # Windows defaults to cp1252; our output is UTF-8 (—, ·, →)
     strategy:
       fail-fast: false
       matrix:
