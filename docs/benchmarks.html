@@ -255,14 +255,14 @@
   <div class="max-w-5xl mx-auto px-6">
     <div class="text-center mb-12">
       <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">How we report ours</span>
-      <h2 class="text-3xl font-bold text-white mt-3 mb-4">We'd rather publish a credible 58% than an inflated 85%</h2>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">We'd rather publish a credible 64–65% than an inflated 85%</h2>
       <p class="text-gray-400 max-w-2xl mx-auto">Here's exactly how memnos measures itself on a standard long-conversation memory benchmark — with every choice above made the honest way.</p>
     </div>
 
     <div class="grid md:grid-cols-2 gap-6 mb-8">
       <div class="glass rounded-2xl p-6">
-        <h3 class="text-white font-semibold mb-3">An independent, cross-provider judge</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">We have one AI provider grade another provider's answers — never the model grading itself — to strip out self-preference bias. That's the number we lead with.</p>
+        <h3 class="text-white font-semibold mb-3">A disclosed judge — never a self-graded headline</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Every number we publish names its judge and rubric and ships with per-question predictions in the repo. An independent cross-provider judge pass is on the roadmap — it gets published when it's re-verified, not before.</p>
       </div>
       <div class="glass rounded-2xl p-6">
         <h3 class="text-white font-semibold mb-3">The whole band, published</h3>
@@ -282,12 +282,12 @@
       <div class="gradient-border-inner px-8 py-6 rounded-2xl">
         <div class="grid sm:grid-cols-3 gap-6 text-center">
           <div>
-            <div class="text-3xl font-bold text-white">58%</div>
-            <div class="text-xs text-gray-500 mt-1">independent cross-provider judge — the number we stand behind</div>
+            <div class="text-3xl font-bold text-white">64–65%</div>
+            <div class="text-xs text-gray-500 mt-1">gpt-4o judge — three independent from-scratch ingests on the v0.1.5 default config (65 / 64 / 65); the band we stand behind</div>
           </div>
           <div>
             <div class="text-3xl font-bold text-white">57–61%</div>
-            <div class="text-xs text-gray-500 mt-1">gpt-4o judge, reproduced from scratch (predictions published)</div>
+            <div class="text-xs text-gray-500 mt-1">our earlier runs on the v0.1.4 config — still published, nothing memory-holed; per-question predictions for every run in the repo</div>
           </div>
           <div>
             <div class="text-3xl font-bold text-white">44–88%</div>
@@ -297,8 +297,8 @@
         <div class="code-block p-4 mt-6 max-w-lg mx-auto">
           <pre class="text-xs leading-relaxed"><code><span class="token-cmt"># reproduce it yourself — full conversation set, from scratch</span>
 $ python benchmarks/locomo_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9
-gpt-4o judge      : <span class="token-num">57–61%</span>
-independent judge : <span class="token-num">58%</span>
+gpt-4o judge : <span class="token-num">64–65%</span>  <span class="token-cmt"># three independent ingests: 65 / 64 / 65</span>
+<span class="token-cmt"># earlier v0.1.4-config runs: 57–61% — still published</span>
 <span class="token-cmt"># same answers, judge band: 44% .. 88%</span></code></pre>
         </div>
       </div>

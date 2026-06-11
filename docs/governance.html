@@ -212,7 +212,7 @@
     <div class="text-center mb-14">
       <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Audit Trail</span>
       <h2 class="text-3xl font-bold text-white mt-3 mb-4">Every agent action. Every decision. Permanently auditable.</h2>
-      <p class="text-gray-400 max-w-2xl mx-auto">Every memory write in memnos carries full provenance. Not just what was written — but who wrote it, which tool produced it, which git commit it belongs to, and which ticket it traces back to.</p>
+      <p class="text-gray-400 max-w-2xl mx-auto">Every operation in memnos is authenticated, namespace-scoped and audit-logged, and every consolidated fact keeps provenance links to the raw episodes it came from. Per-author attribution on each memory ships in v0.1.6.</p>
     </div>
 
     <div class="grid md:grid-cols-2 gap-10 items-start mb-12">
@@ -225,23 +225,22 @@
             <span class="ml-3 text-xs text-gray-600">audit_record.json</span>
           </div>
           <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-var">{</span>
-  <span class="token-str">"id"</span>: <span class="token-str">"mem_a4f2b91"</span>,
-  <span class="token-str">"content"</span>: <span class="token-str">"Selected PostgreSQL + pgvector over Neo4j
+  <span class="token-str">"id"</span>: <span class="token-num">48121</span>,
+  <span class="token-str">"text"</span>: <span class="token-str">"Selected PostgreSQL + pgvector over Neo4j
     for multi-model support"</span>,
-  <span class="token-str">"memory_type"</span>: <span class="token-str">"decision"</span>,
-  <span class="token-str">"author"</span>: <span class="token-str">"arch-agent-01"</span>,
-  <span class="token-str">"provenance"</span>: <span class="token-var">{</span>
-    <span class="token-str">"agent_id"</span>: <span class="token-str">"arch-agent-01"</span>,
-    <span class="token-str">"tool"</span>: <span class="token-str">"claude-code"</span>,
-    <span class="token-str">"git_commit"</span>: <span class="token-str">"a4f2b91"</span>,
-    <span class="token-str">"ticket"</span>: <span class="token-str">"ARCH-42"</span>,
-    <span class="token-str">"session_id"</span>: <span class="token-str">"sess_7c2d..."</span>
-  <span class="token-var">}</span>,
-  <span class="token-str">"created_at"</span>: <span class="token-str">"2026-03-15T10:23:44Z"</span>,
+  <span class="token-str">"kind"</span>: <span class="token-str">"proposition"</span>,
+  <span class="token-str">"namespace"</span>: <span class="token-str">"org:acme:architecture"</span>,
   <span class="token-str">"valid_from"</span>: <span class="token-str">"2026-03-15T10:23:44Z"</span>,
-  <span class="token-str">"valid_until"</span>: <span class="token-kw">null</span>,
-  <span class="token-str">"namespace"</span>: <span class="token-str">"org:acme:architecture"</span>
-<span class="token-var">}</span></code></pre>
+  <span class="token-str">"valid_to"</span>: <span class="token-kw">null</span>,
+  <span class="token-str">"provenance"</span>: <span class="token-var">{</span> <span class="token-str">"episodes"</span>: [<span class="token-num">9143</span>, <span class="token-num">9150</span>] <span class="token-var">}</span>,
+  <span class="token-str">"audit"</span>: <span class="token-var">{</span>
+    <span class="token-str">"principal"</span>: <span class="token-str">"arch-agent"</span>,
+    <span class="token-str">"op"</span>: <span class="token-str">"/remember"</span>,
+    <span class="token-str">"ts"</span>: <span class="token-str">"2026-03-15T10:23:44Z"</span>,
+    <span class="token-str">"status"</span>: <span class="token-num">200</span>
+  <span class="token-var">}</span>
+<span class="token-var">}</span>
+<span class="token-cmt">// per-author attribution on each memory: v0.1.6</span></code></pre>
         </div>
       </div>
 
@@ -450,9 +449,9 @@
             <div class="w-9 h-9 bg-green-500/10 border border-green-500/20 rounded-xl flex items-center justify-center">
               <svg class="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
             </div>
-            <h3 class="text-white font-semibold">Rotation with version history</h3>
+            <h3 class="text-white font-semibold">Master-key rotation</h3>
           </div>
-          <p class="text-sm text-gray-400 leading-relaxed">Rotate any credential with a single API call. Previous versions are retained for a configurable window — so agents using the old value get a grace period to update, without an outage.</p>
+          <p class="text-sm text-gray-400 leading-relaxed">Rotate the vault&rsquo;s encryption key with one command (<code class="text-xs">memnos secret rotate</code>) — every stored secret is re-encrypted under the new key. Per-secret versioned rotation with grace periods is on the roadmap.</p>
         </div>
 
         <div class="glass rounded-2xl p-6">
@@ -462,7 +461,7 @@
             </div>
             <h3 class="text-white font-semibold">Audit-logged access</h3>
           </div>
-          <p class="text-sm text-gray-400 leading-relaxed">Every vault read is recorded — agent, timestamp, namespace. Know exactly which agent read which credential and when. Full compliance-grade access log for every secret access event.</p>
+          <p class="text-sm text-gray-400 leading-relaxed">Vault operations go through the same authenticated, audit-logged control plane as every other memnos call — principal, operation and timestamp recorded in the audit log.</p>
         </div>
       </div>
 
@@ -471,38 +470,25 @@
           <div class="w-3 h-3 rounded-full bg-red-500/60"></div>
           <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
           <div class="w-3 h-3 rounded-full bg-green-500/60"></div>
-          <span class="ml-3 text-xs text-gray-600">vault_example.py</span>
+          <span class="ml-3 text-xs text-gray-600">terminal — secret vault</span>
         </div>
-        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># Store a secret alongside metadata</span>
-<span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-var">vault</span>.<span class="token-fn">set</span>(
-    <span class="token-str">"prod_db_password"</span>,
-    <span class="token-str">"s3cr3t_v@lue"</span>,
-    tags<span class="token-kw">=</span>[<span class="token-str">"database"</span>, <span class="token-str">"prod"</span>],
-    namespace<span class="token-kw">=</span><span class="token-str">"org:acme:security"</span>,
-)
+        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># Generate the vault master key (stored in your config, mode 0600)</span>
+memnos secret keygen
 
-<span class="token-cmt"># Read — automatically creates audit log entry</span>
-<span class="token-var">password</span> <span class="token-kw">=</span> <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-var">vault</span>.<span class="token-fn">get</span>(<span class="token-str">"prod_db_password"</span>)
-<span class="token-cmt"># Audit record: {agent: "deploy-agent", read_at: ...}</span>
+<span class="token-cmt"># Store a secret — AES-256-GCM encrypted at rest</span>
+memnos secret set prod_db_password --desc <span class="token-str">"primary DB"</span>
 
-<span class="token-cmt"># Rotate with version history (grace period)</span>
-<span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-var">vault</span>.<span class="token-fn">rotate</span>(
-    <span class="token-str">"prod_db_password"</span>,
-    <span class="token-str">"new_s3cr3t_v@lue"</span>,
-    grace_period_hours<span class="token-kw">=</span><span class="token-num">24</span>,
-)
+<span class="token-cmt"># List (names + metadata only — never values)</span>
+memnos secret ls
 
-<span class="token-cmt"># List all secrets (metadata only — no values)</span>
-<span class="token-var">secrets</span> <span class="token-kw">=</span> <span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-var">vault</span>.<span class="token-fn">list</span>(
-    namespace<span class="token-kw">=</span><span class="token-str">"org:acme:security"</span>,
-    tags<span class="token-kw">=</span>[<span class="token-str">"prod"</span>],
-)
+<span class="token-cmt"># Rotate the master key — re-encrypts every secret</span>
+memnos secret rotate
 
-<span class="token-cmt"># Delete expired versions</span>
-<span class="token-kw">await</span> <span class="token-var">client</span>.<span class="token-var">vault</span>.<span class="token-fn">purge_old_versions</span>(
-    <span class="token-str">"prod_db_password"</span>,
-    keep_versions<span class="token-kw">=</span><span class="token-num">3</span>,
-)</code></pre>
+<span class="token-cmt"># Remove a secret</span>
+memnos secret rm prod_db_password
+
+<span class="token-cmt"># Ingest redaction is automatic: API keys, JWTs, PEM blocks and
+# passwords are stripped BEFORE text ever enters memory</span></code></pre>
       </div>
     </div>
   </div>
@@ -667,15 +653,15 @@
           <div class="flex items-start gap-3">
             <svg class="w-5 h-5 text-cyan-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
             <div>
-              <p class="text-white text-sm font-medium">Full namespace export to JSON</p>
-              <p class="text-xs text-gray-500 mt-1">All memories, edges, metadata, and provenance included. Completely portable JSON format — import anywhere.</p>
+              <p class="text-white text-sm font-medium">Standard PostgreSQL backup &amp; restore</p>
+              <p class="text-xs text-gray-500 mt-1">All memories, edges, metadata and provenance are plain Postgres tables — <code>pg_dump</code> is a complete, portable backup.</p>
             </div>
           </div>
           <div class="flex items-start gap-3">
             <svg class="w-5 h-5 text-cyan-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
             <div>
-              <p class="text-white text-sm font-medium">Import to any memnos installation</p>
-              <p class="text-xs text-gray-500 mt-1">Cloud to on-prem, region migration, disaster recovery — any installation can import any export.</p>
+              <p class="text-white text-sm font-medium">Restore to any memnos installation</p>
+              <p class="text-xs text-gray-500 mt-1">Cloud to on-prem, region migration, disaster recovery — restore the dump anywhere; whole namespaces can also be copied or moved with one command.</p>
             </div>
           </div>
           <div class="flex items-start gap-3">
@@ -702,28 +688,18 @@
           <div class="w-3 h-3 rounded-full bg-green-500/60"></div>
           <span class="ml-3 text-xs text-gray-600">terminal</span>
         </div>
-        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># Export entire organization memory</span>
-<span class="token-var">memnos</span> <span class="token-fn">export</span> \
-  <span class="token-str">--namespace</span> org:acme \
-  <span class="token-str">--output</span> acme-backup-2026-05-27.json \
-  <span class="token-str">--include-provenance</span> \
-  <span class="token-str">--include-vault-metadata</span>
+        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># Your memory is rows in YOUR PostgreSQL — back it up like one</span>
+pg_dump -Fc memnos > acme-backup-2026-06-10.dump
 
-<span class="token-cmt"># → Exported 4,821 memories, 12,440 edges</span>
-<span class="token-cmt"># → Output: acme-backup-2026-05-27.json (18.4 MB)</span>
+<span class="token-cmt"># Restore on any other installation</span>
+pg_restore -d memnos acme-backup-2026-06-10.dump
 
-<span class="token-cmt"># Import to new installation (region migration)</span>
-<span class="token-var">memnos</span> <span class="token-fn">import</span> \
-  <span class="token-str">--file</span> acme-backup-2026-05-27.json \
-  <span class="token-str">--namespace</span> org:acme \
-  <span class="token-str">--target</span> https://new-region.memnos.acme.com
+<span class="token-cmt"># Copy or move a whole namespace between scopes</span>
+memnos namespace copy org:acme:eng --to org:acme:platform
+memnos namespace move proj:pilot --to org:acme:eng
 
-<span class="token-cmt"># → Imported 4,821 memories in 2.3s</span>
-
-<span class="token-cmt"># Namespace-scoped backup (single team)</span>
-<span class="token-var">memnos</span> <span class="token-fn">export</span> \
-  <span class="token-str">--namespace</span> org:acme:engineering:backend \
-  <span class="token-str">--output</span> backend-team-2026.json</code></pre>
+<span class="token-cmt"># Or pull memories across namespaces you can read
+# (copy_memories_from — MCP / REST)</span></code></pre>
       </div>
     </div>
   </div>
