@@ -67,15 +67,17 @@ class BrainStore:
     # --- episodic ---------------------------------------------------------
     def insert_episodic(self, schema, ns, session_id, text, *, summary=None,
                         t_start=None, t_end=None, observed_at=None, salience=0.0,
-                        source_turn_ids: Iterable[int] = (), vec=None, author=None) -> int:
+                        source_turn_ids: Iterable[int] = (), vec=None, author=None,
+                        memory_type=None) -> int:
         self._chk(schema)
         with self.conn.cursor() as c:
             c.execute(
                 f"INSERT INTO {schema}.episodic"
-                f"(namespace,session_id,text,summary,t_start,t_end,observed_at,salience,source_turn_ids,embedding,author_principal) "
-                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::halfvec,%s) RETURNING id",
+                f"(namespace,session_id,text,summary,t_start,t_end,observed_at,salience,source_turn_ids,embedding,author_principal,memory_type) "
+                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::halfvec,%s,%s) RETURNING id",
                 (ns, session_id, text, summary, t_start, t_end, observed_at, salience,
-                 list(source_turn_ids), vlit(vec) if vec is not None else None, author))
+                 list(source_turn_ids), vlit(vec) if vec is not None else None, author,
+                 memory_type))
             return c.fetchone()["id"]
 
     def uncovered_raw_turns(self, schema, ns) -> list[dict]:
@@ -83,7 +85,7 @@ class BrainStore:
         self._chk(schema)
         with self.conn.cursor() as c:
             c.execute(f"""
-                SELECT id, speaker, text, observed_at, session_id
+                SELECT id, speaker, text, observed_at, session_id, memory_type
                 FROM {schema}.raw_turns
                 WHERE namespace=%s AND id NOT IN (
                     SELECT unnest(source_turn_ids) FROM {schema}.episodic
@@ -110,7 +112,7 @@ class BrainStore:
         self._chk(schema)
         with self.conn.cursor() as c:
             c.execute(f"SELECT id, session_id, summary, text, t_start, t_end, salience, "
-                      f"access_count, source_turn_ids FROM {schema}.episodic WHERE id=%s AND namespace=%s",
+                      f"access_count, source_turn_ids, memory_type FROM {schema}.episodic WHERE id=%s AND namespace=%s",
                       (episode_id, ns))
             ep = c.fetchone()
             if not ep:
@@ -326,15 +328,15 @@ class BrainStore:
         """Hybrid RRF (vector+FTS) over EPISODIC; returns observed_at for recency."""
         self._chk(schema)
         sql = f"""
-        WITH vec AS (SELECT id, text, observed_at, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
+        WITH vec AS (SELECT id, text, observed_at, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
                      FROM {schema}.episodic WHERE namespace=%(ns)s ORDER BY embedding <=> %(qv)s::halfvec LIMIT %(k)s),
-        fts AS (SELECT id, text, observed_at, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
+        fts AS (SELECT id, text, observed_at, memory_type, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
                 FROM {schema}.episodic, websearch_to_tsquery('english',%(qt)s) q
                 WHERE namespace=%(ns)s AND fts @@ q ORDER BY ts_rank(fts,q) DESC LIMIT %(k)s),
-        fused AS (SELECT id, text, observed_at, SUM(1.0/(60+rnk)) score
-                  FROM (SELECT id,text,observed_at,rnk FROM vec UNION ALL SELECT id,text,observed_at,rnk FROM fts) r
-                  GROUP BY id,text,observed_at)
-        SELECT id, text AS content, observed_at, score FROM fused ORDER BY score DESC LIMIT %(k)s;"""
+        fused AS (SELECT id, text, observed_at, memory_type, SUM(1.0/(60+rnk)) score
+                  FROM (SELECT id,text,observed_at,memory_type,rnk FROM vec UNION ALL SELECT id,text,observed_at,memory_type,rnk FROM fts) r
+                  GROUP BY id,text,observed_at,memory_type)
+        SELECT id, text AS content, observed_at, memory_type, score FROM fused ORDER BY score DESC LIMIT %(k)s;"""
         with self.conn.cursor() as c:
             c.execute(sql, {"qv": vlit(qvec), "qt": qtext, "ns": ns, "k": k})
             return c.fetchall()
@@ -608,9 +610,11 @@ class BrainStore:
 
     def pinned_constraints(self, schema, namespaces, *, cap=10) -> list[dict]:
         """PINNED CONSTRAINT INJECTION (0.1.6): every LIVE memory typed 'constraint' in the
-        given namespaces — regardless of query similarity. Covers BOTH stores: semantic
-        facts (extraction inheritance / direct fact writes) and raw turns (local mode has
-        no extraction, so the verbatim typed turn IS the constraint). Oldest-first
+        given namespaces — regardless of query similarity. Covers ALL THREE stores:
+        semantic facts (extraction inheritance / direct fact writes), raw turns (local
+        mode has no extraction, so the verbatim typed turn IS the constraint), and
+        episodic events (an episode inherits 'constraint' only when its source turns are
+        UNANIMOUSLY that type — so the episode body is constraint material). Oldest-first
         (constraints are durable ground rules — earliest laid down come first), deduped on
         content, capped. Pure SQL, no embedding involved."""
         self._chk(schema)
@@ -629,6 +633,11 @@ class BrainStore:
                 f"  SELECT text AS content, 'turn'::text AS kind, observed_at AS ts,"
                 f"         author_principal AS author, namespace"
                 f"  FROM {schema}.raw_turns WHERE namespace = ANY(%(nss)s) AND memory_type='constraint'"
+                f"  UNION ALL"
+                f"  SELECT text AS content, 'episode'::text AS kind,"
+                f"         COALESCE(t_start, observed_at) AS ts,"
+                f"         author_principal AS author, namespace"
+                f"  FROM {schema}.episodic WHERE namespace = ANY(%(nss)s) AND memory_type='constraint'"
                 f") u ORDER BY ts, content LIMIT %(lim)s",
                 {"nss": nss, "lim": cap * 3})        # over-fetch: dedupe may drop rows
             # dedupe on content (a turn + its identical extracted fact), keep oldest, cap

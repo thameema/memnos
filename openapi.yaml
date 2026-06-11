@@ -1479,7 +1479,7 @@ components:
       required: [content, kind]
       properties:
         content: { type: string }
-        kind: { type: string, enum: [turn, fact] }
+        kind: { type: string, enum: [turn, fact, episode] }
         score: { type: number }
         date: { type: [string, "null"], description: fact valid_from (YYYY-MM-DD) }
         author: { type: string, description: server-stamped writing principal }
@@ -1698,6 +1698,10 @@ components:
             source_turn_ids:
               type: array
               items: { type: integer }
+            memory_type:
+              type: [string, "null"]
+              enum: [decision, incident, constraint, skill, fact, null]
+              description: inherited when ALL source turns share one type (else null)
         turns:
           type: array
           items: { $ref: "#/components/schemas/TurnRow" }
@@ -1730,6 +1734,10 @@ components:
               t_start: { $ref: "#/components/schemas/DateTime" }
               t_end: { $ref: "#/components/schemas/DateTime" }
               salience: { type: number }
+              memory_type:
+                type: [string, "null"]
+                enum: [decision, incident, constraint, skill, fact, null]
+                description: inherited when ALL source turns share one type (else null)
               score:
                 $ref: "#/components/schemas/SqlNumber"
     EpisodeDecayResponse:

@@ -573,6 +573,10 @@ class MemnosMemory:
         two-level provenance (fact → episode → turn). Incremental + idempotent: only turns
         not already in an episode are segmented.
 
+        TYPED MEMORIES: an episode INHERITS a memory_type only when ALL of its source
+        turns carry the same non-null type (unanimous — conservative by design: a mixed
+        or partly-typed group is not 'a decision episode', so it stays NULL).
+
         PHASED for pooled callers: read turns (DB) → summaries + embeddings (CPU/network,
         NO connection: up to max_episodes embedding calls) → inserts (DB). `conn_factory`
         gives each DB phase its own short-lived connection; default (None) uses self.store
@@ -598,7 +602,7 @@ class MemnosMemory:
 
         # SUMMARY + EMBED phase — NO connection required (embedding is a network call
         # in OpenAI mode; summary_fn may be an LLM).
-        prepared = []                                        # (group, body, summary, vec)
+        prepared = []                              # (group, body, summary, vec, mtype)
         for g in groups[:max_episodes]:
             body = "\n".join(f"{(r['speaker'] or 'user')}: {r['text']}" for r in g)
             if summary_fn:
@@ -608,19 +612,23 @@ class MemnosMemory:
                 sents = re.split(r"(?<=[.!?])\s+", joined)
                 summary = (" ".join(sents[:2])[:400] or joined[:400])
             vec = self.embed(summary) if summary else None
-            prepared.append((g, body, summary, vec))
+            # UNANIMOUS type inheritance (conservative): one non-null type across ALL
+            # source turns → the episode carries it; any mix / any untyped turn → NULL.
+            mtypes = {r.get("memory_type") for r in g}
+            mtype = mtypes.pop() if (len(mtypes) == 1 and None not in mtypes) else None
+            prepared.append((g, body, summary, vec, mtype))
 
         n = 0
 
         def _write(store):
             nonlocal n
-            for g, body, summary, vec in prepared:
+            for g, body, summary, vec, mtype in prepared:
                 sids = [r["id"] for r in g]
                 eid = store.insert_episodic(
                     self.schema, namespace, g[0].get("session_id"), body, summary=summary,
                     t_start=g[0]["observed_at"], t_end=g[-1]["observed_at"], observed_at=g[-1]["observed_at"],
                     salience=min(1.0, 0.3 + 0.1 * len(g)), source_turn_ids=sids, vec=vec,
-                    author=self.author)
+                    author=self.author, memory_type=mtype)
                 store.link_episode_provenance(self.schema, namespace, eid, sids)
                 n += 1
 
