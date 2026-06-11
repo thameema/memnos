@@ -97,6 +97,51 @@ def _salient_tokens(text: str) -> set[str]:
     return {t for t in _TOKEN_RE.findall((text or "").lower()) if t not in _TOKEN_STOP}
 
 
+# --- query-specificity heuristic (issue #11) ----------------------------------------
+# Broad status questions ("where are we with the deployment?") embed close to long
+# discursive raw turns almost by construction — the turns mention everything — so the
+# turn arm outranks the distilled facts that actually answer the question. The fix is
+# a CHEAP, DETERMINISTIC classifier (no LLM, no embedding) that shifts ARM ORDER only:
+# broad ⇒ facts/dossiers lead the context; specific/neutral ⇒ unchanged (turns stay
+# competitive — verbatim questions NEED raw turns first). High-precision by design:
+# 'specific' cues (quoted strings / verbatim verbs) always win over 'broad' cues, and
+# anything without an explicit broad cue stays 'neutral' — LoCoMo-style single-hop /
+# temporal questions must NOT trip the broad pathway. MEMNOS_BROAD_QUERY_TUNE=0 disables.
+# Double/curly quotes only — single quotes false-positive on contractions ("what's …
+# the team's plan" would scan as a quoted span between the two apostrophes).
+_QUOTED_RE = re.compile(r'"[^"]{2,}"|“[^”]{2,}”')
+_VERBATIM_RE = re.compile(
+    r"\b(exactly|verbatim|quote[ds]?|quoting|word[ -]for[ -]word|literally|precisely|"
+    r"say|says|said|saying|tell|tells|told|mention|mentions|mentioned|wrote|write|"
+    r"phrase[d]?|wording|describe[d]?|express(ed)?)\b", re.I)
+_BROAD_RE = re.compile(
+    r"\b(where (are|do) we|where (do|does) (things|it|this|that) stand|"
+    r"where do we stand|status|state of|progress|update[sd]? on|latest on|the latest|"
+    r"overview|catch (me|us) up|summar(y|ies|ize[d]?|ise[d]?)|recap|big picture|"
+    r"how (is|are) .{0,40}(going|coming along|shaping up|doing)|so far|"
+    r"current(ly)? (state|situation)|bring me up to (speed|date)|fill me in|"
+    r"what.{0,12}(going on|happening) with)\b", re.I)
+
+
+# Question-word capitals are not entities ("Where are we…" — _PROPER would count 'Where').
+_Q_CAPS = {"What", "Whats", "Where", "When", "Who", "Whom", "Whose", "Why", "How",
+           "Which", "Give", "Tell", "Can", "Could", "Would", "Should", "Did", "Does",
+           "The", "Are", "Is", "Was", "Were", "Has", "Have", "Any", "Please"}
+
+
+def query_specificity(query: str) -> str:
+    """'specific' | 'broad' | 'neutral'. Deterministic, ordered: verbatim/quoted cues
+    beat broad cues; long or entity-dense questions never classify broad (a question
+    naming 2+ proper entities is about THOSE things, not a status sweep)."""
+    q = query or ""
+    if _QUOTED_RE.search(q) or _VERBATIM_RE.search(q):
+        return "specific"
+    ents = {e for e in _PROPER.findall(q) if e not in _Q_CAPS}
+    if _BROAD_RE.search(q) and len(q.split()) <= 20 and len(ents) <= 1:
+        return "broad"
+    return "neutral"
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, default))
@@ -536,16 +581,39 @@ class MemnosMemory:
         """CPU phase of recall: cross-encoder rerank + quota assembly over a
         recall_fetch bundle. No database access — safe with no connection held.
         Ranking is byte-identical to the pre-split recall(), except that STALE turns
-        (all derived facts superseded) are annotated + demoted below current facts."""
+        (all derived facts superseded) are annotated + demoted below current facts,
+        plus the issue #11 broad-query tune (all three knobs zero-disable, and
+        MEMNOS_BROAD_QUERY_TUNE=0 kills the whole tune):
+          1. broad questions ('where are we with the deployment?') put facts/dossiers
+             AHEAD of raw turns — same rows, same quotas, order only; specific/neutral
+             queries keep the original turn-first order (query_specificity above);
+          2. raw-turn scores get a mild LOG-LENGTH penalty at rank time (long
+             discursive turns match everything; storage untouched);
+          3. fact scores get a bounded reinforcement boost from restatements/salience
+             (a fact restated 50x should outrank a turn that mentioned it once)."""
         intent = b["intent"]
+        tune = _env_float("MEMNOS_BROAD_QUERY_TUNE", 1.0) > 0
+        len_pen = _env_float("MEMNOS_TURN_LENGTH_PENALTY", 0.15) if tune else 0.0
+        sal_boost = _env_float("MEMNOS_SALIENCE_BOOST", 0.05) if tune else 0.0
+        broad = tune and query_specificity(query) == "broad"
+
+        def adjust(s, it, kind):
+            # rank-time score shaping — content/storage untouched, bounded by design
+            if kind == "turn" and len_pen > 0:
+                s /= 1.0 + len_pen * max(0.0, math.log(max(len(it["content"]), 1) / 400.0))
+            if kind == "fact" and sal_boost > 0:
+                s *= 1.0 + min(0.25, sal_boost * (math.log1p(it.get("restatements") or 0)
+                                                  + max(0.0, (it.get("salience") or 0.0) - 0.5)))
+            return s
 
         def rr(items, kind):
             if not items:
                 return []
             order = brain_rerank.rerank(query, [c["content"] for c in items], self.reranker)
-            out = []
+            scored = []
             for i, s in order:
-                row = {"content": items[i]["content"], "kind": kind, "score": float(s)}
+                s = adjust(float(s), items[i], kind)
+                row = {"content": items[i]["content"], "kind": kind, "score": s}
                 if kind == "fact" and items[i].get("valid_from"):
                     row["date"] = items[i]["valid_from"].date().isoformat()
                 if items[i].get("author"):                    # who wrote this memory
@@ -559,13 +627,16 @@ class MemnosMemory:
                     if items[i].get("_superseded_at"):
                         row["superseded_at"] = (items[i]["_superseded_at"]
                                                 .astimezone(timezone.utc).date().isoformat())
-                out.append(row)
-            return out
+                scored.append(row)
+            scored.sort(key=lambda r: -r["score"])            # re-sort on adjusted score
+            return scored
 
         if not intent.temporal:
             sem_rows = rr(b["sem"], "fact")
             if not b["ents"]:
                 fresh, stale = self._demote_stale(rr(b["raw"], "turn")[:raw_quota])
+                if broad:                                     # facts lead on broad questions
+                    return sem_rows[:fact_quota] + fresh + stale
                 return fresh + sem_rows[:fact_quota] + stale
             seen, eg = set(), []
             for r in b.get("dump", []):
@@ -582,6 +653,8 @@ class MemnosMemory:
                 eg.append(row)
             sem_rows = [r for r in sem_rows if r["content"] not in seen]
             fresh, stale = self._demote_stale(rr(b["raw"], "turn")[:raw_quota])
+            if broad:                                         # facts/dossiers lead
+                return eg[:entity_quota] + sem_rows[:fact_quota] + fresh + stale
             return fresh + eg[:entity_quota] + sem_rows[:fact_quota] + stale
 
         tl_rows, tl_seen = [], set()
@@ -632,16 +705,28 @@ class MemnosMemory:
         return raw_c, sem_c
 
     def recall_wide_rank(self, query, raw_c, sem_c, *, raw_quota=11, fact_quota=8) -> list[dict]:
-        """CPU phase of recall_wide: global cross-encoder rerank. No database access."""
+        """CPU phase of recall_wide: global cross-encoder rerank. No database access.
+        Carries the same issue #11 tune as recall_rank: length-normalized turn scores,
+        restatement/salience-boosted fact scores, facts-first order on broad queries."""
+        tune = _env_float("MEMNOS_BROAD_QUERY_TUNE", 1.0) > 0
+        len_pen = _env_float("MEMNOS_TURN_LENGTH_PENALTY", 0.15) if tune else 0.0
+        sal_boost = _env_float("MEMNOS_SALIENCE_BOOST", 0.05) if tune else 0.0
+        broad = tune and query_specificity(query) == "broad"
 
         def rr(items, kind, quota):
             if not items:
                 return []
             order = brain_rerank.rerank(query, [c["content"] for c in items], self.reranker)
-            out = []
-            for i, s in order[:quota]:
+            scored = []
+            for i, s in order:
                 it = items[i]
-                row = {"content": it["content"], "kind": kind, "score": float(s), "namespace": it["_ns"]}
+                s = float(s)
+                if kind == "turn" and len_pen > 0:            # rank-time length norm (issue #11)
+                    s /= 1.0 + len_pen * max(0.0, math.log(max(len(it["content"]), 1) / 400.0))
+                if kind == "fact" and sal_boost > 0:          # bounded reinforcement boost
+                    s *= 1.0 + min(0.25, sal_boost * (math.log1p(it.get("restatements") or 0)
+                                                      + max(0.0, (it.get("salience") or 0.0) - 0.5)))
+                row = {"content": it["content"], "kind": kind, "score": s, "namespace": it["_ns"]}
                 if kind == "fact" and it.get("valid_from"):
                     row["date"] = it["valid_from"].date().isoformat()
                 if it.get("author"):
@@ -653,11 +738,15 @@ class MemnosMemory:
                     if it.get("_superseded_at"):
                         row["superseded_at"] = (it["_superseded_at"]
                                                 .astimezone(timezone.utc).date().isoformat())
-                out.append(row)
-            return out
+                scored.append(row)
+            scored.sort(key=lambda r: -r["score"])            # re-sort on adjusted score
+            return scored[:quota]
 
         fresh, stale = self._demote_stale(rr(raw_c, "turn", raw_quota))
-        return fresh + rr(sem_c, "fact", fact_quota) + stale
+        facts = rr(sem_c, "fact", fact_quota)
+        if broad:                                             # facts lead on broad questions
+            return facts + fresh + stale
+        return fresh + facts + stale
 
     @staticmethod
     def render_context(rows, *, max_chars=9000, viewer=None) -> str:
