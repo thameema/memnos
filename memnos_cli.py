@@ -2047,6 +2047,12 @@ def cmd_docs_gen(args, cfg):
 
 
 def main():
+    if sys.platform == "win32":                 # Windows consoles default to cp1252 —
+        for _s in (sys.stdout, sys.stderr):     # our help/output uses Unicode (— · ↔)
+            try:
+                _s.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     cfg = load_config()
     ap = build_parser()
