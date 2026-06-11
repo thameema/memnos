@@ -77,6 +77,14 @@ BEGIN
   EXECUTE format('ALTER TABLE %I.episodic  ADD COLUMN IF NOT EXISTS author_principal text', s);
   EXECUTE format('ALTER TABLE %I.semantic  ADD COLUMN IF NOT EXISTS author_principal text', s);
 
+  -- SUPERSESSION LINKAGE + RESTATEMENTS (write-path supersession fixes; additive,
+  -- rolling-safe): superseded_by = the id of the fact that closed this one out (set by
+  -- SPO supersession and the reversal/negation close-out — auditable belief-change
+  -- chain). restatements = how many times a near-duplicate of this fact was re-asserted
+  -- and collapsed into it instead of inserted (write-path dedupe; density signal).
+  EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS superseded_by bigint', s);
+  EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS restatements int NOT NULL DEFAULT 0', s);
+
   -- TYPED MEMORIES (0.1.6): optional classification of a memory —
   -- decision | incident | constraint | skill | fact. NULL = untyped (legacy/plain).
   -- Facts extracted from a typed turn INHERIT the turn's type. type='constraint'

@@ -187,17 +187,20 @@ class BrainStore:
     def insert_semantic(self, schema, ns, kind, statement, *, subject=None, predicate=None,
                         obj=None, valid_from=None, valid_to=None, confidence=1.0,
                         salience=0.0, vec=None, source_turn_ids: Iterable[int] = (),
-                        author=None, memory_type=None) -> int:
+                        author=None, memory_type=None, observed_at=None) -> int:
+        # observed_at = the OBSERVATION (knowledge) axis used by bi-temporal supersession:
+        # when this fact was learned (server: now; session ingest: session date). None →
+        # column default now() (legacy callers unchanged).
         self._chk(schema)
         src = list(source_turn_ids) if source_turn_ids else None
         with self.conn.cursor() as c:
             c.execute(
                 f"INSERT INTO {schema}.semantic"
-                f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding,source_turn_ids,author_principal,memory_type) "
-                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::halfvec,%s,%s,%s) RETURNING id",
+                f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding,source_turn_ids,author_principal,memory_type,observed_at) "
+                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::halfvec,%s,%s,%s,COALESCE(%s,now())) RETURNING id",
                 (ns, kind, statement, subject, predicate, obj, valid_from, valid_to,
                  confidence, salience, vlit(vec) if vec is not None else None, src, author,
-                 memory_type))
+                 memory_type, observed_at))
             return c.fetchone()["id"]
 
     def provenance_of(self, schema, ns, semantic_id) -> dict | None:
@@ -291,23 +294,112 @@ class BrainStore:
                  "lo": dist_lo, "hi": dist_hi})
             return len(c.fetchall())
 
-    def supersede_predicate(self, schema, ns, subject, predicate, obj, valid_from) -> int:
+    def supersede_predicate(self, schema, ns, subject, predicate, obj, valid_from,
+                            observed_at=None, historical=False, event_date=None) -> list[int]:
         """ROBUST belief-change supersession: when a new (subject, predicate, object)
         fact arrives, close out the currently-valid facts with the SAME subject+predicate
         but a DIFFERENT object (e.g. lives-in Austin → lives-in Seattle). Sets valid_to;
-        never deletes. This is what makes 'what is X's CURRENT y?' trustworthy. Returns #."""
+        never deletes. This is what makes 'what is X's CURRENT y?' trustworthy.
+
+        BI-TEMPORAL guard (see service._write_fact): belief change is keyed on the
+        OBSERVATION axis — the old fact must have been observed no later than the new
+        one (a fact learned later is newer knowledge even when its EVENT date backdates,
+        e.g. "moved last week"). Only when the new statement is flagged `historical`
+        (past-state wording) do we additionally require event order: the old fact's
+        valid_from must be <= `event_date` (the EXPLICIT in-statement date; the caller
+        skips the call entirely when a historical statement has none) — a backdated
+        historical statement must not displace the current value. valid_to = the new
+        fact's event date, clamped to never precede the closed fact's own valid_from.
+        Returns the superseded ids (callers stamp superseded_by on them)."""
         self._chk(schema)
         if not subject or not predicate:
-            return 0
+            return []
+        obs = observed_at if observed_at is not None else valid_from
         with self.conn.cursor() as c:
             c.execute(
-                f"UPDATE {schema}.semantic SET valid_to=%s "
-                f"WHERE namespace=%s AND valid_to IS NULL AND expired_at IS NULL "
-                f"AND lower(subject_entity)=lower(%s) AND lower(predicate)=lower(%s) "
-                f"AND lower(coalesce(object,'')) <> lower(coalesce(%s,'')) "
-                f"AND (valid_from IS NULL OR valid_from <= %s) RETURNING id",
-                (valid_from, ns, subject, predicate, obj, valid_from))
+                f"UPDATE {schema}.semantic "
+                f"SET valid_to=GREATEST(coalesce(valid_from, %(vt)s), %(vt)s) "
+                f"WHERE namespace=%(ns)s AND valid_to IS NULL AND expired_at IS NULL "
+                f"AND lower(subject_entity)=lower(%(sub)s) AND lower(predicate)=lower(%(pred)s) "
+                f"AND lower(coalesce(object,'')) <> lower(coalesce(%(obj)s,'')) "
+                f"AND (%(obs)s::timestamptz IS NULL OR observed_at <= %(obs)s) "
+                f"AND (NOT %(hist)s OR valid_from IS NULL "
+                f"     OR (%(ev)s::timestamptz IS NOT NULL AND valid_from <= %(ev)s)) "
+                f"RETURNING id",
+                {"vt": valid_from, "ns": ns, "sub": subject, "pred": predicate, "obj": obj,
+                 "obs": obs, "hist": bool(historical), "ev": event_date})
+            return [r["id"] for r in c.fetchall()]
+
+    def mark_superseded_by(self, schema, ids, new_id) -> None:
+        """Stamp the supersession LINK (additive column): which fact replaced these."""
+        self._chk(schema)
+        if not ids:
+            return
+        with self.conn.cursor() as c:
+            c.execute(f"UPDATE {schema}.semantic SET superseded_by=%s WHERE id = ANY(%s)",
+                      (new_id, list(ids)))
+
+    def nearest_live_facts(self, schema, ns, vec, *, k=8, exclude_id=None,
+                           observed_before=None) -> list[dict]:
+        """Top-k semantically nearest LIVE extracted facts (HNSW) in a namespace — the
+        candidate set for the reversal/negation close-out. kind='fact' only (dossiers/
+        constraints are consolidation-owned), optional knowledge-axis cutoff."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(
+                f"SELECT id, statement, subject_entity, (embedding <=> %(v)s::halfvec) AS dist "
+                f"FROM {schema}.semantic "
+                f"WHERE namespace=%(ns)s AND kind='fact' AND valid_to IS NULL "
+                f"AND expired_at IS NULL AND embedding IS NOT NULL "
+                f"AND (%(ex)s::bigint IS NULL OR id <> %(ex)s) "
+                f"AND (%(obs)s::timestamptz IS NULL OR observed_at <= %(obs)s) "
+                f"ORDER BY embedding <=> %(v)s::halfvec LIMIT %(k)s",
+                {"v": vlit(vec), "ns": ns, "ex": exclude_id, "obs": observed_before, "k": k})
+            return c.fetchall()
+
+    def close_out(self, schema, ns, fact_id, *, valid_to, superseded_by=None) -> int:
+        """Close ONE live fact (belief change): set valid_to (clamped to its own
+        valid_from) + the superseded_by link. Never deletes. Returns 0/1."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(
+                f"UPDATE {schema}.semantic "
+                f"SET valid_to=GREATEST(coalesce(valid_from, %(vt)s), %(vt)s), superseded_by=%(by)s "
+                f"WHERE id=%(id)s AND namespace=%(ns)s AND valid_to IS NULL AND expired_at IS NULL "
+                f"RETURNING id",
+                {"vt": valid_to, "by": superseded_by, "id": fact_id, "ns": ns})
             return len(c.fetchall())
+
+    def find_near_duplicate(self, schema, ns, vec, subject, thresh) -> dict | None:
+        """Nearest LIVE extracted fact within `thresh` cosine distance (write-path dedupe).
+        Subject agreement is required only when BOTH sides carry a subject."""
+        self._chk(schema)
+        if vec is None or thresh <= 0:
+            return None
+        with self.conn.cursor() as c:
+            c.execute(
+                f"SELECT id, statement, (embedding <=> %(v)s::halfvec) AS dist "
+                f"FROM {schema}.semantic "
+                f"WHERE namespace=%(ns)s AND kind='fact' AND valid_to IS NULL "
+                f"AND expired_at IS NULL AND embedding IS NOT NULL "
+                f"AND (%(sub)s::text IS NULL OR subject_entity IS NULL "
+                f"     OR lower(subject_entity)=lower(%(sub)s)) "
+                f"AND (embedding <=> %(v)s::halfvec) < %(t)s "
+                f"ORDER BY embedding <=> %(v)s::halfvec LIMIT 1",
+                {"v": vlit(vec), "ns": ns, "sub": subject, "t": thresh})
+            return c.fetchone()
+
+    def bump_restatement(self, schema, fact_id, source_turn_ids=()) -> None:
+        """Reinforce an existing live fact instead of inserting a near-duplicate:
+        restatements counter + salience bump + provenance union (additive columns)."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(
+                f"UPDATE {schema}.semantic SET restatements = restatements + 1, "
+                f"salience = LEAST(1.0, salience + 0.1), "
+                f"source_turn_ids = (SELECT ARRAY(SELECT DISTINCT t FROM "
+                f"unnest(coalesce(source_turn_ids,'{{}}'::bigint[]) || %s::bigint[]) AS t ORDER BY t)) "
+                f"WHERE id=%s", (list(source_turn_ids or ()), fact_id))
 
     def expire(self, schema, ns, semantic_id) -> None:
         """System-time invalidation (CORRECTION, not belief change): mark a fact as
