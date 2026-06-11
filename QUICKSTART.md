@@ -20,6 +20,9 @@ five minutes — one package, one command.
 
 > No OpenAI key required to try it. The local mode runs entirely on CPU.
 
+> **Windows?** Full walkthrough (Docker path, pgvector-on-Windows, schtasks autostart):
+> [`docs/guides/windows.md`](docs/guides/windows.md).
+
 ---
 
 ## 1. Install the `memnos` package
