@@ -89,7 +89,7 @@ reboots and waits for Postgres if it isn't up yet — setup offers it automatica
 `memnos --help` covers everything: `setup start stop restart status token grant principal
 namespace secret stats health whoami ns remember recall migrate-embeddings upgrade`. Config
 (DSN, vault key, port) lives in `~/.memnos/config.json`. Full walkthrough:
-[`QUICKSTART.md`](QUICKSTART.md).
+[`QUICKSTART.md`](QUICKSTART.md) — on Windows, see [`docs/guides/windows.md`](docs/guides/windows.md).
 
 `memnos setup` asks for an **optional OpenAI key** (validated live, stored AES-256-GCM
 encrypted in the vault): with one, you get 1536-d embeddings + bi-temporal fact extraction;
