@@ -5,6 +5,8 @@
     memnos token <principal>     # mint a bearer token
     memnos grant <p> <ns>        # grant namespace access
     memnos namespace add <ns>    # create a namespace
+    memnos namespace set <ns> --kind knowledge   # mark as a knowledge namespace
+    memnos namespace link <src> <dst>            # ground recall on src in dst
     memnos secret set <name>     # store an encrypted secret (vault)
     memnos secret rotate         # rotate the vault master key
     memnos remember/recall ...   # data client (talks to the server over HTTP)
@@ -1103,9 +1105,37 @@ def cmd_namespace(args, cfg):
                                                       mode=args.action, like=args.like)
         print(f"{out['mode']}d {out['facts']} facts + {out['raw_turns']} turns "
               f"from {args.name} -> {args.to}")
+    elif args.action == "set":
+        if not args.name or not args.kind:
+            sys.exit("usage: memnos namespace set <ns> --kind memory|knowledge")
+        Control.set_namespace_kind(conn, args.name, args.kind)
+        print(f"namespace '{args.name}' kind set to '{args.kind}'")
+    elif args.action == "link":
+        if not args.name or not args.dst:
+            sys.exit("usage: memnos namespace link <src> <dst>")
+        created_by = None
+        try:
+            created_by = _principal_id(conn, "admin")
+        except SystemExit:
+            pass
+        Control.link_namespaces(conn, args.name, args.dst, created_by=created_by)
+        print(f"linked {args.name} -> {args.dst} (recall on '{args.name}' will also "
+              f"ground in '{args.dst}' for callers with a read grant on it)")
+    elif args.action == "unlink":
+        if not args.name or not args.dst:
+            sys.exit("usage: memnos namespace unlink <src> <dst>")
+        removed = Control.unlink_namespaces(conn, args.name, args.dst)
+        print(f"unlinked {args.name} -> {args.dst}" if removed else "no such link")
+    elif args.action == "links":
+        rows = Control.list_links(conn, args.name)
+        if not rows:
+            print("no links" + (f" from '{args.name}'" if args.name else ""))
+        for l in rows:
+            print(f"  {l['src_ns']} -> {l['dst_ns']}  (by {l['created_by'] or '?'}, {l['created_at']:%Y-%m-%d})")
     else:  # ls
         for n in Control.list_namespaces(conn):
-            print(f"  {n['name']:<28} turns={n['turns']} facts={n['facts']}  {n['description'] or ''}")
+            kind = " [knowledge]" if n.get("kind") == "knowledge" else ""
+            print(f"  {n['name']:<28} turns={n['turns']} facts={n['facts']}{kind}  {n['description'] or ''}")
 
 
 def cmd_secret(args, cfg):
@@ -1625,7 +1655,7 @@ def main():
     p = sub.add_parser("principal"); p.add_argument("name"); p.add_argument("--kind", default="user"); p.set_defaults(fn=cmd_principal)
     p = sub.add_parser("token"); p.add_argument("principal"); p.add_argument("--label"); p.add_argument("--ttl-days", type=int); p.set_defaults(fn=cmd_token)
     p = sub.add_parser("grant"); p.add_argument("principal"); p.add_argument("namespace"); p.add_argument("--read-only", action="store_true"); p.set_defaults(fn=cmd_grant)
-    p = sub.add_parser("namespace"); p.add_argument("action", choices=["add", "ls", "rm", "copy", "move"]); p.add_argument("name", nargs="?"); p.add_argument("--to"); p.add_argument("--like"); p.add_argument("--desc"); p.add_argument("--purge", action="store_true"); p.set_defaults(fn=cmd_namespace)
+    p = sub.add_parser("namespace"); p.add_argument("action", choices=["add", "ls", "rm", "copy", "move", "set", "link", "unlink", "links"]); p.add_argument("name", nargs="?"); p.add_argument("dst", nargs="?"); p.add_argument("--to"); p.add_argument("--like"); p.add_argument("--desc"); p.add_argument("--kind", choices=["memory", "knowledge"]); p.add_argument("--purge", action="store_true"); p.set_defaults(fn=cmd_namespace)
     p = sub.add_parser("secret"); p.add_argument("action", choices=["set", "ls", "rm", "keygen", "rotate"]); p.add_argument("name", nargs="?"); p.add_argument("--value"); p.add_argument("--desc"); p.set_defaults(fn=cmd_secret)
     p = sub.add_parser("stats"); p.set_defaults(fn=cmd_stats)
     p = sub.add_parser("health"); p.set_defaults(fn=cmd_health)

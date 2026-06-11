@@ -23,6 +23,8 @@ throwaway namespaces it creates.
 | `test_migrate_api.py` | copy / move memories between namespaces |
 | `test_reconcile_api.py` | local-vs-remote staleness reconciliation |
 | `test_wide_recall_api.py` | cross-namespace (`scope:"all"`) recall |
+| `test_author_attribution.py` | server-stamped `author_principal` + `(by ...)` context tags + author filter |
+| `test_grounded_recall.py` | knowledge namespaces, namespace links, grounded `/recall` fan-out |
 
 ## Running locally
 

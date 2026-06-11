@@ -292,8 +292,37 @@ class Handler(BaseHTTPRequestHandler):
                     if not name or len(name) > 200:
                         return 400, {"error": "name required (<=200 chars)"}
                     Control.create_namespace(conn, name, created_by=pid, description=body.get("description"))
+                    if body.get("kind"):
+                        Control.set_namespace_kind(conn, name, str(body["kind"]))
                     _NS_CACHE["data"] = None
                     return 200, {"ok": True, "name": name}
+                # --- grounded-recall namespace links (admin-only CRUD) ---
+                if sub == "namespaces/links" and method == "GET":
+                    src = (qs.get("ns", [""])[0]).strip() or None
+                    return 200, {"links": Control.list_links(conn, src)}
+                if sub == "namespaces/links" and method == "POST":
+                    src = str(body.get("src", "")).strip()
+                    dst = str(body.get("dst", "")).strip()
+                    if not src or not dst:
+                        return 400, {"error": "src and dst required"}
+                    if src == dst:
+                        return 400, {"error": "src and dst must differ"}
+                    Control.link_namespaces(conn, src, dst, created_by=pid)
+                    return 200, {"ok": True, "src": src, "dst": dst}
+                if sub == "namespaces/links" and method == "DELETE":
+                    src = (qs.get("src", [""])[0]).strip()
+                    dst = (qs.get("dst", [""])[0]).strip()
+                    if not src or not dst:
+                        return 400, {"error": "src and dst required"}
+                    return 200, {"ok": True, "removed": Control.unlink_namespaces(conn, src, dst)}
+                if sub == "namespaces/kind" and method == "POST":
+                    name = str(body.get("name", "")).strip()
+                    kind = str(body.get("kind", "")).strip()
+                    if not name or kind not in ("memory", "knowledge"):
+                        return 400, {"error": "name and kind ('memory'|'knowledge') required"}
+                    Control.set_namespace_kind(conn, name, kind)
+                    _NS_CACHE["data"] = None
+                    return 200, {"ok": True, "name": name, "kind": kind}
                 if sub == "namespaces" and method == "DELETE":
                     name = (qs.get("name", [""])[0]).strip()
                     if not name:
@@ -594,7 +623,8 @@ class Handler(BaseHTTPRequestHandler):
                         text = str(req.get("text", ""))
                         if not name or not text.strip():
                             return self._send(400, {"error": "name and text required"})
-                        ids = store.ingest_constraints(mem.schema, ns, name, text)
+                        pname = (Control.principal_info(conn, principal) or {}).get("name")
+                        ids = store.ingest_constraints(mem.schema, ns, name, text, author=pname)
                         Control.corpus_record(conn, ns, name, str(req.get("kind", "doc")),
                                               (str(req.get("git_sha")) or None) if req.get("git_sha") else None,
                                               len(ids))
@@ -640,15 +670,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _auth_short(self, ns, token, *, write, action):
         """Short-lived auth+ACL phase on its OWN pool connection (released before any
-        slow work). Returns (principal, None) or (None, (code, obj)) to send."""
+        slow work). Returns (principal, pname, None) or (None, None, (code, obj)) to
+        send. `pname` = the authenticated principal's NAME — the only source for
+        author attribution (never the request body)."""
         with POOL.connection() as conn:
             principal = Control.authenticate(conn, token)
             if principal is None:
-                return None, (401, {"error": "unauthorized"})
+                return None, None, (401, {"error": "unauthorized"})
             if not Control.authorize(conn, principal, ns, write=write):
                 Control.audit(conn, principal, action, ns, False, {"reason": "forbidden"})
-                return None, (403, {"error": "forbidden for namespace"})
-        return principal, None
+                return None, None, (403, {"error": "forbidden for namespace"})
+            info = Control.principal_info(conn, principal)
+        return principal, (info or {}).get("name"), None
 
     def _remember_phased(self, req, ns, token, t0, action="remember"):
         """/remember (and its /memory/write alias) in phases — the 'LLM at ingest only,
@@ -669,14 +702,16 @@ class Handler(BaseHTTPRequestHandler):
         cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
         principal = None                               # bound for the failure-audit path
         try:
-            principal, err = self._auth_short(ns, token, write=True, action=action)  # P0
+            principal, pname, err = self._auth_short(ns, token, write=True, action=action)  # P0
             if err:
                 return self._send(*err)
             from core.redact import redact as _redact
             rtext0, _n = _redact(text)                            # P1a — CPU
             vec = EMBED(rtext0)                                   # P1a — network, NO conn
             with POOL.connection() as conn:                       # P1b — short DB write
-                mem = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM, on_usage=usage)
+                # author = AUTHENTICATED principal's name (token-derived; body ignored)
+                mem = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
+                                   on_usage=usage, author=pname)
                 tid, rtext, obs = mem.remember_turn(ns, rtext0, speaker=req.get("speaker"),
                                                     session_id=req.get("session_id"), vec=vec)
             # conn is back in the pool. `mem` is reused ONLY for extract_facts below,
@@ -698,7 +733,8 @@ class Handler(BaseHTTPRequestHandler):
             if hasattr(EMBED, "prime") and facts:                 # batch-embed fact statements, NO conn
                 EMBED.prime([f["statement"] for f in facts])
             with POOL.connection() as conn:                       # P3
-                mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM, on_usage=usage)
+                mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
+                                    on_usage=usage, author=pname)
                 nf, nsup = mem3.write_facts(ns, facts, obs, tid)
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 Control.record_usage(conn, principal, ns, action, mem3.extract_model,
@@ -732,12 +768,13 @@ class Handler(BaseHTTPRequestHandler):
         usage = _UsageAcc()
         cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
         try:
-            principal, err = self._auth_short(ns, token, write=self.path in WRITE_OPS,
-                                              action=action)
+            principal, pname, err = self._auth_short(ns, token, write=self.path in WRITE_OPS,
+                                                     action=action)
             if err:
                 return self._send(*err)
-            # store=None: DB phases attach a short-lived BrainStore per pool conn
-            mem = MemnosMemory(None, EMBED, dim=DIM, llm=LLM, on_usage=usage)
+            # store=None: DB phases attach a short-lived BrainStore per pool conn.
+            # author = authenticated principal's name (stamped on every write).
+            mem = MemnosMemory(None, EMBED, dim=DIM, llm=LLM, on_usage=usage, author=pname)
             try:
                 code, out = self._phased_op(mem, req, ns, principal)
             except Exception as op_err:
@@ -767,6 +804,15 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             return self._send(500, {"error": "internal error"})
 
+    @staticmethod
+    def _author_filter(rows, req):
+        """Optional /recall `author` filter — match against the SERVER-stamped
+        author_principal (rows without an author never match a filter)."""
+        author = str(req.get("author", "")).strip()
+        if not author:
+            return rows
+        return [r for r in rows if r.get("author") == author]
+
     def _phased_op(self, mem, req, ns, principal):
         """One PHASED_OPS endpoint body. Returns (code, out). Pool connections are
         acquired ONLY around pure-DB sections; embeddings/LLM/rerank run with none."""
@@ -783,6 +829,7 @@ class Handler(BaseHTTPRequestHandler):
             ckw = {"max_chars": int(req["max_chars"])} if "max_chars" in req else {}
             qv = mem.embed(q)                                     # network — NO conn
             wide = path == "/recall" and str(req.get("scope", "")).lower() in ("all", "wide")
+            grounded, skipped = [], []
             with POOL.connection() as conn:                       # DB fetch phase
                 mem.store = BrainStore(conn=conn)
                 if wide:
@@ -790,21 +837,35 @@ class Handler(BaseHTTPRequestHandler):
                     nss = Control.readable_namespaces(conn, principal)
                     raw_c, sem_c = mem.recall_wide_fetch(nss, q, qv=qv)
                 else:
-                    bundle = mem.recall_fetch(ns, q, qv=qv)
+                    # GROUNDED RECALL: fan out to LINKED knowledge namespaces, but only
+                    # those the CALLER may read (link = policy, grant = permission —
+                    # both required). Skipped links are reported, never silent.
+                    links = Control.linked_namespaces(conn, ns)
+                    for kns in links:
+                        (grounded if Control.authorize(conn, principal, kns, write=False)
+                         else skipped).append(kns)
+                    bundle = mem.recall_fetch(ns, q, qv=qv, extra_namespaces=grounded)
                 mem.store = None
             # CPU rerank phase — NO conn (ranking identical to pre-split recall)
             if wide:
                 rows = mem.recall_wide_rank(q, raw_c, sem_c, **rkw)
-                out = {"memories": rows, "context": mem.render_context(rows, **ckw),
+                rows = self._author_filter(rows, req)
+                out = {"memories": rows,
+                       "context": mem.render_context(rows, viewer=mem.author, **ckw),
                        "namespaces_searched": nss}
             else:
                 rows = mem.recall_rank(q, bundle, **rkw)
+                rows = self._author_filter(rows, req)
                 if path == "/recall":
-                    out = {"memories": rows, "context": mem.render_context(rows, **ckw)}
+                    out = {"memories": rows,
+                           "context": mem.render_context(rows, viewer=mem.author, **ckw)}
                 elif path == "/memory/context":
-                    out = {"context": mem.render_context(rows, **ckw)}
+                    out = {"context": mem.render_context(rows, viewer=mem.author, **ckw)}
                 else:                                             # /memory/search, /recall_v2
                     out = {"memories": rows}
+                if grounded or skipped:    # keys only appear when links exist (no drift)
+                    out["grounded_in"] = grounded
+                    out["links_skipped"] = skipped
             return 200, out
 
         if path == "/consolidate":
@@ -899,7 +960,9 @@ def _ingest_worker():
             mem.on_usage = usage
             facts = mem.extract_facts(rtext, obs)                 # NO conn held
             with POOL.connection() as conn:
-                mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM, on_usage=usage)
+                # mem.author carries the AUTHENTICATED principal's name from the request
+                mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
+                                    on_usage=usage, author=mem.author)
                 nf, nsup = mem3.write_facts(ns, facts, obs, tid)
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 Control.record_usage(conn, principal, ns, "remember", mem3.extract_model,

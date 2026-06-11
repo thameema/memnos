@@ -107,7 +107,9 @@ def main():
 
     # on_usage feeds dossier-LLM tokens to the meter so the per-namespace cost recorded
     # to usage_ledger reflects real spend (not just embeddings).
-    mem = MemnosMemory(store, embed, dim=embed.dim, llm=cli,
+    # author='system': scheduled consolidation has no requesting principal — dossiers
+    # it writes are attributed to the system, not to any user/agent.
+    mem = MemnosMemory(store, embed, dim=embed.dim, llm=cli, author="system",
                        on_usage=lambda model, pt, ct: meter.record("consolidate", model, pt, ct))
     total = 0
     for ns, n_facts in targets:

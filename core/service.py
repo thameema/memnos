@@ -50,7 +50,7 @@ def _dossier_text(x) -> str:
 class MemnosMemory:
     def __init__(self, store_or_dsn, embed_fn, *, reranker_model=brain_rerank.DEFAULT_RERANKER,
                  dim=1536, llm=None, extract_model="gpt-4o-mini", ensure_schema=False,
-                 on_usage=None, extract_fn=None, redact=True):
+                 on_usage=None, extract_fn=None, redact=True, author=None):
         # store_or_dsn may be a pooled BrainStore (production), a DSN string (scripts), or
         # None — for phased callers (the server) that only use the no-DB methods
         # (extract_facts, recall_rank, ...) or pass conn_factory to the phased methods,
@@ -73,6 +73,11 @@ class MemnosMemory:
         # cheap-per-call answerer stays on a paid API — the provider mix. None = OpenAI path.
         self.extract_fn = extract_fn
         self.redact = redact          # strip secrets from text BEFORE it enters memory
+        # author = the AUTHENTICATED principal's name (set by the server from the bearer
+        # token, NEVER from a request body — non-spoofable) or 'system' for scheduled
+        # jobs. Stamped as author_principal on every raw_turn/fact/episode this instance
+        # writes. None (scripts/benchmarks) leaves the column NULL.
+        self.author = author
         self.schema = self.store.create_schema(_TENANT, dim=dim) if ensure_schema else f"tenant_{_TENANT}"
 
     def _track(self, model, resp):
@@ -121,7 +126,8 @@ class MemnosMemory:
             text, _ = _redact(text)             # strip secrets BEFORE storage + extraction
         tid = self.store.insert_raw_turn(self.schema, namespace, session_id, speaker,
                                          text, observed_at,
-                                         vec if vec is not None else self.embed(text))
+                                         vec if vec is not None else self.embed(text),
+                                         author=self.author)
         return tid, text, observed_at
 
     def extract_facts(self, text, observed_at):
@@ -155,7 +161,8 @@ class MemnosMemory:
             if not txt:
                 continue
             tids.append(self.store.insert_raw_turn(self.schema, namespace, session_id, spk, txt,
-                                                   session_date + timedelta(minutes=ti), self.embed(txt)))
+                                                   session_date + timedelta(minutes=ti), self.embed(txt),
+                                                   author=self.author))
         n_facts = n_super = 0
         if extract and self.llm is not None:
             content = f"SESSION DATE: {session_date}\n\n" + "\n".join(
@@ -183,7 +190,7 @@ class MemnosMemory:
         fid = self.store.insert_semantic(self.schema, namespace, "fact", stmt,
                                          subject=subj, predicate=pred, obj=obj,
                                          valid_from=ev, salience=0.5, vec=vec,
-                                         source_turn_ids=source_turn_ids)
+                                         source_turn_ids=source_turn_ids, author=self.author)
         # populate the ENTITY GRAPH from the SPO triple (every fact is an edge)
         if subj:
             se = self.store.upsert_entity(self.schema, namespace, subj)
@@ -258,10 +265,17 @@ class MemnosMemory:
                                 raw_quota=raw_quota, fact_quota=fact_quota,
                                 entity_quota=entity_quota)
 
-    def recall_fetch(self, namespace: str, query: str, *, k=40, qv=None) -> dict:
+    def recall_fetch(self, namespace: str, query: str, *, k=40, qv=None,
+                     extra_namespaces=()) -> dict:
         """DB phase of recall: temporal intent + ALL store queries (raw, semantic,
         timeline/entity-guarantee arms). `qv` lets pooled callers pre-embed the query
-        (network) before acquiring a connection. Returns a bundle for recall_rank."""
+        (network) before acquiring a connection. Returns a bundle for recall_rank.
+
+        GROUNDED RECALL (0.1.6): `extra_namespaces` = linked knowledge namespaces the
+        CALLER may read (the server checks both the link and the read grant). Their
+        candidates are hybrid-searched per namespace, tagged with their source namespace
+        ("_ns"), and merged into the bundle — ONE rerank covers everything. Primary-
+        namespace rows stay untagged, so with no links the output is unchanged."""
         from . import temporal as T
         now = self.store.max_observed_at(self.schema, namespace) or datetime.now(timezone.utc)
         intent = T.analyze(query, now)
@@ -289,6 +303,12 @@ class MemnosMemory:
                 self.schema, namespace, qv, query, k,
                 start=intent.start, end=intent.end, current_only=intent.current,
                 order=intent.order)
+        # grounded fan-out: per-knowledge-namespace fetches, merged for the SINGLE rerank
+        for kns in extra_namespaces:
+            for r in self.store.search_raw_turns(self.schema, kns, qv, query, k):
+                r["_ns"] = kns; b["raw"].append(r)
+            for r in self.store.search_semantic(self.schema, kns, qv, query, k):
+                r["_ns"] = kns; b.setdefault("sem", []).append(r)
         return b
 
     def recall_rank(self, query: str, b: dict, *, raw_quota=11, fact_quota=8,
@@ -307,6 +327,10 @@ class MemnosMemory:
                 row = {"content": items[i]["content"], "kind": kind, "score": float(s)}
                 if kind == "fact" and items[i].get("valid_from"):
                     row["date"] = items[i]["valid_from"].date().isoformat()
+                if items[i].get("author"):                    # who wrote this memory
+                    row["author"] = items[i]["author"]
+                if items[i].get("_ns"):                       # grounded: source namespace
+                    row["namespace"] = items[i]["_ns"]
                 out.append(row)
             return out
 
@@ -320,8 +344,11 @@ class MemnosMemory:
                 if c in seen:
                     continue
                 seen.add(c)
-                eg.append({"content": c, "kind": "fact",
-                           "date": r["valid_from"].date().isoformat() if r.get("valid_from") else None})
+                row = {"content": c, "kind": "fact",
+                       "date": r["valid_from"].date().isoformat() if r.get("valid_from") else None}
+                if r.get("author"):
+                    row["author"] = r["author"]
+                eg.append(row)
             sem_rows = [r for r in sem_rows if r["content"] not in seen]
             return rr(b["raw"], "turn")[:raw_quota] + eg[:entity_quota] + sem_rows[:fact_quota]
 
@@ -331,8 +358,11 @@ class MemnosMemory:
             if c in tl_seen:
                 continue
             tl_seen.add(c)
-            tl_rows.append({"content": c, "kind": "fact",
-                            "date": r["valid_from"].date().isoformat() if r.get("valid_from") else None})
+            row = {"content": c, "kind": "fact",
+                   "date": r["valid_from"].date().isoformat() if r.get("valid_from") else None}
+            if r.get("author"):
+                row["author"] = r["author"]
+            tl_rows.append(row)
         sem_rows = [r for r in rr(b["sem"], "fact") if r["content"] not in tl_seen]
         # small raw + GUARANTEED timeline + a few reranked relevance facts
         return rr(b["raw"], "turn")[:5] + tl_rows[:12] + sem_rows[:6]
@@ -378,26 +408,36 @@ class MemnosMemory:
                 row = {"content": it["content"], "kind": kind, "score": float(s), "namespace": it["_ns"]}
                 if kind == "fact" and it.get("valid_from"):
                     row["date"] = it["valid_from"].date().isoformat()
+                if it.get("author"):
+                    row["author"] = it["author"]
                 out.append(row)
             return out
 
         return rr(raw_c, "turn", raw_quota) + rr(sem_c, "fact", fact_quota)
 
     @staticmethod
-    def render_context(rows, *, max_chars=9000) -> str:
+    def render_context(rows, *, max_chars=9000, viewer=None) -> str:
         """Format ALREADY-RETRIEVED recall rows into a paste-ready context block.
         Lets callers that need both memories AND context (the /recall endpoint) run the
         retrieval+rerank pipeline ONCE instead of twice — measured: halves /recall
         latency at field scale. Rows from recall() (no namespace tag) and recall_wide()
-        (tagged with source namespace) both render correctly."""
+        (tagged with source namespace) both render correctly.
+
+        ATTRIBUTION RULE: a line is tagged '(by <author>)' ONLY when the row's author
+        differs from `viewer` (the calling principal's name). Single-user contexts —
+        where everything was written by the caller — stay clean; memories written by
+        OTHER principals (bots, teammates) into a shared namespace are visibly
+        attributed. viewer=None (legacy callers) never tags."""
         out, used = [], 0
         for r in rows:
             tag = f" [{r['namespace']}]" if r.get("namespace") else ""
+            by = (f", by {r['author']}"
+                  if viewer is not None and r.get("author") and r["author"] != viewer else "")
             if r["kind"] == "fact":
                 d = f", {r['date']}" if r.get("date") else ""
-                line = f"- (fact{d}){tag} {r['content']}"
+                line = f"- (fact{d}{by}){tag} {r['content']}"
             else:
-                line = f"- (said){tag} {r['content']}"
+                line = f"- (said{by}){tag} {r['content']}"
             if used + len(line) > max_chars:
                 break
             out.append(line); used += len(line)
@@ -492,7 +532,8 @@ class MemnosMemory:
                         store.supersede_subject(self.schema, namespace, e[:100], vec, vf)
                         store.insert_semantic(self.schema, namespace, "dossier", f,
                                               subject=e[:100], valid_from=vf, salience=0.8, vec=vec,
-                                              source_turn_ids=sorted(ent_src.get(e, ())))
+                                              source_turn_ids=sorted(ent_src.get(e, ())),
+                                              author=self.author)
                         n += 1
                 except Exception:
                     continue
@@ -558,7 +599,8 @@ class MemnosMemory:
                 eid = store.insert_episodic(
                     self.schema, namespace, g[0].get("session_id"), body, summary=summary,
                     t_start=g[0]["observed_at"], t_end=g[-1]["observed_at"], observed_at=g[-1]["observed_at"],
-                    salience=min(1.0, 0.3 + 0.1 * len(g)), source_turn_ids=sids, vec=vec)
+                    salience=min(1.0, 0.3 + 0.1 * len(g)), source_turn_ids=sids, vec=vec,
+                    author=self.author)
                 store.link_episode_provenance(self.schema, namespace, eid, sids)
                 n += 1
 

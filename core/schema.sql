@@ -70,6 +70,13 @@ BEGIN
   -- from. Auditable evidence chain — "why do you believe this?" (additive, rolling-safe).
   EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS source_turn_ids bigint[]', s);
 
+  -- AUTHOR ATTRIBUTION (0.1.6): name of the AUTHENTICATED principal that wrote the row.
+  -- Stamped server-side from the bearer token — never read from a request body, so it
+  -- is non-spoofable. NULL on legacy rows / direct-DB writes. (additive, rolling-safe)
+  EXECUTE format('ALTER TABLE %I.raw_turns ADD COLUMN IF NOT EXISTS author_principal text', s);
+  EXECUTE format('ALTER TABLE %I.episodic  ADD COLUMN IF NOT EXISTS author_principal text', s);
+  EXECUTE format('ALTER TABLE %I.semantic  ADD COLUMN IF NOT EXISTS author_principal text', s);
+
   -- ASSOCIATIVE GRAPH
   EXECUTE format($t$
     CREATE TABLE IF NOT EXISTS %I.entities(
