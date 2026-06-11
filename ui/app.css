@@ -35,3 +35,9 @@ tr.state td{color:var(--muted);padding:14px 10px}
 button.retry{background:transparent;border:1px solid var(--err);color:var(--err);padding:3px 10px;font-weight:400;margin-left:8px}
 .pager{display:flex;gap:10px;align-items:center;justify-content:flex-end;margin-top:10px}
 .pager button{padding:5px 12px}.pager button:disabled{opacity:.35;cursor:default}
+#cli-ref h4{margin:18px 0 6px;color:var(--muted);text-transform:uppercase;font-size:12px;letter-spacing:.06em}
+.cli-cmd{border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:6px 0}
+.cli-cmd summary{cursor:pointer}
+.cli-cmd table{margin-top:8px}
+.cli-cmd pre{background:#0e1120;border-radius:8px;padding:10px;overflow-x:auto;margin:8px 0 2px}
+.cli-cmd pre code{background:transparent;padding:0}
