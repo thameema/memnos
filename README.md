@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![Engine: PostgreSQL + pgvector](https://img.shields.io/badge/engine-PostgreSQL%20%2B%20pgvector-336791.svg)](#)
 [![Query-time LLM: none](https://img.shields.io/badge/query--time%20LLM-none-success.svg)](#)
-[![LoCoMo](https://img.shields.io/badge/LoCoMo%20full--10-57–61%25-success.svg)](benchmarks/README.md)
+[![LoCoMo](https://img.shields.io/badge/LoCoMo%20full--10-64–65%25-success.svg)](benchmarks/README.md)
 [![PyPI](https://img.shields.io/pypi/v/memnos.svg)](https://pypi.org/project/memnos/)
 
 **Self-hostable, governed, vendor-neutral memory for AI agents — on one PostgreSQL.**
