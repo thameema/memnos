@@ -275,6 +275,30 @@ def main():
          name="POST /recall (unknown type)")
     call("POST", "/memory/search", token=TADM, body={"namespace": NS, "query": "Ada"}, expect=200)
     call("POST", "/recall_v2", token=TADM, body={"namespace": NS, "query": "Ada"}, expect=200)
+
+    # STALE-TURN annotation (issue #10 residual B): seed a turn whose only derived fact
+    # is superseded — /recall must return that turn row with superseded:true +
+    # superseded_at (schema-validated above) and label it in the context block.
+    t_old = store.insert_raw_turn(SCHEMA, NS, None, "user",
+                                  "The orbit launcher is blocked by a fuel pump failure.",
+                                  "2026-06-08T00:00:00+00:00", None)
+    f_new = store.insert_semantic(SCHEMA, NS, "fact", "The orbit launcher is cleared for launch.",
+                                  subject="orbit launcher", predicate="status", obj="cleared",
+                                  valid_from="2026-06-11T00:00:00+00:00")
+    f_old = store.insert_semantic(SCHEMA, NS, "fact", "The orbit launcher is blocked by a fuel pump.",
+                                  subject="orbit launcher", predicate="status", obj="blocked",
+                                  valid_from="2026-06-08T00:00:00+00:00", source_turn_ids=[t_old])
+    store.close_out(SCHEMA, NS, f_old, valid_to="2026-06-11T00:00:00+00:00", superseded_by=f_new)
+    st, recs = call("POST", "/recall", token=TADM,
+                    body={"namespace": NS, "query": "is the orbit launcher blocked by the fuel pump failure"},
+                    expect=200, name="POST /recall (stale-turn annotation)")
+    stale = [m for m in (recs or {}).get("memories", [])
+             if m.get("kind") == "turn" and m.get("superseded")]
+    check("stale turn row carries superseded:true + superseded_at",
+          stale and stale[0].get("superseded_at") == "2026-06-11"
+          and "fuel pump" in stale[0]["content"])
+    check("context labels the stale turn '(said, superseded as of <date>)'",
+          "- (said, superseded as of 2026-06-11)" in (recs or {}).get("context", ""))
     call("POST", "/memory/context", token=TADM, body={"namespace": NS, "query": "Ada", "max_chars": 500},
          expect=200)
     call("POST", "/consolidate", token=TADM, body={"namespace": NS}, expect=200)

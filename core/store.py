@@ -401,6 +401,93 @@ class BrainStore:
                 f"unnest(coalesce(source_turn_ids,'{{}}'::bigint[]) || %s::bigint[]) AS t ORDER BY t)) "
                 f"WHERE id=%s", (list(source_turn_ids or ()), fact_id))
 
+    # --- namespace reconcile (issue #10 residual C: pre-fix contradiction debt) ------
+    def live_facts_newest_first(self, schema, ns, limit=None) -> list[dict]:
+        """The namespace's LIVE extracted facts, newest-first on the observation axis —
+        the walk order for `memnos namespace reconcile` (newer knowledge closes older)."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(
+                f"SELECT id, statement, subject_entity, predicate, object, valid_from, "
+                f"observed_at, source_turn_ids FROM {schema}.semantic "
+                f"WHERE namespace=%(ns)s AND kind='fact' AND valid_to IS NULL "
+                f"AND expired_at IS NULL "
+                f"ORDER BY observed_at DESC NULLS LAST, id DESC "
+                f"LIMIT %(lim)s", {"ns": ns, "lim": limit})
+            return c.fetchall()
+
+    def is_live(self, schema, ns, fact_id) -> bool:
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(f"SELECT 1 FROM {schema}.semantic WHERE id=%s AND namespace=%s "
+                      f"AND valid_to IS NULL AND expired_at IS NULL", (fact_id, ns))
+            return c.fetchone() is not None
+
+    def older_near_duplicate(self, schema, ns, fact_id, thresh) -> dict | None:
+        """Reconcile twin of find_near_duplicate, against STORED embeddings: the nearest
+        OLDER live fact within `thresh` cosine distance of fact `fact_id` (same subject
+        agreement rule: required only when both sides carry one). No new embeddings."""
+        self._chk(schema)
+        if thresh <= 0:
+            return None
+        with self.conn.cursor() as c:
+            c.execute(
+                f"WITH a AS (SELECT id, embedding, subject_entity, observed_at "
+                f"           FROM {schema}.semantic WHERE id=%(id)s AND namespace=%(ns)s) "
+                f"SELECT s.id, s.statement, (s.embedding <=> a.embedding) AS dist "
+                f"FROM {schema}.semantic s, a "
+                f"WHERE s.namespace=%(ns)s AND s.kind='fact' AND s.valid_to IS NULL "
+                f"AND s.expired_at IS NULL AND s.embedding IS NOT NULL "
+                f"AND (coalesce(s.observed_at,'epoch'), s.id) < (coalesce(a.observed_at,'epoch'), a.id) "
+                f"AND (a.subject_entity IS NULL OR s.subject_entity IS NULL "
+                f"     OR lower(s.subject_entity)=lower(a.subject_entity)) "
+                f"AND (s.embedding <=> a.embedding) < %(t)s "
+                f"ORDER BY s.embedding <=> a.embedding LIMIT 1",
+                {"id": fact_id, "ns": ns, "t": thresh})
+            return c.fetchone()
+
+    def nearest_live_facts_to(self, schema, ns, fact_id, *, k=8) -> list[dict]:
+        """Reconcile twin of nearest_live_facts, against STORED embeddings: top-k live
+        facts nearest to fact `fact_id`, restricted to the SAME observation cutoff the
+        write path uses (observed no later than the anchor), excluding the anchor."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(
+                f"WITH a AS (SELECT id, embedding, observed_at "
+                f"           FROM {schema}.semantic WHERE id=%(id)s AND namespace=%(ns)s) "
+                f"SELECT s.id, s.statement, s.subject_entity, "
+                f"       (s.embedding <=> a.embedding) AS dist "
+                f"FROM {schema}.semantic s, a "
+                f"WHERE s.namespace=%(ns)s AND s.kind='fact' AND s.valid_to IS NULL "
+                f"AND s.expired_at IS NULL AND s.embedding IS NOT NULL AND s.id <> a.id "
+                f"AND (a.observed_at IS NULL OR s.observed_at <= a.observed_at) "
+                f"ORDER BY s.embedding <=> a.embedding LIMIT %(k)s",
+                {"id": fact_id, "ns": ns, "k": k})
+            return c.fetchall()
+
+    def turn_supersession(self, schema, turn_ids) -> dict:
+        """STALE-TURN lookup for recall (issue #10 residual B): for the RETRIEVED turn
+        ids only (one batched query — O(retrieved), never O(namespace); GIN index on
+        semantic.source_turn_ids), return {turn_id: close_date} for turns whose derived
+        semantic facts exist AND are ALL superseded (valid_to set or superseded_by set).
+        Turns with no derived facts, or with at least one still-live fact, are absent —
+        they stay untouched in ranking/rendering. close_date = the latest valid_to of
+        the closed facts (None only in the superseded_by-without-valid_to edge case)."""
+        self._chk(schema)
+        ids = [int(t) for t in turn_ids if t is not None]
+        if not ids:
+            return {}
+        with self.conn.cursor() as c:
+            c.execute(
+                f"SELECT t.tid AS turn_id, max(s.valid_to) AS closed_at "
+                f"FROM unnest(%(ids)s::bigint[]) AS t(tid) "
+                f"JOIN {schema}.semantic s ON s.source_turn_ids @> ARRAY[t.tid] "
+                f"  AND s.kind='fact' AND s.expired_at IS NULL "
+                f"GROUP BY t.tid "
+                f"HAVING bool_and(s.valid_to IS NOT NULL OR s.superseded_by IS NOT NULL)",
+                {"ids": ids})
+            return {r["turn_id"]: r["closed_at"] for r in c.fetchall()}
+
     def expire(self, schema, ns, semantic_id) -> None:
         """System-time invalidation (CORRECTION, not belief change): mark a fact as
         system-removed (expired_at). Excluded from all retrieval; history preserved."""

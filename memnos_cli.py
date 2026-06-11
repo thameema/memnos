@@ -1162,6 +1162,31 @@ def cmd_namespace(args, cfg):
             sys.exit("usage: memnos namespace unlink <src> <dst>")
         removed = Control.unlink_namespaces(conn, args.name, args.dst)
         print(f"unlinked {args.name} -> {args.dst}" if removed else "no such link")
+    elif args.action == "reconcile":
+        # BACKFILL pre-fix contradiction debt (issue #10 residual C): apply the
+        # deterministic write-time supersession logic (dedupe + SPO + negation
+        # close-out) pairwise over the namespace's LIVE facts, newest-first.
+        # Embedding-only (stored vectors), NO LLM. Direct-DB admin path (same _conn
+        # DSN trust as every other `memnos namespace` verb). Dry-run rolls back the
+        # SAME mutations, so its counts are exact, not estimates.
+        if not args.name:
+            sys.exit("usage: memnos namespace reconcile <ns> [--dry-run] [--limit N]")
+        import psycopg
+        from psycopg.rows import dict_row
+        from core.store import BrainStore
+        from core.service import reconcile_namespace
+        conn.close()                       # reconcile owns its own (non-autocommit) txn
+        rconn = psycopg.connect(_dsn(cfg), autocommit=False, row_factory=dict_row)
+        try:
+            res = reconcile_namespace(BrainStore(conn=rconn), args.name, limit=args.limit)
+            rconn.rollback() if args.dry_run else rconn.commit()
+        finally:
+            rconn.close()
+        mode = "dry-run — no changes written" if args.dry_run else "applied"
+        print(f"namespace reconcile '{args.name}' ({mode})")
+        print(f"  {'facts walked':<14} {res['facts_scanned']}")
+        print(f"  {'would-close' if args.dry_run else 'closed':<14} {res['closed']}")
+        print(f"  {'would-dedupe' if args.dry_run else 'deduped':<14} {res['deduped']}")
     elif args.action == "links":
         rows = Control.list_links(conn, args.name)
         if not rows:
@@ -1813,8 +1838,8 @@ def build_parser():
     v.set_defaults(fn=cmd_grant_rm)
 
     # ---- namespaces & secrets (already noun-verb via the action positional) ----
-    p = sub.add_parser("namespace", help="manage namespaces: add | ls | rm | set | link | unlink | links | copy | move")
-    p.add_argument("action", choices=["add", "ls", "rm", "copy", "move", "set", "link", "unlink", "links"],
+    p = sub.add_parser("namespace", help="manage namespaces: add | ls | rm | set | link | unlink | links | copy | move | reconcile")
+    p.add_argument("action", choices=["add", "ls", "rm", "copy", "move", "set", "link", "unlink", "links", "reconcile"],
                    help="what to do")
     p.add_argument("name", nargs="?", help="namespace (or copy/move SOURCE, or link SRC)")
     p.add_argument("dst", nargs="?", help="link/unlink destination namespace")
@@ -1823,6 +1848,10 @@ def build_parser():
     p.add_argument("--desc", help="add: description")
     p.add_argument("--kind", choices=["memory", "knowledge"], help="set: namespace kind")
     p.add_argument("--purge", action="store_true", help="rm: also delete the stored memories")
+    p.add_argument("--dry-run", action="store_true",
+                   help="reconcile: report would-close/would-dedupe counts, write nothing")
+    p.add_argument("--limit", type=int,
+                   help="reconcile: cap the number of facts walked this run (newest first)")
     p.set_defaults(fn=cmd_namespace)
     p = sub.add_parser("secret", help="encrypted secret vault: set | ls | rm | rotate | keygen")
     p.add_argument("action", choices=["set", "ls", "rm", "keygen", "rotate"], help="what to do")

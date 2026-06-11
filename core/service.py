@@ -32,10 +32,32 @@ _SINGLE_VALUED_CUES = ("live", "reside", "home", "based", "located", "current_",
                        # system/work item. did/visited/likes/met/owns stay additive.
                        "blocked",            # is_blocked_by / blocked_on — one current blocker state
                        "runs_on", "can_handle", "capacity", "deployed_", "version",
-                       "recommended_action")
+                       "recommended_action",
+                       # value-attribute cues (field issue #10 retest: 'rate_limit' never
+                       # superseded). Each reviewed against multi-valued corruption: all
+                       # name ONE current scalar setting of a system. visited/did/met and
+                       # the other additive relations stay out of this list.
+                       "quota", "threshold", "timeout", "max_", "min_", "count_of")
 # Exact-match-only cues: substring matching would be unsafe ('uses' is inside 'causes' /
 # 'houses'; bare 'recommended' is inside plausibly multi-valued 'recommended_books').
 _SINGLE_VALUED_EXACT = {"uses", "recommended", "recommendation"}
+# Token-match-only cues: substring matching would be unsafe ('rate' is inside 'operates' /
+# 'celebrates'; 'limit' is inside 'unlimited'), so these must match a whole _-separated
+# predicate token ('rate_limit' → {'rate','limit'} → single-valued; 'operates_in' stays out).
+_SINGLE_VALUED_TOKENS = {"rate", "limit"}
+
+# QUANTIFIED-OBJECT default (issue #10 residual A, the safer general rule): same subject +
+# IDENTICAL predicate + DIFFERENT object where the NEW object is a quantity ("200 rps",
+# "100 requests per second", "$5,000", "30%") is a value UPDATE — single-valued by
+# default regardless of the cue list. Guarded by _MULTI_VALUED_TOKENS: additive relations
+# (visited/did/met/likes/owns...) must NEVER supersede, even with a quantified object
+# ("ran 10 km" does not replace "ran 5 km" — separate events).
+_QUANTIFIED_OBJ_RE = re.compile(
+    r"^\s*(?:~|≈|<=|>=|<|>)?\s*[$€£]?\d[\d,.]*\s*(?:[a-zA-Z%/][\w\s/%.-]*)?$")
+_MULTI_VALUED_TOKENS = {"visited", "visit", "did", "met", "meets", "likes", "liked",
+                        "like", "owns", "own", "attended", "attends", "watched", "read",
+                        "tried", "went", "ate", "played", "bought", "experienced",
+                        "activity", "hobby", "enjoys"}
 
 # Past-state markers: a statement asserting where things STOOD in the past ("Alice lived in
 # Boston in 2019"), as opposed to a change-of-state assertion that implies a new CURRENT
@@ -44,6 +66,13 @@ _SINGLE_VALUED_EXACT = {"uses", "recommended", "recommendation"}
 _HISTORICAL_RE = re.compile(
     r"\b(lived|resided|worked|was|were|used to|had been|formerly|previously|originally|"
     r"back in|at the time|grew up)\b", re.I)
+# Change-of-state override for the historical gate: "the rate limit WAS CHANGED to 200"
+# trips _HISTORICAL_RE on the bare 'was', but it asserts a new CURRENT value, not a past
+# state (issue #10 retest case 4 verbatim). A passive change verb means belief change.
+_CHANGE_OF_STATE_RE = re.compile(
+    r"\b(?:was|were|has been|have been|is now|are now|got)\s+"
+    r"(?:changed|updated|raised|increased|lowered|reduced|set|switched|moved|renamed|"
+    r"bumped|upgraded|downgraded|adjusted|revised)\b", re.I)
 
 # Reversal/negation cues: the NEW statement explicitly closes out a prior state. Kept
 # high-precision (each must clearly assert that something stopped being true).
@@ -75,11 +104,50 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _pred_tokens(pred: str) -> set[str]:
+    return {t for t in re.split(r"[^a-z0-9]+", (pred or "").lower()) if t}
+
+
 def _is_single_valued(pred: str) -> bool:
     if not pred:
         return False
     p = pred.lower()
-    return p in _SINGLE_VALUED_EXACT or any(cue in p for cue in _SINGLE_VALUED_CUES)
+    return (p in _SINGLE_VALUED_EXACT or any(cue in p for cue in _SINGLE_VALUED_CUES)
+            or bool(_SINGLE_VALUED_TOKENS & _pred_tokens(p)))
+
+
+def _supersedable(pred: str, obj: str | None) -> bool:
+    """Should a new (subject, pred, obj) fact close out the prior value for the same
+    subject+predicate? True when the predicate matches a single-valued cue, OR — the
+    general value-update rule — when the NEW object is quantified (number/unit pattern)
+    and the predicate is not a known additive/multi-valued relation."""
+    if not pred:
+        return False
+    if _is_single_valued(pred):
+        return True
+    return bool(obj and _QUANTIFIED_OBJ_RE.match(obj)
+                and not (_pred_tokens(pred) & _MULTI_VALUED_TOKENS))
+
+
+def _negation_targets(stmt: str, subj: str | None, cands, neg_thresh: float):
+    """Shared reversal/negation close-out GUARD (write path + namespace reconcile):
+    from nearest-live candidates, yield the ones the reversal statement `stmt` closes.
+    HIGH PRECISION: vector distance <= threshold AND subject agreement (when both sides
+    carry one) AND ≥2 shared salient tokens of which at least one is NOT a subject-name
+    token (same-entity-but-unrelated facts share only the entity name)."""
+    new_toks = _salient_tokens(stmt)
+    subj_toks = _salient_tokens(subj or "")
+    for cand in cands:
+        if cand["dist"] is None or float(cand["dist"]) > neg_thresh:
+            continue
+        cs = cand.get("subject_entity")
+        if subj and cs and cs.lower() != subj.lower():
+            continue
+        cand_subj_toks = subj_toks | _salient_tokens(cs or "")
+        overlap = new_toks & _salient_tokens(cand["statement"])
+        if len(overlap) < 2 or not (overlap - cand_subj_toks):
+            continue
+        yield cand
 
 
 def _dossier_text(x) -> str:
@@ -272,11 +340,11 @@ class MemnosMemory:
         # guard then requires that date to be >= the old fact's valid_from. A historical
         # statement with NO parseable event date never supersedes (most conservative:
         # "Alice lived in Boston in 2019" — bare years don't parse — describes the past).
-        hist = bool(_HISTORICAL_RE.search(stmt))
+        hist = bool(_HISTORICAL_RE.search(stmt)) and not _CHANGE_OF_STATE_RE.search(stmt)
         explicit_ev = parse_event_date(stmt, None) if hist else None
         superseded_ids = []
-        if (subj and pred and _is_single_valued(pred)        # belief-change ONLY for single-valued attrs
-                and not (hist and explicit_ev is None)):
+        if (subj and pred and _supersedable(pred, obj)       # belief-change ONLY for single-valued attrs
+                and not (hist and explicit_ev is None)):     # (cue list OR quantified-object rule)
             superseded_ids = self.store.supersede_predicate(
                 self.schema, namespace, subj, pred, obj, ev, observed_at=obs,
                 historical=hist, event_date=explicit_ev)
@@ -299,19 +367,9 @@ class MemnosMemory:
         # sides carry one. MEMNOS_NEGATION_THRESHOLD=0 disables.
         neg_thresh = _env_float("MEMNOS_NEGATION_THRESHOLD", 0.40)
         if n_super == 0 and neg_thresh > 0 and _REVERSAL_RE.search(stmt):
-            new_toks = _salient_tokens(stmt)
-            subj_toks = _salient_tokens(subj or "")
-            for cand in self.store.nearest_live_facts(self.schema, namespace, vec, k=8,
-                                                      exclude_id=fid, observed_before=obs):
-                if cand["dist"] is None or float(cand["dist"]) > neg_thresh:
-                    continue
-                cs = cand.get("subject_entity")
-                if subj and cs and cs.lower() != subj.lower():
-                    continue
-                cand_subj_toks = subj_toks | _salient_tokens(cs or "")
-                overlap = new_toks & _salient_tokens(cand["statement"])
-                if len(overlap) < 2 or not (overlap - cand_subj_toks):
-                    continue
+            cands = self.store.nearest_live_facts(self.schema, namespace, vec, k=8,
+                                                  exclude_id=fid, observed_before=obs)
+            for cand in _negation_targets(stmt, subj, cands, neg_thresh):
                 n_super += self.store.close_out(self.schema, namespace, cand["id"],
                                                 valid_to=(ev or obs), superseded_by=fid)
 
@@ -439,13 +497,46 @@ class MemnosMemory:
                 r["_ns"] = kns; b["raw"].append(r)
             for r in self.store.search_semantic(self.schema, kns, qv, query, k):
                 r["_ns"] = kns; b.setdefault("sem", []).append(r)
+        self._mark_stale_turns(b["raw"])      # DB phase — see _mark_stale_turns
         return b
+
+    def _mark_stale_turns(self, raw_rows) -> None:
+        """STALENESS pass over RETRIEVED turn rows (issue #10 residual B, DB phase): a
+        raw turn is verbatim HISTORY with no supersession concept, so recall's top hits
+        can lead with yesterday's state even after fact supersession works. Mark each
+        retrieved turn whose derived semantic facts are ALL superseded — recall_rank then
+        demotes it below current facts and render_context labels it
+        '(said, superseded as of <date>)'. Turns with no facts, or with any live fact,
+        are untouched. ONE batched query over the retrieved ids only — O(k)."""
+        if not raw_rows:
+            return
+        try:
+            stale = self.store.turn_supersession(self.schema,
+                                                 [r.get("id") for r in raw_rows])
+        except Exception:                      # pre-migration store: never break recall
+            return
+        for r in raw_rows:
+            if r.get("id") in stale:
+                r["_superseded"] = True
+                r["_superseded_at"] = stale[r["id"]]
+
+    @staticmethod
+    def _demote_stale(turn_rows):
+        """Split ranked turn rows into (fresh, stale): stale = turns whose derived facts
+        are ALL superseded (marked by _mark_stale_turns). CONSERVATIVE ranking rule —
+        current facts rank above stale turns at equal relevance, so the final ordering is
+        fresh turns + facts + stale turns. Quotas are applied BEFORE the split, so the
+        result set is identical to the pre-fix recall; only the order (and the
+        superseded annotation) changes."""
+        fresh = [r for r in turn_rows if not r.get("superseded")]
+        return fresh, [r for r in turn_rows if r.get("superseded")]
 
     def recall_rank(self, query: str, b: dict, *, raw_quota=11, fact_quota=8,
                     entity_quota=10) -> list[dict]:
         """CPU phase of recall: cross-encoder rerank + quota assembly over a
         recall_fetch bundle. No database access — safe with no connection held.
-        Ranking is byte-identical to the pre-split recall()."""
+        Ranking is byte-identical to the pre-split recall(), except that STALE turns
+        (all derived facts superseded) are annotated + demoted below current facts."""
         intent = b["intent"]
 
         def rr(items, kind):
@@ -463,13 +554,19 @@ class MemnosMemory:
                     row["type"] = items[i]["memory_type"]
                 if items[i].get("_ns"):                       # grounded: source namespace
                     row["namespace"] = items[i]["_ns"]
+                if kind == "turn" and items[i].get("_superseded"):   # stale turn (issue #10 B)
+                    row["superseded"] = True
+                    if items[i].get("_superseded_at"):
+                        row["superseded_at"] = (items[i]["_superseded_at"]
+                                                .astimezone(timezone.utc).date().isoformat())
                 out.append(row)
             return out
 
         if not intent.temporal:
             sem_rows = rr(b["sem"], "fact")
             if not b["ents"]:
-                return rr(b["raw"], "turn")[:raw_quota] + sem_rows[:fact_quota]
+                fresh, stale = self._demote_stale(rr(b["raw"], "turn")[:raw_quota])
+                return fresh + sem_rows[:fact_quota] + stale
             seen, eg = set(), []
             for r in b.get("dump", []):
                 c = r["content"]
@@ -484,7 +581,8 @@ class MemnosMemory:
                     row["type"] = r["memory_type"]
                 eg.append(row)
             sem_rows = [r for r in sem_rows if r["content"] not in seen]
-            return rr(b["raw"], "turn")[:raw_quota] + eg[:entity_quota] + sem_rows[:fact_quota]
+            fresh, stale = self._demote_stale(rr(b["raw"], "turn")[:raw_quota])
+            return fresh + eg[:entity_quota] + sem_rows[:fact_quota] + stale
 
         tl_rows, tl_seen = [], set()
         for r in b.get("tl", []):
@@ -501,7 +599,8 @@ class MemnosMemory:
             tl_rows.append(row)
         sem_rows = [r for r in rr(b["sem"], "fact") if r["content"] not in tl_seen]
         # small raw + GUARANTEED timeline + a few reranked relevance facts
-        return rr(b["raw"], "turn")[:5] + tl_rows[:12] + sem_rows[:6]
+        fresh, stale = self._demote_stale(rr(b["raw"], "turn")[:5])
+        return fresh + tl_rows[:12] + sem_rows[:6] + stale
 
     def recall_wide(self, namespaces, query, *, k=40, raw_quota=11, fact_quota=8) -> list[dict]:
         """WIDEN recall across multiple permissible namespaces (the agent's default + the
@@ -529,6 +628,7 @@ class MemnosMemory:
         # cap candidates by RRF score before the (CPU) cross-encoder rerank
         raw_c = sorted(raw_c, key=lambda x: x.get("score", 0), reverse=True)[:60]
         sem_c = sorted(sem_c, key=lambda x: x.get("score", 0), reverse=True)[:60]
+        self._mark_stale_turns(raw_c)          # DB phase — stale-turn annotation
         return raw_c, sem_c
 
     def recall_wide_rank(self, query, raw_c, sem_c, *, raw_quota=11, fact_quota=8) -> list[dict]:
@@ -548,10 +648,16 @@ class MemnosMemory:
                     row["author"] = it["author"]
                 if it.get("memory_type"):
                     row["type"] = it["memory_type"]
+                if kind == "turn" and it.get("_superseded"):   # stale turn (issue #10 B)
+                    row["superseded"] = True
+                    if it.get("_superseded_at"):
+                        row["superseded_at"] = (it["_superseded_at"]
+                                                .astimezone(timezone.utc).date().isoformat())
                 out.append(row)
             return out
 
-        return rr(raw_c, "turn", raw_quota) + rr(sem_c, "fact", fact_quota)
+        fresh, stale = self._demote_stale(rr(raw_c, "turn", raw_quota))
+        return fresh + rr(sem_c, "fact", fact_quota) + stale
 
     @staticmethod
     def render_context(rows, *, max_chars=9000, viewer=None) -> str:
@@ -580,6 +686,9 @@ class MemnosMemory:
                 line = f"CONSTRAINT:{tag} {r['content']}"
             else:
                 label = r.get("type") or ("fact" if r["kind"] == "fact" else "said")
+                if r.get("superseded"):        # stale turn — show the transition (issue #10 B)
+                    label += (f", superseded as of {r['superseded_at']}"
+                              if r.get("superseded_at") else ", superseded")
                 d = f", {r['date']}" if (r["kind"] == "fact" and r.get("date")) else ""
                 line = f"- ({label}{d}{by}){tag} {r['content']}"
             if used + len(line) > max_chars:
@@ -762,3 +871,64 @@ class MemnosMemory:
         else:
             _write(self.store)
         return {"episodes": n}
+
+
+# --- namespace reconcile (issue #10 residual C) ------------------------------------
+def reconcile_namespace(store, namespace: str, *, schema: str = f"tenant_{_TENANT}",
+                        limit: int | None = None) -> dict:
+    """BACKFILL for pre-fix contradiction debt: namespaces ingested before the bf78b2e
+    write-path fix hold contradicting LIVE facts that the fixed write path would have
+    closed at write time. Walk the namespace's live facts NEWEST-FIRST (observation
+    axis) and apply the SAME deterministic write-time logic pairwise against older live
+    facts: dedupe -> SPO supersession (cue list + quantified-object rule) -> reversal/
+    negation close-out via nearest stored embeddings. Embedding-only — stored vectors,
+    NO LLM, no new embedding calls.
+
+    The CALLER owns the transaction: run on a non-autocommit connection, then COMMIT
+    for a real run or ROLLBACK for --dry-run — the mutations (and therefore the
+    reported counts) are identical by construction. `limit` caps the number of facts
+    WALKED per run (newest first), bounding the work for huge namespaces.
+
+    Dedupe direction (backfill twin of the write-path rule "a restatement reinforces,
+    never inserts"): the OLDER fact is kept (restatements + salience bump + provenance
+    union of the newer fact's source turns) and the NEWER duplicate row is expired —
+    converging on the exact end-state the fixed write path would have produced."""
+    from .temporal import parse_event_date
+    dedupe_thresh = _env_float("MEMNOS_DEDUPE_THRESHOLD", 0.03)
+    neg_thresh = _env_float("MEMNOS_NEGATION_THRESHOLD", 0.40)
+    facts = store.live_facts_newest_first(schema, namespace, limit=limit)
+    out = {"facts_scanned": len(facts), "deduped": 0, "closed": 0}
+    for f in facts:
+        if not store.is_live(schema, namespace, f["id"]):   # closed earlier in this walk
+            continue
+        stmt, subj, pred, obj = (f["statement"], f.get("subject_entity"),
+                                 f.get("predicate"), f.get("object"))
+        ev = f.get("valid_from") or f.get("observed_at")
+        # (a) DEDUPE: f restates an older live fact -> reinforce the older, expire f
+        if dedupe_thresh > 0:
+            dup = store.older_near_duplicate(schema, namespace, f["id"], dedupe_thresh)
+            if dup is not None:
+                store.bump_restatement(schema, dup["id"], f.get("source_turn_ids") or [])
+                store.expire(schema, namespace, f["id"])
+                out["deduped"] += 1
+                continue
+        # (b) SPO supersession — identical gate to _write_fact
+        hist = bool(_HISTORICAL_RE.search(stmt)) and not _CHANGE_OF_STATE_RE.search(stmt)
+        explicit_ev = parse_event_date(stmt, None) if hist else None
+        n = 0
+        if (subj and pred and _supersedable(pred, obj) and ev is not None
+                and not (hist and explicit_ev is None)):
+            ids = store.supersede_predicate(schema, namespace, subj, pred, obj, ev,
+                                            observed_at=f.get("observed_at"),
+                                            historical=hist, event_date=explicit_ev)
+            store.mark_superseded_by(schema, ids, f["id"])
+            n += len(ids)
+        # (c) REVERSAL/NEGATION close-out — same guards as _write_fact
+        if n == 0 and neg_thresh > 0 and _REVERSAL_RE.search(stmt):
+            cands = store.nearest_live_facts_to(schema, namespace, f["id"], k=8)
+            for cand in _negation_targets(stmt, subj, cands, neg_thresh):
+                n += store.close_out(schema, namespace, cand["id"],
+                                     valid_to=ev or datetime.now(timezone.utc),
+                                     superseded_by=f["id"])
+        out["closed"] += n
+    return out

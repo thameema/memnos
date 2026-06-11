@@ -406,7 +406,8 @@
         "set",
         "link",
         "unlink",
-        "links"
+        "links",
+        "reconcile"
        ],
        "help": "what to do",
        "positional": true,
@@ -457,11 +458,23 @@
        "help": "rm: also delete the stored memories",
        "positional": false,
        "required": false
+      },
+      {
+       "arg": "--dry-run",
+       "help": "reconcile: report would-close/would-dedupe counts, write nothing",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--limit",
+       "help": "reconcile: cap the number of facts walked this run (newest first)",
+       "positional": false,
+       "required": false
       }
      ],
      "command": "namespace",
      "example": "memnos namespace add proj:myapp --desc 'my app'",
-     "help": "manage namespaces: add | ls | rm | set | link | unlink | links | copy | move"
+     "help": "manage namespaces: add | ls | rm | set | link | unlink | links | copy | move | reconcile"
     },
     {
      "args": [
