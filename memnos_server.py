@@ -23,6 +23,7 @@ import threading
 import time
 import traceback
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -203,6 +204,23 @@ _INGEST_Q = queue.Queue(maxsize=1024)   # async /remember extraction queue
 EMBED = None
 LLM = None
 DIM = 384
+
+# Issue #12 — recall latency. Query-embed cache: hooks/Desktop repeat near-identical
+# queries within seconds; a short-TTL LRU keyed (query, model) lets repeats skip the
+# OpenAI round-trip entirely. Embed executor: the round-trip for cache MISSES is
+# overlapped with the non-vector DB arms (recall_prefetch) — never with a pool conn held.
+from core.embed import QueryEmbedCache
+
+
+def _env_f(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+_QUERY_CACHE = QueryEmbedCache(ttl_s=_env_f("MEMNOS_QUERY_CACHE_TTL_S", 60.0))
+_EMBED_EXEC = ThreadPoolExecutor(max_workers=4, thread_name_prefix="memnos-query-embed")
 
 
 class _UsageAcc:
@@ -799,6 +817,7 @@ class Handler(BaseHTTPRequestHandler):
         action = self.path.lstrip("/")
         usage = _UsageAcc()
         cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
+        self._audit_detail = None      # per-stage timings (recall ops set this)
         try:
             principal, pname, err = self._auth_short(ns, token, write=self.path in WRITE_OPS,
                                                      action=action)
@@ -808,7 +827,7 @@ class Handler(BaseHTTPRequestHandler):
             # author = authenticated principal's name (stamped on every write).
             mem = MemnosMemory(None, EMBED, dim=DIM, llm=LLM, on_usage=usage, author=pname)
             try:
-                code, out = self._phased_op(mem, req, ns, principal)
+                code, out = self._phased_op(mem, req, ns, principal, t0)
             except Exception as op_err:
                 with POOL.connection() as conn:
                     Control.audit(conn, principal, action, ns, False,
@@ -823,7 +842,10 @@ class Handler(BaseHTTPRequestHandler):
                 Control.record_usage(conn, principal, ns, action, mem.extract_model,
                                      usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))
                 rcount = len(out.get("memories", [])) if isinstance(out, dict) and "memories" in out else None
-                Control.audit(conn, principal, action, ns, True,
+                # detail = per-stage timings for recall ops ({embed_ms, sql_ms,
+                # staleness_ms, rerank_ms, total_ms}) — regressions stay diagnosable
+                # from the ledger alone (issue #12)
+                Control.audit(conn, principal, action, ns, True, self._audit_detail,
                               latency_ms=int((time.perf_counter() - t0) * 1000),
                               result_count=rcount, status=200)
             if self.path in WRITE_OPS:
@@ -845,7 +867,7 @@ class Handler(BaseHTTPRequestHandler):
             return rows
         return [r for r in rows if r.get("author") == author]
 
-    def _phased_op(self, mem, req, ns, principal):
+    def _phased_op(self, mem, req, ns, principal, t0):
         """One PHASED_OPS endpoint body. Returns (code, out). Pool connections are
         acquired ONLY around pure-DB sections; embeddings/LLM/rerank run with none."""
         path = self.path
@@ -860,21 +882,49 @@ class Handler(BaseHTTPRequestHandler):
                 pin_cap = max(0, min(int(req.get("constraint_cap", 10)), 50))
             except (TypeError, ValueError):
                 return 400, {"error": "constraint_cap must be an integer"}
+            # DEADLINE-AWARE RECALL (issue #12): optional client budget. At expiry the
+            # server returns best-available results (un-reranked, staleness pass
+            # skipped) flagged degraded:true — never a client-side timeout.
+            deadline = None
+            if req.get("deadline_ms") is not None:
+                try:
+                    dl_ms = int(req["deadline_ms"])
+                except (TypeError, ValueError):
+                    return 400, {"error": "deadline_ms must be an integer"}
+                if dl_ms > 0:
+                    deadline = t0 + dl_ms / 1000.0
             # engine's CANONICAL (benchmarked) defaults; only override when the client
             # explicitly supplies a value — no server-side drift.
             rkw = {}
             if "raw_quota" in req: rkw["raw_quota"] = int(req["raw_quota"])
             if "fact_quota" in req: rkw["fact_quota"] = int(req["fact_quota"])
             ckw = {"max_chars": int(req["max_chars"])} if "max_chars" in req else {}
-            qv = mem.embed(q)                                     # network — NO conn
+            timings = {}
+            # QUERY EMBED: short-TTL cache hit skips the round-trip; a miss runs on the
+            # embed executor OVERLAPPED with DB phase A below (the non-vector arms) —
+            # the vector arms fire when the embedding arrives. No conn is ever held
+            # across the network call (each DB phase uses its own short-lived conn).
+            model_key = getattr(EMBED, "model", "local-384")
+            qv = _QUERY_CACHE.get(q, model_key)
+            fut = None
+            if qv is None:
+                def _embed_timed():
+                    te = time.perf_counter()
+                    v = mem.embed(q)                              # network — NO conn
+                    timings["embed_ms"] = (time.perf_counter() - te) * 1000.0
+                    return v
+                fut = _EMBED_EXEC.submit(_embed_timed)
+            else:
+                timings["embed_ms"] = 0.0                         # cache hit
             wide = path == "/recall" and str(req.get("scope", "")).lower() in ("all", "wide")
             grounded, skipped = [], []
-            with POOL.connection() as conn:                       # DB fetch phase
+            pre = None
+            t_a = time.perf_counter()
+            with POOL.connection() as conn:        # DB phase A — needs NO embedding
                 mem.store = BrainStore(conn=conn)
                 if wide:
                     # WIDEN across every namespace this key may read (ACL-bounded)
                     nss = Control.readable_namespaces(conn, principal)
-                    raw_c, sem_c = mem.recall_wide_fetch(nss, q, qv=qv)
                     pin_nss = [ns]                 # pin the TARGET namespace's constraints
                 else:
                     # GROUNDED RECALL: fan out to LINKED knowledge namespaces, but only
@@ -884,12 +934,26 @@ class Handler(BaseHTTPRequestHandler):
                     for kns in links:
                         (grounded if Control.authorize(conn, principal, kns, write=False)
                          else skipped).append(kns)
-                    bundle = mem.recall_fetch(ns, q, qv=qv, extra_namespaces=grounded)
+                    pre = mem.recall_prefetch(ns, q)   # timeline/entity arms, no qv
                     pin_nss = [ns] + grounded
                 # PINNED CONSTRAINT INJECTION: type='constraint' memories are ALWAYS in
                 # the output, regardless of query similarity (cap via constraint_cap)
                 pins = mem.store.pinned_constraints(mem.schema, pin_nss, cap=pin_cap)
                 mem.store = None
+            timings["sql_ms"] = (time.perf_counter() - t_a) * 1000.0
+            if fut is not None:
+                qv = fut.result()                  # join the embed — NO conn held
+                _QUERY_CACHE.put(q, model_key, qv)
+            with POOL.connection() as conn:        # DB phase B — vector + FTS arms
+                mem.store = BrainStore(conn=conn)
+                if wide:
+                    raw_c, sem_c = mem.recall_wide_fetch(nss, q, qv=qv, timings=timings,
+                                                         deadline=deadline)
+                else:
+                    bundle = mem.recall_fetch(ns, q, qv=qv, extra_namespaces=grounded,
+                                              pre=pre, timings=timings, deadline=deadline)
+                mem.store = None
+            timings.setdefault("staleness_ms", 0.0)   # wide+empty-namespace edge
             pin_rows = []
             for p in pins:
                 row = {"content": p["content"], "kind": p["kind"], "type": "constraint",
@@ -899,11 +963,17 @@ class Handler(BaseHTTPRequestHandler):
                 if p["namespace"] != ns:           # grounded source — tagged like ranked rows
                     row["namespace"] = p["namespace"]
                 pin_rows.append(row)
-            # CPU rerank phase — NO conn (ranking identical to pre-split recall)
+            # CPU rerank phase — NO conn (ranking identical to pre-split recall).
+            # Past-deadline: skip the cross-encoder, keep retrieval (RRF) order.
+            degraded = (not wide) and bool(bundle.pop("_degraded", False))
+            use_rerank = deadline is None or time.perf_counter() < deadline
+            degraded = degraded or not use_rerank
+            t_rr = time.perf_counter()
             if wide:
-                rows = mem.recall_wide_rank(q, raw_c, sem_c, **rkw)
+                rows = mem.recall_wide_rank(q, raw_c, sem_c, use_rerank=use_rerank, **rkw)
             else:
-                rows = mem.recall_rank(q, bundle, **rkw)
+                rows = mem.recall_rank(q, bundle, use_rerank=use_rerank, **rkw)
+            timings["rerank_ms"] = (time.perf_counter() - t_rr) * 1000.0
             rows = self._author_filter(rows, req)
             if mtype:                              # type filter (pins are exempt — always on)
                 rows = [r for r in rows if r.get("type") == mtype]
@@ -925,6 +995,13 @@ class Handler(BaseHTTPRequestHandler):
                 if grounded or skipped:    # keys only appear when links exist (no drift)
                     out["grounded_in"] = grounded
                     out["links_skipped"] = skipped
+            if degraded:                   # deadline hit — partial pipeline, flagged
+                out["degraded"] = True
+            timings["total_ms"] = (time.perf_counter() - t0) * 1000.0
+            detail = {k: round(v, 1) for k, v in timings.items()}
+            if degraded:
+                detail["degraded"] = True
+            self._audit_detail = detail    # → audit_log.detail (per-stage ledger)
             return 200, out
 
         if path == "/consolidate":
@@ -1059,7 +1136,14 @@ def serve(port=None):
     global POOL, EMBED
     _set_proc_title("memnos-server")
     port = int(port or PORT)
-    brain_rerank.rerank("warm", ["a", "b"])
+    # REALISTIC reranker prewarm + residency keep-alive (issue #12): the old two-token
+    # warm left the first real call paying 6-13s; idle page-out then cost ~20s. See
+    # core/rerank.py — MEMNOS_RERANK=0 skips both, MEMNOS_RERANK_KEEPALIVE_S tunes/0-disables.
+    warm_ms = brain_rerank.prewarm()
+    if warm_ms:
+        print(f"[memnos] reranker prewarmed in {warm_ms:.0f}ms "
+              f"({brain_rerank.DEFAULT_RERANKER})", flush=True)
+    brain_rerank.start_keepalive()
     # timeout=5: a request against a dead DB fails in 5s with a clear 503 — clients
     # (hooks/MCP/agents) must never sit behind a 30s pool wait.
     # max_idle=60: shrink back to min_size within a minute after bursts — a congested

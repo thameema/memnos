@@ -1337,6 +1337,14 @@ components:
         raw_quota: { type: integer, description: max verbatim turns returned }
         fact_quota: { type: integer, description: max facts returned }
         max_chars: { type: integer, description: context block size cap (default 9000) }
+        deadline_ms:
+          type: integer
+          description: >
+            optional latency budget in milliseconds. When the pipeline is still running
+            at expiry, the server returns the best-available results immediately —
+            un-reranked (retrieval order) and possibly without the staleness annotation
+            pass — with `degraded: true`, instead of letting the client time out.
+            Absent/0 = no deadline (full pipeline, never degraded).
     IdRequest:
       type: object
       required: [namespace, id]
@@ -1525,6 +1533,12 @@ components:
           type: array
           items: { type: string }
           description: wide scope only
+        degraded:
+          type: boolean
+          description: >
+            present (true) only when the request's `deadline_ms` expired mid-pipeline:
+            results are best-available — retrieval (RRF) order without the cross-encoder
+            rerank, and the stale-turn annotation pass may have been skipped
     MemoriesResponse:
       type: object
       required: [memories]
@@ -1538,6 +1552,9 @@ components:
         links_skipped:
           type: array
           items: { type: string }
+        degraded:
+          type: boolean
+          description: deadline_ms expired mid-pipeline — best-available, un-reranked results
     ContextResponse:
       type: object
       required: [context]
@@ -1549,6 +1566,9 @@ components:
         links_skipped:
           type: array
           items: { type: string }
+        degraded:
+          type: boolean
+          description: deadline_ms expired mid-pipeline — best-available, un-reranked results
     ConsolidateResponse:
       type: object
       required: [dossiers]

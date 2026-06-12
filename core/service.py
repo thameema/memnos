@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import time
 from datetime import datetime, timezone, timedelta
 
 from .store import BrainStore
@@ -498,26 +499,19 @@ class MemnosMemory:
                                 raw_quota=raw_quota, fact_quota=fact_quota,
                                 entity_quota=entity_quota)
 
-    def recall_fetch(self, namespace: str, query: str, *, k=40, qv=None,
-                     extra_namespaces=()) -> dict:
-        """DB phase of recall: temporal intent + ALL store queries (raw, semantic,
-        timeline/entity-guarantee arms). `qv` lets pooled callers pre-embed the query
-        (network) before acquiring a connection. Returns a bundle for recall_rank.
-
-        GROUNDED RECALL (0.1.6): `extra_namespaces` = linked knowledge namespaces the
-        CALLER may read (the server checks both the link and the read grant). Their
-        candidates are hybrid-searched per namespace, tagged with their source namespace
-        ("_ns"), and merged into the bundle — ONE rerank covers everything. Primary-
-        namespace rows stay untagged, so with no links the output is unchanged."""
+    def recall_prefetch(self, namespace: str, query: str) -> dict:
+        """DB phase A of recall (issue #12): every arm that does NOT need the query
+        embedding — the 'now' watermark, temporal-intent analysis, query-entity
+        extraction, and the timeline / entity-guarantee arms (JOIN/ILIKE scans, not
+        cosine — at field scale these are the expensive non-vector SQL). Pooled callers
+        run this on a short connection WHILE the embedding round-trip is in flight,
+        then pass the result to recall_fetch(pre=...). recall_fetch with pre=None calls
+        this itself, so in-process users (benchmark, scripts) are byte-identical."""
         from . import temporal as T
         now = self.store.max_observed_at(self.schema, namespace) or datetime.now(timezone.utc)
         intent = T.analyze(query, now)
-        if qv is None:
-            qv = self.embed(query)
         b = {"intent": intent, "ents": T.query_entities(query)}
-        b["raw"] = self.store.search_raw_turns(self.schema, namespace, qv, query, k)
         if not intent.temporal:
-            b["sem"] = self.store.search_semantic(self.schema, namespace, qv, query, k)
             if b["ents"]:
                 # ENTITY-GUARANTEE arm: vector search misses items in list/aggregation
                 # answers ('what martial arts' ≁ 'taekwondo'); 82% of eval failures were
@@ -532,6 +526,34 @@ class MemnosMemory:
             # lifted temporal recall 12% → 70%.
             b["tl"] = self.store.timeline(self.schema, namespace, b["ents"], start=intent.start,
                                           end=intent.end, order=intent.order or "asc", limit=12)
+        return b
+
+    def recall_fetch(self, namespace: str, query: str, *, k=40, qv=None,
+                     extra_namespaces=(), pre=None, timings=None, deadline=None) -> dict:
+        """DB phase of recall: temporal intent + ALL store queries (raw, semantic,
+        timeline/entity-guarantee arms). `qv` lets pooled callers pre-embed the query
+        (network) before acquiring a connection. Returns a bundle for recall_rank.
+
+        GROUNDED RECALL (0.1.6): `extra_namespaces` = linked knowledge namespaces the
+        CALLER may read (the server checks both the link and the read grant). Their
+        candidates are hybrid-searched per namespace, tagged with their source namespace
+        ("_ns"), and merged into the bundle — ONE rerank covers everything. Primary-
+        namespace rows stay untagged, so with no links the output is unchanged.
+
+        Issue #12 (all optional, defaults = original behavior): `pre` = a
+        recall_prefetch bundle computed while the embedding was in flight; `timings`
+        = a dict the per-stage durations (sql_ms, staleness_ms) are accumulated into;
+        `deadline` = a time.perf_counter() deadline — when already past it, the
+        staleness annotation pass is skipped and the bundle is marked '_degraded'."""
+        b = pre if pre is not None else self.recall_prefetch(namespace, query)
+        intent = b["intent"]
+        if qv is None:
+            qv = self.embed(query)
+        t_sql = time.perf_counter()
+        b["raw"] = self.store.search_raw_turns(self.schema, namespace, qv, query, k)
+        if not intent.temporal:
+            b["sem"] = self.store.search_semantic(self.schema, namespace, qv, query, k)
+        else:
             b["sem"] = self.store.search_semantic_temporal(
                 self.schema, namespace, qv, query, k,
                 start=intent.start, end=intent.end, current_only=intent.current,
@@ -542,7 +564,15 @@ class MemnosMemory:
                 r["_ns"] = kns; b["raw"].append(r)
             for r in self.store.search_semantic(self.schema, kns, qv, query, k):
                 r["_ns"] = kns; b.setdefault("sem", []).append(r)
-        self._mark_stale_turns(b["raw"])      # DB phase — see _mark_stale_turns
+        t_stale = time.perf_counter()
+        if deadline is not None and t_stale >= deadline:
+            b["_degraded"] = True              # deadline hit: serve un-annotated turns
+        else:
+            self._mark_stale_turns(b["raw"])   # DB phase — see _mark_stale_turns
+        if timings is not None:
+            done = time.perf_counter()
+            timings["sql_ms"] = timings.get("sql_ms", 0.0) + (t_stale - t_sql) * 1000.0
+            timings["staleness_ms"] = timings.get("staleness_ms", 0.0) + (done - t_stale) * 1000.0
         return b
 
     def _mark_stale_turns(self, raw_rows) -> None:
@@ -577,9 +607,11 @@ class MemnosMemory:
         return fresh, [r for r in turn_rows if r.get("superseded")]
 
     def recall_rank(self, query: str, b: dict, *, raw_quota=11, fact_quota=8,
-                    entity_quota=10) -> list[dict]:
+                    entity_quota=10, use_rerank=True) -> list[dict]:
         """CPU phase of recall: cross-encoder rerank + quota assembly over a
         recall_fetch bundle. No database access — safe with no connection held.
+        `use_rerank=False` (issue #12 deadline path) skips the cross-encoder and keeps
+        the retrieval (RRF) order — degraded but instant.
         Ranking is byte-identical to the pre-split recall(), except that STALE turns
         (all derived facts superseded) are annotated + demoted below current facts,
         plus the issue #11 broad-query tune (all three knobs zero-disable, and
@@ -609,7 +641,10 @@ class MemnosMemory:
         def rr(items, kind):
             if not items:
                 return []
-            order = brain_rerank.rerank(query, [c["content"] for c in items], self.reranker)
+            if use_rerank:
+                order = brain_rerank.rerank(query, [c["content"] for c in items], self.reranker)
+            else:                                  # deadline-degraded: retrieval order
+                order = [(i, 1.0 / (1.0 + i)) for i in range(len(items))]
             scored = []
             for i, s in order:
                 s = adjust(float(s), items[i], kind)
@@ -686,12 +721,16 @@ class MemnosMemory:
         return self.recall_wide_rank(query, raw_c, sem_c, raw_quota=raw_quota,
                                      fact_quota=fact_quota)
 
-    def recall_wide_fetch(self, namespaces, query, *, k=40, qv=None):
-        """DB phase of recall_wide: per-namespace hybrid search + RRF-score candidate cap."""
+    def recall_wide_fetch(self, namespaces, query, *, k=40, qv=None, timings=None,
+                          deadline=None):
+        """DB phase of recall_wide: per-namespace hybrid search + RRF-score candidate cap.
+        `timings`/`deadline` — same issue #12 semantics as recall_fetch (per-stage
+        accumulation; past-deadline skips the staleness pass)."""
         if not namespaces:
             return [], []
         if qv is None:
             qv = self.embed(query)
+        t_sql = time.perf_counter()
         raw_c, sem_c = [], []
         for ns in namespaces:
             for r in self.store.search_raw_turns(self.schema, ns, qv, query, k):
@@ -701,11 +740,19 @@ class MemnosMemory:
         # cap candidates by RRF score before the (CPU) cross-encoder rerank
         raw_c = sorted(raw_c, key=lambda x: x.get("score", 0), reverse=True)[:60]
         sem_c = sorted(sem_c, key=lambda x: x.get("score", 0), reverse=True)[:60]
-        self._mark_stale_turns(raw_c)          # DB phase — stale-turn annotation
+        t_stale = time.perf_counter()
+        if deadline is None or t_stale < deadline:
+            self._mark_stale_turns(raw_c)      # DB phase — stale-turn annotation
+        if timings is not None:
+            done = time.perf_counter()
+            timings["sql_ms"] = timings.get("sql_ms", 0.0) + (t_stale - t_sql) * 1000.0
+            timings["staleness_ms"] = timings.get("staleness_ms", 0.0) + (done - t_stale) * 1000.0
         return raw_c, sem_c
 
-    def recall_wide_rank(self, query, raw_c, sem_c, *, raw_quota=11, fact_quota=8) -> list[dict]:
+    def recall_wide_rank(self, query, raw_c, sem_c, *, raw_quota=11, fact_quota=8,
+                         use_rerank=True) -> list[dict]:
         """CPU phase of recall_wide: global cross-encoder rerank. No database access.
+        `use_rerank=False` (deadline path) keeps retrieval order — degraded but instant.
         Carries the same issue #11 tune as recall_rank: length-normalized turn scores,
         restatement/salience-boosted fact scores, facts-first order on broad queries."""
         tune = _env_float("MEMNOS_BROAD_QUERY_TUNE", 1.0) > 0
@@ -716,7 +763,10 @@ class MemnosMemory:
         def rr(items, kind, quota):
             if not items:
                 return []
-            order = brain_rerank.rerank(query, [c["content"] for c in items], self.reranker)
+            if use_rerank:
+                order = brain_rerank.rerank(query, [c["content"] for c in items], self.reranker)
+            else:                                  # deadline-degraded: retrieval order
+                order = [(i, 1.0 / (1.0 + i)) for i in range(len(items))]
             scored = []
             for i, s in order:
                 it = items[i]

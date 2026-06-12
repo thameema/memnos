@@ -276,6 +276,16 @@ def main():
     call("POST", "/memory/search", token=TADM, body={"namespace": NS, "query": "Ada"}, expect=200)
     call("POST", "/recall_v2", token=TADM, body={"namespace": NS, "query": "Ada"}, expect=200)
 
+    # DEADLINE-AWARE recall (issue #12): an already-expired deadline must return 200
+    # with best-available results + degraded:true (schema-validated), never an error.
+    st, recd = call("POST", "/recall", token=TADM,
+                    body={"namespace": NS, "query": "Ada", "deadline_ms": 1},
+                    expect=200, name="POST /recall (deadline_ms expired -> degraded)")
+    check("expired deadline_ms yields degraded:true", (recd or {}).get("degraded") is True)
+    call("POST", "/recall", token=TADM,
+         body={"namespace": NS, "query": "Ada", "deadline_ms": "soon"}, expect=400,
+         name="POST /recall (non-integer deadline_ms)")
+
     # STALE-TURN annotation (issue #10 residual B): seed a turn whose only derived fact
     # is superseded — /recall must return that turn row with superseded:true +
     # superseded_at (schema-validated above) and label it in the context block.
