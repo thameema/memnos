@@ -966,7 +966,13 @@ class Handler(BaseHTTPRequestHandler):
             # CPU rerank phase — NO conn (ranking identical to pre-split recall).
             # Past-deadline: skip the cross-encoder, keep retrieval (RRF) order.
             degraded = (not wide) and bool(bundle.pop("_degraded", False))
-            use_rerank = deadline is None or time.perf_counter() < deadline
+            # DEGRADED-WHILE-WARMING (follow-up to #12): if the reranker isn't ready yet
+            # (background prewarm still loading the model), serve RRF-fused results NOW —
+            # same degraded contract the deadline path uses — instead of blocking on the
+            # heavy load. This is the real cold-start fix: first call is fast on EVERY box.
+            warming = not brain_rerank.is_ready()
+            past_deadline = deadline is not None and time.perf_counter() >= deadline
+            use_rerank = (not warming) and (not past_deadline)
             degraded = degraded or not use_rerank
             t_rr = time.perf_counter()
             if wide:
@@ -1001,6 +1007,12 @@ class Handler(BaseHTTPRequestHandler):
             detail = {k: round(v, 1) for k, v in timings.items()}
             if degraded:
                 detail["degraded"] = True
+            # rerank calibration (follow-up to #12): record what THIS box calibrated to
+            # so an operator can see the derived cap / measured ms-per-pair per recall.
+            cal = brain_rerank.calibration()
+            detail["effective_cap"] = cal["effective_cap"]
+            if cal["measured_ms_per_pair"] is not None:
+                detail["measured_ms_per_pair"] = cal["measured_ms_per_pair"]
             self._audit_detail = detail    # → audit_log.detail (per-stage ledger)
             return 200, out
 
@@ -1136,13 +1148,16 @@ def serve(port=None):
     global POOL, EMBED
     _set_proc_title("memnos-server")
     port = int(port or PORT)
-    # REALISTIC reranker prewarm + residency keep-alive (issue #12): the old two-token
-    # warm left the first real call paying 6-13s; idle page-out then cost ~20s. See
-    # core/rerank.py — MEMNOS_RERANK=0 skips both, MEMNOS_RERANK_KEEPALIVE_S tunes/0-disables.
-    warm_ms = brain_rerank.prewarm()
-    if warm_ms:
-        print(f"[memnos] reranker prewarmed in {warm_ms:.0f}ms "
-              f"({brain_rerank.DEFAULT_RERANKER})", flush=True)
+    # BACKGROUND reranker prewarm + self-calibration + residency keep-alive (follow-up
+    # to #12): prewarm now runs OFF the request path so the server accepts traffic
+    # IMMEDIATELY — the synchronous version cost 13-114s at boot and recalls blocked
+    # behind it (field cold first-call 49.9s). While warming, is_ready() is False and
+    # recalls serve degraded (RRF order, degraded:true). Prewarm also measures this box's
+    # ms-per-pair and DERIVES the rerank cap from a latency budget (a CPU laptop gets a
+    # small cap, a fast box a large one) — fixing the fixed cap=100 that was 85% of every
+    # warm call. See core/rerank.py — MEMNOS_RERANK=0 skips both; MEMNOS_RERANK_CAP
+    # overrides the derived cap; MEMNOS_RERANK_BUDGET_MS / MIN_CAP / MAX_CAP tune it.
+    brain_rerank.prewarm_background()
     brain_rerank.start_keepalive()
     # timeout=5: a request against a dead DB fails in 5s with a clear 503 — clients
     # (hooks/MCP/agents) must never sit behind a 30s pool wait.

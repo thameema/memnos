@@ -1536,9 +1536,11 @@ components:
         degraded:
           type: boolean
           description: >
-            present (true) only when the request's `deadline_ms` expired mid-pipeline:
-            results are best-available — retrieval (RRF) order without the cross-encoder
-            rerank, and the stale-turn annotation pass may have been skipped
+            present (true) when results are best-available — retrieval (RRF) order
+            without the cross-encoder rerank (the stale-turn annotation pass may also be
+            skipped). Two causes: the request's `deadline_ms` expired mid-pipeline, OR
+            the reranker is still warming up at boot (the server accepts traffic
+            immediately and serves un-reranked results until the model finishes loading)
     MemoriesResponse:
       type: object
       required: [memories]
@@ -1554,7 +1556,7 @@ components:
           items: { type: string }
         degraded:
           type: boolean
-          description: deadline_ms expired mid-pipeline — best-available, un-reranked results
+          description: best-available, un-reranked results (deadline_ms expired, or reranker still warming at boot)
     ContextResponse:
       type: object
       required: [context]
@@ -1568,7 +1570,7 @@ components:
           items: { type: string }
         degraded:
           type: boolean
-          description: deadline_ms expired mid-pipeline — best-available, un-reranked results
+          description: best-available, un-reranked results (deadline_ms expired, or reranker still warming at boot)
     ConsolidateResponse:
       type: object
       required: [dossiers]

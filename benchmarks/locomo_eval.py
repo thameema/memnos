@@ -85,6 +85,31 @@ def judge_one(cli, model, q, exp, pred, meter):
     return 1 if (r.choices[0].message.content or "").strip().upper().startswith("YES") else 0
 
 
+def _ingest(idx, sample, conv, st, schema, ns, embed, cli, meter, args, base):
+    """ENCODE every turn + CONSOLIDATE into semantic facts (the expensive, one-time
+    OpenAI spend). Factored out so a --skip-ingest replay run can reuse the schema."""
+    sess = sorted([k for k in conv if k.startswith("session_") and not k.endswith("_date_time")],
+                  key=lambda k: int(k.split("_")[1]) if k.split("_")[1].isdigit() else 0)
+    embed.prime([t["text"] for sk in sess for t in (conv[sk] if isinstance(conv.get(sk), list) else [])
+                 if isinstance(t, dict) and t.get("text")])
+    enc = Encoder(st, schema, ns, embed)
+    t0 = time.perf_counter()
+    for si, sk in enumerate(sess):
+        date = parse_date(str(conv.get(f"{sk}_date_time", "")), base + timedelta(days=30 * si))
+        for ti, t in enumerate(conv[sk] if isinstance(conv.get(sk), list) else []):
+            if isinstance(t, dict) and t.get("text"):
+                enc.ingest_turn(sk, t.get("speaker", "?"), t["text"],
+                                observed_at=date + timedelta(minutes=ti))
+    enc.close()
+    c1 = st.counts(schema)
+    print(f"[{idx}] encoded {c1['raw_turns']} turns -> {c1['episodic']} events "
+          f"in {time.perf_counter()-t0:.0f}s", flush=True)
+    t1 = time.perf_counter()
+    cres = Consolidator(st, schema, ns, cli, args.extractor, embed,
+                        meter=meter, workers=args.workers).run()
+    print(f"[{idx}] consolidated {cres} in {time.perf_counter()-t1:.0f}s ({meter.summary()})", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sample-ids", default="0,1,2,3,4,5,6,7,8,9")  # full LoCoMo by default
@@ -99,6 +124,13 @@ def main():
     ap.add_argument("--budget", type=float, default=25.0)
     ap.add_argument("--max-qa", type=int, default=0)        # 0 = all QA
     ap.add_argument("--out", default="")
+    # QA-replay over preserved schemas (follow-up to #12): ingest ONCE, then QA at
+    # different rerank caps without re-paying the encode+consolidate cost. The driver
+    # only drops a schema at ingest start, so schemas persist after a normal run.
+    #   --skip-ingest   reuse the schemas a prior run left (encode + consolidate skipped;
+    #                   only QA runs) — pair with MEMNOS_RERANK_CAP to measure the
+    #                   accuracy cost of a cap change on the IDENTICAL ingested corpus.
+    ap.add_argument("--skip-ingest", action="store_true")
     args = ap.parse_args()
     ids = [int(x) for x in args.sample_ids.split(",") if x.strip() != ""]
 
@@ -106,8 +138,15 @@ def main():
     meter = TSCostMeter(budget_usd=args.budget)
     embed = CachedEmbedder(cli, meter)
     rlock = threading.Lock()
-    print(f"warming reranker {args.reranker} ...", flush=True)
-    brain_rerank.rerank("warm", ["a", "b"], args.reranker)
+    # prewarm + SELF-CALIBRATE the rerank cap on THIS box (follow-up to #12): so a
+    # default run uses the derived (hardware-appropriate) cap, exactly like the server.
+    # An explicit MEMNOS_RERANK_CAP still overrides (used for the cap=12 replay run).
+    print(f"warming + calibrating reranker {args.reranker} ...", flush=True)
+    brain_rerank.prewarm(args.reranker)
+    cal = brain_rerank.calibration()
+    print(f"  rerank cap in effect: {cal['effective_cap']} "
+          f"(measured_ms_per_pair={cal['measured_ms_per_pair']}, "
+          f"MEMNOS_RERANK_CAP={os.environ.get('MEMNOS_RERANK_CAP', 'unset')})", flush=True)
     data = load_dataset()
     base = datetime(2023, 1, 1, tzinfo=timezone.utc)
     st = BrainStore(DSN)
@@ -117,32 +156,13 @@ def main():
         for idx in ids:
             sample = data[idx]; sid = str(sample.get("sample_id", idx))
             tenant = f"locomo{idx}"; schema = f"tenant_{tenant}"; ns = f"locomo:{sid}"
-            st.drop_schema(tenant); st.create_schema(tenant, dim=embed.dim)
-
-            # --- ENCODE ---
             conv = sample.get("conversation", {})
-            sess = sorted([k for k in conv if k.startswith("session_") and not k.endswith("_date_time")],
-                          key=lambda k: int(k.split("_")[1]) if k.split("_")[1].isdigit() else 0)
-            embed.prime([t["text"] for sk in sess for t in (conv[sk] if isinstance(conv.get(sk), list) else [])
-                         if isinstance(t, dict) and t.get("text")])
-            enc = Encoder(st, schema, ns, embed)
-            t0 = time.perf_counter()
-            for si, sk in enumerate(sess):
-                date = parse_date(str(conv.get(f"{sk}_date_time", "")), base + timedelta(days=30 * si))
-                for ti, t in enumerate(conv[sk] if isinstance(conv.get(sk), list) else []):
-                    if isinstance(t, dict) and t.get("text"):
-                        enc.ingest_turn(sk, t.get("speaker", "?"), t["text"],
-                                        observed_at=date + timedelta(minutes=ti))
-            enc.close()
-            c1 = st.counts(schema)
-            print(f"[{idx}] encoded {c1['raw_turns']} turns -> {c1['episodic']} events "
-                  f"in {time.perf_counter()-t0:.0f}s", flush=True)
-
-            # --- CONSOLIDATE ---
-            t1 = time.perf_counter()
-            cres = Consolidator(st, schema, ns, cli, args.extractor, embed,
-                                meter=meter, workers=args.workers).run()
-            print(f"[{idx}] consolidated {cres} in {time.perf_counter()-t1:.0f}s ({meter.summary()})", flush=True)
+            if args.skip_ingest:
+                # QA-replay: reuse the schema a prior --keep-schema run left in place.
+                print(f"[{idx}] reusing preserved schema {schema} (skip-ingest)", flush=True)
+            else:
+                st.drop_schema(tenant); st.create_schema(tenant, dim=embed.dim)
+                _ingest(idx, sample, conv, st, schema, ns, embed, cli, meter, args, base)
 
             # --- QA: retrieve via the PRODUCTION recall path (same as MCP/REST/hooks),
             #     which adds the entity-guarantee arm (multi-item/aggregation) and the
