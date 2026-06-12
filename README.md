@@ -6,6 +6,7 @@
 [![Engine: PostgreSQL + pgvector](https://img.shields.io/badge/engine-PostgreSQL%20%2B%20pgvector-336791.svg)](#)
 [![Query-time LLM: none](https://img.shields.io/badge/query--time%20LLM-none-success.svg)](#)
 [![LoCoMo](https://img.shields.io/badge/LoCoMo%20full--10-64–65%25-success.svg)](benchmarks/README.md)
+[![LongMemEval](https://img.shields.io/badge/LongMemEval%20500q-78.4%25-success.svg)](#benchmarks-and-how-we-report-them)
 [![PyPI](https://img.shields.io/pypi/v/memnos.svg)](https://pypi.org/project/memnos/)
 
 **Your AI forgets everything between sessions. memnos fixes that.**
@@ -136,9 +137,17 @@ memnos admin          # bootstrap an admin token → paste into /admin
 
 ---
 
-## Benchmarks — LoCoMo (and how we report it)
+## Benchmarks (and how we report them)
 
-**64–65% under the gpt-4o judge** on the full LoCoMo benchmark (10 conversations,
+**LongMemEval: 78.4%** on the full 500-question benchmark (gpt-4o answer + judge), run on
+[MemoryBench](https://github.com/supermemoryai/memorybench) — a competitor's own open
+harness. By category: single-session assistant facts 98.2%, user facts 92.9%,
+knowledge-update tracking 78.2% (with 99% retrieval Hit@10 — the engine found the answer;
+the answering model missed it), temporal reasoning 77.4%, multi-session 70.7%. The weak
+spot, disclosed: single-session *preferences* 46.7% (n=30) — preference statements aren't
+fact-shaped, and extraction underserves them today.
+
+**LoCoMo: 64–65% under the gpt-4o judge** on the full benchmark (10 conversations,
 1,542 QA), reproduced across **three independent from-scratch ingests** (the small spread
 is non-deterministic extraction, not the engine). Every prediction file is published
 under [`benchmarks/results/`](benchmarks/results/).
@@ -227,8 +236,9 @@ memnos is **early (0.1.x)** and changing. Honest scope, so you don't find out th
 - **Capture guarantees vary by client.** Deterministic only via Claude Code hooks or the
   proxy; plain MCP capture depends on the model choosing to call the tools (see
   [Integrations](#integrations)).
-- **Benchmarked, not magic.** 64–65% on LoCoMo under the standard judge — published with
-  the judge ladder because that number moves a lot depending on who grades it.
+- **Benchmarked, not magic.** 78.4% on LongMemEval (500q, full run) and 64–65% on LoCoMo
+  under the standard judge — published with the judge ladder because those numbers move a
+  lot depending on who grades them.
 
 ---
 
