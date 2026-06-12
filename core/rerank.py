@@ -48,11 +48,122 @@ def _enabled() -> bool:
     return os.environ.get("MEMNOS_RERANK", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-def _cap() -> int:
+# --- adaptive, self-calibrating cap (follow-up to #12) -------------------------------
+# Field failure on a CPU-class laptop: a FIXED cap=100 × ~70-90ms/pair on CPU was the
+# ENTIRE warm latency (rerank_ms was 85% of every call). The cap must instead be DERIVED
+# from a per-install latency budget against the measured ms-per-pair of THIS box:
+#   effective_cap = clamp(floor(BUDGET_MS / measured_ms_per_pair), MIN_CAP, MAX_CAP)
+# An explicit MEMNOS_RERANK_CAP always WINS (operator override). Until calibration runs
+# (background prewarm), the conservative MIN_CAP is used so a cold box never blows budget.
+#
+# BUDGET is a CEILING ("don't let warm recall exceed ~1.5s"), NOT an aggressive target.
+# At 1500ms the budget keeps CAPABLE hardware (low ms/pair) clamped at the full MAX_CAP=100
+# — i.e. ranking is IDENTICAL to the already-LoCoMo-gated cap=100 config that scored 65%,
+# so no new (paid) LoCoMo run is needed to ship safely (accuracy parity). ONLY slow hardware
+# degrades: e.g. ~80ms/pair → 1500/80 ≈ 18 → ~1.4s, usable, vs the old 8-50s timeout. This
+# is the single place behavior changes, and it changes for the better. Owner directive: a
+# strong LoCoMo score matters more than reranker size/latency, so capable HW must hold cap=100.
+_BUDGET_MS_DEFAULT = 1500.0
+_MIN_CAP_DEFAULT = 8
+_MAX_CAP_DEFAULT = 100
+
+# calibration state (set by background prewarm); _ready gates degraded-while-warming
+_calib_lock = threading.Lock()
+_measured_ms_per_pair: float | None = None   # None until prewarm calibrates
+_effective_cap: int | None = None
+_ready = threading.Event()                    # set when the model is loaded + calibrated
+
+
+def _env_float(name: str, default: float) -> float:
     try:
-        return max(0, int(os.environ.get("MEMNOS_RERANK_CAP", "100")))
+        return float(os.environ.get(name, str(default)))
     except (TypeError, ValueError):
-        return 100
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _explicit_cap() -> int | None:
+    """Operator override — MEMNOS_RERANK_CAP, if set & parseable. Wins over derivation."""
+    raw = os.environ.get("MEMNOS_RERANK_CAP")
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _simulated_ms_per_pair() -> float | None:
+    """Test hook: force a per-pair latency so a fast runner can simulate a CPU-class box
+    deterministically (gate requirement). None = measure for real."""
+    raw = os.environ.get("MEMNOS_RERANK_SIMULATED_MS_PER_PAIR")
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        v = float(raw)
+        return v if v > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def derive_cap(ms_per_pair: float, *, budget_ms: float | None = None,
+               min_cap: int | None = None, max_cap: int | None = None) -> int:
+    """effective_cap = clamp(floor(budget / ms_per_pair), MIN_CAP, MAX_CAP)."""
+    budget_ms = _env_float("MEMNOS_RERANK_BUDGET_MS", _BUDGET_MS_DEFAULT) if budget_ms is None else budget_ms
+    min_cap = _env_int("MEMNOS_RERANK_MIN_CAP", _MIN_CAP_DEFAULT) if min_cap is None else min_cap
+    max_cap = _env_int("MEMNOS_RERANK_MAX_CAP", _MAX_CAP_DEFAULT) if max_cap is None else max_cap
+    if ms_per_pair <= 0:
+        return max_cap
+    return max(min_cap, min(max_cap, int(budget_ms // ms_per_pair)))
+
+
+def _cap() -> int:
+    """Effective cap fed to the cross-encoder. Precedence:
+      1. explicit MEMNOS_RERANK_CAP (operator override, incl. 0 = uncapped)
+      2. derived cap from the calibrated ms-per-pair (set by background prewarm)
+      3. MIN_CAP fallback before calibration completes (conservative — never blows budget)"""
+    explicit = _explicit_cap()
+    if explicit is not None:
+        return explicit
+    with _calib_lock:
+        if _effective_cap is not None:
+            return _effective_cap
+    return _env_int("MEMNOS_RERANK_MIN_CAP", _MIN_CAP_DEFAULT)
+
+
+def is_ready() -> bool:
+    """True once the model is loaded + calibrated. Recalls arriving before this serve
+    degraded (RRF order, degraded:true) instead of blocking behind the heavy load.
+    MEMNOS_RERANK_SIMULATE_WARMING=1 forces False (test hook: a runner can assert the
+    degraded-while-warming path without racing the real background load)."""
+    if os.environ.get("MEMNOS_RERANK_SIMULATE_WARMING", "").strip().lower() in ("1", "true", "yes", "on"):
+        return False
+    return (not _enabled()) or _ready.is_set()
+
+
+def calibration() -> dict:
+    """Snapshot for the audit ledger / operator log: what this box calibrated to."""
+    with _calib_lock:
+        mpp = _measured_ms_per_pair
+    # _cap() acquires _calib_lock too — call it OUTSIDE the with (Lock is non-reentrant)
+    return {"ready": _ready.is_set(),
+            "measured_ms_per_pair": round(mpp, 2) if mpp is not None else None,
+            "effective_cap": _cap()}
+
+
+def _reset_calibration_for_tests():
+    """Test-only: clear calibration state so a fresh prewarm can recalibrate."""
+    global _measured_ms_per_pair, _effective_cap
+    with _calib_lock:
+        _measured_ms_per_pair = None
+        _effective_cap = None
+    _ready.clear()
 
 
 def _sigmoid(x: float) -> float:
@@ -85,6 +196,9 @@ def rerank(query: str, candidates: list[str], model: str = DEFAULT_RERANKER) -> 
         return _passthrough(n)
     cap = _cap()
     head = candidates if (cap == 0 or n <= cap) else candidates[:cap]
+    sim = _simulated_ms_per_pair()
+    if sim is not None:                                      # test hook: emulate a slow box
+        time.sleep(sim * len(head) / 1000.0)
     logits = list(_model(model).rerank(query, head))         # raw logits, candidate order
     scores = [_sigmoid(float(s)) for s in logits]
     out = sorted(((i, scores[i]) for i in range(len(head))), key=lambda x: x[1], reverse=True)
@@ -131,16 +245,69 @@ def _prewarm_candidates(n: int = 32) -> list[str]:
     return out
 
 
+def _measure_ms_per_pair(model: str, n: int) -> float:
+    """Time a real (or simulated) rerank batch on THIS hardware → ms-per-pair. A
+    simulated value (test hook) short-circuits the timing so any runner can emulate a
+    CPU-class box deterministically."""
+    sim = _simulated_ms_per_pair()
+    if sim is not None:
+        return sim
+    cands = _prewarm_candidates(n)
+    t0 = time.perf_counter()
+    list(_model(model).rerank(_PREWARM_QUERY, cands))    # bypass cap: time the raw batch
+    dt_ms = (time.perf_counter() - t0) * 1000.0
+    return dt_ms / max(1, len(cands))
+
+
 def prewarm(model: str = DEFAULT_RERANKER, n: int = 32) -> float:
     """Boot prewarm with a REALISTIC batch (default 32 candidates of realistic length):
-    loads the model, grows the ONNX arena, and JITs the real code paths so the first
-    field call costs ~one warm inference, not 6-13s. No-op when MEMNOS_RERANK=0.
-    Returns elapsed ms (logged by the server)."""
+    loads the model, grows the ONNX arena, JITs the real code paths, AND self-calibrates
+    the effective rerank cap to THIS install's hardware (follow-up to #12): it measures
+    ms-per-pair here and derives effective_cap = clamp(BUDGET/ms_per_pair, MIN, MAX) so a
+    CPU-class box gets a small cap and a fast box a large one — instead of the fixed
+    cap=100 that made rerank 85% of every warm call on a laptop. Sets the ready flag so
+    recalls before this point serve degraded (RRF order) rather than blocking on the load.
+    No-op when MEMNOS_RERANK=0. Returns elapsed ms (logged by the server)."""
+    global _measured_ms_per_pair, _effective_cap
     if not _enabled():
+        _ready.set()
         return 0.0
     t0 = time.perf_counter()
-    rerank(_PREWARM_QUERY, _prewarm_candidates(n), model)
+    mpp = _measure_ms_per_pair(model, n)
+    rerank(_PREWARM_QUERY, _prewarm_candidates(n), model)   # warm the real (capped) path
+    cap = derive_cap(mpp)
+    with _calib_lock:
+        _measured_ms_per_pair = mpp
+        _effective_cap = cap
+    _ready.set()
+    eff = _explicit_cap()
+    print(f"[memnos] rerank calibrated: measured_ms_per_pair={mpp:.2f} "
+          f"derived_cap={cap}" + (f" (overridden by MEMNOS_RERANK_CAP={eff})"
+                                  if eff is not None else ""), flush=True)
     return (time.perf_counter() - t0) * 1000.0
+
+
+def prewarm_background(model: str = DEFAULT_RERANKER, n: int = 32):
+    """Run prewarm() off the request path so the server accepts traffic IMMEDIATELY on
+    boot (follow-up to #12: the synchronous prewarm cost 13-114s at startup and recalls
+    blocked behind it). Until the flag is set, is_ready() is False and recalls serve
+    degraded. Returns the daemon thread (or None when disabled)."""
+    if not _enabled():
+        _ready.set()
+        return None
+
+    def _run():
+        try:
+            ms = prewarm(model, n)
+            if ms:
+                print(f"[memnos] reranker prewarmed in {ms:.0f}ms ({model})", flush=True)
+        except Exception as e:                  # never take the server down on a warm failure
+            print(f"[memnos] WARN: reranker prewarm failed: {e}", flush=True)
+            _ready.set()                         # unblock — recalls fall back to RRF order
+
+    t = threading.Thread(target=_run, name="memnos-rerank-prewarm", daemon=True)
+    t.start()
+    return t
 
 
 def start_keepalive(model: str = DEFAULT_RERANKER, interval_s: float | None = None):
