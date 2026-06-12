@@ -46,6 +46,10 @@ jobs:
       MEMNOS_URL: http://127.0.0.1:8900
       MEMNOS_SECRET_KEY: "Y2lfdGVzdF9rZXlfMzJfYnl0ZXNfZXhhY3RseV9vayE="   # 32B base64, CI-only
       FASTEMBED_CACHE_PATH: /home/runner/.cache/fastembed   # cached across runs (HF rate-limits)
+      # Shared 2-core runners rerank ~6x slower than dev hardware (CPU ONNX). The strict
+      # 500ms budget is the LOCAL/field gate; CI asserts a looser bound that still catches
+      # gross regressions. (tests/test_recall_latency.py reads this.)
+      MEMNOS_LATENCY_BUDGET_MS: "1500"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
