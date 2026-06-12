@@ -16,10 +16,52 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from array import array
 from collections import OrderedDict
 
 CACHE_MAX = max(64, int(os.environ.get("MEMNOS_EMBED_CACHE_MAX", "4096")))
+
+
+class QueryEmbedCache:
+    """Short-TTL bounded LRU for QUERY embeddings, keyed (query text, model) — issue #12.
+
+    Hooks and Claude Desktop repeat near-identical queries within seconds (the same
+    prompt fans into /recall + /memory/context, retries, paginated follow-ups); a 60s
+    TTL lets those repeats skip the OpenAI embedding round-trip entirely while staying
+    too short to ever serve a stale embedding-model swap. Distinct from CachedEmbedder's
+    ingest cache: that LRU is sized for WRITE-path dedup and gets churned by every
+    ingest batch — query embeddings need their own small, churn-proof window.
+    MEMNOS_QUERY_CACHE_TTL_S tunes the TTL (0 disables)."""
+
+    def __init__(self, ttl_s: float = 60.0, maxsize: int = 256):
+        self.ttl, self.maxsize = float(ttl_s), int(maxsize)
+        self._d: OrderedDict[tuple, tuple] = OrderedDict()    # key -> (expires, vec)
+        self._lock = threading.Lock()
+
+    def get(self, query: str, model: str):
+        if self.ttl <= 0:
+            return None
+        k = (query, model)
+        now = time.monotonic()
+        with self._lock:
+            hit = self._d.get(k)
+            if hit is None:
+                return None
+            if hit[0] < now:
+                del self._d[k]
+                return None
+            self._d.move_to_end(k)
+            return hit[1]
+
+    def put(self, query: str, model: str, vec) -> None:
+        if self.ttl <= 0 or vec is None:
+            return
+        with self._lock:
+            self._d[(query, model)] = (time.monotonic() + self.ttl, array("f", vec))
+            self._d.move_to_end((query, model))
+            while len(self._d) > self.maxsize:
+                self._d.popitem(last=False)
 
 
 class CachedEmbedder:
