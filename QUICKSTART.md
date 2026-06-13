@@ -20,9 +20,12 @@ five minutes — one package, one command.
     on ≥ 0.7. Same recall quality either way.
 - **Python 3.10+** (for `uv` / `pip`).
 - *Optional:* an **OpenAI API key** for 1536-d embeddings + fact extraction. Without one,
-  memnos runs in free **local 384-d** mode (embeddings only, no extraction).
+  memnos runs in free **local 384-d** mode (embeddings only). For fact extraction without
+  OpenAI, set `MEMNOS_EXTRACT_BASE_URL` to any OpenAI-compatible endpoint (Ollama / vLLM /
+  LM Studio, optionally `MEMNOS_EXTRACT_MODEL`) — embeddings stay local-384 and free.
 
-> No OpenAI key required to try it. The local mode runs entirely on CPU.
+> No OpenAI key required to try it. The local mode runs entirely on CPU; add a local
+> extraction endpoint to get facts/supersession without any cloud cost.
 
 > **Windows?** Full walkthrough (Docker path, pgvector-on-Windows, schtasks autostart):
 > [`docs/guides/windows.md`](docs/guides/windows.md).
