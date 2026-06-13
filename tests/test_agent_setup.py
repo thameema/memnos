@@ -140,6 +140,37 @@ def main():
     check("codex: AGENTS.md instruction written",
           "memnos" in open(os.path.join(home, ".codex/AGENTS.md")).read())
 
+    # --- Bug: agent-setup --namespace <custom> must GRANT the wired principal on the
+    # ACTUAL namespace passed, or every write 403s and is silently swallowed. ---
+    cur_ns = os.path.join(home, ".cursor/mcp.json")
+    with open(cur_ns, "w") as f:                          # reset to a clean seed
+        json.dump({"mcpServers": {}}, f)
+    rc, out = run(home, "agent-setup", "cursor", "--namespace", "foo:bar")
+    check("cursor --namespace: exits 0", rc == 0)
+    cn = json.load(open(cur_ns)).get("mcpServers", {}).get("memnos", {}).get("env", {})
+    check("cursor --namespace: wired ns is the custom namespace", cn.get("MEMNOS_NS") == "foo:bar")
+    env = dict(os.environ, MEMNOS_DSN=DSN, HOME=home)
+    r = subprocess.run([PY, os.path.join(ROOT, "memnos_admin.py"),
+                        "whoami", "foo:bar", cn.get("MEMNOS_TOKEN", "")],
+                       capture_output=True, text=True, env=env, timeout=30)
+    who = r.stdout + r.stderr
+    check("cursor --namespace: wired token authorizes WRITE on foo:bar (no 403)",
+          "auth OK" in who and "write=True" in who)
+
+    # autonomous agent with a custom --namespace: same grant requirement.
+    with open(hp, "w") as f:
+        f.write("model: hermes-4\nmcp_servers:\n  existing:\n    command: foo\n")
+    rc, out = run(home, "agent-setup", "hermes", "--namespace", "team:research")
+    hn = yaml.safe_load(open(hp)).get("mcp_servers", {}).get("memnos", {}).get("env", {})
+    check("hermes --namespace: wired ns is the custom namespace",
+          hn.get("MEMNOS_NS") == "team:research")
+    r = subprocess.run([PY, os.path.join(ROOT, "memnos_admin.py"),
+                        "whoami", "team:research", hn.get("MEMNOS_TOKEN", "")],
+                       capture_output=True, text=True, env=env, timeout=30)
+    who = r.stdout + r.stderr
+    check("hermes --namespace: wired token authorizes WRITE on team:research (no 403)",
+          "auth OK" in who and "write=True" in who)
+
     # --- claude-code routes to the full Claude Code setup ---
     os.makedirs(os.path.join(home, ".claude"), exist_ok=True)
     rc, out = run(home, "agent-setup", "claude-code")

@@ -120,7 +120,7 @@ def _server_url(cfg):
 
 
 # ---- HTTP data client -------------------------------------------------------
-def _post(cfg, path, payload, token):
+def _post(cfg, path, payload, token, timeout=120):
     import urllib.request
     import urllib.error
     req = urllib.request.Request(_server_url(cfg) + path, method="POST",
@@ -128,7 +128,7 @@ def _post(cfg, path, payload, token):
         headers={"Content-Type": "application/json",
                  **({"Authorization": "Bearer " + token} if token else {})})
     try:
-        return json.loads(urllib.request.urlopen(req, timeout=30).read() or b"{}")
+        return json.loads(urllib.request.urlopen(req, timeout=timeout).read() or b"{}")
     except urllib.error.HTTPError as e:
         try:                                   # error body may be truncated / non-JSON
             msg = json.loads(e.read() or b"{}").get("error", "?")
@@ -660,10 +660,34 @@ def cmd_status(args, cfg):
         print(f"  database:  {redacted}")
     else:
         print("  database:  not configured  (run: memnos setup)")
-    mode = "OpenAI 1536-d + extraction" if (cfg.get("openai") or os.environ.get("OPENAI_API_KEY")) \
-        else "local 384-d (free, no extraction)"
-    print(f"  embeddings: {mode}")
     running = _server_up(url)
+    # Prefer the live server's truth (handles local-LLM extraction via MEMNOS_EXTRACT_BASE_URL,
+    # which the static config doesn't reflect). Fall back to config-based guess if unavailable.
+    prov = None
+    if running:
+        tok = os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token")
+        if tok:
+            try:
+                import urllib.request
+                req = urllib.request.Request(url + "/admin/api/provider",
+                                             headers={"Authorization": "Bearer " + tok})
+                prov = json.load(urllib.request.urlopen(req, timeout=2))
+            except Exception:
+                prov = None
+    if prov:
+        emb = "OpenAI 1536-d" if prov.get("mode") == "openai" else f"local {prov.get('dim', 384)}-d (free)"
+        if prov.get("extraction"):
+            base = prov.get("extract_base_url")
+            model = prov.get("extract_model") or "?"
+            ex = (f"local LLM extraction ({model} @ {base})" if base
+                  else f"OpenAI extraction ({model})")
+        else:
+            ex = "no extraction"
+        mode = f"{emb} · {ex}"
+    else:
+        mode = "OpenAI 1536-d + extraction" if (cfg.get("openai") or os.environ.get("OPENAI_API_KEY")) \
+            else "local 384-d (free, no extraction)"
+    print(f"  embeddings: {mode}")
     if running:
         print(f"  server:    RUNNING at {url}   ·   console: {url}/admin")
     else:
@@ -1333,9 +1357,11 @@ def _backup(path):
         shutil.copy2(path, f"{path}.memnos-bak")
 
 
-def _ensure_claude_token(cfg):
+def _ensure_claude_token(cfg, extra_ns=None):
     """A principal+token for the Claude integration: default namespace user:<user> plus a
-    proj:* wildcard so per-project + widened recall work. (Grants, not namespace creation.)"""
+    proj:* wildcard so per-project + widened recall work. (Grants, not namespace creation.)
+    If `extra_ns` is a custom namespace the wiring will write to, GRANT it too — otherwise
+    every write to that ns 403s and is silently swallowed. (Bug: agent-setup --namespace 403)"""
     from core.control import Control
     conn = _conn(cfg)
     Control.init(conn)
@@ -1346,15 +1372,29 @@ def _ensure_claude_token(cfg):
         pid = Control.create_principal(conn, name, "user")
     Control.grant(conn, pid, f"user:{name}")
     Control.grant(conn, pid, "proj:*")
+    if extra_ns and not _ns_covered(extra_ns, (f"user:{name}", "proj:*")):
+        Control.grant(conn, pid, extra_ns)
     return Control.mint_token(conn, pid, "claude-code"), f"user:{name}"
 
 
-def _ensure_agent_token(cfg, agent):
+def _ns_covered(target, grants):
+    """True if `target` is already authorized by one of `grants` (exact match or a
+    `prefix:*` wildcard). Used to avoid a redundant grant for the common case."""
+    for g in grants:
+        if g == target:
+            return True
+        if g.endswith(":*") and target.startswith(g[:-1]):
+            return True
+    return False
+
+
+def _ensure_agent_token(cfg, agent, extra_ns=None):
     """Identity for an AUTONOMOUS agent (hermes, openclaw, ...). Unlike a user editor, the
     agent gets its OWN principal named after itself, GRANTED on its own namespace
     `agent:<agent>`, and a token for THAT principal. This is Bug 3: previously every
     agent-setup wired the human user's token (no grant on agent:<agent>), so the agent's
-    writes failed `forbidden`. Returns (token, default_namespace)."""
+    writes failed `forbidden`. If `extra_ns` is the custom namespace the wiring will use,
+    GRANT it too (else --namespace writes 403). Returns (token, default_namespace)."""
     from core.control import Control
     conn = _conn(cfg)
     Control.init(conn)
@@ -1366,6 +1406,8 @@ def _ensure_agent_token(cfg, agent):
         pid = Control.create_principal(conn, principal, "agent")
     Control.grant(conn, pid, ns)            # the agent's own namespace — read+write
     Control.grant(conn, pid, "proj:*")      # shared project memory (read+write), same as users
+    if extra_ns and not _ns_covered(extra_ns, (ns, "proj:*")):
+        Control.grant(conn, pid, extra_ns)  # the custom --namespace the agent will write to
     return Control.mint_token(conn, pid, f"agent-setup:{principal}"), ns
 
 
@@ -1382,7 +1424,7 @@ def cmd_claude_setup(args, cfg):
             return
     os.makedirs(os.path.join(claude_dir, "commands"), exist_ok=True)
     url = os.environ.get("MEMNOS_URL") or f"http://127.0.0.1:{cfg.get('port', 8900)}"
-    token, default_ns = _ensure_claude_token(cfg)
+    token, default_ns = _ensure_claude_token(cfg, extra_ns=args.namespace)
     ns = args.namespace or default_ns
 
     # 1. MCP server -> ~/.claude.json (the file Claude Code reads for MCP)
@@ -1541,9 +1583,9 @@ def cmd_agent_setup(args, cfg):
     # Autonomous agents (hermes, openclaw) get their OWN principal+token scoped to
     # agent:<name>; user editors (cursor, codex, ...) use the human user's identity. (Bug 3)
     if spec.get("agent"):
-        token, default_ns = _ensure_agent_token(cfg, args.agent)
+        token, default_ns = _ensure_agent_token(cfg, args.agent, extra_ns=args.namespace)
     else:
-        token, default_ns = _ensure_claude_token(cfg)
+        token, default_ns = _ensure_claude_token(cfg, extra_ns=args.namespace)
     ns = args.namespace or default_ns
     path = os.path.expanduser(spec["path"])
     os.makedirs(os.path.dirname(path), exist_ok=True)
