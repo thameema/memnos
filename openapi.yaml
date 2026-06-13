@@ -2152,7 +2152,9 @@ components:
         mode: { type: string, enum: [openai, local] }
         dim: { type: integer }
         key_present: { type: boolean }
-        extract_model: { type: string }
+        extract_model: { type: [string, "null"] }   # null when no extraction is active (local-384, no LLM)
+        extract_base_url: { type: [string, "null"] }
+        extraction: { type: boolean }
         vault_unlocked: { type: boolean }
     AdminSecretSetRequest:
       type: object
