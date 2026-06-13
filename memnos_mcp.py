@@ -63,10 +63,10 @@ def _ns():
 NS = _ns()
 
 
-def _post(path, payload):
+def _post(path, payload, timeout=60):
     try:
         r = httpx.post(f"{URL}{path}", json={"namespace": _ns(), **payload},
-                       headers={"Authorization": f"Bearer {TOKEN}"}, timeout=20)
+                       headers={"Authorization": f"Bearer {TOKEN}"}, timeout=timeout)
     except (httpx.ConnectError, httpx.ConnectTimeout):
         # fail fast + clearly — a down server must never surface as a cryptic traceback
         raise RuntimeError(f"memnos server is not running at {URL} — "
@@ -129,10 +129,15 @@ def remember(text: str) -> str:
     project facts, commitments, identity) — not transient chatter. If this updates a
     prior fact (e.g. a changed preference), memnos supersedes the old value automatically."""
     try:
-        out = _post("/remember", {"text": text, "speaker": "user"})
+        # async:true — server stores the raw turn immediately and extracts facts in the
+        # background, so a slow local-LLM extraction backend (Ollama 30-80s) can't ReadTimeout
+        # and drop the write. The raw turn is durable the moment this returns.
+        out = _post("/remember", {"text": text, "speaker": "user", "async": True})
     except Exception as e:
         # Bug 4: raise so the MCP result is flagged isError=true — never a false "saved".
         raise ToolError(_write_error(e, "remember")) from None
+    if out.get("extraction") == "queued":
+        return f"remembered (turn {out.get('turn_id')}; facts extracting in background)"
     return f"remembered (turn {out.get('turn_id')}, {out.get('facts', 0)} facts extracted)"
 
 

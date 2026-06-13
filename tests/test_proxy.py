@@ -118,6 +118,13 @@ class FakeUpstream(BaseHTTPRequestHandler):
         self.end_headers(); self.wfile.write(out)
 
 
+# Simulates a slow local-LLM extraction backend (Ollama 30-80s). When SLOW_EXTRACTION is on,
+# a SYNCHRONOUS /remember (async != true) blocks past the proxy's timeout and is lost — exactly
+# the production failure. With async:true the server stores the raw turn and returns immediately,
+# so BOTH turns must land. The proxy must therefore send async:true on the capture path.
+SLOW_EXTRACTION = {"on": False, "sync_delay": 30.0}
+
+
 class FakeMemnos(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -126,8 +133,11 @@ class FakeMemnos(BaseHTTPRequestHandler):
         b = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         if "MEMNOS_DOWN" in b.get("text", ""):
             self.send_response(500); self.send_header("Content-Length", "0"); self.end_headers(); return
+        if SLOW_EXTRACTION["on"] and not b.get("async"):
+            # synchronous remember on a slow backend: hang well past the proxy timeout
+            time.sleep(SLOW_EXTRACTION["sync_delay"])
         remembered.append(b)
-        out = b'{"ok": true}'
+        out = b'{"ok": true, "turn_id": 1, "extraction": "queued"}'
         self.send_response(200)
         self.send_header("Content-Length", str(len(out)))
         self.end_headers(); self.wfile.write(out)
@@ -275,6 +285,22 @@ def main():
     check("gzip capture: assistant turn parsed from gzip body + stored",
           wait_capture(2) and [r["speaker"] for r in remembered] == ["user", "assistant"]
           and "ZEPHYR-9000" in remembered[1]["text"])
+
+    # 9c. slow extraction backend: capture path uses async:true so BOTH turns land and
+    # neither is dropped to a timeout (the bug: sync remember timed out on the user turn and
+    # the assistant turn was never even attempted). sync_delay >> the proxy's 20s capture timeout.
+    remembered.clear()
+    SLOW_EXTRACTION["on"] = True
+    st, body = post("/v1/chat/completions",
+                    {"model": "gpt-5",
+                     "messages": user_msgs("on a slow ollama backend, do both turns still get captured?")})
+    check("slow backend: relay still 200", st == 200 and b"pgvector" in body)
+    both = wait_capture(2, timeout=10.0)
+    check("slow backend: BOTH user+assistant captured (no drop)",
+          both and [r["speaker"] for r in remembered] == ["user", "assistant"])
+    check("slow backend: capture sent async:true (raw turn stored immediately)",
+          both and all(r.get("async") is True for r in remembered))
+    SLOW_EXTRACTION["on"] = False
 
     # 10. healthz reports stats
     with urllib.request.urlopen(f"http://127.0.0.1:{PROXY_PORT}/healthz", timeout=5) as r:
