@@ -19,6 +19,10 @@ import os
 import subprocess
 import httpx
 from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp.exceptions import ToolError
+except Exception:                                   # very old SDKs — fall back to RuntimeError
+    ToolError = RuntimeError
 
 URL = os.environ.get("MEMNOS_URL", "http://127.0.0.1:8900").rstrip("/")
 TOKEN = os.environ.get("MEMNOS_TOKEN", "")
@@ -74,6 +78,30 @@ def _post(path, payload):
     return r.json()
 
 
+def _write_error(e, what):
+    """Bug 4: a FAILED write must surface as an unmistakable MCP tool ERROR (isError=true) so
+    the model tells the user the save FAILED — never a soft string the model glosses over as
+    success. Build the message; the caller raises ToolError with it."""
+    if isinstance(e, httpx.HTTPStatusError):
+        c = e.response.status_code
+        if c == 401:
+            return (f"memnos {what} FAILED — NOT saved (401 unauthorized: the MEMNOS_TOKEN is "
+                    f"invalid or revoked). Tell the user the memory was NOT stored.")
+        if c == 403:
+            return (f"memnos {what} FAILED — NOT saved (403 forbidden: this principal is not "
+                    f"granted write access to namespace '{_ns()}'). Tell the user the memory "
+                    f"was NOT stored and that the agent's token needs a grant on this namespace.")
+        if c == 400:
+            detail = ""
+            try:
+                detail = f" — {e.response.json().get('error', '')}"
+            except Exception:
+                pass
+            return f"memnos {what} FAILED — NOT saved (400 bad request{detail})."
+        return f"memnos {what} FAILED — NOT saved (HTTP {c}). The memory was NOT stored."
+    return f"memnos {what} FAILED — NOT saved ({type(e).__name__}: {e}). The memory was NOT stored."
+
+
 @mcp.tool()
 def recall(query: str) -> str:
     """Search the user's long-term memory for information relevant to the query.
@@ -102,11 +130,10 @@ def remember(text: str) -> str:
     prior fact (e.g. a changed preference), memnos supersedes the old value automatically."""
     try:
         out = _post("/remember", {"text": text, "speaker": "user"})
-        return f"remembered (turn {out.get('turn_id')}, {out.get('facts', 0)} facts extracted)"
-    except httpx.HTTPStatusError as e:
-        return f"(memnos remember failed: HTTP {e.response.status_code})"
     except Exception as e:
-        return f"(memnos remember failed: {e})"
+        # Bug 4: raise so the MCP result is flagged isError=true — never a false "saved".
+        raise ToolError(_write_error(e, "remember")) from None
+    return f"remembered (turn {out.get('turn_id')}, {out.get('facts', 0)} facts extracted)"
 
 
 @mcp.tool()
@@ -115,9 +142,10 @@ def consolidate() -> str:
     into durable semantic facts and entity dossiers, resolving contradictions. Normally
     run on a schedule; expose here for on-demand use."""
     try:
-        return f"consolidated: {_post('/consolidate', {})}"
+        out = _post('/consolidate', {})
     except Exception as e:
-        return f"(memnos consolidate failed: {e})"
+        raise ToolError(_write_error(e, "consolidate")) from None
+    return f"consolidated: {out}"
 
 
 def _err(e, what):
@@ -163,9 +191,9 @@ def memory_write(text: str) -> str:
     bi-temporal facts; supersedes a changed single-valued fact automatically."""
     try:
         out = _post("/memory/write", {"text": text, "speaker": "user"})
-        return f"written (turn {out.get('turn_id')}, {out.get('facts', 0)} facts)"
     except Exception as e:
-        return _err(e, "memory_write")
+        raise ToolError(_write_error(e, "memory_write")) from None
+    return f"written (turn {out.get('turn_id')}, {out.get('facts', 0)} facts)"
 
 
 @mcp.tool()
@@ -175,9 +203,9 @@ def memory_delete(id: int) -> str:
     memory_search or get_entity."""
     try:
         out = _post("/memory/delete", {"id": int(id)})
-        return f"deleted fact {out.get('deleted')}: {out.get('statement','')}"
     except Exception as e:
-        return _err(e, "memory_delete")
+        raise ToolError(_write_error(e, "memory_delete")) from None
+    return f"deleted fact {out.get('deleted')}: {out.get('statement','')}"
 
 
 @mcp.tool()
@@ -273,7 +301,7 @@ def namespace_subscribe(webhook: str = "") -> str:
     try:
         return str(_post("/subscribe", {"webhook": webhook} if webhook else {}))
     except Exception as e:
-        return _err(e, "namespace_subscribe")
+        raise ToolError(_write_error(e, "namespace_subscribe")) from None
 
 
 @mcp.tool()
@@ -292,9 +320,9 @@ def corpus_ingest(name: str, text: str, kind: str = "doc") -> str:
     (SHALL/MUST/REQUIRED/...) and store them as searchable constraint memories under `name`."""
     try:
         out = _post("/corpus/ingest", {"name": name, "text": text, "kind": kind})
-        return f"ingested {out.get('constraints', 0)} constraints from '{name}'"
     except Exception as e:
-        return _err(e, "corpus_ingest")
+        raise ToolError(_write_error(e, "corpus_ingest")) from None
+    return f"ingested {out.get('constraints', 0)} constraints from '{name}'"
 
 
 @mcp.tool()
@@ -324,9 +352,9 @@ def ingest_file(filename: str, text: str, extract: bool = False) -> str:
     text you pulled from a PDF/DOCX). Set extract=true to also pull bi-temporal facts."""
     try:
         out = _post("/ingest/file", {"filename": filename, "text": text, "extract": extract})
-        return f"ingested '{out.get('filename')}' as {out.get('chunks', 0)} chunks"
     except Exception as e:
-        return _err(e, "ingest_file")
+        raise ToolError(_write_error(e, "ingest_file")) from None
+    return f"ingested '{out.get('filename')}' as {out.get('chunks', 0)} chunks"
 
 
 @mcp.tool()
@@ -382,10 +410,10 @@ def copy_memories_from(src: str, mode: str = "copy", like: str = "") -> str:
         if like:
             body["like"] = like
         out = _post("/namespace/copy", body)
-        return (f"{out.get('mode')}d {out.get('facts',0)} facts + {out.get('raw_turns',0)} turns "
-                f"from {src} into {_ns()}")
     except Exception as e:
-        return _err(e, "copy_memories_from")
+        raise ToolError(_write_error(e, "copy_memories_from")) from None
+    return (f"{out.get('mode')}d {out.get('facts',0)} facts + {out.get('raw_turns',0)} turns "
+            f"from {src} into {_ns()}")
 
 
 @mcp.tool()

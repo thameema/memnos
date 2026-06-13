@@ -112,6 +112,19 @@ def main():
     check("hermes: memnos entry valid", entry_ok(y.get("mcp_servers", {}).get("memnos", {})))
     check("hermes: existing server + model key preserved",
           "existing" in y.get("mcp_servers", {}) and y.get("model") == "hermes-4")
+    # --- Bug 3: an AUTONOMOUS agent gets its OWN principal+token scoped to agent:<name>,
+    # NOT the human user's token (which has no grant on agent:hermes → writes 403). ---
+    hermes_env = y.get("mcp_servers", {}).get("memnos", {}).get("env", {})
+    hermes_ns = hermes_env.get("MEMNOS_NS", "")
+    hermes_tok = hermes_env.get("MEMNOS_TOKEN", "")
+    check("hermes: namespace scoped to agent:hermes (not user:*)", hermes_ns == "agent:hermes")
+    # Prove the wired token can actually WRITE to its own namespace (the field failure was 403).
+    env = dict(os.environ, MEMNOS_DSN=DSN, HOME=home)
+    r = subprocess.run([PY, os.path.join(ROOT, "memnos_admin.py"), "whoami", "agent:hermes", hermes_tok],
+                       capture_output=True, text=True, env=env, timeout=30)
+    who = r.stdout + r.stderr
+    check("hermes: wired token authorizes WRITE on agent:hermes (Bug 3 fix)",
+          "auth OK" in who and "write=True" in who)
 
     # --- codex: TOML appended + AGENTS.md ---
     cp = os.path.join(home, ".codex/config.toml")

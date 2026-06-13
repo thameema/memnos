@@ -19,6 +19,53 @@ def vlit(vec: Sequence[float]) -> str:
     return "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
 
 
+# pgvector >= 0.7 ships the half-precision `halfvec` type (half the storage). pgvector 0.6
+# (the version Debian/Ubuntu ship in apt) does not — only the full-precision `vector` type.
+# memnos feature-detects which is available and uses halfvec when it can, vector otherwise,
+# so a clean apt install of pgvector 0.6 works with no source build. The two are wire- and
+# query-compatible for everything memnos does (cosine distance, HNSW); halfvec is purely a
+# storage optimization. The chosen type is consistent within one database.
+MIN_PGVECTOR_HALFVEC = (0, 7, 0)
+
+
+def _vtuple(ver: str) -> tuple:
+    parts = []
+    for p in str(ver).split("."):
+        m = re.match(r"\d+", p)
+        parts.append(int(m.group()) if m else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+def detect_vector_type(conn) -> str:
+    """Return the embedding column type to use ('halfvec' or 'vector') for this database.
+    Prefers the type already baked into an existing schema (so we never cast to a type the
+    columns aren't); falls back to the installed pgvector version (halfvec needs >= 0.7)."""
+    with conn.cursor() as c:
+        # 1) If a memnos schema already exists, mirror its actual column type — authoritative.
+        c.execute(
+            "SELECT t.typname FROM pg_attribute a "
+            "JOIN pg_class cl ON cl.oid = a.attrelid "
+            "JOIN pg_namespace n ON n.oid = cl.relnamespace "
+            "JOIN pg_type t ON t.oid = a.atttypid "
+            "WHERE n.nspname LIKE 'tenant_%' AND cl.relname = 'raw_turns' "
+            "AND a.attname = 'embedding' LIMIT 1")
+        row = c.fetchone()
+        if row:
+            name = row["typname"] if isinstance(row, dict) else row[0]
+            if name in ("halfvec", "vector"):
+                return name
+        # 2) No schema yet — pick by installed pgvector version.
+        c.execute("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+        r = c.fetchone()
+        if r:
+            ver = r["extversion"] if isinstance(r, dict) else r[0]
+            if _vtuple(ver) >= MIN_PGVECTOR_HALFVEC:
+                return "halfvec"
+        return "vector"
+
+
 class BrainStore:
     def __init__(self, dsn: str | None = None, conn=None):
         # Accept a pooled connection (production) or open one from a DSN (scripts/tests).
@@ -28,6 +75,21 @@ class BrainStore:
         else:
             self.conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
             self._owns = True
+        self._vtype = None
+
+    @property
+    def vtype(self) -> str:
+        """Embedding column/cast type for this DB: 'halfvec' (pgvector>=0.7) or 'vector' (0.6).
+        Detected once from the live database and cached. Value is from a fixed safe set, so it
+        is safe to interpolate into SQL."""
+        if self._vtype is None:
+            self._vtype = detect_vector_type(self.conn)
+        return self._vtype
+
+    @property
+    def vops(self) -> str:
+        """HNSW cosine ops class matching the vector type."""
+        return "halfvec_cosine_ops" if self.vtype == "halfvec" else "vector_cosine_ops"
 
     def _chk(self, s: str) -> None:
         if not _IDENT.match(s):
@@ -42,9 +104,10 @@ class BrainStore:
         sql_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")
         with open(sql_path) as fh:
             ddl = fh.read()
+        vtype, vops = self.vtype, self.vops
         with self.conn.cursor() as c:
             c.execute(ddl)                                   # CREATE OR REPLACE FUNCTION (idempotent)
-            c.execute("SELECT create_brain_schema(%s, %s)", (tenant, dim))
+            c.execute("SELECT create_brain_schema(%s, %s, %s, %s)", (tenant, dim, vtype, vops))
         return f"tenant_{tenant}"
 
     def drop_schema(self, tenant: str) -> None:
@@ -59,7 +122,7 @@ class BrainStore:
         with self.conn.cursor() as c:
             c.execute(
                 f"INSERT INTO {schema}.raw_turns(namespace,session_id,speaker,text,observed_at,embedding,author_principal,memory_type) "
-                f"VALUES(%s,%s,%s,%s,%s,%s::halfvec,%s,%s) RETURNING id",
+                f"VALUES(%s,%s,%s,%s,%s,%s::{self.vtype},%s,%s) RETURNING id",
                 (ns, session_id, speaker, text, observed_at,
                  vlit(vec) if vec is not None else None, author, memory_type))
             return c.fetchone()["id"]
@@ -74,7 +137,7 @@ class BrainStore:
             c.execute(
                 f"INSERT INTO {schema}.episodic"
                 f"(namespace,session_id,text,summary,t_start,t_end,observed_at,salience,source_turn_ids,embedding,author_principal,memory_type) "
-                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::halfvec,%s,%s) RETURNING id",
+                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::{self.vtype},%s,%s) RETURNING id",
                 (ns, session_id, text, summary, t_start, t_end, observed_at, salience,
                  list(source_turn_ids), vlit(vec) if vec is not None else None, author,
                  memory_type))
@@ -158,7 +221,7 @@ class BrainStore:
         with self.conn.cursor() as c:
             c.execute(
                 f"INSERT INTO {schema}.entities(namespace,name,embedding) "
-                f"VALUES(%s,%s,%s::halfvec) ON CONFLICT (namespace,name) DO UPDATE SET name=EXCLUDED.name "
+                f"VALUES(%s,%s,%s::{self.vtype}) ON CONFLICT (namespace,name) DO UPDATE SET name=EXCLUDED.name "
                 f"RETURNING id",
                 (ns, name, vlit(vec) if vec is not None else None))
             return c.fetchone()["id"]
@@ -197,7 +260,7 @@ class BrainStore:
             c.execute(
                 f"INSERT INTO {schema}.semantic"
                 f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding,source_turn_ids,author_principal,memory_type,observed_at) "
-                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::halfvec,%s,%s,%s,COALESCE(%s,now())) RETURNING id",
+                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::{self.vtype},%s,%s,%s,COALESCE(%s,now())) RETURNING id",
                 (ns, kind, statement, subject, predicate, obj, valid_from, valid_to,
                  confidence, salience, vlit(vec) if vec is not None else None, src, author,
                  memory_type, observed_at))
@@ -269,7 +332,7 @@ class BrainStore:
             c.execute(
                 f"UPDATE {schema}.semantic SET valid_to=%s "
                 f"WHERE namespace=%s AND subject_entity=%s AND valid_to IS NULL AND expired_at IS NULL "
-                f"AND (embedding <=> %s::halfvec) < %s RETURNING id",
+                f"AND (embedding <=> %s::{self.vtype}) < %s RETURNING id",
                 (valid_from, ns, subject, vlit(new_vec), thresh))
             return len(c.fetchall())
 
@@ -289,7 +352,7 @@ class BrainStore:
                 f"UPDATE {schema}.semantic SET valid_to=%(vf)s "
                 f"WHERE namespace=%(ns)s AND subject_entity=%(sub)s AND valid_to IS NULL "
                 f"AND expired_at IS NULL AND (valid_from IS NULL OR valid_from < %(vf)s) "
-                f"AND (embedding <=> %(v)s::halfvec) BETWEEN %(lo)s AND %(hi)s RETURNING id",
+                f"AND (embedding <=> %(v)s::{self.vtype}) BETWEEN %(lo)s AND %(hi)s RETURNING id",
                 {"vf": valid_from, "ns": ns, "sub": subject, "v": vlit(new_vec),
                  "lo": dist_lo, "hi": dist_hi})
             return len(c.fetchall())
@@ -347,13 +410,13 @@ class BrainStore:
         self._chk(schema)
         with self.conn.cursor() as c:
             c.execute(
-                f"SELECT id, statement, subject_entity, (embedding <=> %(v)s::halfvec) AS dist "
+                f"SELECT id, statement, subject_entity, (embedding <=> %(v)s::{self.vtype}) AS dist "
                 f"FROM {schema}.semantic "
                 f"WHERE namespace=%(ns)s AND kind='fact' AND valid_to IS NULL "
                 f"AND expired_at IS NULL AND embedding IS NOT NULL "
                 f"AND (%(ex)s::bigint IS NULL OR id <> %(ex)s) "
                 f"AND (%(obs)s::timestamptz IS NULL OR observed_at <= %(obs)s) "
-                f"ORDER BY embedding <=> %(v)s::halfvec LIMIT %(k)s",
+                f"ORDER BY embedding <=> %(v)s::{self.vtype} LIMIT %(k)s",
                 {"v": vlit(vec), "ns": ns, "ex": exclude_id, "obs": observed_before, "k": k})
             return c.fetchall()
 
@@ -378,14 +441,14 @@ class BrainStore:
             return None
         with self.conn.cursor() as c:
             c.execute(
-                f"SELECT id, statement, (embedding <=> %(v)s::halfvec) AS dist "
+                f"SELECT id, statement, (embedding <=> %(v)s::{self.vtype}) AS dist "
                 f"FROM {schema}.semantic "
                 f"WHERE namespace=%(ns)s AND kind='fact' AND valid_to IS NULL "
                 f"AND expired_at IS NULL AND embedding IS NOT NULL "
                 f"AND (%(sub)s::text IS NULL OR subject_entity IS NULL "
                 f"     OR lower(subject_entity)=lower(%(sub)s)) "
-                f"AND (embedding <=> %(v)s::halfvec) < %(t)s "
-                f"ORDER BY embedding <=> %(v)s::halfvec LIMIT 1",
+                f"AND (embedding <=> %(v)s::{self.vtype}) < %(t)s "
+                f"ORDER BY embedding <=> %(v)s::{self.vtype} LIMIT 1",
                 {"v": vlit(vec), "ns": ns, "sub": subject, "t": thresh})
             return c.fetchone()
 
@@ -507,8 +570,8 @@ class BrainStore:
         """Hybrid RRF (vector+FTS) over EPISODIC; returns observed_at for recency."""
         self._chk(schema)
         sql = f"""
-        WITH vec AS (SELECT id, text, observed_at, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
-                     FROM {schema}.episodic WHERE namespace=%(ns)s ORDER BY embedding <=> %(qv)s::halfvec LIMIT %(k)s),
+        WITH vec AS (SELECT id, text, observed_at, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}) rnk
+                     FROM {schema}.episodic WHERE namespace=%(ns)s ORDER BY embedding <=> %(qv)s::{self.vtype} LIMIT %(k)s),
         fts AS (SELECT id, text, observed_at, memory_type, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
                 FROM {schema}.episodic, websearch_to_tsquery('english',%(qt)s) q
                 WHERE namespace=%(ns)s AND fts @@ q ORDER BY ts_rank(fts,q) DESC LIMIT %(k)s),
@@ -524,8 +587,8 @@ class BrainStore:
         """Hybrid RRF (vector+FTS) over RAW TURNS — the strong open/single-hop layer."""
         self._chk(schema)
         sql = f"""
-        WITH vec AS (SELECT id, text, observed_at, author_principal, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
-                     FROM {schema}.raw_turns WHERE namespace=%(ns)s ORDER BY embedding <=> %(qv)s::halfvec LIMIT %(k)s),
+        WITH vec AS (SELECT id, text, observed_at, author_principal, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}) rnk
+                     FROM {schema}.raw_turns WHERE namespace=%(ns)s ORDER BY embedding <=> %(qv)s::{self.vtype} LIMIT %(k)s),
         fts AS (SELECT id, text, observed_at, author_principal, memory_type, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
                 FROM {schema}.raw_turns, websearch_to_tsquery('english',%(qt)s) q
                 WHERE namespace=%(ns)s AND fts @@ q ORDER BY ts_rank(fts,q) DESC LIMIT %(k)s),
@@ -544,8 +607,8 @@ class BrainStore:
         self._chk(schema)
         valid = "AND valid_to IS NULL" if current_only else ""
         sql = f"""
-        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
-                     FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {valid} ORDER BY embedding <=> %(qv)s::halfvec LIMIT %(k)s),
+        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}) rnk
+                     FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {valid} ORDER BY embedding <=> %(qv)s::{self.vtype} LIMIT %(k)s),
         fts AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
                 FROM {schema}.semantic, websearch_to_tsquery('english',%(qt)s) q
                 WHERE namespace=%(ns)s AND expired_at IS NULL {valid} AND fts @@ q ORDER BY ts_rank(fts,q) DESC LIMIT %(k)s),
@@ -566,8 +629,8 @@ class BrainStore:
         self._chk(schema)
         cur = "AND valid_to IS NULL" if current_only else ""
         base = f"""
-        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY embedding <=> %(qv)s::halfvec) rnk
-                     FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {cur} ORDER BY embedding <=> %(qv)s::halfvec LIMIT %(k)s),
+        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}) rnk
+                     FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {cur} ORDER BY embedding <=> %(qv)s::{self.vtype} LIMIT %(k)s),
         fts AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
                 FROM {schema}.semantic, websearch_to_tsquery('english',%(qt)s) q
                 WHERE namespace=%(ns)s AND expired_at IS NULL {cur} AND fts @@ q ORDER BY ts_rank(fts,q) DESC LIMIT %(k)s),
@@ -966,9 +1029,9 @@ class BrainStore:
             # VECTOR arm — catch paraphrases / when no subject given: near-but-different facts
             if qvec is not None:
                 c.execute(f"SELECT id, statement, subject_entity, predicate, object, valid_from, "
-                          f"(embedding <=> %s::halfvec) AS dist FROM {schema}.semantic "
+                          f"(embedding <=> %s::{self.vtype}) AS dist FROM {schema}.semantic "
                           f"WHERE namespace=%s AND valid_to IS NULL AND expired_at IS NULL AND embedding IS NOT NULL "
-                          f"ORDER BY embedding <=> %s::halfvec LIMIT %s", (vlit(qvec), ns, vlit(qvec), k))
+                          f"ORDER BY embedding <=> %s::{self.vtype} LIMIT %s", (vlit(qvec), ns, vlit(qvec), k))
                 for r in c.fetchall():
                     near = r["dist"] is not None and r["dist"] < 0.45
                     if not near:

@@ -1,12 +1,25 @@
 -- memnos brain-inspired memory — tenant schema (B1)
 -- Dual long-term store (episodic + semantic) + associative graph + provenance.
--- One ACID engine. halfvec embeddings (pgvector >= 0.7).
+-- One ACID engine. halfvec embeddings on pgvector >= 0.7; falls back to full-precision
+-- `vector` on pgvector 0.6 (what Debian/Ubuntu apt ships) so a clean apt install works
+-- with no source build. The embedding column type + HNSW ops class are passed in by the
+-- caller (vtype/vops), which feature-detects the installed pgvector. halfvec is purely a
+-- storage optimization; queries are identical on either type.
 CREATE EXTENSION IF NOT EXISTS vector;
 
-CREATE OR REPLACE FUNCTION create_brain_schema(tenant text, dim int DEFAULT 1536)
+CREATE OR REPLACE FUNCTION create_brain_schema(tenant text, dim int DEFAULT 1536,
+                                               vtype text DEFAULT 'halfvec',
+                                               vops  text DEFAULT 'halfvec_cosine_ops')
 RETURNS void LANGUAGE plpgsql AS $fn$
 DECLARE s text := 'tenant_' || tenant;
+        coltype text := vtype || '(' || dim || ')';
 BEGIN
+  IF vtype NOT IN ('halfvec', 'vector') THEN
+    RAISE EXCEPTION 'unsupported embedding vector type: %', vtype;
+  END IF;
+  IF vops NOT IN ('halfvec_cosine_ops', 'vector_cosine_ops') THEN
+    RAISE EXCEPTION 'unsupported vector ops class: %', vops;
+  END IF;
   EXECUTE format('CREATE SCHEMA IF NOT EXISTS %I', s);
 
   -- SENSORY / verbatim log — provenance floor, append-only
@@ -18,9 +31,9 @@ BEGIN
       speaker text,
       text text NOT NULL,
       observed_at timestamptz NOT NULL DEFAULT now(),
-      embedding halfvec(%s),
+      embedding %s,
       fts tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
-    )$t$, s, dim);
+    )$t$, s, coltype);
 
   -- EPISODIC — hippocampus: sharp, recent, verbatim, event-segmented
   EXECUTE format($t$
@@ -38,9 +51,9 @@ BEGIN
       access_count int NOT NULL DEFAULT 0,
       consolidated boolean NOT NULL DEFAULT false,
       source_turn_ids bigint[],
-      embedding halfvec(%s),
+      embedding %s,
       fts tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
-    )$t$, s, dim);
+    )$t$, s, coltype);
 
   -- SEMANTIC — neocortex: durable, deduped, multi-hop pre-joined, FULLY BI-TEMPORAL.
   --   valid time   (application/event): valid_from .. valid_to  (when the fact is TRUE)
@@ -63,9 +76,9 @@ BEGIN
       observed_at timestamptz NOT NULL DEFAULT now(),  -- legacy/event-observed (kept)
       confidence real DEFAULT 1.0,
       salience real NOT NULL DEFAULT 0,
-      embedding halfvec(%s),
+      embedding %s,
       fts tsvector GENERATED ALWAYS AS (to_tsvector('english', statement)) STORED
-    )$t$, s, dim);
+    )$t$, s, coltype);
   -- PROVENANCE (inline): the raw_turn(s) a fact was extracted from / a dossier derived
   -- from. Auditable evidence chain — "why do you believe this?" (additive, rolling-safe).
   EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS source_turn_ids bigint[]', s);
@@ -101,9 +114,9 @@ BEGIN
       id bigserial PRIMARY KEY,
       namespace text NOT NULL,
       name text NOT NULL,
-      embedding halfvec(%s),
+      embedding %s,
       UNIQUE(namespace, name)
-    )$t$, s, dim);
+    )$t$, s, coltype);
 
   EXECUTE format($t$
     CREATE TABLE IF NOT EXISTS %I.mentions(
@@ -133,18 +146,18 @@ BEGIN
     )$t$, s);
 
   -- INDEXES (HNSW vector + GIN fts + temporal + graph)
-  EXECUTE format('CREATE INDEX IF NOT EXISTS raw_hnsw ON %I.raw_turns USING hnsw (embedding halfvec_cosine_ops)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS raw_hnsw ON %I.raw_turns USING hnsw (embedding %s)', s, vops);
   -- raw_turns BM25 arm: episodic/semantic always had GIN fts indexes but raw_turns did
   -- not, so every /recall row-filtered the whole namespace (linear with data size)
   EXECUTE format('CREATE INDEX IF NOT EXISTS raw_fts  ON %I.raw_turns USING gin (fts)', s);
-  EXECUTE format('CREATE INDEX IF NOT EXISTS epi_hnsw ON %I.episodic USING hnsw (embedding halfvec_cosine_ops)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS epi_hnsw ON %I.episodic USING hnsw (embedding %s)', s, vops);
   EXECUTE format('CREATE INDEX IF NOT EXISTS epi_fts  ON %I.episodic USING gin (fts)', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS epi_time ON %I.episodic (observed_at)', s);
-  EXECUTE format('CREATE INDEX IF NOT EXISTS sem_hnsw ON %I.semantic USING hnsw (embedding halfvec_cosine_ops)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS sem_hnsw ON %I.semantic USING hnsw (embedding %s)', s, vops);
   EXECUTE format('CREATE INDEX IF NOT EXISTS sem_fts  ON %I.semantic USING gin (fts)', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS sem_valid ON %I.semantic (valid_from, valid_to)', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS sem_live ON %I.semantic (valid_from) WHERE expired_at IS NULL AND valid_to IS NULL', s);
-  EXECUTE format('CREATE INDEX IF NOT EXISTS ent_hnsw ON %I.entities USING hnsw (embedding halfvec_cosine_ops)', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS ent_hnsw ON %I.entities USING hnsw (embedding %s)', s, vops);
   EXECUTE format('CREATE INDEX IF NOT EXISTS men_ent  ON %I.mentions (entity_id)', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS men_mem  ON %I.mentions (memory_id)', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS prov_sem ON %I.provenance (semantic_id)', s);
