@@ -51,9 +51,11 @@ the foreground for systemd/launchd/Docker; `memnos upgrade` updates in place;
 
 During setup you're asked for an **optional OpenAI key** (stored AES-256-GCM encrypted,
 never in plaintext): with one, you get 1536-d embeddings + bi-temporal fact extraction;
-without one, memnos runs in free **local 384-d mode** — embeddings only, no extraction,
-nothing leaves your machine. `memnos migrate-embeddings` converts between the two
-losslessly if you change your mind.
+without one, memnos runs in free **local 384-d mode** — nothing leaves your machine.
+For extraction without OpenAI, set `MEMNOS_EXTRACT_BASE_URL` to any OpenAI-compatible
+endpoint (Ollama / vLLM / LM Studio) — embeddings stay local-384 and free, only fact
+extraction calls that local LLM. `memnos migrate-embeddings` converts between embedding
+modes losslessly if you change your mind.
 
 Full walkthrough: [`QUICKSTART.md`](QUICKSTART.md) · Windows:
 [`docs/guides/windows.md`](docs/guides/windows.md) · everything else: `memnos --help`.
@@ -230,9 +232,11 @@ memnos is **early (0.1.x)** and changing. Honest scope, so you don't find out th
   plane in the open-source build.
 - **Local-first.** Binds `127.0.0.1` by default; remote access is your reverse proxy's job.
 - **Text only.** No image/audio/multimodal memory.
-- **Fact extraction needs an OpenAI key.** Without one, local mode gives you embeddings +
-  hybrid recall over verbatim turns — but no fact extraction, so no supersession or
-  timelines.
+- **Fact extraction needs an LLM — but not necessarily OpenAI.** Point
+  `MEMNOS_EXTRACT_BASE_URL` at any OpenAI-compatible endpoint (Ollama / vLLM / LM Studio)
+  to run extraction locally and free, while embeddings stay on the private local-384 path.
+  With nothing set, local mode still gives you embeddings + hybrid recall over verbatim
+  turns — but no fact extraction, so no supersession or timelines.
 - **Capture guarantees vary by client.** Deterministic only via Claude Code hooks or the
   proxy; plain MCP capture depends on the model choosing to call the tools (see
   [Integrations](#integrations)).
