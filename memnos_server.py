@@ -74,7 +74,7 @@ from psycopg import OperationalError
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
 
-from core.store import BrainStore
+from core.store import BrainStore, query_clamp
 from core.service import MemnosMemory
 from core.control import Control
 from core import rerank as brain_rerank
@@ -941,7 +941,7 @@ class Handler(BaseHTTPRequestHandler):
             if qv is None:
                 def _embed_timed():
                     te = time.perf_counter()
-                    v = mem.embed(q)                              # network — NO conn
+                    v = mem.embed(query_clamp(q))                 # #15 follow-up: bound long query
                     timings["embed_ms"] = (time.perf_counter() - te) * 1000.0
                     return v
                 fut = _EMBED_EXEC.submit(_embed_timed)
@@ -1066,7 +1066,7 @@ class Handler(BaseHTTPRequestHandler):
                 return 400, {"error": "query required"}
             if len(q) > _QUERY_MAX_CHARS:                        # issue #15: clamp, don't reject
                 q = q[:_QUERY_MAX_CHARS]
-            qv = mem.embed(q)                                     # network — NO conn
+            qv = mem.embed(query_clamp(q))                        # #15 follow-up: bound long query
             with POOL.connection() as conn:
                 store = BrainStore(conn=conn)
                 rows = store.search_episodic(mem.schema, ns, qv, q, k=int(req.get("k", 8)))
