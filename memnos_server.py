@@ -82,6 +82,9 @@ from core import rerank as brain_rerank
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
 PORT = int(os.environ.get("MEMNOS_PORT", "8900"))
 POOL_MAX = int(os.environ.get("MEMNOS_POOL_MAX", "16"))
+# Extraction model: gpt-4o-mini on the OpenAI path; override for OpenAI-compatible
+# local servers (e.g. MEMNOS_EXTRACT_MODEL=llama3.2:3b with MEMNOS_EXTRACT_BASE_URL).
+EXTRACT_MODEL = os.environ.get("MEMNOS_EXTRACT_MODEL", "gpt-4o-mini")
 MAX_BODY = 256 * 1024          # 256 KB request cap
 WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/corpus/ingest",
              "/ingest/file", "/episode/segment", "/episode/decay", "/namespace/copy"}
@@ -255,6 +258,20 @@ def _build_embedder():
         return emb
     from core import local_models
     DIM = 384
+    # Local LLM extraction via any OpenAI-compatible endpoint (e.g. Ollama at
+    # http://localhost:11434/v1) WITHOUT switching embeddings off the free local-384
+    # path. Set MEMNOS_EXTRACT_BASE_URL (+ optional MEMNOS_EXTRACT_MODEL) and no
+    # OPENAI_API_KEY: embeddings stay local/free, only fact extraction calls the LLM.
+    if os.environ.get("MEMNOS_EXTRACT_BASE_URL"):
+        from openai import OpenAI
+        # OpenAI-compatible servers (Ollama, vLLM, LM Studio) ignore the key but the
+        # SDK requires one — a placeholder is fine and never leaves the box.
+        LLM = OpenAI(base_url=os.environ["MEMNOS_EXTRACT_BASE_URL"],
+                     api_key=os.environ.get("MEMNOS_EXTRACT_API_KEY", "local"),
+                     max_retries=2, timeout=120)
+        print(f"[memnos] local 384-d embeddings (free/private) + LOCAL LLM extraction "
+              f"via {os.environ['MEMNOS_EXTRACT_BASE_URL']} model={EXTRACT_MODEL}", flush=True)
+        return local_models.embed
     print("[memnos] local 384-d embeddings (free/private), no extraction", flush=True)
     return local_models.embed
 
@@ -431,7 +448,10 @@ class Handler(BaseHTTPRequestHandler):
                     from core.vault import Vault
                     return 200, {"mode": "openai" if os.environ.get("OPENAI_API_KEY") else "local",
                                  "dim": DIM, "key_present": bool(os.environ.get("OPENAI_API_KEY")),
-                                 "extract_model": "gpt-4o-mini", "vault_unlocked": Vault.available()}
+                                 "extraction": LLM is not None,
+                                 "extract_base_url": os.environ.get("MEMNOS_EXTRACT_BASE_URL"),
+                                 "extract_model": EXTRACT_MODEL if LLM is not None else None,
+                                 "vault_unlocked": Vault.available()}
                 if sub == "secrets":
                     from core.vault import Vault, VaultLocked
                     try:
@@ -558,7 +578,7 @@ class Handler(BaseHTTPRequestHandler):
 
                 store = BrainStore(conn=conn)
                 usage = _UsageAcc()        # captures extraction/consolidation LLM tokens+cost
-                mem = MemnosMemory(store, EMBED, dim=DIM, llm=LLM, on_usage=usage)
+                mem = MemnosMemory(store, EMBED, dim=DIM, llm=LLM, extract_model=EXTRACT_MODEL, on_usage=usage)
                 cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 action = self.path.lstrip("/")
                 try:
@@ -760,7 +780,7 @@ class Handler(BaseHTTPRequestHandler):
             with POOL.connection() as conn:                       # P1b — short DB write
                 # author = AUTHENTICATED principal's name (token-derived; body ignored)
                 mem = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
-                                   on_usage=usage, author=pname)
+                                   extract_model=EXTRACT_MODEL, on_usage=usage, author=pname)
                 tid, rtext, obs = mem.remember_turn(ns, rtext0, speaker=req.get("speaker"),
                                                     session_id=req.get("session_id"), vec=vec,
                                                     memory_type=mtype)
@@ -784,7 +804,7 @@ class Handler(BaseHTTPRequestHandler):
                 EMBED.prime([f["statement"] for f in facts])
             with POOL.connection() as conn:                       # P3
                 mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
-                                    on_usage=usage, author=pname)
+                                    extract_model=EXTRACT_MODEL, on_usage=usage, author=pname)
                 nf, nsup = mem3.write_facts(ns, facts, obs, tid, memory_type=mtype)
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 Control.record_usage(conn, principal, ns, action, mem3.extract_model,
@@ -825,7 +845,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(*err)
             # store=None: DB phases attach a short-lived BrainStore per pool conn.
             # author = authenticated principal's name (stamped on every write).
-            mem = MemnosMemory(None, EMBED, dim=DIM, llm=LLM, on_usage=usage, author=pname)
+            mem = MemnosMemory(None, EMBED, dim=DIM, llm=LLM, extract_model=EXTRACT_MODEL, on_usage=usage, author=pname)
             try:
                 code, out = self._phased_op(mem, req, ns, principal, t0)
             except Exception as op_err:
@@ -1110,7 +1130,7 @@ def _ingest_worker():
             with POOL.connection() as conn:
                 # mem.author carries the AUTHENTICATED principal's name from the request
                 mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
-                                    on_usage=usage, author=mem.author)
+                                    extract_model=EXTRACT_MODEL, on_usage=usage, author=mem.author)
                 nf, nsup = mem3.write_facts(ns, facts, obs, tid, memory_type=mtype)
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 Control.record_usage(conn, principal, ns, "remember", mem3.extract_model,
