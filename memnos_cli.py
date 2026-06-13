@@ -647,6 +647,70 @@ def _server_up(url, timeout=2):
         return False
 
 
+def _pidfile_pid():
+    """Read PID_PATH and return ('alive', pid) / ('dead', pid) / ('none', None).
+    Only `memnos start` writes this file; an autostart-managed server writes none."""
+    if not os.path.exists(PID_PATH):
+        return ("none", None)
+    try:
+        pid = int(open(PID_PATH).read().strip())
+    except (ValueError, OSError):
+        return ("dead", None)
+    try:
+        os.kill(pid, 0)
+        return ("alive", pid)
+    except PermissionError:        # exists but owned by another user → treat as alive
+        return ("alive", pid)
+    except (ProcessLookupError, OSError):
+        return ("dead", pid)
+
+
+def _background_status(running: bool, svc, pidstate) -> dict:
+    """Pure decision for the `background:` line of `memnos status`, reconciling the pidfile
+    with ACTUAL liveness (healthz). Pure so it is unit-testable without launchd/systemd or a
+    real server (issue: status falsely reported "STALE pid file" for autostart-managed
+    servers, which write no pidfile).
+
+      running   = healthz responded (server is live on its port)
+      svc       = _autostart_installed() result (truthy → ('launchd'|'systemd', path))
+      pidstate  = _pidfile_pid() result: ('alive'|'dead'|'none', pid)
+
+    Returns {lines:[...], stale_warning:bool, managed:str}. RULE: if the server RESPONDS it
+    is RUNNING; the only genuine "stale pid file" warning is a DEAD pid AND nothing serving.
+    """
+    state, pid = pidstate
+    lines, stale_warning, managed = [], False, "none"
+    svc_kind = svc[0] if svc else None
+
+    if state == "alive":
+        lines.append(f"  background: pid {pid}   ·   logs: {LOG_PATH}")
+        managed = "start"                       # owned by `memnos start`
+    elif state == "dead":
+        if running and svc:
+            lines.append(f"  background: running (autostart-managed, {svc_kind})   ·   logs: {LOG_PATH}")
+            lines.append("             (stale pid file from a prior `memnos start` ignored — "
+                         "the live server is the autostart service)")
+            managed = "autostart"
+        elif running:
+            lines.append("  background: running, but NOT managed by `memnos start` (stale pid "
+                         "file; the live server is from another manager)   ·   logs: " + LOG_PATH)
+            managed = "other"
+        else:                                   # dead pid AND nothing serving → genuinely stale
+            lines.append("  background: STALE pid file (that process is gone) — the running "
+                         "server, if any, is NOT managed by `memnos start`")
+            stale_warning = True
+    else:                                       # no pidfile
+        if running and svc:
+            lines.append(f"  background: running (autostart-managed, {svc_kind})   ·   logs: {LOG_PATH}")
+            managed = "autostart"
+
+    # `stop/restart` can't control a live server this CLI doesn't own and isn't autostart.
+    if running and managed not in ("start", "autostart"):
+        lines.append("  ⚠ server is running but unmanaged (foreground shell, an old launchd/systemd "
+                     "service, or another manager) — `memnos stop/restart` may not control it.")
+    return {"lines": lines, "stale_warning": stale_warning, "managed": managed}
+
+
 def cmd_status(args, cfg):
     port = int(os.environ.get("MEMNOS_PORT", cfg.get("port", 8900)))
     url = f"http://127.0.0.1:{port}"
@@ -692,24 +756,10 @@ def cmd_status(args, cfg):
         print(f"  server:    RUNNING at {url}   ·   console: {url}/admin")
     else:
         print(f"  server:    not running   (run: memnos start)")
-    pid_alive = False
-    if os.path.exists(PID_PATH):
-        try:
-            pid = int(open(PID_PATH).read().strip())
-            os.kill(pid, 0)
-            pid_alive = True
-            print(f"  background: pid {pid}   ·   logs: {LOG_PATH}")
-        except (ProcessLookupError, ValueError):
-            print(f"  background: STALE pid file (that process is gone) — the running server, "
-                  "if any, is NOT managed by `memnos start`")
-        except PermissionError:
-            pid_alive = True
-            print(f"  background: pid {open(PID_PATH).read().strip()}   ·   logs: {LOG_PATH}")
-    if running and not pid_alive and not _autostart_installed():
-        print("  ⚠ server is running but unmanaged (foreground shell, an old launchd/systemd "
-              "service, or another manager) — `memnos stop/restart` may not control it.\n"
-              "    find it:  lsof -i :" + str(port))
     svc = _autostart_installed()
+    verdict = _background_status(running, svc, _pidfile_pid())
+    for line in verdict["lines"]:
+        print(line)
     print(f"  autostart: {'installed (' + svc[0] + ') — starts at login, restarts on failure' if svc else 'not installed   (run: memnos autostart)'}")
     if cfg.get("proxy_token"):                    # capture proxy configured on this machine
         pport = (cfg.get("proxy") or {}).get("port", 8910)

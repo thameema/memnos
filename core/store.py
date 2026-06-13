@@ -47,6 +47,36 @@ def fts_clamp(qtext: str) -> str:
     return " ".join(parts[:cap])
 
 
+# The #15 fix clamped only the FTS arm; the EMBEDDING and the cross-encoder RERANKER still
+# saw the full query (up to MEMNOS_QUERY_MAX_CHARS=20000 chars). An 8000-word / ~40KB query
+# then embedded + reranked the whole thing — ~5s of pure clamp-able overhead, even though no
+# legitimate recall is thousands of words and both models cap their own input length anyway
+# (a sentence-transformer cross-encoder truncates past ~512 tokens; the embedder past its own
+# limit). Clamp the query that reaches the embedder + reranker to a sane token prefix: its
+# discriminative signal lives in the first few hundred tokens, so normal queries (well under
+# the cap) are byte-for-byte untouched and only pathological ones are bounded.
+# MEMNOS_QUERY_RERANK_MAX_TOKENS tunes the cap (default 384 tokens).
+def _query_max_tokens() -> int:
+    try:
+        return max(1, int(os.environ.get("MEMNOS_QUERY_RERANK_MAX_TOKENS", "384")))
+    except (TypeError, ValueError):
+        return 384
+
+
+def query_clamp(qtext: str) -> str:
+    """Clamp the query text fed to the embedding model and the cross-encoder reranker to the
+    first N whitespace tokens. Returns the input UNCHANGED when at/under the cap, so normal
+    queries embed + rerank identically to before — only pathological long queries are bounded.
+    """
+    if not qtext:
+        return qtext
+    parts = qtext.split()
+    cap = _query_max_tokens()
+    if len(parts) <= cap:
+        return qtext
+    return " ".join(parts[:cap])
+
+
 # pgvector >= 0.7 ships the half-precision `halfvec` type (half the storage). pgvector 0.6
 # (the version Debian/Ubuntu ship in apt) does not — only the full-precision `vector` type.
 # memnos feature-detects which is available and uses halfvec when it can, vector otherwise,

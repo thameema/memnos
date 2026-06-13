@@ -13,7 +13,7 @@ import re
 import time
 from datetime import datetime, timezone, timedelta
 
-from .store import BrainStore
+from .store import BrainStore, query_clamp
 from . import rerank as brain_rerank
 
 _TENANT = "memnos"
@@ -548,7 +548,7 @@ class MemnosMemory:
         b = pre if pre is not None else self.recall_prefetch(namespace, query)
         intent = b["intent"]
         if qv is None:
-            qv = self.embed(query)
+            qv = self.embed(query_clamp(query))   # #15 follow-up: bound a pathological query
         t_sql = time.perf_counter()
         b["raw"] = self.store.search_raw_turns(self.schema, namespace, qv, query, k)
         if not intent.temporal:
@@ -638,11 +638,12 @@ class MemnosMemory:
                                                   + max(0.0, (it.get("salience") or 0.0) - 0.5)))
             return s
 
+        rq = query_clamp(query)                    # #15 follow-up: bound the reranker's query side
         def rr(items, kind):
             if not items:
                 return []
             if use_rerank:
-                order = brain_rerank.rerank(query, [c["content"] for c in items], self.reranker)
+                order = brain_rerank.rerank(rq, [c["content"] for c in items], self.reranker)
             else:                                  # deadline-degraded: retrieval order
                 order = [(i, 1.0 / (1.0 + i)) for i in range(len(items))]
             scored = []
@@ -729,7 +730,7 @@ class MemnosMemory:
         if not namespaces:
             return [], []
         if qv is None:
-            qv = self.embed(query)
+            qv = self.embed(query_clamp(query))   # #15 follow-up: bound a pathological query
         t_sql = time.perf_counter()
         raw_c, sem_c = [], []
         for ns in namespaces:
@@ -759,12 +760,13 @@ class MemnosMemory:
         len_pen = _env_float("MEMNOS_TURN_LENGTH_PENALTY", 0.15) if tune else 0.0
         sal_boost = _env_float("MEMNOS_SALIENCE_BOOST", 0.05) if tune else 0.0
         broad = tune and query_specificity(query) == "broad"
+        rq = query_clamp(query)                    # #15 follow-up: bound the reranker's query side
 
         def rr(items, kind, quota):
             if not items:
                 return []
             if use_rerank:
-                order = brain_rerank.rerank(query, [c["content"] for c in items], self.reranker)
+                order = brain_rerank.rerank(rq, [c["content"] for c in items], self.reranker)
             else:                                  # deadline-degraded: retrieval order
                 order = [(i, 1.0 / (1.0 + i)) for i in range(len(items))]
             scored = []
