@@ -54,6 +54,20 @@ class FakeUpstream(BaseHTTPRequestHandler):
 
     def _openai(self, body, marker):
         wants_tools = "CALL_A_TOOL" in marker
+        if "GZIP_ME" in marker and not body.get("stream"):
+            # Real providers (and httpx's default Accept-Encoding) can return gzip'd JSON.
+            # The proxy must relay these decodably AND still capture the parsed turn.
+            import gzip
+            last = body.get("messages", [{}])[-1].get("content", "")
+            payload = json.dumps({"choices": [{"message": {
+                "content": f"Gzipped answer re '{str(last)[:48]}': the codeword is ZEPHYR-9000."},
+                "finish_reason": "stop"}]}).encode()
+            gz = gzip.compress(payload)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(gz)))
+            self.end_headers(); self.wfile.write(gz); return
         if body.get("stream"):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -242,6 +256,25 @@ def main():
     st, body = post("/v1/chat/completions",
                     {"model": "gpt-5", "messages": user_msgs("MEMNOS_DOWN but the relay must still work")})
     check("memnos down: relay still 200", st == 200 and b"pgvector" in body)
+
+    # 9b. gzip'd upstream response: client can decode AND capture still succeeds (Bug 2)
+    remembered.clear()
+    import gzip as _gzip
+    req = urllib.request.Request(f"http://127.0.0.1:{PROXY_PORT}/v1/chat/completions",
+                                 method="POST",
+                                 data=json.dumps({"model": "gpt-5",
+                                                  "messages": user_msgs("GZIP_ME what is the secret codeword for this run?")}).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read()
+        ce = (r.headers.get("Content-Encoding") or "").lower()
+    # Content-Encoding header must be preserved so a real client knows to gunzip.
+    decoded = _gzip.decompress(raw) if ce == "gzip" else raw
+    client_ok = ce == "gzip" and b"ZEPHYR-9000" in decoded
+    check("gzip relay: Content-Encoding preserved + client can decode", client_ok)
+    check("gzip capture: assistant turn parsed from gzip body + stored",
+          wait_capture(2) and [r["speaker"] for r in remembered] == ["user", "assistant"]
+          and "ZEPHYR-9000" in remembered[1]["text"])
 
     # 10. healthz reports stats
     with urllib.request.urlopen(f"http://127.0.0.1:{PROXY_PORT}/healthz", timeout=5) as r:

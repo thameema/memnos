@@ -41,9 +41,15 @@ DEFAULTS = {
     "capture_min_max_tokens": 512,           # tiny-max_tokens calls are title/summary chatter
 }
 
-# hop-by-hop / recomputed headers we must not forward
+# hop-by-hop / recomputed headers we must not forward.
+# NOTE: we deliberately do NOT forward Accept-Encoding from the client and we forward the
+# upstream's Content-Encoding back unchanged: the body bytes we relay are byte-faithful, so
+# if the upstream gzipped them we MUST keep the Content-Encoding header or the client gets
+# undecodable bytes (this broke real httpx/SDK clients). Capture decompresses separately.
 _SKIP_REQ = {"host", "content-length", "connection", "accept-encoding", "x-memnos-namespace"}
-_SKIP_RESP = {"content-length", "connection", "transfer-encoding", "content-encoding"}
+# content-encoding is intentionally NOT skipped — see note above. Content-Length/
+# transfer-encoding ARE recomputed because we re-frame the body ourselves.
+_SKIP_RESP = {"content-length", "connection", "transfer-encoding"}
 
 
 def _load_cfg():
@@ -129,8 +135,39 @@ def _conv_key(req, fmt):
     return hashlib.sha256((str(sysp) + "\x00" + first).encode()).hexdigest()[:16]
 
 
-def parse_response(body_bytes, fmt, streamed):
-    """Summarize a (possibly SSE) response: {text, terminal, has_tools}. Never raises."""
+def _decompress(body_bytes, content_encoding):
+    """Decompress a response body for CAPTURE parsing. The bytes relayed to the client are
+    always left untouched (with their Content-Encoding header) — this only affects what the
+    capture worker reads so json.loads/SSE parsing sees real text. Handles gzip, deflate,
+    and br (brotli, if available). Unknown/identity → returned unchanged. Never raises."""
+    enc = (content_encoding or "").lower().strip()
+    if not enc or enc == "identity":
+        return body_bytes
+    try:
+        if enc == "gzip":
+            import gzip
+            return gzip.decompress(body_bytes)
+        if enc == "deflate":
+            import zlib
+            try:
+                return zlib.decompress(body_bytes)
+            except zlib.error:
+                return zlib.decompress(body_bytes, -zlib.MAX_WBITS)  # raw deflate
+        if enc == "br":
+            try:
+                import brotli
+                return brotli.decompress(body_bytes)
+            except Exception:
+                return body_bytes  # brotli not installed — leave as-is (parse will skip)
+    except Exception:
+        return body_bytes
+    return body_bytes
+
+
+def parse_response(body_bytes, fmt, streamed, content_encoding=None):
+    """Summarize a (possibly SSE) response: {text, terminal, has_tools}. Never raises.
+    Decompresses per Content-Encoding first so gzip'd upstream bodies parse correctly."""
+    body_bytes = _decompress(body_bytes, content_encoding)
     try:
         if streamed:
             return (_acc_openai_sse if fmt == "openai" else _acc_anthropic_sse)(body_bytes)
@@ -324,9 +361,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
         capture_eligible = self.path.startswith(("/v1/messages", "/v1/chat/completions"))
 
         buf = bytearray()
+        resp_encoding = None
         try:
             with httpx.stream("POST", url, content=body, headers=fwd,
                               timeout=httpx.Timeout(600, connect=15)) as r:
+                resp_encoding = r.headers.get("content-encoding")
                 self.send_response(r.status_code)
                 for k, v in r.headers.items():
                     if k.lower() not in _SKIP_RESP:
@@ -388,7 +427,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # capture AFTER the client has the full response — never on the hot path
         try:
             if capture_eligible and 200 <= status < 300 and WORKER is not None:
-                WORKER.submit(req_json, parse_response(bytes(buf), fmt, streamed), fmt, ns)
+                WORKER.submit(req_json, parse_response(bytes(buf), fmt, streamed, resp_encoding), fmt, ns)
         except Exception:
             pass
 

@@ -11,9 +11,13 @@ five minutes — one package, one command.
 
 ## Prerequisites
 
-- **PostgreSQL 13+** with the **pgvector ≥ 0.7** extension available. memnos **does not install
+- **PostgreSQL 13+** with the **pgvector ≥ 0.6** extension available. memnos **does not install
   Postgres** — it connects to yours and creates its own schema. (For local dev, the
   `pgvector/pgvector` Docker image is easiest: `docker compose -f docker-compose.dev.yml up -d`.)
+  - On **Debian/Ubuntu** a plain `sudo apt install postgresql-16-pgvector` (ships pgvector
+    **0.6**) is enough — no source build. memnos feature-detects the version and uses
+    full-precision `vector` columns on 0.6, the half-precision `halfvec` storage optimization
+    on ≥ 0.7. Same recall quality either way.
 - **Python 3.10+** (for `uv` / `pip`).
 - *Optional:* an **OpenAI API key** for 1536-d embeddings + fact extraction. Without one,
   memnos runs in free **local 384-d** mode (embeddings only, no extraction).

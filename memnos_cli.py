@@ -19,6 +19,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import sys
 import urllib.request
 
@@ -142,7 +143,11 @@ def _post(cfg, path, payload, token):
 
 # ---- setup wizard -----------------------------------------------------------
 MIN_PG_MAJOR = 13          # generated STORED columns need 12; 13 is our tested floor
-MIN_PGVECTOR = (0, 7, 0)   # halfvec + halfvec HNSW
+# pgvector floor. 0.6.0 (what Debian/Ubuntu apt ships) is enough: memnos feature-detects the
+# version and uses full-precision `vector` columns on 0.6, half-precision `halfvec` on >= 0.7.
+# A clean `apt install postgresql-N-pgvector` therefore works with no source build.
+MIN_PGVECTOR = (0, 6, 0)
+HALFVEC_PGVECTOR = (0, 7, 0)   # halfvec storage optimization needs >= 0.7
 
 DOCKER_PG_CONTAINER = "memnos-pg"
 DOCKER_PG_IMAGE = "pgvector/pgvector:pg16"   # Postgres + pgvector pre-baked, version-matched
@@ -273,7 +278,7 @@ def _pg_not_reachable_hint(host, port):
     if sys.platform.startswith("linux"):
         return base + ("  Is it running?   sudo systemctl start postgresql\n"
                        "  Not installed?   sudo apt install postgresql postgresql-16-pgvector")
-    return base + "  Start your PostgreSQL server (needs the pgvector >= 0.7 extension) and re-run."
+    return base + "  Start your PostgreSQL server (needs the pgvector >= 0.6 extension) and re-run."
 
 
 def _preflight_postgres(conn):
@@ -292,7 +297,7 @@ def _preflight_postgres(conn):
         c.execute("SELECT installed_version FROM pg_available_extensions WHERE name = 'vector'")
         avail = c.fetchone()
         if not avail:
-            sys.exit("pgvector (the 'vector' extension, >= 0.7) is NOT available to THIS Postgres server.\n"
+            sys.exit("pgvector (the 'vector' extension, >= 0.6) is NOT available to THIS Postgres server.\n"
                      "Install it for this server, then re-run `memnos setup`:\n"
                      + _pgvector_install_hint(pg_major) +
                      "\n\n  (Alternative — let memnos run a pre-configured pgvector Postgres in Docker:"
@@ -309,9 +314,14 @@ def _preflight_postgres(conn):
         ver = c.fetchone()["extversion"]
         if _vtuple(ver) < MIN_PGVECTOR:
             sys.exit(f"pgvector {ver} is enabled, but memnos needs >= "
-                     f"{'.'.join(map(str, MIN_PGVECTOR))} (halfvec). Upgrade pgvector:\n"
+                     f"{'.'.join(map(str, MIN_PGVECTOR))}. Upgrade pgvector:\n"
                      + _pgvector_install_hint(pg_major))
-        print(f"[memnos] ✓ pgvector {ver} enabled")
+        if _vtuple(ver) < HALFVEC_PGVECTOR:
+            print(f"[memnos] ✓ pgvector {ver} enabled "
+                  f"(< {'.'.join(map(str, HALFVEC_PGVECTOR))}: using full-precision `vector` "
+                  f"columns — halfvec storage optimization is skipped, no functional difference)")
+        else:
+            print(f"[memnos] ✓ pgvector {ver} enabled (halfvec)")
 
 
 def _openai_key_ok(key):
@@ -371,7 +381,7 @@ def cmd_setup(args, cfg):
         else:
             sys.exit(f"could not connect to Postgres: {e}")
 
-    # detect + validate PostgreSQL version, then verify + enable pgvector (>= 0.7, halfvec)
+    # detect + validate PostgreSQL version, then verify + enable pgvector (>= 0.6; halfvec on >= 0.7)
     _preflight_postgres(conn)
 
     from core.store import BrainStore
@@ -933,13 +943,15 @@ def _embedder_for(target, conn):
 def cmd_migrate_embeddings(args, cfg):
     import psycopg
     from psycopg.rows import dict_row
-    from core.store import vlit
+    from core.store import vlit, detect_vector_type
     _apply_env(cfg)
     dsn = cfg.get("dsn") or os.environ.get("MEMNOS_DSN")
     if not dsn:
         sys.exit("not configured — run `memnos setup` first.")
     schema = "tenant_memnos"
     conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
+    vtype = detect_vector_type(conn)
+    vops = "halfvec_cosine_ops" if vtype == "halfvec" else "vector_cosine_ops"
     cur = _emb_dim(conn, schema)
     if cur is None:
         sys.exit("no memnos schema found in this database (run `memnos setup` first).")
@@ -970,16 +982,16 @@ def cmd_migrate_embeddings(args, cfg):
     for tbl, txtcol, idx in _EMB_TABLES:
         with conn.cursor() as c:
             c.execute(f'DROP INDEX IF EXISTS "{schema}"."{idx}"')
-            c.execute(f'ALTER TABLE "{schema}"."{tbl}" ALTER COLUMN embedding TYPE halfvec({target}) USING NULL')
+            c.execute(f'ALTER TABLE "{schema}"."{tbl}" ALTER COLUMN embedding TYPE {vtype}({target}) USING NULL')
             c.execute(f'SELECT id, {txtcol} AS t FROM "{schema}"."{tbl}" WHERE {txtcol} IS NOT NULL')
             rows = c.fetchall()
         if hasattr(embed, "prime"):
             embed.prime([r["t"] for r in rows])          # batch the OpenAI calls
         with conn.cursor() as c:
             for r in rows:
-                c.execute(f'UPDATE "{schema}"."{tbl}" SET embedding=%s::halfvec WHERE id=%s', (vlit(fn(r["t"])), r["id"]))
+                c.execute(f'UPDATE "{schema}"."{tbl}" SET embedding=%s::{vtype} WHERE id=%s', (vlit(fn(r["t"])), r["id"]))
             c.execute(f'CREATE INDEX IF NOT EXISTS "{idx}" ON "{schema}"."{tbl}" '
-                      f'USING hnsw (embedding halfvec_cosine_ops)')
+                      f'USING hnsw (embedding {vops})')
         print(f"    ✓ {tbl}: re-embedded {len(rows)} rows")
 
     # keep the server's embedding mode consistent with the new dim
@@ -1337,6 +1349,26 @@ def _ensure_claude_token(cfg):
     return Control.mint_token(conn, pid, "claude-code"), f"user:{name}"
 
 
+def _ensure_agent_token(cfg, agent):
+    """Identity for an AUTONOMOUS agent (hermes, openclaw, ...). Unlike a user editor, the
+    agent gets its OWN principal named after itself, GRANTED on its own namespace
+    `agent:<agent>`, and a token for THAT principal. This is Bug 3: previously every
+    agent-setup wired the human user's token (no grant on agent:<agent>), so the agent's
+    writes failed `forbidden`. Returns (token, default_namespace)."""
+    from core.control import Control
+    conn = _conn(cfg)
+    Control.init(conn)
+    principal = re.sub(r"[^a-z0-9_-]", "-", agent.lower())   # safe principal name
+    ns = f"agent:{principal}"
+    try:
+        pid = _principal_id(conn, principal)
+    except SystemExit:
+        pid = Control.create_principal(conn, principal, "agent")
+    Control.grant(conn, pid, ns)            # the agent's own namespace — read+write
+    Control.grant(conn, pid, "proj:*")      # shared project memory (read+write), same as users
+    return Control.mint_token(conn, pid, f"agent-setup:{principal}"), ns
+
+
 def cmd_claude_setup(args, cfg):
     """Auto-wire Claude Code (MCP + hooks + /memnos + CLAUDE.md) — friction-free. Idempotent;
     backs up files it edits. Detects ~/.claude; safe to re-run."""
@@ -1464,11 +1496,16 @@ _AGENTS = {
     "claude-desktop": {"path": "~/Library/Application Support/Claude/claude_desktop_config.json", "fmt": "json",
                        "note": "fully quit Claude Desktop (Cmd-Q / system tray) and reopen — the tools "
                                "appear under the search-and-tools icon"},
-    # OpenClaw keeps MCP servers under mcp.servers in its main config
+    # OpenClaw keeps MCP servers under mcp.servers in its main config. It is an AUTONOMOUS
+    # agent (not a user editor): it gets its OWN principal + token scoped to agent:openclaw,
+    # so its writes are attributable and isolated from the human user's memory.
     "openclaw":       {"path": "~/.openclaw/openclaw.json",                    "fmt": "json", "key": ("mcp", "servers"),
+                       "agent": True,
                        "note": "restart the OpenClaw gateway, then verify with: openclaw mcp list"},
-    # Hermes Agent (Nous Research) — YAML config, stdio MCP client since v0.2.0
+    # Hermes Agent (Nous Research) — YAML config, stdio MCP client since v0.2.0. Autonomous
+    # agent: own principal + token scoped to agent:hermes (see "agent" flag above).
     "hermes":         {"path": "~/.hermes/config.yaml",                        "fmt": "yaml", "key": ("mcp_servers",),
+                       "agent": True,
                        "note": "run /reload-mcp inside Hermes (or restart it), then check the tool list"},
 }
 
@@ -1501,7 +1538,12 @@ def cmd_agent_setup(args, cfg):
         elif sys.platform.startswith("linux"):
             spec["path"] = "~/.config/Claude/claude_desktop_config.json"
     url = os.environ.get("MEMNOS_URL") or f"http://127.0.0.1:{cfg.get('port', 8900)}"
-    token, default_ns = _ensure_claude_token(cfg)
+    # Autonomous agents (hermes, openclaw) get their OWN principal+token scoped to
+    # agent:<name>; user editors (cursor, codex, ...) use the human user's identity. (Bug 3)
+    if spec.get("agent"):
+        token, default_ns = _ensure_agent_token(cfg, args.agent)
+    else:
+        token, default_ns = _ensure_claude_token(cfg)
     ns = args.namespace or default_ns
     path = os.path.expanduser(spec["path"])
     os.makedirs(os.path.dirname(path), exist_ok=True)

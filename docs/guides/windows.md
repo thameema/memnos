@@ -6,7 +6,7 @@ integrations all work in PowerShell. The only genuinely fiddly part on Windows i
 path is a source build. This guide ranks the options honestly and gives you a
 copy-paste path that avoids the pain entirely.
 
-**Requirements recap:** PostgreSQL **13+** with **pgvector ≥ 0.7**, and Python **3.10+**.
+**Requirements recap:** PostgreSQL **13+** with **pgvector ≥ 0.6**, and Python **3.10+**.
 
 ---
 
@@ -107,9 +107,10 @@ memnos start
 
 `memnos setup` runs this preflight for you: it checks the PG version (13+), checks
 pgvector is available, runs `CREATE EXTENSION IF NOT EXISTS vector` (needs a superuser
-role), and verifies the version is ≥ 0.7 (`halfvec` support). If pgvector is missing it
+role), and verifies the version is ≥ 0.6 (it uses the `halfvec` storage optimization on
+≥ 0.7, full-precision `vector` columns on 0.6). If pgvector is missing it
 stops with the exact message
-`pgvector (the 'vector' extension, >= 0.7) is NOT available to THIS Postgres server.` —
+`pgvector (the 'vector' extension, >= 0.6) is NOT available to THIS Postgres server.` —
 that means the extension files aren't in this server's `share\extension\` directory yet
 (step 2 above).
 
