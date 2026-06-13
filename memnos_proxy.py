@@ -285,9 +285,13 @@ class CaptureWorker:
         h = hashlib.sha256(f"{namespace}|{speaker}|{' '.join(text.split())}".encode()).hexdigest()
         if self.lru.seen(h):
             return
+        # async:true — the server stores the raw turn immediately (P1, ~ms) and defers LLM
+        # fact extraction to its background workers, returning in ~200ms. Without this a slow
+        # local-LLM backend (Ollama 30-80s) blocks the request past the timeout and the write
+        # is LOST. Both turns must land even on slow backends; 20s is generous for raw-store.
         r = httpx.post(f"{CFG['server_url']}/remember",
                        json={"namespace": namespace, "text": text[:8000],
-                             "speaker": speaker, "session_id": session_id},
+                             "speaker": speaker, "session_id": session_id, "async": True},
                        headers={"Authorization": f"Bearer {CFG['token']}"}, timeout=20)
         r.raise_for_status()
         self.stats["captured"] += 1
@@ -301,8 +305,18 @@ class CaptureWorker:
                     self.stats["skipped"] += 1
                     continue
                 sid = _conv_key(req, fmt)
-                self._remember(_trailing_user_text(req).strip(), "user", ns, sid)
-                self._remember(summary["text"].strip(), "assistant", ns, sid)
+                # Capture BOTH sides independently — a failure on one turn must NOT drop the
+                # other (the old single try-block lost the assistant turn whenever the user
+                # turn raised, e.g. on a slow-backend timeout). async:true keeps each fast.
+                for text, speaker in ((_trailing_user_text(req).strip(), "user"),
+                                      (summary["text"].strip(), "assistant")):
+                    try:
+                        self._remember(text, speaker, ns, sid)
+                    except Exception as e:
+                        self.stats["errors"] += 1
+                        self.stats["last_error"] = f"capture[{speaker}]: {type(e).__name__}: {e}"
+                        print(f"[memnos-proxy] capture error ({speaker} turn; relay unaffected): "
+                              f"{type(e).__name__}: {e}", flush=True)
             except Exception as e:
                 self.stats["errors"] += 1
                 self.stats["last_error"] = f"capture: {type(e).__name__}: {e}"
