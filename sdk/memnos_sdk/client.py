@@ -42,16 +42,21 @@ def _raise(r):
 class MemnosClient:
     """Synchronous client. Use as a context manager or call .close()."""
 
-    def __init__(self, base_url=DEFAULT_URL, token=None, namespace=None, timeout=30.0, transport=None):
+    def __init__(self, base_url=DEFAULT_URL, token=None, namespace=None, timeout=120.0, transport=None):
         self.namespace = namespace
         self._h = {"Authorization": f"Bearer {token}"} if token else {}
         self._c = httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout, headers=self._h,
                                transport=transport)
 
-    def remember(self, text, *, namespace=None, speaker=None, session_id=None) -> dict:
+    def remember(self, text, *, namespace=None, speaker=None, session_id=None,
+                 async_=False) -> dict:
+        """Store a turn. With async_=True the server stores the raw turn immediately and
+        extracts facts in the background, returning in ~200ms — use it for capture paths on
+        slow local-LLM extraction backends (Ollama/vLLM) where a synchronous call would
+        otherwise block past the timeout and lose the write."""
         return _raise(self._c.post("/remember", json={
             "namespace": _ns(namespace, self.namespace), "text": text,
-            "speaker": speaker, "session_id": session_id}))
+            "speaker": speaker, "session_id": session_id, "async": async_}))
 
     def recall(self, query, *, namespace=None, raw_quota=None, fact_quota=None, max_chars=None) -> dict:
         body = {"namespace": _ns(namespace, self.namespace), "query": query}
@@ -98,16 +103,19 @@ class MemnosClient:
 class AsyncMemnosClient:
     """Async client (httpx.AsyncClient). Use `async with` or call .aclose()."""
 
-    def __init__(self, base_url=DEFAULT_URL, token=None, namespace=None, timeout=30.0, transport=None):
+    def __init__(self, base_url=DEFAULT_URL, token=None, namespace=None, timeout=120.0, transport=None):
         self.namespace = namespace
         self._h = {"Authorization": f"Bearer {token}"} if token else {}
         self._c = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout, headers=self._h,
                                     transport=transport)
 
-    async def remember(self, text, *, namespace=None, speaker=None, session_id=None) -> dict:
+    async def remember(self, text, *, namespace=None, speaker=None, session_id=None,
+                       async_=False) -> dict:
+        """Store a turn. async_=True defers fact extraction to the server's background workers
+        (returns in ~200ms) so slow local-LLM extraction can't ReadTimeout and lose the write."""
         return _raise(await self._c.post("/remember", json={
             "namespace": _ns(namespace, self.namespace), "text": text,
-            "speaker": speaker, "session_id": session_id}))
+            "speaker": speaker, "session_id": session_id, "async": async_}))
 
     async def recall(self, query, *, namespace=None, raw_quota=None, fact_quota=None, max_chars=None) -> dict:
         body = {"namespace": _ns(namespace, self.namespace), "query": query}
