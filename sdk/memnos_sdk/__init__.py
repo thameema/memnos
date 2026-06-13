@@ -8,5 +8,9 @@ Framework adapters are optional extras (import only if the framework is installe
 """
 from .client import AsyncMemnosClient, MemnosClient, MemnosError
 
-__version__ = "0.1.0"
+try:                                            # single source of truth: the installed package
+    from importlib.metadata import PackageNotFoundError, version
+    __version__ = version("memnos-sdk")
+except Exception:                               # not installed (e.g. running from source)
+    __version__ = "0.0.0+unknown"
 __all__ = ["MemnosClient", "AsyncMemnosClient", "MemnosError", "__version__"]
