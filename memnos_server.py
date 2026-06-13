@@ -78,6 +78,7 @@ from core.store import BrainStore
 from core.service import MemnosMemory
 from core.control import Control
 from core import rerank as brain_rerank
+from core import memrelief
 
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
 PORT = int(os.environ.get("MEMNOS_PORT", "8900"))
@@ -86,6 +87,10 @@ POOL_MAX = int(os.environ.get("MEMNOS_POOL_MAX", "16"))
 # local servers (e.g. MEMNOS_EXTRACT_MODEL=llama3.2:3b with MEMNOS_EXTRACT_BASE_URL).
 EXTRACT_MODEL = os.environ.get("MEMNOS_EXTRACT_MODEL", "gpt-4o-mini")
 MAX_BODY = 256 * 1024          # 256 KB request cap
+# issue #15: recall queries are CLAMPED to this many chars (not 400-rejected) so a long
+# query returns 200 — the embedder truncates and the FTS arm is token-clamped, so it is
+# safe. Generous default; only a genuinely abusive payload exceeds it.
+_QUERY_MAX_CHARS = int(os.environ.get("MEMNOS_QUERY_MAX_CHARS", "20000"))
 WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/corpus/ingest",
              "/ingest/file", "/episode/segment", "/episode/decay", "/namespace/copy"}
 # Endpoints whose handler mixes DB work with SLOW NON-DB work (network embeddings, LLM
@@ -893,8 +898,14 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path
         if path in ("/recall", "/memory/search", "/recall_v2", "/memory/context"):
             q = str(req.get("query", "")).strip()
-            if not q or len(q) > 4000:
-                return 400, {"error": "query required (<=4000 chars)"}
+            if not q:
+                return 400, {"error": "query required"}
+            # issue #15: a long recall query must return 200, not crash the FTS tsquery
+            # parser. The embedder truncates and the FTS arm is token-clamped (store.
+            # fts_clamp), so a long query is SAFE — clamp it to a generous ceiling here
+            # rather than 400-rejecting it. MEMNOS_QUERY_MAX_CHARS tunes the ceiling.
+            if len(q) > _QUERY_MAX_CHARS:
+                q = q[:_QUERY_MAX_CHARS]
             ok, mtype = _memory_type(req)          # optional `type` result filter
             if not ok:
                 return 400, mtype
@@ -1034,6 +1045,11 @@ class Handler(BaseHTTPRequestHandler):
             if cal["measured_ms_per_pair"] is not None:
                 detail["measured_ms_per_pair"] = cal["measured_ms_per_pair"]
             self._audit_detail = detail    # → audit_log.detail (per-stage ledger)
+            # issue #15: hand the recall's transient heap (candidate strings, fused rows,
+            # ONNX forward-pass working set) back to the OS so phys_footprint/RSS stays
+            # flat instead of ratcheting up and plateauing high. Rate-limited internally,
+            # so a recall BURST doesn't pay it per request; no-op where unsupported.
+            memrelief.release()
             return 200, out
 
         if path == "/consolidate":
@@ -1046,8 +1062,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/episode/recall":
             q = str(req.get("query", "")).strip()
-            if not q or len(q) > 4000:
-                return 400, {"error": "query required (<=4000 chars)"}
+            if not q:
+                return 400, {"error": "query required"}
+            if len(q) > _QUERY_MAX_CHARS:                        # issue #15: clamp, don't reject
+                q = q[:_QUERY_MAX_CHARS]
             qv = mem.embed(q)                                     # network — NO conn
             with POOL.connection() as conn:
                 store = BrainStore(conn=conn)

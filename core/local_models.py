@@ -10,9 +10,25 @@ from __future__ import annotations
 
 import functools
 import math
+import os
 
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 RERANK_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"   # ONNX build of the MiniLM cross-encoder
+
+
+def _arena_enabled() -> bool:
+    # issue #15: ONNX CPU memory arena holds a never-returned high-water block. Off by
+    # default so the embed/rerank path releases memory back to the OS. MEMNOS_RERANK_ARENA=1
+    # reverts. Arena/threads are allocation knobs only — embeddings + logits are unchanged.
+    return os.environ.get("MEMNOS_RERANK_ARENA", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _threads() -> int | None:
+    try:
+        n = int(os.environ.get("MEMNOS_RERANK_THREADS", "1"))
+    except (TypeError, ValueError):
+        n = 1
+    return None if n <= 0 else n
 
 
 def _sigmoid(x: float) -> float:
@@ -25,13 +41,17 @@ def _sigmoid(x: float) -> float:
 @functools.lru_cache(maxsize=1)
 def _embedder():
     from fastembed import TextEmbedding
-    return TextEmbedding(model_name=EMBED_MODEL)
+    return TextEmbedding(model_name=EMBED_MODEL,
+                         threads=_threads(),
+                         enable_cpu_mem_arena=_arena_enabled())
 
 
 @functools.lru_cache(maxsize=1)
 def _reranker():
     from fastembed.rerank.cross_encoder import TextCrossEncoder
-    return TextCrossEncoder(model_name=RERANK_MODEL)
+    return TextCrossEncoder(model_name=RERANK_MODEL,
+                            threads=_threads(),
+                            enable_cpu_mem_arena=_arena_enabled())
 
 
 def embed(text: str) -> list[float]:

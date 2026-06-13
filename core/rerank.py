@@ -173,10 +173,44 @@ def _sigmoid(x: float) -> float:
     return e / (1.0 + e)
 
 
+# --- memory bounding (issue #15) -----------------------------------------------------
+# The ONNX Runtime CPU memory ARENA is the dominant retained-memory contributor on the
+# recall path: it grabs a high-water-mark block on the first inference (sized for the
+# largest batch the cross-encoder ever sees — cap candidates × the model's truncation
+# length) and NEVER returns it to the OS, even at idle. Identical trivial inputs drive it
+# (input-independent), it plateaus, and it never recedes — exactly the #15 symptom. With
+# the default 80MB MiniLM this is a few hundred MB; with a 1GB model (bge-reranker-base)
+# or a 16GB host it is the multi-GB plateau / swap blow-up reported.
+#
+# Fix: build the InferenceSession with the arena DISABLED so allocations are released back
+# to the OS after each forward pass, and pin intra/inter-op threads to 1 (each worker
+# thread otherwise reserves its own arena slab — N× the footprint on a many-core box).
+# fastembed exposes `enable_cpu_mem_arena` (EXPOSED_SESSION_OPTIONS) and `threads`
+# (→ intra_op_num_threads + inter_op_num_threads) through TextCrossEncoder kwargs; the
+# tokenizer is already truncation-bounded at the model's max_length by fastembed, so the
+# per-pair allocation is fixed. This does NOT change the math — same weights, same logits,
+# same ranking (verified by a seeded fixed-input score-parity check; arena/threads affect
+# allocation + scheduling only, not the computation).
+#
+# Escape hatches (operator-tunable, defaults = the bounded behavior):
+#   MEMNOS_RERANK_ARENA=1   re-enable the arena (revert to the old unbounded behavior)
+#   MEMNOS_RERANK_THREADS=N session intra/inter-op threads (default 1; 0 = library default)
+def _arena_enabled() -> bool:
+    return os.environ.get("MEMNOS_RERANK_ARENA", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _rerank_threads() -> int | None:
+    """Session thread count (default 1 — one arena slab, not one per core). 0 = library default."""
+    n = _env_int("MEMNOS_RERANK_THREADS", 1)
+    return None if n <= 0 else n
+
+
 @functools.lru_cache(maxsize=2)
 def _model(name: str):
     from fastembed.rerank.cross_encoder import TextCrossEncoder
-    return TextCrossEncoder(model_name=name)
+    return TextCrossEncoder(model_name=name,
+                            threads=_rerank_threads(),
+                            enable_cpu_mem_arena=_arena_enabled())
 
 
 def _passthrough(n: int) -> list[tuple[int, float]]:

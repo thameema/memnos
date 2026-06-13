@@ -6,6 +6,7 @@ Schema identifiers are validated; values are parameterized.
 """
 from __future__ import annotations
 
+import os
 import re
 from typing import Iterable, Sequence
 
@@ -17,6 +18,33 @@ _IDENT = re.compile(r"^[a-z0-9_]+$")
 
 def vlit(vec: Sequence[float]) -> str:
     return "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
+
+
+# Postgres builds an in-memory parse tree for websearch_to_tsquery whose depth scales with
+# the number of lexemes; a very long recall query (thousands of tokens) overflows the
+# backend stack — "tsquery stack too small" / "stack depth limit exceeded" — and a recall
+# that should return 200 instead crashes (issue #15). The query's discriminative signal
+# lives in its first words anyway, so clamp the text fed to FTS to a sane token cap. The
+# FULL query is still used for the vector arm (the embedding is order-insensitive and
+# fixed-size) and for the cross-encoder, so retrieval quality on normal queries is
+# unchanged — only pathological queries are bounded. MEMNOS_FTS_MAX_TOKENS tunes the cap.
+def _fts_max_tokens() -> int:
+    try:
+        return max(1, int(os.environ.get("MEMNOS_FTS_MAX_TOKENS", "200")))
+    except (TypeError, ValueError):
+        return 200
+
+
+def fts_clamp(qtext: str) -> str:
+    """Clamp the text passed to websearch_to_tsquery to the first N whitespace tokens so a
+    pathologically long query can never overflow the Postgres tsquery parser stack."""
+    if not qtext:
+        return qtext
+    parts = qtext.split()
+    cap = _fts_max_tokens()
+    if len(parts) <= cap:
+        return qtext
+    return " ".join(parts[:cap])
 
 
 # pgvector >= 0.7 ships the half-precision `halfvec` type (half the storage). pgvector 0.6
@@ -580,7 +608,7 @@ class BrainStore:
                   GROUP BY id,text,observed_at,memory_type)
         SELECT id, text AS content, observed_at, memory_type, score FROM fused ORDER BY score DESC LIMIT %(k)s;"""
         with self.conn.cursor() as c:
-            c.execute(sql, {"qv": vlit(qvec), "qt": qtext, "ns": ns, "k": k})
+            c.execute(sql, {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k})
             return c.fetchall()
 
     def search_raw_turns(self, schema, ns, qvec, qtext, k=40) -> list[dict]:
@@ -597,7 +625,7 @@ class BrainStore:
                   GROUP BY id,text,observed_at,author_principal,memory_type)
         SELECT id, text AS content, observed_at, author_principal AS author, memory_type, score FROM fused ORDER BY score DESC LIMIT %(k)s;"""
         with self.conn.cursor() as c:
-            c.execute(sql, {"qv": vlit(qvec), "qt": qtext, "ns": ns, "k": k})
+            c.execute(sql, {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k})
             return c.fetchall()
 
     def search_semantic(self, schema, ns, qvec, qtext, k=40, current_only=False) -> list[dict]:
@@ -617,7 +645,7 @@ class BrainStore:
                   GROUP BY id,statement,valid_from,author_principal,memory_type,restatements,salience)
         SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience, score FROM fused ORDER BY score DESC LIMIT %(k)s;"""
         with self.conn.cursor() as c:
-            c.execute(sql, {"qv": vlit(qvec), "qt": qtext, "ns": ns, "k": k})
+            c.execute(sql, {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k})
             return c.fetchall()
 
     def search_semantic_temporal(self, schema, ns, qvec, qtext, k=40, *, start=None, end=None,
@@ -638,7 +666,7 @@ class BrainStore:
                   FROM (SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM fts) r
                   GROUP BY id,statement,valid_from,author_principal,memory_type,restatements,salience)
         SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience FROM fused ORDER BY score DESC LIMIT %(k)s"""
-        params = {"qv": vlit(qvec), "qt": qtext, "ns": ns, "k": k}
+        params = {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k}
         rows, seen = [], set()
         with self.conn.cursor() as c:
             c.execute(base, params)
