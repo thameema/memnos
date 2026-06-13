@@ -26,6 +26,8 @@ def _handler(request):
     body = json.loads(request.content or b"{}")
     if request.url.path == "/remember":
         assert body["namespace"] and body["text"]
+        if body.get("async"):                    # async path: server returns immediately
+            return httpx.Response(200, json={"turn_id": 1, "facts": None, "extraction": "queued"})
         return httpx.Response(200, json={"turn_id": 1, "facts": 2, "superseded": 0})
     if request.url.path == "/recall":
         return httpx.Response(200, json={"memories": [{"content": "we chose postgres", "kind": "fact",
@@ -44,6 +46,8 @@ def main():
     print("=== memnos-sdk (mock transport) ===")
     mem = MemnosClient(token="mnk_test", namespace="org:acme", transport=httpx.MockTransport(_handler))
     check("remember returns ids", mem.remember("we chose postgres")["facts"] == 2)
+    check("remember async_ forwards async:true (returns queued)",
+          mem.remember("slow-extraction turn", async_=True).get("extraction") == "queued")
     check("recall returns memories", mem.recall("db?")["memories"][0]["content"] == "we chose postgres")
     check("context returns string", mem.context("db?").startswith("- (fact)"))
     check("consolidate", mem.consolidate()["dossiers"] == 3)
@@ -84,6 +88,34 @@ def main():
         check("langgraph adapter imports", True)
     except ImportError:
         print("  SKIP langgraph adapter (langgraph not installed)")
+
+    # slow extraction must NOT block the write: on the SYNC path the server holds the request
+    # through extraction (slow local-LLM); on the async_=True path it returns immediately.
+    # The handler asserts the contract by sleeping ONLY when async is not set — so the async_
+    # call returns fast (proving no ReadTimeout risk) while the sync call is measurably slower.
+    import json
+    import time as _time
+    def slow_handler(req):
+        b = json.loads(req.content or b"{}")
+        if not b.get("async"):
+            _time.sleep(0.5)                     # simulate slow synchronous extraction
+        return httpx.Response(200, json={"turn_id": 1, "facts": None, "extraction": "queued"})
+    sm = MemnosClient(token="x", namespace="n", transport=httpx.MockTransport(slow_handler))
+    t0 = _time.perf_counter()
+    out = sm.remember("async on slow backend", async_=True)
+    async_dt = _time.perf_counter() - t0
+    check("async_ remember returns immediately on slow backend (no extraction block)",
+          out.get("extraction") == "queued" and async_dt < 0.2)
+    t1 = _time.perf_counter()
+    sm.remember("sync on slow backend")          # sync path waits on extraction
+    sync_dt = _time.perf_counter() - t1
+    check("sync remember blocks on slow extraction (async_ is the fix)", sync_dt >= 0.5)
+    sm.close()
+
+    # __version__ is read from package metadata (not the old hardcoded "0.1.0" that drifted)
+    import memnos_sdk
+    check("__version__ is package-derived (not stale 0.1.0)",
+          memnos_sdk.__version__ != "0.1.0")
 
     # live smoke (optional)
     tok, ns = os.environ.get("MEMNOS_TOKEN"), os.environ.get("MEMNOS_NS")
