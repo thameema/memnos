@@ -929,6 +929,9 @@ class Handler(BaseHTTPRequestHandler):
             rkw = {}
             if "raw_quota" in req: rkw["raw_quota"] = int(req["raw_quota"])
             if "fact_quota" in req: rkw["fact_quota"] = int(req["fact_quota"])
+            # issue #17: optional hard SUBJECT scope — recall returns only the named
+            # entity's facts (single-namespace path only; ignored for wide recall).
+            subject_scope = (str(req["subject"]).strip() if req.get("subject") else None)
             ckw = {"max_chars": int(req["max_chars"])} if "max_chars" in req else {}
             timings = {}
             # QUERY EMBED: short-TTL cache hit skips the round-trip; a miss runs on the
@@ -1009,7 +1012,8 @@ class Handler(BaseHTTPRequestHandler):
             if wide:
                 rows = mem.recall_wide_rank(q, raw_c, sem_c, use_rerank=use_rerank, **rkw)
             else:
-                rows = mem.recall_rank(q, bundle, use_rerank=use_rerank, **rkw)
+                rows = mem.recall_rank(q, bundle, use_rerank=use_rerank,
+                                       subject=subject_scope, **rkw)
             timings["rerank_ms"] = (time.perf_counter() - t_rr) * 1000.0
             rows = self._author_filter(rows, req)
             if mtype:                              # type filter (pins are exempt — always on)

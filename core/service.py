@@ -524,7 +524,7 @@ class MemnosMemory:
 
     # --- READ (no query-time LLM) -----------------------------------------
     def recall(self, namespace: str, query: str, *, k=40, raw_quota=11, fact_quota=8,
-               entity_quota=10) -> list[dict]:
+               entity_quota=10, subject=None) -> list[dict]:
         """Quota retrieval (raw turns ⊕ semantic facts) with BI-TEMPORAL awareness:
         for time-scoped questions, retrieve facts by EVENT TIME (valid_from window /
         current-vs-past / first-last ordering), lean on dated facts, and surface the
@@ -535,7 +535,7 @@ class MemnosMemory:
         keeps the original single-call behavior for in-process users."""
         return self.recall_rank(query, self.recall_fetch(namespace, query, k=k),
                                 raw_quota=raw_quota, fact_quota=fact_quota,
-                                entity_quota=entity_quota)
+                                entity_quota=entity_quota, subject=subject)
 
     def recall_prefetch(self, namespace: str, query: str) -> dict:
         """DB phase A of recall (issue #12): every arm that does NOT need the query
@@ -720,7 +720,7 @@ class MemnosMemory:
         return fresh, [r for r in turn_rows if r.get("superseded")]
 
     def recall_rank(self, query: str, b: dict, *, raw_quota=11, fact_quota=8,
-                    entity_quota=10, use_rerank=True) -> list[dict]:
+                    entity_quota=10, use_rerank=True, subject=None) -> list[dict]:
         """CPU phase of recall: cross-encoder rerank + quota assembly over a
         recall_fetch bundle. No database access — safe with no connection held.
         `use_rerank=False` (issue #12 deadline path) skips the cross-encoder and keeps
@@ -737,6 +737,20 @@ class MemnosMemory:
           3. fact scores get a bounded reinforcement boost from restatements/salience
              (a fact restated 50x should outrank a turn that mentioned it once)."""
         intent = b["intent"]
+        # --- issue #17: HARD SUBJECT SCOPE -----------------------------------------
+        # A caller can pass subject="<entity>" to hard-filter facts to ONE entity's set —
+        # the strongest disambiguation when the caller already knows the subject. Acts on
+        # the fact arms only (raw turns are verbatim history, left intact). Gated by
+        # MEMNOS_RECALL_ENTITY_SCOPE (default on); set =0 to ignore the param entirely.
+        if subject and _env_float("MEMNOS_RECALL_ENTITY_SCOPE", 1.0) > 0:
+            sl = subject.strip().lower()
+
+            def _is_subject(it):
+                se = (it.get("subject_entity") or "").strip().lower()
+                return bool(sl) and (sl == se or sl in se or sl in (it.get("content") or "").lower())
+            for key in ("sem", "dump", "tl"):
+                if b.get(key):
+                    b[key] = [it for it in b[key] if _is_subject(it)]
         tune = _env_float("MEMNOS_BROAD_QUERY_TUNE", 1.0) > 0
         len_pen = _env_float("MEMNOS_TURN_LENGTH_PENALTY", 0.15) if tune else 0.0
         sal_boost = _env_float("MEMNOS_SALIENCE_BOOST", 0.05) if tune else 0.0
@@ -752,6 +766,45 @@ class MemnosMemory:
         fb = _env_float("MEMNOS_RECALL_FACT_BOOST", 0.06)
         fact_boost = fb if qi != "verbatim" else 0.0
 
+        # --- issue #17: ENTITY-AWARE recall (subject disambiguation) ----------------
+        # When the query names a known entity, two semantically-adjacent subjects in the
+        # SAME namespace (e.g. an "Interoperability Gateway" service vs. a "record ID
+        # crosswalk" task — both FHIR/interop-flavored, so their embeddings sit next to
+        # each other) compete in one ranked pool. Vector/FTS similarity cannot separate
+        # subject IDENTITY; the entity binding (semantic.subject_entity / mentions) can,
+        # and the store already captured it. This is a rank-time ARM, not a new retrieval:
+        #   - BOOST a fact whose subject_entity / content actually mentions a query entity;
+        #   - DEMOTE a fact that mentions a COMPETING entity (a subject some OTHER candidate
+        #     carries) while mentioning the query entity NOT AT ALL.
+        # Bounded by design (same caps as fact_boost) so it cannot crater a query whose
+        # entities are mis-extracted, and verbatim-exempt. Kill switch:
+        #   MEMNOS_RECALL_ENTITY_BOOST=0 disables the arm entirely.
+        qents = [e.lower() for e in (b.get("ents") or [])]
+        eb = _env_float("MEMNOS_RECALL_ENTITY_BOOST", 0.12)
+        entity_boost = eb if (qi != "verbatim" and qents and eb > 0) else 0.0
+        # the set of subjects OTHER facts in the pool carry but the query did NOT name —
+        # a fact whose ONLY subject is one of these (and not a query entity) is off-topic.
+        competing = set()
+        if entity_boost > 0:
+            for it in (b.get("sem") or []):
+                se = (it.get("subject_entity") or "").strip().lower()
+                if se and not any(qe == se or qe in se for qe in qents):
+                    competing.add(se)
+
+        def _fact_entity_factor(it):
+            """+boost if the fact mentions a query entity; -demote if it mentions only a
+            competing subject and no query entity. 1.0 (neutral) otherwise."""
+            if entity_boost <= 0:
+                return 1.0
+            se = (it.get("subject_entity") or "").strip().lower()
+            content = (it.get("content") or "").lower()
+            hits_query = any(qe and (qe == se or qe in se or qe in content) for qe in qents)
+            if hits_query:
+                return 1.0 + min(0.20, entity_boost)
+            if se and se in competing:                    # off-subject neighbor: demote
+                return 1.0 / (1.0 + min(0.20, entity_boost))
+            return 1.0
+
         def adjust(s, it, kind):
             # rank-time score shaping — content/storage untouched, bounded by design
             if kind == "turn" and len_pen > 0:
@@ -761,6 +814,8 @@ class MemnosMemory:
                                                   + max(0.0, (it.get("salience") or 0.0) - 0.5)))
             if kind == "fact" and fact_boost > 0:         # gated, bounded fact preference (#2)
                 s *= 1.0 + min(0.10, fact_boost)
+            if kind == "fact" and entity_boost > 0:       # #17: entity-aware subject scope
+                s *= _fact_entity_factor(it)
             return s
 
         rq = query_clamp(query)                    # #15 follow-up: bound the reranker's query side
