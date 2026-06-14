@@ -1019,14 +1019,14 @@ class Handler(BaseHTTPRequestHandler):
                 rows = pin_rows + [r for r in rows if r["content"] not in pinned_contents]
             if wide:
                 out = {"memories": rows,
-                       "context": mem.render_context(rows, viewer=mem.author, **ckw),
+                       "context": mem.render_context(rows, viewer=mem.author, query=q, **ckw),
                        "namespaces_searched": nss}
             else:
                 if path == "/recall":
                     out = {"memories": rows,
-                           "context": mem.render_context(rows, viewer=mem.author, **ckw)}
+                           "context": mem.render_context(rows, viewer=mem.author, query=q, **ckw)}
                 elif path == "/memory/context":
-                    out = {"context": mem.render_context(rows, viewer=mem.author, **ckw)}
+                    out = {"context": mem.render_context(rows, viewer=mem.author, query=q, **ckw)}
                 else:                                             # /memory/search, /recall_v2
                     out = {"memories": rows}
                 if grounded or skipped:    # keys only appear when links exist (no drift)

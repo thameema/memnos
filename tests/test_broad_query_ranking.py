@@ -195,8 +195,10 @@ def test_score_shaping(mem):
         rows2 = mem.recall_rank("any neutral question", dict(b2))
         check("restatement boost: 50x-restated fact outranks once-stated fact",
               rows2[0]["content"] == f_rest["content"])
-        check("restatement boost is bounded (<= +25%)",
-              rows2[0]["score"] <= 0.9 * 1.25 + 1e-9)
+        # bound = #11 restatement (+25%) compounded with the issue #2 gated fact boost
+        # (+10% max, applies to non-verbatim queries); both are bounded by design.
+        check("restatement boost is bounded (<= +25% x +10%)",
+              rows2[0]["score"] <= 0.9 * 1.25 * 1.10 + 1e-9)
 
         os.environ["MEMNOS_SALIENCE_BOOST"] = "0"
         rows20 = mem.recall_rank("any neutral question", dict(b2))
