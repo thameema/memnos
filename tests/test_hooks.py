@@ -99,6 +99,55 @@ def main():
     check("remember: streamed assistant events concatenated", "Done" in atext and "anchored" in atext)
     check("remember: only the reply AFTER the last user message", "OLD-999" not in atext)
 
+    # --- remember (headless `claude -p`): payload has no `prompt` and the transcript's
+    # final assistant message isn't flushed; the reply lives in `last_assistant_message`.
+    # Both sides must still be captured: user reconstructed from the transcript's last
+    # user turn, assistant from `last_assistant_message`. ---
+    captured.clear()
+    tp = transcript([
+        u("earlier headless question that should be superseded"),
+        a("earlier headless answer with OLD-111"),
+        u("in headless mode, what ticket did we file for the consent work"),
+        # NOTE: no assistant event after the last user turn — not flushed at Stop time
+    ])
+    hook("remember", {  # NO `prompt` key — headless Stop payload omits it
+        "transcript_path": tp,
+        "last_assistant_message": "Filed PROJ-555 for the headless consent work.",
+    })
+    check("headless: both speakers saved (user reconstructed + assistant from payload)",
+          [b["speaker"] for _, b in captured] == ["user", "assistant"])
+    if captured:
+        utext = captured[0][1]["text"]; atext = captured[1][1]["text"]
+        check("headless: user turn is the transcript's LAST user message",
+              "what ticket did we file" in utext and "superseded" not in utext)
+        check("headless: assistant reply taken from last_assistant_message verbatim",
+              "PROJ-555" in atext)
+        check("headless: superseded earlier turn not leaked",
+              "OLD-111" not in atext and "OLD-111" not in utext)
+
+    # --- headless: last_assistant_message in content-block form is flattened ---
+    captured.clear()
+    tp = transcript([u("headless question delivered as a content-block reply please")])
+    hook("remember", {"transcript_path": tp,
+                      "last_assistant_message": [
+                          {"type": "text", "text": "Block-form reply that is long enough OK-777."}]})
+    check("headless: content-block last_assistant_message flattened to text",
+          len(captured) == 2 and "OK-777" in captured[1][1]["text"])
+
+    # --- interactive UNCHANGED: when the transcript HAS the flushed reply, the payload's
+    # last_assistant_message must be ignored (fallback only fires when transcript empty). ---
+    captured.clear()
+    tp = transcript([
+        u("interactive question with plenty of words to pass the filter"),
+        a("Real transcript reply with TRUE-001."),
+    ])
+    hook("remember", {"prompt": "interactive question with plenty of words to pass the filter",
+                      "transcript_path": tp,
+                      "last_assistant_message": "WRONG-999 from payload must be ignored"})
+    check("interactive unchanged: assistant comes from transcript, not last_assistant_message",
+          len(captured) == 2 and "TRUE-001" in captured[1][1]["text"]
+          and "WRONG-999" not in captured[1][1]["text"])
+
     # --- remember: noise prompt suppresses BOTH writes ---
     captured.clear()
     tp = transcript([u("<task-notification>automated</task-notification>"),
