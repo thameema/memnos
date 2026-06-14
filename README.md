@@ -27,6 +27,45 @@ old one, bi-temporal supersession closes the old fact out, and recall shows the 
 
 ---
 
+## CLAUDE.md remembers your repo. memnos remembers your team.
+
+CLAUDE.md, Cursor rules, native model memory — all genuinely useful, and all the same
+shape: **local and per-developer.** They sit on one machine, scoped to one repo or one
+person's chat history. The knowledge that actually gets lost is *between* developers: the
+decision a teammate made three sprints ago and why, the constraint nobody wrote down. That
+never reaches the next engineer's agent.
+
+memnos is one shared, governed memory the whole team's agents read and write — so a fact
+one developer's agent learns is recallable by everyone else's, correctly attributed.
+
+![Two Claude Code agents sharing one memnos memory](docs/assets/cc-team-memory.gif)
+
+*Two **separate** Claude Code agents — different processes, different tokens, same
+namespace (`ns=team:eng`). Alice's agent decides an auth approach; Bob's fresh agent (which
+never saw her session) recalls it attributed **`by dev-alice`** and adds a constraint;
+Alice's next turn picks up Bob's constraint, attributed **`by dev-bob`**. Bidirectional
+shared memory across two real agents — server-stamped authorship (clients can't spoof it),
+on your own Postgres, no LLM at recall time.*
+
+The same proof at the CLI level, two `memnos` sessions on one namespace:
+
+![Shared team memory across two memnos CLI sessions](docs/assets/team-memory-demo.gif)
+
+*Dev Bob's `recall` returns the decision Dev Alice stored, attributed `by dev-alice` — one
+governed namespace, attribution stamped by the server, not the payload.*
+
+**How memory gets captured is honest about its limits:** deterministic both-sides on Claude
+Code (lifecycle hooks) and on any base-URL-configurable client via `memnos proxy`; MCP
+capture is discretionary (the model chooses when to call the tools); ChatGPT and Claude
+Desktop can't be cleanly auto-captured (no base-URL override, no cert MITM) — MCP is the
+path there. Details in [Integrations](#integrations).
+
+The concept (the gap, and why attribution must be server-stamped) is in
+[`docs/team-memory.md`](docs/team-memory.md); standing up one shared host with a scoped
+token per developer is in [`docs/guides/team.md`](docs/guides/team.md).
+
+---
+
 ## Quickstart
 
 **Prerequisite:** PostgreSQL **13+** with the **pgvector ≥ 0.7** extension. memnos does
