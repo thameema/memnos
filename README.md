@@ -27,7 +27,7 @@ old one, bi-temporal supersession closes the old fact out, and recall shows the 
 
 ---
 
-## CLAUDE.md remembers your repo. memnos remembers your team.
+## Your AI remembers your repo. memnos remembers your team.
 
 CLAUDE.md, Cursor rules, native model memory — all genuinely useful, and all the same
 shape: **local and per-developer.** They sit on one machine, scoped to one repo or one
