@@ -694,7 +694,8 @@ class BrainStore:
         fused AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, SUM(1.0/(60+rnk)) score
                   FROM (SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM fts) r
                   GROUP BY id,statement,valid_from,author_principal,memory_type,restatements,salience)
-        SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience, score FROM fused ORDER BY score DESC LIMIT %(k)s;"""
+        SELECT f.id, f.statement AS content, f.valid_from, f.author_principal AS author, f.memory_type, f.restatements, f.salience, f.score, s.subject_entity
+        FROM fused f JOIN {schema}.semantic s ON s.id=f.id ORDER BY f.score DESC LIMIT %(k)s;"""
         with self.conn.cursor() as c:
             c.execute(sql, {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k})
             return c.fetchall()
