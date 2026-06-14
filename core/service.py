@@ -143,6 +143,44 @@ def query_specificity(query: str) -> str:
     return "neutral"
 
 
+# --- list/aggregation intent (issue #2: the #11-class ranking gap) -------------------
+# EXTENDS the #11 classifier (does NOT build a parallel one). The HDIG field case ("what
+# projects does the MR reviewer monitor") FOUND the answer facts but ranked them 15-22,
+# under raw-turn noise — a list/aggregation question whose crisp answer lives in distilled
+# facts/dossiers, not in any single discursive turn. Such questions want the DISTILLED
+# answer read first. Distinct from #11 'broad': those are status sweeps ('where are we'),
+# these enumerate ('which / how many / what <plural> …'). High precision: a VERBATIM cue
+# (query_specificity == 'specific') ALWAYS wins — "what exactly did X say" is not a list
+# question even if phrased 'what …'. Entity-density does NOT veto here: "what projects does
+# the HDIG MR reviewer monitor" names entities yet is squarely a list question.
+_LIST_RE = re.compile(
+    r"\b(how many|how much|which|what (?:projects?|agents?|services?|systems?|tools?|"
+    r"tickets?|tasks?|items?|repos?|repositories|hosts?|servers?|clients?|vendors?|"
+    r"people|teams?|things?|files?|components?|modules?|features?|pets?|hobbies|"
+    r"languages?|frameworks?|members?|roles?|responsibilities|kinds?|types?|"
+    r"activities|countries|places|cities)\b|"
+    r"\b(list|enumerate|all of the|all the)\b|"
+    r"\bwhat are\b|\bwho (?:all |are )\b)", re.I)
+
+
+def query_intent(query: str) -> str:
+    """'verbatim' | 'list' | 'broad' | 'neutral'. The unified non-LLM intent for the
+    recall rank/render path. Ordered so the most answer-shape-decisive cue wins:
+      verbatim (quoted / 'exactly'/'said'...)  -> raw turns stay first (today's behavior)
+      list/aggregation ('which / how many …')  -> distilled facts lead (issue #2)
+      broad status sweep ('where are we …')    -> facts lead (issue #11)
+      neutral (single-hop / temporal)          -> turn-first (today's behavior)
+    'verbatim' subsumes query_specificity=='specific' (the regression detector)."""
+    spec = query_specificity(query)
+    if spec == "specific":
+        return "verbatim"
+    if _LIST_RE.search(query or ""):
+        return "list"
+    if spec == "broad":
+        return "broad"
+    return "neutral"
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, default))
@@ -564,6 +602,7 @@ class MemnosMemory:
                 r["_ns"] = kns; b["raw"].append(r)
             for r in self.store.search_semantic(self.schema, kns, qv, query, k):
                 r["_ns"] = kns; b.setdefault("sem", []).append(r)
+        b["raw"] = self._dedup_candidates(b["raw"])   # issue #2: collapse cron-x10 dups
         t_stale = time.perf_counter()
         if deadline is not None and t_stale >= deadline:
             b["_degraded"] = True              # deadline hit: serve un-annotated turns
@@ -574,6 +613,80 @@ class MemnosMemory:
             timings["sql_ms"] = timings.get("sql_ms", 0.0) + (t_stale - t_sql) * 1000.0
             timings["staleness_ms"] = timings.get("staleness_ms", 0.0) + (done - t_stale) * 1000.0
         return b
+
+    @staticmethod
+    def _norm_content(s: str) -> str:
+        """Whitespace/case-normalized content key for exact-duplicate collapse."""
+        return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+    def _dedup_candidates(self, raw_rows) -> list:
+        """RECALL-PATH DEDUPE (issue #2, DB phase): collapse near-identical RAW-TURN
+        candidates BEFORE the cross-encoder. This is the cron-x10 killer — the HDIG field
+        case had the SAME operational turn duplicated ~10x crowding ranks 1-4 above the
+        answer-bearing facts. Two collapse rules, both deterministic and cheap:
+          1. EXACT: whitespace/case-normalized content hash (no embedding needed) — kills
+             literal duplicates regardless of vectors;
+          2. NEAR: embedding cosine distance < the write-path dedupe threshold
+             (MEMNOS_DEDUPE_THRESHOLD, 0.03) over ONLY the candidate ids (a bounded
+             self-join, not a namespace scan).
+        Groups are merged (union-find); ONE survivor is kept per group — highest base score,
+        ties broken by most recent observed_at — with a `dup_count` annotation. Dups carry
+        no extra signal, so accuracy risk is near zero; it also shrinks the pairs fed to the
+        reranker. MEMNOS_RECALL_DEDUP=0 disables (returns the input unchanged)."""
+        if not raw_rows or _env_float("MEMNOS_RECALL_DEDUP", 1.0) <= 0:
+            return raw_rows
+        n = len(raw_rows)
+        parent = list(range(n))
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]; x = parent[x]
+            return x
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        # rule 1: exact normalized-content collapse
+        by_content = {}
+        for i, r in enumerate(raw_rows):
+            key = self._norm_content(r.get("content", ""))
+            if key in by_content:
+                union(i, by_content[key])
+            else:
+                by_content[key] = i
+        # rule 2: embedding near-duplicate collapse (bounded self-join over candidate ids)
+        thresh = _env_float("MEMNOS_DEDUPE_THRESHOLD", 0.03)
+        id_to_idx = {r.get("id"): i for i, r in enumerate(raw_rows) if r.get("id") is not None}
+        if thresh > 0 and len(id_to_idx) >= 2:
+            try:
+                for a, b in self.store.near_duplicate_pairs(self.schema, list(id_to_idx), thresh):
+                    if a in id_to_idx and b in id_to_idx:
+                        union(id_to_idx[a], id_to_idx[b])
+            except Exception:                  # pre-migration / no-vector store: exact-only
+                pass
+
+        groups = {}
+        for i in range(n):
+            groups.setdefault(find(i), []).append(i)
+        if len(groups) == n:                   # nothing collapsed — preserve identity
+            return raw_rows
+
+        def keyfn(idx):                        # survivor = highest score, then most recent
+            r = raw_rows[idx]
+            return (float(r.get("score") or 0.0),
+                    (r.get("observed_at") or datetime.min.replace(tzinfo=timezone.utc)))
+
+        survivors = []
+        for members in groups.values():
+            best = max(members, key=keyfn)
+            row = raw_rows[best]
+            if len(members) > 1:
+                row["dup_count"] = len(members)
+            survivors.append((best, row))
+        survivors.sort(key=lambda t: t[0])     # keep the original retrieval order
+        return [row for _, row in survivors]
 
     def _mark_stale_turns(self, raw_rows) -> None:
         """STALENESS pass over RETRIEVED turn rows (issue #10 residual B, DB phase): a
@@ -627,7 +740,17 @@ class MemnosMemory:
         tune = _env_float("MEMNOS_BROAD_QUERY_TUNE", 1.0) > 0
         len_pen = _env_float("MEMNOS_TURN_LENGTH_PENALTY", 0.15) if tune else 0.0
         sal_boost = _env_float("MEMNOS_SALIENCE_BOOST", 0.05) if tune else 0.0
-        broad = tune and query_specificity(query) == "broad"
+        # issue #2: unified intent. list/aggregation ('which / how many …') leads with facts
+        # (MEMNOS_RECALL_FACT_FIRST); #11 broad keeps its own facts-first. verbatim NEVER
+        # leads with facts — raw turns stay first.
+        qi = query_intent(query)
+        fact_first = _env_float("MEMNOS_RECALL_FACT_FIRST", 1.0) > 0
+        broad = (tune and qi == "broad") or (fact_first and qi == "list")
+        # issue #2 layer 3: a SMALL, capped nudge for fact/semantic candidates over raw
+        # turns of similar relevance — ONLY for non-verbatim classes (the gate). Bounded so
+        # it cannot crater single_hop/verbatim. MEMNOS_RECALL_FACT_BOOST=0 disables.
+        fb = _env_float("MEMNOS_RECALL_FACT_BOOST", 0.06)
+        fact_boost = fb if qi != "verbatim" else 0.0
 
         def adjust(s, it, kind):
             # rank-time score shaping — content/storage untouched, bounded by design
@@ -636,6 +759,8 @@ class MemnosMemory:
             if kind == "fact" and sal_boost > 0:
                 s *= 1.0 + min(0.25, sal_boost * (math.log1p(it.get("restatements") or 0)
                                                   + max(0.0, (it.get("salience") or 0.0) - 0.5)))
+            if kind == "fact" and fact_boost > 0:         # gated, bounded fact preference (#2)
+                s *= 1.0 + min(0.10, fact_boost)
             return s
 
         rq = query_clamp(query)                    # #15 follow-up: bound the reranker's query side
@@ -663,6 +788,8 @@ class MemnosMemory:
                     if items[i].get("_superseded_at"):
                         row["superseded_at"] = (items[i]["_superseded_at"]
                                                 .astimezone(timezone.utc).date().isoformat())
+                if items[i].get("dup_count"):                  # issue #2: collapsed duplicates
+                    row["dup_count"] = items[i]["dup_count"]
                 scored.append(row)
             scored.sort(key=lambda r: -r["score"])            # re-sort on adjusted score
             return scored
@@ -741,6 +868,7 @@ class MemnosMemory:
         # cap candidates by RRF score before the (CPU) cross-encoder rerank
         raw_c = sorted(raw_c, key=lambda x: x.get("score", 0), reverse=True)[:60]
         sem_c = sorted(sem_c, key=lambda x: x.get("score", 0), reverse=True)[:60]
+        raw_c = self._dedup_candidates(raw_c)   # issue #2: collapse cron-x10 dups
         t_stale = time.perf_counter()
         if deadline is None or t_stale < deadline:
             self._mark_stale_turns(raw_c)      # DB phase — stale-turn annotation
@@ -759,7 +887,11 @@ class MemnosMemory:
         tune = _env_float("MEMNOS_BROAD_QUERY_TUNE", 1.0) > 0
         len_pen = _env_float("MEMNOS_TURN_LENGTH_PENALTY", 0.15) if tune else 0.0
         sal_boost = _env_float("MEMNOS_SALIENCE_BOOST", 0.05) if tune else 0.0
-        broad = tune and query_specificity(query) == "broad"
+        qi = query_intent(query)                              # issue #2 unified intent
+        fact_first = _env_float("MEMNOS_RECALL_FACT_FIRST", 1.0) > 0
+        broad = (tune and qi == "broad") or (fact_first and qi == "list")
+        fb = _env_float("MEMNOS_RECALL_FACT_BOOST", 0.06)
+        fact_boost = fb if qi != "verbatim" else 0.0
         rq = query_clamp(query)                    # #15 follow-up: bound the reranker's query side
 
         def rr(items, kind, quota):
@@ -778,6 +910,8 @@ class MemnosMemory:
                 if kind == "fact" and sal_boost > 0:          # bounded reinforcement boost
                     s *= 1.0 + min(0.25, sal_boost * (math.log1p(it.get("restatements") or 0)
                                                       + max(0.0, (it.get("salience") or 0.0) - 0.5)))
+                if kind == "fact" and fact_boost > 0:         # gated, bounded fact preference (#2)
+                    s *= 1.0 + min(0.10, fact_boost)
                 row = {"content": it["content"], "kind": kind, "score": s, "namespace": it["_ns"]}
                 if kind == "fact" and it.get("valid_from"):
                     row["date"] = it["valid_from"].date().isoformat()
@@ -790,6 +924,8 @@ class MemnosMemory:
                     if it.get("_superseded_at"):
                         row["superseded_at"] = (it["_superseded_at"]
                                                 .astimezone(timezone.utc).date().isoformat())
+                if it.get("dup_count"):                        # issue #2: collapsed duplicates
+                    row["dup_count"] = it["dup_count"]
                 scored.append(row)
             scored.sort(key=lambda r: -r["score"])            # re-sort on adjusted score
             return scored[:quota]
@@ -801,7 +937,7 @@ class MemnosMemory:
         return fresh + facts + stale
 
     @staticmethod
-    def render_context(rows, *, max_chars=9000, viewer=None) -> str:
+    def render_context(rows, *, max_chars=9000, viewer=None, query=None) -> str:
         """Format ALREADY-RETRIEVED recall rows into a paste-ready context block.
         Lets callers that need both memories AND context (the /recall endpoint) run the
         retrieval+rerank pipeline ONCE instead of twice — measured: halves /recall
@@ -817,7 +953,21 @@ class MemnosMemory:
         TYPED MEMORIES (0.1.6): a row's `type` replaces the generic fact/said label —
         '- (decision, 2026-06-10, by arch-agent) ...'. PINNED constraint rows render as
         'CONSTRAINT: ...' lines; the server puts them first in `rows`, so they lead the
-        context block ahead of every ranked result."""
+        context block ahead of every ranked result.
+
+        FACT-FIRST RENDERING (issue #2): when `query` is a list/aggregation or broad-status
+        question, lead with distilled FACTS/dossiers ('what's known') and put raw turns
+        below as supporting evidence — so the crisp answer is read FIRST regardless of the
+        rerank float order (the HDIG case: answer facts that floated to rank 15-22). Pins
+        always stay first; verbatim/neutral queries keep the rerank order. query=None
+        (legacy callers) is unchanged. MEMNOS_RECALL_FACT_FIRST=0 disables."""
+        if (query and _env_float("MEMNOS_RECALL_FACT_FIRST", 1.0) > 0
+                and query_intent(query) in ("list", "broad")):
+            pins = [r for r in rows if r.get("pinned")]
+            rest = [r for r in rows if not r.get("pinned")]
+            facts = [r for r in rest if r.get("kind") == "fact"]
+            turns = [r for r in rest if r.get("kind") != "fact"]
+            rows = pins + facts + turns
         out, used = [], 0
         for r in rows:
             tag = f" [{r['namespace']}]" if r.get("namespace") else ""
@@ -830,6 +980,8 @@ class MemnosMemory:
                 if r.get("superseded"):        # stale turn — show the transition (issue #10 B)
                     label += (f", superseded as of {r['superseded_at']}"
                               if r.get("superseded_at") else ", superseded")
+                if r.get("dup_count"):         # issue #2: N near-identical turns collapsed to 1
+                    label += f", x{r['dup_count']}"
                 d = f", {r['date']}" if (r["kind"] == "fact" and r.get("date")) else ""
                 line = f"- ({label}{d}{by}){tag} {r['content']}"
             if used + len(line) > max_chars:
@@ -838,10 +990,12 @@ class MemnosMemory:
         return "\n".join(out)
 
     def context_wide(self, namespaces, query, *, max_chars=9000, **kw) -> str:
-        return self.render_context(self.recall_wide(namespaces, query, **kw), max_chars=max_chars)
+        return self.render_context(self.recall_wide(namespaces, query, **kw),
+                                   max_chars=max_chars, query=query)
 
     def context(self, namespace: str, query: str, *, max_chars=9000, **kw) -> str:
-        return self.render_context(self.recall(namespace, query, **kw), max_chars=max_chars)
+        return self.render_context(self.recall(namespace, query, **kw),
+                                   max_chars=max_chars, query=query)
 
     # --- consolidation (offline; call on idle / schedule) -----------------
     def consolidate(self, namespace: str, max_entities=25, max_dossier=6,

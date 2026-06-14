@@ -510,6 +510,27 @@ class BrainStore:
                 {"v": vlit(vec), "ns": ns, "sub": subject, "t": thresh})
             return c.fetchone()
 
+    def near_duplicate_pairs(self, schema, ids, thresh) -> list[tuple]:
+        """RECALL-PATH dedupe (issue #2): among the GIVEN candidate raw-turn ids, return
+        (a, b) pairs whose embeddings are within `thresh` cosine distance (a<b). A single
+        self-join over the small candidate set (k<=~80) — NOT a namespace scan — so it is
+        cheap and bounded. Reuses the write-path dedupe threshold (MEMNOS_DEDUPE_THRESHOLD,
+        0.03). The caller collapses the resulting groups, keeping one survivor."""
+        self._chk(schema)
+        ids = [i for i in (ids or ()) if i is not None]
+        if len(ids) < 2 or thresh <= 0:
+            return []
+        with self.conn.cursor() as c:
+            c.execute(
+                f"SELECT a.id AS a, b.id AS b "
+                f"FROM {schema}.raw_turns a JOIN {schema}.raw_turns b "
+                f"  ON a.id < b.id "
+                f"WHERE a.id = ANY(%(ids)s) AND b.id = ANY(%(ids)s) "
+                f"  AND a.embedding IS NOT NULL AND b.embedding IS NOT NULL "
+                f"  AND (a.embedding <=> b.embedding) < %(t)s",
+                {"ids": ids, "t": thresh})
+            return [(r["a"], r["b"]) for r in c.fetchall()]
+
     def bump_restatement(self, schema, fact_id, source_turn_ids=()) -> None:
         """Reinforce an existing live fact instead of inserting a near-duplicate:
         restatements counter + salience bump + provenance union (additive columns)."""
