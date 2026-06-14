@@ -11,21 +11,21 @@
   </script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>memnos — Memory for AI that remembers you | persistent, private, portable</title>
-  <meta name="description" content="Your AI forgets everything. memnos makes it remember — everything you and your AI figure out, saved, searchable, and there next time, in every AI you use. Yours, not a vendor's. Self-hostable, governed; MCP, REST and a Python SDK." />
-  <meta name="keywords" content="persistent memory AI agents, LLM memory, MCP server, Claude Code memory, Cursor AI memory, agent context persistence, memory store AI, RAG memory, memnos, AI agent SDK" />
+  <title>memnos — shared memory for your team's AI coding agents | self-hosted, governed</title>
+  <meta name="description" content="Your AI agents each start from zero. memnos gives them one shared, governed memory on your own PostgreSQL — what one agent learns, every agent knows: attributed, audited, no LLM at query time. For engineering teams on Claude Code, Codex and Cursor, agent builders (LangChain/LangGraph), and regulated enterprises." />
+  <meta name="keywords" content="persistent memory AI agents, LLM memory, MCP server, Claude Code memory, Cursor AI memory, agent context persistence, memory store AI, RAG memory, memnos, AI agent SDK, shared agent memory, team memory for AI, Codex memory, Claude Code memory, multi-agent memory, LangChain memory backend, self-hosted AI memory, governed AI memory" />
   <link rel="canonical" href="https://memnos.net/" />
   <!-- Open Graph -->
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://memnos.net/" />
-  <meta property="og:title" content="memnos — Persistent Memory for AI Agents" />
-  <meta property="og:description" content="Persistent memory for Claude Code, Cursor, Windsurf and any LLM agent. MCP server + REST API + CLI. Sessions, episodes, and memory stores." />
+  <meta property="og:title" content="memnos — shared memory for your team's AI coding agents" />
+  <meta property="og:description" content="One shared, governed memory for Claude Code, Codex and Cursor — self-hosted on your own PostgreSQL, no LLM at query time. MCP server + REST API + CLI." />
   <meta property="og:image" content="https://memnos.net/og-image.png" />
   <meta property="og:site_name" content="memnos" />
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="memnos — Persistent Memory for AI Agents" />
-  <meta name="twitter:description" content="Persistent memory for Claude Code, Cursor, Windsurf and any LLM agent. MCP server + REST API + CLI." />
+  <meta name="twitter:title" content="memnos — shared memory for your team's AI coding agents" />
+  <meta name="twitter:description" content="One shared, governed memory for Claude Code, Codex and Cursor — self-hosted on your own PostgreSQL, no LLM at query time. MCP server + REST API + CLI." />
   <meta name="twitter:image" content="https://memnos.net/og-image.png" />
   <!-- Structured data -->
   <script type="application/ld+json">
@@ -33,7 +33,7 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "memnos",
-    "description": "Persistent memory for AI coding agents — MCP server, REST API and Python SDK. Works with Claude Code, Cursor, Windsurf and any LLM agent.",
+    "description": "Shared, governed memory for AI coding agents and agent frameworks — one PostgreSQL, no LLM at query time. Works with Claude Code, Codex, Cursor, LangChain/LangGraph and any base-URL agent.",
     "url": "https://memnos.net",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Linux, macOS, Windows",
@@ -194,17 +194,17 @@
     <div>
       <div class="inline-flex items-center gap-2 bg-purple-500/10 border border-purple-500/20 rounded-full px-4 py-1.5 text-sm text-purple-300 mb-8">
         <span class="w-1.5 h-1.5 bg-purple-400 rounded-full pulse-dot"></span>
-        Apache-2.0 · Self-hostable · Private · Works with Claude, GPT-5, Llama, Gemini
+        Apache-2.0 · Self-hostable · Works with Claude Code, Codex, Cursor &amp; any base-URL agent
       </div>
       <h1 class="hero-display text-5xl md:text-6xl font-bold text-white leading-[1.05] mb-6">
-        Your AI forgets everything.<br />
-        <span class="gradient-text">memnos makes it remember.</span>
+        Your AI remembers your repo.<br />
+        <span class="gradient-text">memnos remembers your team.</span>
       </h1>
       <p class="text-gray-400 text-lg leading-relaxed mb-6 max-w-lg">
-        Everything you and your AI figure out — saved, searchable, and there next time. In every AI you use. Yours, not a vendor&rsquo;s.
+        Every AI coding agent keeps its own memory — one per tool, per developer, per session. memnos is the shared, governed layer across all of them: what one agent learns, every agent knows — attributed to who learned it, audited, on your own PostgreSQL.
       </p>
       <p class="text-gray-300 text-base leading-relaxed mb-8 max-w-lg">
-        <span class="text-white font-semibold">How we're different:</span> other memory tools lock you into their cloud, or let an LLM <em>guess</em> what to keep and forget. memnos is yours to self-host, remembers <span class="text-white">deterministically</span> (no LLM guessing), is fully governed and audited — and we publish <span class="text-white">honest, judge-transparent</span> benchmarks: the full judge band, per-question predictions in the repo.
+        <span class="text-white font-semibold">How we're different:</span> memnos captures <span class="text-white">deterministically</span> through Claude Code hooks and the capture proxy — not the model&rsquo;s discretion — runs <span class="text-white">no LLM at query time</span>, and is fully governed and audited. And we publish <span class="text-white">honest, judge-transparent</span> benchmarks: the full judge band, per-question predictions in the repo.
       </p>
       <div class="flex flex-wrap items-center gap-3">
         <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white font-semibold px-6 py-3 rounded-full text-sm whitespace-nowrap">Deploy free</a>
@@ -289,6 +289,21 @@
     <div class="glass rounded-2xl px-8 py-4 text-center">
       <p class="text-sm text-gray-300 leading-relaxed"><span class="text-white font-semibold">64–65%</span> on full LoCoMo across three independent ingests — every prediction published <span class="text-gray-600">·</span> No LLM at query time <span class="text-gray-600">·</span> Apache-2.0, full engine source <span class="text-gray-600">·</span> Runs on PostgreSQL.</p>
     </div>
+  </div>
+</section>
+
+<!-- ── DEMO (two agents, one shared brain) ─────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">See it work</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Two agents. One shared brain.</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Two real Claude Code agents — separate processes, separate tokens, same team namespace. Dev Alice&rsquo;s agent makes a decision. Dev Bob&rsquo;s agent, in a fresh session that never saw hers, recalls it — attributed to dev-alice — and adds a constraint her next turn picks up. No one re-explained anything. memnos is the shared memory underneath.</p>
+    </div>
+    <div class="glass rounded-2xl p-2 max-w-4xl mx-auto">
+      <img src="assets/cc-team-memory.gif" alt="Two Claude Code agents sharing memory through memnos — Dev Bob's agent recalls Dev Alice's decision, attributed by dev-alice" class="rounded-xl w-full" loading="lazy" />
+    </div>
+    <p class="text-xs text-gray-600 text-center max-w-2xl mx-auto mt-4">Recorded live · attribution is server-stamped from each agent&rsquo;s token, not client-claimed · runs on your own Postgres.</p>
   </div>
 </section>
 
@@ -428,29 +443,24 @@
   <div class="max-w-6xl mx-auto px-6">
     <div class="text-center mb-12">
       <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Who it's for</span>
-      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Memory for everyone an AI talks to</h2>
-      <p class="text-gray-400 max-w-2xl mx-auto">Every AI tool forgets you the moment a chat ends. memnos is the memory layer underneath — for the person on ChatGPT, the team shipping software, the developer building agents, and the regulated enterprise that can't send data anywhere.</p>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Not for everyone. Built for people shipping with AI agents.</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">memnos earns its place when more than one agent — or more than one developer — needs to share what&rsquo;s been learned. Three audiences feel that most:</p>
     </div>
-    <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-5">
-      <div class="glass rounded-2xl p-6">
-        <div class="text-2xl mb-3">🧠</div>
-        <h3 class="text-white font-semibold mb-2">Everyday AI users</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">You re-explain yourself to ChatGPT, Claude or Gemini every single chat. memnos gives your assistants a memory that's <span class="text-gray-200">yours</span> — portable across tools, private, and always current.</p>
-      </div>
+    <div class="grid md:grid-cols-3 gap-5">
       <div class="glass rounded-2xl p-6">
         <div class="text-2xl mb-3">👩‍💻</div>
-        <h3 class="text-white font-semibold mb-2">Engineering teams</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">One shared memory of decisions, constraints and incidents — governed and audited. New hires get full context on day one; the team stops repeating old mistakes.</p>
+        <h3 class="text-white font-semibold mb-2">AI engineering teams</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Your team runs Claude Code, Codex and Cursor. memnos is the one shared, governed memory underneath them: decisions, constraints and incidents every developer&rsquo;s agent reads and writes — attributed to who learned them. New hires get full context on day one; the team stops re-litigating settled questions.</p>
       </div>
       <div class="glass rounded-2xl p-6">
         <div class="text-2xl mb-3">🤖</div>
-        <h3 class="text-white font-semibold mb-2">AI-agent builders</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Drop-in backend memory for your agents via MCP and the <code class="text-green-300">memnos-sdk</code> (LangChain · LangGraph). No query-time LLM, vendor-neutral, runs anywhere.</p>
+        <h3 class="text-white font-semibold mb-2">Agent builders</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Building on LangChain, LangGraph or your own stack? memnos is a real memory backend via the <code class="text-green-300">memnos-sdk</code>, MCP and REST — hybrid recall, bi-temporal facts, no LLM at query time. Vendor-neutral, runs anywhere.</p>
       </div>
       <div class="glass rounded-2xl p-6">
         <div class="text-2xl mb-3">🏛️</div>
-        <h3 class="text-white font-semibold mb-2">Regulated sectors</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Healthcare, legal, finance, government — self-host with token auth, namespace access control, full audit, and an encrypted secret vault. Your data never leaves your infrastructure.</p>
+        <h3 class="text-white font-semibold mb-2">Regulated enterprise</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Healthcare, finance, government. Self-host on the PostgreSQL you already operate, with token auth, namespace ACLs, a full audit log, server-stamped authorship and an encrypted secret vault. Your data never leaves your infrastructure.</p>
       </div>
     </div>
   </div>
@@ -518,7 +528,7 @@
           <svg class="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1 1 .03 2.798-1.442 2.798H4.24c-1.47 0-2.441-1.798-1.442-2.798L4.2 15.3"/></svg>
         </div>
         <h3 class="text-white font-semibold mb-2">Multi-Model Support</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Claude Code, GPT-4, Llama, Gemini, Mistral — any model that can make an HTTP call works with memnos. Swap your underlying LLM without touching your memory layer.</p>
+        <p class="text-sm text-gray-400 leading-relaxed">Claude Code, Codex, Cursor, GPT-5, Llama, Gemini, Mistral — any model that can make an HTTP call works with memnos. Swap your underlying LLM without touching your memory layer.</p>
       </div>
 
       <div class="glass rounded-2xl p-6">

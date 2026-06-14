@@ -27,3 +27,4 @@ qdrant_data/
 evolution_data/
 run_canary.sh
 run_consolidate.sh
+docs/assets/.cc-replay/
