@@ -3,7 +3,7 @@
 How an engineering team stands up **one shared memnos** and wires each developer's agent
 to it, so the whole team's agents read and write a common, governed memory.
 
-> CLAUDE.md remembers your repo. memnos remembers your team. See
+> Your AI remembers your repo. memnos remembers your team. See
 > [`docs/team-memory.md`](../team-memory.md) for the why.
 
 ---

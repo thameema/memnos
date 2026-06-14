@@ -1,4 +1,4 @@
-# CLAUDE.md remembers your repo. memnos remembers your team.
+# Your AI remembers your repo. memnos remembers your team.
 
 ## The problem: memory is local and per-developer
 
