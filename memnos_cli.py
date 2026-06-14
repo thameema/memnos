@@ -1793,6 +1793,22 @@ def cmd_hook(args, cfg):
         except Exception:
             pass
 
+    # Headless (`claude -p`) fallback: in print mode the Stop payload carries no `prompt`
+    # and the final assistant message isn't flushed to the transcript yet, so the loop
+    # above leaves `a_text` empty — only the user turn would be saved, losing the reply
+    # (the decision/reasoning we actually want). The full reply is in the payload's
+    # `last_assistant_message`. ADDITIVE: this only fires when the interactive extraction
+    # came up empty; the interactive path (which finds the reply in the transcript) is
+    # untouched. The user prompt is already reconstructed above from the transcript's last
+    # user turn, so headless captures both sides like interactive.
+    if not a_text.strip():
+        lam = data.get("last_assistant_message")
+        if isinstance(lam, list):                          # content-block form
+            lam = "".join(b.get("text", "") for b in lam
+                          if isinstance(b, dict) and b.get("type") == "text")
+        if isinstance(lam, str) and lam.strip():
+            a_text = lam.strip()
+
     def _save(t, speaker):
         try:
             # async: the hook never reads the fact count — the server stores the raw
