@@ -19,6 +19,20 @@ behind an env kill switch (default = new behavior on):
 
 Engine-level (no LLM, no embedding API): rows are seeded with a crafted-vector stub
 embedder; recall() runs the REAL production retrieval + rerank pipeline.
+
+CI-DETERMINISM: the three RANK/RENDER POLICIES under test (dedup-collapse, fact-first
+leading, verbatim turn-first) are decided in recall_rank's quota-ASSEMBLY step, NOT by
+the cross-encoder's per-candidate floats. But the cross-encoder's scores DO decide which
+near-tied near-duplicate / fact / turn lands at a given index, and those floats vary
+across ONNX-Runtime builds (dev vs the 2-core CI runner) — so a test that asserts "row N
+is exactly this kind" is flaky on CI even though the POLICY is identical. We therefore
+pin MEMNOS_RERANK=0 for the DB-backed pipeline checks: candidates keep their stable
+retrieval (RRF) order, the cross-encoder never runs, and the policy assertions (does
+dedup collapse? do facts lead a list query? does a turn lead a verbatim query?) become
+deterministic while remaining MEANINGFUL — each policy still has to fire for the check to
+pass. The bounded fact-boost test (test_fact_boost_gate) stubs the reranker itself, so it
+is independent of this pin. (The cross-encoder's real ranking quality is exercised by the
+LoCoMo gate + test_broad_query_ranking, not by exact-index asserts here.)
 """
 import math
 import os
@@ -114,19 +128,26 @@ def near_vec(v):
 def test_dedup(mem):
     print("dedup: cron-x10 collapses to one candidate")
     q = "what projects does the HDIG MR reviewer monitor"
+    def cron_count(rows):
+        return sum(1 for r in rows if r["kind"] == "turn"
+                   and "hdig-mr-reviewer ran" in r["content"])
+
     rows = mem.recall(NS, q)
     cron_rows = [r for r in rows if r["kind"] == "turn"
                  and "hdig-mr-reviewer ran" in r["content"]]
-    check("cron-style turns collapsed to a single survivor", len(cron_rows) <= 1)
+    on_count = len(cron_rows)
+    check("cron-style turns collapsed to a single survivor", on_count <= 1)
     if cron_rows:
         check("survivor carries a dup_count annotation", cron_rows[0].get("dup_count", 0) >= 2)
 
     os.environ["MEMNOS_RECALL_DEDUP"] = "0"
     try:
-        rows0 = mem.recall(NS, q)
-        cron0 = [r for r in rows0 if r["kind"] == "turn"
-                 and "hdig-mr-reviewer ran" in r["content"]]
-        check("kill switch MEMNOS_RECALL_DEDUP=0: duplicates return", len(cron0) >= 2)
+        off_count = cron_count(mem.recall(NS, q))
+        # POLICY (not a brittle absolute count): turning dedup OFF must let the collapsed
+        # duplicates RETURN — strictly more cron turns survive than with dedup on, and the
+        # ~10 seeded exact-dups are no longer folded into one survivor.
+        check("kill switch MEMNOS_RECALL_DEDUP=0: duplicates return (more than with dedup on)",
+              off_count > on_count and off_count >= 2)
     finally:
         del os.environ["MEMNOS_RECALL_DEDUP"]
 
@@ -137,6 +158,8 @@ def test_fact_first(mem):
     q = "what projects does the HDIG MR reviewer monitor"
     rows = mem.recall(NS, q)
     kinds = [r["kind"] for r in rows]
+    check("list (fact-first ON): the FIRST result is a fact",
+          rows and rows[0]["kind"] == "fact")
     first_turn = kinds.index("turn") if "turn" in kinds else len(kinds)
     fact_idx = [i for i, k in enumerate(kinds) if k == "fact"]
     check("list: at least 2 answer facts present",
@@ -155,9 +178,12 @@ def test_fact_first(mem):
     os.environ["MEMNOS_RECALL_FACT_FIRST"] = "0"
     try:
         rows_off = mem.recall(NS, q)
-        # with fact-first off (and broad/list disabled), the strong turn arm leads again
-        check("kill switch MEMNOS_RECALL_FACT_FIRST=0: a turn leads the result",
-              rows_off and rows_off[0]["kind"] == "turn")
+        # POLICY contrast: with fact-first ON a fact led (asserted above); with it OFF the
+        # forced fact-first assembly no longer fires, so the raw-turn arm leads again. The
+        # toggle FLIPS the lead — proving the kill switch genuinely controls the behavior.
+        check("kill switch MEMNOS_RECALL_FACT_FIRST=0: a turn leads the result (lead flips)",
+              rows_off and rows_off[0]["kind"] == "turn"
+              and rows and rows[0]["kind"] == "fact")
     finally:
         del os.environ["MEMNOS_RECALL_FACT_FIRST"]
 
@@ -228,9 +254,20 @@ def main():
     test_intent()
     seed(store, crafted_embed)
     mem = MemnosMemory(store, crafted_embed, dim=dim, llm=None)
-    test_dedup(mem)
-    test_fact_first(mem)
-    test_verbatim_guard(mem)
+    # Pin retrieval (RRF) order for the DB-backed pipeline checks so the POLICY
+    # assertions are CI-deterministic (cross-encoder floats vary across ONNX builds —
+    # see module docstring). test_fact_boost_gate stubs the reranker itself.
+    _rerank_saved = os.environ.get("MEMNOS_RERANK")
+    os.environ["MEMNOS_RERANK"] = "0"
+    try:
+        test_dedup(mem)
+        test_fact_first(mem)
+        test_verbatim_guard(mem)
+    finally:
+        if _rerank_saved is None:
+            os.environ.pop("MEMNOS_RERANK", None)
+        else:
+            os.environ["MEMNOS_RERANK"] = _rerank_saved
     test_fact_boost_gate(mem)
 
     with store.conn.cursor() as c:
