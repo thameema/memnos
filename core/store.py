@@ -649,15 +649,15 @@ class BrainStore:
         """Hybrid RRF (vector+FTS) over EPISODIC; returns observed_at for recency."""
         self._chk(schema)
         sql = f"""
-        WITH vec AS (SELECT id, text, observed_at, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}) rnk
-                     FROM {schema}.episodic WHERE namespace=%(ns)s ORDER BY embedding <=> %(qv)s::{self.vtype} LIMIT %(k)s),
-        fts AS (SELECT id, text, observed_at, memory_type, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
+        WITH vec AS (SELECT id, text, observed_at, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}, id) rnk
+                     FROM {schema}.episodic WHERE namespace=%(ns)s ORDER BY embedding <=> %(qv)s::{self.vtype}, id LIMIT %(k)s),
+        fts AS (SELECT id, text, observed_at, memory_type, row_number() OVER (ORDER BY ts_rank(fts,q) DESC, id) rnk
                 FROM {schema}.episodic, websearch_to_tsquery('english',%(qt)s) q
-                WHERE namespace=%(ns)s AND fts @@ q ORDER BY ts_rank(fts,q) DESC LIMIT %(k)s),
+                WHERE namespace=%(ns)s AND fts @@ q ORDER BY ts_rank(fts,q) DESC, id LIMIT %(k)s),
         fused AS (SELECT id, text, observed_at, memory_type, SUM(1.0/(60+rnk)) score
                   FROM (SELECT id,text,observed_at,memory_type,rnk FROM vec UNION ALL SELECT id,text,observed_at,memory_type,rnk FROM fts) r
                   GROUP BY id,text,observed_at,memory_type)
-        SELECT id, text AS content, observed_at, memory_type, score FROM fused ORDER BY score DESC LIMIT %(k)s;"""
+        SELECT id, text AS content, observed_at, memory_type, score FROM fused ORDER BY score DESC, id LIMIT %(k)s;"""
         with self.conn.cursor() as c:
             c.execute(sql, {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k})
             return c.fetchall()
@@ -666,15 +666,15 @@ class BrainStore:
         """Hybrid RRF (vector+FTS) over RAW TURNS — the strong open/single-hop layer."""
         self._chk(schema)
         sql = f"""
-        WITH vec AS (SELECT id, text, observed_at, author_principal, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}) rnk
-                     FROM {schema}.raw_turns WHERE namespace=%(ns)s ORDER BY embedding <=> %(qv)s::{self.vtype} LIMIT %(k)s),
-        fts AS (SELECT id, text, observed_at, author_principal, memory_type, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
+        WITH vec AS (SELECT id, text, observed_at, author_principal, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}, id) rnk
+                     FROM {schema}.raw_turns WHERE namespace=%(ns)s ORDER BY embedding <=> %(qv)s::{self.vtype}, id LIMIT %(k)s),
+        fts AS (SELECT id, text, observed_at, author_principal, memory_type, row_number() OVER (ORDER BY ts_rank(fts,q) DESC, id) rnk
                 FROM {schema}.raw_turns, websearch_to_tsquery('english',%(qt)s) q
-                WHERE namespace=%(ns)s AND fts @@ q ORDER BY ts_rank(fts,q) DESC LIMIT %(k)s),
+                WHERE namespace=%(ns)s AND fts @@ q ORDER BY ts_rank(fts,q) DESC, id LIMIT %(k)s),
         fused AS (SELECT id, text, observed_at, author_principal, memory_type, SUM(1.0/(60+rnk)) score
                   FROM (SELECT id,text,observed_at,author_principal,memory_type,rnk FROM vec UNION ALL SELECT id,text,observed_at,author_principal,memory_type,rnk FROM fts) r
                   GROUP BY id,text,observed_at,author_principal,memory_type)
-        SELECT id, text AS content, observed_at, author_principal AS author, memory_type, score FROM fused ORDER BY score DESC LIMIT %(k)s;"""
+        SELECT id, text AS content, observed_at, author_principal AS author, memory_type, score FROM fused ORDER BY score DESC, id LIMIT %(k)s;"""
         with self.conn.cursor() as c:
             c.execute(sql, {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k})
             return c.fetchall()
@@ -686,16 +686,16 @@ class BrainStore:
         self._chk(schema)
         valid = "AND valid_to IS NULL" if current_only else ""
         sql = f"""
-        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}) rnk
-                     FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {valid} ORDER BY embedding <=> %(qv)s::{self.vtype} LIMIT %(k)s),
-        fts AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
+        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}, id) rnk
+                     FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {valid} ORDER BY embedding <=> %(qv)s::{self.vtype}, id LIMIT %(k)s),
+        fts AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY ts_rank(fts,q) DESC, id) rnk
                 FROM {schema}.semantic, websearch_to_tsquery('english',%(qt)s) q
-                WHERE namespace=%(ns)s AND expired_at IS NULL {valid} AND fts @@ q ORDER BY ts_rank(fts,q) DESC LIMIT %(k)s),
+                WHERE namespace=%(ns)s AND expired_at IS NULL {valid} AND fts @@ q ORDER BY ts_rank(fts,q) DESC, id LIMIT %(k)s),
         fused AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, SUM(1.0/(60+rnk)) score
                   FROM (SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM fts) r
                   GROUP BY id,statement,valid_from,author_principal,memory_type,restatements,salience)
         SELECT f.id, f.statement AS content, f.valid_from, f.author_principal AS author, f.memory_type, f.restatements, f.salience, f.score, s.subject_entity
-        FROM fused f JOIN {schema}.semantic s ON s.id=f.id ORDER BY f.score DESC LIMIT %(k)s;"""
+        FROM fused f JOIN {schema}.semantic s ON s.id=f.id ORDER BY f.score DESC, f.id LIMIT %(k)s;"""
         with self.conn.cursor() as c:
             c.execute(sql, {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k})
             return c.fetchall()
@@ -709,15 +709,15 @@ class BrainStore:
         self._chk(schema)
         cur = "AND valid_to IS NULL" if current_only else ""
         base = f"""
-        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}) rnk
-                     FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {cur} ORDER BY embedding <=> %(qv)s::{self.vtype} LIMIT %(k)s),
-        fts AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY ts_rank(fts,q) DESC) rnk
+        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}, id) rnk
+                     FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {cur} ORDER BY embedding <=> %(qv)s::{self.vtype}, id LIMIT %(k)s),
+        fts AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY ts_rank(fts,q) DESC, id) rnk
                 FROM {schema}.semantic, websearch_to_tsquery('english',%(qt)s) q
-                WHERE namespace=%(ns)s AND expired_at IS NULL {cur} AND fts @@ q ORDER BY ts_rank(fts,q) DESC LIMIT %(k)s),
+                WHERE namespace=%(ns)s AND expired_at IS NULL {cur} AND fts @@ q ORDER BY ts_rank(fts,q) DESC, id LIMIT %(k)s),
         fused AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, SUM(1.0/(60+rnk)) score
                   FROM (SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM fts) r
                   GROUP BY id,statement,valid_from,author_principal,memory_type,restatements,salience)
-        SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience FROM fused ORDER BY score DESC LIMIT %(k)s"""
+        SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience FROM fused ORDER BY score DESC, id LIMIT %(k)s"""
         params = {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k}
         rows, seen = [], set()
         with self.conn.cursor() as c:
