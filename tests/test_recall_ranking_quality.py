@@ -141,6 +141,14 @@ def test_dedup(mem):
         check("survivor carries a dup_count annotation", cron_rows[0].get("dup_count", 0) >= 2)
 
     os.environ["MEMNOS_RECALL_DEDUP"] = "0"
+    # ISOLATE the variable under test: the #17 entity arm is an uncontrolled third
+    # variable here (it boosts/demotes fact candidates, which can change which rows
+    # survive the quotas and swamp the dedup contrast on CI's float distribution). Pin
+    # it OFF so this check measures ONLY the dedup kill switch — same philosophy as the
+    # MEMNOS_RERANK=0 determinism pin (module docstring). The entity arm has its own
+    # dedicated coverage in tests/test_recall_entity_scope.py.
+    os.environ["MEMNOS_RECALL_ENTITY_BOOST"] = "0"
+    os.environ["MEMNOS_RECALL_ENTITY_SCOPE"] = "0"
     try:
         off_count = cron_count(mem.recall(NS, q))
         # POLICY (not a brittle absolute count): turning dedup OFF must let the collapsed
@@ -150,6 +158,8 @@ def test_dedup(mem):
               off_count > on_count and off_count >= 2)
     finally:
         del os.environ["MEMNOS_RECALL_DEDUP"]
+        del os.environ["MEMNOS_RECALL_ENTITY_BOOST"]
+        del os.environ["MEMNOS_RECALL_ENTITY_SCOPE"]
 
 
 # --- 3. fact-first: the answer facts lead the list-intent result + context ----------
@@ -176,6 +186,13 @@ def test_fact_first(mem):
 
     # kill switch: fact-first off -> rendered context no longer forced fact-first
     os.environ["MEMNOS_RECALL_FACT_FIRST"] = "0"
+    # ISOLATE the variable under test: pin the #17 entity arm OFF so this contrast
+    # measures ONLY the fact-first kill switch. The entity arm reshapes fact-candidate
+    # scores (uncontrolled third variable) and on CI's float distribution that can change
+    # which row leads independently of fact-first — swamping the flip this check asserts.
+    # Same hygiene as the MEMNOS_RERANK=0 pin; entity arm covered by test_recall_entity_scope.py.
+    os.environ["MEMNOS_RECALL_ENTITY_BOOST"] = "0"
+    os.environ["MEMNOS_RECALL_ENTITY_SCOPE"] = "0"
     try:
         rows_off = mem.recall(NS, q)
         # POLICY contrast: with fact-first ON a fact led (asserted above); with it OFF the
@@ -186,6 +203,8 @@ def test_fact_first(mem):
               and rows and rows[0]["kind"] == "fact")
     finally:
         del os.environ["MEMNOS_RECALL_FACT_FIRST"]
+        del os.environ["MEMNOS_RECALL_ENTITY_BOOST"]
+        del os.environ["MEMNOS_RECALL_ENTITY_SCOPE"]
 
 
 # --- 4. verbatim guard: raw turn must stay first ------------------------------------
