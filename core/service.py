@@ -737,6 +737,7 @@ class MemnosMemory:
           3. fact scores get a bounded reinforcement boost from restatements/salience
              (a fact restated 50x should outrank a turn that mentioned it once)."""
         intent = b["intent"]
+        from . import temporal as T
         # --- issue #17: HARD SUBJECT SCOPE -----------------------------------------
         # A caller can pass subject="<entity>" to hard-filter facts to ONE entity's set —
         # the strongest disambiguation when the caller already knows the subject. Acts on
@@ -771,36 +772,59 @@ class MemnosMemory:
         # SAME namespace (e.g. an "Interoperability Gateway" service vs. a "record ID
         # crosswalk" task — both FHIR/interop-flavored, so their embeddings sit next to
         # each other) compete in one ranked pool. Vector/FTS similarity cannot separate
-        # subject IDENTITY; the entity binding (semantic.subject_entity / mentions) can,
-        # and the store already captured it. This is a rank-time ARM, not a new retrieval:
-        #   - BOOST a fact whose subject_entity / content actually mentions a query entity;
-        #   - DEMOTE a fact that mentions a COMPETING entity (a subject some OTHER candidate
-        #     carries) while mentioning the query entity NOT AT ALL.
-        # Bounded by design (same caps as fact_boost) so it cannot crater a query whose
-        # entities are mis-extracted, and verbatim-exempt. Kill switch:
+        # subject IDENTITY; the ENTITY BINDING (semantic.subject_entity) can, and the store
+        # already captured it. This is a rank-time ARM, not a new retrieval:
+        #   - BOOST a fact whose subject_entity / extracted entities match a query entity;
+        #   - DEMOTE a fact that carries a COMPETING subject (a subject some OTHER candidate
+        #     carries) while matching the query entity NOT AT ALL.
+        # MATCHING SIGNAL (the #17 fix): match against the fact's ENTITY BINDING, never its
+        # free-text content as a substring. The old `qe in content` clause let a single
+        # generic token (e.g. "interoperability") inside a competing subject's prose make it
+        # look on-topic, so in the shared-vocabulary case this arm targets it was a NO-OP
+        # (ON == OFF). We now match query entities — as whole-word/phrase units, multi-word
+        # phrases preferred over their split tokens — against subject_entity and the proper
+        # nouns the fact's statement actually names (entity-level), via temporal.entity_match.
+        # Bounded by design (same caps as fact_boost), verbatim-exempt. Kill switch:
         #   MEMNOS_RECALL_ENTITY_BOOST=0 disables the arm entirely.
-        qents = [e.lower() for e in (b.get("ents") or [])]
+        # PHRASES first (e.g. "Interoperability Gateway"), then fall back to single proper
+        # nouns ONLY when no phrase exists — so split tokens can't bridge two subjects.
+        qphrases = [e.lower() for e in T.query_entity_phrases(query)]
+        qsingles = [e.lower() for e in (b.get("ents") or [])]
+        qmatch = qphrases or qsingles          # prefer whole phrases when present
         eb = _env_float("MEMNOS_RECALL_ENTITY_BOOST", 0.12)
-        entity_boost = eb if (qi != "verbatim" and qents and eb > 0) else 0.0
-        # the set of subjects OTHER facts in the pool carry but the query did NOT name —
-        # a fact whose ONLY subject is one of these (and not a query entity) is off-topic.
+        entity_boost = eb if (qi != "verbatim" and qmatch and eb > 0) else 0.0
+
+        def _fact_entities(it):
+            """The fact's entity bindings: its subject_entity plus the proper-noun entities
+            its statement actually names. Entity-level — NOT a free-text substring scan."""
+            ents = []
+            se = (it.get("subject_entity") or "").strip().lower()
+            if se:
+                ents.append(se)
+            ents.extend(e.lower() for e in T.query_entities(it.get("content") or ""))
+            return ents
+
+        def _hits_query(it):
+            fe = _fact_entities(it)
+            return any(T.entity_match(qe, fce) for qe in qmatch for fce in fe)
+
+        # the set of SUBJECTS other facts in the pool carry but the query did NOT match —
+        # a fact whose subject is one of these (and matches no query entity) is off-topic.
         competing = set()
         if entity_boost > 0:
             for it in (b.get("sem") or []):
                 se = (it.get("subject_entity") or "").strip().lower()
-                if se and not any(qe == se or qe in se for qe in qents):
+                if se and not any(T.entity_match(qe, se) for qe in qmatch):
                     competing.add(se)
 
         def _fact_entity_factor(it):
-            """+boost if the fact mentions a query entity; -demote if it mentions only a
-            competing subject and no query entity. 1.0 (neutral) otherwise."""
+            """+boost if the fact's entity binding matches a query entity; -demote if it
+            carries only a competing subject and matches no query entity. 1.0 otherwise."""
             if entity_boost <= 0:
                 return 1.0
-            se = (it.get("subject_entity") or "").strip().lower()
-            content = (it.get("content") or "").lower()
-            hits_query = any(qe and (qe == se or qe in se or qe in content) for qe in qents)
-            if hits_query:
+            if _hits_query(it):
                 return 1.0 + min(0.20, entity_boost)
+            se = (it.get("subject_entity") or "").strip().lower()
             if se and se in competing:                    # off-subject neighbor: demote
                 return 1.0 / (1.0 + min(0.20, entity_boost))
             return 1.0

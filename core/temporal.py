@@ -67,6 +67,48 @@ def query_entities(query):
     return out
 
 
+# adjacent run of proper nouns (allowing one connector token like "of"/"and"/"the")
+# so "Interoperability Gateway" / "Record ID Crosswalk" survive as ONE phrase.
+_PHRASE = re.compile(r"\b[A-Z][a-zA-Z]{2,}(?:\s+(?:of|and|the|for|de)?\s*[A-Z][a-zA-Z]{2,})*\b")
+
+
+def query_entity_phrases(query):
+    """Multi-word proper-noun PHRASES in the question (e.g. 'Interoperability Gateway'),
+    leading stop-word stripped. Unlike query_entities() these are NOT split into single
+    tokens — so the #17 entity arm can match the whole subject phrase against a fact's
+    entity binding instead of bridging two subjects on one shared generic token."""
+    seen, out = [], []
+    for m in _PHRASE.findall(query):
+        toks = m.split()
+        # drop a leading interrogative/article ("What", "The", ...) the regex may have caught
+        while toks and toks[0] in _QSTOP:
+            toks.pop(0)
+        if not toks:
+            continue
+        phrase = " ".join(toks)
+        key = phrase.lower()
+        if key not in seen:
+            seen.append(key); out.append(phrase)
+    return out
+
+
+def entity_match(query_ent: str, fact_ent: str) -> bool:
+    """Whole-word / whole-phrase containment between a query entity and a fact entity
+    (subject_entity or a mention), case-insensitive and trimmed. A match holds when one
+    is contained in the other AS A WORD BOUNDARY-DELIMITED phrase — so 'Gateway' matches
+    'gateway service' (same subject family) but a single shared GENERIC token cannot
+    bridge two different subjects via free-text substring (that was the #17 no-op bug)."""
+    q = (query_ent or "").strip().lower()
+    f = (fact_ent or "").strip().lower()
+    if not q or not f:
+        return False
+    if q == f:
+        return True
+    # whole-word containment in either direction (word-boundary anchored, not substring)
+    big, small = (f, q) if len(f) >= len(q) else (q, f)
+    return re.search(r"(?:^|\W)" + re.escape(small) + r"(?:\W|$)", big) is not None
+
+
 class TemporalIntent:
     def __init__(self):
         self.temporal = False

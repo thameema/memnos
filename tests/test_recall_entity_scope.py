@@ -150,6 +150,61 @@ def test_boost_demote_arm_isolated(mem):
         svc.brain_rerank.rerank = real
 
 
+# --- 2b. SHARED-VOCABULARY no-op regression (the Mac Mini bug) ------------------------
+# The case the OLD arm silently no-op'd on: a multi-word query subject
+# ("Interoperability Gateway") whose query_entities() SPLITS into ['Interoperability',
+# 'Gateway'], competing with an adjacent subject ("Record ID Crosswalk") whose fact
+# CONTENT literally contains the word "interoperability". Under the old logic the
+# `qe in content` substring clause matched the split token 'interoperability' against the
+# Crosswalk fact's prose -> it was treated as on-topic and BOOSTED, never demoted, so the
+# arm did NOTHING in exactly the case it exists for (ON == OFF, byte-identical order).
+# The fixed arm must match the ENTITY BINDING (subject_entity / named entities), as a
+# whole phrase, so the off-subject Crosswalk fact is demoted and the Gateway fact leads.
+SV_QUERY = "what is the work on the Interoperability Gateway"
+
+
+def test_shared_vocab_noop_regression(mem):
+    print("shared-vocabulary regression: split-token in competing content must NOT save it")
+    real = svc.brain_rerank.rerank
+    svc.brain_rerank.rerank = lambda q, cands, m=None: [(i, 0.5) for i in range(len(cands))]
+    try:
+        intent = types.SimpleNamespace(temporal=False, start=None, end=None,
+                                       current=False, order=None)
+        # sem pool: the COMPETING Crosswalk fact retrieves FIRST (vector-closest) AND its
+        # content contains the query token "interoperability" — the exact trap. The on-
+        # subject Gateway fact retrieves second. Only correct entity-level matching reorders.
+        sem = [
+            {"content": "The Crosswalk task maps legacy record IDs for the interoperability program.",
+             "subject_entity": "Record ID Crosswalk", "restatements": 0, "salience": 0.5},
+            {"content": "The Gateway service exposes a FHIR R4 endpoint for partners.",
+             "subject_entity": "Interoperability Gateway", "restatements": 0, "salience": 0.5},
+        ]
+        b = {"intent": intent, "ents": ["Interoperability", "Gateway"], "raw": [], "sem": sem}
+
+        rows_on = _facts(mem.recall_rank(SV_QUERY, dict(b)))
+        order_on = [r["content"][:20] for r in rows_on]
+
+        os.environ["MEMNOS_RECALL_ENTITY_BOOST"] = "0"
+        try:
+            rows_off = _facts(mem.recall_rank(SV_QUERY, dict(b)))
+        finally:
+            del os.environ["MEMNOS_RECALL_ENTITY_BOOST"]
+        order_off = [r["content"][:20] for r in rows_off]
+
+        # The defect signature: ON and OFF identical (arm is a no-op). The fix makes them
+        # DIFFER — a genuine arm-driven contrast, the thing the old test never exercised.
+        check("arm ON differs from OFF on shared-vocab content (NOT a no-op)",
+              order_on != order_off)
+        check("arm ON: on-subject (Gateway) fact leads despite worse retrieval + shared token",
+              rows_on and _is_a(rows_on[0]))
+        check("arm ON: competing (Crosswalk) fact demoted to last",
+              rows_on and _is_b(rows_on[-1]))
+        check("kill switch OFF: conflation returns (competing Crosswalk fact leads)",
+              rows_off and _is_b(rows_off[0]))
+    finally:
+        svc.brain_rerank.rerank = real
+
+
 # --- 3. precision@k on the labeled set (end-to-end) ----------------------------------
 def test_precision_on_labeled_set(mem):
     print("precision@3 on the labeled query->correct-subject set")
@@ -211,6 +266,7 @@ def main():
     try:
         test_entity_boost_on(mem)
         test_boost_demote_arm_isolated(mem)
+        test_shared_vocab_noop_regression(mem)
         test_precision_on_labeled_set(mem)
         test_hard_subject_scope(mem)
     finally:
