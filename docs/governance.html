@@ -11,8 +11,8 @@
   </script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>memnos Agent Memory Policies — Constraints, Decisions & Audit Trails for AI Agents</title>
-  <meta name="description" content="Enforce agent memory policies with memnos. Typed memory (constraints, decisions, ADRs), audit trails, namespace access control and provenance tracking for AI coding agents." />
+  <title>memnos Governance — Server-Stamped Authorship, Audit Trails, ACLs & Secret Vault</title>
+  <meta name="description" content="Govern your AI agents' memory with memnos: server-stamped authorship (spoof-proof), a full audit trail, namespace access control, an encrypted secret vault, and constraint enforcement — built into every memory write." />
   <meta name="keywords" content="AI agent policies, LLM constraints, agent memory audit trail, decision records AI, ADR AI agent, agent access control, provenance tracking LLM, typed memory" />
   <link rel="canonical" href="https://memnos.net/governance.html" />
   <meta property="og:type" content="website" />
@@ -183,9 +183,13 @@
       Memory policies that<br /><span class="gradient-text">don't slow you down</span>
     </h1>
     <p class="text-gray-400 text-lg leading-relaxed max-w-3xl mx-auto mb-10">
-      The question isn't whether your AI agents will make consequential decisions. They already are. memnos gives you the audit trail, access controls, and constraint enforcement to keep them within bounds — without adding friction to the engineering workflow.
+      The question isn't whether your AI agents will make consequential decisions. They already are. memnos stamps every memory with its author (server-side, spoof-proof), keeps a full audit trail, scopes access by namespace, and enforces your constraints — so you always know which agent made which decision, without adding friction to the engineering workflow.
     </p>
     <div class="flex items-center justify-center gap-8 text-sm">
+      <div class="flex items-center gap-2 text-gray-400">
+        <svg class="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+        Server-stamped authorship
+      </div>
       <div class="flex items-center gap-2 text-gray-400">
         <svg class="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
         Complete audit trail
@@ -212,7 +216,7 @@
     <div class="text-center mb-14">
       <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Audit Trail</span>
       <h2 class="text-3xl font-bold text-white mt-3 mb-4">Every agent action. Every decision. Permanently auditable.</h2>
-      <p class="text-gray-400 max-w-2xl mx-auto">Every operation in memnos is authenticated, namespace-scoped and audit-logged, and every consolidated fact keeps provenance links to the raw episodes it came from. Per-author attribution on each memory ships in v0.1.6.</p>
+      <p class="text-gray-400 max-w-2xl mx-auto">Every operation in memnos is authenticated, namespace-scoped and audit-logged. Every memory is stamped with its author — the authenticated principal, set server-side from the token, never client-supplied — so it can't be spoofed, and it's surfaced in recall so you always know which agent (and which teammate) learned what. Every consolidated fact keeps provenance links to the raw episodes it came from.</p>
     </div>
 
     <div class="grid md:grid-cols-2 gap-10 items-start mb-12">
@@ -230,6 +234,7 @@
     for multi-model support"</span>,
   <span class="token-str">"kind"</span>: <span class="token-str">"proposition"</span>,
   <span class="token-str">"namespace"</span>: <span class="token-str">"org:acme:architecture"</span>,
+  <span class="token-str">"author"</span>: <span class="token-str">"arch-agent"</span>,   <span class="token-cmt">// stamped server-side</span>
   <span class="token-str">"valid_from"</span>: <span class="token-str">"2026-03-15T10:23:44Z"</span>,
   <span class="token-str">"valid_to"</span>: <span class="token-kw">null</span>,
   <span class="token-str">"provenance"</span>: <span class="token-var">{</span> <span class="token-str">"episodes"</span>: [<span class="token-num">9143</span>, <span class="token-num">9150</span>] <span class="token-var">}</span>,
@@ -240,7 +245,8 @@
     <span class="token-str">"status"</span>: <span class="token-num">200</span>
   <span class="token-var">}</span>
 <span class="token-var">}</span>
-<span class="token-cmt">// per-author attribution on each memory: v0.1.6</span></code></pre>
+<span class="token-cmt">// the author is the authenticated principal — a body-supplied
+// author is ignored, so you can't spoof who learned something</span></code></pre>
         </div>
       </div>
 
@@ -351,7 +357,7 @@
               </div>
               <div>
                 <p class="text-white text-sm font-medium">Backend dev agents</p>
-                <p class="text-xs text-gray-500 font-mono">key: sk_backend_xxx</p>
+                <p class="text-xs text-gray-500 font-mono">token: mnk_backend_…</p>
               </div>
             </div>
             <div class="flex flex-wrap gap-2">
@@ -367,7 +373,7 @@
               </div>
               <div>
                 <p class="text-white text-sm font-medium">Architecture agents</p>
-                <p class="text-xs text-gray-500 font-mono">key: sk_arch_xxx</p>
+                <p class="text-xs text-gray-500 font-mono">token: mnk_arch_…</p>
               </div>
             </div>
             <div class="flex flex-wrap gap-2">
@@ -383,7 +389,7 @@
               </div>
               <div>
                 <p class="text-white text-sm font-medium">Oncall / incident agents</p>
-                <p class="text-xs text-gray-500 font-mono">key: sk_oncall_xxx</p>
+                <p class="text-xs text-gray-500 font-mono">token: mnk_oncall_…</p>
               </div>
             </div>
             <div class="flex flex-wrap gap-2">
@@ -399,7 +405,7 @@
               </div>
               <div>
                 <p class="text-white text-sm font-medium">CI / audit agents</p>
-                <p class="text-xs text-gray-500 font-mono">key: sk_ci_xxx</p>
+                <p class="text-xs text-gray-500 font-mono">token: mnk_ci_…</p>
               </div>
             </div>
             <div class="flex flex-wrap gap-2">
@@ -563,7 +569,7 @@ memnos secret rm prod_db_password
     <div class="text-center mb-14">
       <span class="text-sm text-green-400 font-medium tracking-wider uppercase">Multi-Model Policies</span>
       <h2 class="text-3xl font-bold text-white mt-3 mb-4">Same policy layer, any LLM</h2>
-      <p class="text-gray-400 max-w-2xl mx-auto">Whether your team uses Claude Code, GPT-4, Llama, or Gemini — all agents write to the same policy-governed memory layer with the same audit trail. Switch models without losing policy enforcement.</p>
+      <p class="text-gray-400 max-w-2xl mx-auto">Whether your team uses Claude Code, Codex, Cursor, GPT-5, Llama, or Gemini — all agents write to the same policy-governed memory layer with the same audit trail. Switch models without losing policy enforcement.</p>
     </div>
 
     <div class="glass rounded-2xl overflow-hidden mb-10">
@@ -581,20 +587,20 @@ memnos secret rm prod_db_password
               <td>
                 <div class="flex items-center gap-2">
                   <div class="w-6 h-6 rounded bg-purple-500/20 flex items-center justify-center text-purple-300 text-xs font-bold">C</div>
-                  <span class="text-white font-medium">Claude (Anthropic)</span>
+                  <span class="text-white font-medium">Claude Code / Claude</span>
                 </div>
               </td>
-              <td><span class="text-gray-400 font-mono text-xs">MCP + REST SDK</span></td>
+              <td><span class="text-gray-400 font-mono text-xs">hooks · MCP · REST</span></td>
               <td><span class="text-xs text-green-400 bg-green-500/10 border border-green-500/20 px-2 py-0.5 rounded-full">Supported</span></td>
             </tr>
             <tr>
               <td>
                 <div class="flex items-center gap-2">
                   <div class="w-6 h-6 rounded bg-green-500/20 flex items-center justify-center text-green-300 text-xs font-bold">G</div>
-                  <span class="text-white font-medium">GPT-4, GPT-4o (OpenAI)</span>
+                  <span class="text-white font-medium">GPT-5 / GPT-4o · Codex (OpenAI)</span>
                 </div>
               </td>
-              <td><span class="text-gray-400 font-mono text-xs">REST SDK</span></td>
+              <td><span class="text-gray-400 font-mono text-xs">proxy · REST SDK</span></td>
               <td><span class="text-xs text-green-400 bg-green-500/10 border border-green-500/20 px-2 py-0.5 rounded-full">Supported</span></td>
             </tr>
             <tr>
