@@ -58,9 +58,36 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /home/runner/.cache/fastembed
-          key: fastembed-models-v1
+          key: fastembed-models-v2          # v1 retired: a partial download had poisoned it
       - name: Install deps
         run: pip install -r requirements.txt
+      - name: Prefetch + verify models (retry; clean-redownload on a corrupt cache)
+        # The reranker/embedding ONNX weights are pulled from HF Hub, which rate-limits
+        # unauthenticated pulls. A bare constructor is lazy, so a partial/corrupt cache only
+        # blows up later when a test loads model.onnx at inference. Here we actually RUN each
+        # model (forcing a full, usable download), retry on transient HF failures, and wipe
+        # the cache to force a clean re-download if a restored cache is corrupt — so the test
+        # suite can never crash on a missing model.onnx again.
+        run: |
+          cat > /tmp/prefetch_models.py <<'PY'
+          import os
+          from fastembed import TextEmbedding
+          from fastembed.rerank.cross_encoder import TextCrossEncoder
+          cache = os.environ.get("FASTEMBED_CACHE_PATH") or None
+          list(TextEmbedding(model_name="BAAI/bge-small-en-v1.5", cache_dir=cache).embed(["warm up"]))
+          list(TextCrossEncoder(model_name="Xenova/ms-marco-MiniLM-L-6-v2", cache_dir=cache).rerank("q", ["a", "b"]))
+          print("models OK")
+          PY
+          ok=0
+          for attempt in 1 2 3; do
+            echo "::group::model prefetch attempt $attempt"
+            if python /tmp/prefetch_models.py; then ok=1; echo "::endgroup::"; break; fi
+            echo "attempt $attempt failed — clearing cache to force a clean re-download"
+            rm -rf "${FASTEMBED_CACHE_PATH:?}"/* 2>/dev/null || true
+            echo "::endgroup::"
+            sleep $((attempt * 20))
+          done
+          [ "$ok" = 1 ] || { echo "::error::reranker/embedding model download failed after 3 attempts (HF Hub unreachable?)"; exit 1; }
       - name: Enable pgvector
         run: PGPASSWORD=memnos_ci psql -h localhost -p 5433 -U memnos -d memnos -c "CREATE EXTENSION IF NOT EXISTS vector"
       - name: Start server (free local-384 mode) + wait for ready
