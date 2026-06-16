@@ -335,7 +335,7 @@
             </tr>
             <tr>
               <td>Grounded recall — admin-linked knowledge namespaces consulted on every recall</td>
-              <td class="col-memnos"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">0.1.6</span></td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
@@ -411,7 +411,7 @@
             </tr>
             <tr>
               <td>Author-attributed memories — author server-signed, never client-supplied</td>
-              <td class="col-memnos"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">0.1.6</span></td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">client-supplied IDs</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">client-supplied IDs</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">client-supplied IDs</span></td>
@@ -631,7 +631,10 @@ memnos secret set openai   <span class="token-cmt"># AES-256-GCM vault</span>
             <pre class="text-xs leading-relaxed"><code><span class="token-cmt"># LoCoMo, full 10 conversations — from scratch</span>
 gpt-4o judge : <span class="token-num">64–65%</span>  <span class="token-cmt"># 3 independent ingests; predictions published</span>
 <span class="token-cmt"># same answers, judge band: 44% .. 88%</span>
-$ python benchmarks/locomo_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9</code></pre>
+$ python benchmarks/locomo_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9
+
+<span class="token-cmt"># LongMemEval, 500 questions — Supermemory's open MemoryBench harness</span>
+gpt-4o judge : <span class="token-num">78.4%</span>  <span class="token-cmt"># predictions published</span></code></pre>
           </div>
           <p class="text-xs text-green-400 mt-4 font-medium">Reproducible, not self-graded. <a href="benchmarks.html" class="underline underline-offset-2 hover:text-green-300">How benchmarks are really measured &rarr;</a></p>
         </div>
