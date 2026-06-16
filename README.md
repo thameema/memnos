@@ -9,7 +9,7 @@
 [![LongMemEval](https://img.shields.io/badge/LongMemEval%20500q-78.4%25-success.svg)](#benchmarks-and-how-we-report-them)
 [![PyPI](https://img.shields.io/pypi/v/memnos.svg)](https://pypi.org/project/memnos/)
 
-**Your AI forgets everything between sessions. memnos fixes that.**
+**Shared, governed memory for your team's AI coding agents — on your own Postgres.**
 
 memnos is a self-hosted memory server for AI agents. Your conversations are captured,
 distilled into facts, and recalled in later sessions — across Claude Code, Cursor,
@@ -68,7 +68,9 @@ token per developer is in [`docs/guides/team.md`](docs/guides/team.md).
 
 ## Quickstart
 
-**Prerequisite:** PostgreSQL **13+** with the **pgvector ≥ 0.7** extension. memnos does
+**Prerequisite:** PostgreSQL **13+** with the **pgvector ≥ 0.6** extension (Ubuntu/Debian's
+apt build is enough — memnos uses full-precision `vector` on 0.6, the `halfvec` storage
+optimization on ≥ 0.7, same recall quality). memnos does
 **not** install Postgres — it connects to yours. No Postgres? `memnos setup --docker`
 spins up a pgvector Postgres container for you.
 
@@ -212,8 +214,8 @@ We care more about *credibility* than a big headline:
 **Reproduce:** `python benchmarks/locomo_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9`
 (see [`benchmarks/`](benchmarks/README.md)).
 
-*We'd rather report a credible 64–65% with the judge ladder disclosed than an inflated
-85% under a lenient one.*
+*Every number above is reproducible from this repo — judge, rubric, and per-question
+predictions all included.*
 
 ---
 
