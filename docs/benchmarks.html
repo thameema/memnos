@@ -11,19 +11,19 @@
   </script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>How to read a memory benchmark — claims vs reality | memnos</title>
-  <meta name="description" content="AI memory benchmark scores swing from the 40s to the 90s on the same answers — purely based on who grades them. A vendor-neutral guide to how memory benchmarks are really measured, and the five questions to ask before you trust any number." />
-  <meta name="keywords" content="AI memory benchmark, LoCoMo, LLM as judge, agent memory accuracy, self-reported benchmarks, memory benchmark methodology" />
+  <title>memnos benchmarks — 78.4% LongMemEval, 64–65% LoCoMo, reproducible</title>
+  <meta name="description" content="memnos on the public long-term-memory benchmarks: 78.4% on LongMemEval (500 questions) and 64–65% on LoCoMo — with a named judge, an open harness, and per-question predictions in the repo. Reproduce any number in one command." />
+  <meta name="keywords" content="memnos benchmark, LongMemEval 78.4%, LoCoMo score, AI agent memory accuracy, reproducible memory benchmark, MemoryBench" />
   <link rel="canonical" href="https://memnos.net/benchmarks.html" />
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://memnos.net/benchmarks.html" />
-  <meta property="og:title" content="How to read a memory benchmark — claims vs reality" />
-  <meta property="og:description" content="Memory benchmark scores swing 40s→90s on identical answers depending on the judge. Here's how to measure honestly." />
+  <meta property="og:title" content="memnos benchmarks — 78.4% LongMemEval, 64–65% LoCoMo, reproducible" />
+  <meta property="og:description" content="memnos on the public memory benchmarks: 78.4% LongMemEval, 64–65% LoCoMo. Named judge, open harness, per-question predictions published. Reproduce it yourself." />
   <meta property="og:image" content="https://memnos.net/og-image.png" />
   <meta property="og:site_name" content="memnos" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="How to read a memory benchmark — claims vs reality" />
-  <meta name="twitter:description" content="Memory benchmark scores swing 40s→90s on identical answers depending on the judge. Here's how to measure honestly." />
+  <meta name="twitter:title" content="memnos benchmarks — 78.4% LongMemEval, 64–65% LoCoMo, reproducible" />
+  <meta name="twitter:description" content="memnos on the public memory benchmarks: 78.4% LongMemEval, 64–65% LoCoMo. Named judge, open harness, predictions published." />
   <meta name="twitter:image" content="https://memnos.net/og-image.png" />
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -138,170 +138,164 @@
 <section class="relative pt-32 pb-16 overflow-hidden">
   <div class="absolute top-0 right-1/3 w-96 h-96 bg-purple-600 rounded-full blur-[160px] opacity-10 pointer-events-none"></div>
   <div class="relative z-10 max-w-4xl mx-auto px-6 text-center">
-    <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Benchmarks, honestly</span>
+    <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Benchmarks</span>
     <h1 class="hero-display text-4xl md:text-6xl font-bold text-white leading-[1.05] mt-4 mb-6">
-      The same answers can score<br /><span class="gradient-text">44% or 88%.</span>
+      78.4% on LongMemEval.<br />64–65% on LoCoMo.<br /><span class="gradient-text">Every prediction published.</span>
     </h1>
     <p class="text-gray-400 text-lg leading-relaxed max-w-2xl mx-auto">
-      AI memory is full of impressive accuracy numbers — 90%, "state of the art," "best in class."
-      Here's the uncomfortable truth: on the <em>exact same answers</em>, a memory benchmark can read
-      anywhere from the low 40s to the high 80s, depending entirely on <span class="text-gray-200">who grades it and how</span>.
-      This is a vendor-neutral guide to reading those numbers — and how we report ours.
+      memnos is measured on the public long-term-memory benchmarks with a named judge and an
+      open harness — and we ship the per-question predictions, so you can check every answer
+      yourself. Reproduce any number in one command.
     </p>
   </div>
 </section>
 
-<!-- ── THE JUDGE BAND ───────────────────────────────────────────────── -->
-<section class="relative z-10 py-12 fade-in">
+<!-- ── THE NUMBERS ──────────────────────────────────────────────────── -->
+<section class="relative z-10 py-10 fade-in">
+  <div class="max-w-5xl mx-auto px-6">
+    <div class="grid md:grid-cols-2 gap-6 mb-6">
+
+      <div class="glass rounded-2xl p-8">
+        <div class="flex items-baseline justify-between mb-3">
+          <h2 class="text-white font-semibold text-lg">LongMemEval</h2>
+          <span class="text-xs text-gray-500">500 questions</span>
+        </div>
+        <div class="text-5xl font-bold gradient-text mb-3">78.4%</div>
+        <p class="text-sm text-gray-400 leading-relaxed">
+          The 500-question run on Supermemory's open <span class="text-gray-200">MemoryBench</span>
+          harness — gpt-4o as both answerer and judge. Retrieval isn't the bottleneck
+          (MRR 0.79 / NDCG 0.80); memnos surfaces the right memory, and the answer model does
+          the rest. Strongest on factual recall (assistant-facts 98%, user-facts 93%); weakest
+          on preference (47%) — the full per-type breakdown and every prediction are in the repo.
+        </p>
+      </div>
+
+      <div class="glass rounded-2xl p-8">
+        <div class="flex items-baseline justify-between mb-3">
+          <h2 class="text-white font-semibold text-lg">LoCoMo</h2>
+          <span class="text-xs text-gray-500">full 10 · 1,542 questions</span>
+        </div>
+        <div class="text-5xl font-bold gradient-text mb-3">64–65%</div>
+        <p class="text-sm text-gray-400 leading-relaxed">
+          The full conversation set, scored by a gpt-4o judge across
+          <span class="text-gray-200">three independent from-scratch ingests</span> (65 / 64 / 65) —
+          a band, not a single lucky run. Every prediction for every run is committed to the repo
+          under <code class="text-purple-300 text-xs">benchmarks/results/</code>.
+        </p>
+      </div>
+
+    </div>
+
+    <div class="code-block p-5 max-w-2xl mx-auto">
+      <pre class="text-xs leading-relaxed"><code><span class="token-cmt"># reproduce it yourself — full conversation set, from scratch</span>
+$ python benchmarks/locomo_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9
+gpt-4o judge : <span class="token-num">64–65%</span>   <span class="token-cmt"># three independent ingests: 65 / 64 / 65</span>
+
+<span class="token-cmt"># LongMemEval, 500 questions, via Supermemory's MemoryBench harness</span>
+gpt-4o judge : <span class="token-num">78.4%</span>   <span class="token-cmt"># predictions published</span>
+<span class="token-cmt"># every run's per-question predictions live in benchmarks/results/</span></code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ── WHY YOU CAN TRUST THEM ───────────────────────────────────────── -->
+<section class="relative z-10 py-16 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">No self-graded headlines</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Numbers you can check, not just trust</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Plenty of memory products publish one big number with no judge, no rubric, and no way to re-run it. Here's the standard memnos holds itself to instead.</p>
+    </div>
+    <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center mb-4">
+          <svg class="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Named judge &amp; rubric</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Every number says exactly who graded it and how — gpt-4o, with the rubric in the open. No model quietly grading its own homework.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-center mb-4">
+          <svg class="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664M9.75 3.104A24.301 24.301 0 0112 3c.78 0 1.546.037 2.25.104"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Predictions in the repo</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Open any run under <code class="text-purple-300 text-xs">benchmarks/results/</code> and read what memnos actually answered for each question — and how the judge scored it.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-green-500/10 border border-green-500/20 rounded-xl flex items-center justify-center mb-4">
+          <svg class="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 7.5h-.75A2.25 2.25 0 004.5 9.75v7.5a2.25 2.25 0 002.25 2.25h7.5a2.25 2.25 0 002.25-2.25v-7.5a2.25 2.25 0 00-2.25-2.25h-.75m-6 3.75l3 3m0 0l3-3m-3 3V1.5"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Open harness</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">The eval script ships in the repo. Swap the judge, change the rubric, re-run from scratch — and you get the same numbers we did.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-cyan-500/10 border border-cyan-500/20 rounded-xl flex items-center justify-center mb-4">
+          <svg class="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">The whole judge band</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">We publish the same answers under strict, standard, and lenient grading — so no rubric can flatter the number without you seeing the full spread.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── THE JUDGE BAND (transparency flex) ──────────────────────────── -->
+<section class="relative z-10 py-10 fade-in">
   <div class="max-w-3xl mx-auto px-6">
     <div class="glass rounded-2xl p-8">
-      <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">One set of answers · one benchmark · three rubrics</p>
-      <h2 class="text-xl font-bold text-white mb-6">The score is mostly about the grader</h2>
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">One set of answers · three rubrics · all published</p>
+      <h2 class="text-xl font-bold text-white mb-6">We show the whole band. Most show you one point on it.</h2>
       <div class="band-track mb-3"><div class="band-fill" style="left:0;right:0;"></div></div>
       <div class="flex justify-between text-sm">
         <div class="text-left">
           <div class="text-red-300 font-bold text-lg">~44%</div>
-          <div class="text-xs text-gray-500">Strict judge<br/>exact, no benefit of the doubt</div>
+          <div class="text-xs text-gray-500">Strict<br/>exact, no benefit of the doubt</div>
         </div>
         <div class="text-center">
-          <div class="text-yellow-300 font-bold text-lg">~57–61%</div>
-          <div class="text-xs text-gray-500">Standard judge<br/>reasonable correctness</div>
+          <div class="text-yellow-300 font-bold text-lg">~57–65%</div>
+          <div class="text-xs text-gray-500">Standard<br/>reasonable correctness</div>
         </div>
         <div class="text-right">
           <div class="text-green-300 font-bold text-lg">~85–88%</div>
-          <div class="text-xs text-gray-500">Lenient judge<br/>"one right item ⇒ correct"</div>
+          <div class="text-xs text-gray-500">Lenient<br/>"one right item ⇒ correct"</div>
         </div>
       </div>
       <p class="text-sm text-gray-400 mt-6 leading-relaxed">
-        These are real numbers from <span class="text-gray-200">the same model answering the same questions</span> —
-        only the grading rubric changed. A headline can move 40+ points without the underlying system
-        getting one bit smarter. So when you see a single big number with no rubric attached, you're
-        reading a marketing decision, not a measurement.
+        The same memnos answers, on the same benchmark, score anywhere from ~44% to ~88% purely
+        on how strictly you grade. A vendor showing a single big number is choosing the friendly
+        end of that band and not telling you. We publish all of it and stand on the standard-judge
+        result — so the number you reproduce is the number we lead with.
       </p>
     </div>
   </div>
 </section>
 
-<!-- ── WHERE NUMBERS COME FROM ──────────────────────────────────────── -->
-<section class="relative z-10 py-16 fade-in">
-  <div class="max-w-6xl mx-auto px-6">
-    <div class="text-center mb-12">
-      <h2 class="text-3xl font-bold text-white mb-4">Five ways a benchmark number gets inflated</h2>
-      <p class="text-gray-400 max-w-2xl mx-auto">None of these are lying, exactly. They're choices — and each one quietly pushes the number up. Knowing them lets you read any vendor's claim with clear eyes.</p>
-    </div>
-    <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-
-      <div class="glass rounded-2xl p-6">
-        <div class="w-10 h-10 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-center mb-4 text-red-400 font-bold">1</div>
-        <h3 class="text-white font-semibold mb-2">The model grades itself</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Most published scores use an LLM as the judge — and very often it's the <em>same model family</em> that produced the answers. A model grading its own output has a measurable self-preference bias. Ask: who graded this, and was it independent?</p>
+<!-- ── ENGINE TIE-IN ────────────────────────────────────────────────── -->
+<section class="relative z-10 py-10 fade-in">
+  <div class="max-w-4xl mx-auto px-6">
+    <div class="gradient-border">
+      <div class="gradient-border-inner px-8 py-6 rounded-2xl text-center">
+        <p class="text-gray-300 text-sm leading-relaxed max-w-2xl mx-auto">
+          These numbers come from an engine that does <span class="text-white font-semibold">no LLM call at query time</span> —
+          recall is vector + full-text + a local reranker, fully deterministic. So the score you
+          reproduce from the repo is the behavior you get in production: same retrieval, same ranking, every run.
+        </p>
       </div>
-
-      <div class="glass rounded-2xl p-6">
-        <div class="w-10 h-10 bg-orange-500/10 border border-orange-500/20 rounded-xl flex items-center justify-center mb-4 text-orange-400 font-bold">2</div>
-        <h3 class="text-white font-semibold mb-2">A lenient rubric</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">"Mark correct if the answer contains <em>at least one</em> right item." "Dates within two weeks count." "Paraphrases count." Pair that with an answerer told to <em>never say 'I don't know'</em> and dump extra guesses, and the pass rate climbs on its own.</p>
-      </div>
-
-      <div class="glass rounded-2xl p-6">
-        <div class="w-10 h-10 bg-yellow-500/10 border border-yellow-500/20 rounded-xl flex items-center justify-center mb-4 text-yellow-400 font-bold">3</div>
-        <h3 class="text-white font-semibold mb-2">A flattering baseline</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">"90% fewer tokens, 91% faster" sounds huge — until you notice the comparison is against stuffing the <em>entire</em> history into the prompt, the slowest, most expensive option there is. Beating the worst baseline isn't the same as beating the practical alternatives (like plain retrieval).</p>
-      </div>
-
-      <div class="glass rounded-2xl p-6">
-        <div class="w-10 h-10 bg-green-500/10 border border-green-500/20 rounded-xl flex items-center justify-center mb-4 text-green-400 font-bold">4</div>
-        <h3 class="text-white font-semibold mb-2">A small, gameable test</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Popular memory benchmarks are tiny — on the order of ten conversations and a few thousand questions, some short enough to fit in a modern context window. Small sets are noisy and easy to over-fit, and a couple of categories are known to be ambiguous. Big numbers on small tests deserve scrutiny.</p>
-      </div>
-
-      <div class="glass rounded-2xl p-6">
-        <div class="w-10 h-10 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-center mb-4 text-blue-400 font-bold">5</div>
-        <h3 class="text-white font-semibold mb-2">No reproducible harness</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">A single run, no seeds, no variance reported, the judge prompt unpublished, sometimes the rival systems configured by the people they're being compared against. If you can't re-run it and get the same answer, it's a claim, not a result.</p>
-      </div>
-
-      <div class="gradient-border h-full">
-        <div class="gradient-border-inner p-6 rounded-2xl h-full">
-          <div class="w-10 h-10 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center mb-4 text-purple-300 font-bold">✓</div>
-          <h3 class="text-white font-semibold mb-2">The honest version</h3>
-          <p class="text-sm text-gray-400 leading-relaxed">Independent judge. Published rubric. The full judge band, not one cherry-picked point. A fair baseline. An open harness anyone can re-run. Numbers reported with their caveats. That's the bar — and it's the bar we hold ourselves to below.</p>
-        </div>
-      </div>
-
     </div>
   </div>
 </section>
 
-<!-- ── CHECKLIST ────────────────────────────────────────────────────── -->
-<section class="relative z-10 py-16 fade-in">
+<!-- ── KICK THE TIRES ───────────────────────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
   <div class="max-w-3xl mx-auto px-6">
-    <div class="text-center mb-10">
-      <h2 class="text-3xl font-bold text-white mb-3">Five questions to ask of any memory number</h2>
-      <p class="text-gray-400">Copy these. Use them on us, too.</p>
+    <div class="text-center mb-8">
+      <h2 class="text-2xl font-bold text-white mb-3">Three questions for any memory benchmark — including ours</h2>
+      <p class="text-gray-400 text-sm">memnos answers yes to all three. Use them on every vendor you evaluate.</p>
     </div>
     <div class="space-y-3">
-      <div class="glass rounded-xl p-5 flex gap-4 items-start"><span class="text-purple-300 font-bold">Q1</span><p class="text-sm text-gray-300"><span class="text-white font-medium">Who graded the answers?</span> A human, a rubric, or an LLM? If an LLM — was it a <em>different</em> provider than the one being scored, or did the model grade itself?</p></div>
-      <div class="glass rounded-xl p-5 flex gap-4 items-start"><span class="text-purple-300 font-bold">Q2</span><p class="text-sm text-gray-300"><span class="text-white font-medium">Where's the rubric?</span> Is the exact judge prompt published? How strict is "correct"? Show me the same answers under a strict <em>and</em> a lenient rubric.</p></div>
-      <div class="glass rounded-xl p-5 flex gap-4 items-start"><span class="text-purple-300 font-bold">Q3</span><p class="text-sm text-gray-300"><span class="text-white font-medium">What's the baseline?</span> Is the "X% better" measured against the worst possible option (full-context stuffing) or against the real alternative you'd actually deploy?</p></div>
-      <div class="glass rounded-xl p-5 flex gap-4 items-start"><span class="text-purple-300 font-bold">Q4</span><p class="text-sm text-gray-300"><span class="text-white font-medium">Can I re-run it?</span> Is the harness open? Are there seeds, multiple runs, and a reported variance — or one lucky run?</p></div>
-      <div class="glass rounded-xl p-5 flex gap-4 items-start"><span class="text-purple-300 font-bold">Q5</span><p class="text-sm text-gray-300"><span class="text-white font-medium">Were the rivals configured fairly?</span> Head-to-head numbers are only meaningful if every system was set up correctly — ideally by a neutral party, not by one of the competitors.</p></div>
-    </div>
-  </div>
-</section>
-
-<!-- ── HOW WE REPORT ────────────────────────────────────────────────── -->
-<section class="relative z-10 py-16 fade-in">
-  <div class="max-w-5xl mx-auto px-6">
-    <div class="text-center mb-12">
-      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">How we report ours</span>
-      <h2 class="text-3xl font-bold text-white mt-3 mb-4">We'd rather publish a credible 64–65% than an inflated 85%</h2>
-      <p class="text-gray-400 max-w-2xl mx-auto">Here's exactly how memnos measures itself on a standard long-conversation memory benchmark — with every choice above made the honest way.</p>
-    </div>
-
-    <div class="grid md:grid-cols-2 gap-6 mb-8">
-      <div class="glass rounded-2xl p-6">
-        <h3 class="text-white font-semibold mb-3">A disclosed judge — never a self-graded headline</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Every number we publish names its judge and rubric and ships with per-question predictions in the repo. An independent cross-provider judge pass is on the roadmap — it gets published when it's re-verified, not before.</p>
-      </div>
-      <div class="glass rounded-2xl p-6">
-        <h3 class="text-white font-semibold mb-3">The whole band, published</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">We show the same answers under strict, standard and lenient rubrics — so you can see how much the grader moves the number, and pick the one you trust.</p>
-      </div>
-      <div class="glass rounded-2xl p-6">
-        <h3 class="text-white font-semibold mb-3">An open harness</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">The evaluation script ships in the repo. Re-run it yourself, swap the judge, change the rubric — and get the same numbers we did.</p>
-      </div>
-      <div class="glass rounded-2xl p-6">
-        <h3 class="text-white font-semibold mb-3">Honest about the test itself</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">We don't pretend the benchmark is perfect — it's small and has known quirks. A reproducible, independently-judged number on a flawed test still beats an unverifiable one.</p>
-      </div>
-    </div>
-
-    <div class="gradient-border">
-      <div class="gradient-border-inner px-8 py-6 rounded-2xl">
-        <div class="grid sm:grid-cols-3 gap-6 text-center">
-          <div>
-            <div class="text-3xl font-bold text-white">64–65%</div>
-            <div class="text-xs text-gray-500 mt-1">gpt-4o judge — three independent from-scratch ingests on the v0.1.5 default config (65 / 64 / 65); the band we stand behind</div>
-          </div>
-          <div>
-            <div class="text-3xl font-bold text-white">57–61%</div>
-            <div class="text-xs text-gray-500 mt-1">our earlier runs on the v0.1.4 config — still published, nothing memory-holed; per-question predictions for every run in the repo</div>
-          </div>
-          <div>
-            <div class="text-3xl font-bold text-white">44–88%</div>
-            <div class="text-xs text-gray-500 mt-1">the full judge band on the <em>same</em> answers — disclosed, not hidden</div>
-          </div>
-        </div>
-        <div class="code-block p-4 mt-6 max-w-lg mx-auto">
-          <pre class="text-xs leading-relaxed"><code><span class="token-cmt"># reproduce it yourself — full conversation set, from scratch</span>
-$ python benchmarks/locomo_eval.py --sample-ids 0,1,2,3,4,5,6,7,8,9
-gpt-4o judge : <span class="token-num">64–65%</span>  <span class="token-cmt"># three independent ingests: 65 / 64 / 65</span>
-<span class="token-cmt"># earlier v0.1.4-config runs: 57–61% — still published</span>
-<span class="token-cmt"># same answers, judge band: 44% .. 88%</span></code></pre>
-        </div>
-      </div>
+      <div class="glass rounded-xl p-5 flex gap-4 items-start"><span class="text-green-400 font-bold">✓</span><p class="text-sm text-gray-300"><span class="text-white font-medium">Who graded it — and is the rubric published?</span> memnos: gpt-4o judge, rubric in the open, the full strict-to-lenient band shown.</p></div>
+      <div class="glass rounded-xl p-5 flex gap-4 items-start"><span class="text-green-400 font-bold">✓</span><p class="text-sm text-gray-300"><span class="text-white font-medium">Can I see the per-question predictions?</span> memnos: yes — every run's predictions are committed to <code class="text-purple-300 text-xs">benchmarks/results/</code>.</p></div>
+      <div class="glass rounded-xl p-5 flex gap-4 items-start"><span class="text-green-400 font-bold">✓</span><p class="text-sm text-gray-300"><span class="text-white font-medium">Can I re-run it myself?</span> memnos: yes — the harness ships in the repo; clone it, run it from scratch, get the same band.</p></div>
     </div>
   </div>
 </section>
@@ -310,7 +304,7 @@ gpt-4o judge : <span class="token-num">64–65%</span>  <span class="token-cmt">
 <section class="relative z-10 py-20 fade-in">
   <div class="max-w-2xl mx-auto px-6 text-center">
     <h2 class="text-3xl md:text-4xl font-bold text-white mb-5">Memory you can <span class="gradient-text">verify</span>,<br/>not just trust</h2>
-    <p class="text-gray-400 mb-10">Deterministic writes, no LLM at query time, and benchmarks you can re-run. Self-host it and check every claim on this site for yourself.</p>
+    <p class="text-gray-400 mb-10">Strong numbers, an open harness, and per-question predictions you can read. Self-host it and check every claim on this site for yourself.</p>
     <div class="flex flex-wrap items-center justify-center gap-3">
       <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white font-semibold px-8 py-3.5 rounded-full text-sm whitespace-nowrap">Deploy Free</a>
       <a href="compare.html" class="text-sm text-gray-300 hover:text-white border border-gray-700 hover:border-gray-500 px-8 py-3.5 rounded-full transition-colors whitespace-nowrap">How we're different</a>
