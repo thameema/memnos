@@ -768,6 +768,19 @@
     {
      "args": [
       {
+       "arg": "--token",
+       "help": "bearer token (else $MEMNOS_TOKEN / config)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "bindings refresh",
+     "example": null,
+     "help": "pull server bindings into the local cache + register THIS host now"
+    },
+    {
+     "args": [
+      {
        "arg": "subcmd",
        "choices": [
         "rename"

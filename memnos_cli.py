@@ -1530,6 +1530,26 @@ def cmd_bindings_recap(args, cfg):
             break
 
 
+def cmd_bindings_refresh(args, cfg):
+    """`memnos bindings refresh` — force a pull of this principal's server bindings into the
+    local cache + register this host NOW. Same path SessionStart runs automatically; this is
+    the manual escape hatch for "I just bound on another machine / in the UI — pull it here".
+    (issue #20 Part A: the only on-demand caller of nsresolve.refresh besides the hook.)"""
+    import nsresolve
+    url = _server_url(cfg)
+    token = _user_token(args, cfg)
+    if not url or not token:
+        print("no server URL/token configured — set MEMNOS_URL/MEMNOS_TOKEN or run `memnos agent-setup`.")
+        return
+    ok = nsresolve.refresh(url=url, token=token)
+    if not ok:
+        print(f"could not refresh bindings from {url} (server unreachable or no bindings/token).")
+        return
+    cache = nsresolve._load(nsresolve._CACHE) or {}
+    n = len(cache.get("bindings") or [])
+    print(f"cached {n} binding(s); registered host {nsresolve.machine_id()}")
+
+
 # ---- data client ------------------------------------------------------------
 def cmd_remember(args, cfg):
     import nsresolve
@@ -1918,6 +1938,18 @@ def cmd_hook(args, cfg):
         data = json.load(sys.stdin)
     except Exception:
         return
+    if args.which == "status":
+        # SessionStart: fetch the principal's server bindings + register this host, then
+        # cache them locally (issue #20 Part A: "fetch at session start, cache"). This is
+        # the ONLY place refresh() is wired — without it the cache never populates and every
+        # resolve falls through to default (cross-machine portability is inert). BEST-EFFORT
+        # and NON-BLOCKING: a short timeout in its own try/except so a network/auth failure
+        # can never delay or break the status line below.
+        try:
+            nsresolve.refresh(url=url, token=token, timeout=2)
+        except Exception:
+            pass
+
     ns, ns_source = nsresolve.resolve_with_source(data)
     session_id = data.get("session_id") or data.get("sessionId")
 
@@ -2231,12 +2263,15 @@ def build_parser():
     p.add_argument("--all-hosts", action="store_true", help="host-agnostic repo binding (default)")
     p.add_argument("--token", help="bearer token (else $MEMNOS_TOKEN / config)")
     p.set_defaults(fn=cmd_bind)
-    p = sub.add_parser("bindings", help="manage server-side bindings: ls | migrate | recap")
+    p = sub.add_parser("bindings", help="manage server-side bindings: ls | refresh | migrate | recap")
     p.set_defaults(fn=lambda a, c, _p=p: _p.print_help())
     ps = p.add_subparsers(dest="verb", metavar="<verb>")
     v = ps.add_parser("ls", help="list this principal's bindings (grouped by host)")
     v.add_argument("--token", help="bearer token (else $MEMNOS_TOKEN / config)")
     v.set_defaults(fn=cmd_bindings_ls)
+    v = ps.add_parser("refresh", help="pull server bindings into the local cache + register THIS host now")
+    v.add_argument("--token", help="bearer token (else $MEMNOS_TOKEN / config)")
+    v.set_defaults(fn=cmd_bindings_refresh)
     v = ps.add_parser("migrate", help="one-time: migrate ~/.memnos/ns_overrides.json into server bindings")
     v.add_argument("--token", help="bearer token (else $MEMNOS_TOKEN / config)")
     v.set_defaults(fn=cmd_bindings_migrate)
