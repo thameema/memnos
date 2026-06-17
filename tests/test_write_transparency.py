@@ -176,6 +176,48 @@ def test_suggestion_helper(conn, pid, a_ns, b_ns):
     check("single-entity write -> no suggestion (below floor)",
           Control.suggest_namespace(conn, pid, a_ns, ["Gateway"], schema=SCHEMA) is None)
 
+    # REGRESSION (field 2026-06-17): candidate selection must be by RELEVANCE, not an
+    # arbitrary DISTINCT-namespace list truncated to max_candidate_ns. The old code took
+    # `SELECT DISTINCT namespace FROM entities`, filtered by covered(), then [:cap] — so when
+    # more than `cap` COVERED entity-namespaces exist, the namespace that actually holds the
+    # query's entities could fall past the cut -> cand_hits empty -> None. The fix pre-filters
+    # in SQL to namespaces containing the query tokens (ranked, then capped), so the matching
+    # ns is found no matter how many irrelevant covered namespaces exist.
+    #
+    # Seed MANY covered decoy namespaces FIRST (none holding the query's entities), then a
+    # FRESH namespace holding them, inserted LAST so it does not land early in the scan. With
+    # max_candidate_ns=1 the old code keeps a single arbitrary covered ns (a decoy, holding
+    # none of the tokens) -> None; the fix ranks the only relevant ns first -> fires. (Proven
+    # to flip: reverting the candidate-selection fix makes this assertion fail.)
+    Control.grant(conn, pid, "test:*")           # makes the decoys + buried ns COVERED
+    buried_ns = "test:wt-buried"
+    for i in range(25):                          # 25 covered decoys >> the cap
+        conn.execute(f"INSERT INTO {SCHEMA}.entities(namespace,name) VALUES(%s,%s) "
+                     f"ON CONFLICT DO NOTHING", (f"test:decoy-{i:02d}", f"Junk{i:02d} Widget{i:02d}"))
+    for name in ("Zelkova", "Tamarind", "Sycamore"):   # the ONLY ns with the query's entities
+        conn.execute(f"INSERT INTO {SCHEMA}.entities(namespace,name) VALUES(%s,%s) "
+                     f"ON CONFLICT DO NOTHING", (buried_ns, name))
+    nns = conn.execute(f"SELECT count(DISTINCT namespace) AS n FROM {SCHEMA}.entities").fetchone()["n"]
+    check("store has far more entity-namespaces than the candidate cap (exercises the bug)", nns > 12)
+    buried = Control.suggest_namespace(conn, pid, a_ns, ["Zelkova", "Tamarind", "Sycamore"],
+                                       schema=SCHEMA, max_candidate_ns=1)
+    check("relevant ns found despite >>cap irrelevant covered namespaces (relevance-first, cap=1)",
+          isinstance(buried, dict) and buried.get("namespace") == buried_ns)
+    # and at the default cap too.
+    buried_def = Control.suggest_namespace(conn, pid, a_ns, ["Zelkova", "Tamarind", "Sycamore"],
+                                           schema=SCHEMA)
+    check("relevant ns found at the default cap with >cap namespaces",
+          isinstance(buried_def, dict) and buried_def.get("namespace") == buried_ns)
+    # whole-word boundary: a query token must not match a SUBSTRING of an unrelated entity
+    # (e.g. 'cygn' should not match 'Cygnus') — guards the \m..\M regex.
+    conn.execute(f"INSERT INTO {SCHEMA}.entities(namespace,name) VALUES(%s,%s) "
+                 f"ON CONFLICT DO NOTHING", (buried_ns, "Cygnus"))
+    check("partial-token query does NOT spuriously match a longer entity word",
+          Control.suggest_namespace(conn, pid, a_ns, ["cygn", "xyzq"], schema=SCHEMA) is None)
+    conn.execute(f"DELETE FROM {SCHEMA}.entities WHERE namespace=%s", (buried_ns,))
+    for i in range(25):
+        conn.execute(f"DELETE FROM {SCHEMA}.entities WHERE namespace=%s", (f"test:decoy-{i:02d}",))
+
     # toggle: an env-gated OFF state is honoured by the server wrapper (helper itself is
     # always callable; the wrapper _write_suggestion respects MEMNOS_SUGGEST_NAMESPACE).
     # Tested at the function level (no server process) by flipping the env around direct
