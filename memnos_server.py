@@ -542,7 +542,7 @@ class Handler(BaseHTTPRequestHandler):
         hosts. Returns (code, obj) or None if `path` isn't a user route (so the caller
         falls through to the normal dispatch). Mirrors `_admin`'s shape."""
         if not (path == "/bindings" or path.startswith("/bindings/")
-                or path == "/hosts" or path == "/bindings/recap"):
+                or path == "/hosts" or path == "/bindings/recap" or path == "/nudges"):
             return None
         with POOL.connection() as conn:
             pid = Control.authenticate(conn, self._token())
@@ -580,6 +580,10 @@ class Handler(BaseHTTPRequestHandler):
                     if not Control.delete_binding(conn, pid, bid):
                         return 404, {"error": "binding not found"}   # also not-theirs -> 404
                     return 200, {"ok": True}
+                if path == "/nudges" and method == "GET":
+                    # deferred suggest-on-mismatch (issue #20, Part B3): return + mark
+                    # delivered (at-most-once display). The SessionStart hook surfaces these.
+                    return 200, {"nudges": Control.take_pending_nudges(conn, pid)}
                 if path == "/hosts" and method == "GET":
                     return 200, {"hosts": Control.list_hosts(conn, pid)}
                 if path == "/hosts" and method == "POST":
@@ -1300,6 +1304,18 @@ def _ingest_worker():
                 # mem.author carries the AUTHENTICATED principal's name from the request
                 mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
                                     extract_model=EXTRACT_MODEL, on_usage=usage, author=mem.author)
+                # suggest-on-mismatch (issue #20, Part B3): the async response already
+                # returned (extraction:queued), so the advisory can't ride it. Compute it
+                # against the PRE-write entity state (same ordering rule as the sync path —
+                # before write_facts self-pollutes `ns`) and persist a DEFERRED nudge the
+                # next SessionStart hook surfaces. Advisory only; never reroutes the write.
+                suggestion = _write_suggestion(conn, principal, ns, facts, rtext)
+                if suggestion:
+                    try:
+                        Control.record_nudge(conn, principal, ns, suggestion["namespace"],
+                                             suggestion.get("reason"), turn_id=tid)
+                    except Exception:
+                        pass                                       # a write never fails on the nudge
                 nf, nsup = mem3.write_facts(ns, facts, obs, tid, memory_type=mtype)
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 Control.record_usage(conn, principal, ns, "remember", mem3.extract_model,

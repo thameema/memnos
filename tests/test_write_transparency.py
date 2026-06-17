@@ -366,7 +366,48 @@ def test_remember_suggests_on_mismatch_llm_ordering(conn, a_ns, b_ns):
         check("/remember (LLM-path match) 200", s2 == 200)
         check("matching write to its own ns -> NO suggestion", j2.get("suggestion") is None)
 
+        # DEFERRED NUDGE (Part B3): the ASYNC write path (Claude Code Stop hook) can't carry
+        # the advisory in its immediate response (extraction is queued), so the ingest worker
+        # parks a nudge that the next SessionStart hook reads via GET /nudges. Exercise it
+        # end-to-end: async mismatch write to A -> a pending nudge for A->B appears -> a
+        # second read is empty (delivered once).
+        # Reset A's entity state first: the earlier SYNC mismatch write above already
+        # self-polluted A (by design), which would legitimately suppress the suggestion now.
+        # We want to isolate the async-nudge mechanics from that accumulated state.
+        conn.execute(f"DELETE FROM {SCHEMA}.entities WHERE namespace=%s", (a_ns,))
+        def gget(path):
+            req = urllib.request.Request(base + path, method="GET",
+                headers={"Authorization": "Bearer " + tok})
+            r = urllib.request.urlopen(req, timeout=20)
+            return r.status, json.loads(r.read() or b"{}")
+
+        sa, ja = lcall("/remember", {"namespace": a_ns, "async": True, "text":
+            "More Project Zephyr planning; the Acme Payments connector rollout shifts again."})
+        check("async /remember returns immediately (queued)", sa == 200 and ja.get("facts") is None)
+        # the background worker extracts + records the nudge; poll briefly.
+        nudge = None
+        for _ in range(40):
+            sN, jN = gget("/nudges")
+            hit = [n for n in (jN.get("nudges") or [])
+                   if n.get("write_ns") == a_ns and n.get("suggested_ns") == b_ns]
+            if hit:
+                nudge = hit[0]
+                break
+            _time.sleep(0.25)
+        check("async mismatch parks a DEFERRED nudge (A looks like B)", nudge is not None)
+        check("the parked nudge carries a human reason", nudge and bool(nudge.get("reason")))
+        # the async write STILL landed in A (advisory, never auto-routed).
+        atid = ja.get("turn_id")
+        arow = conn.execute(f"SELECT namespace FROM {SCHEMA}.raw_turns WHERE id=%s", (atid,)).fetchone()
+        check("async mismatch write LANDED in A (suggest only)", arow and arow["namespace"] == a_ns)
+        # delivered-once: a second read no longer returns that pending nudge.
+        _s, jN2 = gget("/nudges")
+        again = [n for n in (jN2.get("nudges") or [])
+                 if n.get("write_ns") == a_ns and n.get("suggested_ns") == b_ns]
+        check("nudge is delivered-once (gone on the next read)", not again)
+
         # cleanup principal
+        conn.execute("DELETE FROM memnos_control.ns_nudges WHERE principal_id=%s", (pid,))
         conn.execute("DELETE FROM memnos_control.api_tokens WHERE principal_id=%s", (pid,))
         conn.execute("DELETE FROM memnos_control.grants WHERE principal_id=%s", (pid,))
         conn.execute("DELETE FROM memnos_control.principals WHERE id=%s", (pid,))

@@ -389,6 +389,9 @@ def main():
     call("GET", "/bindings", token=TLIM, expect=200)
     call("GET", "/bindings/recap", token=TLIM, query="days=7", expect=200,
          name="GET /bindings/recap (write-health recap, issue #20)")
+    call("GET", "/nudges", expect=401, name="GET /nudges (no token)")
+    call("GET", "/nudges", token=TLIM, expect=200,
+         name="GET /nudges (deferred suggest-on-mismatch, issue #20 B3)")
     st, hb = call("POST", "/hosts", token=TLIM, body={"machine_id": "oapi-host", "friendly_name": "OAPI"}, expect=200)
     call("GET", "/hosts", token=TLIM, expect=200)
     st, bb = call("POST", "/bindings", token=TLIM,
