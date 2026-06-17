@@ -1502,16 +1502,56 @@ def cmd_bindings_migrate(args, cfg):
           "(local ns_overrides.json kept as offline fallback)")
 
 
+def cmd_bindings_recap(args, cfg):
+    """`memnos bindings recap [--days N]` — a light memory-health line: per-namespace write
+    counts for this principal over a window, with a bind nudge for the busiest UNBOUND-looking
+    namespace. Read-only; purely informational (issue #20, Part B periodic recap)."""
+    import nsresolve
+    token = _user_token(args, cfg)
+    days = getattr(args, "days", 7) or 7
+    st, body = _http(cfg, "GET", f"/bindings/recap?days={days}", token)
+    if st != 200:
+        sys.exit(f"recap failed ({st}): {body.get('error', '?')}")
+    rows = body.get("recap", [])
+    if not rows:
+        print(f"no writes in the last {days} day(s)."); return
+    # which namespaces already have a binding? (best-effort; recap still prints if this fails)
+    bound = set()
+    bst, bbody = _http(cfg, "GET", "/bindings", token)
+    if bst == 200:
+        bound = {b["namespace"] for b in bbody.get("bindings", [])}
+    print(f"this week ({days}d): " +
+          ", ".join(f"{r['writes']} to {r['namespace']}" for r in rows))
+    # nudge: the busiest namespace that has NO binding yet
+    for r in rows:
+        if r["namespace"] not in bound:
+            print(f"  most of {r['namespace']}'s writes have no binding — "
+                  f"bind it? memnos bind <repo|.> {r['namespace']}")
+            break
+
+
 # ---- data client ------------------------------------------------------------
 def cmd_remember(args, cfg):
     import nsresolve
-    ns = args.namespace if args.namespace and args.namespace != "auto" else nsresolve.resolve()
+    if args.namespace and args.namespace != "auto":
+        ns, source = args.namespace, "explicit"
+    else:
+        ns, source = nsresolve.resolve_with_source()
     body = {"namespace": ns, "text": args.text}
     if getattr(args, "type", None):
         body["type"] = args.type
     out = _post(cfg, "/remember", body,
                 args.token or os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token"))
-    print(json.dumps(out))
+    # write-time attribution (issue #20, Part B): always say WHERE it landed.
+    print(f"→ remembered in {ns}")
+    if source == "default":                         # no binding for this repo — offer to persist
+        print("  " + nsresolve.default_fallback_hint(ns))
+    sugg = out.get("suggestion") if isinstance(out, dict) else None
+    if sugg:                                        # advisory only — the write already landed in ns
+        print(f"  hint: this looks like '{sugg['namespace']}' ({sugg.get('reason','')}) — "
+              f"bind future writes there? memnos bind {nsresolve.bind_key_for()} {sugg['namespace']}")
+    if getattr(args, "json", False):
+        print(json.dumps(out))
 
 
 def cmd_recall(args, cfg):
@@ -1878,7 +1918,8 @@ def cmd_hook(args, cfg):
         data = json.load(sys.stdin)
     except Exception:
         return
-    ns = nsresolve.resolve(data)
+    ns, ns_source = nsresolve.resolve_with_source(data)
+    session_id = data.get("session_id") or data.get("sessionId")
 
     if args.which == "status":
         # SessionStart: ONE visible line so the user always knows whether memory is on —
@@ -1920,9 +1961,21 @@ def cmd_hook(args, cfg):
             except Exception:
                 pass
             return
+        # write-side transparency (issue #20, Part B): tell the user WHERE memory for this
+        # folder will be written — ONCE per session, and again only when the namespace
+        # CHANGES (session_first_time dedupe), never every turn. On a default fallback (no
+        # binding) add the one-time warning + bind offer.
+        out = {}
+        if nsresolve.session_first_time(session_id, ns, kind="dest"):
+            if ns_source == "default":
+                out["systemMessage"] = "memnos: " + nsresolve.default_fallback_hint(ns, data)
+            else:
+                out["systemMessage"] = f"memnos: writing to namespace '{ns}'"
         if ctx.strip():
-            print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
-                  "additionalContext": "## Relevant memories (memnos)\n" + ctx}}))
+            out["hookSpecificOutput"] = {"hookEventName": "UserPromptSubmit",
+                  "additionalContext": "## Relevant memories (memnos)\n" + ctx}
+        if out:
+            print(json.dumps(out))
         return
 
     # remember (Stop): save the last user message AND the assistant's reply to it.
@@ -2057,6 +2110,7 @@ def build_parser():
     p.add_argument("--type", choices=["decision", "incident", "constraint", "skill", "fact"],
                    help="classify the memory (constraints are pinned into every recall)")
     p.add_argument("--token", help="bearer token (default: MEMNOS_TOKEN or the config admin token)")
+    p.add_argument("--json", action="store_true", help="also print the raw server response JSON")
     p.set_defaults(fn=cmd_remember)
     p = sub.add_parser("recall", help="recall relevant memories (data client)")
     p.add_argument("query", help="what to recall")
@@ -2177,7 +2231,7 @@ def build_parser():
     p.add_argument("--all-hosts", action="store_true", help="host-agnostic repo binding (default)")
     p.add_argument("--token", help="bearer token (else $MEMNOS_TOKEN / config)")
     p.set_defaults(fn=cmd_bind)
-    p = sub.add_parser("bindings", help="manage server-side bindings: ls | migrate")
+    p = sub.add_parser("bindings", help="manage server-side bindings: ls | migrate | recap")
     p.set_defaults(fn=lambda a, c, _p=p: _p.print_help())
     ps = p.add_subparsers(dest="verb", metavar="<verb>")
     v = ps.add_parser("ls", help="list this principal's bindings (grouped by host)")
@@ -2186,6 +2240,10 @@ def build_parser():
     v = ps.add_parser("migrate", help="one-time: migrate ~/.memnos/ns_overrides.json into server bindings")
     v.add_argument("--token", help="bearer token (else $MEMNOS_TOKEN / config)")
     v.set_defaults(fn=cmd_bindings_migrate)
+    v = ps.add_parser("recap", help="memory-health: per-namespace write counts this week + bind nudge")
+    v.add_argument("--days", type=int, default=7, help="window in days (default 7)")
+    v.add_argument("--token", help="bearer token (else $MEMNOS_TOKEN / config)")
+    v.set_defaults(fn=cmd_bindings_recap)
     p = sub.add_parser("unbind", help="remove a server-side binding by id or key")
     p.add_argument("target", help="binding id (see: memnos bindings ls) or the repo/path key")
     p.add_argument("--token", help="bearer token (else $MEMNOS_TOKEN / config)")

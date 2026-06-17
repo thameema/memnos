@@ -36,6 +36,12 @@
        "help": "bearer token (default: MEMNOS_TOKEN or the config admin token)",
        "positional": false,
        "required": false
+      },
+      {
+       "arg": "--json",
+       "help": "also print the raw server response JSON",
+       "positional": false,
+       "required": false
       }
      ],
      "command": "remember",
@@ -738,6 +744,26 @@
      "command": "bindings migrate",
      "example": null,
      "help": "one-time: migrate ~/.memnos/ns_overrides.json into server bindings"
+    },
+    {
+     "args": [
+      {
+       "arg": "--days",
+       "default": "7",
+       "help": "window in days (default 7)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "bearer token (else $MEMNOS_TOKEN / config)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "bindings recap",
+     "example": null,
+     "help": "memory-health: per-namespace write counts this week + bind nudge"
     },
     {
      "args": [

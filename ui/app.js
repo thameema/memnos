@@ -218,6 +218,170 @@ $("#gr-add").onclick = async () => {
   } catch (e) { alert(e.message); }
 };
 
+// ---- routing: namespace bindings + host registry (issue #20, A5) ----
+// These are USER-scoped endpoints at the server root (NOT under /admin/api/): any valid
+// bearer token, scoped to its own principal. The console's admin token is a valid bearer
+// token, so it authenticates here as the admin principal and manages that principal's own
+// bindings/hosts. Mirrors api() (same auth header, timeout, 401/403→login, error shape).
+async function uapi(method, path, body) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), API_TIMEOUT_MS);
+  let r;
+  try {
+    r = await fetch(path, {
+      method,
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + tok() },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ctl.signal,
+    });
+  } catch (e) {
+    throw new Error(e.name === "AbortError"
+      ? "request timed out — the server may be busy"
+      : "server unreachable — is memnos running?");
+  } finally { clearTimeout(timer); }
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401 || r.status === 403) {
+    localStorage.removeItem("memnos_admin_token");
+    show(false);
+    $("#loginerr").textContent = "Session expired or token revoked — sign in again with a valid admin token.";
+    throw new Error("unauthorized");
+  }
+  if (!r.ok) throw new Error((j.error || ("HTTP " + r.status)) + (j.msg ? ": " + j.msg : ""));
+  return j;
+}
+
+const KEY_LABEL = { repo: "repo", host_repo: "repo", host_path: "path" };
+
+async function loadRouting() {
+  const groups = $("#bind-groups");
+  groups.innerHTML = `<span class="muted"><span class="spinner"></span> loading…</span>`;
+  try {
+    const { bindings, hosts } = await uapi("GET", "/bindings");
+    renderBindings(bindings, hosts);
+    renderHosts(hosts);
+    populateScope(hosts);
+  } catch (e) {
+    if (e.message === "unauthorized") return;
+    groups.innerHTML = `<span class="errbox">${esc(e.message)} <button class="retry">retry</button></span>`;
+    $("button.retry", groups).onclick = loadRouting;
+  }
+}
+
+// scope picker: "All hosts" + one option per registered host (value = machine_id)
+function populateScope(hosts) {
+  const sel = $("#bind-scope");
+  const cur = sel.value;
+  sel.innerHTML = `<option value="repo">All hosts (follow the repo)</option>`
+    + hosts.map(h => `<option value="${esc(h.machine_id)}">${esc(h.friendly_name || h.machine_id)}</option>`).join("");
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+  syncBindForm();
+}
+function syncBindForm() {
+  const hostScoped = $("#bind-scope").value !== "repo";
+  $("#bind-keytype").hidden = !hostScoped;
+  $("#bind-key").placeholder = hostScoped && $("#bind-keytype").value === "host_path"
+    ? "absolute path (e.g. /Users/me/work/app)"
+    : "repo (e.g. github.com/thameema/memnos)";
+}
+$("#bind-scope").onchange = syncBindForm;
+$("#bind-keytype").onchange = syncBindForm;
+
+function bindingRow(b) {
+  return `<tr>
+    <td><span class="muted">${esc(KEY_LABEL[b.key_type] || b.key_type)}</span> <code>${esc(b.key)}</code></td>
+    <td><input class="bind-ns-edit" data-id="${b.id}" value="${esc(b.namespace)}"
+         data-keytype="${esc(b.key_type)}" data-key="${esc(b.key)}" data-host="${esc(b.host_id ?? "")}"></td>
+    <td>
+      <button class="bind-save" data-id="${b.id}">save</button>
+      <button class="danger bind-del" data-id="${b.id}" data-key="${esc(b.key)}">remove</button>
+    </td></tr>`;
+}
+
+function renderBindings(bindings, hosts) {
+  const box = $("#bind-groups");
+  const allHost = bindings.filter(b => b.key_type === "repo");
+  // group host-scoped bindings by host_id (== machine_id); include hosts with no bindings
+  const byHost = {};
+  for (const h of hosts) byHost[h.machine_id] = [];
+  for (const b of bindings) {
+    if (b.key_type === "repo") continue;
+    (byHost[b.host_id] = byHost[b.host_id] || []).push(b);
+  }
+  const hostName = (mid) => {
+    const h = hosts.find(x => x.machine_id === mid);
+    return h ? (h.friendly_name || h.machine_id) : mid;
+  };
+  const tbl = (rows) => `<table><thead><tr><th>Key</th><th>Namespace</th><th></th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+
+  let html = `<div class="bind-group"><h4>All hosts <span class="muted">· follow-the-repo</span></h4>`
+    + (allHost.length ? tbl(allHost.map(bindingRow).join(""))
+       : `<p class="muted">No host-agnostic bindings yet.</p>`) + `</div>`;
+
+  const hostIds = Object.keys(byHost);
+  if (!hostIds.length && !allHost.length) {
+    box.innerHTML = `<p class="muted">No bindings yet. Bind a repo or directory to a namespace so your
+      agents always write to the right place — these follow you across machines.</p>`;
+    return;
+  }
+  for (const mid of hostIds) {
+    html += `<div class="bind-group"><h4>${esc(hostName(mid))} <span class="muted">· ${esc(mid)}</span></h4>`
+      + (byHost[mid].length ? tbl(byHost[mid].map(bindingRow).join(""))
+         : `<p class="muted">No bindings for this host.</p>`) + `</div>`;
+  }
+  box.innerHTML = html;
+
+  $$(".bind-save").forEach(b => b.onclick = async () => {
+    const inp = $(`.bind-ns-edit[data-id="${b.dataset.id}"]`);
+    const ns = inp.value.trim();
+    if (!ns) return;
+    try {
+      await uapi("POST", "/bindings", {
+        key_type: inp.dataset.keytype, key: inp.dataset.key, namespace: ns,
+        host_id: inp.dataset.host || undefined,
+      });
+      loadRouting();
+    } catch (e) { $("#bind-err").textContent = e.message; }
+  });
+  $$(".bind-del").forEach(b => b.onclick = async () => {
+    if (!confirm(`Remove binding for "${b.dataset.key}"?`)) return;
+    try { await uapi("DELETE", "/bindings/" + b.dataset.id); loadRouting(); }
+    catch (e) { $("#bind-err").textContent = e.message; }
+  });
+}
+
+function renderHosts(hosts) {
+  const tbody = $("#host-table tbody");
+  tbody.innerHTML = hosts.map(h => `<tr>
+    <td><input class="host-name-edit" data-mid="${esc(h.machine_id)}" value="${esc(h.friendly_name || "")}"
+         placeholder="(unnamed)"></td>
+    <td><code>${esc(h.machine_id)}</code></td>
+    <td title="${esc(h.last_seen || "")}">${age(h.last_seen)}</td>
+    <td><button class="host-save" data-mid="${esc(h.machine_id)}">rename</button></td></tr>`).join("")
+    || emptyRow(4, `No machines registered yet — a host appears here after a client checks in from it.`);
+  $$(".host-save").forEach(b => b.onclick = async () => {
+    const inp = $(`.host-name-edit[data-mid="${CSS.escape(b.dataset.mid)}"]`);
+    try {
+      await uapi("POST", "/hosts", { machine_id: b.dataset.mid, friendly_name: inp.value.trim() || null });
+      loadRouting();
+    } catch (e) { $("#bind-err").textContent = e.message; }
+  });
+}
+
+$("#bind-add").onclick = async () => {
+  const scope = $("#bind-scope").value;
+  const key = $("#bind-key").value.trim(), ns = $("#bind-ns").value.trim();
+  if (!key || !ns) { $("#bind-err").textContent = "key and namespace are required"; return; }
+  const body = (scope === "repo")
+    ? { key_type: "repo", key, namespace: ns }
+    : { key_type: $("#bind-keytype").value, key, namespace: ns, host_id: scope };
+  try {
+    await uapi("POST", "/bindings", body);
+    $("#bind-key").value = ""; $("#bind-ns").value = ""; $("#bind-err").textContent = "";
+    loadRouting();
+  } catch (e) { $("#bind-err").textContent = e.message; }
+};
+
 // ---- dashboard (each panel loads + fails independently — one bad call can't blank the page) ----
 async function loadHealth() {
   const box = $("#dash-health");
@@ -340,6 +504,7 @@ async function loadCliRef() {
 }
 
 $$(".tabs button").forEach(b => b.addEventListener("click", () => {
+  if (b.dataset.tab === "routing") loadRouting();
   if (b.dataset.tab === "feed") { feedOffset = 0; loadFeed(); }
   if (b.dataset.tab === "dashboard") loadDashboard();
   if (b.dataset.tab === "secrets") loadSecrets();

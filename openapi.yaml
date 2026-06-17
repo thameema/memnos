@@ -1254,6 +1254,35 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /bindings/recap:
+    get:
+      tags: [bindings]
+      summary: Per-namespace write counts for the caller over a window (memory-health recap, issue #20)
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, default: 7 }
+          description: window size in days
+      responses:
+        "200":
+          description: per-namespace write counts (desc)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [days, recap]
+                properties:
+                  days: { type: integer }
+                  recap:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        namespace: { type: string }
+                        writes: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1619,6 +1648,18 @@ components:
           type: string
           enum: [queued]
           description: present only on the async path
+        namespace:
+          type: string
+          description: "the destination namespace the write landed in (write-time attribution, issue #20)"
+        suggestion:
+          type: object
+          description: >-
+            non-blocking suggest-on-mismatch (issue #20): present only when the write's
+            extracted entities look like they belong to a DIFFERENT writable namespace.
+            ADVISORY ONLY — the write still landed in `namespace`; this is never an auto-route.
+          properties:
+            namespace: { type: string }
+            reason: { type: string }
     MemoryRow:
       type: object
       required: [content, kind]

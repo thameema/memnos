@@ -387,6 +387,8 @@ def main():
     print("=== bindings + hosts (user-scoped, issue #20) ===")
     call("GET", "/bindings", expect=401, name="GET /bindings (no token)")
     call("GET", "/bindings", token=TLIM, expect=200)
+    call("GET", "/bindings/recap", token=TLIM, query="days=7", expect=200,
+         name="GET /bindings/recap (write-health recap, issue #20)")
     st, hb = call("POST", "/hosts", token=TLIM, body={"machine_id": "oapi-host", "friendly_name": "OAPI"}, expect=200)
     call("GET", "/hosts", token=TLIM, expect=200)
     st, bb = call("POST", "/bindings", token=TLIM,

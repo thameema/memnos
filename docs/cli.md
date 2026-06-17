@@ -41,6 +41,7 @@ save a memory (data client — talks to the server)
 | `--namespace` | target namespace (default: auto-resolve for this folder) |
 | `--type` | classify the memory (constraints are pinned into every recall) (one of: `decision`, `incident`, `constraint`, `skill`, `fact`) |
 | `--token` | bearer token (default: MEMNOS_TOKEN or the config admin token) |
+| `--json` | also print the raw server response JSON |
 
 ```bash
 memnos remember "We chose Postgres 16 for staging" --namespace proj:myapp
@@ -471,6 +472,15 @@ one-time: migrate ~/.memnos/ns_overrides.json into server bindings
 
 | argument | description |
 |---|---|
+| `--token` | bearer token (else $MEMNOS_TOKEN / config) |
+
+### `memnos bindings recap`
+
+memory-health: per-namespace write counts this week + bind nudge
+
+| argument | description |
+|---|---|
+| `--days` | window in days (default 7) (default `7`) |
 | `--token` | bearer token (else $MEMNOS_TOKEN / config) |
 
 ### `memnos hosts`

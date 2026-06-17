@@ -27,6 +27,7 @@
   <main id="app" hidden>
     <nav class="tabs">
       <button data-tab="namespaces" class="active">Namespaces</button>
+      <button data-tab="routing">Routing</button>
       <button data-tab="feed">Memory feed</button>
       <button data-tab="tokens">Tokens</button>
       <button data-tab="access">Principals &amp; Grants</button>
@@ -47,6 +48,35 @@
         <p class="muted">A namespace isolates memory. You create them here — nothing is auto-created.</p>
       </div>
       <div class="card"><table id="ns-table"><thead><tr><th>Namespace</th><th>Description</th><th>Turns</th><th>Facts</th><th>Created</th><th></th></tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section id="tab-routing" class="tab" hidden>
+      <div class="card">
+        <h3>Add binding</h3>
+        <p class="muted">Bind a repo or directory to a namespace so your agents always write to the
+          right place — these live in memnos (not a local file) and follow you across machines.</p>
+        <div class="row">
+          <select id="bind-scope">
+            <option value="repo">All hosts (follow the repo)</option>
+          </select>
+          <select id="bind-keytype" hidden>
+            <option value="host_repo">repo on this host</option>
+            <option value="host_path">path on this host</option>
+          </select>
+          <input id="bind-key" placeholder="repo (e.g. github.com/thameema/memnos) or path">
+          <input id="bind-ns" placeholder="namespace (e.g. proj:memnos)">
+          <button id="bind-add">Bind</button>
+        </div>
+        <p id="bind-err" class="err"></p>
+      </div>
+      <div class="card">
+        <h3>Bindings <span class="muted">· grouped by host</span></h3>
+        <div id="bind-groups"></div>
+      </div>
+      <div class="card">
+        <h3>Hosts <span class="muted">· your machines</span></h3>
+        <table id="host-table"><thead><tr><th>Friendly name</th><th>Machine ID</th><th>Last seen</th><th></th></tr></thead><tbody></tbody></table>
+      </div>
     </section>
 
     <section id="tab-feed" class="tab" hidden>

@@ -41,3 +41,8 @@ button.retry{background:transparent;border:1px solid var(--err);color:var(--err)
 .cli-cmd table{margin-top:8px}
 .cli-cmd pre{background:#0e1120;border-radius:8px;padding:10px;overflow-x:auto;margin:8px 0 2px}
 .cli-cmd pre code{background:transparent;padding:0}
+.bind-group{margin:0 0 18px}.bind-group:last-child{margin-bottom:0}
+.bind-group h4{margin:0 0 8px;color:var(--fg);font-size:14px}
+.bind-group h4 .muted{font-weight:400}
+.bind-ns-edit,.host-name-edit{min-width:140px;padding:5px 9px}
+.bind-save,.host-save{background:transparent;border:1px solid var(--line);color:var(--fg);padding:5px 10px;font-weight:400}
