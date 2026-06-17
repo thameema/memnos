@@ -208,6 +208,122 @@ def test_resolver():
     nsresolve.repo_key = orig_repo_key
 
 
+def _point_resolver_at(tmp):
+    """Redirect nsresolve's ~/.memnos/* files at a scratch dir so tests never touch the
+    real cache/machine_id/markers. Returns the module (already imported)."""
+    import nsresolve
+    nsresolve._DIR = tmp
+    nsresolve._CACHE = os.path.join(tmp, "bindings_cache.json")
+    nsresolve._OVR = os.path.join(tmp, "ns_overrides.json")
+    nsresolve._MID = os.path.join(tmp, "machine_id")
+    return nsresolve
+
+
+def test_portability_refresh(conn, a_id, a_tok):
+    """CROSS-MACHINE PORTABILITY PROOF (issue #20 regression that would have caught Gap 1:
+    refresh() was orphaned, so the cache never populated and every resolve fell to default).
+
+    A 'repo' binding exists server-side for the principal. With an EMPTY local cache, the
+    SessionStart refresh path (nsresolve.refresh) must populate the cache AND make
+    resolve_with_source return the bound namespace with a binding_* source (NOT default).
+    Against the old orphaned code this never ran on SessionStart, so the bound ns was unreachable."""
+    print("=== portability: refresh() populates cache -> bound ns resolves (Gap 1) ===")
+    rkey = "github.com/test/portability"
+    NS = "proj:portable"
+    # a server binding made on "another machine" / the UI
+    Control.upsert_binding(conn, a_id, "repo", rkey, NS)
+
+    tmp = tempfile.mkdtemp(prefix="nsport_")
+    ns = _point_resolver_at(tmp)
+    work = tempfile.mkdtemp(prefix="nsport_work_")
+    orig_repo_key = ns.repo_key
+    ns.repo_key = lambda cwd=None: rkey
+    os.environ.pop("MEMNOS_NS", None)
+    try:
+        # PRECONDITION: empty cache -> resolve falls to default (the inert state Gap 1 left).
+        check("empty cache: no cache file yet", not os.path.exists(ns._CACHE))
+        nsres, src = ns.resolve_with_source({"cwd": work})
+        check("empty cache resolves to DEFAULT (bound ns unreachable pre-refresh)",
+              src == "default" and nsres != NS)
+
+        # THE FIX: run the SessionStart refresh path directly.
+        ok = ns.refresh(url=URL, token=a_tok)
+        check("refresh() reports success", ok is True)
+        check("refresh() wrote bindings_cache.json", os.path.exists(ns._CACHE))
+        cache = ns._load(ns._CACHE) or {}
+        check("cache contains the server 'repo' binding",
+              any(b.get("key_type") == "repo" and b.get("key") == rkey
+                  and b.get("namespace") == NS for b in cache.get("bindings", [])))
+
+        # POST-REFRESH: the bound namespace now resolves with a binding_* source, NOT default.
+        nsres, src = ns.resolve_with_source({"cwd": work})
+        check("post-refresh resolves to BOUND ns (cross-machine portability works)", nsres == NS)
+        check("post-refresh source is binding_repo (not default)", src == "binding_repo")
+
+        # host registration happened as part of refresh (POST /hosts)
+        hosts = {h["machine_id"] for h in Control.list_hosts(conn, a_id)}
+        check("refresh registered THIS host", ns.machine_id() in hosts)
+    finally:
+        ns.repo_key = orig_repo_key
+
+
+def test_bindings_refresh_cli(conn, a_id, a_tok):
+    """`memnos bindings refresh` populates the cache via the CLI (same assertion, user path)."""
+    print("=== CLI: `memnos bindings refresh` populates the cache ===")
+    rkey = "github.com/test/cli-refresh"
+    NS = "proj:cli-refresh"
+    Control.upsert_binding(conn, a_id, "repo", rkey, NS)
+
+    tmp = tempfile.mkdtemp(prefix="nscli_")
+    ns = _point_resolver_at(tmp)
+    import memnos_cli
+    cfg = {"url": URL}
+
+    class A:  # noqa
+        token = a_tok
+    memnos_cli.cmd_bindings_refresh(A(), cfg)
+    cache = ns._load(ns._CACHE) or {}
+    check("CLI refresh wrote the cache file", os.path.exists(ns._CACHE))
+    check("CLI refresh cached the server binding",
+          any(b.get("namespace") == NS for b in cache.get("bindings", [])))
+
+
+def test_surfacing(conn, a_id, a_tok):
+    """Write-time surfacing (issue #20 Part B): with a populated cache + bound repo the dest
+    is the bound ns; with an UNBOUND repo the default-fallback hint is produced. Deterministic
+    (drives nsresolve directly, no live transcript needed)."""
+    print("=== surfacing: bound -> dest line, unbound -> default-fallback hint (Part B) ===")
+    bound_rkey = "github.com/test/surf-bound"
+    NS = "proj:surf-bound"
+    Control.upsert_binding(conn, a_id, "repo", bound_rkey, NS)
+
+    tmp = tempfile.mkdtemp(prefix="nssurf_")
+    ns = _point_resolver_at(tmp)
+    work = tempfile.mkdtemp(prefix="nssurf_work_")
+    os.environ.pop("MEMNOS_NS", None)
+    orig_repo_key = ns.repo_key
+    try:
+        ns.refresh(url=URL, token=a_tok)
+        # BOUND repo: source is a real binding, so the hook emits "writing to namespace '<NS>'".
+        ns.repo_key = lambda cwd=None: bound_rkey
+        nsres, src = ns.resolve_with_source({"cwd": work})
+        check("bound repo resolves to its ns with a bound source",
+              nsres == NS and src in ns.BOUND_SOURCES)
+        check("session_first_time fires once then dedupes",
+              ns.session_first_time("sess1", nsres) is True
+              and ns.session_first_time("sess1", nsres) is False)
+
+        # UNBOUND repo: default fallback -> the bind-offer hint is produced.
+        ns.repo_key = lambda cwd=None: "github.com/test/surf-unbound"
+        nsres2, src2 = ns.resolve_with_source({"cwd": work})
+        check("unbound repo source is default", src2 == "default")
+        hint = ns.default_fallback_hint(nsres2, {"cwd": work})
+        check("default-fallback hint offers a copy-pasteable bind",
+              "memnos bind " in hint and nsres2 in hint)
+    finally:
+        ns.repo_key = orig_repo_key
+
+
 def test_migration(conn, a_id, a_tok):
     print("=== migration (ns_overrides.json -> server bindings) ===")
     import nsresolve
@@ -251,6 +367,9 @@ def main():
         test_api_scoping(conn, a_id, b_id, a_tok, b_tok)
         test_resolver()
         test_migration(conn, a_id, a_tok)
+        test_portability_refresh(conn, a_id, a_tok)
+        test_bindings_refresh_cli(conn, a_id, a_tok)
+        test_surfacing(conn, a_id, a_tok)
     finally:
         with conn.cursor() as c:
             for pid in (a_id, b_id):

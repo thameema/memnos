@@ -483,6 +483,14 @@ memory-health: per-namespace write counts this week + bind nudge
 | `--days` | window in days (default 7) (default `7`) |
 | `--token` | bearer token (else $MEMNOS_TOKEN / config) |
 
+### `memnos bindings refresh`
+
+pull server bindings into the local cache + register THIS host now
+
+| argument | description |
+|---|---|
+| `--token` | bearer token (else $MEMNOS_TOKEN / config) |
+
 ### `memnos hosts`
 
 list this principal's machines, or `hosts rename <name>` for THIS one
