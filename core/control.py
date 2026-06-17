@@ -343,10 +343,6 @@ class Control:
         # the principal's OWN writable namespaces (can_write), excluding the write target.
         writable = [g["namespace"] for g in Control.authorized_namespaces(conn, principal_id)
                     if g.get("can_write")]
-        # expand patterns against namespaces that actually hold entities (bounded candidate set)
-        with conn.cursor() as c:
-            c.execute(f"SELECT DISTINCT namespace FROM {schema}.entities")
-            existing = [r["namespace"] for r in c.fetchall()]
 
         def covered(ns):
             for p in writable:
@@ -356,10 +352,25 @@ class Control:
                     return True
             return False
 
-        cand = [ns for ns in existing if ns != write_ns and covered(ns)]
+        # CANDIDATE SELECTION BY RELEVANCE, then cap. Earlier code did `SELECT DISTINCT
+        # namespace` (arbitrary order) and truncated to max_candidate_ns BEFORE checking
+        # which namespaces actually hold the query's entities — so with more than the cap's
+        # worth of entity-namespaces, the matching one could be silently dropped (past the
+        # cut) → cand_hits empty → None. Instead, pre-filter in SQL to namespaces that
+        # contain ≥1 of the want-TOKENS as a whole word (Postgres \m..\M word boundaries,
+        # so 'zephyr' matches the phrase entity 'Project Zephyr' but not 'zephyrant'),
+        # RANK by how many matching entity rows each has, and only THEN cap. The cap now
+        # bounds the expensive per-name token step over RELEVANT namespaces, never blindly
+        # truncates an unordered list.
+        token_re = r"\m(" + "|".join(re.escape(t) for t in want) + r")\M"
+        with conn.cursor() as c:
+            c.execute(f"SELECT namespace, count(*) AS m FROM {schema}.entities "
+                      f"WHERE name ~* %s GROUP BY namespace ORDER BY m DESC, namespace",
+                      (token_re,))
+            ranked = [r["namespace"] for r in c.fetchall()]
+        cand = [ns for ns in ranked if ns != write_ns and covered(ns)][:max_candidate_ns]
         if not cand:
             return None
-        cand = cand[:max_candidate_ns]                 # hard cap — never unbounded
         # Pull the candidate + write namespaces' entity names (bounded: candidate set is
         # capped, names are short) and intersect on TOKENS in Python. One indexed query
         # (namespace b-tree) per side; no per-row scan beyond these namespaces.
