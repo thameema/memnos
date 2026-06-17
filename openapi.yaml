@@ -1283,6 +1283,37 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /nudges:
+    get:
+      tags: [bindings]
+      summary: Pending deferred suggest-on-mismatch nudges (issue #20, Part B3)
+      description: >
+        Returns the caller's UNDELIVERED suggest-on-mismatch nudges, parked by the async
+        ingest worker when an async write's entities looked like a different namespace, and
+        marks them delivered in the same call (at-most-once). The SessionStart hook surfaces
+        them. Advisory only — nothing is ever re-routed.
+      responses:
+        "200":
+          description: the caller's pending nudges (marked delivered)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nudges]
+                properties:
+                  nudges:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        write_ns: { type: string }
+                        suggested_ns: { type: string }
+                        reason: { type: string, nullable: true }
+                        hits: { type: integer }
+                        last_turn_id: { type: integer, nullable: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+
 components:
   securitySchemes:
     bearerAuth:

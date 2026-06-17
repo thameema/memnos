@@ -128,6 +128,26 @@ CREATE TABLE IF NOT EXISTS memnos_control.hosts(
     last_seen timestamptz NOT NULL DEFAULT now(),
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE(principal_id, machine_id));
+-- deferred suggest-on-mismatch nudges (issue #20, Part B3): the ASYNC write path
+-- (Claude Code Stop hook, async:true) extracts facts in a background worker, so the
+-- suggestion can't ride the immediate /remember response. The worker drops an UNDELIVERED
+-- nudge here; the next SessionStart hook reads + delivers it ("recent writes to A look
+-- like B — bind it?"). Advisory ONLY — never moves a write. One open nudge per
+-- (principal, write_ns, suggested_ns); a repeat write just refreshes its count/turn.
+CREATE TABLE IF NOT EXISTS memnos_control.ns_nudges(
+    id bigserial PRIMARY KEY,
+    principal_id bigint NOT NULL REFERENCES memnos_control.principals(id),
+    write_ns text NOT NULL,
+    suggested_ns text NOT NULL,
+    reason text,
+    hits int NOT NULL DEFAULT 1,
+    last_turn_id bigint,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    delivered_at timestamptz,
+    UNIQUE(principal_id, write_ns, suggested_ns));
+CREATE INDEX IF NOT EXISTS ns_nudges_pending
+    ON memnos_control.ns_nudges(principal_id) WHERE delivered_at IS NULL;
 """
 
 
@@ -373,6 +393,38 @@ class Control:
             return {"namespace": other_ns,
                     "reason": f"{other_n} of these {total} entities are mostly in {other_ns}"}
         return None
+
+    # --- deferred nudges (issue #20, Part B3 — async write path) ------------
+    @staticmethod
+    def record_nudge(conn, principal_id, write_ns, suggested_ns, reason, *, turn_id=None):
+        """Persist (or refresh) an UNDELIVERED suggest-on-mismatch nudge from the async
+        ingest worker. Idempotent per (principal, write_ns, suggested_ns): a repeat write to
+        the same mismatched pair bumps `hits` and re-opens the nudge (clears delivered_at) so
+        a persistent pattern resurfaces, rather than spamming a row per write. Advisory only.
+        Best-effort: callers wrap in try/except so a write never fails on the nudge."""
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.ns_nudges"
+                      "(principal_id, write_ns, suggested_ns, reason, last_turn_id) "
+                      "VALUES(%s,%s,%s,%s,%s) "
+                      "ON CONFLICT (principal_id, write_ns, suggested_ns) DO UPDATE SET "
+                      "  hits = memnos_control.ns_nudges.hits + 1, "
+                      "  reason = EXCLUDED.reason, last_turn_id = EXCLUDED.last_turn_id, "
+                      "  updated_at = now(), delivered_at = NULL",
+                      (principal_id, write_ns, suggested_ns, reason, turn_id))
+
+    @staticmethod
+    def take_pending_nudges(conn, principal_id, *, limit=10):
+        """Return the principal's UNDELIVERED nudges and mark them delivered in the SAME
+        transaction (at-most-once display — fine for an advisory). Newest first. Used by the
+        SessionStart hook to surface 'recent writes to A look like B — bind it?' once."""
+        with conn.cursor() as c:
+            c.execute("UPDATE memnos_control.ns_nudges SET delivered_at = now() "
+                      "WHERE id IN (SELECT id FROM memnos_control.ns_nudges "
+                      "             WHERE principal_id=%s AND delivered_at IS NULL "
+                      "             ORDER BY updated_at DESC LIMIT %s) "
+                      "RETURNING write_ns, suggested_ns, reason, hits, last_turn_id",
+                      (principal_id, limit))
+            return c.fetchall()
 
     @staticmethod
     def write_recap(conn, principal_id, *, days=7, limit=20):

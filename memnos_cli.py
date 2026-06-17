@@ -647,6 +647,19 @@ def _server_up(url, timeout=2):
         return False
 
 
+def _fetch_nudges(url, hdr, timeout=2):
+    """GET the principal's pending deferred suggest-on-mismatch nudges (issue #20, Part B3).
+    The server marks them delivered in the same call (at-most-once display). Returns a list
+    of {write_ns, suggested_ns, reason, hits, ...} or [] on any error — never raises into the
+    SessionStart hook, which must stay fast and unbreakable."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(url + "/nudges", method="GET", headers=hdr)
+        return json.load(urllib.request.urlopen(req, timeout=timeout)).get("nudges", []) or []
+    except Exception:
+        return []
+
+
 def _pidfile_pid():
     """Read PID_PATH and return ('alive', pid) / ('dead', pid) / ('none', None).
     Only `memnos start` writes this file; an autostart-managed server writes none."""
@@ -1966,7 +1979,23 @@ def cmd_hook(args, cfg):
             pport = (cfg.get("proxy") or {}).get("port", 8910)
             parts.append("capture proxy ACTIVE" if _server_up(f"http://127.0.0.1:{pport}", timeout=1)
                          else f"⚠ capture proxy DOWN (:{pport}) — run `memnos proxy`")
-        print(json.dumps({"systemMessage": "memnos: " + "  ·  ".join(parts)}))
+        msg = "memnos: " + "  ·  ".join(parts)
+        # deferred suggest-on-mismatch (issue #20, Part B3): async writes (the Stop hook)
+        # can't carry the advisory in their immediate response, so the ingest worker parks a
+        # nudge server-side. Surface any pending ones HERE, once (the GET marks them
+        # delivered). Best-effort + short timeout — never delays or breaks the status line.
+        try:
+            nudges = _fetch_nudges(url, hdr)
+            for n in nudges:
+                w, s = n.get("write_ns"), n.get("suggested_ns")
+                hits = n.get("hits") or 1
+                times = "writes" if hits != 1 else "a write"
+                msg += (f"\nmemnos: heads-up — {('%d ' % hits) if hits != 1 else ''}recent "
+                        f"{times} to '{w}' look like they belong in '{s}'. "
+                        f"If so, bind this repo:  memnos bind <repo|key> {s}")
+        except Exception:
+            pass
+        print(json.dumps({"systemMessage": msg}))
         return
 
     if args.which == "recall":
