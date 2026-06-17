@@ -95,6 +95,17 @@ def save_config(cfg):
         pass
 
 
+def _persist_port(cfg, port):
+    """Persist a non-default HTTP port to the config so later `memnos start` (no flag) reuses
+    it (issue #19). No-op when unchanged. Returns True if it wrote."""
+    if port and cfg.get("port") != port:
+        cfg["port"] = port
+        save_config(cfg)
+        print(f"[memnos] persisted port {port} to {CONFIG_PATH} (future `memnos start` will use it)")
+        return True
+    return False
+
+
 def _apply_env(cfg):
     """Make config visible to Control/Vault/server (they read env)."""
     if cfg.get("dsn"):
@@ -441,8 +452,11 @@ def cmd_setup(args, cfg):
     Control.grant(conn, pid, "*")
     tok = Control.mint_token(conn, pid, "console")
     # persist the admin token (config is already 0600 and holds the vault master key) so
-    # `memnos recall/remember` work out of the box — without it every CLI call 401s
-    cfg.update({"dsn": dsn, "port": cfg.get("port", 8900), "secret_key": secret_key,
+    # `memnos recall/remember` work out of the box — without it every CLI call 401s.
+    # `--port` persists a non-default port (issue #19) so `memnos start` picks it up and a
+    # second instance can coexist with one already on 8900, no hand-editing config.json.
+    setup_port = getattr(args, "port", None) or cfg.get("port", 8900)
+    cfg.update({"dsn": dsn, "port": setup_port, "secret_key": secret_key,
                 "admin_token": tok})
     save_config(cfg)
     print(f"\n✓ schema + control plane created (embedding dim {dim}"
@@ -510,6 +524,15 @@ def cmd_start(args, cfg):
     svc = _autostart_installed()
     if svc:                                   # managed by launchd/systemd — start through it
         kind, path = svc
+        if args.port and args.port != cfg.get("port", 8900):
+            # the login service binds the CONFIG port (baked into the plist/unit); a one-off
+            # --port here would just mismatch the health-check URL. Tell the user the real
+            # path to change it rather than silently persist a port the service won't use.
+            print(f"[memnos] note: an autostart service manages this server on port "
+                  f"{cfg.get('port', 8900)} — `--port {args.port}` is ignored. To change it: "
+                  f"`memnos setup --port {args.port}` (or edit config) then `memnos autostart` "
+                  f"to regenerate the service.")
+            port = cfg.get("port", 8900)
         url = f"http://127.0.0.1:{port}"
         if _server_up(url):
             sys.exit(f"a memnos server is already running at {url} (autostart service).")
@@ -525,6 +548,8 @@ def cmd_start(args, cfg):
                 return
             time.sleep(1.5)
         sys.exit(f"server still not up — check:  tail {LOG_PATH}")
+    if args.port:                             # unmanaged start: persist the chosen port (#19)
+        _persist_port(cfg, args.port)
     _serve_background(port)
 
 
@@ -537,6 +562,12 @@ def cmd_restart(args, cfg):
     svc = _autostart_installed()
     if svc:
         kind, path = svc
+        if args.port and args.port != cfg.get("port", 8900):
+            print(f"[memnos] note: an autostart service manages this server on port "
+                  f"{cfg.get('port', 8900)} — `--port {args.port}` is ignored. To change it: "
+                  f"`memnos setup --port {args.port}` (or edit config) then `memnos autostart` "
+                  f"to regenerate the service.")
+            port = cfg.get("port", 8900)
         if kind == "launchd":
             subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.memnos.server"],
                            capture_output=True)
@@ -568,6 +599,8 @@ def cmd_restart(args, cfg):
                  "             systemctl --user list-units | grep -i memnos   (Linux)\n"
                  "  or:        lsof -i :%d   then kill that pid, and use `memnos autostart` "
                  "going forward." % port)
+    if args.port:                             # unmanaged restart: persist the chosen port (#19)
+        _persist_port(cfg, args.port)
     _serve_background(port)
 
 
@@ -2187,6 +2220,9 @@ def build_parser():
     p.add_argument("--dsn", help="Postgres DSN (skips the interactive wizard)")
     p.add_argument("--docker", action="store_true",
                    help="provision a pgvector Postgres in Docker (no Postgres setup needed)")
+    p.add_argument("--port", type=int,
+                   help="HTTP port to persist in the config (default 8900) — set this to run "
+                        "a second instance alongside one already on 8900")
     p.set_defaults(fn=cmd_setup)
     p = sub.add_parser("start", help="start the memory server in the background")
     p.add_argument("--port", type=int, help="HTTP port (default: config / 8900)")

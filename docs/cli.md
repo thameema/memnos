@@ -74,6 +74,7 @@ connect to Postgres, create schema + admin token
 |---|---|
 | `--dsn` | Postgres DSN (skips the interactive wizard) |
 | `--docker` | provision a pgvector Postgres in Docker (no Postgres setup needed) |
+| `--port` | HTTP port to persist in the config (default 8900) — set this to run a second instance alongside one already on 8900 |
 
 ```bash
 memnos setup --docker

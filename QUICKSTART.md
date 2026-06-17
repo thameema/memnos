@@ -97,6 +97,11 @@ downloads the local embedding/reranker models (~1 GB) — `memnos start` shows t
 (`memnos serve` runs the server in the *foreground* instead — for systemd, launchd, Docker,
 or debugging.)
 
+**Running a second instance on the same host?** Give it its own port so it doesn't collide
+with the one already on 8900: `memnos setup --port 8901` persists the port to the config, and
+`memnos start --port 8901` (when not managed by autostart) persists it too — so later
+`memnos start` reuses it. No hand-editing `~/.memnos/config.json`.
+
 **Recommended:** `memnos autostart` installs a login service (launchd on macOS, systemd
 `--user` on Linux) so the server starts at every login, restarts if it dies, and **waits for
 Postgres** if it isn't up yet — your agents always have memory without you thinking about
