@@ -34,6 +34,53 @@ def check(name, cond):
     PASS += cond; FAIL += (not cond)
 
 
+def test_setup_port_persist():
+    """issue #19: `memnos setup --port <p>` persists a non-default HTTP port to the config so
+    a second instance can coexist with one already on 8900 — no hand-editing config.json.
+    Runs setup against a FRESH scratch DB (no 'admin' collision) with an isolated temp HOME
+    (so the real ~/.memnos/config.json is never touched). Non-interactive via --dsn."""
+    import psycopg
+    import tempfile
+    from urllib.parse import urlsplit
+    print("=== memnos setup --port persists (issue #19) ===")
+    admin = psycopg.connect(DSN, autocommit=True)
+
+    def _scratch(name):
+        with admin.cursor() as c:
+            c.execute(f'DROP DATABASE IF EXISTS {name}')
+            c.execute(f'CREATE DATABASE {name}')
+        u = urlsplit(DSN)
+        return f"{u.scheme}://{u.username}:{u.password}@{u.hostname}:{u.port or 5432}/{name}"
+
+    def _setup(scratch_dsn, *extra):
+        home = tempfile.mkdtemp(prefix="memnos-home-")
+        env = dict(os.environ, MEMNOS_DSN=scratch_dsn, MEMNOS_CI="1", HOME=home, USERPROFILE=home)
+        env.pop("MEMNOS_PORT", None)              # don't let an ambient port mask the flag
+        r = subprocess.run([PY, os.path.join(ROOT, "memnos_cli.py"), "setup",
+                            "--dsn", scratch_dsn, *extra],
+                           capture_output=True, text=True, env=env, timeout=90)
+        cfg_path = os.path.join(home, ".memnos", "config.json")
+        cfg = json.load(open(cfg_path)) if os.path.exists(cfg_path) else {}
+        return r.returncode, (r.stdout + r.stderr), cfg
+
+    d1 = _scratch("memnos_cliport_a")
+    rc, out, cfg = _setup(d1, "--port", "8917")
+    check("setup --port 8917 succeeds", rc == 0)
+    check("setup --port persists the chosen port to config", cfg.get("port") == 8917)
+
+    d2 = _scratch("memnos_cliport_b")
+    rc, out, cfg = _setup(d2)
+    check("setup without --port defaults to 8900", cfg.get("port") == 8900)
+
+    # also: --help advertises the new flag
+    rc, out = run("setup", "--help")
+    check("setup --help documents --port", rc == 0 and "--port" in out)
+
+    with admin.cursor() as c:
+        for n in ("memnos_cliport_a", "memnos_cliport_b"):
+            c.execute(f'DROP DATABASE IF EXISTS {n}')
+
+
 def main():
     print("=== memnos CLI ===")
     rc, out = run("--help")
@@ -65,6 +112,8 @@ def main():
 
     rc, out = run("health")
     check("health runs", rc == 0)
+
+    test_setup_port_persist()
 
     # cleanup
     run("namespace", "rm", NS, "--purge")

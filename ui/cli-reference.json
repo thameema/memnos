@@ -115,6 +115,12 @@
        "help": "provision a pgvector Postgres in Docker (no Postgres setup needed)",
        "positional": false,
        "required": false
+      },
+      {
+       "arg": "--port",
+       "help": "HTTP port to persist in the config (default 8900) \u2014 set this to run a second instance alongside one already on 8900",
+       "positional": false,
+       "required": false
       }
      ],
      "command": "setup",
