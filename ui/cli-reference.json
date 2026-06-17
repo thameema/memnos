@@ -667,6 +667,127 @@
     }
    ],
    "title": "Maintenance"
+  },
+  {
+   "commands": [
+    {
+     "args": [
+      {
+       "arg": "key",
+       "help": "repo remote/name, '.' for this folder's repo, or an absolute path",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "namespace",
+       "help": "namespace to route writes/reads to",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--host",
+       "help": "pin to ONE machine by machine-id (host-scoped binding)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--host-path",
+       "help": "treat key as a path on THIS machine (host_path)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--all-hosts",
+       "help": "host-agnostic repo binding (default)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "bearer token (else $MEMNOS_TOKEN / config)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "bind",
+     "example": null,
+     "help": "bind a repo/path to a namespace, server-side (follows you across machines)"
+    },
+    {
+     "args": [
+      {
+       "arg": "--token",
+       "help": "bearer token (else $MEMNOS_TOKEN / config)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "bindings ls",
+     "example": null,
+     "help": "list this principal's bindings (grouped by host)"
+    },
+    {
+     "args": [
+      {
+       "arg": "--token",
+       "help": "bearer token (else $MEMNOS_TOKEN / config)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "bindings migrate",
+     "example": null,
+     "help": "one-time: migrate ~/.memnos/ns_overrides.json into server bindings"
+    },
+    {
+     "args": [
+      {
+       "arg": "subcmd",
+       "choices": [
+        "rename"
+       ],
+       "help": "rename: set THIS machine's friendly name",
+       "positional": true,
+       "required": false
+      },
+      {
+       "arg": "name",
+       "help": "rename: the friendly name",
+       "positional": true,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "bearer token (else $MEMNOS_TOKEN / config)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "hosts",
+     "example": null,
+     "help": "list this principal's machines, or `hosts rename <name>` for THIS one"
+    },
+    {
+     "args": [
+      {
+       "arg": "target",
+       "help": "binding id (see: memnos bindings ls) or the repo/path key",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--token",
+       "help": "bearer token (else $MEMNOS_TOKEN / config)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "unbind",
+     "example": null,
+     "help": "remove a server-side binding by id or key"
+    }
+   ],
+   "title": "Other"
   }
  ]
 }
