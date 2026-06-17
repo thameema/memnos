@@ -225,6 +225,54 @@ def test_remember_echoes_ns_and_lands(conn, pid, tok, a_ns, b_ns):
     check("the write did NOT land in the suggested namespace (B)", none_in_b["n"] == 0)
 
 
+def test_remember_suggests_on_mismatch_live(conn, pid, tok, a_ns, b_ns):
+    """END-TO-END (the test the prior suite missed): the suggestion must appear in the LIVE
+    /remember HTTP RESPONSE on a genuine mismatch, and be ABSENT on a match — proving the
+    local-mode wiring + token normalization, not just the helper in isolation.
+
+    DETERMINISTIC AT $0 / local-384: extraction needs an LLM (LLM is None here), so we DON'T
+    rely on facts. We seed B's `entities` directly (the exact signal the encoder/fact path
+    writes) — half as PHRASES ("Project Zephyr") to prove token-vs-phrase normalization, half
+    as TOKENS — then the /remember advisory runs off raw-turn proper-noun NER alone, which is
+    fully deterministic (regex), so no LLM and no flakiness."""
+    # seed B's entity world — mix of phrase-form (fact-subject style) and token-form (encoder
+    # style) to exercise the token normalization on BOTH stored shapes.
+    for name in ("Project Zephyr", "Acme Payments", "Centaur"):
+        conn.execute(f"INSERT INTO {SCHEMA}.entities(namespace,name) VALUES(%s,%s) "
+                     f"ON CONFLICT DO NOTHING", (b_ns, name))
+    # A holds its own, unrelated entities (so the control write matches A, not B).
+    for name in ("Borealis", "Aurora"):
+        conn.execute(f"INSERT INTO {SCHEMA}.entities(namespace,name) VALUES(%s,%s) "
+                     f"ON CONFLICT DO NOTHING", (a_ns, name))
+
+    # MISMATCH: write B-flavored text to A -> live response must SUGGEST B.
+    s, j = call("POST", "/remember", tok, {"namespace": a_ns, "text":
+        "Project Zephyr and the Acme Payments rollout with Centaur slipped to next week."})
+    check("/remember (mismatch) 200", s == 200)
+    sugg = j.get("suggestion")
+    check("LIVE /remember response carries a suggestion on a B-mismatch",
+          isinstance(sugg, dict))
+    check("the live suggestion points at B", sugg and sugg.get("namespace") == b_ns)
+    # GUARDRAIL: it landed in A, never rerouted to B.
+    tid = j.get("turn_id")
+    row = conn.execute(f"SELECT namespace FROM {SCHEMA}.raw_turns WHERE id=%s", (tid,)).fetchone()
+    check("mismatch write LANDED in A (suggest only, never auto-route)",
+          row and row["namespace"] == a_ns)
+    in_b = conn.execute(f"SELECT count(*) AS n FROM {SCHEMA}.raw_turns WHERE id=%s AND namespace=%s",
+                        (tid, b_ns)).fetchone()
+    check("mismatch write did NOT land in suggested B", in_b["n"] == 0)
+
+    # CONTROL: write A's OWN content to A -> NO suggestion in the live response.
+    s2, j2 = call("POST", "/remember", tok, {"namespace": a_ns, "text":
+        "Borealis and Aurora reviewed the plan today."})
+    check("/remember (match) 200", s2 == 200)
+    check("LIVE /remember response has NO suggestion when content matches its own ns",
+          j2.get("suggestion") is None)
+    tid2 = j2.get("turn_id")
+    row2 = conn.execute(f"SELECT namespace FROM {SCHEMA}.raw_turns WHERE id=%s", (tid2,)).fetchone()
+    check("control write LANDED in A", row2 and row2["namespace"] == a_ns)
+
+
 # ---------------------------------------------------------------------------
 def main():
     # resolver + dedupe need no server/DB
@@ -248,6 +296,7 @@ def main():
     try:
         test_suggestion_helper(conn, pid, a_ns, b_ns)
         test_remember_echoes_ns_and_lands(conn, pid, tok, a_ns, b_ns)
+        test_remember_suggests_on_mismatch_live(conn, pid, tok, a_ns, b_ns)
     finally:
         for ns in (a_ns, b_ns):
             conn.execute(f"DELETE FROM {SCHEMA}.entities WHERE namespace=%s", (ns,))

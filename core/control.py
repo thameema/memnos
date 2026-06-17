@@ -9,7 +9,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import secrets
+
+# suggest-on-mismatch (issue #20, Part B) thresholds — TUNABLE, env-overridable. Kept
+# conservative so the advisory never fires on noise, but a genuine strong match surfaces.
+#   MIN_ENTITIES: a write must carry at least this many proper-noun TOKENS to be eligible
+#     (avoids nudging on tiny/keyword-free writes).
+#   DOMINANCE: the OTHER namespace must cover at least this share of those tokens.
+SUGGEST_MIN_ENTITIES = int(os.environ.get("MEMNOS_SUGGEST_MIN_ENTITIES", "2"))
+SUGGEST_DOMINANCE = float(os.environ.get("MEMNOS_SUGGEST_DOMINANCE", "0.6"))
 
 CONTROL_DDL = """
 CREATE SCHEMA IF NOT EXISTS memnos_control;
@@ -273,7 +283,7 @@ class Control:
     # --- suggest-on-mismatch (issue #20, Part B) ---------------------------
     @staticmethod
     def suggest_namespace(conn, principal_id, write_ns, entity_names, *,
-                          schema="tenant_memnos", min_entities=2, dominance=0.6,
+                          schema="tenant_memnos", min_entities=None, dominance=None,
                           max_candidate_ns=12):
         """NON-BLOCKING advisory: do the write's extracted entities look like they belong
         to a DIFFERENT namespace than the one it landed in? SUGGEST, NEVER auto-route — the
@@ -291,8 +301,24 @@ class Control:
         Returns {"namespace": <other>, "reason": "..."} or None. No heavy scan: it touches
         only the entities table by (namespace,name), both indexed.
         """
-        names = sorted({(n or "").strip().lower() for n in (entity_names or []) if (n or "").strip()})
-        if len(names) < min_entities:
+        if min_entities is None:
+            min_entities = SUGGEST_MIN_ENTITIES
+        if dominance is None:
+            dominance = SUGGEST_DOMINANCE
+        # TOKEN normalization — the write's NER yields per-word proper-noun TOKENS
+        # ("Project", "Zephyr"), but stored entities may be PHRASES ("Project Zephyr",
+        # from a fact subject) OR tokens (from the encoder). Exact lower(name) equality
+        # therefore misses the common case. We compare on lowercased word TOKENS on BOTH
+        # sides: each stored entity name contributes its constituent tokens, and the write
+        # contributes its tokens; a stored phrase "Project Zephyr" then matches the write
+        # tokens {project, zephyr}. Two-char+ tokens only (drops noise like "a"/"to").
+        def _toks(s):
+            return [w for w in re.findall(r"[a-z0-9]{2,}", (s or "").lower())]
+        want = set()
+        for n in (entity_names or []):
+            want.update(_toks(n))
+        want = sorted(want)
+        if len(want) < min_entities:
             return None
         # the principal's OWN writable namespaces (can_write), excluding the write target.
         writable = [g["namespace"] for g in Control.authorized_namespaces(conn, principal_id)
@@ -314,22 +340,35 @@ class Control:
         if not cand:
             return None
         cand = cand[:max_candidate_ns]                 # hard cap — never unbounded
-        # how many of THESE entities does the write's own ns already have?
-        with conn.cursor() as c:
-            c.execute(f"SELECT count(DISTINCT lower(name)) AS n FROM {schema}.entities "
-                      f"WHERE namespace=%s AND lower(name) = ANY(%s)", (write_ns, names))
-            own = c.fetchone()["n"]
-            # per-candidate overlap, one indexed query
-            c.execute(f"SELECT namespace, count(DISTINCT lower(name)) AS n FROM {schema}.entities "
-                      f"WHERE namespace = ANY(%s) AND lower(name) = ANY(%s) "
-                      f"GROUP BY namespace ORDER BY n DESC LIMIT 1", (cand, names))
-            top = c.fetchone()
-        if not top or not top["n"]:
+        # Pull the candidate + write namespaces' entity names (bounded: candidate set is
+        # capped, names are short) and intersect on TOKENS in Python. One indexed query
+        # (namespace b-tree) per side; no per-row scan beyond these namespaces.
+        wantset = set(want)
+
+        def _ns_token_hits(namespaces):
+            """{namespace: count of distinct want-tokens its entity names cover}."""
+            if not namespaces:
+                return {}
+            with conn.cursor() as c:
+                c.execute(f"SELECT namespace, name FROM {schema}.entities "
+                          f"WHERE namespace = ANY(%s)", (list(namespaces),))
+                rows = c.fetchall()
+            hits = {}
+            for r in rows:
+                covered_toks = {t for t in _toks(r["name"]) if t in wantset}
+                if covered_toks:
+                    hits.setdefault(r["namespace"], set()).update(covered_toks)
+            return {ns: len(ts) for ns, ts in hits.items()}
+
+        own = _ns_token_hits([write_ns]).get(write_ns, 0)
+        cand_hits = _ns_token_hits(cand)
+        if not cand_hits:
             return None
-        total = len(names)
-        other_n, other_ns = top["n"], top["namespace"]
-        # DOMINANCE: the other ns holds a strong majority of these entities, the write's own
-        # ns holds clearly fewer, and the other ns out-covers the write's own.
+        other_ns = max(cand_hits, key=cand_hits.get)
+        other_n = cand_hits[other_ns]
+        total = len(want)
+        # DOMINANCE: the other ns holds a strong majority of these entity tokens, the write's
+        # own ns holds clearly fewer, and the other ns out-covers the write's own.
         if (other_n / total) >= dominance and other_n > own:
             return {"namespace": other_ns,
                     "reason": f"{other_n} of these {total} entities are mostly in {other_ns}"}

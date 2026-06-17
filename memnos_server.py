@@ -892,8 +892,16 @@ class Handler(BaseHTTPRequestHandler):
                 with POOL.connection() as conn:
                     Control.audit(conn, principal, action, ns, True,
                                   latency_ms=int((time.perf_counter() - t0) * 1000), status=200)
+                    # suggest-on-mismatch (issue #20, Part B) STILL fires in local mode —
+                    # no LLM facts, so the advisory runs off raw-turn NER alone (the same
+                    # extract_entities signal _write_suggestion uses). Advisory only: the
+                    # write already landed in `ns`; this never reroutes.
+                    suggestion = _write_suggestion(conn, principal, ns, [], rtext)
                 _DELIVER_EVENT.set()
-                return self._send(200, {"turn_id": tid, "facts": 0, "superseded": 0, "namespace": ns})
+                out = {"turn_id": tid, "facts": 0, "superseded": 0, "namespace": ns}
+                if suggestion:
+                    out["suggestion"] = suggestion
+                return self._send(200, out)
             if run_async:
                 try:
                     _INGEST_Q.put_nowait((ns, rtext, obs, tid, principal, mem, cost0, t0, mtype))
