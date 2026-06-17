@@ -273,6 +273,111 @@ def test_remember_suggests_on_mismatch_live(conn, pid, tok, a_ns, b_ns):
     check("control write LANDED in A", row2 and row2["namespace"] == a_ns)
 
 
+def test_remember_suggests_on_mismatch_llm_ordering(conn, a_ns, b_ns):
+    """REGRESSION for the field bug: the suggestion was computed AFTER write_facts persisted
+    the write's OWN just-extracted entities into the destination ns -> that ns self-polluted
+    and could never be "dominated by another ns" -> suggestion was always None in the real
+    LLM path (while the local-mode test above passed, because local mode never extracts).
+
+    To reproduce the bug deterministically at $0 (CI has no OpenAI key) this spins up a
+    SECOND server with MEMNOS_FAKE_EXTRACT=1 — a regex-NER extractor that makes write_facts
+    persist one entity per proper noun, EXACTLY like the LLM path. So this exercises the
+    genuine P2(extract)->P3(write_facts)->suggestion ORDERING over HTTP. If the suggestion
+    is ever moved back after write_facts, the mismatch write self-pollutes A first and the
+    suggestion goes None -> this test fails."""
+    import subprocess
+    import time as _time
+    print("=== suggest-on-mismatch with REAL extraction ordering (fake extractor, $0) ===")
+
+    port = int(os.environ.get("MEMNOS_FAKE_PORT", "8911"))
+    base = f"http://127.0.0.1:{port}"
+    env = dict(os.environ)
+    env["MEMNOS_FAKE_EXTRACT"] = "1"
+    env["MEMNOS_PORT"] = str(port)
+    env["MEMNOS_DSN"] = DSN
+    env.pop("OPENAI_API_KEY", None)          # force local-384 embeddings + fake extraction
+    proc = subprocess.Popen([sys.executable, "memnos_server.py"], cwd=ROOT, env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        # wait for liveness
+        up = False
+        for _ in range(60):
+            try:
+                urllib.request.urlopen(base + "/healthz", timeout=2)
+                up = True
+                break
+            except Exception:
+                _time.sleep(0.5)
+        check("fake-extract server came up", up)
+        if not up:
+            return
+
+        # fresh principal/token scoped to the two scratch namespaces
+        pid = Control.create_principal(conn, "test-wt-llm", "agent")
+        tok = Control.mint_token(conn, pid, "test")
+        Control.grant(conn, pid, a_ns)
+        Control.grant(conn, pid, b_ns)
+        for ns in (a_ns, b_ns):
+            conn.execute(f"DELETE FROM {SCHEMA}.entities WHERE namespace=%s", (ns,))
+            conn.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s", (ns,))
+
+        def lcall(path, body):
+            req = urllib.request.Request(base + path, method="POST",
+                data=json.dumps(body).encode(),
+                headers={"Content-Type": "application/json", "Authorization": "Bearer " + tok})
+            r = urllib.request.urlopen(req, timeout=20)
+            return r.status, json.loads(r.read() or b"{}")
+
+        # SEED B by WRITING project-X content to B — the fake extractor persists B's entities
+        # through the same write_facts path the LLM uses (not a direct INSERT).
+        for txt in ("Project Zephyr is the new Acme Payments gateway.",
+                    "The Project Zephyr rollout merged this week.",
+                    "Acme Payments connector for Project Zephyr handles refunds."):
+            lcall("/remember", {"namespace": b_ns, "text": txt})
+        bcount = conn.execute(f"SELECT count(*) AS n FROM {SCHEMA}.entities WHERE namespace=%s",
+                              (b_ns,)).fetchone()["n"]
+        check("seed writes populated B's entities via write_facts", bcount > 0)
+
+        # MISMATCH: write project-X content to A. The fake extractor WILL persist A's own
+        # entities (self-pollution) — the suggestion must STILL point at B because it is
+        # computed against A's PRE-write state.
+        s, j = lcall("/remember", {"namespace": a_ns, "text":
+            "Project Zephyr work slipped to next week; the Acme Payments connector needs review."})
+        check("/remember (LLM-path mismatch) 200", s == 200)
+        check("extraction actually ran (facts written)", (j.get("facts") or 0) > 0)
+        sugg = j.get("suggestion")
+        check("LLM-path mismatch SURFACES a suggestion despite self-pollution",
+              isinstance(sugg, dict))
+        check("the suggestion points at B", sugg and sugg.get("namespace") == b_ns)
+        # confirm A really did self-pollute (so the test is genuinely exercising the
+        # ordering, not a degenerate empty-A case).
+        acount = conn.execute(f"SELECT count(*) AS n FROM {SCHEMA}.entities WHERE namespace=%s",
+                              (a_ns,)).fetchone()["n"]
+        check("A self-polluted with its own write's entities (ordering is load-bearing)",
+              acount > 0)
+        # GUARDRAIL: never auto-routed.
+        tid = j.get("turn_id")
+        row = conn.execute(f"SELECT namespace FROM {SCHEMA}.raw_turns WHERE id=%s", (tid,)).fetchone()
+        check("LLM-path mismatch write LANDED in A (suggest only)", row and row["namespace"] == a_ns)
+
+        # CONTROL: a matching write to B yields NO suggestion.
+        s2, j2 = lcall("/remember", {"namespace": b_ns, "text":
+            "Project Zephyr gateway now supports Acme Payments disputes."})
+        check("/remember (LLM-path match) 200", s2 == 200)
+        check("matching write to its own ns -> NO suggestion", j2.get("suggestion") is None)
+
+        # cleanup principal
+        conn.execute("DELETE FROM memnos_control.api_tokens WHERE principal_id=%s", (pid,))
+        conn.execute("DELETE FROM memnos_control.grants WHERE principal_id=%s", (pid,))
+        conn.execute("DELETE FROM memnos_control.principals WHERE id=%s", (pid,))
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            proc.kill()
+
+
 # ---------------------------------------------------------------------------
 def main():
     # resolver + dedupe need no server/DB
@@ -297,6 +402,12 @@ def main():
         test_suggestion_helper(conn, pid, a_ns, b_ns)
         test_remember_echoes_ns_and_lands(conn, pid, tok, a_ns, b_ns)
         test_remember_suggests_on_mismatch_live(conn, pid, tok, a_ns, b_ns)
+        # clean the scratch namespaces before the ordering test re-seeds them via a
+        # second (fake-extract) server, so its assertions start from a known-empty state.
+        for ns in (a_ns, b_ns):
+            conn.execute(f"DELETE FROM {SCHEMA}.entities WHERE namespace=%s", (ns,))
+            conn.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s", (ns,))
+        test_remember_suggests_on_mismatch_llm_ordering(conn, a_ns, b_ns)
     finally:
         for ns in (a_ns, b_ns):
             conn.execute(f"DELETE FROM {SCHEMA}.entities WHERE namespace=%s", (ns,))
