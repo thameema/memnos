@@ -61,6 +61,8 @@ tags:
     description: Liveness / readiness / metrics
   - name: admin
     description: Management plane (`*`-grant token required)
+  - name: bindings
+    description: Server-side namespace binding registry + host registry (any valid token, own principal)
 
 paths:
   # ───────────────────────── health ─────────────────────────
@@ -1174,6 +1176,84 @@ paths:
         "409": { $ref: "#/components/responses/VaultLocked" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  # ──────────────── namespace bindings + hosts (issue #20) ────────────────
+  # USER-scoped: any valid token, but every operation is clamped to the caller's
+  # own principal (a principal can only see/modify its own bindings + hosts).
+  /bindings:
+    get:
+      tags: [bindings]
+      summary: List the caller's namespace bindings + registered hosts
+      responses:
+        "200":
+          description: the principal's bindings and hosts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BindingsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [bindings]
+      summary: Create or update (upsert) a binding for the caller
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BindingRequest" }
+      responses:
+        "200":
+          description: the upserted binding
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BindingResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /bindings/{id}:
+    delete:
+      tags: [bindings]
+      summary: Delete one of the caller's own bindings (404 if not theirs)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+  /hosts:
+    get:
+      tags: [bindings]
+      summary: List the caller's registered machines
+      responses:
+        "200":
+          description: the principal's hosts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HostsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [bindings]
+      summary: Register / rename this machine (bumps last_seen)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HostRequest" }
+      responses:
+        "200":
+          description: the upserted host
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HostResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1241,6 +1321,63 @@ components:
       properties:
         error: { type: string }
         msg: { type: string }
+
+    # ──────────────── namespace bindings + hosts (issue #20) ────────────────
+    Binding:
+      type: object
+      required: [id, key_type, key, namespace]
+      properties:
+        id: { type: integer }
+        key_type: { type: string, enum: [repo, host_repo, host_path] }
+        key: { type: string }
+        namespace: { type: string }
+        host_id: { type: [string, "null"] }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+    Host:
+      type: object
+      required: [machine_id]
+      properties:
+        id: { type: integer }
+        machine_id: { type: string }
+        friendly_name: { type: [string, "null"] }
+        last_seen: { $ref: "#/components/schemas/DateTime" }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+    BindingsResponse:
+      type: object
+      required: [bindings, hosts]
+      properties:
+        bindings: { type: array, items: { $ref: "#/components/schemas/Binding" } }
+        hosts: { type: array, items: { $ref: "#/components/schemas/Host" } }
+    BindingResponse:
+      type: object
+      required: [binding]
+      properties:
+        binding: { $ref: "#/components/schemas/Binding" }
+    BindingRequest:
+      type: object
+      required: [key_type, key, namespace]
+      properties:
+        key_type: { type: string, enum: [repo, host_repo, host_path] }
+        key: { type: string }
+        namespace: { type: string }
+        host_id: { type: string }
+    HostsResponse:
+      type: object
+      required: [hosts]
+      properties:
+        hosts: { type: array, items: { $ref: "#/components/schemas/Host" } }
+    HostResponse:
+      type: object
+      required: [host]
+      properties:
+        host: { $ref: "#/components/schemas/Host" }
+    HostRequest:
+      type: object
+      required: [machine_id]
+      properties:
+        machine_id: { type: string }
+        friendly_name: { type: string }
 
     Healthz:
       type: object

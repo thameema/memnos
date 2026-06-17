@@ -440,3 +440,54 @@ show this help
 ```bash
 memnos help
 ```
+
+
+## Other
+
+### `memnos bind`
+
+bind a repo/path to a namespace, server-side (follows you across machines)
+
+| argument | description |
+|---|---|
+| `key` | repo remote/name, '.' for this folder's repo, or an absolute path |
+| `namespace` | namespace to route writes/reads to |
+| `--host` | pin to ONE machine by machine-id (host-scoped binding) |
+| `--host-path` | treat key as a path on THIS machine (host_path) |
+| `--all-hosts` | host-agnostic repo binding (default) |
+| `--token` | bearer token (else $MEMNOS_TOKEN / config) |
+
+### `memnos bindings ls`
+
+list this principal's bindings (grouped by host)
+
+| argument | description |
+|---|---|
+| `--token` | bearer token (else $MEMNOS_TOKEN / config) |
+
+### `memnos bindings migrate`
+
+one-time: migrate ~/.memnos/ns_overrides.json into server bindings
+
+| argument | description |
+|---|---|
+| `--token` | bearer token (else $MEMNOS_TOKEN / config) |
+
+### `memnos hosts`
+
+list this principal's machines, or `hosts rename <name>` for THIS one
+
+| argument | description |
+|---|---|
+| `subcmd` | rename: set THIS machine's friendly name (optional; one of: `rename`) |
+| `name` | rename: the friendly name (optional) |
+| `--token` | bearer token (else $MEMNOS_TOKEN / config) |
+
+### `memnos unbind`
+
+remove a server-side binding by id or key
+
+| argument | description |
+|---|---|
+| `target` | binding id (see: memnos bindings ls) or the repo/path key |
+| `--token` | bearer token (else $MEMNOS_TOKEN / config) |

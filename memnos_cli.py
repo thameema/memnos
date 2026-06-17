@@ -1347,6 +1347,161 @@ def cmd_ns(args, cfg):
         print(nsresolve.resolve())
 
 
+# ---- bindings: server-side namespace routing registry (issue #20) -----------
+def _user_token(args, cfg):
+    return (getattr(args, "token", None) or os.environ.get("MEMNOS_TOKEN")
+            or cfg.get("admin_token"))
+
+
+def _http(cfg, method, path, token, payload=None, timeout=15):
+    """Tiny GET/DELETE/POST client for the user-scoped binding/host endpoints."""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(_server_url(cfg) + path, method=method,
+        data=json.dumps(payload).encode() if payload is not None else None,
+        headers={"Content-Type": "application/json",
+                 **({"Authorization": "Bearer " + token} if token else {})})
+    try:
+        r = urllib.request.urlopen(req, timeout=timeout)
+        return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read() or b"{}")
+        except Exception:
+            body = {}
+        return e.code, body
+    except Exception as e:
+        sys.exit(f"server unreachable: {e}")
+
+
+def cmd_bind(args, cfg):
+    """`memnos bind <repo|key> <namespace> [--host <id> | --all-hosts]`.
+    Default = host-agnostic repo binding (key normalized to the repo's remote URL form, so
+    it follows the project to any machine). --host pins it to one machine (host_repo if the
+    key looks like a repo, host_path if it's an absolute path)."""
+    import nsresolve
+    token = _user_token(args, cfg)
+    raw = args.key
+    # 'auto' / '.' => derive this folder's repo key (or its abspath if no remote)
+    if raw in (".", "auto", "here"):
+        rkey = nsresolve.repo_key()
+        raw = rkey or os.path.realpath(os.getcwd())
+    if args.host or (not args.all_hosts and args.host_path):
+        host_id = args.host or nsresolve.machine_id()
+        if os.path.isabs(raw) or args.host_path:
+            key_type, key = "host_path", os.path.realpath(raw)
+        else:
+            key_type, key = "host_repo", nsresolve._normalize_remote(raw) or raw
+    else:
+        host_id = None
+        if os.path.isabs(raw):                       # absolute path with no remote -> host_path on THIS host
+            key_type, key, host_id = "host_path", os.path.realpath(raw), nsresolve.machine_id()
+        else:
+            key_type, key = "repo", (nsresolve._normalize_remote(raw) or raw)
+    st, body = _http(cfg, "POST", "/bindings", token,
+                     {"key_type": key_type, "key": key, "namespace": args.namespace,
+                      "host_id": host_id})
+    if st != 200:
+        sys.exit(f"bind failed ({st}): {body.get('error', '?')}")
+    b = body["binding"]
+    where = "all hosts" if host_id is None else f"host {host_id}"
+    print(f"bound [{b['key_type']}] {b['key']} -> {b['namespace']}  ({where})  id={b['id']}")
+
+
+def cmd_bindings_ls(args, cfg):
+    token = _user_token(args, cfg)
+    st, body = _http(cfg, "GET", "/bindings", token)
+    if st != 200:
+        sys.exit(f"list failed ({st}): {body.get('error', '?')}")
+    binds = body.get("bindings", [])
+    if not binds:
+        print("no bindings"); return
+    groups = {}
+    for b in binds:
+        groups.setdefault(b.get("host_id") or "all-hosts", []).append(b)
+    for host, items in sorted(groups.items()):
+        print(f"  {host}:")
+        for b in items:
+            print(f"    {b['id']:<5} [{b['key_type']:<9}] {b['key']:<40} -> {b['namespace']}")
+
+
+def cmd_unbind(args, cfg):
+    """`memnos unbind <id|key>` — delete by binding id, or by matching key."""
+    import nsresolve
+    token = _user_token(args, cfg)
+    target = args.target
+    bid = None
+    if target.isdigit():
+        bid = int(target)
+    else:
+        st, body = _http(cfg, "GET", "/bindings", token)
+        if st != 200:
+            sys.exit(f"lookup failed ({st}): {body.get('error', '?')}")
+        norm = nsresolve._normalize_remote(target) or target
+        for b in body.get("bindings", []):
+            if b["key"] == target or b["key"] == norm or b["key"] == os.path.realpath(target):
+                bid = b["id"]; break
+        if bid is None:
+            sys.exit(f"no binding matches {target!r}")
+    st, body = _http(cfg, "DELETE", f"/bindings/{bid}", token)
+    if st != 200:
+        sys.exit(f"unbind failed ({st}): {body.get('error', '?')}")
+    print(f"unbound id={bid}")
+
+
+def cmd_hosts(args, cfg):
+    """`memnos hosts` (list) / `memnos hosts rename <name>` (rename THIS machine)."""
+    import nsresolve
+    token = _user_token(args, cfg)
+    if getattr(args, "name", None):                  # rename this machine
+        st, body = _http(cfg, "POST", "/hosts", token,
+                         {"machine_id": nsresolve.machine_id(), "friendly_name": args.name})
+        if st != 200:
+            sys.exit(f"rename failed ({st}): {body.get('error', '?')}")
+        h = body["host"]
+        print(f"this machine ({h['machine_id']}) -> {h.get('friendly_name')}")
+        return
+    st, body = _http(cfg, "GET", "/hosts", token)
+    if st != 200:
+        sys.exit(f"hosts failed ({st}): {body.get('error', '?')}")
+    this = nsresolve.machine_id()
+    hosts = body.get("hosts", [])
+    if not hosts:
+        print(f"no hosts registered (this machine = {this}; run any memnos refresh/hook to register)")
+        return
+    for h in hosts:
+        mark = " *this" if h["machine_id"] == this else ""
+        print(f"  {h['machine_id']:<28} {h.get('friendly_name') or '-':<20} last_seen={h['last_seen']}{mark}")
+
+
+def cmd_bindings_migrate(args, cfg):
+    """One-time: read ~/.memnos/ns_overrides.json and POST each path->ns entry as a
+    binding (repo binding if a git remote resolves at that path, else a host_path binding
+    on THIS machine). Idempotent (upserts). Reports a table."""
+    import nsresolve
+    token = _user_token(args, cfg)
+    ovr = nsresolve._load(nsresolve._OVR) or {}
+    if not ovr:
+        print("no ~/.memnos/ns_overrides.json entries to migrate"); return
+    mid = nsresolve.machine_id()
+    rows = []
+    for path, ns in ovr.items():
+        rkey = nsresolve.repo_key(path) if os.path.isdir(path) else None
+        if rkey:
+            kt, key, host_id = "repo", rkey, None
+        else:
+            kt, key, host_id = "host_path", os.path.realpath(path), mid
+        st, body = _http(cfg, "POST", "/bindings", token,
+                         {"key_type": kt, "key": key, "namespace": ns, "host_id": host_id})
+        ok = st == 200
+        rows.append((path, ns, kt, key, "migrated" if ok else f"ERROR {st}"))
+    print(f"{'PATH':<40} {'NS':<18} {'TYPE':<10} {'KEY':<40} STATUS")
+    for path, ns, kt, key, status in rows:
+        print(f"{path[:39]:<40} {ns[:17]:<18} {kt:<10} {key[:39]:<40} {status}")
+    print(f"\n{sum(1 for r in rows if r[4]=='migrated')}/{len(rows)} migrated "
+          "(local ns_overrides.json kept as offline fallback)")
+
+
 # ---- data client ------------------------------------------------------------
 def cmd_remember(args, cfg):
     import nsresolve
@@ -2012,6 +2167,34 @@ def build_parser():
     p = sub.add_parser("ns", help="show or pin this folder's namespace (ns <value> | ns clear)")
     p.add_argument("value", nargs="?", help="namespace to pin for this folder ('clear' reverts)")
     p.set_defaults(fn=cmd_ns)
+
+    # ---- server-side namespace binding registry (issue #20) ----
+    p = sub.add_parser("bind", help="bind a repo/path to a namespace, server-side (follows you across machines)")
+    p.add_argument("key", help="repo remote/name, '.' for this folder's repo, or an absolute path")
+    p.add_argument("namespace", help="namespace to route writes/reads to")
+    p.add_argument("--host", help="pin to ONE machine by machine-id (host-scoped binding)")
+    p.add_argument("--host-path", action="store_true", help="treat key as a path on THIS machine (host_path)")
+    p.add_argument("--all-hosts", action="store_true", help="host-agnostic repo binding (default)")
+    p.add_argument("--token", help="bearer token (else $MEMNOS_TOKEN / config)")
+    p.set_defaults(fn=cmd_bind)
+    p = sub.add_parser("bindings", help="manage server-side bindings: ls | migrate")
+    p.set_defaults(fn=lambda a, c, _p=p: _p.print_help())
+    ps = p.add_subparsers(dest="verb", metavar="<verb>")
+    v = ps.add_parser("ls", help="list this principal's bindings (grouped by host)")
+    v.add_argument("--token", help="bearer token (else $MEMNOS_TOKEN / config)")
+    v.set_defaults(fn=cmd_bindings_ls)
+    v = ps.add_parser("migrate", help="one-time: migrate ~/.memnos/ns_overrides.json into server bindings")
+    v.add_argument("--token", help="bearer token (else $MEMNOS_TOKEN / config)")
+    v.set_defaults(fn=cmd_bindings_migrate)
+    p = sub.add_parser("unbind", help="remove a server-side binding by id or key")
+    p.add_argument("target", help="binding id (see: memnos bindings ls) or the repo/path key")
+    p.add_argument("--token", help="bearer token (else $MEMNOS_TOKEN / config)")
+    p.set_defaults(fn=cmd_unbind)
+    p = sub.add_parser("hosts", help="list this principal's machines, or `hosts rename <name>` for THIS one")
+    p.add_argument("subcmd", nargs="?", choices=["rename"], help="rename: set THIS machine's friendly name")
+    p.add_argument("name", nargs="?", help="rename: the friendly name")
+    p.add_argument("--token", help="bearer token (else $MEMNOS_TOKEN / config)")
+    p.set_defaults(fn=cmd_hosts)
 
     # ---- observability ----
     sub.add_parser("stats", help="per-op reliability stats (last 24h)").set_defaults(fn=cmd_stats)

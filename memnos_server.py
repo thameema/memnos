@@ -479,6 +479,57 @@ class Handler(BaseHTTPRequestHandler):
                 return 500, {"error": type(e).__name__, "msg": str(e)[:200]}
             return 404, {"error": "unknown admin route"}
 
+    def _user(self, method, path, qs, body):
+        """USER-scoped API (issue #20, Part A): any valid token, scoped to ITS OWN
+        principal — NOT admin-gated. A principal can only see/modify its own bindings +
+        hosts. Returns (code, obj) or None if `path` isn't a user route (so the caller
+        falls through to the normal dispatch). Mirrors `_admin`'s shape."""
+        if not (path == "/bindings" or path.startswith("/bindings/")
+                or path == "/hosts"):
+            return None
+        with POOL.connection() as conn:
+            pid = Control.authenticate(conn, self._token())
+            if pid is None:
+                return 401, {"error": "unauthorized"}
+            body = body or {}
+            try:
+                if path == "/bindings" and method == "GET":
+                    return 200, {"bindings": Control.list_bindings(conn, pid),
+                                 "hosts": Control.list_hosts(conn, pid)}
+                if path == "/bindings" and method == "POST":
+                    kt = str(body.get("key_type", "")).strip()
+                    key = str(body.get("key", "")).strip()
+                    ns = str(body.get("namespace", "")).strip()
+                    host_id = (str(body.get("host_id", "")).strip() or None)
+                    if kt not in ("repo", "host_repo", "host_path"):
+                        return 400, {"error": "key_type must be 'repo'|'host_repo'|'host_path'"}
+                    if not key or not ns or len(ns) > 200:
+                        return 400, {"error": "key and namespace required (namespace <=200 chars)"}
+                    if kt in ("host_repo", "host_path") and not host_id:
+                        return 400, {"error": "host_id required for host-scoped binding"}
+                    row = Control.upsert_binding(conn, pid, kt, key, ns, host_id)
+                    return 200, {"binding": row}
+                if path.startswith("/bindings/") and method == "DELETE":
+                    try:
+                        bid = int(path[len("/bindings/"):])
+                    except ValueError:
+                        return 400, {"error": "binding id (int) required"}
+                    if not Control.delete_binding(conn, pid, bid):
+                        return 404, {"error": "binding not found"}   # also not-theirs -> 404
+                    return 200, {"ok": True}
+                if path == "/hosts" and method == "GET":
+                    return 200, {"hosts": Control.list_hosts(conn, pid)}
+                if path == "/hosts" and method == "POST":
+                    mid = str(body.get("machine_id", "")).strip()
+                    fname = (str(body.get("friendly_name", "")).strip() or None)
+                    if not mid:
+                        return 400, {"error": "machine_id required"}
+                    return 200, {"host": Control.upsert_host(conn, pid, mid, fname)}
+            except Exception as e:
+                traceback.print_exc()
+                return 500, {"error": type(e).__name__, "msg": str(e)[:200]}
+            return 404, {"error": "unknown user route"}
+
     def do_GET(self):
         u = urlparse(self.path)
         # --- management console (zero-build static UI) ---
@@ -489,6 +540,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(code, obj)
         if u.path.startswith("/admin/"):
             return self._send_static(u.path[len("/admin/"):])
+        r = self._user("GET", u.path, parse_qs(u.query), None)
+        if r is not None:
+            return self._send(*r)
         if self.path == "/healthz":
             return self._send(200, {"ok": True})
         if self.path == "/readyz":
@@ -516,6 +570,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path.startswith("/admin/api/"):
             code, obj = self._admin("DELETE", u.path[len("/admin/api/"):], parse_qs(u.query), None)
             return self._send(code, obj)
+        r = self._user("DELETE", u.path, parse_qs(u.query), None)
+        if r is not None:
+            return self._send(*r)
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -527,6 +584,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "invalid json"})
             code, obj = self._admin("POST", u.path[len("/admin/api/"):], parse_qs(u.query), body)
             return self._send(code, obj)
+
+        # --- user-scoped binding/host registry (no namespace in body) ---
+        if u.path == "/bindings" or u.path == "/hosts":
+            body = self._read_body()
+            if body is None:
+                return self._send(400, {"error": "invalid json"})
+            return self._send(*self._user("POST", u.path, parse_qs(u.query), body))
 
         t0 = time.perf_counter()
         # --- body limits + json ---

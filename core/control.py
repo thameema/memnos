@@ -91,6 +91,33 @@ CREATE TABLE IF NOT EXISTS memnos_control.corpus_sources(
     kind text, git_sha text, constraint_count int NOT NULL DEFAULT 0,
     ingested_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE(namespace, name));
+-- namespace BINDING registry (issue #20, Part A): the dir/repo -> namespace map lives
+-- HERE (scoped to the principal), not in a per-machine local file the server never sees.
+-- key_type: 'repo' = host-agnostic, key = normalized git remote origin URL (resolves the
+-- SAME on every machine); 'host_repo'/'host_path' = host-scoped, key + host_id pins a repo
+-- or absolute path to ONE machine. Follows the user across reinstalls + machines.
+CREATE TABLE IF NOT EXISTS memnos_control.bindings(
+    id bigserial PRIMARY KEY,
+    principal_id bigint NOT NULL REFERENCES memnos_control.principals(id),
+    key_type text NOT NULL CHECK (key_type IN ('repo','host_repo','host_path')),
+    key text NOT NULL,
+    namespace text NOT NULL,
+    host_id text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(principal_id, key_type, key, host_id));
+CREATE INDEX IF NOT EXISTS bindings_principal ON memnos_control.bindings(principal_id);
+-- host registry (issue #20, A3): the principal's machines, so the UI can show
+-- "Work laptop" vs "Dev laptop" and scope a binding to one host or "all hosts".
+-- machine_id is re-derivable from sanitize(hostname) (no opaque UUID).
+CREATE TABLE IF NOT EXISTS memnos_control.hosts(
+    id bigserial PRIMARY KEY,
+    principal_id bigint NOT NULL REFERENCES memnos_control.principals(id),
+    machine_id text NOT NULL,
+    friendly_name text,
+    last_seen timestamptz NOT NULL DEFAULT now(),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(principal_id, machine_id));
 """
 
 
@@ -157,6 +184,113 @@ class Control:
         with conn.cursor() as c:
             c.execute("SELECT id, name, kind, git_sha, constraint_count, ingested_at "
                       "FROM memnos_control.corpus_sources WHERE namespace=%s ORDER BY name", (namespace,))
+            return c.fetchall()
+
+    # --- namespace binding registry (issue #20, Part A) --------------------
+    @staticmethod
+    def upsert_binding(conn, principal_id, key_type, key, namespace, host_id=None):
+        """Insert (or update the namespace of) a binding, scoped to the principal.
+        Conflict target is (principal_id, key_type, key, host_id) — re-binding the same
+        key just changes the namespace. Returns the row. Audited."""
+        if key_type not in ("repo", "host_repo", "host_path"):
+            raise ValueError("key_type must be 'repo', 'host_repo', or 'host_path'")
+        with conn.cursor() as c:
+            # NULL host_id can't use a UNIQUE constraint conflict target reliably (NULLs
+            # are distinct in SQL), so split: repo (host-agnostic) has host_id NULL and we
+            # match on the partial key; host-scoped always has a host_id.
+            if host_id is None:
+                c.execute("SELECT id FROM memnos_control.bindings "
+                          "WHERE principal_id=%s AND key_type=%s AND key=%s AND host_id IS NULL",
+                          (principal_id, key_type, key))
+                ex = c.fetchone()
+                if ex:
+                    c.execute("UPDATE memnos_control.bindings SET namespace=%s, updated_at=now() "
+                              "WHERE id=%s RETURNING *", (namespace, ex["id"]))
+                else:
+                    c.execute("INSERT INTO memnos_control.bindings"
+                              "(principal_id,key_type,key,namespace,host_id) VALUES(%s,%s,%s,%s,NULL) "
+                              "RETURNING *", (principal_id, key_type, key, namespace))
+            else:
+                c.execute("INSERT INTO memnos_control.bindings"
+                          "(principal_id,key_type,key,namespace,host_id) VALUES(%s,%s,%s,%s,%s) "
+                          "ON CONFLICT (principal_id,key_type,key,host_id) "
+                          "DO UPDATE SET namespace=EXCLUDED.namespace, updated_at=now() RETURNING *",
+                          (principal_id, key_type, key, namespace, host_id))
+            row = c.fetchone()
+        Control.audit(conn, principal_id, "bind", namespace, True,
+                      {"key_type": key_type, "key": key, "host_id": host_id})
+        return row
+
+    @staticmethod
+    def list_bindings(conn, principal_id):
+        with conn.cursor() as c:
+            c.execute("SELECT id, key_type, key, namespace, host_id, created_at, updated_at "
+                      "FROM memnos_control.bindings WHERE principal_id=%s "
+                      "ORDER BY key_type, key", (principal_id,))
+            return c.fetchall()
+
+    @staticmethod
+    def delete_binding(conn, principal_id, binding_id) -> bool:
+        """Delete one of the principal's OWN bindings (scoped by principal_id, so a
+        principal can never delete another's). Returns False if not theirs / not found."""
+        with conn.cursor() as c:
+            c.execute("DELETE FROM memnos_control.bindings WHERE id=%s AND principal_id=%s",
+                      (binding_id, principal_id))
+            ok = c.rowcount > 0
+        if ok:
+            Control.audit(conn, principal_id, "unbind", None, True, {"binding_id": binding_id})
+        return ok
+
+    @staticmethod
+    def resolve_binding(conn, principal_id, repo_key=None, host_id=None, path_key=None):
+        """Server-side resolution helper (optional convenience; the client resolver works
+        off its local cache). Best match in priority order: repo (host-agnostic) ->
+        host_repo (this host + repo) -> host_path (this host + path). Returns the binding
+        row or None."""
+        with conn.cursor() as c:
+            if repo_key:
+                c.execute("SELECT * FROM memnos_control.bindings WHERE principal_id=%s "
+                          "AND key_type='repo' AND key=%s LIMIT 1", (principal_id, repo_key))
+                r = c.fetchone()
+                if r:
+                    return r
+            if host_id and repo_key:
+                c.execute("SELECT * FROM memnos_control.bindings WHERE principal_id=%s "
+                          "AND key_type='host_repo' AND key=%s AND host_id=%s LIMIT 1",
+                          (principal_id, repo_key, host_id))
+                r = c.fetchone()
+                if r:
+                    return r
+            if host_id and path_key:
+                c.execute("SELECT * FROM memnos_control.bindings WHERE principal_id=%s "
+                          "AND key_type='host_path' AND key=%s AND host_id=%s LIMIT 1",
+                          (principal_id, path_key, host_id))
+                r = c.fetchone()
+                if r:
+                    return r
+        return None
+
+    # --- host registry (issue #20, A3) -------------------------------------
+    @staticmethod
+    def upsert_host(conn, principal_id, machine_id, friendly_name=None):
+        """Register this machine (or bump last_seen / rename). friendly_name is only
+        overwritten when a non-None value is supplied, so a plain check-in keeps the
+        existing name. Returns the row."""
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.hosts(principal_id,machine_id,friendly_name) "
+                      "VALUES(%s,%s,%s) ON CONFLICT (principal_id,machine_id) DO UPDATE "
+                      "SET last_seen=now(), "
+                      "    friendly_name=COALESCE(EXCLUDED.friendly_name, memnos_control.hosts.friendly_name) "
+                      "RETURNING id, machine_id, friendly_name, last_seen, created_at",
+                      (principal_id, machine_id, friendly_name))
+            return c.fetchone()
+
+    @staticmethod
+    def list_hosts(conn, principal_id):
+        with conn.cursor() as c:
+            c.execute("SELECT id, machine_id, friendly_name, last_seen, created_at "
+                      "FROM memnos_control.hosts WHERE principal_id=%s ORDER BY last_seen DESC",
+                      (principal_id,))
             return c.fetchall()
 
     @staticmethod

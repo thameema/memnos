@@ -103,15 +103,17 @@ def _operation(method, spec_path):
     return (p or {}).get(method.lower())
 
 
-def call(method, spec_path, *, token=None, body=None, query="", expect=None, name=None):
+def call(method, spec_path, *, token=None, body=None, query="", expect=None, name=None, url_path=None):
     """Hit the server, then validate status + body against the spec. Marks the
-    operation exercised. `expect` (optional int) additionally asserts the status."""
+    operation exercised. `expect` (optional int) additionally asserts the status.
+    `url_path` overrides the URL path for templated ops (e.g. spec '/bindings/{id}',
+    url '/bindings/42') while the spec lookup still uses `spec_path`."""
     op = _operation(method, spec_path)
     label = name or f"{method} {spec_path}" + (f"?{query}" if query else "")
     if op is None:
         check(f"{label} documented in openapi.yaml", False, "operation missing from spec")
         return None, None
-    url = URL + spec_path + (f"?{query}" if query else "")
+    url = URL + (url_path or spec_path) + (f"?{query}" if query else "")
     req = urllib.request.Request(url, method=method,
         data=json.dumps(body).encode() if body is not None else None,
         headers={"Content-Type": "application/json",
@@ -156,6 +158,10 @@ def cleanup(conn):
                       "WHERE g.principal_id=pr.id AND pr.name=%s", (p,))
             c.execute("DELETE FROM memnos_control.subscriptions s USING memnos_control.principals pr "
                       "WHERE s.principal_id=pr.id AND pr.name=%s", (p,))
+            c.execute("DELETE FROM memnos_control.bindings b USING memnos_control.principals pr "
+                      "WHERE b.principal_id=pr.id AND pr.name=%s", (p,))
+            c.execute("DELETE FROM memnos_control.hosts h USING memnos_control.principals pr "
+                      "WHERE h.principal_id=pr.id AND pr.name=%s", (p,))
             c.execute("DELETE FROM memnos_control.principals WHERE name=%s", (p,))
 
 
@@ -377,6 +383,21 @@ def main():
          expect=404, name="POST /feed (unknown sub)")
     call("POST", "/unsubscribe", token=TADM,
          body={"namespace": NS, "subscription_id": sub["subscription_id"]}, expect=200)
+
+    print("=== bindings + hosts (user-scoped, issue #20) ===")
+    call("GET", "/bindings", expect=401, name="GET /bindings (no token)")
+    call("GET", "/bindings", token=TLIM, expect=200)
+    st, hb = call("POST", "/hosts", token=TLIM, body={"machine_id": "oapi-host", "friendly_name": "OAPI"}, expect=200)
+    call("GET", "/hosts", token=TLIM, expect=200)
+    st, bb = call("POST", "/bindings", token=TLIM,
+                  body={"key_type": "repo", "key": "github.com/oapi/x", "namespace": NS}, expect=200)
+    call("POST", "/bindings", token=TLIM, body={"key_type": "bogus", "key": "k", "namespace": NS},
+         expect=400, name="POST /bindings (bad key_type)")
+    bid = (bb or {}).get("binding", {}).get("id")
+    call("DELETE", "/bindings/{id}", url_path=f"/bindings/{bid}", token=TLIM, expect=200,
+         name="DELETE /bindings/{id}")
+    call("DELETE", "/bindings/{id}", url_path="/bindings/999999999", token=TLIM, expect=404,
+         name="DELETE /bindings/{id} (not theirs)")
 
     print("=== admin cleanup ops (delete link + namespaces via API) ===")
     call("DELETE", "/admin/api/namespaces/links", token=TADM, query=f"src={NS}&dst={NSK}", expect=200)
