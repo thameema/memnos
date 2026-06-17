@@ -281,7 +281,7 @@ def main():
 
     print("=== CLI ===")
     rc, out = cli("remember", "CLI deploys MUST run the full suite first.",
-                  "--namespace", NSX, "--type", "constraint", token=TADM)
+                  "--namespace", NSX, "--type", "constraint", "--json", token=TADM)
     check("CLI: remember --type constraint", rc == 0 and '"turn_id"' in out)
     rc, out = cli("remember", "x", "--namespace", NSX, "--type", "nonsense", token=TADM)
     check("CLI: bad --type rejected by the parser", rc != 0 and "invalid choice" in out)
