@@ -275,6 +275,36 @@ class _UsageAcc:
         self.cost += (prompt_tokens or 0) / 1e6 * pin + (completion_tokens or 0) / 1e6 * pout
 
 
+def _fake_extract(text, date):
+    """TEST-ONLY deterministic fact extractor (MEMNOS_FAKE_EXTRACT=1). Emits one SPO fact
+    per proper-noun token found by the regex NER — so `write_facts` persists those entities
+    into the write namespace, EXACTLY as the real LLM path does. This lets CI (no OpenAI
+    key) exercise the genuine P2(extract)->P3(write_facts)->suggestion ORDERING — the only
+    path where the self-pollution bug lived. NEVER enable in production: it captures noise,
+    not real facts."""
+    from core.encode import extract_entities
+    seen, facts = set(), []
+    for e in extract_entities(text or ""):
+        k = (e or "").strip().lower()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        facts.append({"subject": e, "predicate": "", "object": "",
+                      "statement": f"{e} was mentioned."})
+    return facts
+
+
+# When set, the server runs the FULL extraction branch with the $0 deterministic extractor
+# above instead of an LLM — used only by tests/CI to reproduce the LLM-path write ordering.
+EXTRACT_FN = _fake_extract if os.environ.get("MEMNOS_FAKE_EXTRACT", "").strip().lower() in (
+    "1", "true", "yes", "on") else None
+
+
+def _have_extraction():
+    """True when the /remember path should run extraction (real LLM OR the test extractor)."""
+    return LLM is not None or EXTRACT_FN is not None
+
+
 def _build_embedder():
     global LLM, DIM
     if os.environ.get("OPENAI_API_KEY"):
@@ -882,13 +912,14 @@ class Handler(BaseHTTPRequestHandler):
             with POOL.connection() as conn:                       # P1b — short DB write
                 # author = AUTHENTICATED principal's name (token-derived; body ignored)
                 mem = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
-                                   extract_model=EXTRACT_MODEL, on_usage=usage, author=pname)
+                                   extract_model=EXTRACT_MODEL, on_usage=usage, author=pname,
+                                   extract_fn=EXTRACT_FN)
                 tid, rtext, obs = mem.remember_turn(ns, rtext0, speaker=req.get("speaker"),
                                                     session_id=req.get("session_id"), vec=vec,
                                                     memory_type=mtype)
             # conn is back in the pool. `mem` is reused ONLY for extract_facts below,
             # which never touches its store.
-            if LLM is None:                                       # local mode: no extraction
+            if not _have_extraction():                            # local mode: no extraction
                 with POOL.connection() as conn:
                     Control.audit(conn, principal, action, ns, True,
                                   latency_ms=int((time.perf_counter() - t0) * 1000), status=200)
@@ -914,15 +945,21 @@ class Handler(BaseHTTPRequestHandler):
                 EMBED.prime([f["statement"] for f in facts])
             with POOL.connection() as conn:                       # P3
                 mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
-                                    extract_model=EXTRACT_MODEL, on_usage=usage, author=pname)
+                                    extract_model=EXTRACT_MODEL, on_usage=usage, author=pname,
+                                    extract_fn=EXTRACT_FN)
+                # suggest-on-mismatch (issue #20, Part B): advisory only — NEVER reroutes.
+                # MUST run BEFORE write_facts persists this turn's entities into `ns`,
+                # else `ns` self-pollutes with its own just-extracted entities and the
+                # "other namespace must dominate AND exceed the write ns" check can never
+                # fire (the write ns trivially dominates its own write). We judge against
+                # the PRE-write entity state of every namespace.
+                suggestion = _write_suggestion(conn, principal, ns, facts, rtext)
                 nf, nsup = mem3.write_facts(ns, facts, obs, tid, memory_type=mtype)
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 Control.record_usage(conn, principal, ns, action, mem3.extract_model,
                                      usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))
                 Control.audit(conn, principal, action, ns, True,
                               latency_ms=int((time.perf_counter() - t0) * 1000), status=200)
-                # suggest-on-mismatch (issue #20, Part B): advisory only — NEVER reroutes.
-                suggestion = _write_suggestion(conn, principal, ns, facts, rtext)
             _DELIVER_EVENT.set()
             out = {"turn_id": tid, "facts": nf, "superseded": nsup, "namespace": ns}
             if suggestion:
