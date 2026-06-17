@@ -155,9 +155,9 @@ def remember(text: str) -> str:
     # the chat client relays WHERE the memory landed.
     dest = out.get("namespace") or ns
     if out.get("extraction") == "queued":
-        msg = f"saved to '{dest}' (turn {out.get('turn_id')}; facts extracting in background)"
+        msg = f"remembered in '{dest}' (turn {out.get('turn_id')}; facts extracting in background)"
     else:
-        msg = f"saved to '{dest}' (turn {out.get('turn_id')}, {out.get('facts', 0)} facts extracted)"
+        msg = f"remembered in '{dest}' (turn {out.get('turn_id')}, {out.get('facts', 0)} facts extracted)"
     # default-fallback: no binding for this repo — surface the one-step bind offer.
     if source == "default":
         try:
