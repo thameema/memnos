@@ -40,23 +40,34 @@ def _git_root():
         return None
 
 
-def _ns():
-    """Resolve the namespace the SAME way the hooks do (memnos_ns.resolve), so explicit
-    tool calls and auto-save/recall never target different buckets:
-    override file (set via `/memnos ns=`) → MEMNOS_NS env → proj:<repo> → proj:<cwd>."""
-    cwd = os.getcwd()
-    root = _git_root()
+def _ns_source():
+    """Resolve the namespace the SAME way the hooks/CLI do (nsresolve.resolve_with_source),
+    so explicit tool calls and auto-save/recall never target different buckets, AND we know
+    whether it's a real binding or a default fallback (issue #20, Part B). Returns
+    (namespace, source). Falls back to the legacy local resolution if nsresolve isn't
+    importable (very old installs)."""
     try:
-        m = json.load(open(_OVR))
-        for k in (cwd, os.path.realpath(cwd), root):
-            if k and m.get(k):
-                return m[k]
+        import nsresolve
+        return nsresolve.resolve_with_source()
     except Exception:
-        pass
-    env = os.environ.get("MEMNOS_NS", "").strip()
-    if env and env.lower() != "auto":
-        return env
-    return "proj:" + (os.path.basename(root) if root else (os.path.basename(cwd.rstrip("/")) or "default"))
+        cwd = os.getcwd()
+        root = _git_root()
+        try:
+            m = json.load(open(_OVR))
+            for k in (cwd, os.path.realpath(cwd), root):
+                if k and m.get(k):
+                    return m[k], "legacy"
+        except Exception:
+            pass
+        env = os.environ.get("MEMNOS_NS", "").strip()
+        if env and env.lower() != "auto":
+            return env, "env"
+        return ("proj:" + (os.path.basename(root) if root
+                           else (os.path.basename(cwd.rstrip("/")) or "default")), "default")
+
+
+def _ns():
+    return _ns_source()[0]
 
 
 # expose the resolved namespace on every tool result so it's never ambiguous
@@ -109,8 +120,11 @@ def recall(query: str) -> str:
     ones). Call this whenever the user references past conversations, stated
     preferences, prior decisions, people/projects, or context not in this session."""
     try:
+        ns = _ns()
         ctx = _post("/recall", {"query": query}).get("context", "")
-        return ctx or "(no relevant memories found)"
+        # tell the chat client which namespace we searched so it's never ambiguous.
+        header = f"(recalled from '{ns}')\n"
+        return (header + ctx) if ctx else f"(no relevant memories found in '{ns}')"
     except httpx.HTTPStatusError as e:
         code = e.response.status_code
         if code == 401:
@@ -128,6 +142,7 @@ def remember(text: str) -> str:
     long-term memory for future sessions. Use for things worth keeping (preferences,
     project facts, commitments, identity) — not transient chatter. If this updates a
     prior fact (e.g. a changed preference), memnos supersedes the old value automatically."""
+    ns, source = _ns_source()
     try:
         # async:true — server stores the raw turn immediately and extracts facts in the
         # background, so a slow local-LLM extraction backend (Ollama 30-80s) can't ReadTimeout
@@ -136,9 +151,25 @@ def remember(text: str) -> str:
     except Exception as e:
         # Bug 4: raise so the MCP result is flagged isError=true — never a false "saved".
         raise ToolError(_write_error(e, "remember")) from None
+    # write-time attribution (issue #20, Part B): always name the destination namespace so
+    # the chat client relays WHERE the memory landed.
+    dest = out.get("namespace") or ns
     if out.get("extraction") == "queued":
-        return f"remembered (turn {out.get('turn_id')}; facts extracting in background)"
-    return f"remembered (turn {out.get('turn_id')}, {out.get('facts', 0)} facts extracted)"
+        msg = f"saved to '{dest}' (turn {out.get('turn_id')}; facts extracting in background)"
+    else:
+        msg = f"saved to '{dest}' (turn {out.get('turn_id')}, {out.get('facts', 0)} facts extracted)"
+    # default-fallback: no binding for this repo — surface the one-step bind offer.
+    if source == "default":
+        try:
+            import nsresolve
+            msg += "\n" + nsresolve.default_fallback_hint(dest)
+        except Exception:
+            pass
+    sugg = out.get("suggestion")              # advisory only — the write already landed in `dest`
+    if isinstance(sugg, dict) and sugg.get("namespace"):
+        msg += (f"\nhint: this looks like '{sugg['namespace']}' ({sugg.get('reason','')}) — "
+                f"bind future writes there if so.")
+    return msg
 
 
 @mcp.tool()

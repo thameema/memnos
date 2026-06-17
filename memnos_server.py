@@ -93,6 +93,33 @@ MAX_BODY = 256 * 1024          # 256 KB request cap
 _QUERY_MAX_CHARS = int(os.environ.get("MEMNOS_QUERY_MAX_CHARS", "20000"))
 WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/corpus/ingest",
              "/ingest/file", "/episode/segment", "/episode/decay", "/namespace/copy"}
+
+
+def _suggest_enabled():
+    """Suggest-on-mismatch is ON by default; MEMNOS_SUGGEST_NAMESPACE=0 turns it off so a
+    deployment that finds it noisy (or wants zero extra per-write SQL) can opt out."""
+    return os.environ.get("MEMNOS_SUGGEST_NAMESPACE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _write_suggestion(conn, principal_id, write_ns, facts, raw_text):
+    """Build the non-blocking suggest-on-mismatch hint for a /remember response, or None.
+    Gathers the write's entity names (each fact's subject + cheap proper-noun NER over the
+    raw turn — the SAME signal the encoder writes as entities/mentions) and asks the bounded
+    Control.suggest_namespace helper whether a DIFFERENT writable namespace dominates them.
+    SUGGEST ONLY — never moves the write. Best-effort: any error -> None (a write must NEVER
+    fail because the advisory broke)."""
+    if not _suggest_enabled():
+        return None
+    try:
+        from core.encode import extract_entities
+        names = set(extract_entities(raw_text or ""))
+        for f in (facts or []):
+            s = (f.get("subject") or "").strip()
+            if s:
+                names.add(s)
+        return Control.suggest_namespace(conn, principal_id, write_ns, list(names))
+    except Exception:
+        return None
 # Endpoints whose handler mixes DB work with SLOW NON-DB work (network embeddings, LLM
 # calls, cross-encoder rerank, file parsing). These are served by the PHASED dispatcher
 # (_phased): pool connections are only held for the short DB phases — never across model
@@ -485,7 +512,7 @@ class Handler(BaseHTTPRequestHandler):
         hosts. Returns (code, obj) or None if `path` isn't a user route (so the caller
         falls through to the normal dispatch). Mirrors `_admin`'s shape."""
         if not (path == "/bindings" or path.startswith("/bindings/")
-                or path == "/hosts"):
+                or path == "/hosts" or path == "/bindings/recap"):
             return None
         with POOL.connection() as conn:
             pid = Control.authenticate(conn, self._token())
@@ -493,6 +520,12 @@ class Handler(BaseHTTPRequestHandler):
                 return 401, {"error": "unauthorized"}
             body = body or {}
             try:
+                if path == "/bindings/recap" and method == "GET":
+                    try:
+                        days = int((qs or {}).get("days", ["7"])[0])
+                    except Exception:
+                        days = 7
+                    return 200, {"days": days, "recap": Control.write_recap(conn, pid, days=days)}
                 if path == "/bindings" and method == "GET":
                     return 200, {"bindings": Control.list_bindings(conn, pid),
                                  "hosts": Control.list_hosts(conn, pid)}
@@ -860,12 +893,12 @@ class Handler(BaseHTTPRequestHandler):
                     Control.audit(conn, principal, action, ns, True,
                                   latency_ms=int((time.perf_counter() - t0) * 1000), status=200)
                 _DELIVER_EVENT.set()
-                return self._send(200, {"turn_id": tid, "facts": 0, "superseded": 0})
+                return self._send(200, {"turn_id": tid, "facts": 0, "superseded": 0, "namespace": ns})
             if run_async:
                 try:
                     _INGEST_Q.put_nowait((ns, rtext, obs, tid, principal, mem, cost0, t0, mtype))
                     return self._send(200, {"turn_id": tid, "facts": None,
-                                            "extraction": "queued"})
+                                            "extraction": "queued", "namespace": ns})
                 except Exception:                                  # queue full → fall through to sync
                     pass
             facts = mem.extract_facts(rtext, obs)                 # P2 — NO conn held
@@ -880,8 +913,13 @@ class Handler(BaseHTTPRequestHandler):
                                      usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))
                 Control.audit(conn, principal, action, ns, True,
                               latency_ms=int((time.perf_counter() - t0) * 1000), status=200)
+                # suggest-on-mismatch (issue #20, Part B): advisory only — NEVER reroutes.
+                suggestion = _write_suggestion(conn, principal, ns, facts, rtext)
             _DELIVER_EVENT.set()
-            return self._send(200, {"turn_id": tid, "facts": nf, "superseded": nsup})
+            out = {"turn_id": tid, "facts": nf, "superseded": nsup, "namespace": ns}
+            if suggestion:
+                out["suggestion"] = suggestion
+            return self._send(200, out)
         except (PoolTimeout, OperationalError) as e:
             print(f"[memnos] DB unreachable ({type(e).__name__}): {e}", flush=True)
             return self._send(503, {"error": "database unreachable — is Postgres running?"})

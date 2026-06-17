@@ -130,13 +130,29 @@ def refresh(url=None, token=None, timeout=4):
 
 def resolve(data=None):
     """Resolve a namespace from the LOCAL CACHE only — NEVER makes a network call.
-    Degrades gracefully with no cache / no git / no env."""
+    Back-compat wrapper: returns just the namespace. Callers that need to know WHETHER
+    the namespace came from a real binding vs a default fallback use resolve_with_source."""
+    return resolve_with_source(data)[0]
+
+
+def resolve_with_source(data=None):
+    """Like resolve() but ALSO returns WHERE the namespace came from, so the write-side
+    (hook/MCP/CLI) can say "writing to <ns>" and warn on a default fallback (issue #20,
+    Part B). Returns (namespace, source) where source is one of:
+        explicit          — caller passed data['namespace'] / arg
+        binding_repo      — host-agnostic cache binding (key_type='repo')
+        binding_host_repo — host-scoped repo binding for THIS host
+        binding_host_path — host-scoped path binding for THIS host
+        legacy            — ~/.memnos/ns_overrides.json (offline / pre-#20 fallback)
+        env               — MEMNOS_NS
+        default           — derived proj:<repo|cwd> fallback (NO binding for this repo)
+    NEVER makes a network call. 'default' is the signal that no binding exists yet."""
     cwd = (data or {}).get("cwd") or os.getcwd()
 
     # 1. explicit arg
     explicit = (data or {}).get("namespace")
     if explicit and str(explicit).strip().lower() != "auto":
-        return str(explicit).strip()
+        return str(explicit).strip(), "explicit"
 
     root = _git_root(cwd)
     rkey = repo_key(cwd)
@@ -148,33 +164,84 @@ def resolve(data=None):
     if rkey:
         for b in binds:
             if b.get("key_type") == "repo" and (b.get("key") or "").lower() == rkey:
-                return b["namespace"]
+                return b["namespace"], "binding_repo"
 
     # 3. cache host-scoped: host_repo (this host + repo) then host_path (this host + abspath)
     if rkey:
         for b in binds:
             if (b.get("key_type") == "host_repo" and b.get("host_id") == mid
                     and (b.get("key") or "").lower() == rkey):
-                return b["namespace"]
+                return b["namespace"], "binding_host_repo"
     abspath = os.path.realpath(cwd)
     for b in binds:
         if (b.get("key_type") == "host_path" and b.get("host_id") == mid
                 and os.path.realpath(b.get("key") or "") == abspath):
-            return b["namespace"]
+            return b["namespace"], "binding_host_path"
 
     # 4. legacy local override file (offline / pre-#20 migration fallback)
     m = _load(_OVR) or {}
     for k in (cwd, os.path.realpath(cwd), root):
         if k and m.get(k):
-            return m[k]
+            return m[k], "legacy"
 
     # 5. env default
     env = os.environ.get("MEMNOS_NS", "").strip()
     if env and env.lower() != "auto":
-        return env
+        return env, "env"
 
-    # 6. derived default
-    return "proj:" + (os.path.basename(root) if root else (os.path.basename(cwd.rstrip("/")) or "default"))
+    # 6. derived default (NO binding for this repo — write-side warns + offers to bind)
+    return ("proj:" + (os.path.basename(root) if root else
+                       (os.path.basename(cwd.rstrip("/")) or "default")), "default")
+
+
+# --- write-side surfacing helpers (issue #20, Part B) -----------------------
+# A binding exists for this location iff the source is one of these.
+BOUND_SOURCES = ("explicit", "binding_repo", "binding_host_repo", "binding_host_path", "legacy")
+
+
+def bind_key_for(data=None):
+    """The key a user would `memnos bind` to persist THIS location's routing — the
+    portable repo key if there's a remote, else this host's abspath. Used by the
+    default-fallback hint so the offer is copy-pasteable."""
+    cwd = (data or {}).get("cwd") or os.getcwd()
+    return repo_key(cwd) or os.path.realpath(cwd)
+
+
+def default_fallback_hint(ns, data=None):
+    """One-line warning + bind offer for a default-fallback write (source == 'default').
+    SUGGEST, never auto-route: we don't create the binding, we make the fix one step away."""
+    key = bind_key_for(data)
+    return (f"no namespace bound for this repo — writing to default '{ns}'. "
+            f"Bind future writes here: memnos bind {key} {ns}")
+
+
+def session_first_time(session_id, ns, kind="dest"):
+    """Per-session/ns dedupe so the hook surfaces the destination line ONCE per session
+    and again only when the namespace CHANGES — never every turn. Returns True the first
+    time it's called for a given (session_id, ns, kind), False afterwards. Marker files
+    live under ~/.memnos/sessmark/; best-effort (any FS error -> treat as first time so
+    the user still sees it). A missing session_id falls back to 'nosess' (still deduped
+    within a process run via the same marker)."""
+    sid = re.sub(r"[^A-Za-z0-9_.-]", "_", str(session_id or "nosess"))[:120]
+    nsk = re.sub(r"[^A-Za-z0-9_.:-]", "_", str(ns or "?"))[:120]
+    d = os.path.join(_DIR, "sessmark")
+    marker = os.path.join(d, f"{sid}.{kind}.{nsk}")
+    try:
+        if os.path.exists(marker):
+            return False
+        os.makedirs(d, exist_ok=True)
+        # a CHANGE = a different ns for this session+kind: clear this session's other
+        # markers of the same kind so the new destination surfaces.
+        for f in os.listdir(d):
+            if f.startswith(f"{sid}.{kind}.") and f != os.path.basename(marker):
+                try:
+                    os.remove(os.path.join(d, f))
+                except Exception:
+                    pass
+        open(marker, "w").close()
+        return True
+    except Exception:
+        return True
 
 
 def set_override(namespace, cwd=None):

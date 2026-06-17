@@ -270,6 +270,85 @@ class Control:
                     return r
         return None
 
+    # --- suggest-on-mismatch (issue #20, Part B) ---------------------------
+    @staticmethod
+    def suggest_namespace(conn, principal_id, write_ns, entity_names, *,
+                          schema="tenant_memnos", min_entities=2, dominance=0.6,
+                          max_candidate_ns=12):
+        """NON-BLOCKING advisory: do the write's extracted entities look like they belong
+        to a DIFFERENT namespace than the one it landed in? SUGGEST, NEVER auto-route — the
+        write already landed in write_ns; this only returns a hint the client surfaces.
+
+        Cheap + bounded:
+          - entity_names is the small set the extractor produced for THIS write (<= a
+            handful); we lower-case + dedupe and cap it.
+          - one indexed query over `entities` (UNIQUE(namespace,name), ns b-tree) counts,
+            per namespace, how many of those names already exist as entities — limited to
+            the principal's OWN writable namespaces (bounded set) MINUS write_ns.
+          - if some OTHER namespace contains a DOMINANT share of these entities AND the
+            write's own namespace contains few of them, return a suggestion.
+
+        Returns {"namespace": <other>, "reason": "..."} or None. No heavy scan: it touches
+        only the entities table by (namespace,name), both indexed.
+        """
+        names = sorted({(n or "").strip().lower() for n in (entity_names or []) if (n or "").strip()})
+        if len(names) < min_entities:
+            return None
+        # the principal's OWN writable namespaces (can_write), excluding the write target.
+        writable = [g["namespace"] for g in Control.authorized_namespaces(conn, principal_id)
+                    if g.get("can_write")]
+        # expand patterns against namespaces that actually hold entities (bounded candidate set)
+        with conn.cursor() as c:
+            c.execute(f"SELECT DISTINCT namespace FROM {schema}.entities")
+            existing = [r["namespace"] for r in c.fetchall()]
+
+        def covered(ns):
+            for p in writable:
+                if p == "*" or p == ns:
+                    return True
+                if p.endswith(":*") and ns.startswith(p[:-1]):
+                    return True
+            return False
+
+        cand = [ns for ns in existing if ns != write_ns and covered(ns)]
+        if not cand:
+            return None
+        cand = cand[:max_candidate_ns]                 # hard cap — never unbounded
+        # how many of THESE entities does the write's own ns already have?
+        with conn.cursor() as c:
+            c.execute(f"SELECT count(DISTINCT lower(name)) AS n FROM {schema}.entities "
+                      f"WHERE namespace=%s AND lower(name) = ANY(%s)", (write_ns, names))
+            own = c.fetchone()["n"]
+            # per-candidate overlap, one indexed query
+            c.execute(f"SELECT namespace, count(DISTINCT lower(name)) AS n FROM {schema}.entities "
+                      f"WHERE namespace = ANY(%s) AND lower(name) = ANY(%s) "
+                      f"GROUP BY namespace ORDER BY n DESC LIMIT 1", (cand, names))
+            top = c.fetchone()
+        if not top or not top["n"]:
+            return None
+        total = len(names)
+        other_n, other_ns = top["n"], top["namespace"]
+        # DOMINANCE: the other ns holds a strong majority of these entities, the write's own
+        # ns holds clearly fewer, and the other ns out-covers the write's own.
+        if (other_n / total) >= dominance and other_n > own:
+            return {"namespace": other_ns,
+                    "reason": f"{other_n} of these {total} entities are mostly in {other_ns}"}
+        return None
+
+    @staticmethod
+    def write_recap(conn, principal_id, *, days=7, limit=20):
+        """Per-namespace WRITE count for this principal over the last `days` (issue #20,
+        Part B periodic recap). Counts successful write actions in the audit log. Cheap:
+        one indexed (audit_ts) aggregate. Returns [{namespace, writes}] desc."""
+        with conn.cursor() as c:
+            c.execute("SELECT namespace, count(*) AS writes FROM memnos_control.audit_log "
+                      "WHERE principal_id=%s AND ok AND namespace IS NOT NULL "
+                      "AND action IN ('remember','memory/write','memory_write') "
+                      "AND ts > now() - (%s::int || ' days')::interval "
+                      "GROUP BY namespace ORDER BY writes DESC LIMIT %s",
+                      (principal_id, days, limit))
+            return c.fetchall()
+
     # --- host registry (issue #20, A3) -------------------------------------
     @staticmethod
     def upsert_host(conn, principal_id, machine_id, friendly_name=None):
