@@ -362,6 +362,7 @@ def test_remember_suggests_on_mismatch_llm_ordering(conn, a_ns, b_ns):
         for ns in (a_ns, b_ns):
             conn.execute(f"DELETE FROM {SCHEMA}.entities WHERE namespace=%s", (ns,))
             conn.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s", (ns,))
+            conn.execute(f"DELETE FROM {SCHEMA}.semantic WHERE namespace=%s", (ns,))
 
         def lcall(path, body):
             req = urllib.request.Request(base + path, method="POST",
@@ -413,10 +414,11 @@ def test_remember_suggests_on_mismatch_llm_ordering(conn, a_ns, b_ns):
         # parks a nudge that the next SessionStart hook reads via GET /nudges. Exercise it
         # end-to-end: async mismatch write to A -> a pending nudge for A->B appears -> a
         # second read is empty (delivered once).
-        # Reset A's entity state first: the earlier SYNC mismatch write above already
-        # self-polluted A (by design), which would legitimately suppress the suggestion now.
-        # We want to isolate the async-nudge mechanics from that accumulated state.
+        # Reset A's entity + semantic state first: the earlier SYNC mismatch write above
+        # already self-polluted A (by design), which would legitimately suppress the
+        # suggestion now. We want to isolate the async-nudge mechanics from that state.
         conn.execute(f"DELETE FROM {SCHEMA}.entities WHERE namespace=%s", (a_ns,))
+        conn.execute(f"DELETE FROM {SCHEMA}.semantic WHERE namespace=%s", (a_ns,))
         def gget(path):
             req = urllib.request.Request(base + path, method="GET",
                 headers={"Authorization": "Bearer " + tok})
@@ -485,16 +487,17 @@ def main():
         test_suggestion_helper(conn, pid, a_ns, b_ns)
         test_remember_echoes_ns_and_lands(conn, pid, tok, a_ns, b_ns)
         test_remember_suggests_on_mismatch_live(conn, pid, tok, a_ns, b_ns)
-        # clean the scratch namespaces before the ordering test re-seeds them via a
-        # second (fake-extract) server, so its assertions start from a known-empty state.
+        # clean ALL tables so dedup (semantic) + entity graph don't bleed across sub-tests.
         for ns in (a_ns, b_ns):
             conn.execute(f"DELETE FROM {SCHEMA}.entities WHERE namespace=%s", (ns,))
             conn.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s", (ns,))
+            conn.execute(f"DELETE FROM {SCHEMA}.semantic WHERE namespace=%s", (ns,))
         test_remember_suggests_on_mismatch_llm_ordering(conn, a_ns, b_ns)
     finally:
         for ns in (a_ns, b_ns):
             conn.execute(f"DELETE FROM {SCHEMA}.entities WHERE namespace=%s", (ns,))
             conn.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s", (ns,))
+            conn.execute(f"DELETE FROM {SCHEMA}.semantic WHERE namespace=%s", (ns,))
         conn.execute("DELETE FROM memnos_control.api_tokens WHERE principal_id=%s", (pid,))
         conn.execute("DELETE FROM memnos_control.grants WHERE principal_id=%s", (pid,))
         conn.execute("DELETE FROM memnos_control.principals WHERE id=%s", (pid,))

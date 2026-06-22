@@ -953,6 +953,7 @@ class BrainStore:
                 f"         author_principal AS author, namespace"
                 f"  FROM {schema}.semantic WHERE namespace = ANY(%(nss)s)"
                 f"    AND memory_type='constraint' AND valid_to IS NULL AND expired_at IS NULL"
+                f"    AND (source_turn_ids IS NULL OR cardinality(source_turn_ids) = 0)"
                 f"  UNION ALL"
                 f"  SELECT text AS content, 'turn'::text AS kind, observed_at AS ts,"
                 f"         author_principal AS author, namespace"

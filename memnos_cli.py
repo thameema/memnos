@@ -1351,9 +1351,12 @@ def cmd_secret(args, cfg):
             if not old:
                 sys.exit("no current MEMNOS_SECRET_KEY to rotate from")
             new = Vault.keygen()
-            n = Vault.rotate_key(conn, old, new)
+            n, skipped = Vault.rotate_key(conn, old, new)
             cfg["secret_key"] = new; save_config(cfg)
-            print(f"rotated {n} secret(s). New key saved to config; update .env if you use it:\n  MEMNOS_SECRET_KEY={new}")
+            msg = f"rotated {n} secret(s). New key saved to config; update .env if you use it:\n  MEMNOS_SECRET_KEY={new}"
+            if skipped:
+                msg += f"\n  (skipped {len(skipped)} secret(s) encrypted under a different key: {', '.join(skipped)})"
+            print(msg)
     except VaultLocked as e:
         sys.exit(f"vault locked: {e}")
 

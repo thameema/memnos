@@ -90,7 +90,7 @@ def main():
     print("=== key rotation ===")
     Vault.set(conn, "rot_secret", "rotate-me-please")
     new_key = Vault.keygen()
-    n_rot = Vault.rotate_key(conn, saved, new_key)
+    n_rot, skipped = Vault.rotate_key(conn, saved, new_key)
     check("rotate re-encrypted >=1 secret", n_rot >= 1)
     os.environ["MEMNOS_SECRET_KEY"] = new_key
     check("decrypts under NEW key after rotate", Vault.get(conn, "rot_secret") == "rotate-me-please")
