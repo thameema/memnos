@@ -94,23 +94,28 @@ class Vault:
 
     @staticmethod
     def rotate_key(conn, old_key_b64, new_key_b64):
-        """Re-encrypt EVERY secret from the old master key to a new one, atomically.
-        Decrypt with old, re-encrypt with fresh nonces under new. After this, update
-        MEMNOS_SECRET_KEY to new_key_b64 (the old key no longer decrypts anything).
-        Returns the count rotated."""
+        """Re-encrypt secrets from the old master key to a new one.
+        Secrets that fail to decrypt with old_key (encrypted under a different key) are
+        skipped — they remain as-is. Returns (rotated_count, skipped_names)."""
+        from cryptography.exceptions import InvalidTag as _InvalidTag
         def _k(b64):
             k = base64.b64decode(b64)
             if len(k) != 32:
                 raise VaultLocked("key must decode to 32 bytes (AES-256)")
             return k
         old, new = AESGCM(_k(old_key_b64)), AESGCM(_k(new_key_b64))
+        skipped = []
         with conn.cursor() as c:
             c.execute("SELECT name, nonce, ciphertext FROM memnos_control.secrets")
             rows = c.fetchall()
             for r in rows:
-                pt = old.decrypt(bytes(r["nonce"]), bytes(r["ciphertext"]), r["name"].encode())
+                try:
+                    pt = old.decrypt(bytes(r["nonce"]), bytes(r["ciphertext"]), r["name"].encode())
+                except _InvalidTag:
+                    skipped.append(r["name"])
+                    continue
                 nonce = os.urandom(12)
                 ct = new.encrypt(nonce, pt, r["name"].encode())
                 c.execute("UPDATE memnos_control.secrets SET nonce=%s, ciphertext=%s, updated_at=now() "
                           "WHERE name=%s", (nonce, ct, r["name"]))
-        return len(rows)
+        return len(rows) - len(skipped), skipped
