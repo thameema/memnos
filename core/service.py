@@ -590,7 +590,8 @@ class MemnosMemory:
         t_sql = time.perf_counter()
         b["raw"] = self.store.search_raw_turns(self.schema, namespace, qv, query, k)
         if not intent.temporal:
-            b["sem"] = self.store.search_semantic(self.schema, namespace, qv, query, k)
+            b["sem"] = self.store.search_semantic(self.schema, namespace, qv, query, k,
+                                                   current_only=True)
         else:
             b["sem"] = self.store.search_semantic_temporal(
                 self.schema, namespace, qv, query, k,
@@ -600,7 +601,8 @@ class MemnosMemory:
         for kns in extra_namespaces:
             for r in self.store.search_raw_turns(self.schema, kns, qv, query, k):
                 r["_ns"] = kns; b["raw"].append(r)
-            for r in self.store.search_semantic(self.schema, kns, qv, query, k):
+            for r in self.store.search_semantic(self.schema, kns, qv, query, k,
+                                                 current_only=True):
                 r["_ns"] = kns; b.setdefault("sem", []).append(r)
         b["raw"] = self._dedup_candidates(b["raw"])   # issue #2: collapse cron-x10 dups
         t_stale = time.perf_counter()
@@ -874,30 +876,27 @@ class MemnosMemory:
             return scored
 
         if not intent.temporal:
-            sem_rows = rr(b["sem"], "fact")
             if not b["ents"]:
+                sem_rows = rr(b.get("sem") or [], "fact")
                 fresh, stale = self._demote_stale(rr(b["raw"], "turn")[:raw_quota])
                 if broad:                                     # facts lead on broad questions
                     return sem_rows[:fact_quota] + fresh + stale
                 return fresh + sem_rows[:fact_quota] + stale
-            seen, eg = set(), []
-            for r in b.get("dump", []):
-                c = r["content"]
-                if c in seen:
-                    continue
-                seen.add(c)
-                row = {"content": c, "kind": "fact",
-                       "date": r["valid_from"].date().isoformat() if r.get("valid_from") else None}
-                if r.get("author"):
-                    row["author"] = r["author"]
-                if r.get("memory_type"):
-                    row["type"] = r["memory_type"]
-                eg.append(row)
-            sem_rows = [r for r in sem_rows if r["content"] not in seen]
+            # Entity path (issue #10 follow-up): entity-dump + semantic facts unified through
+            # the cross-encoder reranker so every fact carries a real score. Previously the
+            # dossier rows bypassed rr() and arrived score=None, always sorting below turns.
+            dump_rows = b.get("dump") or []
+            dump_contents = {r["content"] for r in dump_rows if r.get("content")}
+            sem_for_entity = [r for r in (b.get("sem") or [])
+                              if r.get("content") not in dump_contents]
+            # entity-dump rows first → their position preserved when the cross-encoder ties
+            all_fact_cands = dump_rows + sem_for_entity
+            all_facts_ranked = rr(all_fact_cands, "fact")
             fresh, stale = self._demote_stale(rr(b["raw"], "turn")[:raw_quota])
+            cap = fact_quota + entity_quota                   # same total-fact budget
             if broad:                                         # facts/dossiers lead
-                return eg[:entity_quota] + sem_rows[:fact_quota] + fresh + stale
-            return fresh + eg[:entity_quota] + sem_rows[:fact_quota] + stale
+                return all_facts_ranked[:cap] + fresh + stale
+            return fresh + all_facts_ranked[:cap] + stale
 
         tl_rows, tl_seen = [], set()
         for r in b.get("tl", []):
