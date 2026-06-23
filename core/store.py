@@ -473,7 +473,7 @@ class BrainStore:
                 f"WHERE namespace=%(ns)s AND kind='fact' AND valid_to IS NULL "
                 f"AND expired_at IS NULL AND embedding IS NOT NULL "
                 f"AND (%(ex)s::bigint IS NULL OR id <> %(ex)s) "
-                f"AND (%(obs)s::timestamptz IS NULL OR observed_at <= %(obs)s) "
+                f"AND (%(obs)s::timestamptz IS NULL OR observed_at < %(obs)s) "
                 f"ORDER BY embedding <=> %(v)s::{self.vtype} LIMIT %(k)s",
                 {"v": vlit(vec), "ns": ns, "ex": exclude_id, "obs": observed_before, "k": k})
             return c.fetchall()
