@@ -941,7 +941,8 @@ class MemnosMemory:
         for ns in namespaces:
             for r in self.store.search_raw_turns(self.schema, ns, qv, query, k):
                 r["_ns"] = ns; raw_c.append(r)
-            for r in self.store.search_semantic(self.schema, ns, qv, query, k):
+            for r in self.store.search_semantic(self.schema, ns, qv, query, k,
+                                                 current_only=True):
                 r["_ns"] = ns; sem_c.append(r)
         # cap candidates by RRF score before the (CPU) cross-encoder rerank
         raw_c = sorted(raw_c, key=lambda x: x.get("score", 0), reverse=True)[:60]
