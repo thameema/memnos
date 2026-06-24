@@ -2005,9 +2005,34 @@ def cmd_hook(args, cfg):
     if args.which == "status":
         # SessionStart: ONE visible line so the user always knows whether memory is on —
         # no silent loss of capture after a reboot.
+        _OFFLINE_DIR = os.path.join(CONFIG_DIR, "offline_queue")
         parts = []                                  # 1s health timeouts — session start must
         if _server_up(url, timeout=1):              # never feel slowed by this hook
             parts.append(f"memory ACTIVE → {ns}")
+            # Drain offline queue: turns written while the server was down are replayed
+            # in chronological order (filenames are epoch-ms prefixed).
+            try:
+                qfiles = sorted(f for f in os.listdir(_OFFLINE_DIR) if f.endswith(".json")) \
+                    if os.path.isdir(_OFFLINE_DIR) else []
+                drained = 0
+                for fname in qfiles:
+                    fpath = os.path.join(_OFFLINE_DIR, fname)
+                    try:
+                        with open(fpath) as fh:
+                            item = json.load(fh)
+                        qhdr = {"Content-Type": "application/json",
+                                **({"Authorization": "Bearer " + token} if token else {})}
+                        req = urllib.request.Request(f"{url}/remember", method="POST",
+                            data=json.dumps(item).encode(), headers=qhdr)
+                        urllib.request.urlopen(req, timeout=8).read()
+                        os.remove(fpath)
+                        drained += 1
+                    except Exception:
+                        break   # server might be flaky — stop draining, retry next session
+                if drained:
+                    parts[0] += f" (+{drained} offline turn{'s' if drained != 1 else ''} replayed)"
+            except Exception:
+                pass
         else:
             parts.append(f"⚠ memory OFF — server unreachable at {url}. Run `memnos start` "
                          "(`memnos autostart` makes it survive reboots)")
@@ -2114,6 +2139,19 @@ def cmd_hook(args, cfg):
         if isinstance(lam, str) and lam.strip():
             a_text = lam.strip()
 
+    _OFFLINE_DIR = os.path.join(CONFIG_DIR, "offline_queue")
+
+    def _queue_offline(t, speaker):
+        """Write one turn to the offline queue so it can be drained on next session start."""
+        try:
+            os.makedirs(_OFFLINE_DIR, exist_ok=True)
+            import time as _time
+            fname = f"{int(_time.time() * 1000)}_{speaker}.json"
+            with open(os.path.join(_OFFLINE_DIR, fname), "w") as fh:
+                json.dump({"namespace": ns, "text": t, "speaker": speaker, "async": True}, fh)
+        except Exception:
+            pass
+
     def _save(t, speaker):
         try:
             # async: the hook never reads the fact count — the server stores the raw
@@ -2123,7 +2161,7 @@ def cmd_hook(args, cfg):
                                  "async": True}).encode(), headers=hdr)
             urllib.request.urlopen(req, timeout=12).read()
         except Exception:
-            pass
+            _queue_offline(t, speaker)   # server down — park for next-session drain
 
     text = (text or "").strip()
     low = text.lower()
