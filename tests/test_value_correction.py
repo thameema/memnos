@@ -215,8 +215,7 @@ def main():
     check("Vortan/Lisbon is current in DB (valid_to IS NULL)",
           "Lisbon" in vrows and vrows["Lisbon"] is None)
 
-    # Now use the full recall pipeline (recall_prefetch → recall_fetch → recall_rank)
-    # with "Vortan" as an entity name — triggers the entity-guarantee arm (timeline dump)
+    # Non-temporal path: entity-guarantee arm (b["dump"]) — fixed by timeline current_only
     qv_vortan = vortan_embed("Vortan datacenter location")
     bundle = mem.recall_prefetch(NS2, "Vortan datacenter location")
     bundle = mem.recall_fetch(NS2, "Vortan datacenter location", qv=qv_vortan, pre=bundle)
@@ -226,6 +225,29 @@ def main():
           not any("Helsinki" in c and "no longer" not in c for c in fact_contents))
     check("entity-dump arm: current Lisbon fact present in recall",
           any("Lisbon" in c for c in fact_contents))
+
+    print("=== Bug 5: temporal-current path excludes superseded facts (tl_rows + scoring) ===")
+    # "current/now/latest" queries route to the temporal arm (b["tl"]) via timeline().
+    # Previously: timeline() had no valid_to filter → Helsinki leaked into b["tl"];
+    # and tl_rows bypassed rr() → score=None. Fix: current_only=True when intent.current
+    # with no date range; tl_cands routed through rr() for real scores.
+    for q_label, q_text in [
+        ("temporal-current", "where is the current datacenter for Vortan"),
+        ("temporal-now",     "what is the latest datacenter for Vortan now"),
+    ]:
+        qv_t = vortan_embed(q_text)
+        tb = mem.recall_prefetch(NS2, q_text)
+        tb = mem.recall_fetch(NS2, q_text, qv=qv_t, pre=tb)
+        tr = mem.recall_rank(q_text, tb)
+        tf = [r for r in tr if r.get("kind") == "fact"]
+        tf_contents = [r.get("content", "") for r in tf]
+        check(f"{q_label}: superseded Helsinki fact absent from recall",
+              not any("Helsinki" in c and "no longer" not in c for c in tf_contents))
+        check(f"{q_label}: current Lisbon fact present in recall",
+              any("Lisbon" in c for c in tf_contents))
+        no_score_facts = [r for r in tf if r.get("score") is None]
+        check(f"{q_label}: all fact rows have scores (not None)",
+              len(no_score_facts) == 0)
 
     # cleanup
     with store.conn.cursor() as c:
