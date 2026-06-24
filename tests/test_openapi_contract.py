@@ -162,6 +162,8 @@ def cleanup(conn):
                       "WHERE b.principal_id=pr.id AND pr.name=%s", (p,))
             c.execute("DELETE FROM memnos_control.hosts h USING memnos_control.principals pr "
                       "WHERE h.principal_id=pr.id AND pr.name=%s", (p,))
+            c.execute("DELETE FROM memnos_control.ns_nudges n USING memnos_control.principals pr "
+                      "WHERE n.principal_id=pr.id AND pr.name=%s", (p,))
             c.execute("DELETE FROM memnos_control.principals WHERE name=%s", (p,))
 
 

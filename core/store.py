@@ -734,11 +734,11 @@ class BrainStore:
                 for r in c.fetchall():
                     if r["id"] not in seen:
                         seen.add(r["id"]); rows.append(r)
-            # first/last boundary facts
+            # first/last boundary facts — apply same valid_to guard as the main CTE
             if order in ("asc", "desc"):
                 c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience "
                           f"FROM {schema}.semantic "
-                          f"WHERE namespace=%s AND expired_at IS NULL AND valid_from IS NOT NULL "
+                          f"WHERE namespace=%s AND expired_at IS NULL {cur} AND valid_from IS NOT NULL "
                           f"ORDER BY valid_from {('ASC' if order=='asc' else 'DESC')} LIMIT 6", (ns,))
                 for r in c.fetchall():
                     if r["id"] not in seen:

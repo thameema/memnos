@@ -562,8 +562,12 @@ class MemnosMemory:
             # engine). Vector search structurally misses dated evidence ('when did X'
             # ≁ 'I moved out') — a JOIN/range, not a cosine bet. This is the arm that
             # lifted temporal recall 12% → 70%.
+            # current_only: "current/now/latest" with NO date range means the user wants
+            # the present state, not a history walk — apply valid_to IS NULL filter.
+            tl_current = intent.current and intent.start is None and intent.end is None
             b["tl"] = self.store.timeline(self.schema, namespace, b["ents"], start=intent.start,
-                                          end=intent.end, order=intent.order or "asc", limit=12)
+                                          end=intent.end, order=intent.order or "asc", limit=12,
+                                          current_only=tl_current)
         return b
 
     def recall_fetch(self, namespace: str, query: str, *, k=40, qv=None,
@@ -898,21 +902,17 @@ class MemnosMemory:
                 return all_facts_ranked[:cap] + fresh + stale
             return fresh + all_facts_ranked[:cap] + stale
 
-        tl_rows, tl_seen = [], set()
+        # Deduplicate timeline candidates, then score through rr() so every temporal fact
+        # carries a real cross-encoder score (previously tl_rows bypassed rr() → score=None).
+        tl_cands, tl_seen = [], set()
         for r in b.get("tl", []):
             c = r["content"]
-            if c in tl_seen:
-                continue
-            tl_seen.add(c)
-            row = {"content": c, "kind": "fact",
-                   "date": r["valid_from"].date().isoformat() if r.get("valid_from") else None}
-            if r.get("author"):
-                row["author"] = r["author"]
-            if r.get("memory_type"):
-                row["type"] = r["memory_type"]
-            tl_rows.append(row)
+            if c not in tl_seen:
+                tl_seen.add(c)
+                tl_cands.append(r)
+        tl_rows = rr(tl_cands, "fact")
         sem_rows = [r for r in rr(b["sem"], "fact") if r["content"] not in tl_seen]
-        # small raw + GUARANTEED timeline + a few reranked relevance facts
+        # small raw + GUARANTEED timeline (scored) + a few reranked relevance facts
         fresh, stale = self._demote_stale(rr(b["raw"], "turn")[:5])
         return fresh + tl_rows[:12] + sem_rows[:6] + stale
 
