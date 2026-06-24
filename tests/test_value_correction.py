@@ -34,8 +34,9 @@ NS = "test:valuecorrect"
 SCHEMA = "tenant_memnos"
 PASS = FAIL = 0
 
-# Vocabulary for bag-of-words embedding (covers all test sentences)
-_VOCAB = ["veldoria", "capital", "vantaria", "mornhaven", "longer", "correction", "now", "city"]
+# Vocabulary for bag-of-words embedding (covers all test sentences including Bug 4)
+_VOCAB = ["veldoria", "capital", "vantaria", "mornhaven", "longer", "correction", "now", "city",
+          "vortan", "datacenter", "helsinki", "lisbon", "primary", "update"]
 
 
 def _bow_embed(text, dim):
@@ -170,10 +171,68 @@ def main():
     check("Mornhaven dump fact is present in results",
           any("Mornhaven" in r.get("content", "") for r in fact_rows))
 
+    print("=== Bug 4: entity-dump arm excludes superseded facts (timeline current_only) ===")
+    # Regression for the Vortan/Helsinki→Lisbon scenario from the test-laptop re-verify.
+    # The entity-guarantee arm called timeline() without current_only=True, so superseded
+    # facts reached b["dump"] even though b["sem"] was correctly filtered. Fix: pass
+    # current_only=True to timeline() for the non-temporal entity path.
+    NS2 = "test:valuecorrect:vortan"
+    with store.conn.cursor() as c:
+        c.execute(f"DELETE FROM {SCHEMA}.semantic WHERE namespace=%s", (NS2,))
+        c.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s", (NS2,))
+
+    dv1 = datetime(2024, 3, 1, tzinfo=timezone.utc)
+    dv2 = datetime(2025, 9, 1, tzinfo=timezone.utc)
+    vortan_embed = lambda t: _bow_embed(t, dim)
+
+    # Write W1: Vortan datacenter is Helsinki
+    helsinki_stmt = "The primary datacenter for Vortan is in Helsinki."
+    tid_v1 = store.insert_raw_turn(SCHEMA, NS2, None, "user", helsinki_stmt, dv1,
+                                   vortan_embed("Vortan datacenter Helsinki"))
+    mem.write_facts(NS2, [{"subject": "Vortan", "predicate": "datacenter",
+                            "object": "Helsinki",
+                            "statement": helsinki_stmt}], dv1, turn_id=tid_v1)
+
+    # Write W2: correction — Vortan datacenter is now Lisbon, not Helsinki
+    lisbon_stmt = "Update: primary datacenter for Vortan is now in Lisbon, not Helsinki."
+    tid_v2 = store.insert_raw_turn(SCHEMA, NS2, None, "user", lisbon_stmt, dv2,
+                                   vortan_embed("Vortan datacenter Lisbon not Helsinki"))
+    mem.write_facts(NS2, [
+        {"subject": "Vortan", "predicate": "datacenter", "object": "Lisbon",
+         "statement": "The primary datacenter for Vortan is in Lisbon."},
+        {"subject": "Vortan", "predicate": "datacenter", "object": None,
+         "statement": "The Vortan datacenter is no longer in Helsinki."},
+    ], dv2, turn_id=tid_v2)
+
+    # Verify DB: Helsinki superseded, Lisbon current
+    with store.conn.cursor() as c:
+        c.execute(f"SELECT object, valid_to FROM {SCHEMA}.semantic "
+                  f"WHERE namespace=%s AND predicate='datacenter' AND subject_entity='Vortan'",
+                  (NS2,))
+        vrows = {r["object"]: r["valid_to"] for r in c.fetchall() if r["object"]}
+    check("Vortan/Helsinki is superseded in DB (valid_to SET)",
+          "Helsinki" in vrows and vrows["Helsinki"] is not None)
+    check("Vortan/Lisbon is current in DB (valid_to IS NULL)",
+          "Lisbon" in vrows and vrows["Lisbon"] is None)
+
+    # Now use the full recall pipeline (recall_prefetch → recall_fetch → recall_rank)
+    # with "Vortan" as an entity name — triggers the entity-guarantee arm (timeline dump)
+    qv_vortan = vortan_embed("Vortan datacenter location")
+    bundle = mem.recall_prefetch(NS2, "Vortan datacenter location")
+    bundle = mem.recall_fetch(NS2, "Vortan datacenter location", qv=qv_vortan, pre=bundle)
+    ranked = mem.recall_rank("Vortan datacenter location", bundle)
+    fact_contents = [r.get("content", "") for r in ranked if r.get("kind") == "fact"]
+    check("entity-dump arm: superseded Helsinki fact absent from recall",
+          not any("Helsinki" in c and "no longer" not in c for c in fact_contents))
+    check("entity-dump arm: current Lisbon fact present in recall",
+          any("Lisbon" in c for c in fact_contents))
+
     # cleanup
     with store.conn.cursor() as c:
         c.execute(f"DELETE FROM {SCHEMA}.semantic WHERE namespace=%s", (NS,))
         c.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s", (NS,))
+        c.execute(f"DELETE FROM {SCHEMA}.semantic WHERE namespace=%s", (NS2,))
+        c.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s", (NS2,))
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 
