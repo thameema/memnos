@@ -745,14 +745,20 @@ class BrainStore:
                         seen.add(r["id"]); rows.append(r)
         return rows
 
-    def timeline(self, schema, ns, entities, *, start=None, end=None, order="asc", limit=20) -> list[dict]:
+    def timeline(self, schema, ns, entities, *, start=None, end=None, order="asc", limit=20,
+                 current_only=False) -> list[dict]:
         """TIMELINE retrieval — the fix for 'vector can't find dated evidence'. Pull all
         facts about the query's entities, SORTED by event time (valid_from), optionally
         range-filtered (valid_from BETWEEN start AND end). A JOIN/range, not a cosine bet,
         so 'when did X happen' / 'what did X do in May 2023' surface the dated fact even
-        though the question doesn't lexically match it. Pure SQL, no LLM."""
+        though the question doesn't lexically match it. Pure SQL, no LLM.
+
+        current_only=True: add AND valid_to IS NULL — used by the non-temporal entity-
+        guarantee arm so superseded facts never reach b["dump"] for present-tense recall."""
         self._chk(schema)
         where = ["namespace=%s", "expired_at IS NULL", "valid_from IS NOT NULL"]
+        if current_only:
+            where.append("valid_to IS NULL")
         params = [ns]
         if entities:
             ors = []

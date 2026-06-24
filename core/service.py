@@ -556,7 +556,7 @@ class MemnosMemory:
                 # retrieval misses. Guarantee the facts about the query's entities — the
                 # same JOIN-not-cosine trick the timeline arm uses for temporal.
                 b["dump"] = self.store.timeline(self.schema, namespace, b["ents"],
-                                                order="desc", limit=20)
+                                                order="desc", limit=20, current_only=True)
         else:
             # TEMPORAL: GUARANTEE the entity timeline (parity with the tested phaseA
             # engine). Vector search structurally misses dated evidence ('when did X'
