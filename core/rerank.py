@@ -205,12 +205,22 @@ def _rerank_threads() -> int | None:
     return None if n <= 0 else n
 
 
+def _model_cache_dir() -> str:
+    """Persistent model cache under ~/.memnos/models — survives reboots and macOS TMPDIR
+    purges (the default cache is TMPDIR which macOS clears at reboot, causing recall 500s
+    after every restart when the ONNX blob is gone but the symlink remains)."""
+    d = os.path.join(os.path.expanduser("~"), ".memnos", "models")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 @functools.lru_cache(maxsize=2)
 def _model(name: str):
     from fastembed.rerank.cross_encoder import TextCrossEncoder
     return TextCrossEncoder(model_name=name,
                             threads=_rerank_threads(),
-                            enable_cpu_mem_arena=_arena_enabled())
+                            enable_cpu_mem_arena=_arena_enabled(),
+                            cache_dir=_model_cache_dir())
 
 
 def _passthrough(n: int) -> list[tuple[int, float]]:
@@ -233,7 +243,24 @@ def rerank(query: str, candidates: list[str], model: str = DEFAULT_RERANKER) -> 
     sim = _simulated_ms_per_pair()
     if sim is not None:                                      # test hook: emulate a slow box
         time.sleep(sim * len(head) / 1000.0)
-    logits = list(_model(model).rerank(query, head))         # raw logits, candidate order
+    try:
+        logits = list(_model(model).rerank(query, head))     # raw logits, candidate order
+    except Exception as e:
+        # Model file missing/corrupt (e.g. macOS TMPDIR purge with stale symlink).
+        # Evict the broken cached model object, serve this request from RRF order,
+        # and kick off a background re-download so the next request can score properly.
+        _model.cache_clear()
+        print(f"[memnos] WARN: reranker load failed ({e}); degrading to RRF, re-downloading in background", flush=True)
+
+        def _redownload():
+            try:
+                _model(model)           # blocks until download complete; re-populates lru_cache
+                print(f"[memnos] reranker re-downloaded to {_model_cache_dir()}", flush=True)
+            except Exception as e2:
+                print(f"[memnos] WARN: reranker re-download failed: {e2}", flush=True)
+
+        threading.Thread(target=_redownload, name="memnos-rerank-redownload", daemon=True).start()
+        return _passthrough(n)
     scores = [_sigmoid(float(s)) for s in logits]
     out = sorted(((i, scores[i]) for i in range(len(head))), key=lambda x: x[1], reverse=True)
     if len(head) < n:
