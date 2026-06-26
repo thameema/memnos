@@ -644,6 +644,64 @@ gpt-4o judge : <span class="token-num">78.4%</span>  <span class="token-cmt"># p
 </section>
 
 
+<!-- ── VS SUPERMEMORY ──────────────────────────────────────────────── -->
+<section id="vs-supermemory" class="relative z-10 py-20 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <h2 class="text-3xl font-bold text-white mb-4">memnos vs Supermemory</h2>
+      <p class="text-gray-400 max-w-xl mx-auto">Supermemory is a polished cloud-first platform with SaaS connectors and a local launcher. memnos is an open-engine, self-hosted memory layer built on PostgreSQL — no closed binary, no cloud dependency for governance.</p>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-8 mb-10">
+      <div class="vs-card">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-9 h-9 bg-gray-500/10 border border-gray-500/20 rounded-xl flex items-center justify-center">
+            <span class="text-gray-400 text-sm font-bold">SM</span>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">Supermemory</h3>
+            <p class="text-xs text-gray-500">Cloud-first memory platform with connectors</p>
+          </div>
+        </div>
+        <ul class="space-y-2 text-sm text-gray-400">
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Polished DX: one-command launcher (<code class="text-xs">npx supermemory local</code>), broad connector library (Drive, Gmail, Notion, Slack)</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Multimodal ingestion including OCR and video — memnos is text-only today</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Open MemoryBench harness — the LongMemEval benchmark we ran on is theirs</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Local mode engine is a closed-source precompiled binary (first stable release June 2026); engine internals unverifiable</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>ACL, audit, air-gapped HIPAA/SOC2, and the Claude Code plugin require paid Scale/Enterprise — not in the free local binary</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Local file store only; no Postgres option; observability is server logs</li>
+        </ul>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-9 h-9 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center">
+            <svg width="16" height="16" viewBox="0 0 28 28" fill="none"><rect x="4" y="17" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.8"/><rect x="4" y="11" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.9"/><rect x="4" y="5" width="20" height="5" rx="2.5" fill="#a78bfa"/></svg>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">memnos</h3>
+            <p class="text-xs text-gray-500">Open engine, governed by default, runs on your Postgres</p>
+          </div>
+        </div>
+        <ul class="space-y-2 text-sm text-gray-400">
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Fully open Apache-2.0 engine — every line that stores or retrieves your data is readable</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Governance in the free tier: token auth, namespace ACL, audit + cost ledger, encrypted secret vault — not a paid upgrade</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Bi-temporal, deterministic supersession — know what was true <em>now</em> vs any past date, resolved by rule not by LLM</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Runs entirely on PostgreSQL + pgvector — back up, inspect and migrate with standard database tools</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Deterministic capture via Claude Code hooks (offline queue survives server downtime) and the proxy</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Honest gap: memnos has no Drive/Gmail/Notion connectors and no multimodal ingestion today — those are real reasons to choose Supermemory if you need them</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="gradient-border">
+      <div class="gradient-border-inner px-8 py-5 rounded-2xl">
+        <p class="text-gray-300 text-sm leading-relaxed text-center"><strong class="text-white">The honest split:</strong> Supermemory wins on connectors, multimodal, and DX if you're cloud-first. memnos wins on open engine, governance in the free tier, bi-temporal correctness, and running entirely on your own Postgres. We ran our 78.4% LongMemEval score <em>on their own open benchmark harness</em> — it's the fairest comparison we can make.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ── SUPERMEMORY & LETTA (verified as of 2026-06-10) ───────────────── -->
 <section id="vs-others" class="relative z-10 py-20 fade-in">
   <div class="max-w-6xl mx-auto px-6">

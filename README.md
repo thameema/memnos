@@ -149,6 +149,8 @@ rather tell you than pretend otherwise:
 
 1. **Deterministic (Claude Code):** lifecycle hooks auto-recall before each prompt and
    auto-save after — both your message and the assistant's reply. No model discretion.
+   If the server is unreachable, turns are queued locally (`~/.memnos/offline_queue/`)
+   and replayed automatically on next session start — no turns lost to transient downtime.
 2. **Deterministic (any base-URL client) — `memnos proxy`:** point any OpenAI- or
    Anthropic-compatible client at the proxy
    (`ANTHROPIC_BASE_URL=http://127.0.0.1:8910`). It relays every request untouched
