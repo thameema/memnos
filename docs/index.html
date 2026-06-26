@@ -204,7 +204,7 @@
         Every AI coding agent keeps its own memory — one per tool, per developer, per session. memnos is the shared, governed layer across all of them: what one agent learns, every agent knows — attributed to who learned it, audited, on your own PostgreSQL.
       </p>
       <p class="text-gray-300 text-base leading-relaxed mb-8 max-w-lg">
-        <span class="text-white font-semibold">How we're different:</span> memnos captures <span class="text-white">deterministically</span> through Claude Code hooks and the capture proxy — not the model&rsquo;s discretion — runs <span class="text-white">no LLM at query time</span>, and is fully governed and audited. And we publish <span class="text-white">honest, judge-transparent</span> benchmarks: the full judge band, per-question predictions in the repo.
+        <span class="text-white font-semibold">How we're different:</span> memnos captures <span class="text-white">deterministically</span> through Claude Code hooks and the capture proxy — not the model&rsquo;s discretion (and if the server is down, turns are queued and replayed automatically) — runs <span class="text-white">no LLM at query time</span>, and is fully governed and audited. And we publish <span class="text-white">honest, judge-transparent</span> benchmarks: the full judge band, per-question predictions in the repo.
       </p>
       <div class="flex flex-wrap items-center gap-3">
         <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white font-semibold px-6 py-3 rounded-full text-sm whitespace-nowrap">Deploy free</a>
