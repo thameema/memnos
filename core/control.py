@@ -148,6 +148,20 @@ CREATE TABLE IF NOT EXISTS memnos_control.ns_nudges(
     UNIQUE(principal_id, write_ns, suggested_ns));
 CREATE INDEX IF NOT EXISTS ns_nudges_pending
     ON memnos_control.ns_nudges(principal_id) WHERE delivered_at IS NULL;
+-- agent coordination leases (issue #26): at most one unexpired+unreleased holder per (namespace,key).
+-- Partial index on released_at IS NULL (immutable predicate); expiry check enforced in acquire logic.
+CREATE TABLE IF NOT EXISTS memnos_control.leases(
+    id           bigserial PRIMARY KEY,
+    namespace    text NOT NULL,
+    key          text NOT NULL,
+    holder_id    text NOT NULL,
+    principal_id bigint REFERENCES memnos_control.principals(id),
+    acquired_at  timestamptz NOT NULL DEFAULT now(),
+    expires_at   timestamptz NOT NULL,
+    released_at  timestamptz
+);
+CREATE UNIQUE INDEX IF NOT EXISTS leases_active
+    ON memnos_control.leases(namespace, key) WHERE released_at IS NULL;
 """
 
 
@@ -539,6 +553,100 @@ class Control:
             c.execute("DELETE FROM memnos_control.subscriptions WHERE id=%s AND principal_id=%s",
                       (subscription_id, principal_id))
             return c.rowcount > 0
+
+    # --- agent coordination leases (issue #26) --------------------------------
+
+    @staticmethod
+    def lease_acquire(conn, namespace, key, holder_id, principal_id, ttl_seconds=1200):
+        """Atomic acquire. Returns {granted, holder_id, expires_at}.
+        granted=True  → caller now holds the lease.
+        granted=False → another unexpired holder has it; caller should back off."""
+        with conn.cursor() as c:
+            c.execute("""
+                INSERT INTO memnos_control.leases(namespace,key,holder_id,principal_id,expires_at)
+                VALUES (%s,%s,%s,%s, now() + (%s * interval '1 second'))
+                ON CONFLICT (namespace,key) WHERE released_at IS NULL
+                DO UPDATE SET
+                    holder_id    = EXCLUDED.holder_id,
+                    principal_id = EXCLUDED.principal_id,
+                    acquired_at  = now(),
+                    expires_at   = EXCLUDED.expires_at
+                WHERE memnos_control.leases.expires_at <= now()
+                RETURNING holder_id, expires_at
+            """, (namespace, key, holder_id, principal_id, ttl_seconds))
+            row = c.fetchone()
+        if row:
+            return {"granted": True, "holder_id": row["holder_id"],
+                    "expires_at": row["expires_at"].isoformat()}
+        # Lease is held and unexpired — read who holds it
+        with conn.cursor() as c:
+            c.execute("""
+                SELECT holder_id, expires_at FROM memnos_control.leases
+                WHERE namespace=%s AND key=%s AND released_at IS NULL AND expires_at > now()
+            """, (namespace, key))
+            cur = c.fetchone()
+        if cur:
+            return {"granted": False, "holder_id": cur["holder_id"],
+                    "expires_at": cur["expires_at"].isoformat()}
+        # Edge: expired between our two reads — tell caller to retry immediately
+        return {"granted": False, "holder_id": None, "expires_at": None, "retry": True}
+
+    @staticmethod
+    def lease_heartbeat(conn, namespace, key, holder_id, ttl_seconds=1200):
+        """Extend the expiry of a held lease. Returns {renewed, expires_at}."""
+        with conn.cursor() as c:
+            c.execute("""
+                UPDATE memnos_control.leases
+                SET expires_at = now() + (%s * interval '1 second')
+                WHERE namespace=%s AND key=%s AND holder_id=%s
+                  AND released_at IS NULL AND expires_at > now()
+                RETURNING expires_at
+            """, (ttl_seconds, namespace, key, holder_id))
+            row = c.fetchone()
+        if not row:
+            return {"renewed": False}
+        return {"renewed": True, "expires_at": row["expires_at"].isoformat()}
+
+    @staticmethod
+    def lease_release(conn, namespace, key, holder_id):
+        """Release a held lease. Returns {released: bool}."""
+        with conn.cursor() as c:
+            c.execute("""
+                UPDATE memnos_control.leases SET released_at = now()
+                WHERE namespace=%s AND key=%s AND holder_id=%s AND released_at IS NULL
+                RETURNING id
+            """, (namespace, key, holder_id))
+            row = c.fetchone()
+        return {"released": bool(row)}
+
+    @staticmethod
+    def lease_who_holds(conn, namespace, key):
+        """Return current unexpired holder info, or {held: False}."""
+        with conn.cursor() as c:
+            c.execute("""
+                SELECT holder_id, acquired_at, expires_at FROM memnos_control.leases
+                WHERE namespace=%s AND key=%s AND released_at IS NULL AND expires_at > now()
+            """, (namespace, key))
+            row = c.fetchone()
+        if not row:
+            return {"held": False, "holder_id": None}
+        return {"held": True, "holder_id": row["holder_id"],
+                "acquired_at": row["acquired_at"].isoformat(),
+                "expires_at": row["expires_at"].isoformat()}
+
+    @staticmethod
+    def lease_list(conn, namespace):
+        """List all active (unexpired, unreleased) leases in a namespace."""
+        with conn.cursor() as c:
+            c.execute("""
+                SELECT key, holder_id, acquired_at, expires_at FROM memnos_control.leases
+                WHERE namespace=%s AND released_at IS NULL AND expires_at > now()
+                ORDER BY acquired_at
+            """, (namespace,))
+            rows = c.fetchall()
+        return [{"key": r["key"], "holder_id": r["holder_id"],
+                 "acquired_at": r["acquired_at"].isoformat(),
+                 "expires_at": r["expires_at"].isoformat()} for r in rows]
 
     # --- identity / tokens (admin) ----------------------------------------
     @staticmethod
