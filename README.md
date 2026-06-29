@@ -68,12 +68,6 @@ token per developer is in [`docs/guides/team.md`](docs/guides/team.md).
 
 ## Quickstart
 
-**Prerequisite:** PostgreSQL **13+** with the **pgvector ≥ 0.6** extension (Ubuntu/Debian's
-apt build is enough — memnos uses full-precision `vector` on 0.6, the `halfvec` storage
-optimization on ≥ 0.7, same recall quality). memnos does
-**not** install Postgres — it connects to yours. No Postgres? `memnos setup --docker`
-spins up a pgvector Postgres container for you.
-
 Install into an isolated environment (`uv` recommended; `pipx` works too — don't
 `pip install` into your system Python):
 
@@ -81,10 +75,16 @@ Install into an isolated environment (`uv` recommended; `pipx` works too — don
 uv tool install memnos        # no uv?  brew install uv   or
                               #         curl -LsSf https://astral.sh/uv/install.sh | sh
 
-memnos setup                  # enter your Postgres connection → creates schema + admin token
-                              # (or: memnos setup --docker — needs Docker, zero Postgres setup)
+memnos setup --embedded       # ← zero external dependencies: downloads embedded PG + pgvector
+                              #   (~20-30 MB, macOS arm64 / Linux x86_64)
+                              # or: memnos setup          (connect to YOUR existing Postgres)
+                              # or: memnos setup --docker (spin up a pgvector container)
 memnos start                  # background server → open http://127.0.0.1:8900/admin
 ```
+
+`memnos setup --embedded` downloads a pre-built PostgreSQL 16 + pgvector binary into
+`~/.memnos/embedded_pg/` on first run. No Docker, no `brew`, no `apt` — just `pipx install`
+and you're done. `memnos start` auto-restarts the embedded PG on every boot.
 
 Operate it like any daemon: `memnos status` / `stop` / `restart`; `memnos serve` runs in
 the foreground for systemd/launchd/Docker; `memnos upgrade` updates in place;

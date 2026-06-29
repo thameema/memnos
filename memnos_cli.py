@@ -163,6 +163,197 @@ HALFVEC_PGVECTOR = (0, 7, 0)   # halfvec storage optimization needs >= 0.7
 DOCKER_PG_CONTAINER = "memnos-pg"
 DOCKER_PG_IMAGE = "pgvector/pgvector:pg16"   # Postgres + pgvector pre-baked, version-matched
 
+EMBEDDED_PG_HOME = os.path.join(CONFIG_DIR, "embedded_pg")
+EMBEDDED_PG_BINARY_TAG = "embedded-pg-v1"
+EMBEDDED_PG_PGVECTOR_VERSION = "0.8.0"
+EMBEDDED_PG_PREFERRED_PORTS = [5477, 5478, 5479]
+
+# Platform key → (zonky artifact suffix, file extension used in our release archive)
+_EMBEDDED_SUPPORTED = {
+    ("darwin", "arm64"):   "darwin-arm64",
+    ("darwin", "aarch64"): "darwin-arm64",
+    ("linux", "x86_64"):   "linux-amd64",
+}
+
+
+def _embedded_pg_platform():
+    import platform
+    sys_key = "darwin" if sys.platform == "darwin" else "linux"
+    return _EMBEDDED_SUPPORTED.get((sys_key, platform.machine().lower()))
+
+
+def _embedded_pg_asset_url(plat):
+    return (
+        "https://github.com/thameema/memnos/releases/download/"
+        f"{EMBEDDED_PG_BINARY_TAG}/"
+        f"memnos-pg16-pgvector-{EMBEDDED_PG_PGVECTOR_VERSION}-{plat}.tar.xz"
+    )
+
+
+def _embedded_state_path():
+    return os.path.join(EMBEDDED_PG_HOME, "state.json")
+
+
+def _load_embedded_state():
+    try:
+        with open(_embedded_state_path()) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _save_embedded_state(state):
+    os.makedirs(EMBEDDED_PG_HOME, exist_ok=True)
+    path = _embedded_state_path()
+    with open(path, "w") as f:
+        json.dump(state, f, indent=2)
+    os.chmod(path, 0o600)
+
+
+def _embedded_pg_ctl(state, *args):
+    import subprocess
+    pg_ctl = os.path.join(state["pg_dir"], "bin", "pg_ctl")
+    return subprocess.run([pg_ctl, *args, "-D", state["data_dir"]],
+                          capture_output=True, text=True)
+
+
+def _embedded_pg_is_running(state):
+    return _embedded_pg_ctl(state, "status").returncode == 0
+
+
+def _start_embedded_pg(state):
+    log = os.path.join(EMBEDDED_PG_HOME, "pg.log")
+    result = _embedded_pg_ctl(state, "start", "-l", log, "-w")
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr or result.stdout)
+
+
+def _ensure_embedded_pg():
+    """Download, configure, and (re)start embedded PostgreSQL + pgvector. Returns DSN."""
+    import io as _io, tarfile, shutil, subprocess
+    import urllib.request
+
+    state = _load_embedded_state()
+    if state:
+        port = state["port"]
+        dsn = f"postgresql://memnos@localhost:{port}/memnos"
+        if not _embedded_pg_is_running(state):
+            print("[memnos] starting embedded PostgreSQL...")
+            try:
+                _start_embedded_pg(state)
+            except Exception as e:
+                sys.exit(f"Failed to start embedded PostgreSQL: {e}\n"
+                         f"  Check: {os.path.join(EMBEDDED_PG_HOME, 'pg.log')}")
+            _wait_dsn(dsn)
+        return dsn
+
+    # First-time setup
+    plat = _embedded_pg_platform()
+    if not plat:
+        import platform
+        sys.exit(
+            f"Embedded PostgreSQL is not yet supported on "
+            f"{sys.platform}/{platform.machine()}.\n"
+            f"  Supported: macOS arm64 (Apple Silicon), Linux x86_64.\n"
+            f"  Alternative:  memnos setup --docker   (needs Docker)"
+        )
+
+    os.makedirs(EMBEDDED_PG_HOME, exist_ok=True)
+    pg_dir  = os.path.join(EMBEDDED_PG_HOME, "pg")
+    data_dir = os.path.join(EMBEDDED_PG_HOME, "data")
+    log_path = os.path.join(EMBEDDED_PG_HOME, "pg.log")
+
+    url = _embedded_pg_asset_url(plat)
+    print(f"[memnos] downloading embedded PostgreSQL 16 + pgvector ({plat}) ...")
+    try:
+        resp = urllib.request.urlopen(url, timeout=300)
+        total = int(resp.headers.get("Content-Length", 0))
+        chunks = []
+        done = 0
+        while True:
+            chunk = resp.read(131072)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            done += len(chunk)
+            if total:
+                pct = done * 100 // total
+                mb = done // 1024 // 1024
+                print(f"\r         {pct}%  ({mb} MB / {total // 1024 // 1024} MB)   ",
+                      end="", flush=True)
+        print()
+        archive_bytes = b"".join(chunks)
+    except Exception as e:
+        sys.exit(f"Download failed: {e}\n"
+                 f"  Alternative:  memnos setup --docker   or   memnos setup --dsn postgresql://...")
+
+    print("[memnos] extracting ...")
+    os.makedirs(pg_dir, exist_ok=True)
+    with tarfile.open(fileobj=_io.BytesIO(archive_bytes), mode="r:xz") as tf:
+        try:
+            tf.extractall(pg_dir, filter="data")   # Python >= 3.12 safe extraction
+        except TypeError:
+            tf.extractall(pg_dir)                  # Python 3.10 / 3.11
+    # archive has a single top-level dir "memnos-pg16" — flatten it
+    inner = os.path.join(pg_dir, "memnos-pg16")
+    if os.path.isdir(inner):
+        for item in os.listdir(inner):
+            shutil.move(os.path.join(inner, item), pg_dir)
+        os.rmdir(inner)
+    # make binaries executable
+    bin_dir = os.path.join(pg_dir, "bin")
+    for fname in os.listdir(bin_dir):
+        try:
+            os.chmod(os.path.join(bin_dir, fname), 0o755)
+        except OSError:
+            pass
+
+    port = _free_port(EMBEDDED_PG_PREFERRED_PORTS)
+
+    # initdb — creates the data directory; 'trust' auth is safe on localhost-only port
+    initdb = os.path.join(pg_dir, "bin", "initdb")
+    print("[memnos] initializing database cluster ...")
+    r = subprocess.run([initdb, "-D", data_dir, "-U", "memnos",
+                        "--auth", "trust", "--no-instructions"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"initdb failed:\n{r.stderr}")
+
+    # tune postgresql.conf (port + bind to localhost only)
+    conf = os.path.join(data_dir, "postgresql.conf")
+    with open(conf, "a") as fh:
+        fh.write(f"\n# memnos embedded instance\nport = {port}\nlisten_addresses = '127.0.0.1'\n")
+
+    # start
+    pg_ctl = os.path.join(pg_dir, "bin", "pg_ctl")
+    r = subprocess.run([pg_ctl, "start", "-D", data_dir, "-l", log_path, "-w"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"pg_ctl start failed:\n{r.stderr}\n{r.stdout}")
+
+    # create database
+    import psycopg
+    from psycopg.rows import dict_row
+    pg_dsn = f"postgresql://memnos@localhost:{port}/postgres"
+    _wait_dsn(pg_dsn)
+    conn = psycopg.connect(pg_dsn, autocommit=True, row_factory=dict_row)
+    with conn.cursor() as c:
+        c.execute("SELECT 1 FROM pg_database WHERE datname = 'memnos'")
+        if not c.fetchone():
+            c.execute("CREATE DATABASE memnos")
+    conn.close()
+
+    dsn = f"postgresql://memnos@localhost:{port}/memnos"
+    conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
+    with conn.cursor() as c:
+        c.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    conn.close()
+    print("[memnos] ✓ pgvector enabled")
+
+    _save_embedded_state({"port": port, "pg_dir": pg_dir, "data_dir": data_dir})
+    print(f"[memnos] ✓ embedded PostgreSQL ready on localhost:{port}")
+    return dsn
+
 
 def _ensure_docker_pg():
     """Provision (or reuse) a pgvector Postgres in Docker and return a DSN to it. The image
@@ -285,11 +476,14 @@ def _pg_not_reachable_hint(host, port):
     if sys.platform == "darwin":
         return base + ("  Is it running?   brew services start postgresql@16\n"
                        "  Not installed?   brew install postgresql@16 && brew install pgvector\n"
-                       "  (Alternative: memnos setup --docker runs a pgvector Postgres for you.)")
+                       "  Zero-dep option: memnos setup --embedded  (downloads embedded PG, no Docker)\n"
+                       "  Docker option:   memnos setup --docker")
     if sys.platform.startswith("linux"):
         return base + ("  Is it running?   sudo systemctl start postgresql\n"
-                       "  Not installed?   sudo apt install postgresql postgresql-16-pgvector")
-    return base + "  Start your PostgreSQL server (needs the pgvector >= 0.6 extension) and re-run."
+                       "  Not installed?   sudo apt install postgresql postgresql-16-pgvector\n"
+                       "  Zero-dep option: memnos setup --embedded  (downloads embedded PG, no Docker)")
+    return base + ("  Start your PostgreSQL server (needs the pgvector >= 0.6 extension) and re-run.\n"
+                   "  Or: memnos setup --embedded  (downloads embedded PG, no Docker needed)")
 
 
 def _preflight_postgres(conn):
@@ -352,9 +546,15 @@ def _openai_key_ok(key):
 
 
 def cmd_setup(args, cfg):
-    print("=== memnos setup (Postgres is a prerequisite — this only creates objects in it) ===")
+    embedded_mode = getattr(args, "embedded", False)
+    if embedded_mode:
+        print("=== memnos setup --embedded (zero-dependency mode: embedded PostgreSQL + pgvector) ===")
+    else:
+        print("=== memnos setup (Postgres is a prerequisite — this only creates objects in it) ===")
     dsn = args.dsn or os.environ.get("MEMNOS_DSN")
-    if getattr(args, "docker", False) and not dsn:
+    if embedded_mode and not dsn:
+        dsn = _ensure_embedded_pg()     # download + start embedded PG (no Docker, no local PG needed)
+    elif getattr(args, "docker", False) and not dsn:
         dsn = _ensure_docker_pg()       # memnos provisions a pgvector Postgres for you
     if not dsn:
         host = input("Postgres host [localhost]: ").strip() or "localhost"
@@ -457,7 +657,7 @@ def cmd_setup(args, cfg):
     # second instance can coexist with one already on 8900, no hand-editing config.json.
     setup_port = getattr(args, "port", None) or cfg.get("port", 8900)
     cfg.update({"dsn": dsn, "port": setup_port, "secret_key": secret_key,
-                "admin_token": tok})
+                "admin_token": tok, "embedded": embedded_mode})
     save_config(cfg)
     print(f"\n✓ schema + control plane created (embedding dim {dim}"
           f"{' — OpenAI key stored in the encrypted vault' if openai_key else ''})")
@@ -500,9 +700,24 @@ def cmd_setup(args, cfg):
 
 def _preflight_pg(cfg):
     """Fail FAST with a clear message if Postgres is down — never let the user discover
-    it via a hanging server. Returns silently when reachable."""
+    it via a hanging server. Returns silently when reachable.
+    In embedded mode, auto-starts the embedded PostgreSQL if it is not already running."""
     import psycopg
     from urllib.parse import urlparse
+
+    if cfg.get("embedded"):
+        state = _load_embedded_state()
+        if state and not _embedded_pg_is_running(state):
+            print("[memnos] auto-starting embedded PostgreSQL ...")
+            try:
+                _start_embedded_pg(state)
+                _wait_dsn(f"postgresql://memnos@localhost:{state['port']}/memnos")
+            except Exception as e:
+                sys.exit(f"Failed to start embedded PostgreSQL: {e}\n"
+                         f"  Check: {os.path.join(EMBEDDED_PG_HOME, 'pg.log')}\n"
+                         f"  Re-run setup: memnos setup --embedded")
+        return   # either already running or startup succeeded
+
     dsn = _dsn(cfg)
     try:
         psycopg.connect(dsn, connect_timeout=5).close()
@@ -2259,6 +2474,9 @@ def build_parser():
     # ---- lifecycle ----
     p = sub.add_parser("setup", help="connect to Postgres, create schema + admin token")
     p.add_argument("--dsn", help="Postgres DSN (skips the interactive wizard)")
+    p.add_argument("--embedded", action="store_true",
+                   help="download + use embedded PostgreSQL + pgvector — zero external dependencies "
+                        "(macOS arm64, Linux x86_64; ~20-30 MB one-time download)")
     p.add_argument("--docker", action="store_true",
                    help="provision a pgvector Postgres in Docker (no Postgres setup needed)")
     p.add_argument("--port", type=int,
