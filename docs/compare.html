@@ -139,6 +139,42 @@
       padding: 8px 12px;
       text-align: left;
     }
+    /* jump nav */
+    .jump-nav-wrap {
+      background: rgba(9,9,15,0.88);
+      backdrop-filter: blur(18px);
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+    }
+    .jump-nav-inner {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+      overflow-x: auto;
+      scrollbar-width: none;
+      height: 40px;
+      white-space: nowrap;
+    }
+    .jump-nav-inner::-webkit-scrollbar { display: none; }
+    .jump-pill {
+      font-size: 0.72rem;
+      font-weight: 500;
+      color: #9ca3af;
+      padding: 4px 12px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      transition: color 0.2s, border-color 0.2s, background 0.2s;
+      text-decoration: none;
+      flex-shrink: 0;
+    }
+    .jump-pill:hover, .jump-pill.active {
+      color: #a78bfa;
+      border-color: rgba(124,92,252,0.35);
+      background: rgba(124,92,252,0.08);
+    }
+    .jump-sep { color: #374151; font-size: 0.7rem; flex-shrink: 0; }
     /* vs sections */
     .vs-card { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 1.5rem; }
     .diff-row { display: flex; gap: 1rem; margin-bottom: 0.75rem; }
@@ -222,8 +258,27 @@
   </div>
 </section>
 
+<!-- ── SECTION JUMP NAV ───────────────────────────────────────── -->
+<div class="jump-nav-wrap sticky z-40" style="top:64px;">
+  <div class="jump-nav-inner">
+    <a href="#matrix" class="jump-pill">Feature matrix</a>
+    <span class="jump-sep">·</span>
+    <a href="#vs-mem0" class="jump-pill">vs Mem0</a>
+    <span class="jump-sep">·</span>
+    <a href="#vs-zep" class="jump-pill">vs Zep</a>
+    <span class="jump-sep">·</span>
+    <a href="#vs-supermemory" class="jump-pill">vs Supermemory</a>
+    <span class="jump-sep">·</span>
+    <a href="#vs-mnemosyne" class="jump-pill">vs Mnemosyne</a>
+    <span class="jump-sep">·</span>
+    <a href="#vs-honcho" class="jump-pill">vs Honcho</a>
+    <span class="jump-sep">·</span>
+    <a href="#vs-others" class="jump-pill">vs Letta</a>
+  </div>
+</div>
+
 <!-- ── FULL COMPARISON TABLE ─────────────────────────────────────── -->
-<section class="relative z-10 py-12 fade-in">
+<section id="matrix" class="relative z-10 py-12 fade-in">
   <div class="max-w-7xl mx-auto px-6">
     <div class="text-center mb-10">
       <h2 class="text-2xl font-bold text-white mb-3">Full feature matrix <span class="text-gray-500 text-base font-normal">(as of June 2026)</span></h2>
@@ -235,22 +290,24 @@
         <table class="big-compare">
           <thead>
             <tr>
-              <th style="min-width:280px;">Capability</th>
-              <th class="col-memnos" style="min-width:110px;">
+              <th style="min-width:240px;">Capability</th>
+              <th class="col-memnos" style="min-width:100px;">
                 <div class="flex items-center justify-center gap-1.5">
                   <svg width="14" height="14" viewBox="0 0 28 28" fill="none"><rect x="4" y="17" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.8"/><rect x="4" y="11" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.9"/><rect x="4" y="5" width="20" height="5" rx="2.5" fill="#a78bfa"/></svg>
                   memnos
                 </div>
               </th>
-              <th style="min-width:95px;">Mem0<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">v2.0.4</span></th>
-              <th style="min-width:95px;">Zep<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">Cloud<sup>†</sup></span></th>
-              <th style="min-width:95px;">Graphiti<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">v0.29</span></th>
-              <th style="min-width:110px;">Supermemory<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">June 2026<sup>&#8225;</sup></span></th>
+              <th style="min-width:85px;">Mem0<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">v2.0.4</span></th>
+              <th style="min-width:85px;">Zep<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">Cloud<sup>†</sup></span></th>
+              <th style="min-width:85px;">Graphiti<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">v0.29</span></th>
+              <th style="min-width:95px;">Supermemory<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">June 2026<sup>&#8225;</sup></span></th>
+              <th style="min-width:95px;">Mnemosyne<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">v3.10 · MIT</span></th>
+              <th style="min-width:95px;">Honcho<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">AGPL-3.0<sup>§</sup></span></th>
             </tr>
           </thead>
           <tbody>
             <!-- Ingestion & memory model -->
-            <tr class="section-header"><td colspan="6">Ingestion &amp; memory model</td></tr>
+            <tr class="section-header"><td colspan="8">Ingestion &amp; memory model</td></tr>
             <tr>
               <td>Structured fact extraction (typed subject–predicate–object)</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
@@ -258,6 +315,8 @@
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-unk">&#8225;</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">LLM summaries</span></td>
+              <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">Neuromancer</span></td>
             </tr>
             <tr>
               <td>Bi-temporal facts (valid-time + as-of queries)</td>
@@ -266,6 +325,8 @@
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-unk">&#8225;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
               <td>Deterministic conflict resolution at write — <em>no LLM</em></td>
@@ -274,6 +335,8 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-unk">&#8225;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">LLM-resolved</span></td>
             </tr>
             <tr>
               <td>Single- vs multi-valued attribute logic (supersede vs accumulate)</td>
@@ -282,6 +345,8 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-unk">&#8225;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
               <td>Offline consolidation into entity dossiers / communities</td>
@@ -290,6 +355,8 @@
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-unk">&#8225;</span></td>
+              <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">sleep()</span></td>
+              <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">Dreaming</span></td>
             </tr>
             <tr>
               <td>Deterministic auto-capture from your existing AI tools (hooks / proxy — not model-discretionary)</td>
@@ -297,10 +364,12 @@
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">MCP only</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">plugin = paid cloud</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">plugin = paid</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">MCP / opt-in hook</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">API push or MCP</span></td>
             </tr>
             <!-- Retrieval & ranking -->
-            <tr class="section-header"><td colspan="6">Retrieval &amp; ranking</td></tr>
+            <tr class="section-header"><td colspan="8">Retrieval &amp; ranking</td></tr>
             <tr>
               <td>Hybrid retrieval (vector + BM25 keyword)</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
@@ -308,6 +377,8 @@
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-unk">&#8225;</span></td>
+              <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">vec + FTS5</span></td>
+              <td><span class="check-green">&#10003;</span></td>
             </tr>
             <tr>
               <td>Reciprocal Rank Fusion (RRF)</td>
@@ -316,6 +387,8 @@
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-unk">&#8225;</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">weighted blend</span></td>
+              <td><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
               <td>Cross-encoder reranking on recall</td>
@@ -324,6 +397,8 @@
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">opt-in</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">opt-in</span></td>
               <td><span class="check-unk">&#8225;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
               <td>Entity-guarantee + timeline retrieval arms (answer completeness)</td>
@@ -332,6 +407,8 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-unk">&#8225;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
               <td>Grounded recall — admin-linked knowledge namespaces consulted on every recall</td>
@@ -340,6 +417,8 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-unk">&#8225;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
               <td>No LLM at query time</td>
@@ -348,9 +427,11 @@
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">LLM reranker default</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">LLM reranker default</span></td>
               <td><span class="check-unk">&#8225;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">context() free; reasoning = LLM</span></td>
             </tr>
             <!-- Architecture & deploy -->
-            <tr class="section-header"><td colspan="6">Architecture &amp; deploy</td></tr>
+            <tr class="section-header"><td colspan="8">Architecture &amp; deploy</td></tr>
             <tr>
               <td>Deployment model</td>
               <td class="col-memnos"><span style="font-size:0.7rem;color:#c4b5fd;">Self-host,<br>your Postgres</span></td>
@@ -358,6 +439,8 @@
               <td><span style="font-size:0.7rem;color:#9ca3af;">Hosted cloud</span></td>
               <td><span style="font-size:0.7rem;color:#9ca3af;">Library +<br>graph DB</span></td>
               <td><span style="font-size:0.7rem;color:#9ca3af;">Cloud (local =<br>closed binary)</span></td>
+              <td><span style="font-size:0.7rem;color:#9ca3af;">Local SQLite,<br>single user</span></td>
+              <td><span style="font-size:0.7rem;color:#9ca3af;">Managed cloud;<br>Docker self-host</span></td>
             </tr>
             <tr>
               <td>Single store — no separate graph database required</td>
@@ -366,6 +449,8 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">local file store</span></td>
+              <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">SQLite</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">storage + insights services</span></td>
             </tr>
             <tr>
               <td>Runs on standard PostgreSQL + pgvector — <em>your</em> database</td>
@@ -374,6 +459,8 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">no Postgres option</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">SQLite only</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">managed, not your DB</span></td>
             </tr>
             <tr>
               <td>MCP server (any MCP client)</td>
@@ -382,6 +469,8 @@
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">cloud-only</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
             </tr>
             <tr>
               <td>Python SDK (LangChain / LangGraph)</td>
@@ -390,9 +479,11 @@
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">DIY</span></td>
               <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
+              <td><span class="check-green">&#10003;</span></td>
             </tr>
             <!-- Governance & security -->
-            <tr class="section-header"><td colspan="6">Governance &amp; security — in the free, self-hosted tier</td></tr>
+            <tr class="section-header"><td colspan="8">Governance &amp; security — in the free, self-hosted tier</td></tr>
             <tr>
               <td>Token auth + namespace access control</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
@@ -400,6 +491,8 @@
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">single API key locally</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">filesystem perms</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">API key + workspace</span></td>
             </tr>
             <tr>
               <td>Audit trail + usage / cost ledger</td>
@@ -408,6 +501,8 @@
               <td><span class="check-yellow">~</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">server logs only locally</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
               <td>Author-attributed memories — author server-signed, never client-supplied</td>
@@ -416,10 +511,14 @@
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">client-supplied IDs</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">client-supplied IDs</span></td>
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">single key locally</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">single user</span></td>
+              <td><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
               <td>Encrypted secret vault + ingest secret-redaction</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
@@ -432,9 +531,11 @@
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">cloud</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">cloud</span></td>
+              <td><span class="check-red">&#10007;</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">cloud app</span></td>
             </tr>
             <!-- Trust -->
-            <tr class="section-header"><td colspan="6">Trust &amp; licensing</td></tr>
+            <tr class="section-header"><td colspan="8">Trust &amp; licensing</td></tr>
             <tr>
               <td>Engine source published — read every line that touches your data</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
@@ -442,6 +543,8 @@
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">cloud</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">engine unpublished</span></td>
+              <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">MIT, fully open</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">server open; Neuromancer closed</span></td>
             </tr>
             <tr>
               <td>License</td>
@@ -450,6 +553,8 @@
               <td><span style="font-size:0.7rem;color:#9ca3af;">Proprietary<br>(CE deprecated)</span></td>
               <td><span style="font-size:0.7rem;color:#9ca3af;">Apache-2.0</span></td>
               <td><span style="font-size:0.7rem;color:#9ca3af;">MIT (SDKs/apps);<br>engine closed</span></td>
+              <td><span style="font-size:0.7rem;color:#9ca3af;">MIT</span></td>
+              <td><span style="font-size:0.7rem;color:#9ca3af;">AGPL-3.0<sup>§</sup></span></td>
             </tr>
             <tr>
               <td>Benchmark with per-question predictions published + open harness</td>
@@ -458,6 +563,8 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">open harness, no predictions</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">BEAM harness open</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">harness open; predictions unknown</span></td>
             </tr>
           </tbody>
         </table>
@@ -900,8 +1007,36 @@ gpt-4o judge : <span class="token-num">78.4%</span>  <span class="token-cmt"># p
   document.querySelectorAll('a[href^="#"]').forEach(a => {
     a.addEventListener('click', e => {
       const target = document.querySelector(a.getAttribute('href'));
-      if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth' }); }
+      if (target) {
+        e.preventDefault();
+        // offset for sticky nav (64px main nav + 40px jump nav)
+        const offset = 64 + 40 + 12;
+        const top = target.getBoundingClientRect().top + window.scrollY - offset;
+        window.scrollTo({ top, behavior: 'smooth' });
+      }
     });
+  });
+  // scroll-spy: highlight active jump-nav pill
+  const jumpSections = ['matrix','vs-mem0','vs-zep','vs-supermemory','vs-mnemosyne','vs-honcho','vs-others'];
+  const jumpPills = {};
+  jumpSections.forEach(id => {
+    const pill = document.querySelector(`.jump-nav-inner a[href="#${id}"]`);
+    if (pill) jumpPills[id] = pill;
+  });
+  const spyObserver = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      const id = e.target.id;
+      if (jumpPills[id]) {
+        if (e.isIntersecting) {
+          Object.values(jumpPills).forEach(p => p.classList.remove('active'));
+          jumpPills[id].classList.add('active');
+        }
+      }
+    });
+  }, { rootMargin: '-110px 0px -55% 0px', threshold: 0 });
+  jumpSections.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) spyObserver.observe(el);
   });
   function toggleMobileNav() {
     const menu = document.getElementById('mobile-nav');
