@@ -103,21 +103,33 @@
     .big-compare { border-collapse: collapse; width: 100%; }
     .big-compare thead th {
       background: #0d0d16;
-      padding: 14px 12px;
-      font-size: 0.78rem;
+      padding: 14px 10px;
+      font-size: 0.75rem;
       font-weight: 600;
       text-align: center;
       border-bottom: 1px solid rgba(255,255,255,0.10);
+      border-right: 1px solid rgba(255,255,255,0.04);
     }
-    .big-compare thead th:first-child { text-align: left; color: #9ca3af; }
+    .big-compare thead th:first-child {
+      text-align: left;
+      color: #9ca3af;
+      min-width: 210px;
+      max-width: 240px;
+      position: sticky;
+      left: 0;
+      z-index: 3;
+      background: #0d0d16;
+      box-shadow: 2px 0 8px rgba(0,0,0,0.4);
+    }
     .big-compare thead th.col-memnos {
       color: #a78bfa;
       background: #15122a;
     }
     .big-compare tbody td {
-      padding: 12px 12px;
-      font-size: 0.82rem;
+      padding: 11px 10px;
+      font-size: 0.8rem;
       border-top: 1px solid rgba(255,255,255,0.04);
+      border-right: 1px solid rgba(255,255,255,0.03);
       text-align: center;
       vertical-align: middle;
     }
@@ -125,19 +137,30 @@
       text-align: left;
       color: #d1d5db;
       font-weight: 500;
+      font-size: 0.78rem;
+      line-height: 1.4;
+      position: sticky;
+      left: 0;
+      z-index: 2;
+      background: #111118;
+      box-shadow: 2px 0 8px rgba(0,0,0,0.4);
     }
     .big-compare tbody td.col-memnos { background: rgba(124,92,252,0.05); }
-    .big-compare tbody tr:hover td { background: rgba(255,255,255,0.02); }
-    .big-compare tbody tr:hover td.col-memnos { background: rgba(124,92,252,0.08); }
+    .big-compare tbody tr:hover td { background: #141420; }
+    .big-compare tbody tr:hover td:first-child { background: #141420; }
+    .big-compare tbody tr:hover td.col-memnos { background: rgba(124,92,252,0.1); }
     .big-compare .section-header td {
-      background: rgba(255,255,255,0.02);
-      color: #6b7280;
-      font-size: 0.7rem;
-      font-weight: 600;
+      background: #0e0e1a;
+      color: #7c6fcd;
+      font-size: 0.67rem;
+      font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
-      padding: 8px 12px;
+      letter-spacing: 0.1em;
+      padding: 10px 12px;
       text-align: left;
+      border-top: 1px solid rgba(124,92,252,0.12);
+      position: sticky;
+      left: 0;
     }
     /* jump nav */
     .jump-nav-wrap {
@@ -273,6 +296,8 @@
     <span class="jump-sep">·</span>
     <a href="#vs-honcho" class="jump-pill">vs Honcho</a>
     <span class="jump-sep">·</span>
+    <a href="#vs-hindsight" class="jump-pill">vs Hindsight</a>
+    <span class="jump-sep">·</span>
     <a href="#vs-others" class="jump-pill">vs Letta</a>
   </div>
 </div>
@@ -301,13 +326,14 @@
               <th style="min-width:85px;">Zep<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">Cloud<sup>†</sup></span></th>
               <th style="min-width:85px;">Graphiti<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">v0.29</span></th>
               <th style="min-width:95px;">Supermemory<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">June 2026<sup>&#8225;</sup></span></th>
-              <th style="min-width:95px;">Mnemosyne<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">v3.10 · MIT</span></th>
-              <th style="min-width:95px;">Honcho<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">AGPL-3.0<sup>§</sup></span></th>
+              <th style="min-width:88px;">Mnemosyne<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">v3.10 · MIT</span></th>
+              <th style="min-width:88px;">Honcho<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">AGPL-3.0<sup>§</sup></span></th>
+              <th style="min-width:95px;border-left:1px solid rgba(255,255,255,0.08);">Hindsight<br><span style="font-weight:400;font-size:0.62rem;color:#6b7280;">MIT · 17k★</span></th>
             </tr>
           </thead>
           <tbody>
             <!-- Ingestion & memory model -->
-            <tr class="section-header"><td colspan="8">Ingestion &amp; memory model</td></tr>
+            <tr class="section-header"><td colspan="9">Ingestion &amp; memory model</td></tr>
             <tr>
               <td>Structured fact extraction (typed subject–predicate–object)</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
@@ -317,6 +343,7 @@
               <td><span class="check-unk">&#8225;</span></td>
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">LLM summaries</span></td>
               <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">Neuromancer</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">retain()</span></td>
             </tr>
             <tr>
               <td>Bi-temporal facts (valid-time + as-of queries)</td>
@@ -327,6 +354,7 @@
               <td><span class="check-unk">&#8225;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">updates-not-overwrites</span></td>
             </tr>
             <tr>
               <td>Deterministic conflict resolution at write — <em>no LLM</em></td>
@@ -337,6 +365,7 @@
               <td><span class="check-unk">&#8225;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">LLM-resolved</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">LLM-resolved</span></td>
             </tr>
             <tr>
               <td>Single- vs multi-valued attribute logic (supersede vs accumulate)</td>
@@ -347,6 +376,7 @@
               <td><span class="check-unk">&#8225;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
               <td>Offline consolidation into entity dossiers / communities</td>
@@ -357,6 +387,7 @@
               <td><span class="check-unk">&#8225;</span></td>
               <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">sleep()</span></td>
               <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">Dreaming</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">reflect()</span></td>
             </tr>
             <tr>
               <td>Deterministic auto-capture from your existing AI tools (hooks / proxy — not model-discretionary)</td>
@@ -367,9 +398,10 @@
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">plugin = paid</span></td>
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">MCP / opt-in hook</span></td>
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">API push or MCP</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">API push or MCP</span></td>
             </tr>
             <!-- Retrieval & ranking -->
-            <tr class="section-header"><td colspan="8">Retrieval &amp; ranking</td></tr>
+            <tr class="section-header"><td colspan="9">Retrieval &amp; ranking</td></tr>
             <tr>
               <td>Hybrid retrieval (vector + BM25 keyword)</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
@@ -379,6 +411,7 @@
               <td><span class="check-unk">&#8225;</span></td>
               <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">vec + FTS5</span></td>
               <td><span class="check-green">&#10003;</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-green">&#10003;</span></td>
             </tr>
             <tr>
               <td>Reciprocal Rank Fusion (RRF)</td>
@@ -389,6 +422,7 @@
               <td><span class="check-unk">&#8225;</span></td>
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">weighted blend</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-green">&#10003;</span></td>
             </tr>
             <tr>
               <td>Cross-encoder reranking on recall</td>
@@ -399,6 +433,7 @@
               <td><span class="check-unk">&#8225;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-green">&#10003;</span></td>
             </tr>
             <tr>
               <td>Entity-guarantee + timeline retrieval arms (answer completeness)</td>
@@ -409,6 +444,7 @@
               <td><span class="check-unk">&#8225;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">graph + temporal arms</span></td>
             </tr>
             <tr>
               <td>Grounded recall — admin-linked knowledge namespaces consulted on every recall</td>
@@ -419,6 +455,7 @@
               <td><span class="check-unk">&#8225;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">Mental Models inject context</span></td>
             </tr>
             <tr>
               <td>No LLM at query time</td>
@@ -429,9 +466,10 @@
               <td><span class="check-unk">&#8225;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">context() free; reasoning = LLM</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">recall: no; reflect(): LLM</span></td>
             </tr>
             <!-- Architecture & deploy -->
-            <tr class="section-header"><td colspan="8">Architecture &amp; deploy</td></tr>
+            <tr class="section-header"><td colspan="9">Architecture &amp; deploy</td></tr>
             <tr>
               <td>Deployment model</td>
               <td class="col-memnos"><span style="font-size:0.7rem;color:#c4b5fd;">Self-host,<br>your Postgres</span></td>
@@ -441,6 +479,7 @@
               <td><span style="font-size:0.7rem;color:#9ca3af;">Cloud (local =<br>closed binary)</span></td>
               <td><span style="font-size:0.7rem;color:#9ca3af;">Local SQLite,<br>single user</span></td>
               <td><span style="font-size:0.7rem;color:#9ca3af;">Managed cloud;<br>Docker self-host</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span style="font-size:0.7rem;color:#9ca3af;">Docker / bare metal;<br>embedded (no server)</span></td>
             </tr>
             <tr>
               <td>Single store — no separate graph database required</td>
@@ -451,6 +490,7 @@
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">local file store</span></td>
               <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">SQLite</span></td>
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">storage + insights services</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">pure PG, graph = recursive CTEs</span></td>
             </tr>
             <tr>
               <td>Runs on standard PostgreSQL + pgvector — <em>your</em> database</td>
@@ -461,6 +501,7 @@
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">no Postgres option</span></td>
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">SQLite only</span></td>
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">managed, not your DB</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">or pg0 embedded</span></td>
             </tr>
             <tr>
               <td>MCP server (any MCP client)</td>
@@ -471,6 +512,7 @@
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">cloud-only</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-green">&#10003;</span></td>
             </tr>
             <tr>
               <td>Python SDK (LangChain / LangGraph)</td>
@@ -481,9 +523,10 @@
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
               <td><span class="check-green">&#10003;</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">+ TypeScript + Go</span></td>
             </tr>
             <!-- Governance & security -->
-            <tr class="section-header"><td colspan="8">Governance &amp; security — in the free, self-hosted tier</td></tr>
+            <tr class="section-header"><td colspan="9">Governance &amp; security — in the free, self-hosted tier</td></tr>
             <tr>
               <td>Token auth + namespace access control</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
@@ -493,6 +536,7 @@
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">single API key locally</span></td>
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">filesystem perms</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">API key + workspace</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">tag convention only; RBAC = Enterprise</span></td>
             </tr>
             <tr>
               <td>Audit trail + usage / cost ledger</td>
@@ -503,6 +547,7 @@
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">server logs only locally</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">Mental Model history only</span></td>
             </tr>
             <tr>
               <td>Author-attributed memories — author server-signed, never client-supplied</td>
@@ -513,6 +558,7 @@
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">single key locally</span></td>
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">single user</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
               <td>Encrypted secret vault + ingest secret-redaction</td>
@@ -523,6 +569,7 @@
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-red">&#10007;</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-red">&#10007;</span></td>
             </tr>
             <tr>
               <td>Built-in management console (self-hostable)</td>
@@ -533,9 +580,10 @@
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">cloud</span></td>
               <td><span class="check-red">&#10007;</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">cloud app</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">cloud dashboard</span></td>
             </tr>
             <!-- Trust -->
-            <tr class="section-header"><td colspan="8">Trust &amp; licensing</td></tr>
+            <tr class="section-header"><td colspan="9">Trust &amp; licensing</td></tr>
             <tr>
               <td>Engine source published — read every line that touches your data</td>
               <td class="col-memnos"><span class="check-green">&#10003;</span></td>
@@ -545,6 +593,7 @@
               <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">engine unpublished</span></td>
               <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">MIT, fully open</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">server open; Neuromancer closed</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">MIT, pure SQL</span></td>
             </tr>
             <tr>
               <td>License</td>
@@ -555,6 +604,7 @@
               <td><span style="font-size:0.7rem;color:#9ca3af;">MIT (SDKs/apps);<br>engine closed</span></td>
               <td><span style="font-size:0.7rem;color:#9ca3af;">MIT</span></td>
               <td><span style="font-size:0.7rem;color:#9ca3af;">AGPL-3.0<sup>§</sup></span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span style="font-size:0.7rem;color:#9ca3af;">MIT</span></td>
             </tr>
             <tr>
               <td>Benchmark with per-question predictions published + open harness</td>
@@ -565,16 +615,18 @@
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">open harness, no predictions</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">BEAM harness open</span></td>
               <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">harness open; predictions unknown</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">harness open; judge version undisclosed</span></td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
     <div class="max-w-4xl mx-auto mt-4 space-y-1.5">
-      <p class="text-xs text-gray-600 text-center">~ = partial / limited / opt-in support. Verified from official docs, repos and pricing pages against <span class="text-gray-500">Mem0 v2.0.4, Graphiti v0.29.x, Zep Cloud, and Supermemory, June 2026</span>. Vendors evolve — check each project's current docs.</p>
+      <p class="text-xs text-gray-600 text-center">~ = partial / limited / opt-in support. Verified from official docs, repos and pricing pages against <span class="text-gray-500">Mem0 v2.0.4, Graphiti v0.29.x, Zep Cloud, Supermemory, Mnemosyne v3.10, Honcho, and Hindsight, June 2026</span>. Vendors evolve — check each project's current docs.</p>
       <p class="text-xs text-gray-600 text-center"><sup>†</sup> Zep's open-source Community Edition was <span class="text-gray-500">deprecated April 2025</span>; Zep is now a hosted Cloud product whose open-source engine is <span class="text-gray-500">Graphiti</span> (shown separately). Cloud-only features are marked ~ for self-hosters.</p>
       <p class="text-xs text-gray-600 text-center"><sup>&#8225;</sup> As of June 2026, Supermemory's engine source is not published — the MIT repo contains SDKs, apps and docs, and <code>npx supermemory local</code> downloads a closed-source precompiled binary. Engine-internal rows marked &#8225; cannot be independently verified from source; local-mode facts (file store, single API key, logs-only observability) and paid-tier gates (org air-gap, SOC2/HIPAA, ACL, connectors, the Claude Code plugin) are from their own published docs and pricing.</p>
-      <p class="text-xs text-gray-600 text-center">Honest gaps, conceded (as of June 2026): memnos has no SaaS connectors (Drive / Gmail / Notion), no multimodal ingestion (OCR / video), no one-command <code>npx</code>-style launcher, and a smaller community than Mem0, Zep or Supermemory. Supermemory also publishes an open MIT benchmark harness (MemoryBench). If you need those today, they are real reasons to pick another tool.</p>
+      <p class="text-xs text-gray-600 text-center"><sup>§</sup> Honcho is AGPL-3.0 — if you self-host and modify, those changes must be open-sourced. memnos is Apache-2.0 with no such requirement. Hindsight is MIT — same as Apache-2.0 for practical commercial use, but lacks the explicit patent grant Apache-2.0 provides.</p>
+      <p class="text-xs text-gray-600 text-center">Honest gaps, conceded (as of June 2026): memnos has no SaaS connectors (Drive / Gmail / Notion), no multimodal ingestion (OCR / video), no one-command <code>npx</code>-style launcher, and a smaller community than Mem0, Zep, Supermemory, or Hindsight. If you need those today, they are real reasons to pick another tool.</p>
     </div>
   </div>
 </section>
@@ -931,6 +983,71 @@ gpt-4o judge : <span class="token-num">78.4%</span>  <span class="token-cmt"># p
   </div>
 </section>
 
+<!-- ── VS HINDSIGHT ──────────────────────────────────────────────── -->
+<section id="vs-hindsight" class="relative z-10 py-20 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <h2 class="text-3xl font-bold text-white mb-4">memnos vs Hindsight</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Hindsight (vectorize.io) is the strongest recall-performance competitor in the space — MIT licensed, pure PostgreSQL, 17k+ GitHub stars. An honest read: they lead on benchmarks and community. memnos leads on governance and benchmark transparency.</p>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-8 mb-10">
+      <div class="vs-card">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-9 h-9 bg-gray-500/10 border border-gray-500/20 rounded-xl flex items-center justify-center">
+            <span class="text-gray-400 text-sm font-bold">H</span>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">Hindsight</h3>
+            <p class="text-xs text-gray-500">Agent memory platform · MIT · 17k+ stars · vectorize.io</p>
+          </div>
+        </div>
+        <ul class="space-y-2 text-sm text-gray-400">
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span><strong class="text-gray-300">High benchmark scores</strong> — 94.6% LongMemEval S, 92% LoCoMo on their published leaderboard. Independently co-authored with Virginia Tech and The Washington Post. Judge is Gemini (version not disclosed). Score drift: paper reports 91.4% for the same config — the 3.2pp gap is unexplained</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span><strong class="text-gray-300">TEMPR four-arm retrieval</strong> — semantic, keyword (BM25), graph traversal (recursive SQL CTEs), and temporal filtering all run in parallel; fused with RRF + cross-encoder reranking. Graph is pure PostgreSQL, no separate graph DB</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span><strong class="text-gray-300">Mental Models</strong> — explicitly created briefings about a user or topic, refreshed automatically when facts update. Injected at the top of every reflect() response. Purpose-built for Q&amp;A accuracy on frequent query dimensions</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span><strong class="text-gray-300">reflect()</strong> operation synthesises across stored memories on demand — effective but adds 800–3,000ms of LLM latency at runtime</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>TypeScript + Go + Python SDKs; 50+ integrations (AutoGen, CrewAI, LangGraph, LiteLLM, Pydantic AI, OpenAI Agents, Cursor, Cline)</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>pg0 embedded (zero infrastructure to get started); or bring your own PostgreSQL; or Oracle AI Database for enterprise. MIT license</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span><strong class="text-gray-300">Governance gap:</strong> multi-tenancy is tag-based convention only — no hard platform enforcement. If calling code omits a user tag, the memory is globally visible. RBAC is a paid Enterprise tier feature. No retain/recall audit trail</li>
+        </ul>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-9 h-9 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center">
+            <svg width="16" height="16" viewBox="0 0 28 28" fill="none"><rect x="4" y="17" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.8"/><rect x="4" y="11" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.9"/><rect x="4" y="5" width="20" height="5" rx="2.5" fill="#a78bfa"/></svg>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">memnos</h3>
+            <p class="text-xs text-gray-500">Self-hosted · Apache-2.0 · governed by default</p>
+          </div>
+        </div>
+        <ul class="space-y-2 text-sm text-gray-400">
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span><strong class="text-gray-300">Governance enforced by the platform</strong> — token auth, namespace ACLs, server-stamped author attribution, full retain/recall audit trail, encrypted secret vault — in the open-source build, not an Enterprise tier</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span><strong class="text-gray-300">Bi-temporal model</strong> — explicit valid-time + system-time axes, deterministic supersession by rule (not LLM-guessed). History never deleted; full as-of queries. Hindsight does "updates not overwrites" but without documented bi-temporal semantics</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span><strong class="text-gray-300">Benchmark transparency</strong> — memnos publishes the exact judge model, judge rubric, full judge ladder (strict ↔ lenient band), and per-question prediction files. Hindsight's judge Gemini version is never named; the paper-vs-leaderboard discrepancy (91.4% → 94.6%) is unexplained</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span><strong class="text-gray-300">No LLM at query time</strong> — recall is purely vector + BM25 + ONNX cross-encoder. No 800ms+ reflect() call in your agent's hot path unless you explicitly choose it</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Apache-2.0 — explicit patent grant included. MIT (Hindsight) lacks this; relevant if either party holds AI-adjacent patents</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span><strong class="text-gray-300">Honest gaps:</strong> Hindsight leads on recall benchmark scores, has a larger community (17k stars), supports TypeScript/Go SDKs, and includes the Mental Models briefing layer. If peak benchmark recall on LongMemEval is the primary requirement and your team can enforce tag conventions for multi-tenancy, Hindsight is the stronger choice today</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Benchmark note -->
+    <div class="vs-card mb-8">
+      <p class="text-xs text-yellow-400 font-semibold uppercase tracking-wide mb-2">Benchmark comparison note</p>
+      <p class="text-sm text-gray-400 leading-relaxed">Hindsight's leaderboard (94.6% LongMemEval S) and memnos's result (78.4%) are measured with <strong class="text-gray-200">different judges</strong>: memnos uses GPT-4o; Hindsight uses Gemini (version undisclosed). The same answer set can differ 15–20pp by judge alone — a gap we document with our <a href="benchmarks.html" class="text-purple-400 hover:text-purple-300 underline underline-offset-2">full judge ladder</a>. Hindsight's published paper (arXiv:2512.12818) reports 91.4% for the same config with Gemini-3, not 94.6% — that unexplained 3.2pp drift between the paper and the leaderboard is worth noting. Their LoCoMo claim of 92% is also flagged in their own docs as potentially unreliable due to "flawed ground truth" in that dataset. Both teams publish open harnesses — run both on your workload, with the same judge, before making infrastructure decisions.</p>
+    </div>
+
+    <div class="gradient-border">
+      <div class="gradient-border-inner px-8 py-5 rounded-2xl">
+        <p class="text-gray-300 text-sm leading-relaxed text-center"><strong class="text-white">The honest split:</strong> Hindsight and memnos make the same core architectural bet (PostgreSQL, no separate graph DB) and differ on where they put their energy. Hindsight invests in benchmark-optimised recall and a large integration surface. memnos invests in governance-first design (enforced ACL, audit trail, bi-temporal provenance, encrypted vault) that works correctly by default without disciplined tag usage from every developer on the team. Choose by what breaks first in production: recall accuracy or data governance.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ── LETTA + CAPTURE NOTE ────────────────────────────────────────── -->
 <section id="vs-others" class="relative z-10 py-20 fade-in">
   <div class="max-w-6xl mx-auto px-6">
@@ -1017,7 +1134,7 @@ gpt-4o judge : <span class="token-num">78.4%</span>  <span class="token-cmt"># p
     });
   });
   // scroll-spy: highlight active jump-nav pill
-  const jumpSections = ['matrix','vs-mem0','vs-zep','vs-supermemory','vs-mnemosyne','vs-honcho','vs-others'];
+  const jumpSections = ['matrix','vs-mem0','vs-zep','vs-supermemory','vs-mnemosyne','vs-honcho','vs-hindsight','vs-others'];
   const jumpPills = {};
   jumpSections.forEach(id => {
     const pill = document.querySelector(`.jump-nav-inner a[href="#${id}"]`);
