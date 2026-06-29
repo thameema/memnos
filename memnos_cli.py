@@ -2092,6 +2092,49 @@ def _mcp_launcher():
     return sys.executable, [os.path.abspath(__file__), "mcp"]
 
 
+def _install_hermes_native_plugin(url: str, token: str, ns: str) -> None:
+    """Install the memnos MemoryProvider plugin into ~/.hermes/plugins/memnos/.
+
+    Copies the bundled plugin __init__.py and writes config.json with the
+    URL, token, and namespace so the plugin loads without env vars.
+    """
+    import shutil
+    # Locate the bundled plugin (installed alongside memnos_cli.py)
+    plugin_src_candidates = [
+        # pip/uv installed: alongside the package
+        os.path.join(os.path.dirname(__file__), "integrations", "hermes", "__init__.py"),
+        # source checkout
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "integrations", "hermes", "__init__.py"),
+    ]
+    plugin_src = next((p for p in plugin_src_candidates if os.path.exists(p)), None)
+
+    hermes_plugins_dir = os.path.expanduser("~/.hermes/plugins/memnos")
+    os.makedirs(hermes_plugins_dir, exist_ok=True)
+    dest = os.path.join(hermes_plugins_dir, "__init__.py")
+
+    if plugin_src:
+        _backup(dest)
+        shutil.copy2(plugin_src, dest)
+        print(f"  • native plugin  -> {dest}")
+    else:
+        print("  ⚠ Could not find bundled Hermes plugin (integrations/hermes/__init__.py).")
+        print("    The MCP integration was still wired. For the native plugin, copy manually:")
+        print("    https://github.com/thameema/memnos/tree/master/integrations/hermes/__init__.py")
+
+    # Write plugin config.json (token stays 0600)
+    cfg_path = os.path.join(hermes_plugins_dir, "config.json")
+    cfg_data = {"url": url, "token": token, "namespace": ns}
+    with open(cfg_path, "w") as f:
+        json.dump(cfg_data, f, indent=2)
+    os.chmod(cfg_path, 0o600)
+    print(f"  • plugin config  -> {cfg_path}")
+    print()
+    print("  To activate the native plugin (deterministic prefetch + auto-save),")
+    print("  add to ~/.hermes/config.yaml under the 'memory:' section:")
+    print("      provider: memnos")
+    print("  Then restart Hermes. The MCP tools still work regardless.")
+
+
 def cmd_agent_setup(args, cfg):
     """Wire memnos into another MCP-capable agent (codex/cursor/windsurf/claude-desktop/
     openclaw/hermes). Writes its MCP server config (+ an AGENTS.md instruction for codex).
@@ -2171,6 +2214,11 @@ def cmd_agent_setup(args, cfg):
     print(f"[memnos] {args.agent} wired -> {spec['path']} (MCP server 'memnos', ns={ns}).")
     if spec.get("agents_md"):
         print(f"          + instructions -> {spec['agents_md']}")
+
+    # Hermes: also install the native MemoryProvider plugin (deterministic prefetch/sync_turn)
+    if args.agent == "hermes":
+        _install_hermes_native_plugin(url, token, ns)
+
     if args.agent == "claude-desktop":
         # Desktop has no hooks — a personal SKILL makes tool use consistent instead of
         # occasional. Write it where the user can add it via Customize → Skills → "+".
@@ -2184,8 +2232,13 @@ def cmd_agent_setup(args, cfg):
         print("    decisions/identifiers after. (Desktop has no hooks; the skill makes")
         print("    memory use consistent. Also consider turning OFF Desktop's own")
         print("    'Generate memory from chat history' to avoid two competing memories.)")
-    print("  Note: this agent uses the memnos MCP *tools* (recall/remember/reconcile_claim) — "
-          "no auto inject/save hooks (those are Claude Code only). Restart the agent to load it.")
+    if args.agent == "hermes":
+        print("  MCP tools (recall/remember/reconcile_claim) wired. "
+              "Native plugin (deterministic prefetch+save) also installed — "
+              "activate by setting `memory.provider: memnos` in ~/.hermes/config.yaml, then restart.")
+    else:
+        print("  Note: this agent uses the memnos MCP *tools* (recall/remember/reconcile_claim) — "
+              "no auto inject/save hooks (those are Claude Code only). Restart the agent to load it.")
     if spec.get("note"):
         print(f"  Next: {spec['note']}")
 
