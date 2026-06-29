@@ -472,7 +472,7 @@
             <tr class="section-header"><td colspan="9">Architecture &amp; deploy</td></tr>
             <tr>
               <td>Deployment model</td>
-              <td class="col-memnos"><span style="font-size:0.7rem;color:#c4b5fd;">Self-host,<br>your Postgres</span></td>
+              <td class="col-memnos"><span style="font-size:0.7rem;color:#c4b5fd;">Self-host;<br>embedded (zero-dep) or your Postgres</span></td>
               <td><span style="font-size:0.7rem;color:#9ca3af;">Self-host<br>or cloud</span></td>
               <td><span style="font-size:0.7rem;color:#9ca3af;">Hosted cloud</span></td>
               <td><span style="font-size:0.7rem;color:#9ca3af;">Library +<br>graph DB</span></td>
@@ -480,6 +480,17 @@
               <td><span style="font-size:0.7rem;color:#9ca3af;">Local SQLite,<br>single user</span></td>
               <td><span style="font-size:0.7rem;color:#9ca3af;">Managed cloud;<br>Docker self-host</span></td>
               <td style="border-left:1px solid rgba(255,255,255,0.06);"><span style="font-size:0.7rem;color:#9ca3af;">Docker / bare metal;<br>embedded (no server)</span></td>
+            </tr>
+            <tr>
+              <td><code style="font-size:0.7rem;">pipx install</code> → works, zero external deps</td>
+              <td class="col-memnos"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;"><code>--embedded</code> downloads PG + pgvector</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">needs Postgres or Docker</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">cloud only</span></td>
+              <td><span class="check-red">&#10007;</span> <span style="font-size:0.65rem;color:#6b7280;">needs Neo4j + Postgres</span></td>
+              <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">pip install + API key</span></td>
+              <td><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">pip install, SQLite</span></td>
+              <td><span class="check-yellow">~</span> <span style="font-size:0.65rem;color:#6b7280;">needs API key + account</span></td>
+              <td style="border-left:1px solid rgba(255,255,255,0.06);"><span class="check-green">&#10003;</span> <span style="font-size:0.65rem;color:#6b7280;">pg0 embedded</span></td>
             </tr>
             <tr>
               <td>Single store — no separate graph database required</td>

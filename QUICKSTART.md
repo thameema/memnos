@@ -11,13 +11,22 @@ five minutes — one package, one command.
 
 ## Prerequisites
 
+**Nothing required** if you use embedded mode (recommended for solo / first-time installs):
+
+```bash
+memnos setup --embedded   # downloads PostgreSQL 16 + pgvector into ~/.memnos/embedded_pg/
+                          # ~20-30 MB one-time download; macOS arm64 + Linux x86_64
+```
+
+If you prefer to connect to your own PostgreSQL:
+
 - **PostgreSQL 13+** with the **pgvector ≥ 0.6** extension available. memnos **does not install
   Postgres** — it connects to yours and creates its own schema. (For local dev, the
   `pgvector/pgvector` Docker image is easiest: `docker compose -f docker-compose.dev.yml up -d`.)
   - On **Debian/Ubuntu** a plain `sudo apt install postgresql-16-pgvector` (ships pgvector
-    **0.6**) is enough — no source build. memnos feature-detects the version and uses
-    full-precision `vector` columns on 0.6, the half-precision `halfvec` storage optimization
-    on ≥ 0.7. Same recall quality either way.
+    **0.6**) is enough — no source build.
+- Or use Docker: `memnos setup --docker`
+
 - **Python 3.10+** (for `uv` / `pip`).
 - *Optional:* an **OpenAI API key** for 1536-d embeddings + fact extraction. Without one,
   memnos runs in free **local 384-d** mode (embeddings only). For fact extraction without
@@ -59,28 +68,44 @@ memnos --help
 
 ---
 
-## 2. Point memnos at your Postgres
+## 2. Set up memnos
+
+### Option A — Zero-dependency (recommended for solo developers)
 
 ```bash
-memnos setup
+memnos setup --embedded
 ```
 
-The wizard asks for your Postgres connection (or pass `--dsn postgresql://user:pass@host:5432/db`).
-It then enables `pgvector`, creates the memnos schema + the governance control plane,
-generates your encrypted-vault key, mints a one-time **admin token** (copy it — shown once),
-and writes everything to `~/.memnos/config.json`. If pgvector is missing or built for the
-wrong PG version, it tells you exactly how to fix it. If it detects Claude Code it offers to
-wire it up (`memnos claude-setup`).
+Downloads a pre-built **PostgreSQL 16 + pgvector** binary (~20-30 MB) into
+`~/.memnos/embedded_pg/` on first run. No Docker, no `brew install`, no `apt install` —
+just this command. `memnos start` auto-starts the embedded database on every boot.
 
-The wizard also asks for an **optional OpenAI key** (hidden input, validated live against
-the OpenAI API, stored encrypted in the vault) — that's what chooses between 1536-d OpenAI
-mode and free local 384-d mode. Choose carefully, but it's not one-way:
-`memnos migrate-embeddings` later re-embeds every memory between the two dimensions,
-losslessly (it re-embeds from the stored text). Re-running `memnos setup` is safe — the
-schema is additive and never wipes data.
+*Supported: macOS arm64 (Apple Silicon), Linux x86_64.*
+For other platforms, use Option B or C below.
 
-> **Alternative (needs Docker):** `memnos setup --docker` runs a pre-configured pgvector
-> Postgres for you — no Postgres install or version-matching. Then continue to step 3.
+### Option B — Docker (any platform)
+
+```bash
+memnos setup --docker   # needs Docker Desktop; runs pgvector/pgvector:pg16 container
+```
+
+### Option C — Bring your own Postgres
+
+```bash
+memnos setup            # interactive wizard: enter your Postgres connection details
+memnos setup --dsn postgresql://user:pass@host:5432/db   # or pass directly
+```
+
+---
+
+All three paths do the same thing after connecting to Postgres: enable `pgvector`, create
+the memnos schema + governance control plane, generate your encrypted-vault key, mint a
+one-time **admin token** (copy it — shown once), and write everything to
+`~/.memnos/config.json`.
+
+The wizard also asks for an **optional OpenAI key** (hidden input, validated live, stored
+encrypted in the vault) — that chooses between 1536-d OpenAI mode and free local 384-d mode.
+`memnos migrate-embeddings` later re-embeds losslessly if you change your mind.
 
 ---
 
