@@ -1815,6 +1815,53 @@ def cmd_bindings_refresh(args, cfg):
 
 
 # ---- data client ------------------------------------------------------------
+def cmd_lease(args, cfg):
+    import nsresolve
+    ns = getattr(args, "namespace", None)
+    if not ns or ns == "auto":
+        ns = nsresolve.resolve()
+    tok = getattr(args, "token", None) or os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token")
+    verb = getattr(args, "verb", None)
+    if verb == "acquire":
+        out = _post(cfg, "/lease/acquire",
+                    {"namespace": ns, "key": args.key, "holder_id": args.holder,
+                     "ttl_seconds": args.ttl}, tok)
+        if out.get("granted"):
+            print(f"granted  key={args.key}  expires={out['expires_at']}")
+        else:
+            hb = out.get("holder_id") or "unknown"
+            print(f"denied   key={args.key}  held_by={hb}  expires={out.get('expires_at','?')}")
+    elif verb == "heartbeat":
+        out = _post(cfg, "/lease/heartbeat",
+                    {"namespace": ns, "key": args.key, "holder_id": args.holder,
+                     "ttl_seconds": args.ttl}, tok)
+        if out.get("renewed"):
+            print(f"renewed  key={args.key}  expires={out['expires_at']}")
+        else:
+            print(f"not found — lease on {args.key!r} does not exist or has expired")
+    elif verb == "release":
+        out = _post(cfg, "/lease/release",
+                    {"namespace": ns, "key": args.key, "holder_id": args.holder}, tok)
+        print(f"released={out.get('released')}  key={args.key}")
+    elif verb == "who-holds":
+        out = _post(cfg, "/lease/who_holds", {"namespace": ns, "key": args.key}, tok)
+        if out.get("held"):
+            print(f"held_by={out['holder_id']}  acquired={out['acquired_at']}  expires={out['expires_at']}")
+        else:
+            print(f"free — no active lease on {args.key!r}")
+    elif verb == "ls":
+        out = _post(cfg, "/lease/list", {"namespace": ns}, tok)
+        rows = out.get("leases", [])
+        if not rows:
+            print("no active leases")
+            return
+        for r in rows:
+            print(f"  {r['key']:<40}  {r['holder_id']:<30}  expires={r['expires_at']}")
+    else:
+        print("lease: use acquire | heartbeat | release | who-holds | ls", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_remember(args, cfg):
     import nsresolve
     if args.namespace and args.namespace != "auto":
@@ -2563,6 +2610,40 @@ def build_parser():
     p = sub.add_parser("upgrade", help="check PyPI for a newer version and install it")
     p.add_argument("--check", action="store_true", help="only check; don't install")
     p.set_defaults(fn=cmd_upgrade)
+
+    # ---- agent coordination ----
+    p = sub.add_parser("lease", help="agent coordination leases — one holder per work item at a time")
+    p.set_defaults(fn=cmd_lease)
+    ps = p.add_subparsers(dest="verb", metavar="<verb>")
+    v = ps.add_parser("acquire", help="atomically claim a work item; returns granted or denied+who-holds")
+    v.add_argument("key", help="work item key, e.g. 'ticket:PROJ-543' or 'mr:!51'")
+    v.add_argument("holder", help="this agent's id")
+    v.add_argument("--ttl", type=int, default=1200, dest="ttl", help="lease TTL in seconds (default 1200)")
+    v.add_argument("--namespace", default="auto")
+    v.add_argument("--token")
+    v.set_defaults(fn=cmd_lease)
+    v = ps.add_parser("heartbeat", help="extend a held lease; call every ttl/3 seconds while working")
+    v.add_argument("key")
+    v.add_argument("holder")
+    v.add_argument("--ttl", type=int, default=1200, dest="ttl")
+    v.add_argument("--namespace", default="auto")
+    v.add_argument("--token")
+    v.set_defaults(fn=cmd_lease)
+    v = ps.add_parser("release", help="release a held lease when work is done")
+    v.add_argument("key")
+    v.add_argument("holder")
+    v.add_argument("--namespace", default="auto")
+    v.add_argument("--token")
+    v.set_defaults(fn=cmd_lease)
+    v = ps.add_parser("who-holds", help="show who currently holds a lease")
+    v.add_argument("key")
+    v.add_argument("--namespace", default="auto")
+    v.add_argument("--token")
+    v.set_defaults(fn=cmd_lease)
+    v = ps.add_parser("ls", help="list all active leases in the namespace")
+    v.add_argument("--namespace", default="auto")
+    v.add_argument("--token")
+    v.set_defaults(fn=cmd_lease)
 
     # ---- identity & access (noun-verb) ----
     p = sub.add_parser("principal", help="manage principals (identities): create | ls")

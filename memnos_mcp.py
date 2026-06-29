@@ -473,5 +473,74 @@ def get_context(query: str) -> str:
         return _err(e, "get_context")
 
 
+@mcp.tool()
+def lease_acquire(key: str, holder_id: str, ttl_seconds: int = 1200) -> str:
+    """Atomically acquire an exclusive lease on a work item (e.g. 'ticket:PROJ-543',
+    'mr:!51', 'repo:gridops-platform'). Returns granted=true if you now hold the lease;
+    granted=false with held_by/expires_at if another agent is already working it.
+    Always call this before starting work on any shared item; heartbeat while working;
+    release on completion."""
+    try:
+        out = _post("/lease/acquire", {"key": key, "holder_id": holder_id, "ttl_seconds": ttl_seconds})
+        if out.get("granted"):
+            return f"granted lease on '{key}' until {out['expires_at']}"
+        hb = out.get("holder_id") or "unknown"
+        exp = out.get("expires_at") or "unknown"
+        return f"denied — '{key}' held by {hb} until {exp}"
+    except Exception as e:
+        return _err(e, "lease_acquire")
+
+
+@mcp.tool()
+def lease_heartbeat(key: str, holder_id: str, ttl_seconds: int = 1200) -> str:
+    """Extend the expiry of a lease you hold. Call every ttl/3 seconds while working
+    to prevent the lease from expiring and being stolen."""
+    try:
+        out = _post("/lease/heartbeat", {"key": key, "holder_id": holder_id, "ttl_seconds": ttl_seconds})
+        if out.get("renewed"):
+            return f"heartbeat accepted — lease on '{key}' extended to {out['expires_at']}"
+        return f"heartbeat rejected — lease on '{key}' not found or expired"
+    except Exception as e:
+        return _err(e, "lease_heartbeat")
+
+
+@mcp.tool()
+def lease_release(key: str, holder_id: str) -> str:
+    """Release a lease you hold on a work item. Call this when work is complete or
+    abandoned. A crashed holder's lease auto-expires after the TTL."""
+    try:
+        out = _post("/lease/release", {"key": key, "holder_id": holder_id})
+        return f"released lease on '{key}'" if out.get("released") else f"lease on '{key}' not found or not yours"
+    except Exception as e:
+        return _err(e, "lease_release")
+
+
+@mcp.tool()
+def lease_who_holds(key: str) -> str:
+    """Check who currently holds the lease on a work item. Returns holder_id and
+    expiry if held, or confirms the item is free."""
+    try:
+        out = _post("/lease/who_holds", {"key": key})
+        if out.get("held"):
+            return f"'{key}' held by {out['holder_id']} until {out['expires_at']}"
+        return f"'{key}' is free"
+    except Exception as e:
+        return _err(e, "lease_who_holds")
+
+
+@mcp.tool()
+def lease_list() -> str:
+    """List all active leases in the current namespace — useful to see what work
+    items other agents are currently processing."""
+    try:
+        leases = _post("/lease/list", {}).get("leases", [])
+        if not leases:
+            return "no active leases in namespace"
+        lines = [f"  {l['key']} — held by {l['holder_id']} until {l['expires_at']}" for l in leases]
+        return f"{len(leases)} active lease(s):\n" + "\n".join(lines)
+    except Exception as e:
+        return _err(e, "lease_list")
+
+
 if __name__ == "__main__":
     mcp.run()        # stdio transport (JSON-RPC over stdin/stdout)

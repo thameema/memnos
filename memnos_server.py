@@ -23,6 +23,7 @@ import threading
 import time
 import traceback
 import urllib.request
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -92,7 +93,8 @@ MAX_BODY = 256 * 1024          # 256 KB request cap
 # safe. Generous default; only a genuinely abusive payload exceeds it.
 _QUERY_MAX_CHARS = int(os.environ.get("MEMNOS_QUERY_MAX_CHARS", "20000"))
 WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/corpus/ingest",
-             "/ingest/file", "/episode/segment", "/episode/decay", "/namespace/copy"}
+             "/ingest/file", "/episode/segment", "/episode/decay", "/namespace/copy",
+             "/lease/acquire", "/lease/heartbeat", "/lease/release"}
 
 
 def _suggest_enabled():
@@ -819,6 +821,45 @@ class Handler(BaseHTTPRequestHandler):
                         except (TypeError, ValueError):
                             return self._send(400, {"error": "subscription_id (int) required"})
                         out = {"unsubscribed": Control.unsubscribe(conn, principal, sid)}
+                    # --- agent coordination leases (issue #26) ---
+                    elif self.path == "/lease/acquire":
+                        key = str(req.get("key", "")).strip()
+                        holder = str(req.get("holder_id", "")).strip()
+                        ttl = max(1, int(req.get("ttl_seconds", 1200)))
+                        if not key or not holder:
+                            return self._send(400, {"error": "key and holder_id required"})
+                        out = Control.lease_acquire(conn, ns, key, holder, principal, ttl)
+                        if out.get("granted"):
+                            store.insert_raw_turn(
+                                mem.schema, ns, "", "memnos:lease",
+                                json.dumps({"event": "acquired", "key": key, "holder_id": holder,
+                                            "expires_at": out["expires_at"]}),
+                                datetime.now(timezone.utc), None)
+                    elif self.path == "/lease/heartbeat":
+                        key = str(req.get("key", "")).strip()
+                        holder = str(req.get("holder_id", "")).strip()
+                        ttl = max(1, int(req.get("ttl_seconds", 1200)))
+                        if not key or not holder:
+                            return self._send(400, {"error": "key and holder_id required"})
+                        out = Control.lease_heartbeat(conn, ns, key, holder, ttl)
+                    elif self.path == "/lease/release":
+                        key = str(req.get("key", "")).strip()
+                        holder = str(req.get("holder_id", "")).strip()
+                        if not key or not holder:
+                            return self._send(400, {"error": "key and holder_id required"})
+                        out = Control.lease_release(conn, ns, key, holder)
+                        if out.get("released"):
+                            store.insert_raw_turn(
+                                mem.schema, ns, "", "memnos:lease",
+                                json.dumps({"event": "released", "key": key, "holder_id": holder}),
+                                datetime.now(timezone.utc), None)
+                    elif self.path == "/lease/who_holds":
+                        key = str(req.get("key", "")).strip()
+                        if not key:
+                            return self._send(400, {"error": "key required"})
+                        out = Control.lease_who_holds(conn, ns, key)
+                    elif self.path == "/lease/list":
+                        out = {"leases": Control.lease_list(conn, ns)}
                     # --- corpus ingestion + checks (Batch 4) ---
                     elif self.path == "/corpus/ingest":    # parse doc constraints -> facts
                         name = str(req.get("name", "")).strip()
