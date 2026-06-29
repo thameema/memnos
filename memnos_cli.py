@@ -2128,6 +2128,43 @@ _AGENTS = {
 }
 
 
+def _detect_installed_agents():
+    """Return list of agent names that appear to be installed on this machine.
+
+    Detection heuristics (in priority order):
+      claude-code   — ~/.claude directory exists
+      claude-desktop— config dir exists (platform-aware)
+      codex         — ~/.codex directory exists
+      cursor        — ~/.cursor directory exists
+      windsurf      — ~/.codeium directory exists
+      hermes        — ~/.hermes directory exists
+      openclaw      — ~/.openclaw directory exists
+
+    Returns a list of names in the order they appear in _AGENTS so output
+    is predictable.
+    """
+    import shutil
+    found = []
+    checks = {
+        "claude-code":    lambda: os.path.isdir(os.path.expanduser("~/.claude")),
+        "claude-desktop": lambda: (
+            os.path.isdir(os.path.expanduser("~/Library/Application Support/Claude"))
+            or os.path.isdir(os.path.expanduser("~/.config/Claude"))
+            or os.path.isdir(os.path.join(os.environ.get("APPDATA", ""), "Claude"))
+        ),
+        "codex":          lambda: os.path.isdir(os.path.expanduser("~/.codex")),
+        "cursor":         lambda: os.path.isdir(os.path.expanduser("~/.cursor")),
+        "windsurf":       lambda: os.path.isdir(os.path.expanduser("~/.codeium")),
+        "hermes":         lambda: os.path.isdir(os.path.expanduser("~/.hermes")),
+        "openclaw":       lambda: os.path.isdir(os.path.expanduser("~/.openclaw")),
+    }
+    for name in _AGENTS:
+        check = checks.get(name)
+        if check and check():
+            found.append(name)
+    return found
+
+
 def _mcp_launcher():
     """(command, args) for spawning the memnos MCP adapter — ABSOLUTE command path, because
     GUI apps launch MCP servers with a minimal PATH. Falls back to `python memnos_cli.py mcp`
@@ -2186,6 +2223,44 @@ def cmd_agent_setup(args, cfg):
     """Wire memnos into another MCP-capable agent (codex/cursor/windsurf/claude-desktop/
     openclaw/hermes). Writes its MCP server config (+ an AGENTS.md instruction for codex).
     Idempotent; backs up."""
+    if args.agent == "all":
+        detected = _detect_installed_agents()
+        if not detected:
+            print("[memnos] No supported agents detected on this machine.")
+            print("         Supported: " + ", ".join(_AGENTS))
+            print("         To force-setup a specific agent: memnos agent-setup <name> --force")
+            return
+        print(f"[memnos] Detected {len(detected)} agent(s): {', '.join(detected)}")
+        print()
+        results = []
+        for name in detected:
+            print(f"── {name} ".ljust(40, "─"))
+            try:
+                sub_args = argparse.Namespace(agent=name,
+                                              namespace=getattr(args, "namespace", None),
+                                              force=getattr(args, "force", False))
+                cmd_agent_setup(sub_args, cfg)
+                results.append((name, "wired"))
+            except SystemExit as e:
+                results.append((name, f"failed: {e}"))
+                print(f"  ⚠ {name} setup failed: {e}")
+            except Exception as e:
+                results.append((name, f"error: {e}"))
+                print(f"  ⚠ {name} setup error: {e}")
+            print()
+        print("═" * 50)
+        print(f"{'Agent':<20} {'Status'}")
+        print("─" * 50)
+        for name, status in results:
+            icon = "✓" if status == "wired" else "✗"
+            print(f"  {icon}  {name:<18} {status}")
+        print()
+        wired = [n for n, s in results if s == "wired"]
+        if wired:
+            print(f"[memnos] {len(wired)}/{len(results)} agent(s) wired. "
+                  "Restart each agent to activate memory.")
+        return
+
     spec = _AGENTS.get(args.agent)
     if not spec:
         sys.exit(f"unknown agent '{args.agent}' — choose: {', '.join(_AGENTS)}")
@@ -2755,8 +2830,9 @@ def build_parser():
     p.set_defaults(fn=cmd_whoami)
 
     # ---- integrations ----
-    p = sub.add_parser("agent-setup", help="wire memnos into an agent (claude-code, codex, cursor, ...)")
-    p.add_argument("agent", choices=list(_AGENTS), help="which agent to wire")
+    p = sub.add_parser("agent-setup", help="wire memnos into an agent (claude-code, codex, cursor, ...) or 'all'")
+    p.add_argument("agent", choices=list(_AGENTS) + ["all"],
+                   help="which agent to wire — use 'all' to auto-detect and wire every installed agent")
     p.add_argument("--namespace", help="default namespace for the agent")
     p.add_argument("--force", action="store_true", help="set up even if the agent isn't detected")
     p.set_defaults(fn=cmd_agent_setup)
