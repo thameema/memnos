@@ -702,24 +702,136 @@ gpt-4o judge : <span class="token-num">78.4%</span>  <span class="token-cmt"># p
   </div>
 </section>
 
-<!-- ── SUPERMEMORY & LETTA (verified as of 2026-06-10) ───────────────── -->
+<!-- ── VS MNEMOSYNE ─────────────────────────────────────────────────── -->
+<section id="vs-mnemosyne" class="relative z-10 py-20 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <h2 class="text-3xl font-bold text-white mb-4">memnos vs Mnemosyne</h2>
+      <p class="text-gray-400 max-w-xl mx-auto">Mnemosyne (github.com/AxDSan/mnemosyne) is a popular lightweight alternative — zero dependencies, SQLite-backed, sub-10ms local retrieval. memnos solves a different problem: shared, governed memory for teams on a real database.</p>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-8 mb-10">
+      <div class="vs-card">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-9 h-9 bg-gray-500/10 border border-gray-500/20 rounded-xl flex items-center justify-center">
+            <span class="text-gray-400 text-sm font-bold">Mn</span>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">Mnemosyne</h3>
+            <p class="text-xs text-gray-500">Zero-dependency local memory — SQLite, single user</p>
+          </div>
+        </div>
+        <ul class="space-y-2 text-sm text-gray-400">
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span><strong class="text-gray-300">Zero-setup:</strong> one <code class="text-xs">pip install</code>, no Postgres, no Docker — runs anywhere including on the same thread as the agent</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span><strong class="text-gray-300">Sub-10ms retrieval</strong> at 10K items — SQLite runs in-process so there's no network hop at all</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>23+ MCP tools, first-class Cursor / Claude Code / Windsurf integrations out of the box</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Three memory tiers (working / episodic / scratchpad) with LLM-driven consolidation via <code class="text-xs">sleep()</code></li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span><strong class="text-gray-300">Single-user only</strong> — no auth layer, no namespace isolation, no audit log; access control is filesystem permissions</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>MIT licensed · 1,300+ stars (June 2026) · rapid release cadence</li>
+        </ul>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-9 h-9 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center">
+            <svg width="16" height="16" viewBox="0 0 28 28" fill="none"><rect x="4" y="17" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.8"/><rect x="4" y="11" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.9"/><rect x="4" y="5" width="20" height="5" rx="2.5" fill="#a78bfa"/></svg>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">memnos</h3>
+            <p class="text-xs text-gray-500">Team memory — shared, governed, on your Postgres</p>
+          </div>
+        </div>
+        <ul class="space-y-2 text-sm text-gray-400">
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span><strong class="text-gray-300">Multi-user from the start</strong> — token auth, namespace ACL, server-stamped attribution, audit log. One server, many developers, each fact attributed to who wrote it</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span><strong class="text-gray-300">Bi-temporal facts</strong> — deterministic supersession (rule-based, not LLM-guessed), full as-of history retained. Mnemosyne has no temporal model</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Runs on PostgreSQL + pgvector — standard ops tooling, PITR backups, SQL introspection. Scales beyond a single file</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Encrypted secret vault, ingest redaction, governance console — in the open-source build</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Deterministic capture via Claude Code hooks + offline queue (survives server downtime)</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Honest gap: memnos needs Postgres to exist — if you want zero-setup single-user memory today, Mnemosyne is a legitimate choice</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="gradient-border">
+      <div class="gradient-border-inner px-8 py-5 rounded-2xl">
+        <p class="text-gray-300 text-sm leading-relaxed text-center"><strong class="text-white">The honest split:</strong> Mnemosyne is the right tool for a solo developer who wants memory in under 60 seconds, no ops, no database. memnos is the right tool when two or more people (or agents) share the same memory, when you need to audit who wrote what, or when "my SQLite file" isn't a sufficient backup strategy.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── VS HONCHO ───────────────────────────────────────────────────── -->
+<section id="vs-honcho" class="relative z-10 py-20 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <h2 class="text-3xl font-bold text-white mb-4">memnos vs Honcho</h2>
+      <p class="text-gray-400 max-w-xl mx-auto">Honcho (honcho.dev) is a managed memory-infrastructure service with a proprietary reasoning pipeline (Neuromancer) and strong benchmark results. It targets developers building AI products on managed cloud. memnos is self-hosted, Apache-2.0, and runs no LLM at query time.</p>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-8 mb-10">
+      <div class="vs-card">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-9 h-9 bg-gray-500/10 border border-gray-500/20 rounded-xl flex items-center justify-center">
+            <span class="text-gray-400 text-sm font-bold">H</span>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">Honcho</h3>
+            <p class="text-xs text-gray-500">Managed reasoning-first memory service · AGPL-3.0 · 5,600+ stars</p>
+          </div>
+        </div>
+        <ul class="space-y-2 text-sm text-gray-400">
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span><strong class="text-gray-300">Strong benchmark scores</strong> (published, reproducible harness): <strong>90.4%</strong> on LongMemEval S (judge: Claude Haiku 4.5; deriver: Gemini 2.5 Flash Lite) and <strong>89.9%</strong> on LoCoMo (judge: GPT-4o-mini) — see the benchmark note below before comparing to other vendors' numbers</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span><strong class="text-gray-300">Neuromancer XR</strong> — a Qwen3-8B model fine-tuned on proprietary conversation→conclusion data; does heavy extraction at <em>ingestion time</em>, not query time. Reasoning model is closed-source; training data is proprietary</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Basic <code class="text-xs">context()</code> retrieval: unlimited, ~200ms — no per-query LLM cost at this tier. Optional reasoning queries (active synthesis) cost $0.001–$0.50 each (Minimal→Max)</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span><strong class="text-gray-300">Managed service pricing</strong>: $2.00/M tokens ingested; background Dreaming inference included</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>AGPL-3.0 license — if you self-host and modify, the copyleft requires you to open-source those modifications (vs Apache-2.0 which has no such restriction)</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Capture is primarily API-push or MCP (model-discretionary); no deterministic lifecycle-hook capture for Claude Code</li>
+        </ul>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-9 h-9 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center">
+            <svg width="16" height="16" viewBox="0 0 28 28" fill="none"><rect x="4" y="17" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.8"/><rect x="4" y="11" width="20" height="5" rx="2.5" fill="#a78bfa" opacity="0.9"/><rect x="4" y="5" width="20" height="5" rx="2.5" fill="#a78bfa"/></svg>
+          </div>
+          <div>
+            <h3 class="text-white font-semibold">memnos</h3>
+            <p class="text-xs text-gray-500">Self-hosted · Apache-2.0 · no LLM at query time</p>
+          </div>
+        </div>
+        <ul class="space-y-2 text-sm text-gray-400">
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span><strong class="text-gray-300">No LLM at query time</strong> — recall is hybrid search + RRF + a local ONNX cross-encoder reranker. No per-query LLM cost, no latency from an external model call</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span><strong class="text-gray-300">Apache-2.0</strong> — use commercially, modify, deploy, fork — no copyleft strings attached</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Fully open engine — every line of the retrieval and storage logic is public and auditable. No proprietary model deciding what you remember</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Governance in the free self-hosted build: token auth, namespace ACL, audit log, encrypted secret vault — not a metered add-on</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span>Bi-temporal supersession — deterministic, rule-based, not LLM-judged. History never deleted; as-of queries work</li>
+          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Honest gap: Honcho's reasoning pipeline produces higher benchmark recall — if accuracy on complex multi-hop memory tasks is the primary requirement and you're comfortable with managed cloud + per-query pricing, Honcho is a strong choice</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Benchmark note — critical for credibility -->
+    <div class="vs-card mb-8">
+      <p class="text-xs text-yellow-400 font-semibold uppercase tracking-wide mb-2">A note on benchmark comparisons</p>
+      <p class="text-sm text-gray-400 leading-relaxed">Honcho's published numbers (LongMemEval S: 90.4%; LoCoMo: 89.9%) and memnos's numbers (LongMemEval: 78.4%; LoCoMo: 64–65%) use <strong class="text-gray-200">different judge models, different rubrics, and in the case of LongMemEval, potentially different subsets of the dataset</strong> — they cannot be read as a single leaderboard. Honcho's LongMemEval judge is Claude Haiku 4.5; their LoCoMo judge is GPT-4o-mini (per their Neuromancer XR paper). memnos used gpt-4o on Supermemory's open MemoryBench harness. "LongMemEval S" may differ from the full 500-question set we ran. The same set of answers can score 15–20 points differently depending only on the judge model — a phenomenon we document on our <a href="benchmarks.html" class="text-purple-400 hover:text-purple-300 underline underline-offset-2">benchmarks page</a> with the full strict-to-lenient judge ladder. Both teams publish reproducible harnesses — run both on your data with your judge and form your own view.</p>
+    </div>
+
+    <div class="gradient-border">
+      <div class="gradient-border-inner px-8 py-5 rounded-2xl">
+        <p class="text-gray-300 text-sm leading-relaxed text-center"><strong class="text-white">The honest split:</strong> Honcho is a managed reasoning service — you pay per-query for LLM-powered extraction and synthesis, and you get high benchmark scores in return. memnos is self-hosted infrastructure that runs no LLM at retrieval time — lower raw benchmark ceiling, but zero per-query cost, no cloud dependency, Apache-2.0 licensed, and every line of the engine is yours to read and modify.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── LETTA + CAPTURE NOTE ────────────────────────────────────────── -->
 <section id="vs-others" class="relative z-10 py-20 fade-in">
   <div class="max-w-6xl mx-auto px-6">
     <div class="text-center mb-12">
-      <h2 class="text-3xl font-bold text-white mb-4">What about Supermemory and Letta?</h2>
-      <p class="text-gray-400 max-w-xl mx-auto">Two more serious players, placed honestly. Facts verified against their published repos, docs and pricing as of <span class="text-gray-300">June 10, 2026</span> — vendors move fast; re-check their current docs.</p>
+      <h2 class="text-3xl font-bold text-white mb-4">What about Letta (MemGPT)?</h2>
+      <p class="text-gray-400 max-w-xl mx-auto">A different category entirely — an agent runtime, not a memory layer. Verified against published repos and docs as of June 2026.</p>
     </div>
-    <div class="grid md:grid-cols-2 gap-8 mb-10">
-      <div class="vs-card">
-        <h3 class="text-white font-semibold mb-1">Supermemory</h3>
-        <p class="text-xs text-gray-500 mb-4">Hosted memory platform with a local launcher</p>
-        <ul class="space-y-2 text-sm text-gray-400">
-          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>As of June 2026, the engine&rsquo;s source is not published — the MIT repo contains SDKs, apps and docs; <code class="text-xs">npx supermemory local</code> downloads a closed-source precompiled binary (first stable binary released June 2026).</li>
-          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>Local mode (per their own docs): embedded file store with no Postgres option, a single auto-generated API key, and server-logs-only observability. ACL, audit and air-gapped SOC2/HIPAA deployment are paid Scale/Enterprise features.</li>
-          <li class="flex items-start gap-2"><span class="text-gray-600 mt-0.5">&#9679;</span>The Claude Code plugin and the Drive/Gmail/Notion connectors require the paid cloud.</li>
-          <li class="flex items-start gap-2"><span class="text-purple-400 mt-0.5">&#10003;</span><span>Where it beats memnos today, honestly: those connectors, multimodal ingestion (OCR, video), one-command DX, and an open MIT benchmark harness (MemoryBench).</span></li>
-        </ul>
-      </div>
+    <div class="max-w-2xl mx-auto mb-10">
       <div class="vs-card">
         <h3 class="text-white font-semibold mb-1">Letta (MemGPT)</h3>
         <p class="text-xs text-gray-500 mb-4">An agent runtime — a different category</p>
@@ -732,7 +844,7 @@ gpt-4o judge : <span class="token-num">78.4%</span>  <span class="token-cmt"># p
     </div>
     <div class="gradient-border">
       <div class="gradient-border-inner px-8 py-5 rounded-2xl">
-        <p class="text-gray-300 text-sm leading-relaxed text-center"><strong class="text-white">A note on capture:</strong> no memory product — ours included — can capture automatically through MCP alone; the MCP spec has no post-response event, so MCP capture is always at the model&rsquo;s discretion. memnos ships deterministic capture where the platform allows it (Claude Code hooks, the <code class="text-xs">memnos proxy</code> for base-URL clients) and best-effort MCP tools everywhere else. Claude Desktop allows tools only — for every vendor.</p>
+        <p class="text-gray-300 text-sm leading-relaxed text-center"><strong class="text-white">A note on capture that applies to all vendors:</strong> no memory product — ours included — can capture automatically through MCP alone; the MCP spec has no post-response event, so MCP capture is always at the model&rsquo;s discretion. memnos ships deterministic capture where the platform allows it (Claude Code hooks, the <code class="text-xs">memnos proxy</code> for base-URL clients) and best-effort MCP tools everywhere else. Claude Desktop allows tools only — for every vendor.</p>
       </div>
     </div>
   </div>
