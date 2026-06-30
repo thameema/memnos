@@ -7,6 +7,7 @@
     memnos namespace add <ns>    # create a namespace
     memnos namespace set <ns> --kind knowledge   # mark as a knowledge namespace
     memnos namespace link <src> <dst>            # ground recall on src in dst
+    memnos secret get <name>     # decrypt + print a secret (admin-only, audited)
     memnos secret set <name>     # store an encrypted secret (vault)
     memnos secret rotate         # rotate the vault master key
     memnos remember/recall ...   # data client (talks to the server over HTTP)
@@ -1549,11 +1550,27 @@ def cmd_namespace(args, cfg):
 def cmd_secret(args, cfg):
     _apply_env(cfg)
     from core.vault import Vault, VaultLocked
+    from core.control import Control
     if args.action == "keygen":
         print("MEMNOS_SECRET_KEY=" + Vault.keygen()); return
     conn = _conn(cfg)
     try:
-        if args.action == "set":
+        if args.action == "get":
+            if not args.name:
+                sys.exit("secret get requires a name")
+            tok = os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token")
+            principal_id = Control.authenticate(conn, tok) if tok else None
+            if not Control.is_admin(conn, principal_id):
+                Control.audit(conn, principal_id, "secret.get", args.name, False, {"name": args.name})
+                sys.exit("secret get requires an admin token (write grant on '*')")
+            row = Control.secret_get(conn, args.name)
+            if row is None:
+                Control.audit(conn, principal_id, "secret.get", args.name, False, {"name": args.name})
+                sys.exit(f"secret '{args.name}' not found")
+            plaintext = Vault.get(conn, args.name)
+            Control.audit(conn, principal_id, "secret.get", args.name, True, {"name": args.name})
+            print(plaintext)
+        elif args.action == "set":
             val = args.value or getpass.getpass(f"value for '{args.name}': ")
             Vault.set(conn, args.name, val, args.desc); print(f"secret '{args.name}' stored (encrypted)")
         elif args.action == "ls":
@@ -2793,8 +2810,8 @@ def build_parser():
     p.add_argument("--limit", type=int,
                    help="reconcile: cap the number of facts walked this run (newest first)")
     p.set_defaults(fn=cmd_namespace)
-    p = sub.add_parser("secret", help="encrypted secret vault: set | ls | rm | rotate | keygen")
-    p.add_argument("action", choices=["set", "ls", "rm", "keygen", "rotate"], help="what to do")
+    p = sub.add_parser("secret", help="encrypted secret vault: get | set | ls | rm | rotate | keygen")
+    p.add_argument("action", choices=["get", "set", "ls", "rm", "keygen", "rotate"], help="what to do")
     p.add_argument("name", nargs="?", help="secret name (set/rm)")
     p.add_argument("--value", help="set: the value (omit to be prompted, hidden)")
     p.add_argument("--desc", help="set: description")
