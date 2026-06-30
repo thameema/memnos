@@ -987,6 +987,13 @@ class Control:
             return c.fetchall()
 
     @staticmethod
+    def secret_get(conn, name):
+        """Return the ciphertext row for a named secret, or None if not found."""
+        with conn.cursor() as c:
+            c.execute("SELECT nonce, ciphertext FROM memnos_control.secrets WHERE name=%s", (name,))
+            return c.fetchone()
+
+    @staticmethod
     def record_usage(conn, principal_id, namespace, op, model, tin, tout, cost):
         with conn.cursor() as c:
             c.execute("INSERT INTO memnos_control.usage_ledger"
