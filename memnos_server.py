@@ -705,7 +705,17 @@ class Handler(BaseHTTPRequestHandler):
                 write = self.path in WRITE_OPS
                 if not Control.authorize(conn, principal, ns, write=write):
                     Control.audit(conn, principal, self.path.lstrip("/"), ns, False, {"reason": "forbidden"})
-                    return self._send(403, {"error": "forbidden for namespace"})
+                    body = {"error": "forbidden for namespace"}
+                    if write:
+                        try:
+                            wns = Control.writable_namespaces(conn, principal)
+                            if wns:
+                                body["writable_namespaces"] = wns
+                                body["hint"] = ("switch namespace with /memnos ns=<namespace> "
+                                                "or set MEMNOS_NS env var")
+                        except Exception:
+                            pass
+                    return self._send(403, body)
 
                 if self.path == "/feedback":   # the true quality signal: was recall helpful?
                     Control.record_feedback(conn, principal, ns, str(req.get("query", ""))[:1000],
@@ -922,7 +932,17 @@ class Handler(BaseHTTPRequestHandler):
                 return None, None, (401, {"error": "unauthorized"})
             if not Control.authorize(conn, principal, ns, write=write):
                 Control.audit(conn, principal, action, ns, False, {"reason": "forbidden"})
-                return None, None, (403, {"error": "forbidden for namespace"})
+                body = {"error": "forbidden for namespace"}
+                if write:
+                    try:
+                        wns = Control.writable_namespaces(conn, principal)
+                        if wns:
+                            body["writable_namespaces"] = wns
+                            body["hint"] = ("switch namespace with /memnos ns=<namespace> "
+                                            "or set MEMNOS_NS env var")
+                    except Exception:
+                        pass
+                return None, None, (403, body)
             info = Control.principal_info(conn, principal)
         return principal, (info or {}).get("name"), None
 

@@ -728,6 +728,35 @@ class Control:
             return c.fetchall()
 
     @staticmethod
+    def writable_namespaces(conn, principal_id, limit=10):
+        """Concrete namespaces this principal may WRITE to, capped at `limit`.
+        Exact grants are included directly (even if the namespace has no data yet).
+        Wildcard grants ('*' or 'prefix:*') are expanded against existing namespaces.
+        Used to populate the suggestion in write-403 responses."""
+        grants = [g for g in Control.authorized_namespaces(conn, principal_id) if g["can_write"]]
+        if not grants:
+            return []
+        result = set()
+        wildcard_patterns = []
+        for g in grants:
+            ns = g["namespace"]
+            if ns == "*" or ns.endswith(":*"):
+                wildcard_patterns.append(ns)
+            else:
+                result.add(ns)
+        if wildcard_patterns:
+            with conn.cursor() as c:
+                c.execute("SELECT DISTINCT namespace FROM tenant_memnos.raw_turns "
+                          "UNION SELECT DISTINCT namespace FROM tenant_memnos.semantic")
+                existing = [r["namespace"] for r in c.fetchall()]
+            for ns in existing:
+                for p in wildcard_patterns:
+                    if p == "*" or (p.endswith(":*") and ns.startswith(p[:-1])):
+                        result.add(ns)
+                        break
+        return sorted(result)[:limit]
+
+    @staticmethod
     def readable_namespaces(conn, principal_id):
         """The CONCRETE namespaces (that actually hold memory) this principal may READ —
         expanding its grants (exact, prefix `p:*`, or `*`) against the existing namespaces.
