@@ -99,6 +99,17 @@ def _write_error(e, what):
             return (f"memnos {what} FAILED — NOT saved (401 unauthorized: the MEMNOS_TOKEN is "
                     f"invalid or revoked). Tell the user the memory was NOT stored.")
         if c == 403:
+            rbody = {}
+            try:
+                rbody = e.response.json()
+            except Exception:
+                pass
+            wns = rbody.get("writable_namespaces")
+            if wns:
+                ns_list = ", ".join(wns)
+                return (f"Write rejected for namespace '{_ns()}'. "
+                        f"Your token can write to: {ns_list}\n"
+                        f"Switch with: /memnos ns=<namespace>  or  MEMNOS_NS=<namespace>")
             return (f"memnos {what} FAILED — NOT saved (403 forbidden: this principal is not "
                     f"granted write access to namespace '{_ns()}'). Tell the user the memory "
                     f"was NOT stored and that the agent's token needs a grant on this namespace.")
