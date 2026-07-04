@@ -64,6 +64,9 @@ def main():
     ns_a = "test:usage-ns-a"
     ns_b = "test:usage-ns-b"
 
+    with conn.cursor() as c:
+        c.execute("DELETE FROM memnos_control.usage_ledger WHERE namespace IN (%s, %s)", (ns_a, ns_b))
+
     print("=== usage panel: insert mock ledger rows ===")
     insert_row(conn, ns_a, "extract",     100, 50, 0.002, admin_id)
     insert_row(conn, ns_a, "extract",     200, 80, 0.004, admin_id)
