@@ -1602,11 +1602,30 @@ def cmd_stats(args, cfg):
 
 
 def cmd_health(args, cfg):
+    import os
     from core.control import Control
-    rows = Control.health(_conn(cfg), 24)
-    print("OK — no findings" if not rows else "")
+    conn = _conn(cfg)
+    rows = Control.health(conn, 24)
+    print("OK -- no findings" if not rows else "")
     for level, msg in rows:
         print(f"  [{level}] {msg}")
+    daily_lim  = os.environ.get("MEMNOS_BUDGET_DAILY_USD")
+    monthly_lim = os.environ.get("MEMNOS_BUDGET_MONTHLY_USD")
+    if daily_lim or monthly_lim:
+        try:
+            daily_f  = float(daily_lim)  if daily_lim  else None
+            monthly_f = float(monthly_lim) if monthly_lim else None
+            bs = Control.budget_status(conn, daily_f, monthly_f)
+            daily_ok   = bs.get("daily_ok", True)
+            monthly_ok = bs.get("monthly_ok", True)
+            if daily_lim:
+                tag = "OK" if daily_ok else "EXCEEDED"
+                print(f"  [budget] daily   ${bs.get('daily_spend_usd', 0):.4f} / ${daily_lim}  [{tag}]")
+            if monthly_lim:
+                tag = "OK" if monthly_ok else "EXCEEDED"
+                print(f"  [budget] monthly ${bs.get('monthly_spend_usd', 0):.4f} / ${monthly_lim}  [{tag}]")
+        except Exception as exc:
+            print(f"  [budget] could not read budget status: {exc}")
 
 
 def cmd_whoami(args, cfg):
