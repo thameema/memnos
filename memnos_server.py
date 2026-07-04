@@ -887,6 +887,19 @@ class Handler(BaseHTTPRequestHandler):
                         if not snippet.strip():
                             return self._send(400, {"error": "snippet/code required"})
                         out = {"constraints": store.corpus_check(mem.schema, ns, snippet)}
+                    elif self.path == "/entity/dossier":   # get stored dossier for an entity
+                        entity_name = str(req.get("entity", "")).strip()
+                        if not entity_name:
+                            return self._send(400, {"error": "entity name required"})
+                        res = store.get_entity_dossier(mem.schema, ns, entity_name)
+                        if res is None:
+                            return self._send(404, {"error": "no dossier found for this entity"})
+                        out = {
+                            "entity": res["name"],
+                            "dossier": res["dossier_text"],
+                            "generated_at": res["generated_at"].isoformat() if res.get("generated_at") else None,
+                            "model_used": res.get("model_used"),
+                        }
                     elif self.path == "/corpus/list":
                         out = {"sources": Control.corpus_list(conn, ns)}
                     else:
@@ -1269,8 +1282,34 @@ class Handler(BaseHTTPRequestHandler):
             return 200, out
 
         if path == "/consolidate":
-            # read (conn) → per-entity dossier LLM + embeddings (NO conn) → write (conn)
-            return 200, mem.consolidate(ns, conn_factory=POOL.connection)
+            # read (conn) -> per-entity dossier LLM + embeddings (NO conn) -> write (conn)
+            result = mem.consolidate(ns, conn_factory=POOL.connection)
+            # ENTITY DOSSIER GENERATION (issue #23): only when MEMNOS_ENTITY_DOSSIERS=1
+            if os.environ.get("MEMNOS_ENTITY_DOSSIERS") == "1" and mem.llm is not None:
+                from core.service import generate_entity_dossier
+                with POOL.connection() as conn:
+                    candidates = Control.entity_dossier_candidates(
+                        conn, mem.schema, ns, min_mentions=3)
+                n_dossiers = 0
+                for cand in candidates[:5]:
+                    entity_id = cand["entity_id"]
+                    entity_name = cand["name"]
+                    # gather facts mentioning this entity (semantic only)
+                    with POOL.connection() as conn:
+                        store = BrainStore(conn=conn)
+                        ent = store.get_entity(mem.schema, ns, entity_name, fact_limit=30)
+                    facts = [r["content"] for r in (ent or {}).get("facts", []) if r.get("content")]
+                    if not facts:
+                        continue
+                    text = generate_entity_dossier(entity_name, facts, mem.llm, mem.extract_model)
+                    if text:
+                        with POOL.connection() as conn:
+                            store = BrainStore(conn=conn)
+                            store.store_entity_dossier(mem.schema, entity_id, ns, text,
+                                                       model_used=mem.extract_model)
+                        n_dossiers += 1
+                result["dossiers_generated"] = n_dossiers
+            return 200, result
 
         if path == "/episode/segment":
             return 200, mem.segment_episodes(ns, gap_minutes=int(req.get("gap_minutes", 30)),
