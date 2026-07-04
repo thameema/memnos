@@ -648,6 +648,27 @@ class Control:
                  "acquired_at": r["acquired_at"].isoformat(),
                  "expires_at": r["expires_at"].isoformat()} for r in rows]
 
+
+    @staticmethod
+    def entity_dossier_candidates(conn, schema, namespace, min_mentions=3) -> list[dict]:
+        """Return entities with at least min_mentions mentions in the given namespace,
+        ordered by mention count descending (issue #23). Used by the /consolidate
+        handler to decide which entities to generate dossiers for.
+        Returns: list of {"entity_id": int, "name": str, "mention_count": int}."""
+        with conn.cursor() as c:
+            c.execute(
+                f"SELECT e.id AS entity_id, e.name, count(m.memory_id) AS mention_count "
+                f"FROM {schema}.entities e "
+                f"JOIN {schema}.mentions m ON m.entity_id = e.id "
+                f"WHERE e.namespace=%s "
+                f"GROUP BY e.id, e.name "
+                f"HAVING count(m.memory_id) >= %s "
+                f"ORDER BY mention_count DESC",
+                (namespace, min_mentions))
+            rows = c.fetchall()
+        return [{"entity_id": r["entity_id"], "name": r["name"],
+                 "mention_count": int(r["mention_count"])} for r in rows]
+
     # --- identity / tokens (admin) ----------------------------------------
     @staticmethod
     def create_principal(conn, name, kind="user") -> int:
