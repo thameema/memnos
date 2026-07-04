@@ -193,5 +193,20 @@ BEGIN
   -- index scan; additive, rolling-safe.
   EXECUTE format('CREATE INDEX IF NOT EXISTS sem_src_turns ON %I.semantic '
                  'USING gin (source_turn_ids)', s);
+  -- ENTITY DOSSIERS (issue #23): one generated summary paragraph per entity,
+  -- stored per-tenant so it is namespace-scoped and shares the pool/conn.
+  -- Upserted on (entity_id, namespace) so a re-run replaces the prior text
+  -- (idempotent). model_used records which LLM generated the text for audit.
+  EXECUTE format($t$
+    CREATE TABLE IF NOT EXISTS %I.entity_dossiers(
+      id bigserial PRIMARY KEY,
+      entity_id bigint NOT NULL,
+      namespace text NOT NULL,
+      dossier_text text NOT NULL,
+      generated_at timestamptz NOT NULL DEFAULT now(),
+      model_used text
+    )$t$, s);
+  EXECUTE format('CREATE UNIQUE INDEX IF NOT EXISTS entity_dossiers_entity_ns '
+                 'ON %I.entity_dossiers(entity_id, namespace)', s);
 END
 $fn$;

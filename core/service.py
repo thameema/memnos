@@ -1247,6 +1247,35 @@ class MemnosMemory:
         return {"episodes": n}
 
 
+
+
+def generate_entity_dossier(entity_name: str, facts: list[str], llm, model: str) -> str:
+    """Generate a 2-4 sentence summary paragraph about an entity from its related facts.
+    Uses the same LLM pattern as consolidate(). Returns the generated text, or an empty
+    string if the LLM call fails. No em-dashes used in the prompt (issue #23 constraint)."""
+    import json
+    if not facts or llm is None:
+        return ""
+    fact_lines = "\n- ".join(f[:500] for f in facts[:30])
+    prompt = (
+        "You are summarising what is known about a single entity from a memory system. "
+        "Write 2 to 4 sentences that capture the most important, durable facts about the entity. "
+        "Be specific: include names, roles, relationships, and notable attributes. "
+        "Do NOT use bullet points, lists, or section headers. "
+        "Write in present tense for current facts and past tense for past events. "
+        "Do not use the word 'dossier'. Output plain prose only."
+    )
+    user_msg = f"Entity: {entity_name}\n\nKnown facts:\n- {fact_lines}"
+    try:
+        r = llm.chat.completions.create(
+            model=model, temperature=0, max_tokens=300,
+            messages=[{"role": "system", "content": prompt},
+                      {"role": "user", "content": user_msg}])
+        text = (r.choices[0].message.content or "").strip()
+        return text if len(text) >= 10 else ""
+    except Exception:
+        return ""
+
 # --- namespace reconcile (issue #10 residual C) ------------------------------------
 def reconcile_namespace(store, namespace: str, *, schema: str = f"tenant_{_TENANT}",
                         limit: int | None = None) -> dict:
