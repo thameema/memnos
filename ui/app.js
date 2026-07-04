@@ -503,6 +503,56 @@ async function loadCliRef() {
   }
 }
 
+async function loadUsagePanel() {
+  const days = $("#usage-days").value;
+  const ns   = $("#usage-ns").value.trim();
+  const qs   = `days=${days}` + (ns ? `&namespace=${encodeURIComponent(ns)}` : "");
+
+  const banner = $("#usage-budget-banner");
+  banner.hidden = true;
+
+  const [usageData, budgetData] = await Promise.all([
+    api("GET", `usage?${qs}`),
+    api("GET", "budget").catch(() => null),
+  ]);
+
+  if (usageData && !usageData.error) {
+    const d = usageData;
+    $("#usage-totals").textContent =
+      `Total: $${(d.total_usd ?? 0).toFixed(4)} | ${(d.total_tokens ?? 0).toLocaleString()} tokens`;
+
+    const opTbody = $("#usage-op-table tbody");
+    const ops = d.by_op ?? {};
+    opTbody.innerHTML = Object.entries(ops).map(([op, v]) =>
+      `<tr><td>${esc(op)}</td><td>${v.calls ?? 0}</td><td>${v.tokens_in ?? 0}</td><td>${v.tokens_out ?? 0}</td><td>${(v.usd ?? 0).toFixed(4)}</td></tr>`
+    ).join("") || emptyRow(5, "No usage recorded yet.");
+
+    const nsTbody = $("#usage-ns-table tbody");
+    const nss = d.by_namespace ?? {};
+    nsTbody.innerHTML = Object.entries(nss).map(([n, v]) =>
+      `<tr><td>${esc(n)}</td><td>${v.calls ?? 0}</td><td>${v.tokens ?? 0}</td><td>${(v.usd ?? 0).toFixed(4)}</td></tr>`
+    ).join("") || emptyRow(4, "No namespace breakdown yet.");
+
+    const dayTbody = $("#usage-day-table tbody");
+    const days7 = (d.by_day ?? []).slice(-7);
+    dayTbody.innerHTML = days7.map(r =>
+      `<tr><td>${esc(r.date)}</td><td>${r.tokens ?? 0}</td><td>${(r.usd ?? 0).toFixed(4)}</td></tr>`
+    ).join("") || emptyRow(3, "No daily data yet.");
+  }
+
+  if (budgetData && !budgetData.error && budgetData.exceeded) {
+    const msgs = [];
+    if (!budgetData.daily_ok)   msgs.push(`Daily budget exceeded ($${(budgetData.daily_spend_usd ?? 0).toFixed(4)} / $${budgetData.daily_limit_usd})`);
+    if (!budgetData.monthly_ok) msgs.push(`Monthly budget exceeded ($${(budgetData.monthly_spend_usd ?? 0).toFixed(4)} / $${budgetData.monthly_limit_usd})`);
+    banner.textContent = msgs.join(" | ");
+    banner.hidden = false;
+    banner.style.cssText = "background:#fff3cd;border:1px solid #ffc107;padding:8px 12px;border-radius:4px;margin-bottom:10px;";
+  }
+}
+
+$("#usage-refresh").addEventListener("click", loadUsagePanel);
+$("#usage-days").addEventListener("change", loadUsagePanel);
+
 $$(".tabs button").forEach(b => b.addEventListener("click", () => {
   if (b.dataset.tab === "routing") loadRouting();
   if (b.dataset.tab === "feed") { feedOffset = 0; loadFeed(); }
@@ -510,6 +560,7 @@ $$(".tabs button").forEach(b => b.addEventListener("click", () => {
   if (b.dataset.tab === "secrets") loadSecrets();
   if (b.dataset.tab === "cli") loadCliRef();
   if (b.dataset.tab === "settings") loadSettings();
+  if (b.dataset.tab === "usage") loadUsagePanel();
 }));
 
 // ---- boot ----
