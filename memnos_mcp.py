@@ -392,6 +392,32 @@ def corpus_list() -> str:
         return _err(e, "corpus_list")
 
 
+
+
+@mcp.tool()
+def get_entity_dossier(entity: str) -> str:
+    """Return the stored dossier (summary paragraph) for an entity by name. The dossier
+    is generated during consolidation when MEMNOS_ENTITY_DOSSIERS=1 is set. Returns the
+    summary text, or a message explaining that none has been generated yet."""
+    try:
+        out = _post("/entity/dossier", {"entity": entity})
+        text = out.get("dossier", "")
+        if not text:
+            return f"(no dossier found for '{entity}')"
+        gen = out.get("generated_at") or ""
+        model = out.get("model_used") or ""
+        header = f"Dossier for '{out.get('entity', entity)}'"
+        if gen:
+            header += f" (generated {gen[:10]}"
+            if model:
+                header += f" by {model}"
+            header += ")"
+        return header + ":\n" + text
+    except Exception as e:
+        if hasattr(e, "response") and e.response.status_code == 404:
+            return f"(no dossier found for '{entity}' yet -- run consolidate with MEMNOS_ENTITY_DOSSIERS=1 to generate)"
+        return _err(e, "get_entity_dossier")
+
 @mcp.tool()
 def ingest_file(filename: str, text: str, extract: bool = False) -> str:
     """Ingest a document's text into memory: it's chunked and each chunk stored as a
