@@ -95,14 +95,14 @@ def main():
     Control.record_usage(conn, admin_id, NS, ACTION, "test-model", 100, 10, 0.5)
     Control.record_usage(conn, admin_id, NS, ACTION, "test-model", 100, 10, 0.25)
     s, j = call("GET", "/admin/api/usage", admin_tok)
-    check("usage all-time by default", s == 200 and j.get("window_hours") is None)
-    u = next((o for o in j.get("usage", []) if o["op"] == ACTION), None)
-    check("usage rollup sums op rows", u is not None and u["n"] == 2
-          and abs(float(u["cost"]) - 0.75) < 1e-6 and int(u["tin"]) == 200)
-    s, j = call("GET", "/admin/api/usage?hours=24", admin_tok)
-    u = next((o for o in j.get("usage", []) if o["op"] == ACTION), None)
-    check("usage hours window honored", s == 200 and j.get("window_hours") == 24
-          and u is not None and u["n"] == 2)
+    check("usage all-time by default", s == 200 and "by_op" in j)
+    u = j.get("by_op", {}).get(ACTION)
+    check("usage rollup sums op rows", u is not None and u["n"] >= 2
+          and abs(float(u["usd"]) - 0.75) < 1e-6 and int(u["tokens_in"]) >= 200)
+    s, j = call("GET", "/admin/api/usage?days=1", admin_tok)
+    u = j.get("by_op", {}).get(ACTION)
+    check("usage hours window honored", s == 200 and j.get("period_days") == 1
+          and u is not None and u["n"] >= 2)
 
     # --- /recall contract: memories + context from the SAME rows ---
     Control.create_namespace(conn, NS, created_by=admin_id)

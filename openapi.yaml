@@ -1000,9 +1000,10 @@ paths:
   /admin/api/usage:
     get:
       tags: [admin]
-      summary: Token/cost rollup by op (`?hours=` optional; default all-time)
+      summary: Token/cost rollup by op, namespace, and day (`?days=` 1-365, default 30; `?namespace=` optional filter)
       parameters:
-        - { name: hours, in: query, required: false, schema: { type: integer } }
+        - { name: days, in: query, required: false, schema: { type: integer } }
+        - { name: namespace, in: query, required: false, schema: { type: string } }
       responses:
         "200":
           description: usage ledger rollup
@@ -2243,20 +2244,40 @@ components:
               can_write: { type: boolean }
     AdminUsageResponse:
       type: object
-      required: [usage]
+      required: [total_usd, total_tokens, by_op, by_namespace, by_day]
       properties:
-        usage:
+        total_usd: { $ref: "#/components/schemas/SqlNumber" }
+        total_tokens: { type: integer }
+        period_days: { type: [integer, "null"] }
+        namespace: { type: [string, "null"] }
+        by_op:
+          type: object
+          additionalProperties:
+            type: object
+            required: [n, usd, tokens_in, tokens_out]
+            properties:
+              n: { type: integer }
+              usd: { $ref: "#/components/schemas/SqlNumber" }
+              tokens_in: { type: integer }
+              tokens_out: { type: integer }
+        by_namespace:
+          type: object
+          additionalProperties:
+            type: object
+            required: [n, usd, tokens]
+            properties:
+              n: { type: integer }
+              usd: { $ref: "#/components/schemas/SqlNumber" }
+              tokens: { type: integer }
+        by_day:
           type: array
           items:
             type: object
-            required: [op, n]
+            required: [date, usd, tokens]
             properties:
-              op: { type: string }
-              n: { type: integer }
-              cost: { $ref: "#/components/schemas/SqlNumber" }
-              tin: { type: [integer, "null"] }
-              tout: { type: [integer, "null"] }
-        window_hours: { type: [integer, "null"] }
+              date: { type: string }
+              usd: { $ref: "#/components/schemas/SqlNumber" }
+              tokens: { type: integer }
     AdminAuditResponse:
       type: object
       required: [audit, total, limit, offset]
