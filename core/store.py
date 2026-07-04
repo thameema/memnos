@@ -1129,6 +1129,35 @@ class BrainStore:
         conflicts = [f for f in found if f["conflict"]]
         return {"claim": statement, "matches": found, "conflicts": conflicts, "stale": bool(conflicts)}
 
+
+    def store_entity_dossier(self, schema, entity_id, namespace, dossier_text, model_used=None) -> int:
+        """UPSERT an entity dossier (issue #23): store or replace the generated summary
+        paragraph for one entity. Returns the dossier row id."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(
+                f"INSERT INTO {schema}.entity_dossiers(entity_id, namespace, dossier_text, model_used, generated_at) "
+                f"VALUES(%s,%s,%s,%s,now()) "
+                f"ON CONFLICT (entity_id, namespace) DO UPDATE "
+                f"SET dossier_text=EXCLUDED.dossier_text, model_used=EXCLUDED.model_used, generated_at=now() "
+                f"RETURNING id",
+                (entity_id, namespace, dossier_text, model_used))
+            return c.fetchone()["id"]
+
+    def get_entity_dossier(self, schema, namespace, entity_name) -> dict | None:
+        """Retrieve the stored dossier for an entity, looked up by name (issue #23).
+        Returns None when no dossier has been generated yet."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(
+                f"SELECT d.id, e.name, d.dossier_text, d.generated_at, d.model_used "
+                f"FROM {schema}.entity_dossiers d "
+                f"JOIN {schema}.entities e ON e.id = d.entity_id "
+                f"WHERE d.namespace=%s AND lower(e.name)=lower(%s) "
+                f"LIMIT 1",
+                (namespace, entity_name))
+            return c.fetchone()
+
     def counts(self, schema) -> dict:
         self._chk(schema)
         out = {}
