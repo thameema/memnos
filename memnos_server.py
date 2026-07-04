@@ -1188,6 +1188,7 @@ class Handler(BaseHTTPRequestHandler):
                 timings["embed_ms"] = 0.0                         # cache hit
             wide = path == "/recall" and str(req.get("scope", "")).lower() in ("all", "wide")
             grounded, skipped = [], []
+            other_readable = []    # issue #16: namespaces the principal may read beyond ns
             pre = None
             t_a = time.perf_counter()
             with POOL.connection() as conn:        # DB phase A — needs NO embedding
@@ -1195,6 +1196,8 @@ class Handler(BaseHTTPRequestHandler):
                 if wide:
                     # WIDEN across every namespace this key may read (ACL-bounded)
                     nss = Control.readable_namespaces(conn, principal)
+                    # scope hint: other readable = all readable minus the query ns, cap 10
+                    other_readable = [n for n in nss if n != ns][:10]
                     pin_nss = [ns]                 # pin the TARGET namespace's constraints
                 else:
                     # GROUNDED RECALL: fan out to LINKED knowledge namespaces, but only
@@ -1204,6 +1207,10 @@ class Handler(BaseHTTPRequestHandler):
                     for kns in links:
                         (grounded if Control.authorize(conn, principal, kns, write=False)
                          else skipped).append(kns)
+                    # issue #16: scope observability — other namespaces this principal can read
+                    if path == "/recall":
+                        other_readable = Control.readable_namespaces(
+                            conn, principal, exclude=ns, limit=10)
                     pre = mem.recall_prefetch(ns, q)   # timeline/entity arms, no qv
                     pin_nss = [ns] + grounded
                 # PINNED CONSTRAINT INJECTION: type='constraint' memories are ALWAYS in
@@ -1272,6 +1279,20 @@ class Handler(BaseHTTPRequestHandler):
                 if grounded or skipped:    # keys only appear when links exist (no drift)
                     out["grounded_in"] = grounded
                     out["links_skipped"] = skipped
+            # issue #16: scope observability — always attach for /recall (both wide + narrow)
+            if path == "/recall":
+                ns_searched = nss if wide else [ns]
+                scope = {
+                    "namespaces_searched": ns_searched,
+                    "facts_found": len(rows),
+                    "query_namespace": ns,
+                    "other_readable_namespaces": other_readable,
+                }
+                if other_readable:
+                    scope["hint"] = ("results scoped to " + ns
+                                     + " -- token can also read: "
+                                     + ", ".join(other_readable))
+                out["scope"] = scope
             if degraded:                   # deadline hit — partial pipeline, flagged
                 out["degraded"] = True
             timings["total_ms"] = (time.perf_counter() - t0) * 1000.0
