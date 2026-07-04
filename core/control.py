@@ -757,28 +757,38 @@ class Control:
         return sorted(result)[:limit]
 
     @staticmethod
-    def readable_namespaces(conn, principal_id):
-        """The CONCRETE namespaces (that actually hold memory) this principal may READ —
-        expanding its grants (exact, prefix `p:*`, or `*`) against the existing namespaces.
-        Used to WIDEN recall across all of an agent's permissible namespaces."""
+    def readable_namespaces(conn, principal_id, exclude=None, limit=None):
+        """Concrete namespaces this principal may READ, optionally capped at `limit`.
+        Exact grants are included directly (even if the namespace has no data yet).
+        Wildcard grants ('*' or 'prefix:*') are expanded against existing namespaces.
+        Pass exclude=<namespace> to omit the current query namespace from the result
+        (used to populate other_readable_namespaces in /recall scope metadata).
+        limit=None means no cap (backward-compatible default for wide recall)."""
         grants = [g for g in Control.authorized_namespaces(conn, principal_id) if g["can_read"]]
         if not grants:
             return []
-        patterns = [g["namespace"] for g in grants]
-        with conn.cursor() as c:
-            c.execute("SELECT DISTINCT namespace FROM tenant_memnos.raw_turns "
-                      "UNION SELECT DISTINCT namespace FROM tenant_memnos.semantic")
-            existing = [r["namespace"] for r in c.fetchall()]
-
-        def covered(ns):
-            for p in patterns:
-                if p == "*" or p == ns:
-                    return True
-                if p.endswith(":*") and ns.startswith(p[:-1]):   # 'zudioz:*' covers 'zudioz:tap'
-                    return True
-            return False
-
-        return sorted(ns for ns in existing if covered(ns))
+        result = set()
+        wildcard_patterns = []
+        for g in grants:
+            ns = g["namespace"]
+            if ns == "*" or ns.endswith(":*"):
+                wildcard_patterns.append(ns)
+            else:
+                result.add(ns)
+        if wildcard_patterns:
+            with conn.cursor() as c:
+                c.execute("SELECT DISTINCT namespace FROM tenant_memnos.raw_turns "
+                          "UNION SELECT DISTINCT namespace FROM tenant_memnos.semantic")
+                existing = [r["namespace"] for r in c.fetchall()]
+            for ns in existing:
+                for p in wildcard_patterns:
+                    if p == "*" or (p.endswith(":*") and ns.startswith(p[:-1])):
+                        result.add(ns)
+                        break
+        if exclude is not None:
+            result.discard(exclude)
+        out = sorted(result)
+        return out[:limit] if limit is not None else out
 
     @staticmethod
     def is_admin(conn, principal_id) -> bool:
