@@ -111,6 +111,12 @@
        "required": false
       },
       {
+       "arg": "--embedded",
+       "help": "download + use embedded PostgreSQL + pgvector \u2014 zero external dependencies (macOS arm64, Linux x86_64; ~20-30 MB one-time download)",
+       "positional": false,
+       "required": false
+      },
+      {
        "arg": "--docker",
        "help": "provision a pgvector Postgres in Docker (no Postgres setup needed)",
        "positional": false,
@@ -511,6 +517,7 @@
       {
        "arg": "action",
        "choices": [
+        "get",
         "set",
         "ls",
         "rm",
@@ -542,7 +549,7 @@
      ],
      "command": "secret",
      "example": "memnos secret set openai",
-     "help": "encrypted secret vault: set | ls | rm | rotate | keygen"
+     "help": "encrypted secret vault: get | set | ls | rm | rotate | keygen"
     }
    ],
    "title": "Secrets"
@@ -577,9 +584,10 @@
         "windsurf",
         "claude-desktop",
         "openclaw",
-        "hermes"
+        "hermes",
+        "all"
        ],
-       "help": "which agent to wire",
+       "help": "which agent to wire \u2014 use 'all' to auto-detect and wire every installed agent",
        "positional": true,
        "required": true
       },
@@ -598,7 +606,7 @@
      ],
      "command": "agent-setup",
      "example": "memnos agent-setup claude-code",
-     "help": "wire memnos into an agent (claude-code, codex, cursor, ...)"
+     "help": "wire memnos into an agent (claude-code, codex, cursor, ...) or 'all'"
     },
     {
      "args": [
@@ -811,6 +819,162 @@
      "command": "hosts",
      "example": null,
      "help": "list this principal's machines, or `hosts rename <name>` for THIS one"
+    },
+    {
+     "args": [
+      {
+       "arg": "key",
+       "help": "work item key, e.g. 'ticket:HPTE-543' or 'mr:!51'",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "holder",
+       "help": "this agent's id",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--ttl",
+       "default": "1200",
+       "help": "lease TTL in seconds (default 1200)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "lease acquire",
+     "example": null,
+     "help": "atomically claim a work item; returns granted or denied+who-holds"
+    },
+    {
+     "args": [
+      {
+       "arg": "key",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "holder",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--ttl",
+       "default": "1200",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "lease heartbeat",
+     "example": null,
+     "help": "extend a held lease; call every ttl/3 seconds while working"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "lease ls",
+     "example": null,
+     "help": "list all active leases in the namespace"
+    },
+    {
+     "args": [
+      {
+       "arg": "key",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "holder",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "lease release",
+     "example": null,
+     "help": "release a held lease when work is done"
+    },
+    {
+     "args": [
+      {
+       "arg": "key",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "lease who-holds",
+     "example": null,
+     "help": "show who currently holds a lease"
     },
     {
      "args": [

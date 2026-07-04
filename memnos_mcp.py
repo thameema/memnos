@@ -107,8 +107,8 @@ def _write_error(e, what):
             wns = rbody.get("writable_namespaces")
             if wns:
                 ns_list = ", ".join(wns)
-                return (f"Write rejected for namespace '{_ns()}'. "
-                        f"Your token can write to: {ns_list}\n"
+                return (f"memnos {what} FAILED — NOT saved (403 forbidden: write rejected for "
+                        f"namespace '{_ns()}'). Your token can write to: {ns_list}. "
                         f"Switch with: /memnos ns=<namespace>  or  MEMNOS_NS=<namespace>")
             return (f"memnos {what} FAILED — NOT saved (403 forbidden: this principal is not "
                     f"granted write access to namespace '{_ns()}'). Tell the user the memory "

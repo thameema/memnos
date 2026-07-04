@@ -73,6 +73,7 @@ connect to Postgres, create schema + admin token
 | argument | description |
 |---|---|
 | `--dsn` | Postgres DSN (skips the interactive wizard) |
+| `--embedded` | download + use embedded PostgreSQL + pgvector — zero external dependencies (macOS arm64, Linux x86_64; ~20-30 MB one-time download) |
 | `--docker` | provision a pgvector Postgres in Docker (no Postgres setup needed) |
 | `--port` | HTTP port to persist in the config (default 8900) — set this to run a second instance alongside one already on 8900 |
 
@@ -337,11 +338,11 @@ memnos ns proj:myapp
 
 ### `memnos secret`
 
-encrypted secret vault: set | ls | rm | rotate | keygen
+encrypted secret vault: get | set | ls | rm | rotate | keygen
 
 | argument | description |
 |---|---|
-| `action` | what to do (one of: `set`, `ls`, `rm`, `keygen`, `rotate`) |
+| `action` | what to do (one of: `get`, `set`, `ls`, `rm`, `keygen`, `rotate`) |
 | `name` | secret name (set/rm) (optional) |
 | `--value` | set: the value (omit to be prompted, hidden) |
 | `--desc` | set: description |
@@ -374,11 +375,11 @@ memnos health
 
 ### `memnos agent-setup`
 
-wire memnos into an agent (claude-code, codex, cursor, ...)
+wire memnos into an agent (claude-code, codex, cursor, ...) or 'all'
 
 | argument | description |
 |---|---|
-| `agent` | which agent to wire (one of: `claude-code`, `codex`, `cursor`, `windsurf`, `claude-desktop`, `openclaw`, `hermes`) |
+| `agent` | which agent to wire — use 'all' to auto-detect and wire every installed agent (one of: `claude-code`, `codex`, `cursor`, `windsurf`, `claude-desktop`, `openclaw`, `hermes`, `all`) |
 | `--namespace` | default namespace for the agent |
 | `--force` | set up even if the agent isn't detected |
 
@@ -501,6 +502,60 @@ list this principal's machines, or `hosts rename <name>` for THIS one
 | `subcmd` | rename: set THIS machine's friendly name (optional; one of: `rename`) |
 | `name` | rename: the friendly name (optional) |
 | `--token` | bearer token (else $MEMNOS_TOKEN / config) |
+
+### `memnos lease acquire`
+
+atomically claim a work item; returns granted or denied+who-holds
+
+| argument | description |
+|---|---|
+| `key` | work item key, e.g. 'ticket:HPTE-543' or 'mr:!51' |
+| `holder` | this agent's id |
+| `--ttl` | lease TTL in seconds (default 1200) (default `1200`) |
+| `--namespace` |  |
+| `--token` |  |
+
+### `memnos lease heartbeat`
+
+extend a held lease; call every ttl/3 seconds while working
+
+| argument | description |
+|---|---|
+| `key` |  |
+| `holder` |  |
+| `--ttl` | (default `1200`) |
+| `--namespace` |  |
+| `--token` |  |
+
+### `memnos lease ls`
+
+list all active leases in the namespace
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+
+### `memnos lease release`
+
+release a held lease when work is done
+
+| argument | description |
+|---|---|
+| `key` |  |
+| `holder` |  |
+| `--namespace` |  |
+| `--token` |  |
+
+### `memnos lease who-holds`
+
+show who currently holds a lease
+
+| argument | description |
+|---|---|
+| `key` |  |
+| `--namespace` |  |
+| `--token` |  |
 
 ### `memnos unbind`
 
