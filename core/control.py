@@ -982,6 +982,108 @@ class Control:
                       ((hours,) if hours else None))
             return c.fetchall()
 
+    @staticmethod
+    def usage_summary(conn, period_days=30, namespace=None):
+        """Richer usage summary: totals + breakdown by op, namespace, and day-by-day trend.
+
+        Returns:
+            {
+                "total_usd": float,
+                "total_tokens": int,
+                "by_op": {op: {"n": int, "usd": float, "tokens_in": int, "tokens_out": int}},
+                "by_namespace": {ns: {"n": int, "usd": float, "tokens": int}},
+                "by_day": [{"date": "YYYY-MM-DD", "usd": float, "tokens": int}]  # newest first
+            }
+        """
+        days = max(1, min(int(period_days), 365))
+        where = "WHERE ts > now() - (%s || ' days')::interval"
+        base = [days]
+        if namespace:
+            where += " AND namespace=%s"
+            base = [days, namespace]
+
+        with conn.cursor() as c:
+            c.execute(
+                f"SELECT COALESCE(sum(cost_usd), 0) AS total_usd, "
+                f"COALESCE(sum(tokens_in + tokens_out), 0) AS total_tokens "
+                f"FROM memnos_control.usage_ledger {where}", base)
+            totals = c.fetchone()
+
+            c.execute(
+                f"SELECT op, count(*) AS n, COALESCE(sum(cost_usd), 0) AS usd, "
+                f"COALESCE(sum(tokens_in), 0) AS tokens_in, "
+                f"COALESCE(sum(tokens_out), 0) AS tokens_out "
+                f"FROM memnos_control.usage_ledger {where} "
+                f"GROUP BY op ORDER BY usd DESC NULLS LAST", base)
+            by_op = {(r["op"] or ""): {"n": r["n"], "usd": float(r["usd"]),
+                                        "tokens_in": r["tokens_in"],
+                                        "tokens_out": r["tokens_out"]}
+                     for r in c.fetchall()}
+
+            c.execute(
+                f"SELECT namespace, count(*) AS n, COALESCE(sum(cost_usd), 0) AS usd, "
+                f"COALESCE(sum(tokens_in + tokens_out), 0) AS tokens "
+                f"FROM memnos_control.usage_ledger {where} "
+                f"GROUP BY namespace ORDER BY usd DESC NULLS LAST", base)
+            by_namespace = {(r["namespace"] or ""): {"n": r["n"], "usd": float(r["usd"]),
+                                                      "tokens": r["tokens"]}
+                            for r in c.fetchall()}
+
+            trend_days = min(days, 7)
+            trend_where = "WHERE ts > now() - (%s || ' days')::interval"
+            trend_base = [trend_days]
+            if namespace:
+                trend_where += " AND namespace=%s"
+                trend_base = [trend_days, namespace]
+            c.execute(
+                f"SELECT date_trunc('day', ts)::date AS day, "
+                f"COALESCE(sum(cost_usd), 0) AS usd, "
+                f"COALESCE(sum(tokens_in + tokens_out), 0) AS tokens "
+                f"FROM memnos_control.usage_ledger {trend_where} "
+                f"GROUP BY day ORDER BY day DESC", trend_base)
+            by_day = [{"date": str(r["day"]), "usd": float(r["usd"]), "tokens": r["tokens"]}
+                      for r in c.fetchall()]
+
+        return {
+            "total_usd": float(totals["total_usd"]),
+            "total_tokens": int(totals["total_tokens"]),
+            "by_op": by_op,
+            "by_namespace": by_namespace,
+            "by_day": by_day,
+        }
+
+    @staticmethod
+    def budget_status(conn, daily_usd=None, monthly_usd=None):
+        """Check current spend against optional daily/monthly thresholds.
+
+        Returns dict with daily_spend, monthly_spend, thresholds, and exceeded flags.
+        Spend is computed from the usage_ledger using the usage_ts index.
+        """
+        with conn.cursor() as c:
+            c.execute(
+                "SELECT COALESCE(sum(cost_usd), 0) AS spend "
+                "FROM memnos_control.usage_ledger "
+                "WHERE ts > now() - interval '1 day'")
+            daily_spend = float(c.fetchone()["spend"])
+
+            c.execute(
+                "SELECT COALESCE(sum(cost_usd), 0) AS spend "
+                "FROM memnos_control.usage_ledger "
+                "WHERE ts > now() - interval '30 days'")
+            monthly_spend = float(c.fetchone()["spend"])
+
+        daily_ok = daily_spend <= daily_usd if daily_usd is not None else True
+        monthly_ok = monthly_spend <= monthly_usd if monthly_usd is not None else True
+        return {
+            "daily_spend_usd": round(daily_spend, 6),
+            "monthly_spend_usd": round(monthly_spend, 6),
+            "daily_limit_usd": daily_usd,
+            "monthly_limit_usd": monthly_usd,
+            "daily_ok": daily_ok,
+            "monthly_ok": monthly_ok,
+            "exceeded": not (daily_ok and monthly_ok),
+        }
+
     # --- audit + usage ----------------------------------------------------
     @staticmethod
     def audit(conn, principal_id, action, namespace, ok, detail=None,

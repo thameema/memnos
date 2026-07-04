@@ -92,6 +92,15 @@ MAX_BODY = 256 * 1024          # 256 KB request cap
 # query returns 200 — the embedder truncates and the FTS arm is token-clamped, so it is
 # safe. Generous default; only a genuinely abusive payload exceeds it.
 _QUERY_MAX_CHARS = int(os.environ.get("MEMNOS_QUERY_MAX_CHARS", "20000"))
+# issue #14: optional budget thresholds — float USD or None (unconfigured)
+def _parse_budget_env(name):
+    v = os.environ.get(name, "").strip()
+    try:
+        return float(v) if v else None
+    except ValueError:
+        return None
+BUDGET_DAILY_USD = _parse_budget_env("MEMNOS_BUDGET_DAILY_USD")
+BUDGET_MONTHLY_USD = _parse_budget_env("MEMNOS_BUDGET_MONTHLY_USD")
 WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/corpus/ingest",
              "/ingest/file", "/episode/segment", "/episode/decay", "/namespace/copy",
              "/lease/acquire", "/lease/heartbeat", "/lease/release"}
@@ -477,9 +486,13 @@ class Handler(BaseHTTPRequestHandler):
                     hours = max(1, min(int(qs.get("hours", [24])[0]), 720))
                     return 200, {"ops": Control.stats(conn, hours), "window_hours": hours}
                 if sub == "usage" and method == "GET":
-                    hours = qs.get("hours", [None])[0]   # optional window; default all-time
-                    hours = max(1, min(int(hours), 8760)) if hours else None
-                    return 200, {"usage": Control.usage_rollup(conn, hours), "window_hours": hours}
+                    days = qs.get("days", [None])[0]
+                    days = max(1, min(int(days), 365)) if days else 30
+                    ns_filter = (qs.get("namespace", [""])[0]).strip() or None
+                    return 200, {**Control.usage_summary(conn, days, ns_filter),
+                                 "period_days": days, "namespace": ns_filter}
+                if sub == "budget" and method == "GET":
+                    return 200, Control.budget_status(conn, BUDGET_DAILY_USD, BUDGET_MONTHLY_USD)
                 if sub == "memory/feed" and method == "GET":
                     # recent memories across ALL namespaces (admin-only, paginated)
                     limit = max(1, min(int(qs.get("limit", [50])[0]), 200))
@@ -613,7 +626,18 @@ class Handler(BaseHTTPRequestHandler):
         if r is not None:
             return self._send(*r)
         if self.path == "/healthz":
-            return self._send(200, {"ok": True})
+            budget = {}
+            if BUDGET_DAILY_USD is not None or BUDGET_MONTHLY_USD is not None:
+                try:
+                    with POOL.connection() as conn:
+                        bs = Control.budget_status(conn, BUDGET_DAILY_USD, BUDGET_MONTHLY_USD)
+                    budget = {"daily_ok": bs["daily_ok"], "monthly_ok": bs["monthly_ok"]}
+                except Exception:
+                    budget = {}
+            resp = {"ok": True}
+            if budget:
+                resp["budget"] = budget
+            return self._send(200, resp)
         if self.path == "/readyz":
             try:
                 with POOL.connection() as conn, conn.cursor() as c:

@@ -32,6 +32,7 @@
       <button data-tab="tokens">Tokens</button>
       <button data-tab="access">Principals &amp; Grants</button>
       <button data-tab="dashboard">Dashboard</button>
+      <button data-tab="usage">Usage</button>
       <button data-tab="secrets">Secrets</button>
       <button data-tab="cli">CLI Reference</button>
       <button data-tab="settings">Settings</button>
@@ -93,9 +94,9 @@
         </div>
         <table id="feed-table"><thead><tr><th>Age</th><th>Namespace</th><th>Type</th><th>Author</th><th>Memory</th></tr></thead><tbody></tbody></table>
         <div class="pager">
-          <button id="feed-prev" class="ghost">‹ newer</button>
+          <button id="feed-prev" class="ghost">&#8249; newer</button>
           <span id="feed-info" class="muted"></span>
-          <button id="feed-next" class="ghost">older ›</button>
+          <button id="feed-next" class="ghost">older &#8250;</button>
         </div>
       </div>
     </section>
@@ -141,21 +142,51 @@
     <section id="tab-dashboard" class="tab" hidden>
       <div class="card"><h3>Health <span class="muted">· last 24h</span></h3><div id="dash-health"></div></div>
       <div class="card"><h3>Reliability <span class="muted">· last 24h</span></h3><table id="dash-stats"><thead><tr><th>op</th><th>calls</th><th>err%</th><th>p50ms</th><th>p95ms</th><th>recall-empty%</th></tr></thead><tbody></tbody></table></div>
-      <div class="card"><h3>Usage / cost <span class="muted">· all-time total</span></h3><table id="dash-usage"><thead><tr><th>op</th><th>calls</th><th>tokens in</th><th>tokens out</th><th>cost $</th></tr></thead><tbody></tbody></table></div>
+      <div class="card"><h3>Usage / cost <span class="muted">· last 30 days</span></h3><table id="dash-usage"><thead><tr><th>op</th><th>calls</th><th>tokens in</th><th>tokens out</th><th>cost $</th></tr></thead><tbody></tbody></table></div>
       <div class="card"><h3>Recent activity</h3>
         <table id="dash-audit"><thead><tr><th>time</th><th>principal</th><th>action</th><th>namespace</th><th>status</th><th>ms</th></tr></thead><tbody></tbody></table>
         <div class="pager">
-          <button id="audit-prev" class="ghost">‹ newer</button>
+          <button id="audit-prev" class="ghost">&#8249; newer</button>
           <span id="audit-info" class="muted"></span>
-          <button id="audit-next" class="ghost">older ›</button>
+          <button id="audit-next" class="ghost">older &#8250;</button>
         </div>
+      </div>
+    </section>
+
+    <section id="tab-usage" class="tab" hidden>
+      <div id="usage-budget-banner" hidden></div>
+      <div class="card">
+        <h3>Usage &amp; cost</h3>
+        <div class="row">
+          <select id="usage-days">
+            <option value="7">last 7 days</option>
+            <option value="30" selected>last 30 days</option>
+            <option value="90">last 90 days</option>
+            <option value="365">last 365 days</option>
+          </select>
+          <input id="usage-ns" placeholder="namespace filter (optional)">
+          <button id="usage-refresh">Refresh</button>
+        </div>
+        <div id="usage-totals" class="muted" style="margin-top:10px"></div>
+      </div>
+      <div class="card">
+        <h3>By operation</h3>
+        <table id="usage-op-table"><thead><tr><th>op</th><th>calls</th><th>tokens in</th><th>tokens out</th><th>cost $</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h3>By namespace</h3>
+        <table id="usage-ns-table"><thead><tr><th>namespace</th><th>calls</th><th>tokens</th><th>cost $</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h3>Day-by-day trend <span class="muted">· last 7 days</span></h3>
+        <table id="usage-day-table"><thead><tr><th>date</th><th>tokens</th><th>cost $</th></tr></thead><tbody></tbody></table>
       </div>
     </section>
 
     <section id="tab-secrets" class="tab" hidden>
       <div class="card">
         <h3>Secret vault <span id="vault-state" class="muted"></span></h3>
-        <p class="muted">Encrypted at rest (AES-256-GCM). Plaintext is never stored, listed, or returned —
+        <p class="muted">Encrypted at rest (AES-256-GCM). Plaintext is never stored, listed, or returned --
           reference a secret anywhere as <code>secret://name</code>. memnos also auto-redacts secret-looking
           text from remembered messages so credentials can't leak into recall.</p>
         <div class="row">
@@ -172,7 +203,7 @@
     <section id="tab-cli" class="tab" hidden>
       <div class="card">
         <h3>CLI reference</h3>
-        <p class="muted">Generated from the <code>memnos</code> CLI itself (<code>memnos docs-gen</code>) —
+        <p class="muted">Generated from the <code>memnos</code> CLI itself (<code>memnos docs-gen</code>) --
           always in sync with the installed version. Remote use: set <code>MEMNOS_URL</code> and
           <code>MEMNOS_TOKEN</code> to point <code>memnos remember/recall</code> at this server from
           another machine.</p>
