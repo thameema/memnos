@@ -184,6 +184,56 @@ def main():
     check("claude-code: MCP entry valid (abs cmd + env triple)",
           entry_ok(cj.get("mcpServers", {}).get("memnos", {})))
 
+    # --- omnigent: inline `tools.memnos` MCP entry in an agent's config.yaml ---
+    # Omnigent has no single global config shared by every agent (each agent is its own
+    # config.yaml or directory bundle), so the writer is targeted via --agent-dir and
+    # falls back to ~/.omnigent/config.yaml's `default_agent` when omitted.
+    agent_dir = os.path.join(home, "my_agent")
+    os.makedirs(agent_dir, exist_ok=True)
+    agent_cfg = os.path.join(agent_dir, "config.yaml")
+    with open(agent_cfg, "w") as f:
+        yaml.safe_dump({"spec_version": 1, "name": "my_agent",
+                         "tools": {"agents": ["researcher", "reviewer"]}}, f)
+    rc, out = run(home, "agent-setup", "omnigent", "--agent-dir", agent_dir)
+    check("omnigent: exits 0", rc == 0)
+    run(home, "agent-setup", "omnigent", "--agent-dir", agent_dir)   # idempotency: run twice
+    oc = yaml.safe_load(open(agent_cfg))
+    otools = oc.get("tools", {})
+    check("omnigent: memnos entry valid (abs cmd + URL/TOKEN/NS)", entry_ok(otools.get("memnos", {})))
+    check("omnigent: memnos entry is inline type: mcp", otools.get("memnos", {}).get("type") == "mcp")
+    check("omnigent: pre-existing tools.agents preserved", otools.get("agents") == ["researcher", "reviewer"])
+    check("omnigent: single memnos entry after re-run",
+          sum(1 for k in otools if k == "memnos") == 1)
+
+    # --agent-dir pointing straight at a *.yaml file (not a directory) must also work.
+    lone_cfg = os.path.join(home, "lone_agent.yaml")
+    with open(lone_cfg, "w") as f:
+        yaml.safe_dump({"spec_version": 1, "name": "lone_agent"}, f)
+    rc, out = run(home, "agent-setup", "omnigent", "--agent-dir", lone_cfg)
+    check("omnigent: exits 0 for a direct *.yaml file target", rc == 0)
+    check("omnigent: wired the direct file (not a config.yaml alongside it)",
+          entry_ok(yaml.safe_load(open(lone_cfg)).get("tools", {}).get("memnos", {})))
+
+    # No --agent-dir: falls back to ~/.omnigent/config.yaml's default_agent.
+    os.makedirs(os.path.join(home, ".omnigent"), exist_ok=True)
+    default_agent_dir = os.path.join(home, "default_agent")
+    os.makedirs(default_agent_dir, exist_ok=True)
+    with open(os.path.join(default_agent_dir, "config.yaml"), "w") as f:
+        yaml.safe_dump({"spec_version": 1, "name": "default_agent"}, f)
+    with open(os.path.join(home, ".omnigent", "config.yaml"), "w") as f:
+        yaml.safe_dump({"default_agent": default_agent_dir}, f)
+    rc, out = run(home, "agent-setup", "omnigent")
+    check("omnigent: exits 0 via default_agent fallback (no --agent-dir)", rc == 0)
+    check("omnigent: default_agent's config.yaml got wired",
+          entry_ok(yaml.safe_load(open(os.path.join(default_agent_dir, "config.yaml")))
+                   .get("tools", {}).get("memnos", {})))
+
+    # No --agent-dir AND no ~/.omnigent/config.yaml at all: fail loud, not silent.
+    home2 = tempfile.mkdtemp(prefix="memnos_agents_")
+    rc, out = run(home2, "agent-setup", "omnigent")
+    check("omnigent: fails loud with no --agent-dir and no ~/.omnigent/config.yaml",
+          rc != 0 and "agent-dir" in out)
+
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 
