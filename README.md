@@ -140,6 +140,8 @@ memnos agent-setup cursor          # Cursor
 memnos agent-setup windsurf        # Windsurf
 memnos agent-setup openclaw        # OpenClaw
 memnos agent-setup hermes          # Hermes Agent (Nous Research)
+memnos agent-setup omnigent --agent-dir <path>   # Omnigent (Databricks) — wires whatever
+                                    #   harness Omnigent runs (Claude, Codex, Cursor, ...)
 ```
 
 Each mints a scoped token, is idempotent, and backs up any file it edits.

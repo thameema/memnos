@@ -2161,6 +2161,12 @@ _AGENTS = {
     "hermes":         {"path": "~/.hermes/config.yaml",                        "fmt": "yaml", "key": ("mcp_servers",),
                        "agent": True,
                        "note": "run /reload-mcp inside Hermes (or restart it), then check the tool list"},
+    # Omnigent (Databricks meta-harness over Claude Code/Codex/Cursor/etc.) has no single
+    # global config shared by every agent — each agent is its own config.yaml (or a
+    # directory bundle). cmd_omnigent_setup resolves the target itself (via --agent-dir or
+    # ~/.omnigent/config.yaml's default_agent) and writes an inline `tools.memnos` MCP
+    # entry, so it gets its own "special" dispatch like claude-code.
+    "omnigent":       {"special": "omnigent"},
 }
 
 
@@ -2193,6 +2199,7 @@ def _detect_installed_agents():
         "windsurf":       lambda: os.path.isdir(os.path.expanduser("~/.codeium")),
         "hermes":         lambda: os.path.isdir(os.path.expanduser("~/.hermes")),
         "openclaw":       lambda: os.path.isdir(os.path.expanduser("~/.openclaw")),
+        "omnigent":       lambda: os.path.isdir(os.path.expanduser("~/.omnigent")),
     }
     for name in _AGENTS:
         check = checks.get(name)
@@ -2255,10 +2262,90 @@ def _install_hermes_native_plugin(url: str, token: str, ns: str) -> None:
     print("  Then restart Hermes. The MCP tools still work regardless.")
 
 
+def cmd_omnigent_setup(args, cfg):
+    """Wire memnos into an Omnigent agent as an inline MCP tool.
+
+    Omnigent (github.com/omnigent-ai/omnigent) has no single global config shared by
+    every agent — each agent is its own config.yaml (or a directory bundle with a
+    config.yaml at its root). AgentSpec supports MCP servers declared inline under the
+    top-level `tools:` block (`tools.<name> = {type: mcp, command, args, env}`) — this
+    is the same mechanism used for github/slack/etc MCP servers in Omnigent's own docs
+    (omnigent/spec/parser.py:_parse_inline_mcp_servers). We reuse it rather than the
+    tools/mcp/<name>.yaml bundle-file form since it's a single self-contained edit.
+
+    Target resolution:
+      --agent-dir <path>   explicit — a directory (its config.yaml is edited) or a
+                           direct path to a *.yaml agent spec file.
+      (no --agent-dir)     falls back to `default_agent` in ~/.omnigent/config.yaml —
+                           the agent Omnigent runs when invoked with no arguments.
+
+    Idempotent (skips if `tools.memnos` already present, unless --force); backs up the
+    edited file first via _backup().
+    """
+    import yaml as _yaml
+
+    target = getattr(args, "agent_dir", None)
+    if not target:
+        omni_cfg_path = os.path.expanduser("~/.omnigent/config.yaml")
+        if not os.path.exists(omni_cfg_path):
+            sys.exit("omnigent: no ~/.omnigent/config.yaml found and no --agent-dir given.\n"
+                      "         Run `omnigent` once to initialize, or pass:\n"
+                      "         memnos agent-setup omnigent --agent-dir <path-to-config.yaml-or-dir>")
+        try:
+            omni_cfg = _yaml.safe_load(open(omni_cfg_path)) or {}
+        except Exception as e:
+            sys.exit(f"omnigent: failed to parse {omni_cfg_path}: {e}")
+        target = omni_cfg.get("default_agent")
+        if not target:
+            sys.exit("omnigent: no 'default_agent' configured in ~/.omnigent/config.yaml.\n"
+                      "         Pass --agent-dir <path-to-config.yaml-or-dir> explicitly.")
+
+    target = os.path.expanduser(str(target))
+    config_path = os.path.join(target, "config.yaml") if os.path.isdir(target) else target
+    if not os.path.exists(config_path):
+        sys.exit(f"omnigent: agent config not found at {config_path}")
+
+    try:
+        spec = _yaml.safe_load(open(config_path)) or {}
+    except Exception as e:
+        sys.exit(f"omnigent: failed to parse {config_path}: {e}")
+    if not isinstance(spec, dict):
+        sys.exit(f"omnigent: {config_path} is not a YAML mapping")
+
+    tools = spec.get("tools")
+    if not isinstance(tools, dict):
+        tools = {}
+    if isinstance(tools.get("memnos"), dict) and not getattr(args, "force", False):
+        print(f"[memnos] omnigent: 'memnos' already wired in {config_path} (use --force to re-wire).")
+        return
+
+    token, default_ns = _ensure_claude_token(cfg, extra_ns=args.namespace)
+    ns = args.namespace or default_ns
+    url = os.environ.get("MEMNOS_URL") or f"http://127.0.0.1:{cfg.get('port', 8900)}"
+    cmd, cargs = _mcp_launcher()
+
+    tools["memnos"] = {
+        "type": "mcp",
+        "command": cmd,
+        "args": cargs,
+        "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns},
+    }
+    spec["tools"] = tools
+
+    _backup(config_path)
+    with open(config_path, "w") as f:
+        _yaml.safe_dump(spec, f, sort_keys=False, default_flow_style=False)
+
+    print(f"[memnos] omnigent wired -> {config_path} (MCP server 'memnos', ns={ns}).")
+    print("          Whatever harness Omnigent runs this agent through (Claude, Codex, "
+          "Cursor, ...) now has the memnos recall/remember tools. Restart the agent "
+          "session to activate.")
+
+
 def cmd_agent_setup(args, cfg):
     """Wire memnos into another MCP-capable agent (codex/cursor/windsurf/claude-desktop/
-    openclaw/hermes). Writes its MCP server config (+ an AGENTS.md instruction for codex).
-    Idempotent; backs up."""
+    openclaw/hermes/omnigent). Writes its MCP server config (+ an AGENTS.md instruction
+    for codex). Idempotent; backs up."""
     if args.agent == "all":
         detected = _detect_installed_agents()
         if not detected:
@@ -2274,7 +2361,8 @@ def cmd_agent_setup(args, cfg):
             try:
                 sub_args = argparse.Namespace(agent=name,
                                               namespace=getattr(args, "namespace", None),
-                                              force=getattr(args, "force", False))
+                                              force=getattr(args, "force", False),
+                                              agent_dir=getattr(args, "agent_dir", None))
                 cmd_agent_setup(sub_args, cfg)
                 results.append((name, "wired"))
             except SystemExit as e:
@@ -2303,6 +2391,10 @@ def cmd_agent_setup(args, cfg):
     if spec.get("special") == "claude":       # full Claude Code setup (MCP + hooks + /memnos)
         return cmd_claude_setup(argparse.Namespace(namespace=args.namespace,
                                                    force=getattr(args, "force", False)), cfg)
+    if spec.get("special") == "omnigent":      # inline MCP entry in the agent's config.yaml
+        return cmd_omnigent_setup(argparse.Namespace(namespace=args.namespace,
+                                                      force=getattr(args, "force", False),
+                                                      agent_dir=getattr(args, "agent_dir", None)), cfg)
     spec = dict(spec)
     if args.agent == "claude-desktop":        # app-data dir is platform-specific
         if sys.platform == "win32":
@@ -2882,11 +2974,14 @@ def build_parser():
     p.set_defaults(fn=cmd_whoami)
 
     # ---- integrations ----
-    p = sub.add_parser("agent-setup", help="wire memnos into an agent (claude-code, codex, cursor, ...) or 'all'")
+    p = sub.add_parser("agent-setup", help="wire memnos into an agent (claude-code, codex, cursor, omnigent, ...) or 'all'")
     p.add_argument("agent", choices=list(_AGENTS) + ["all"],
                    help="which agent to wire — use 'all' to auto-detect and wire every installed agent")
     p.add_argument("--namespace", help="default namespace for the agent")
     p.add_argument("--force", action="store_true", help="set up even if the agent isn't detected")
+    p.add_argument("--agent-dir",
+                   help="omnigent only: path to an agent's config.yaml (or its containing "
+                        "directory); defaults to ~/.omnigent/config.yaml's default_agent")
     p.set_defaults(fn=cmd_agent_setup)
     p = sub.add_parser("claude-setup", help="(alias of: memnos agent-setup claude-code)")
     p.add_argument("--namespace", help="default namespace for Claude Code")
