@@ -548,6 +548,12 @@ class MemnosMemory:
         from . import temporal as T
         now = self.store.max_observed_at(self.schema, namespace) or datetime.now(timezone.utc)
         intent = T.analyze(query, now)
+        if intent.temporal:
+            import logging
+            logging.getLogger("memnos.temporal").debug(
+                "temporal arm: query=%r matched=%r ents=%r",
+                query[:80], getattr(intent, "matched_pattern", None), T.query_entities(query),
+            )
         b = {"intent": intent, "ents": T.query_entities(query)}
         if not intent.temporal:
             if b["ents"]:
