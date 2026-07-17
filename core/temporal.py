@@ -7,6 +7,7 @@ not just cosine. Pure regex/dateutil — runs at query time with zero LLM.
 """
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -26,6 +27,34 @@ _IS_TEMPORAL = re.compile(
     r"\b(when|what year|what month|what day|how long|how many (days|weeks|months|years)|"
     r"before|after|first|last|earliest|latest|recent|recently|ago|date|since|until|"
     r"current(ly)?|now|these days|nowadays|" + "|".join(MONTHS) + r")\b", re.I)
+
+# Extended temporal cues added for issue #25 — cover change/history/state-transition
+# language that the original pattern missed.  Kept separate so the original _IS_TEMPORAL
+# is unchanged (regression-safe) and the two are OR-ed in analyze().
+#
+# Single-word additions:
+#   anymore, previous/previously, earlier, still, sequence, timeline, progression,
+#   outdated, deprecated, newest, evolve/evolved/evolving
+# Prefix match (no closing \b):
+#   chronolog  -- catches chronological, chronology, chronologically
+# Multi-word phrases:
+#   used to, no longer, what changed, history of, over time, back when, back in,
+#   at the time, prior to, subsequent to, how long ago, how long since, last time,
+#   first time, when did, latest version, out of date
+# Dynamic "has X changed?" pattern (bounded .* so no catastrophic backtracking):
+#   \bhas\b.{0,40}\bchanged\b
+_IS_TEMPORAL_EXT = re.compile(
+    r"\b(anymore|previous(?:ly)?|earlier|still|sequence|timeline|progression|"
+    r"outdated|deprecated|newest|evolve[ds]?|evolving)\b"
+    r"|\bchronolog"
+    r"|\bused to\b|\bno longer\b|\bwhat changed\b|\bhistory of\b|\bover time\b"
+    r"|\bback when\b|\bback in\b|\bat the time\b|\bprior to\b|\bsubsequent to\b"
+    r"|\bhow long ago\b|\bhow long since\b|\blast time\b|\bfirst time\b"
+    r"|\bwhen did\b|\blatest version\b|\bout of date\b"
+    r"|\bhas\b.{0,40}\bchanged\b",
+    re.I,
+)
+
 _CURRENT = re.compile(r"\b(current(ly)?|now|these days|nowadays|latest|most recent|still)\b", re.I)
 _ORDER_FIRST = re.compile(r"\b(first|earliest|initial(ly)?|originally|begin)\b", re.I)
 _ORDER_LAST = re.compile(r"\b(last|latest|most recent|final|recently)\b", re.I)
@@ -116,10 +145,12 @@ class TemporalIntent:
         self.order = None             # 'asc' (first) | 'desc' (last)
         self.start = None             # event-time window lower bound
         self.end = None               # upper bound
+        self.matched_pattern = None   # which pattern triggered temporal=True (debug)
 
     def __repr__(self):
         return (f"TemporalIntent(temporal={self.temporal} current={self.current} "
-                f"order={self.order} window={self.start}..{self.end})")
+                f"order={self.order} window={self.start}..{self.end} "
+                f"matched={self.matched_pattern!r})")
 
 
 def analyze(query: str, now: datetime | None = None) -> TemporalIntent:
@@ -131,10 +162,27 @@ def analyze(query: str, now: datetime | None = None) -> TemporalIntent:
     year = int(ym.group(0)) if ym else None
     month = next((n for m, n in MONTHS.items() if re.search(rf"\b{m}\b", q)), None)
 
-    # temporal if a keyword OR an explicit year/month is present
-    if not (_IS_TEMPORAL.search(query) or year or month):
+    # MEMNOS_TEMPORAL_AUTO_ARM=0 disables keyword-based arm activation; explicit
+    # year/month detection always runs (date filtering is always correct).
+    auto_arm = os.environ.get("MEMNOS_TEMPORAL_AUTO_ARM", "1") != "0"
+    if auto_arm:
+        m1 = _IS_TEMPORAL.search(query)
+        if m1:
+            t.temporal = True
+            t.matched_pattern = m1.group(0).lower()
+        else:
+            m2 = _IS_TEMPORAL_EXT.search(query)
+            if m2:
+                t.temporal = True
+                t.matched_pattern = m2.group(0).lower()
+
+    if year or month:
+        t.temporal = True
+        if t.matched_pattern is None:
+            t.matched_pattern = f"year={year}" if year else f"month={month}"
+
+    if not t.temporal:
         return t
-    t.temporal = True
     t.current = bool(_CURRENT.search(query))
     if _ORDER_FIRST.search(query):
         t.order = "asc"
