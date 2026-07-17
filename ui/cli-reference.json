@@ -585,6 +585,7 @@
         "claude-desktop",
         "openclaw",
         "hermes",
+        "omnigent",
         "all"
        ],
        "help": "which agent to wire \u2014 use 'all' to auto-detect and wire every installed agent",
@@ -602,11 +603,17 @@
        "help": "set up even if the agent isn't detected",
        "positional": false,
        "required": false
+      },
+      {
+       "arg": "--agent-dir",
+       "help": "omnigent only: path to an agent's config.yaml (or its containing directory); defaults to ~/.omnigent/config.yaml's default_agent",
+       "positional": false,
+       "required": false
       }
      ],
      "command": "agent-setup",
      "example": "memnos agent-setup claude-code",
-     "help": "wire memnos into an agent (claude-code, codex, cursor, ...) or 'all'"
+     "help": "wire memnos into an agent (claude-code, codex, cursor, omnigent, ...) or 'all'"
     },
     {
      "args": [
