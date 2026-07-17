@@ -382,11 +382,10 @@ wire memnos into an agent (claude-code, codex, cursor, omnigent, ...) or 'all'
 | `agent` | which agent to wire — use 'all' to auto-detect and wire every installed agent (one of: `claude-code`, `codex`, `cursor`, `windsurf`, `claude-desktop`, `openclaw`, `hermes`, `omnigent`, `all`) |
 | `--namespace` | default namespace for the agent |
 | `--force` | set up even if the agent isn't detected |
-| `--agent-dir` | omnigent only: path to an agent's `config.yaml` (or its containing directory); defaults to `~/.omnigent/config.yaml`'s `default_agent` |
+| `--agent-dir` | omnigent only: path to an agent's config.yaml (or its containing directory); defaults to ~/.omnigent/config.yaml's default_agent |
 
 ```bash
 memnos agent-setup claude-code
-memnos agent-setup omnigent --agent-dir ~/my-agent
 ```
 
 ### `memnos claude-setup`
