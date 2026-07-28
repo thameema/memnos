@@ -1328,7 +1328,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/consolidate":
             # read (conn) -> per-entity dossier LLM + embeddings (NO conn) -> write (conn)
-            result = mem.consolidate(ns, conn_factory=POOL.connection)
+            infer_flag = os.environ.get("MEMNOS_INFER_ON_SLEEP") == "1" and mem.llm is not None
+            result = mem.consolidate(ns, conn_factory=POOL.connection, infer=infer_flag)
             # ENTITY DOSSIER GENERATION (issue #23): only when MEMNOS_ENTITY_DOSSIERS=1
             if os.environ.get("MEMNOS_ENTITY_DOSSIERS") == "1" and mem.llm is not None:
                 from core.service import generate_entity_dossier

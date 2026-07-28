@@ -308,20 +308,23 @@ class BrainStore:
     def insert_semantic(self, schema, ns, kind, statement, *, subject=None, predicate=None,
                         obj=None, valid_from=None, valid_to=None, confidence=1.0,
                         salience=0.0, vec=None, source_turn_ids: Iterable[int] = (),
-                        author=None, memory_type=None, observed_at=None) -> int:
+                        author=None, memory_type=None, observed_at=None,
+                        inference_confidence=None, inference_basis=None,
+                        source_fact_ids: Iterable[int] = ()) -> int:
         # observed_at = the OBSERVATION (knowledge) axis used by bi-temporal supersession:
         # when this fact was learned (server: now; session ingest: session date). None →
         # column default now() (legacy callers unchanged).
         self._chk(schema)
         src = list(source_turn_ids) if source_turn_ids else None
+        fact_src = list(source_fact_ids) if source_fact_ids else None
         with self.conn.cursor() as c:
             c.execute(
                 f"INSERT INTO {schema}.semantic"
-                f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding,source_turn_ids,author_principal,memory_type,observed_at) "
-                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::{self.vtype},%s,%s,%s,COALESCE(%s,now())) RETURNING id",
+                f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding,source_turn_ids,author_principal,memory_type,observed_at,inference_confidence,inference_basis,source_fact_ids) "
+                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::{self.vtype},%s,%s,%s,COALESCE(%s,now()),%s,%s,%s) RETURNING id",
                 (ns, kind, statement, subject, predicate, obj, valid_from, valid_to,
                  confidence, salience, vlit(vec) if vec is not None else None, src, author,
-                 memory_type, observed_at))
+                 memory_type, observed_at, inference_confidence, inference_basis, fact_src))
             return c.fetchone()["id"]
 
     def provenance_of(self, schema, ns, semantic_id) -> dict | None:
@@ -392,6 +395,21 @@ class BrainStore:
                 f"WHERE namespace=%s AND subject_entity=%s AND valid_to IS NULL AND expired_at IS NULL "
                 f"AND (embedding <=> %s::{self.vtype}) < %s RETURNING id",
                 (valid_from, ns, subject, vlit(new_vec), thresh))
+            return len(c.fetchall())
+
+    def supersede_inferred(self, schema, ns, subject, valid_from) -> int:
+        """Close out prior INFERRED conclusions for `subject` before writing fresh ones —
+        inferred memories are superseded (not accumulated) on every re-consolidation pass
+        that recomputes them (issue #24)."""
+        self._chk(schema)
+        if not subject:
+            return 0
+        with self.conn.cursor() as c:
+            c.execute(
+                f"UPDATE {schema}.semantic SET valid_to=%s "
+                f"WHERE namespace=%s AND subject_entity=%s AND memory_type='inferred' "
+                f"AND valid_to IS NULL AND expired_at IS NULL RETURNING id",
+                (valid_from, ns, subject))
             return len(c.fetchall())
 
     def supersede_subject(self, schema, ns, subject, new_vec, valid_from,
@@ -686,15 +704,15 @@ class BrainStore:
         self._chk(schema)
         valid = "AND valid_to IS NULL" if current_only else ""
         sql = f"""
-        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}, id) rnk
+        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, inference_confidence, inference_basis, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}, id) rnk
                      FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {valid} ORDER BY embedding <=> %(qv)s::{self.vtype}, id LIMIT %(k)s),
-        fts AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY ts_rank(fts,q) DESC, id) rnk
+        fts AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, inference_confidence, inference_basis, row_number() OVER (ORDER BY ts_rank(fts,q) DESC, id) rnk
                 FROM {schema}.semantic, websearch_to_tsquery('english',%(qt)s) q
                 WHERE namespace=%(ns)s AND expired_at IS NULL {valid} AND fts @@ q ORDER BY ts_rank(fts,q) DESC, id LIMIT %(k)s),
-        fused AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, SUM(1.0/(60+rnk)) score
-                  FROM (SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM fts) r
-                  GROUP BY id,statement,valid_from,author_principal,memory_type,restatements,salience)
-        SELECT f.id, f.statement AS content, f.valid_from, f.author_principal AS author, f.memory_type, f.restatements, f.salience, f.score, s.subject_entity
+        fused AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, inference_confidence, inference_basis, SUM(1.0/(60+rnk)) score
+                  FROM (SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,inference_confidence,inference_basis,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,inference_confidence,inference_basis,rnk FROM fts) r
+                  GROUP BY id,statement,valid_from,author_principal,memory_type,restatements,salience,inference_confidence,inference_basis)
+        SELECT f.id, f.statement AS content, f.valid_from, f.author_principal AS author, f.memory_type, f.restatements, f.salience, f.inference_confidence, f.inference_basis, f.score, s.subject_entity
         FROM fused f JOIN {schema}.semantic s ON s.id=f.id ORDER BY f.score DESC, f.id LIMIT %(k)s;"""
         with self.conn.cursor() as c:
             c.execute(sql, {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k})

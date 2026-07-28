@@ -1786,6 +1786,8 @@ components:
       required: [dossiers]
       properties:
         dossiers: { type: integer }
+        dossiers_generated: { type: integer }
+        inferred: { type: integer }
     OkResponse:
       type: object
       required: [ok]

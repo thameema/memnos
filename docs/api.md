@@ -107,8 +107,9 @@ curl -s "${H[@]}" $M/memory/delete -d '{"namespace": "proj:myapp", "id": 123}'
 
 ### `POST /consolidate`
 
-Offline dossier-building LLM pass over a namespace's facts → `{"dossiers": n}` (0 in
-local mode — needs an LLM).
+Offline dossier-building LLM pass over a namespace's facts → `{"dossiers": n, "inferred": n}`
+(0 in local mode — needs an LLM). `inferred` counts LLM-derived conclusions written when
+`MEMNOS_INFER_ON_SLEEP=1` is set (opt-in; 0 otherwise).
 
 ```python
 m.consolidate()
