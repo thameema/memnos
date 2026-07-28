@@ -872,6 +872,11 @@ class MemnosMemory:
                     row["author"] = items[i]["author"]
                 if items[i].get("memory_type"):               # typed memory (0.1.6)
                     row["type"] = items[i]["memory_type"]
+                if items[i].get("memory_type") == "inferred":  # issue #24: derived conclusion
+                    if items[i].get("inference_confidence"):
+                        row["confidence"] = items[i]["inference_confidence"]
+                    if items[i].get("inference_basis"):
+                        row["basis"] = items[i]["inference_basis"]
                 if items[i].get("_ns"):                       # grounded: source namespace
                     row["namespace"] = items[i]["_ns"]
                 if kind == "turn" and items[i].get("_superseded"):   # stale turn (issue #10 B)
@@ -1004,6 +1009,11 @@ class MemnosMemory:
                     row["author"] = it["author"]
                 if it.get("memory_type"):
                     row["type"] = it["memory_type"]
+                if it.get("memory_type") == "inferred":        # issue #24: derived conclusion
+                    if it.get("inference_confidence"):
+                        row["confidence"] = it["inference_confidence"]
+                    if it.get("inference_basis"):
+                        row["basis"] = it["inference_basis"]
                 if kind == "turn" and it.get("_superseded"):   # stale turn (issue #10 B)
                     row["superseded"] = True
                     if it.get("_superseded_at"):
@@ -1062,6 +1072,8 @@ class MemnosMemory:
                 line = f"CONSTRAINT:{tag} {r['content']}"
             else:
                 label = r.get("type") or ("fact" if r["kind"] == "fact" else "said")
+                if label == "inferred" and r.get("confidence"):   # issue #24
+                    label += f", confidence={r['confidence']}"
                 if r.get("superseded"):        # stale turn — show the transition (issue #10 B)
                     label += (f", superseded as of {r['superseded_at']}"
                               if r.get("superseded_at") else ", superseded")
@@ -1084,7 +1096,7 @@ class MemnosMemory:
 
     # --- consolidation (offline; call on idle / schedule) -----------------
     def consolidate(self, namespace: str, max_entities=25, max_dossier=6,
-                    conn_factory=None) -> dict:
+                    conn_factory=None, infer=False) -> dict:
         """Build entity dossiers (offline multi-hop pre-join) from stored facts. Groups
         facts by SUBJECT entity (SPO) + proper nouns in the statement — same clustering
         as the benchmarked phaseA ingest.
@@ -1100,7 +1112,7 @@ class MemnosMemory:
 
         def _read(store):
             with store.conn.cursor() as c:
-                c.execute(f"SELECT statement, subject_entity, valid_from, source_turn_ids "
+                c.execute(f"SELECT id, statement, subject_entity, valid_from, source_turn_ids "
                           f"FROM {self.schema}.semantic WHERE namespace=%s AND kind='fact'",
                           (namespace,))
                 return c.fetchall()
@@ -1118,13 +1130,14 @@ class MemnosMemory:
             if row.get("subject_entity"):
                 ents.add(row["subject_entity"])
             for e in ents:
-                ent[e].append((row["valid_from"], row["statement"]))
+                ent[e].append((row["id"], row["valid_from"], row["statement"]))
                 ent_src[e].update(row.get("source_turn_ids") or [])
         clusters = sorted(((e, fs) for e, fs in ent.items() if len(fs) >= 3),
                           key=lambda x: -len(x[1]))[:max_entities]
 
         # LLM phase — NO connection required: dossier generation + embeddings only.
         results = []                                         # (entity, vf, [(fact, vec)...])
+        infer_results = []                                   # (entity, vf, [conclusion dict, ...]) — issue #24
         for e, fs in clusters:
             if self.llm is None:
                 break
@@ -1141,9 +1154,9 @@ class MemnosMemory:
                                "fact MUST be a single self-contained SENTENCE (a string, not an object). "
                                'JSON {"facts":["...", "..."]}.'},
                               {"role": "user", "content": f"Subject: {e}\n- " +
-                               "\n- ".join(f for _, f in fs[:40])}])
+                               "\n- ".join(f for _, _, f in fs[:40])}])
                 self._track(self.extract_model, r)
-                vf = max((d for d, _ in fs if d), default=None)
+                vf = max((d for _, d, _ in fs if d), default=None)
                 items = []
                 for f in [_dossier_text(x) for x in json.loads(r.choices[0].message.content).get("facts", [])][:max_dossier]:
                     if not f:
@@ -1153,11 +1166,19 @@ class MemnosMemory:
                     results.append((e, vf, items))
             except Exception:
                 continue
+            if infer:
+                try:
+                    concls = infer_conclusions(e, [(fid, stmt) for fid, _, stmt in fs], self.llm, self.extract_model)
+                    if concls:
+                        infer_results.append((e, vf, concls))
+                except Exception:
+                    continue
 
         n = 0
+        n_inferred = 0
 
         def _write(store):
-            nonlocal n
+            nonlocal n, n_inferred
             for e, vf, items in results:
                 try:
                     for f, vec in items:
@@ -1170,13 +1191,29 @@ class MemnosMemory:
                         n += 1
                 except Exception:
                     continue
+            CONF_WEIGHT = {"low": 0.3, "medium": 0.6, "high": 0.9}
+            for e, vf, concls in infer_results:
+                try:
+                    store.supersede_inferred(self.schema, namespace, e[:100], vf)
+                    for item in concls:
+                        vec = self.embed(item["conclusion"])
+                        store.insert_semantic(
+                            self.schema, namespace, "inferred", item["conclusion"],
+                            subject=e[:100], valid_from=vf, confidence=CONF_WEIGHT[item["confidence"]],
+                            salience=0.7, vec=vec, source_turn_ids=sorted(ent_src.get(e, ())),
+                            author=self.author, memory_type="inferred",
+                            inference_confidence=item["confidence"], inference_basis=item["basis"],
+                            source_fact_ids=item["supporting_fact_ids"])
+                        n_inferred += 1
+                except Exception:
+                    continue
 
         if conn_factory is not None:                          # WRITE phase (short conn)
             with conn_factory() as conn:
                 _write(BrainStore(conn=conn))
         else:
             _write(self.store)
-        return {"dossiers": n}
+        return {"dossiers": n, "inferred": n_inferred}
 
     def segment_episodes(self, namespace: str, *, gap_minutes=30, max_episodes=200,
                          summary_fn=None, conn_factory=None) -> dict:
@@ -1281,6 +1318,57 @@ def generate_entity_dossier(entity_name: str, facts: list[str], llm, model: str)
         return text if len(text) >= 10 else ""
     except Exception:
         return ""
+
+
+def infer_conclusions(entity_name: str, facts: list[tuple[int, str]], llm, model: str) -> list[dict]:
+    """Derive implicit conclusions from a pattern of stated facts about one entity
+    (issue #24). `facts` = [(fact_id, statement), ...]. Returns a list of
+    {"conclusion": str, "confidence": "low"|"medium"|"high", "basis": str,
+    "supporting_fact_ids": [int, ...]}, or [] on any failure / no LLM / <3 facts.
+
+    The LLM is asked for 1-based INDICES into the numbered fact list (not raw IDs,
+    which it would frequently hallucinate) — indices are translated back to real
+    semantic.id values locally after parsing, so provenance is never LLM-authored."""
+    import json
+    if not facts or llm is None or len(facts) < 3:
+        return []
+    numbered = "\n".join(f"{i+1}. {stmt[:400]}" for i, (_, stmt) in enumerate(facts[:40]))
+    try:
+        r = llm.chat.completions.create(
+            model=model, temperature=0, max_tokens=500,
+            response_format={"type": "json_object"},
+            messages=[{"role": "system", "content":
+                       "Given numbered facts about ONE subject, identify PATTERNS across "
+                       "MULTIPLE facts and derive conclusions that are clearly supported "
+                       "(do NOT restate a single fact as a conclusion; do NOT speculate "
+                       "beyond what the pattern supports). Return only conclusions backed "
+                       "by at least 2 of the numbered facts. For each: the conclusion as a "
+                       "single sentence, a confidence level (low, medium, or high), a "
+                       "one-line basis explaining the reasoning, and the 1-based indices "
+                       "of the supporting facts. "
+                       'JSON {"conclusions":[{"conclusion":"...", "confidence":"medium", '
+                       '"basis":"...", "supporting_indices":[1,3]}]}'},
+                      {"role": "user", "content": f"Subject: {entity_name}\n{numbered}"}])
+        data = json.loads(r.choices[0].message.content)
+        out = []
+        for item in data.get("conclusions", []):
+            conclusion = (item.get("conclusion") or "").strip()
+            if not conclusion:
+                continue
+            conf = str(item.get("confidence") or "medium").strip().lower()
+            if conf not in ("low", "medium", "high"):
+                conf = "medium"
+            idxs = item.get("supporting_indices") or []
+            fact_ids = [facts[i - 1][0] for i in idxs
+                        if isinstance(i, int) and 1 <= i <= len(facts)]
+            if len(fact_ids) < 2:              # not actually a cross-fact pattern
+                continue
+            out.append({"conclusion": conclusion, "confidence": conf,
+                        "basis": (item.get("basis") or "")[:300],
+                        "supporting_fact_ids": fact_ids})
+        return out
+    except Exception:
+        return []
 
 # --- namespace reconcile (issue #10 residual C) ------------------------------------
 def reconcile_namespace(store, namespace: str, *, schema: str = f"tenant_{_TENANT}",

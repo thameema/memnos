@@ -108,6 +108,17 @@ BEGIN
   -- (unanimous — conservative; mixed/partly-typed groups stay NULL).
   EXECUTE format('ALTER TABLE %I.episodic  ADD COLUMN IF NOT EXISTS memory_type text', s);
 
+  -- INFERENTIAL MEMORY (issue #24): LLM-derived conclusions from patterns across stated
+  -- facts, written with kind='inferred' + memory_type='inferred' (a distinct kind, so
+  -- they never get swept into the kind='fact' reversal/negation-close-out queries that
+  -- are tuned for stated facts only). inference_confidence/basis are the human-readable
+  -- level + one-line justification; source_fact_ids = the semantic.id values of the
+  -- stated facts that support the inference (separate from source_turn_ids, which points
+  -- at raw verbatim turns).
+  EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS inference_confidence text', s);
+  EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS inference_basis text', s);
+  EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS source_fact_ids bigint[]', s);
+
   -- ASSOCIATIVE GRAPH
   EXECUTE format($t$
     CREATE TABLE IF NOT EXISTS %I.entities(

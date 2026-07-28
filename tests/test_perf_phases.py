@@ -120,9 +120,9 @@ def main():
 
     print("== consolidate(conn_factory=...) ==")
     out = mnone.consolidate(NS, conn_factory=conn_factory)   # llm=None: read+write phases only
-    check("consolidate with conn_factory + no store (llm=None)", out == {"dossiers": 0})
+    check("consolidate with conn_factory + no store (llm=None)", out == {"dossiers": 0, "inferred": 0})
     out2 = mem.consolidate(NS)                               # default plain-store path intact
-    check("consolidate default path intact", out2 == {"dossiers": 0})
+    check("consolidate default path intact", out2 == {"dossiers": 0, "inferred": 0})
 
     print("== segment_episodes(conn_factory=...) parity ==")
     # two sessions -> two episodes; run via conn_factory with NO store on the engine
