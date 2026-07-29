@@ -230,6 +230,53 @@ def test_infer_conclusions_malformed_json_returns_empty():
 
 
 # ---------------------------------------------------------------------------
+# person/agent scoping (pilot follow-up): consolidate()'s clustering groups facts
+# under ANY entity mentioned 3+ times, including tools/products/topics ("Fitbit
+# Inspire HR", "Curves panel") that show up as subject_entity as often as a real
+# person does. A LongMemEval pilot showed these produce coherent-sounding but
+# useless trivia ("The Curves panel is essential for precise color adjustments")
+# instead of genuine preferences. The fix gates in the PROMPT (no hardcoded
+# identity string, so it works for "user", "Alice", or any named person) rather
+# than pre-filtering by caller, since only the LLM can judge person-hood from the
+# fact content itself.
+# ---------------------------------------------------------------------------
+
+class _CapturingFakeLLM:
+    """Like _FakeInferLLM but records the exact kwargs passed to create(), so a
+    test can assert on the system prompt actually sent (regression guard against
+    a future edit silently dropping the person/agent gate)."""
+    def __init__(self, payload):
+        self._text = json.dumps(payload)
+        self.calls = []
+        self.chat = types.SimpleNamespace(
+            completions=types.SimpleNamespace(create=self._create))
+
+    def _create(self, **kwargs):
+        self.calls.append(kwargs)
+        return types.SimpleNamespace(choices=[_FakeChoice(self._text)])
+
+
+def test_infer_conclusions_prompt_instructs_person_agent_gate():
+    facts = [(1, "a"), (2, "b"), (3, "c")]
+    llm = _CapturingFakeLLM({"conclusions": []})
+    infer_conclusions("Curves panel", facts, llm, "test-model")
+    assert len(llm.calls) == 1
+    system_msg = llm.calls[0]["messages"][0]["content"]
+    assert "PERSON or AGENT" in system_msg
+    assert '"conclusions":[]' in system_msg
+
+
+def test_infer_conclusions_llm_declines_nonperson_subject_returns_empty():
+    """Simulates the LLM correctly recognizing a tool/product subject (per the
+    prompt's person/agent gate) and declining to derive a conclusion for it."""
+    facts = [(1, "The Curves panel adjusts color precisely."),
+             (2, "The Curves panel supports RGB and luma curves."),
+             (3, "The Curves panel is found in the color grading tab.")]
+    llm = _FakeInferLLM({"conclusions": []})
+    assert infer_conclusions("Curves panel", facts, llm, "test-model") == []
+
+
+# ---------------------------------------------------------------------------
 # BrainStore.insert_semantic -- new columns round-trip (direct DB)
 # ---------------------------------------------------------------------------
 
