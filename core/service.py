@@ -1326,6 +1326,16 @@ def infer_conclusions(entity_name: str, facts: list[tuple[int, str]], llm, model
     {"conclusion": str, "confidence": "low"|"medium"|"high", "basis": str,
     "supporting_fact_ids": [int, ...]}, or [] on any failure / no LLM / <3 facts.
 
+    PERSON/AGENT SCOPING: consolidate()'s clustering groups facts under ANY entity
+    mentioned 3+ times (subject_entity, which the extractor assigns to tools/topics/
+    products just as readily as to people — "Curves panel", "Fitbit Inspire HR" show
+    up as subjects as often as "Alice" does). Deriving a "pattern" for a tool entity
+    produces coherent-sounding trivia about the tool, not a preference — useless noise
+    at recall time. The prompt below gates on person/agent-hood itself (no hardcoded
+    identity string, so it works for "user", "Alice", or any named individual) rather
+    than the caller pre-filtering, since only the LLM can tell from the fact content
+    whether the subject IS a person/agent.
+
     The LLM is asked for 1-based INDICES into the numbered fact list (not raw IDs,
     which it would frequently hallucinate) — indices are translated back to real
     semantic.id values locally after parsing, so provenance is never LLM-authored."""
@@ -1338,8 +1348,15 @@ def infer_conclusions(entity_name: str, facts: list[tuple[int, str]], llm, model
             model=model, temperature=0, max_tokens=500,
             response_format={"type": "json_object"},
             messages=[{"role": "system", "content":
-                       "Given numbered facts about ONE subject, identify PATTERNS across "
-                       "MULTIPLE facts and derive conclusions that are clearly supported "
+                       "Given numbered facts about ONE subject, first decide: is this "
+                       "subject a PERSON or AGENT (a user, a named individual) whose own "
+                       "behavior, choices, or preferences these facts describe — as "
+                       "opposed to a tool, product, feature, place, organization, or topic "
+                       "that facts merely explain or describe? If the subject is NOT a "
+                       "person/agent, return {\"conclusions\":[]} immediately — do not "
+                       "derive conclusions about what a tool or topic IS or does. "
+                       "Otherwise, identify PATTERNS across MULTIPLE facts and derive "
+                       "conclusions that are clearly supported "
                        "(do NOT restate a single fact as a conclusion; do NOT speculate "
                        "beyond what the pattern supports). Return only conclusions backed "
                        "by at least 2 of the numbered facts. For each: the conclusion as a "
