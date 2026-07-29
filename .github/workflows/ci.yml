@@ -60,7 +60,10 @@ jobs:
           path: /home/runner/.cache/fastembed
           key: fastembed-models-v2          # v1 retired: a partial download had poisoned it
       - name: Install deps
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install pytest    # CI-only: a few pytest-style test files (fixtures/mocks);
+                                 # not a production dep, so not in requirements.txt
       - name: Prefetch + verify models (retry; clean-redownload on a corrupt cache)
         # The reranker/embedding ONNX weights are pulled from HF Hub, which rate-limits
         # unauthenticated pulls. A bare constructor is lazy, so a partial/corrupt cache only
