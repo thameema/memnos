@@ -2216,13 +2216,35 @@ def cmd_claude_setup(args, cfg):
     hooks = s.setdefault("hooks", {})
     env = f"MEMNOS_URL={url} MEMNOS_TOKEN={token} MEMNOS_NS={ns}"
 
-    def wire(event, cmd):
+    def wire(event, cmd, matcher=None):
         groups = [g for g in hooks.get(event, []) if "memnos hook" not in json.dumps(g)]
-        groups.append({"hooks": [{"type": "command", "command": cmd, "timeout": 15}]})
+        group = {"hooks": [{"type": "command", "command": cmd, "timeout": 15}]}
+        if matcher is not None:
+            group["matcher"] = matcher
+        groups.append(group)
         hooks[event] = groups
     wire("UserPromptSubmit", f"{env} memnos hook recall")
     wire("Stop", f"{env} memnos hook remember")
     wire("SessionStart", f"{env} memnos hook status")   # visible "memory ON/OFF" each session
+
+    # issue #28: PreToolUse enforcement — auto-wired ONLY if at least one ask/block
+    # constraint exists anywhere (opt-in through USE, not a flag to remember). The hook
+    # itself still scopes correctly per-namespace at match time (each namespace has its own
+    # cache file); this check just avoids adding a permission-prompt-shaped hook to every
+    # install when nobody has ever created an enforced constraint. UNVERIFIED: the ".*"
+    # matcher (match every tool, let the hook do its own --tool glob matching) is not
+    # confirmed against a real Claude Code session — see `memnos claude-setup`'s printed
+    # notice below.
+    enforce_wired = False
+    try:
+        from core.control import Control
+        econn = _conn(cfg)
+        Control.init(econn)
+        if Control.list_constraint_enforcement(econn):
+            wire("PreToolUse", f"{env} memnos hook enforce", matcher=".*")
+            enforce_wired = True
+    except Exception:
+        pass
     _backup(sj); json.dump(s, open(sj, "w"), indent=2)
 
     # 3. /memnos slash command — bake in URL/token inline (issue #27: the slash command must
@@ -2245,6 +2267,10 @@ def cmd_claude_setup(args, cfg):
     print("  • hooks           -> ~/.claude/settings.json (auto recall + save)")
     print("  • /memnos command -> ~/.claude/commands/memnos.md")
     print("  • CLAUDE.md       -> memnos usage + staleness-check instructions")
+    if enforce_wired:
+        print("  • PreToolUse hook -> ~/.claude/settings.json (enforces your ask/block constraints)")
+        print("    UNVERIFIED: the all-tools matcher hasn't been confirmed in a real session yet —")
+        print("    please test a --enforce block constraint and confirm it actually denies before relying on it.")
     print("\n  Restart Claude Code to load the MCP tools. Verify with /mcp.")
 
 
@@ -2662,6 +2688,56 @@ def cmd_agent_setup(args, cfg):
 
 
 # ---- Claude Code hook entry (`memnos hook recall|remember`) ------------------
+# --- enforced constraints (issue #28 part 2): PreToolUse hot-path cache -----------------
+# The PreToolUse hook (memnos hook enforce) must never do a DB/server round-trip on its
+# common (no-match/allow) path: a slow hook fails OPEN on timeout (Claude Code's own
+# documented behavior), so a governance gate that's slow is a governance gate that's
+# silently defeated exactly when it matters. Instead, a SessionStart hook snapshots the
+# session's namespace's active ask/block rules to a local file ONCE per session; PreToolUse
+# reads that file only. Tradeoff: a constraint added/removed mid-session doesn't take
+# effect until the next session — acceptable (arguably desirable) for a guardrail.
+_ENFORCE_CACHE_DIR = os.path.join(CONFIG_DIR, "enforce_cache")
+
+
+def _enforce_cache_path(ns):
+    safe = re.sub(r"[^a-zA-Z0-9_.-]", "_", ns)
+    return os.path.join(_ENFORCE_CACHE_DIR, safe + ".json")
+
+
+def _refresh_enforce_cache(cfg, ns):
+    """SessionStart-only. Best-effort: any failure here must never block SessionStart, and
+    just leaves enforcement at its last-cached state for this session (or unenforced, if
+    there was never a prior cache) — never a hard failure of the session itself."""
+    from core.control import Control
+    from datetime import datetime, timezone
+    conn = _conn(cfg)
+    Control.init(conn)
+    rows = Control.list_constraint_enforcement(conn, namespace=ns)
+    os.makedirs(_ENFORCE_CACHE_DIR, exist_ok=True)
+    payload = {"namespace": ns, "refreshed_at": datetime.now(timezone.utc).isoformat(),
+              "rules": [{"id": r["id"], "enforce_level": r["enforce_level"],
+                        "tool_matcher": r["tool_matcher"], "rule_text": r["rule_text"]}
+                       for r in rows]}
+    path = _enforce_cache_path(ns)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f)
+    os.replace(tmp, path)   # atomic — a concurrently-firing PreToolUse hook never sees a partial write
+
+
+def _tool_match_subject(tool_name, tool_input):
+    """The string a --tool glob is matched against — mirrors Claude Code's OWN allowed-tools
+    syntax (Bash(cmd), so users write matchers in a form they already know from #27's
+    Bash(memnos:*) pattern. Falls back to the bare tool name (e.g. just "Bash") for --tool
+    patterns that don't care about the specific input."""
+    inner = ""
+    if tool_name == "Bash":
+        inner = (tool_input or {}).get("command", "")
+    elif isinstance(tool_input, dict) and tool_input.get("file_path"):
+        inner = tool_input["file_path"]
+    return f"{tool_name}({inner})" if inner else tool_name
+
+
 def cmd_hook(args, cfg):
     """Stdin-driven Claude Code hooks, packaged so they work after a pipx install with no
     repo paths. recall -> inject memory before the prompt; remember -> save the turn after."""
@@ -2673,6 +2749,65 @@ def cmd_hook(args, cfg):
         data = json.load(sys.stdin)
     except Exception:
         return
+
+    if args.which == "enforce":
+        # PreToolUse (issue #28 part 2). Cache-only — NO DB/server/LLM call on this path
+        # (see _ENFORCE_CACHE_DIR's docstring for why: a slow hook fails OPEN on timeout,
+        # so speed here isn't an optimization, it's the difference between enforcement
+        # working and enforcement being silently bypassed). No decision printed = defer to
+        # Claude Code's normal permission flow (NOT the same as "allow" — verified: an
+        # empty/absent permissionDecision defers, it doesn't grant).
+        tool_name = data.get("tool_name") or ""
+        tool_input = data.get("tool_input") or {}
+        enforce_ns = os.environ.get("MEMNOS_NS") or ""
+        try:
+            with open(_enforce_cache_path(enforce_ns)) as f:
+                cache = json.load(f)
+            rules = cache.get("rules", [])
+        except Exception:
+            return   # no cache yet (never refreshed) or unreadable — fail OPEN, not closed
+        if not rules:
+            return
+        subject = _tool_match_subject(tool_name, tool_input)
+        import fnmatch
+        matched = []
+        for r in rules:
+            try:
+                pat = r.get("tool_matcher") or ""
+                if fnmatch.fnmatch(subject, pat) or fnmatch.fnmatch(tool_name, pat):
+                    matched.append(r)
+            except Exception:
+                continue   # one broken matcher fails OPEN for itself only — never blocks
+                          # everything, and never suppresses a DIFFERENT rule's real match
+        if not matched:
+            return
+        level = "block" if any(r["enforce_level"] == "block" for r in matched) else "ask"
+        fired = next(r for r in matched if r["enforce_level"] == level)
+        decision = "deny" if level == "block" else "ask"
+        reason = f"memnos constraint (id={fired['id']}): {fired['rule_text']}"
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision,
+            "permissionDecisionReason": reason}}))
+        # Audit AFTER printing the decision — a slow/failed audit write must never delay or
+        # suppress the actual deny/ask (that's the rare path; the DB round-trip here, unlike
+        # the common allow path above, is acceptable).
+        try:
+            from core.control import Control
+            aconn = _conn(cfg)
+            Control.init(aconn)
+            apid = None
+            try:
+                apid = _principal_id(aconn, "admin")
+            except SystemExit:
+                pass
+            Control.audit(aconn, apid, "constraint.enforce", enforce_ns, True,
+                          {"tool_name": tool_name, "matched_id": fired["id"],
+                           "level": level, "subject": subject})
+        except Exception:
+            pass
+        return
+
     if args.which == "status":
         # SessionStart: fetch the principal's server bindings + register this host, then
         # cache them locally (issue #20 Part A: "fetch at session start, cache"). This is
@@ -2687,6 +2822,16 @@ def cmd_hook(args, cfg):
 
     ns, ns_source = nsresolve.resolve_with_source(data)
     session_id = data.get("session_id") or data.get("sessionId")
+
+    if args.which == "status":
+        # issue #28 part 2: refresh THIS namespace's enforce cache for the PreToolUse hook.
+        # Best-effort — see _refresh_enforce_cache's docstring for why a failure here is
+        # never allowed to block the session.
+        _enforce_ns = os.environ.get("MEMNOS_NS") or ns
+        try:
+            _refresh_enforce_cache(cfg, _enforce_ns)
+        except Exception:
+            pass
 
     if args.which == "status":
         # SessionStart: ONE visible line so the user always knows whether memory is on —
@@ -3183,7 +3328,7 @@ def build_parser():
     p.add_argument("--force", action="store_true", help="set up even if ~/.claude is missing")
     p.set_defaults(fn=cmd_claude_setup)
     p = sub.add_parser("hook", help="Claude Code hook entry (stdin JSON; wired by agent-setup)")
-    p.add_argument("which", choices=["recall", "remember", "status"], help="which hook")
+    p.add_argument("which", choices=["recall", "remember", "status", "enforce"], help="which hook")
     p.set_defaults(fn=cmd_hook)
 
     # ---- maintenance ----

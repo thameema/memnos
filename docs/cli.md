@@ -410,7 +410,7 @@ Claude Code hook entry (stdin JSON; wired by agent-setup)
 
 | argument | description |
 |---|---|
-| `which` | which hook (one of: `recall`, `remember`, `status`) |
+| `which` | which hook (one of: `recall`, `remember`, `status`, `enforce`) |
 
 ```bash
 echo '{}' | memnos hook status

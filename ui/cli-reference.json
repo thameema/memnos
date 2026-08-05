@@ -660,7 +660,8 @@
        "choices": [
         "recall",
         "remember",
-        "status"
+        "status",
+        "enforce"
        ],
        "help": "which hook",
        "positional": true,
