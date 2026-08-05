@@ -92,8 +92,8 @@ def test_dispatch_cheat_sheet_on_question_mark():
     out = _dispatch("?")
     assert "/memnos constraint <rule>" in out
     assert "/memnos remember <fact>" in out
-    assert "/memnos ns=<namespace>" in out
-    assert "governs future behavior" in out
+    assert "/memnos ns=proj:x" in out
+    assert "governs behavior" in out
 
 
 def test_dispatch_cheat_sheet_aliases():
@@ -129,6 +129,16 @@ def test_dispatch_plain_word_starting_with_constraint_is_not_misrouted():
 def test_slash_cmd_instructions_mention_constraint():
     assert "/memnos constraint <rule>" in memnos_cli._SLASH_CMD
     assert "/memnos !<rule>" in memnos_cli._SLASH_CMD
+
+
+def test_slash_cmd_allows_printf_tool():
+    """Regression guard: the cheat-sheet branch calls printf, so allowed-tools must
+    grant it explicitly or /memnos ? hits a permission prompt instead of just working
+    (caught by hands-on testing in Claude Code itself, not by the bash-logic tests
+    above — those exercise the dispatch script directly, bypassing the tool-permission
+    gate a real Claude Code session enforces)."""
+    frontmatter = memnos_cli._SLASH_CMD.split("---")[1]
+    assert "Bash(printf:*)" in frontmatter
 
 
 def test_desktop_skill_documents_memory_type_constraint():
