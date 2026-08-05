@@ -1937,14 +1937,17 @@ def cmd_recall(args, cfg):
 
 
 _SLASH_CMD = """---
-description: memnos memory — recall, set folder namespace (ns=...), show (ns) or list (ns list)
+description: memnos memory — recall, save, pin a constraint, set folder namespace (ns=...), or show the cheat sheet (?)
 allowed-tools: Bash(memnos:*)
 ---
 
-!`A="$ARGUMENTS"; case "$A" in ns=*) memnos ns "${A#ns=}";; "ns clear") memnos ns clear;; "ns list"|"list"|"ls") memnos namespace ls;; ""|"ns") memnos ns;; *) memnos recall "$A" --namespace auto;; esac`
+!`A="$ARGUMENTS"; case "$A" in "?"|help|cheat) printf '%s\\n' "/memnos <query>            recall memories matching <query> in this folder's namespace" "/memnos constraint <rule>  pin <rule> as an enforced constraint (alias: /memnos !<rule>)" "/memnos remember <fact>    save a durable memory (not pinned)" "/memnos ns=<namespace>     pin this folder's namespace" "/memnos ns                 show this folder's namespace" "/memnos ns list            list all namespaces" "/memnos ns clear           revert to the default namespace" "/memnos ?                  show this cheat sheet (aliases: help, cheat)" "" "Rule of thumb: governs future behavior -> constraint; describes the world -> remember/recall.";; constraint\\ *|rule\\ *|\\!*) R="${A#constraint }"; R="${R#rule }"; R="${R#\\!}"; memnos remember "$R" --type constraint --namespace auto;; remember\\ *) memnos remember "${A#remember }" --namespace auto;; ns=*) memnos ns "${A#ns=}";; "ns clear") memnos ns clear;; "ns list"|"list"|"ls") memnos namespace ls;; ""|"ns") memnos ns;; *) memnos recall "$A" --namespace auto;; esac`
 
 Instructions:
+- `/memnos constraint <rule>` (or `/memnos !<rule>`) pins a rule that gets injected into every future session for this project — use it when the user states something that should govern your future behavior, not just a fact about the world.
+- `/memnos remember <fact>` saves a durable memory without pinning it.
 - `/memnos ns=proj:x` pins this folder's namespace; `/memnos ns` shows it; `/memnos ns list` lists namespaces; `/memnos ns clear` reverts.
+- `/memnos ?` (or `help`/`cheat`) prints the full command list.
 - Otherwise, use the recalled memories above to answer: $ARGUMENTS
 """
 
@@ -2130,6 +2133,15 @@ consistently. Follow these rules:
   preferences, and commitments. One fact per call, self-contained, dates absolute.
 - Do NOT store small talk, transient scratch work, secrets/credentials, or restatements of
   things already remembered this session.
+
+## Constraints — rules that govern YOUR future behavior
+- When the user states a rule you should always/never follow going forward ("always use
+  bash syntax", "never touch prod without asking"), call `remember` with
+  `memory_type="constraint"`. Constraint memories are PINNED into every future recall for
+  this namespace instead of competing for relevance like an ordinary fact — so the rule
+  stops needing to be repeated.
+- Rule of thumb: governs future behavior -> `memory_type="constraint"`; describes the
+  world (a fact, preference, decision) -> plain `remember` with no type.
 
 ## Notes
 - Memories are namespace-scoped and access-controlled server-side; if a read/write is
