@@ -1486,6 +1486,8 @@ def cmd_namespace(args, cfg):
     elif args.action == "rm":
         Control.delete_namespace(conn, args.name, purge_data=args.purge)
         print(f"namespace '{args.name}' deleted")
+    elif args.action == "prune":
+        _cmd_namespace_prune(conn, args)
     elif args.action in ("copy", "move"):
         from core.store import BrainStore
         if not args.name or not args.to:
@@ -1550,6 +1552,58 @@ def cmd_namespace(args, cfg):
         for n in Control.list_namespaces(conn):
             kind = " [knowledge]" if n.get("kind") == "knowledge" else ""
             print(f"  {n['name']:<28} turns={n['turns']} facts={n['facts']}{kind}  {n['description'] or ''}")
+
+
+# "small" footprint for a --stale candidate (issue #30): a namespace nobody relies on, not
+# a namespace that just happens to be quiet this week. Hardcoded rather than another flag —
+# --stale already asks the user to pick a day threshold; a second numeric knob is noise.
+_PRUNE_STALE_MAX_FACTS = 20
+
+
+def _cmd_namespace_prune(conn, args):
+    """`memnos namespace prune` (issue #30). Default (no flags) = dry-run report of EMPTY
+    (0 turns, 0 facts) namespaces only — always safe, no data ever destroyed by default.
+    --stale DAYS also considers namespaces with a small (<=_PRUNE_STALE_MAX_FACTS) fact
+    count whose last write is older than DAYS. --force is the ONLY thing that deletes
+    anything (--empty alone or --stale alone still just report). A namespace with an active
+    binding is skipped unless --force, since delete_namespace() always revokes grants and
+    would 403 that binding's next write."""
+    from core.control import Control
+    empty = args.empty or args.stale is None   # bare call / --empty alone -> empty-only scan
+    rows = Control.namespace_prune_candidates(conn, empty=empty, stale_days=args.stale,
+                                              stale_max_facts=_PRUNE_STALE_MAX_FACTS)
+    if not rows:
+        print("no namespaces match the prune criteria")
+        return
+    do_delete = bool(args.force) and not bool(args.dry_run)
+    admin_pid = None
+    if do_delete:
+        try:
+            admin_pid = _principal_id(conn, "admin")
+        except SystemExit:
+            pass
+    pruned = skipped = 0
+    for r in rows:
+        reason = "empty" if r["is_empty"] else f"stale >{args.stale}d, {r['facts']} facts"
+        last = r["last_write"].strftime("%Y-%m-%d") if r["last_write"] else "—"
+        if r["bound"] and not args.force:
+            print(f"  {'skipped':<12} {r['name']:<28} turns={r['turns']} facts={r['facts']} "
+                  f"last_write={last}  (has an active binding — re-run with --force to override)")
+            skipped += 1
+        elif do_delete:
+            Control.delete_namespace(conn, r["name"], purge_data=(r["turns"] > 0 or r["facts"] > 0))
+            Control.audit(conn, admin_pid, "namespace.prune", r["name"], True,
+                          {"reason": reason, "facts": r["facts"], "turns": r["turns"], "bound": r["bound"]})
+            print(f"  {'pruned':<12} {r['name']:<28} turns={r['turns']} facts={r['facts']} last_write={last}  ({reason})")
+            pruned += 1
+        else:
+            print(f"  {'would prune':<12} {r['name']:<28} turns={r['turns']} facts={r['facts']} last_write={last}  ({reason})")
+    if do_delete:
+        print(f"\npruned {pruned} namespace(s)" + (f", skipped {skipped} (bound)" if skipped else ""))
+    else:
+        tail = "" if args.force else " — re-run with --force to actually delete"
+        note = f", {skipped} skipped (bound, use --force to override)" if skipped else ""
+        print(f"\n{len(rows) - skipped} namespace(s) would be pruned{tail}{note}")
 
 
 def cmd_secret(args, cfg):
@@ -1955,7 +2009,7 @@ description: memnos memory — /memnos <query> recall · constraint <rule> · re
 allowed-tools: Bash(memnos:*)
 ---
 
-!`A="$ARGUMENTS"; case "$A" in "?"|help|cheat|cheatsheet) : ;; constraint\\ *|rule\\ *|!*) R="${A#constraint }"; R="${R#rule }"; R="${R#!}"; memnos remember "$R" --type constraint --namespace auto --token __MEMNOS_TOKEN__;; remember\\ *) memnos remember "${A#remember }" --namespace auto --token __MEMNOS_TOKEN__;; ns=*) memnos ns "${A#ns=}";; "ns clear") memnos ns clear;; "ns list"|list|ls) memnos namespace ls;; ""|ns) memnos ns;; *) memnos recall "$A" --namespace auto --token __MEMNOS_TOKEN__;; esac`
+!`A="$ARGUMENTS"; case "$A" in "?"|help|cheat|cheatsheet) : ;; constraint\\ *|rule\\ *|!*) R="${A#constraint }"; R="${R#rule }"; R="${R#!}"; memnos remember "$R" --type constraint --namespace auto --token __MEMNOS_TOKEN__;; remember\\ *) memnos remember "${A#remember }" --namespace auto --token __MEMNOS_TOKEN__;; ns=*) memnos ns "${A#ns=}";; "ns clear") memnos ns clear;; "ns list"|list|ls) memnos namespace ls;; "ns prune") memnos namespace prune --empty --dry-run;; ""|ns) memnos ns;; *) memnos recall "$A" --namespace auto --token __MEMNOS_TOKEN__;; esac`
 
 Instructions:
 - If $ARGUMENTS is `?`, `help`, `cheat`, or `cheatsheet`: reply with EXACTLY the block below as
@@ -1971,6 +2025,7 @@ Instructions:
   /memnos ns                 show current namespace
   /memnos ns list            list namespaces
   /memnos ns clear           revert namespace pin
+  /memnos ns prune           dry-run: show empty namespaces that could be cleaned up
   /memnos ?                  this cheat sheet
 
   TYPES: constraint(pinned) · decision · incident · skill · fact
@@ -2970,8 +3025,8 @@ def build_parser():
     v.set_defaults(fn=cmd_grant_rm)
 
     # ---- namespaces & secrets (already noun-verb via the action positional) ----
-    p = sub.add_parser("namespace", help="manage namespaces: add | ls | rm | set | link | unlink | links | copy | move | reconcile")
-    p.add_argument("action", choices=["add", "ls", "rm", "copy", "move", "set", "link", "unlink", "links", "reconcile"],
+    p = sub.add_parser("namespace", help="manage namespaces: add | ls | rm | prune | set | link | unlink | links | copy | move | reconcile")
+    p.add_argument("action", choices=["add", "ls", "rm", "prune", "copy", "move", "set", "link", "unlink", "links", "reconcile"],
                    help="what to do")
     p.add_argument("name", nargs="?", help="namespace (or copy/move SOURCE, or link SRC)")
     p.add_argument("dst", nargs="?", help="link/unlink destination namespace")
@@ -2981,9 +3036,16 @@ def build_parser():
     p.add_argument("--kind", choices=["memory", "knowledge"], help="set: namespace kind")
     p.add_argument("--purge", action="store_true", help="rm: also delete the stored memories")
     p.add_argument("--dry-run", action="store_true",
-                   help="reconcile: report would-close/would-dedupe counts, write nothing")
+                   help="reconcile/prune: report only, write nothing (prune's default even without this flag)")
     p.add_argument("--limit", type=int,
                    help="reconcile: cap the number of facts walked this run (newest first)")
+    p.add_argument("--empty", action="store_true",
+                   help="prune: target namespaces with 0 facts and 0 turns (default filter if --stale not given)")
+    p.add_argument("--stale", type=int, metavar="DAYS",
+                   help="prune: also target namespaces with a small fact count whose last write "
+                        "is older than DAYS (still requires --force to actually delete)")
+    p.add_argument("--force", action="store_true",
+                   help="prune: actually delete the matched candidates (default is report-only)")
     p.set_defaults(fn=cmd_namespace)
     p = sub.add_parser("secret", help="encrypted secret vault: get | set | ls | rm | rotate | keygen")
     p.add_argument("action", choices=["get", "set", "ls", "rm", "keygen", "rotate"], help="what to do")

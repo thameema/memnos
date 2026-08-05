@@ -419,6 +419,7 @@
         "add",
         "ls",
         "rm",
+        "prune",
         "copy",
         "move",
         "set",
@@ -479,7 +480,7 @@
       },
       {
        "arg": "--dry-run",
-       "help": "reconcile: report would-close/would-dedupe counts, write nothing",
+       "help": "reconcile/prune: report only, write nothing (prune's default even without this flag)",
        "positional": false,
        "required": false
       },
@@ -488,11 +489,29 @@
        "help": "reconcile: cap the number of facts walked this run (newest first)",
        "positional": false,
        "required": false
+      },
+      {
+       "arg": "--empty",
+       "help": "prune: target namespaces with 0 facts and 0 turns (default filter if --stale not given)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--stale",
+       "help": "prune: also target namespaces with a small fact count whose last write is older than DAYS (still requires --force to actually delete)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--force",
+       "help": "prune: actually delete the matched candidates (default is report-only)",
+       "positional": false,
+       "required": false
       }
      ],
      "command": "namespace",
      "example": "memnos namespace add proj:myapp --desc 'my app'",
-     "help": "manage namespaces: add | ls | rm | set | link | unlink | links | copy | move | reconcile"
+     "help": "manage namespaces: add | ls | rm | prune | set | link | unlink | links | copy | move | reconcile"
     },
     {
      "args": [

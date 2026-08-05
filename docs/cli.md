@@ -302,11 +302,11 @@ memnos whoami mnk_...
 
 ### `memnos namespace`
 
-manage namespaces: add | ls | rm | set | link | unlink | links | copy | move | reconcile
+manage namespaces: add | ls | rm | prune | set | link | unlink | links | copy | move | reconcile
 
 | argument | description |
 |---|---|
-| `action` | what to do (one of: `add`, `ls`, `rm`, `copy`, `move`, `set`, `link`, `unlink`, `links`, `reconcile`) |
+| `action` | what to do (one of: `add`, `ls`, `rm`, `prune`, `copy`, `move`, `set`, `link`, `unlink`, `links`, `reconcile`) |
 | `name` | namespace (or copy/move SOURCE, or link SRC) (optional) |
 | `dst` | link/unlink destination namespace (optional) |
 | `--to` | copy/move destination namespace |
@@ -314,8 +314,11 @@ manage namespaces: add | ls | rm | set | link | unlink | links | copy | move | r
 | `--desc` | add: description |
 | `--kind` | set: namespace kind (one of: `memory`, `knowledge`) |
 | `--purge` | rm: also delete the stored memories |
-| `--dry-run` | reconcile: report would-close/would-dedupe counts, write nothing |
+| `--dry-run` | reconcile/prune: report only, write nothing (prune's default even without this flag) |
 | `--limit` | reconcile: cap the number of facts walked this run (newest first) |
+| `--empty` | prune: target namespaces with 0 facts and 0 turns (default filter if --stale not given) |
+| `--stale` | prune: also target namespaces with a small fact count whose last write is older than DAYS (still requires --force to actually delete) |
+| `--force` | prune: actually delete the matched candidates (default is report-only) |
 
 ```bash
 memnos namespace add proj:myapp --desc 'my app'
