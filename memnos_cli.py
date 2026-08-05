@@ -1407,7 +1407,12 @@ def cmd_admin(args, cfg):
     Control.init(conn)
     pid = Control.create_principal(conn, "admin", "service")
     Control.grant(conn, pid, "*")
-    print("ADMIN TOKEN (shown once):\n  " + Control.mint_token(conn, pid, "console"))
+    tok = Control.mint_token(conn, pid, "console")
+    cfg["admin_token"] = tok           # also repairs a blank config.json (issue #27)
+    save_config(cfg)
+    url = os.environ.get("MEMNOS_URL") or f"http://127.0.0.1:{cfg.get('port', 8900)}"
+    print("ADMIN TOKEN (shown once):\n  " + tok)
+    print(f"\nADMIN CONSOLE: {url}/admin")
 
 
 def cmd_principal(args, cfg):
@@ -1938,14 +1943,39 @@ def cmd_recall(args, cfg):
 
 _SLASH_CMD = """---
 description: memnos memory — /memnos <query> recall · constraint <rule> · remember <fact> · ns=… · ? cheat sheet
-allowed-tools: Bash(memnos:*), Bash(printf:*)
+allowed-tools: Bash(memnos:*)
 ---
 
-!`A="$ARGUMENTS"; case "$A" in "?"|help|cheat|cheatsheet) printf '%s\\n' "── MEMNOS CHEAT SHEET ──────────────────────────────" "/memnos <query>            recall memory for <query> (this folder's namespace)" "/memnos constraint <rule>  save a RULE — pinned into EVERY session for this project" "/memnos !<rule>            shorthand for constraint" "/memnos remember <fact>    save a durable fact/decision (normal memory)" "/memnos ns=proj:x          pin this folder's namespace" "/memnos ns                 show current namespace" "/memnos ns list            list namespaces" "/memnos ns clear           revert namespace pin" "/memnos ?                  this cheat sheet" "" "TYPES: constraint(pinned) · decision · incident · skill · fact" "RULE OF THUMB: governs behavior → constraint · describes the world → remember" "CLI: memnos recall|remember [--type T]|ns|bindings|stats|status|constraint" "─────────────────────────────────────────────────────";; constraint\\ *|rule\\ *|!*) R="${A#constraint }"; R="${R#rule }"; R="${R#!}"; memnos remember "$R" --type constraint --namespace auto;; remember\\ *) memnos remember "${A#remember }" --namespace auto;; ns=*) memnos ns "${A#ns=}";; "ns clear") memnos ns clear;; "ns list"|list|ls) memnos namespace ls;; ""|ns) memnos ns;; *) memnos recall "$A" --namespace auto;; esac`
+!`A="$ARGUMENTS"; case "$A" in "?"|help|cheat|cheatsheet) : ;; constraint\\ *|rule\\ *|!*) R="${A#constraint }"; R="${R#rule }"; R="${R#!}"; MEMNOS_URL=__MEMNOS_URL__ MEMNOS_TOKEN=__MEMNOS_TOKEN__ memnos remember "$R" --type constraint --namespace auto;; remember\\ *) MEMNOS_URL=__MEMNOS_URL__ MEMNOS_TOKEN=__MEMNOS_TOKEN__ memnos remember "${A#remember }" --namespace auto;; ns=*) MEMNOS_URL=__MEMNOS_URL__ MEMNOS_TOKEN=__MEMNOS_TOKEN__ memnos ns "${A#ns=}";; "ns clear") MEMNOS_URL=__MEMNOS_URL__ MEMNOS_TOKEN=__MEMNOS_TOKEN__ memnos ns clear;; "ns list"|list|ls) MEMNOS_URL=__MEMNOS_URL__ MEMNOS_TOKEN=__MEMNOS_TOKEN__ memnos namespace ls;; ""|ns) MEMNOS_URL=__MEMNOS_URL__ MEMNOS_TOKEN=__MEMNOS_TOKEN__ memnos ns;; *) MEMNOS_URL=__MEMNOS_URL__ MEMNOS_TOKEN=__MEMNOS_TOKEN__ memnos recall "$A" --namespace auto;; esac`
 
 Instructions:
+- If $ARGUMENTS is `?`, `help`, `cheat`, or `cheatsheet`: reply with EXACTLY the block below as
+  your message text — do not call a tool, do not add commentary. (Bash stdout is invisible in
+  compact/mobile UIs, so the cheat sheet is rendered by you, the model, instead.)
+
+  ── MEMNOS CHEAT SHEET ──────────────────────────────
+  /memnos <query>            recall memory for <query> (this folder's namespace)
+  /memnos constraint <rule>  save a RULE — pinned into EVERY session for this project
+  /memnos !<rule>            shorthand for constraint
+  /memnos remember <fact>    save a durable fact/decision (normal memory)
+  /memnos ns=proj:x          pin this folder's namespace
+  /memnos ns                 show current namespace
+  /memnos ns list            list namespaces
+  /memnos ns clear           revert namespace pin
+  /memnos ?                  this cheat sheet
+
+  TYPES: constraint(pinned) · decision · incident · skill · fact
+  RULE OF THUMB: governs behavior → constraint · describes the world → remember
+  CLI: memnos recall|remember [--type T]|ns|bindings|stats|status|constraint
+
+  ADMIN CONSOLE (manage tokens): __MEMNOS_URL__/admin
+  LOGIN TO CONSOLE: mint an admin token → memnos token mint admin --label console
+     (needs a '*' grant; token shown ONCE — paste into /admin. Grant if needed: memnos grant add <principal> '*')
+  CONFIG (set admin_token here): ~/.memnos/config.json   ·   LOGS: ~/.memnos/server.log
+  ─────────────────────────────────────────────────────
+
 - `/memnos constraint <rule>` (or `/memnos !<rule>`) saves a **pinned constraint** at this folder's namespace — it is injected into EVERY future session for this project, so you never repeat it. Use for rules/guardrails: "never X", "always Y", "don't Z without my permission".
-- `/memnos remember <fact>` saves a normal durable memory. `/memnos ns=…` manages the folder namespace. `/memnos ?` shows the cheat sheet.
+- `/memnos remember <fact>` saves a normal durable memory. `/memnos ns=…` manages the folder namespace.
 - `/memnos <anything else>` recalls memory — use the recalled memories shown above to answer: $ARGUMENTS
 """
 
@@ -2040,6 +2070,18 @@ def cmd_claude_setup(args, cfg):
     token, default_ns = _ensure_claude_token(cfg, extra_ns=args.namespace)
     ns = args.namespace or default_ns
 
+    # issue #27 field report: bare `memnos recall/remember` (no inline token — e.g. the /admin
+    # console's own instructions) 401 if config.json's admin_token was ever cleared (rotation,
+    # partial reinstall). claude-setup is the tool people already re-run, so self-heal it here.
+    if not cfg.get("admin_token"):
+        from core.control import Control
+        aconn = _conn(cfg)
+        Control.init(aconn)
+        apid = Control.create_principal(aconn, "admin", "service")
+        Control.grant(aconn, apid, "*")
+        cfg["admin_token"] = Control.mint_token(aconn, apid, "console")
+        save_config(cfg)
+
     # 1. MCP server -> ~/.claude.json (the file Claude Code reads for MCP)
     cj = os.path.join(home, ".claude.json")
     try:
@@ -2070,8 +2112,11 @@ def cmd_claude_setup(args, cfg):
     wire("SessionStart", f"{env} memnos hook status")   # visible "memory ON/OFF" each session
     _backup(sj); json.dump(s, open(sj, "w"), indent=2)
 
-    # 3. /memnos slash command
-    open(os.path.join(claude_dir, "commands", "memnos.md"), "w").write(_SLASH_CMD)
+    # 3. /memnos slash command — bake in URL/token inline (issue #27: the slash command must
+    # never depend on config.json's admin_token fallback, which field reports show can go
+    # blank across a token rotation/reinstall).
+    rendered_slash_cmd = _SLASH_CMD.replace("__MEMNOS_URL__", url).replace("__MEMNOS_TOKEN__", token)
+    open(os.path.join(claude_dir, "commands", "memnos.md"), "w").write(rendered_slash_cmd)
 
     # 4. CLAUDE.md memnos section (append once)
     cm = os.path.join(claude_dir, "CLAUDE.md")

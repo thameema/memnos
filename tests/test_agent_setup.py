@@ -192,6 +192,27 @@ def main():
           "remember <fact>" in slash_cmd)
     check("claude-code: /memnos template ships the cheat sheet (?/help/cheat)",
           '"?"|help|cheat' in slash_cmd)
+    # issue #27 field report: the slash command must never depend on config.json's
+    # admin_token fallback — every memnos call carries its own real URL/token, and no
+    # unrendered placeholder should survive into the shipped file.
+    check("claude-code: /memnos template has NO unrendered auth placeholders",
+          "__MEMNOS_URL__" not in slash_cmd and "__MEMNOS_TOKEN__" not in slash_cmd)
+    check("claude-code: /memnos template's memnos calls carry a real inline token",
+          slash_cmd.count("MEMNOS_TOKEN=mnk_") == 7)
+    check("claude-code: /memnos template's admin console URL is rendered with the real URL",
+          "/admin" in slash_cmd and "__MEMNOS_URL__/admin" not in slash_cmd)
+
+    # issue #27 field report: a blank config.json admin_token 401s bare `memnos recall/
+    # remember`. claude-setup must self-heal it (re-populate a fresh admin-service token).
+    cfg_path = os.path.join(home, ".memnos/config.json")
+    cfg_on_disk = json.load(open(cfg_path))
+    cfg_on_disk["admin_token"] = ""
+    json.dump(cfg_on_disk, open(cfg_path, "w"))
+    rc, out = run(home, "agent-setup", "claude-code")
+    check("claude-code: re-run with blank admin_token exits 0", rc == 0)
+    healed = json.load(open(cfg_path))
+    check("claude-code: self-heals a blank config.json admin_token",
+          bool(healed.get("admin_token")) and healed["admin_token"].startswith("mnk_"))
 
     # --- omnigent: inline `tools.memnos` MCP entry in an agent's config.yaml ---
     # Omnigent has no single global config shared by every agent (each agent is its own
