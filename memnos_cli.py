@@ -1472,6 +1472,55 @@ def cmd_grant_rm(args, cfg):
     print(f"revoked {args.principal} -> {args.namespace}")
 
 
+def cmd_constraint_add(args, cfg):
+    """issue #28: `advise` (default) writes ONLY the pinned memory, same as `/memnos
+    constraint <rule>` (#27). `ask`/`block` ALSO registers a control-plane enforcement row
+    — validated BEFORE the pinned write, so a rejected --enforce request never leaves a
+    confusing half-applied state (pinned but not actually enforced)."""
+    from core.control import Control
+    if args.enforce != "advise" and not args.tool:
+        sys.exit(f"--enforce {args.enforce} requires --tool <glob>: a prose rule can't be "
+                 "matched to a tool call deterministically without an LLM, and enforcement "
+                 "is LLM-free by design. (Use --enforce advise for a pinned-only constraint.)")
+    tok = args.token or os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token")
+    _post(cfg, "/remember", {"namespace": args.namespace, "text": args.rule, "type": "constraint"}, tok)
+    print(f"→ constraint pinned in {args.namespace}")
+    if args.enforce != "advise":
+        conn = _conn(cfg)
+        Control.init(conn)
+        created_by = None
+        try:
+            created_by = _principal_id(conn, "admin")
+        except SystemExit:
+            pass
+        cid = Control.add_constraint_enforcement(conn, args.namespace, args.rule, args.enforce,
+                                                 args.tool, created_by=created_by)
+        print(f"  enforced: id={cid} level={args.enforce} tool='{args.tool}'")
+        print("  (takes effect once the PreToolUse hook's cache next refreshes — new session, "
+              "or `memnos hook status` — see `memnos claude-setup`)")
+
+
+def cmd_constraint_ls(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    Control.init(conn)
+    rows = Control.list_constraint_enforcement(conn, namespace=args.namespace)
+    if not rows:
+        print("no enforced constraints" + (f" for '{args.namespace}'" if args.namespace else ""))
+        return
+    for r in rows:
+        preview = r["rule_text"] if len(r["rule_text"]) <= 60 else r["rule_text"][:57] + "..."
+        print(f"  {r['id']:<5} {r['namespace']:<20} {r['enforce_level']:<6} tool='{r['tool_matcher']}'  {preview}")
+
+
+def cmd_constraint_rm(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    Control.init(conn)
+    ok = Control.remove_constraint_enforcement(conn, args.id)
+    print(f"constraint {args.id} deactivated" if ok else f"no active constraint with id {args.id}")
+
+
 def cmd_namespace(args, cfg):
     from core.control import Control
     conn = _conn(cfg)
@@ -3023,6 +3072,26 @@ def build_parser():
     v.add_argument("principal", help="principal name")
     v.add_argument("namespace", help="namespace of the grant to revoke")
     v.set_defaults(fn=cmd_grant_rm)
+
+    # ---- enforced constraints (issue #28) ----
+    p = sub.add_parser("constraint", help="manage constraints: add | ls | rm (advise=pinned memory, ask|block=enforced)")
+    p.set_defaults(fn=lambda a, c, _p=p: _p.print_help())
+    ps = p.add_subparsers(dest="verb", metavar="<verb>")
+    v = ps.add_parser("add", help="add a constraint; --enforce ask|block also registers a PreToolUse enforcement rule")
+    v.add_argument("namespace", help="namespace this constraint governs")
+    v.add_argument("rule", help="the constraint text")
+    v.add_argument("--enforce", choices=["advise", "ask", "block"], default="advise",
+                   help="advise (default): pinned into recall only, like /memnos constraint. "
+                        "ask/block: ALSO enforced by the PreToolUse hook (requires --tool)")
+    v.add_argument("--tool", help="glob matched against the pending tool name — required for --enforce ask|block")
+    v.add_argument("--token", help="bearer token for the pinned-memory write (else $MEMNOS_TOKEN / config)")
+    v.set_defaults(fn=cmd_constraint_add)
+    v = ps.add_parser("ls", help="list enforced (ask/block) constraints")
+    v.add_argument("namespace", nargs="?", help="namespace (omit to list across all)")
+    v.set_defaults(fn=cmd_constraint_ls)
+    v = ps.add_parser("rm", help="deactivate an enforced constraint by id (see: constraint ls)")
+    v.add_argument("id", type=int)
+    v.set_defaults(fn=cmd_constraint_rm)
 
     # ---- namespaces & secrets (already noun-verb via the action positional) ----
     p = sub.add_parser("namespace", help="manage namespaces: add | ls | rm | prune | set | link | unlink | links | copy | move | reconcile")
