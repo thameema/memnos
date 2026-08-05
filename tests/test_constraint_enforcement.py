@@ -107,6 +107,32 @@ def main():
     rc, out = cli("constraint", "ls")
     check("ls (no ns): still includes the row (cross-namespace listing)", NS in out)
 
+    # --- 5b. constraint ls warns when the PreToolUse cache doesn't cover this rule yet -------
+    # (issue #28 field report: "added" != "enforced" until claude-setup + a new session).
+    print("=== constraint ls staleness warning ===")
+    sys.path.insert(0, ROOT)
+    import memnos_cli
+    cache_path = memnos_cli._enforce_cache_path(NS)
+    if os.path.exists(cache_path):
+        os.remove(cache_path)
+    rc, out = cli("constraint", "ls", NS)
+    check("ls warns when no PreToolUse cache exists at all",
+          rc == 0 and "no PreToolUse cache yet" in out and "claude-setup" in out)
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "w") as f:
+        import json as _json
+        _json.dump({"namespace": NS, "rules": []}, f)   # cache exists but doesn't cover this rule
+    rc, out = cli("constraint", "ls", NS)
+    check("ls warns when the cache exists but is stale (missing this rule)",
+          rc == 0 and "cache is stale" in out)
+    with open(cache_path, "w") as f:
+        _json.dump({"namespace": NS, "rules": [{"id": rows[0]["id"], "enforce_level": "block",
+                                                 "tool_matcher": "Bash(rm*)", "rule_text": "x"}]}, f)
+    rc, out = cli("constraint", "ls", NS)
+    check("ls does NOT warn once the cache actually covers this rule",
+          rc == 0 and "no PreToolUse cache" not in out and "cache is stale" not in out)
+    os.remove(cache_path)
+
     # --- 6. constraint rm: soft-delete, idempotent on a second call -------------------------
     print("=== constraint rm ===")
     row_id = rows[0]["id"]
