@@ -193,12 +193,14 @@ def main():
     check("claude-code: /memnos template ships the cheat sheet (?/help/cheat)",
           '"?"|help|cheat' in slash_cmd)
     # issue #27 field report: the slash command must never depend on config.json's
-    # admin_token fallback — every memnos call carries its own real URL/token, and no
+    # admin_token fallback — remember/recall carry their own real --token arg, and no
     # unrendered placeholder should survive into the shipped file.
     check("claude-code: /memnos template has NO unrendered auth placeholders",
           "__MEMNOS_URL__" not in slash_cmd and "__MEMNOS_TOKEN__" not in slash_cmd)
-    check("claude-code: /memnos template's memnos calls carry a real inline token",
-          slash_cmd.count("MEMNOS_TOKEN=mnk_") == 7)
+    check("claude-code: /memnos template's remember/recall calls carry a real --token arg",
+          slash_cmd.count("--token mnk_") == 3)
+    check("claude-code: no ENV=val prefix on any memnos call (breaks Bash(memnos:*) matching)",
+          "MEMNOS_TOKEN=mnk_" not in slash_cmd and "MEMNOS_URL=http" not in slash_cmd)
     check("claude-code: /memnos template's admin console URL is rendered with the real URL",
           "/admin" in slash_cmd and "__MEMNOS_URL__/admin" not in slash_cmd)
 

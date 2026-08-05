@@ -62,29 +62,32 @@ def _dispatch(argument_string):
 
 def test_dispatch_constraint_verb_pins_as_constraint_type():
     out = _dispatch("constraint always use bash, not zsh")
-    assert out == "[remember][always use bash, not zsh][--type][constraint][--namespace][auto]", out
+    assert out == ("[remember][always use bash, not zsh][--type][constraint]"
+                    "[--namespace][auto][--token][__MEMNOS_TOKEN__]"), out
 
 
 def test_dispatch_rule_alias_same_as_constraint():
     out = _dispatch("rule never touch prod without asking")
-    assert out == "[remember][never touch prod without asking][--type][constraint][--namespace][auto]", out
+    assert out == ("[remember][never touch prod without asking][--type][constraint]"
+                    "[--namespace][auto][--token][__MEMNOS_TOKEN__]"), out
 
 
 def test_dispatch_bang_alias_same_as_constraint():
     out = _dispatch("!never delete without confirmation")
-    assert out == "[remember][never delete without confirmation][--type][constraint][--namespace][auto]", out
+    assert out == ("[remember][never delete without confirmation][--type][constraint]"
+                    "[--namespace][auto][--token][__MEMNOS_TOKEN__]"), out
 
 
 def test_dispatch_remember_verb_untyped():
     out = _dispatch("remember the sky is blue today")
-    assert out == "[remember][the sky is blue today][--namespace][auto]", out
+    assert out == "[remember][the sky is blue today][--namespace][auto][--token][__MEMNOS_TOKEN__]", out
 
 
 def test_dispatch_multiword_arg_stays_one_token():
     """Regression guard: a rule/fact with commas/multiple words must not get word-split
     across separate memnos argv positions."""
     out = _dispatch("constraint always run tests, never skip hooks, ask before force-push")
-    assert out.count("[") == 6          # remember, <one rule token>, --type, constraint, --namespace, auto
+    assert out.count("[") == 8   # remember, <one rule token>, --type, constraint, --namespace, auto, --token, <tok>
     assert "always run tests, never skip hooks, ask before force-push" in out
 
 
@@ -108,14 +111,14 @@ def test_dispatch_existing_ns_behavior_unchanged():
 
 def test_dispatch_default_falls_through_to_recall():
     out = _dispatch("what did we decide about auth")
-    assert out == "[recall][what did we decide about auth][--namespace][auto]", out
+    assert out == "[recall][what did we decide about auth][--namespace][auto][--token][__MEMNOS_TOKEN__]", out
 
 
 def test_dispatch_plain_word_starting_with_constraint_is_not_misrouted():
     """'constraintx' must NOT match the 'constraint ' (with trailing space) pattern —
     only an actual `constraint <rule>` verb call should route to a typed write."""
     out = _dispatch("constraints on the API design")
-    assert out == "[recall][constraints on the API design][--namespace][auto]", out
+    assert out == "[recall][constraints on the API design][--namespace][auto][--token][__MEMNOS_TOKEN__]", out
 
 
 # ---------------------------------------------------------------------------
@@ -162,12 +165,23 @@ def test_slash_cmd_cheat_sheet_documents_admin_console_and_config():
 
 def test_slash_cmd_memnos_calls_carry_inline_auth_placeholders():
     """Token-robustness fix (issue #27 field report): a blank config.json admin_token must
-    not 401 the slash command. Every memnos invocation in the bash dispatch carries its own
-    MEMNOS_URL/MEMNOS_TOKEN, rendered by cmd_claude_setup — never relying on config.json."""
+    not 401 the slash command. remember/recall (the only two verbs that hit the HTTP Bearer-
+    auth API) carry a `--token` CLI ARG, rendered by cmd_claude_setup — never relying on
+    config.json. This must be a trailing arg, NOT an `ENV=val` prefix on the command line: a
+    Claude Code Bash(memnos:*) allow-rule only auto-strips a small known-safe env-var
+    allowlist ahead of the command word, so `MEMNOS_TOKEN=... memnos ...` would silently fail
+    to match the grant and turn every /memnos call into a permission prompt (verified against
+    Claude Code's own permission-matcher docs, not just bash's argv semantics)."""
     bash_line = re.search(r"!`(.*)`", memnos_cli._SLASH_CMD).group(1)
-    calls = re.findall(r"MEMNOS_URL=(\S+) MEMNOS_TOKEN=(\S+) memnos ", bash_line)
-    assert len(calls) == 7, f"expected all 7 memnos call sites authenticated inline, found {len(calls)}"
-    assert all(u == "__MEMNOS_URL__" and t == "__MEMNOS_TOKEN__" for u, t in calls)
+    assert not re.search(r"MEMNOS_\w+=\S+\s+memnos\b", bash_line), \
+        "no memnos invocation may be prefixed with an ENV=val assignment (breaks Bash(memnos:*) matching)"
+    calls = re.findall(r"memnos (?:remember|recall)\b[^;]*--token ([^;\s]+)", bash_line)
+    assert len(calls) == 3, f"expected remember(constraint)/remember/recall all pass --token, found {len(calls)}"
+    assert all(t == "__MEMNOS_TOKEN__" for t in calls)
+    # ns / ns clear / namespace ls never call the HTTP API — must NOT carry a token at all.
+    for branch_re in (r'ns=\*\) (.*?);;', r'"ns clear"\) (.*?);;', r'"ns list"\|list\|ls\) (.*?);;'):
+        branch = re.search(branch_re, bash_line).group(1)
+        assert "--token" not in branch and "MEMNOS_" not in branch, branch
 
 
 def test_desktop_skill_documents_memory_type_constraint():

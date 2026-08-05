@@ -1941,12 +1941,21 @@ def cmd_recall(args, cfg):
     print(out.get("context", json.dumps(out)))
 
 
+# NOTE on the `remember`/`recall` calls below: they carry `--token __MEMNOS_TOKEN__` (a
+# trailing CLI ARG, rendered by cmd_claude_setup), never an `ENV=val` PREFIX on the command
+# line. Claude Code's `Bash(memnos:*)` allow-rule only auto-strips a small known-safe env var
+# allowlist ahead of the command word — an arbitrary `MEMNOS_TOKEN=... memnos ...` prefix
+# would silently fail to match that rule and trigger a permission prompt on every /memnos
+# call. `--token` keeps `memnos` as the literal first word, so the existing grant still
+# matches. No URL override is needed: `ns`/`namespace ls` never call the HTTP API at all
+# (ns is a local file, namespace ls hits Postgres directly), and remember/recall's default
+# URL resolution already reads this SAME machine's ~/.memnos/config.json port.
 _SLASH_CMD = """---
 description: memnos memory — /memnos <query> recall · constraint <rule> · remember <fact> · ns=… · ? cheat sheet
 allowed-tools: Bash(memnos:*)
 ---
 
-!`A="$ARGUMENTS"; case "$A" in "?"|help|cheat|cheatsheet) : ;; constraint\\ *|rule\\ *|!*) R="${A#constraint }"; R="${R#rule }"; R="${R#!}"; MEMNOS_URL=__MEMNOS_URL__ MEMNOS_TOKEN=__MEMNOS_TOKEN__ memnos remember "$R" --type constraint --namespace auto;; remember\\ *) MEMNOS_URL=__MEMNOS_URL__ MEMNOS_TOKEN=__MEMNOS_TOKEN__ memnos remember "${A#remember }" --namespace auto;; ns=*) MEMNOS_URL=__MEMNOS_URL__ MEMNOS_TOKEN=__MEMNOS_TOKEN__ memnos ns "${A#ns=}";; "ns clear") MEMNOS_URL=__MEMNOS_URL__ MEMNOS_TOKEN=__MEMNOS_TOKEN__ memnos ns clear;; "ns list"|list|ls) MEMNOS_URL=__MEMNOS_URL__ MEMNOS_TOKEN=__MEMNOS_TOKEN__ memnos namespace ls;; ""|ns) MEMNOS_URL=__MEMNOS_URL__ MEMNOS_TOKEN=__MEMNOS_TOKEN__ memnos ns;; *) MEMNOS_URL=__MEMNOS_URL__ MEMNOS_TOKEN=__MEMNOS_TOKEN__ memnos recall "$A" --namespace auto;; esac`
+!`A="$ARGUMENTS"; case "$A" in "?"|help|cheat|cheatsheet) : ;; constraint\\ *|rule\\ *|!*) R="${A#constraint }"; R="${R#rule }"; R="${R#!}"; memnos remember "$R" --type constraint --namespace auto --token __MEMNOS_TOKEN__;; remember\\ *) memnos remember "${A#remember }" --namespace auto --token __MEMNOS_TOKEN__;; ns=*) memnos ns "${A#ns=}";; "ns clear") memnos ns clear;; "ns list"|list|ls) memnos namespace ls;; ""|ns) memnos ns;; *) memnos recall "$A" --namespace auto --token __MEMNOS_TOKEN__;; esac`
 
 Instructions:
 - If $ARGUMENTS is `?`, `help`, `cheat`, or `cheatsheet`: reply with EXACTLY the block below as
