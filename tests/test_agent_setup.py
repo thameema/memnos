@@ -183,6 +183,15 @@ def main():
     cj = json.load(open(os.path.join(home, ".claude.json")))
     check("claude-code: MCP entry valid (abs cmd + env triple)",
           entry_ok(cj.get("mcpServers", {}).get("memnos", {})))
+    # issue #27: constraint/remember/cheat-sheet verbs live in the SHIPPED template, so
+    # they survive claude-setup / upgrade regeneration (not a one-off local edit).
+    slash_cmd = open(os.path.join(home, ".claude/commands/memnos.md")).read()
+    check("claude-code: /memnos template ships the constraint verb",
+          "constraint <rule>" in slash_cmd and "--type constraint" in slash_cmd)
+    check("claude-code: /memnos template ships the remember verb",
+          "remember <fact>" in slash_cmd)
+    check("claude-code: /memnos template ships the cheat sheet (?/help/cheat)",
+          '"?"|help|cheat' in slash_cmd)
 
     # --- omnigent: inline `tools.memnos` MCP entry in an agent's config.yaml ---
     # Omnigent has no single global config shared by every agent (each agent is its own

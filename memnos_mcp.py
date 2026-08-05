@@ -148,17 +148,26 @@ def recall(query: str) -> str:
 
 
 @mcp.tool()
-def remember(text: str) -> str:
+def remember(text: str, memory_type: str = "") -> str:
     """Save a durable fact, preference, decision, or piece of context to the user's
     long-term memory for future sessions. Use for things worth keeping (preferences,
     project facts, commitments, identity) — not transient chatter. If this updates a
-    prior fact (e.g. a changed preference), memnos supersedes the old value automatically."""
+    prior fact (e.g. a changed preference), memnos supersedes the old value automatically.
+
+    Pass memory_type="constraint" when the text should GOVERN future behavior (a rule
+    to always/never follow) rather than merely describe the world — constraint memories
+    are PINNED into every future recall for this namespace instead of competing for
+    relevance like an ordinary fact. Other allowed types: decision, incident, skill,
+    fact. Leave empty for an ordinary untyped memory."""
     ns, source = _ns_source()
+    body = {"text": text, "speaker": "user", "async": True}
+    if memory_type:
+        body["type"] = memory_type
     try:
         # async:true — server stores the raw turn immediately and extracts facts in the
         # background, so a slow local-LLM extraction backend (Ollama 30-80s) can't ReadTimeout
         # and drop the write. The raw turn is durable the moment this returns.
-        out = _post("/remember", {"text": text, "speaker": "user", "async": True})
+        out = _post("/remember", body)
     except Exception as e:
         # Bug 4: raise so the MCP result is flagged isError=true — never a false "saved".
         raise ToolError(_write_error(e, "remember")) from None
