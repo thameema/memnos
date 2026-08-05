@@ -194,14 +194,22 @@ def _sigmoid(x: float) -> float:
 #
 # Escape hatches (operator-tunable, defaults = the bounded behavior):
 #   MEMNOS_RERANK_ARENA=1   re-enable the arena (revert to the old unbounded behavior)
-#   MEMNOS_RERANK_THREADS=N session intra/inter-op threads (default 1; 0 = library default)
+#   MEMNOS_RERANK_THREADS=N session intra/inter-op threads (default min(4, cpu_count);
+#                           0 = library default) — see _rerank_threads() for why 4 is
+#                           safe on memory with the arena off (issue #12)
 def _arena_enabled() -> bool:
     return os.environ.get("MEMNOS_RERANK_ARENA", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _rerank_threads() -> int | None:
-    """Session thread count (default 1 — one arena slab, not one per core). 0 = library default."""
-    n = _env_int("MEMNOS_RERANK_THREADS", 1)
+    """Session thread count. The "one arena slab per thread" memory cost from #15 only
+    applies with the arena ON (see the block above) — with it OFF (the default), threads
+    are nearly free on memory (measured: threads=4 vs 1 costs ~+30MB) but cut real-row
+    (~512-token) rerank latency ~3x (issue #12 field profiling: 165.7 -> 53.7 ms/pair).
+    Default 4, clamped to the box's core count so small/CI hosts don't oversubscribe.
+    0 = library default."""
+    default = min(4, os.cpu_count() or 1)
+    n = _env_int("MEMNOS_RERANK_THREADS", default)
     return None if n <= 0 else n
 
 
