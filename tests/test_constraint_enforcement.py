@@ -48,6 +48,15 @@ def main():
     conn = psycopg.connect(DSN, autocommit=True, row_factory=dict_row)
     Control.init(conn)
 
+    # `constraint add` posts to /remember and needs a real bearer token. Don't rely on
+    # cfg.get("admin_token") from the ambient ~/.memnos/config — that's only populated on
+    # a machine that's already run `memnos setup`/`claude-setup`, which a fresh CI runner
+    # (or a fresh `memnos` install) has NOT. Mint our own, like test_corpus_api.py does,
+    # so this test is correct in a clean environment, not just on a warmed-up dev box.
+    pid = Control.create_principal(conn, "test-constraint-enforcement-admin", "service")
+    TOK = Control.mint_token(conn, pid, "test")
+    Control.grant(conn, pid, NS, can_read=True, can_write=True)
+
     def reset():
         with conn.cursor() as c:
             c.execute("DELETE FROM tenant_memnos.raw_turns WHERE namespace=%s", (NS,))
@@ -64,7 +73,7 @@ def main():
 
     # --- 1. --enforce advise (default): pinned memory only, NO control-plane row ------------
     print("=== --enforce advise (default) ===")
-    rc, out = cli("constraint", "add", NS, "never deploy on Friday without sign-off")
+    rc, out = cli("constraint", "add", NS, "never deploy on Friday without sign-off", "--token", TOK)
     check("advise: exits 0", rc == 0)
     check("advise: pinned the memory", "constraint pinned" in out and pinned_turn_count() == 1)
     check("advise: no 'enforced:' line (nothing registered)", "enforced:" not in out)
@@ -74,7 +83,7 @@ def main():
     # --- 2. --enforce block WITHOUT --tool: rejected, NOTHING written ------------------------
     print("=== --enforce block, no --tool (must reject) ===")
     reset()
-    rc, out = cli("constraint", "add", NS, "never force-push to main", "--enforce", "block")
+    rc, out = cli("constraint", "add", NS, "never force-push to main", "--enforce", "block", "--token", TOK)
     check("rejected: exits non-zero", rc != 0)
     check("rejected: explains --tool is required", "--tool" in out and "requires" in out)
     check("rejected: did NOT write the pinned memory either (no half-applied state)",
@@ -82,14 +91,14 @@ def main():
     check("rejected: no control-plane row", len(Control.list_constraint_enforcement(conn, namespace=NS)) == 0)
 
     # --- 3. --enforce ask WITHOUT --tool: same rejection ------------------------------------
-    rc, out = cli("constraint", "add", NS, "confirm before bulk delete", "--enforce", "ask")
+    rc, out = cli("constraint", "add", NS, "confirm before bulk delete", "--enforce", "ask", "--token", TOK)
     check("ask without --tool: also rejected", rc != 0 and "--tool" in out)
 
     # --- 4. --enforce block WITH --tool: pinned memory AND control-plane row -----------------
     print("=== --enforce block --tool (full path) ===")
     reset()
     rc, out = cli("constraint", "add", NS, "never rm -rf without confirmation",
-                  "--enforce", "block", "--tool", "Bash(rm*)")
+                  "--enforce", "block", "--tool", "Bash(rm*)", "--token", TOK)
     check("block+tool: exits 0", rc == 0)
     check("block+tool: pinned the memory", pinned_turn_count() == 1)
     check("block+tool: prints the enforced id/level/tool", "enforced: id=" in out and "level=block" in out)
@@ -159,6 +168,10 @@ def main():
         check("Control rejects an empty tool_matcher", True)
 
     reset()
+    with conn.cursor() as c:
+        c.execute("DELETE FROM memnos_control.api_tokens WHERE principal_id=%s", (pid,))
+        c.execute("DELETE FROM memnos_control.grants WHERE principal_id=%s", (pid,))
+        c.execute("DELETE FROM memnos_control.principals WHERE id=%s", (pid,))
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 
