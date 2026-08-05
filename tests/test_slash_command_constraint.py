@@ -88,18 +88,14 @@ def test_dispatch_multiword_arg_stays_one_token():
     assert "always run tests, never skip hooks, ask before force-push" in out
 
 
-def test_dispatch_cheat_sheet_on_question_mark():
-    out = _dispatch("?")
-    assert "/memnos constraint <rule>" in out
-    assert "/memnos remember <fact>" in out
-    assert "/memnos ns=proj:x" in out
-    assert "governs behavior" in out
-
-
-def test_dispatch_cheat_sheet_aliases():
-    for alias in ("help", "cheat"):
-        out = _dispatch(alias)
-        assert "/memnos constraint <rule>" in out, f"alias {alias!r} did not show the cheat sheet"
+def test_dispatch_cheat_sheet_produces_no_bash_output():
+    """UI-portability fix (issue #27 field report): `!`bash`` stdout is fed to the model's
+    context but never RENDERED to the user in compact/mobile UIs (e.g. Orca) — so the cheat
+    sheet moved to static Instructions text the model prints itself. The bash branch for
+    ?/help/cheat/cheatsheet must now be a true no-op."""
+    for arg in ("?", "help", "cheat", "cheatsheet"):
+        out = _dispatch(arg)
+        assert out == "", f"{arg!r} branch must be a no-op (`:`), got bash output: {out!r}"
 
 
 def test_dispatch_existing_ns_behavior_unchanged():
@@ -131,14 +127,47 @@ def test_slash_cmd_instructions_mention_constraint():
     assert "/memnos !<rule>" in memnos_cli._SLASH_CMD
 
 
-def test_slash_cmd_allows_printf_tool():
-    """Regression guard: the cheat-sheet branch calls printf, so allowed-tools must
-    grant it explicitly or /memnos ? hits a permission prompt instead of just working
-    (caught by hands-on testing in Claude Code itself, not by the bash-logic tests
-    above — those exercise the dispatch script directly, bypassing the tool-permission
-    gate a real Claude Code session enforces)."""
+def test_slash_cmd_cheat_sheet_branch_is_noop_bash():
+    """Regression guard, updated: the cheat sheet used to be printed via `printf` in the
+    ?/help/cheat branch, which needed an extra `allowed-tools` grant and (per field report)
+    doesn't even render in compact/mobile UIs since bash stdout isn't shown to the user
+    there. It's now static Instructions text the model prints itself, so the bash branch
+    must call no external command at all — and `Bash(printf:*)` is no longer needed."""
+    m = re.search(r"!`(.*)`", memnos_cli._SLASH_CMD)
+    bash_line = m.group(1)
+    branch = re.search(r'"\?"\|help\|cheat\|cheatsheet\) (.*?) ;;', bash_line)
+    assert branch and branch.group(1).strip() == ":", f"expected a no-op branch, got: {branch}"
     frontmatter = memnos_cli._SLASH_CMD.split("---")[1]
-    assert "Bash(printf:*)" in frontmatter
+    assert "Bash(printf:*)" not in frontmatter
+
+
+def test_slash_cmd_cheat_sheet_lives_in_instructions_not_bash():
+    bash_line = re.search(r"!`(.*)`", memnos_cli._SLASH_CMD).group(1)
+    assert "/memnos constraint <rule>" not in bash_line, \
+        "cheat sheet content must not be embedded in bash stdout (invisible on mobile/compact UIs)"
+    assert "/memnos constraint <rule>" in memnos_cli._SLASH_CMD
+    assert "/memnos remember <fact>" in memnos_cli._SLASH_CMD
+    assert "/memnos ns=proj:x" in memnos_cli._SLASH_CMD
+    assert "governs behavior" in memnos_cli._SLASH_CMD
+    assert "reply with EXACTLY the block below" in memnos_cli._SLASH_CMD
+
+
+def test_slash_cmd_cheat_sheet_documents_admin_console_and_config():
+    assert "__MEMNOS_URL__/admin" in memnos_cli._SLASH_CMD
+    assert "memnos token mint admin --label console" in memnos_cli._SLASH_CMD
+    assert "'*' grant" in memnos_cli._SLASH_CMD
+    assert "~/.memnos/config.json" in memnos_cli._SLASH_CMD
+    assert "~/.memnos/server.log" in memnos_cli._SLASH_CMD
+
+
+def test_slash_cmd_memnos_calls_carry_inline_auth_placeholders():
+    """Token-robustness fix (issue #27 field report): a blank config.json admin_token must
+    not 401 the slash command. Every memnos invocation in the bash dispatch carries its own
+    MEMNOS_URL/MEMNOS_TOKEN, rendered by cmd_claude_setup — never relying on config.json."""
+    bash_line = re.search(r"!`(.*)`", memnos_cli._SLASH_CMD).group(1)
+    calls = re.findall(r"MEMNOS_URL=(\S+) MEMNOS_TOKEN=(\S+) memnos ", bash_line)
+    assert len(calls) == 7, f"expected all 7 memnos call sites authenticated inline, found {len(calls)}"
+    assert all(u == "__MEMNOS_URL__" and t == "__MEMNOS_TOKEN__" for u, t in calls)
 
 
 def test_desktop_skill_documents_memory_type_constraint():
