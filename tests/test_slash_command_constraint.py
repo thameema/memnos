@@ -109,6 +109,14 @@ def test_dispatch_existing_ns_behavior_unchanged():
     assert _dispatch("ns list") == "[namespace][ls]"
 
 
+def test_dispatch_ns_prune_runs_safe_dry_run_empty_scan():
+    """issue #30: `/memnos ns prune` is READ-ONLY in chat — always --empty --dry-run, never
+    --force. Actual deletion stays an explicit CLI step outside the slash command."""
+    out = _dispatch("ns prune")
+    assert out == "[namespace][prune][--empty][--dry-run]", out
+    assert "--force" not in out
+
+
 def test_dispatch_default_falls_through_to_recall():
     out = _dispatch("what did we decide about auth")
     assert out == "[recall][what did we decide about auth][--namespace][auto][--token][__MEMNOS_TOKEN__]", out
@@ -151,6 +159,7 @@ def test_slash_cmd_cheat_sheet_lives_in_instructions_not_bash():
     assert "/memnos constraint <rule>" in memnos_cli._SLASH_CMD
     assert "/memnos remember <fact>" in memnos_cli._SLASH_CMD
     assert "/memnos ns=proj:x" in memnos_cli._SLASH_CMD
+    assert "/memnos ns prune" in memnos_cli._SLASH_CMD
     assert "governs behavior" in memnos_cli._SLASH_CMD
     assert "reply with EXACTLY the block below" in memnos_cli._SLASH_CMD
 

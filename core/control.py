@@ -911,6 +911,49 @@ class Control:
             return c.fetchall()
 
     @staticmethod
+    def namespace_prune_candidates(conn, empty=True, stale_days=None, stale_max_facts=20):
+        """Candidates for `memnos namespace prune` (issue #30): the same universe as
+        list_namespaces, filtered to `empty` (0 turns AND 0 facts — safe, no data to lose)
+        and/or `stale_days` (last write older than N days AND a small (<=stale_max_facts)
+        fact count — holds SOME data, caller must gate deletion behind --force). Each row
+        also carries `bound`: True if a bindings row currently routes some repo/host to
+        this namespace — delete_namespace() always revokes grants (even without
+        purge_data), so deleting a bound namespace would 403 that binding's next write;
+        the caller should skip these unless the user explicitly forces past them."""
+        with conn.cursor() as c:
+            c.execute("""
+                WITH names AS (
+                    SELECT name FROM memnos_control.namespaces
+                    UNION SELECT DISTINCT namespace FROM tenant_memnos.raw_turns
+                    UNION SELECT DISTINCT namespace FROM tenant_memnos.semantic
+                    UNION SELECT DISTINCT namespace FROM memnos_control.grants
+                      WHERE namespace <> '*' AND namespace NOT LIKE '%%*'
+                ), stats AS (
+                    SELECT nm.name,
+                      COALESCE(rt.cnt,0) AS turns, COALESCE(sm.cnt,0) AS facts,
+                      GREATEST(rt.last, sm.last) AS last_write,
+                      EXISTS(SELECT 1 FROM memnos_control.bindings b WHERE b.namespace=nm.name) AS bound
+                    FROM names nm
+                    LEFT JOIN (SELECT namespace, count(*) cnt, max(observed_at) last
+                               FROM tenant_memnos.raw_turns GROUP BY namespace) rt ON rt.namespace=nm.name
+                    LEFT JOIN (SELECT namespace, count(*) cnt, max(created_at) last
+                               FROM tenant_memnos.semantic GROUP BY namespace) sm ON sm.namespace=nm.name
+                )
+                SELECT name, turns, facts, last_write, bound,
+                  (turns=0 AND facts=0) AS is_empty,
+                  (%(stale_days)s::int IS NOT NULL AND last_write IS NOT NULL
+                   AND facts <= %(stale_max_facts)s
+                   AND last_write < now() - (%(stale_days)s::int || ' days')::interval) AS is_stale
+                FROM stats
+                WHERE (%(empty)s AND turns=0 AND facts=0)
+                   OR (%(stale_days)s::int IS NOT NULL AND last_write IS NOT NULL
+                       AND facts <= %(stale_max_facts)s
+                       AND last_write < now() - (%(stale_days)s::int || ' days')::interval)
+                ORDER BY name""",
+                {"empty": empty, "stale_days": stale_days, "stale_max_facts": stale_max_facts})
+            return c.fetchall()
+
+    @staticmethod
     def delete_namespace(conn, name, purge_data=False):
         """Remove registry row + all grants on it; optionally purge its memory rows."""
         with conn.cursor() as c:
