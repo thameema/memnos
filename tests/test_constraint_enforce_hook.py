@@ -9,11 +9,13 @@ for itself only (not suppressing a different rule's real match, not blocking eve
 and every matched decision getting audit-logged.
 
 What this CANNOT verify (documented, not silently assumed): that Claude Code's OWN
-PreToolUse mechanism actually invokes this hook, that the ".*" matcher used to register it
-in settings.json actually means "every tool" (unverified per the research behind this
-feature), or that a real session's permission UI honors "ask"/"deny" as expected. Those
-need a real Claude Code session — see the #28 issue thread for the pending validation
-checklist.
+PreToolUse mechanism actually invokes this hook, that the "*" matcher used to register it
+in settings.json actually means "every tool" (seen in use by another pre-existing hook on
+the dev machine, which is stronger evidence than doc inference alone, but still not
+independently confirmed from inside memnos), or that a real session's permission UI honors
+"ask"/"deny" as expected. Those need a real Claude Code session — see the #28 issue thread
+for the pending validation checklist. (See test_agent_setup.py for coverage of the
+auto-wire DECISION logic — whether claude-setup writes the PreToolUse group at all.)
 
 Exercised through the REAL CLI (subprocess), stdin piped exactly as Claude Code would.
 """

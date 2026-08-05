@@ -2231,17 +2231,19 @@ def cmd_claude_setup(args, cfg):
     # constraint exists anywhere (opt-in through USE, not a flag to remember). The hook
     # itself still scopes correctly per-namespace at match time (each namespace has its own
     # cache file); this check just avoids adding a permission-prompt-shaped hook to every
-    # install when nobody has ever created an enforced constraint. UNVERIFIED: the ".*"
-    # matcher (match every tool, let the hook do its own --tool glob matching) is not
-    # confirmed against a real Claude Code session — see `memnos claude-setup`'s printed
-    # notice below.
+    # install when nobody has ever created an enforced constraint. matcher="*" (match every
+    # tool, let the hook do its own --tool glob matching): found IN USE by another real
+    # PreToolUse hook already present in this machine's own ~/.claude/settings.json (an
+    # unrelated third-party tool), which is stronger evidence than doc inference alone — but
+    # still not independently confirmed against a real Claude Code session from inside memnos
+    # itself. See `memnos claude-setup`'s printed notice below.
     enforce_wired = False
     try:
         from core.control import Control
         econn = _conn(cfg)
         Control.init(econn)
         if Control.list_constraint_enforcement(econn):
-            wire("PreToolUse", f"{env} memnos hook enforce", matcher=".*")
+            wire("PreToolUse", f"{env} memnos hook enforce", matcher="*")
             enforce_wired = True
     except Exception:
         pass
@@ -2269,8 +2271,8 @@ def cmd_claude_setup(args, cfg):
     print("  • CLAUDE.md       -> memnos usage + staleness-check instructions")
     if enforce_wired:
         print("  • PreToolUse hook -> ~/.claude/settings.json (enforces your ask/block constraints)")
-        print("    UNVERIFIED: the all-tools matcher hasn't been confirmed in a real session yet —")
-        print("    please test a --enforce block constraint and confirm it actually denies before relying on it.")
+        print("    NOT YET CONFIRMED live — please test a --enforce block constraint (try the tool")
+        print("    it targets) and confirm it actually denies before relying on it.")
     print("\n  Restart Claude Code to load the MCP tools. Verify with /mcp.")
 
 

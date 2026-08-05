@@ -20,6 +20,8 @@ import subprocess
 import sys
 import tempfile
 
+import psycopg
+
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -215,6 +217,41 @@ def main():
     healed = json.load(open(cfg_path))
     check("claude-code: self-heals a blank config.json admin_token",
           bool(healed.get("admin_token")) and healed["admin_token"].startswith("mnk_"))
+
+    # issue #28: PreToolUse enforcement hook is auto-wired ONLY once an ask/block
+    # constraint actually exists somewhere — opt-in through use, not a flag. Verify BOTH
+    # directions: absent by default, present (with the right shape) once a constraint exists.
+    s = json.load(open(os.path.join(home, ".claude/settings.json")))
+    check("claude-code: NO PreToolUse hook wired before any enforced constraint exists",
+          "PreToolUse" not in s.get("hooks", {})
+          or "memnos hook enforce" not in json.dumps(s["hooks"]["PreToolUse"]))
+    env = dict(os.environ, MEMNOS_DSN=DSN, HOME=home)
+    _AGENT_SETUP_TEST_NS = "test:agent_setup_enforce_wiring"
+    cadd = subprocess.run([PY, os.path.join(ROOT, "memnos_cli.py"), "constraint", "add",
+                           _AGENT_SETUP_TEST_NS, "never rm -rf without confirmation",
+                           "--enforce", "block", "--tool", "Bash(rm*)"],
+                          capture_output=True, text=True, env=env, timeout=30)
+    check("claude-code: constraint add (setup fixture) exits 0", cadd.returncode == 0)
+    rc, out = run(home, "agent-setup", "claude-code")
+    check("claude-code: re-run after a constraint exists exits 0", rc == 0)
+    s = json.load(open(os.path.join(home, ".claude/settings.json")))
+    ptu = s.get("hooks", {}).get("PreToolUse", [])
+    memnos_groups = [g for g in ptu if "memnos hook enforce" in json.dumps(g)]
+    check("claude-code: PreToolUse hook IS wired once a constraint exists",
+          len(memnos_groups) == 1)
+    check("claude-code: PreToolUse group carries matcher '*' and the enforce command",
+          memnos_groups and memnos_groups[0].get("matcher") == "*"
+          and "memnos hook enforce" in memnos_groups[0]["hooks"][0]["command"])
+    check("claude-code: PreToolUse command carries a real inline token (not a placeholder)",
+          memnos_groups and "MEMNOS_TOKEN=mnk_" in memnos_groups[0]["hooks"][0]["command"])
+    # cleanup: don't leave this fixture constraint (pinned memory + control-plane row) behind
+    subprocess.run([PY, os.path.join(ROOT, "memnos_cli.py"), "namespace", "rm",
+                    _AGENT_SETUP_TEST_NS, "--purge"], capture_output=True, text=True, env=env, timeout=30)
+    _dbconn = psycopg.connect(DSN, autocommit=True)
+    with _dbconn.cursor() as _c:
+        _c.execute("DELETE FROM memnos_control.constraint_enforcement WHERE namespace=%s",
+                  (_AGENT_SETUP_TEST_NS,))
+    _dbconn.close()
 
     # --- omnigent: inline `tools.memnos` MCP entry in an agent's config.yaml ---
     # Omnigent has no single global config shared by every agent (each agent is its own
