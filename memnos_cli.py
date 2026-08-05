@@ -1511,6 +1511,26 @@ def cmd_constraint_ls(args, cfg):
     for r in rows:
         preview = r["rule_text"] if len(r["rule_text"]) <= 60 else r["rule_text"][:57] + "..."
         print(f"  {r['id']:<5} {r['namespace']:<20} {r['enforce_level']:<6} tool='{r['tool_matcher']}'  {preview}")
+    # issue #28 field report: a rule can exist here without actually being enforced yet —
+    # either the PreToolUse hook was never wired (no active rule existed at the last
+    # `claude-setup` run) or its cache predates this rule. Warn per-namespace rather than
+    # silently leaving "added" to be mistaken for "enforced".
+    for ns_checked in sorted({r["namespace"] for r in rows}):
+        ns_rule_ids = {r["id"] for r in rows if r["namespace"] == ns_checked}
+        cache_path = _enforce_cache_path(ns_checked)
+        if not os.path.exists(cache_path):
+            print(f"  ⚠ '{ns_checked}': no PreToolUse cache yet — run `memnos claude-setup`, "
+                  "then start a new Claude Code session for these to actually enforce")
+            continue
+        try:
+            with open(cache_path) as f:
+                cached_ids = {rr["id"] for rr in json.load(f).get("rules", [])}
+        except Exception:
+            cached_ids = set()
+        missing = ns_rule_ids - cached_ids
+        if missing:
+            print(f"  ⚠ '{ns_checked}': cache is stale (missing {len(missing)} rule(s)) — "
+                  "run `memnos claude-setup`, then start a new session to refresh")
 
 
 def cmd_constraint_rm(args, cfg):
@@ -2761,7 +2781,14 @@ def cmd_hook(args, cfg):
         # empty/absent permissionDecision defers, it doesn't grant).
         tool_name = data.get("tool_name") or ""
         tool_input = data.get("tool_input") or {}
-        enforce_ns = os.environ.get("MEMNOS_NS") or ""
+        # nsresolve.resolve() (no data arg -> pure cwd + local-bindings-cache resolution),
+        # NOT the baked MEMNOS_NS env var directly: bindings take precedence over env in
+        # nsresolve's own resolution order, so this self-heals if the user rebinds the
+        # folder (`memnos ns <newvalue>` / `memnos bind`) without re-running claude-setup —
+        # and, critically, resolves IDENTICALLY to how `hook status` refreshes the cache
+        # below, so the two hooks can never silently disagree on which namespace's rules
+        # apply (a real gap in an earlier version of this hook, caught in review).
+        enforce_ns = nsresolve.resolve()
         try:
             with open(_enforce_cache_path(enforce_ns)) as f:
                 cache = json.load(f)
@@ -2828,8 +2855,13 @@ def cmd_hook(args, cfg):
     if args.which == "status":
         # issue #28 part 2: refresh THIS namespace's enforce cache for the PreToolUse hook.
         # Best-effort — see _refresh_enforce_cache's docstring for why a failure here is
-        # never allowed to block the session.
-        _enforce_ns = os.environ.get("MEMNOS_NS") or ns
+        # never allowed to block the session. Deliberately NOT reusing `ns` above (that's
+        # resolve_with_source(data), which can prefer data['cwd']/data['namespace'] from the
+        # SessionStart payload) — calling nsresolve.resolve() fresh here makes this a
+        # byte-for-byte identical call to what `hook enforce` makes below, so there is no
+        # daylight even if a future SessionStart payload starts carrying a cwd/namespace
+        # field PreToolUse's payload doesn't (caught in review).
+        _enforce_ns = nsresolve.resolve()
         try:
             _refresh_enforce_cache(cfg, _enforce_ns)
         except Exception:
