@@ -1937,18 +1937,16 @@ def cmd_recall(args, cfg):
 
 
 _SLASH_CMD = """---
-description: memnos memory — recall, save, pin a constraint, set folder namespace (ns=...), or show the cheat sheet (?)
-allowed-tools: Bash(memnos:*)
+description: memnos memory — /memnos <query> recall · constraint <rule> · remember <fact> · ns=… · ? cheat sheet
+allowed-tools: Bash(memnos:*), Bash(printf:*)
 ---
 
-!`A="$ARGUMENTS"; case "$A" in "?"|help|cheat) printf '%s\\n' "/memnos <query>            recall memories matching <query> in this folder's namespace" "/memnos constraint <rule>  pin <rule> as an enforced constraint (alias: /memnos !<rule>)" "/memnos remember <fact>    save a durable memory (not pinned)" "/memnos ns=<namespace>     pin this folder's namespace" "/memnos ns                 show this folder's namespace" "/memnos ns list            list all namespaces" "/memnos ns clear           revert to the default namespace" "/memnos ?                  show this cheat sheet (aliases: help, cheat)" "" "Rule of thumb: governs future behavior -> constraint; describes the world -> remember/recall.";; constraint\\ *|rule\\ *|\\!*) R="${A#constraint }"; R="${R#rule }"; R="${R#\\!}"; memnos remember "$R" --type constraint --namespace auto;; remember\\ *) memnos remember "${A#remember }" --namespace auto;; ns=*) memnos ns "${A#ns=}";; "ns clear") memnos ns clear;; "ns list"|"list"|"ls") memnos namespace ls;; ""|"ns") memnos ns;; *) memnos recall "$A" --namespace auto;; esac`
+!`A="$ARGUMENTS"; case "$A" in "?"|help|cheat|cheatsheet) printf '%s\\n' "── MEMNOS CHEAT SHEET ──────────────────────────────" "/memnos <query>            recall memory for <query> (this folder's namespace)" "/memnos constraint <rule>  save a RULE — pinned into EVERY session for this project" "/memnos !<rule>            shorthand for constraint" "/memnos remember <fact>    save a durable fact/decision (normal memory)" "/memnos ns=proj:x          pin this folder's namespace" "/memnos ns                 show current namespace" "/memnos ns list            list namespaces" "/memnos ns clear           revert namespace pin" "/memnos ?                  this cheat sheet" "" "TYPES: constraint(pinned) · decision · incident · skill · fact" "RULE OF THUMB: governs behavior → constraint · describes the world → remember" "CLI: memnos recall|remember [--type T]|ns|bindings|stats|status|constraint" "─────────────────────────────────────────────────────";; constraint\\ *|rule\\ *|!*) R="${A#constraint }"; R="${R#rule }"; R="${R#!}"; memnos remember "$R" --type constraint --namespace auto;; remember\\ *) memnos remember "${A#remember }" --namespace auto;; ns=*) memnos ns "${A#ns=}";; "ns clear") memnos ns clear;; "ns list"|list|ls) memnos namespace ls;; ""|ns) memnos ns;; *) memnos recall "$A" --namespace auto;; esac`
 
 Instructions:
-- `/memnos constraint <rule>` (or `/memnos !<rule>`) pins a rule that gets injected into every future session for this project — use it when the user states something that should govern your future behavior, not just a fact about the world.
-- `/memnos remember <fact>` saves a durable memory without pinning it.
-- `/memnos ns=proj:x` pins this folder's namespace; `/memnos ns` shows it; `/memnos ns list` lists namespaces; `/memnos ns clear` reverts.
-- `/memnos ?` (or `help`/`cheat`) prints the full command list.
-- Otherwise, use the recalled memories above to answer: $ARGUMENTS
+- `/memnos constraint <rule>` (or `/memnos !<rule>`) saves a **pinned constraint** at this folder's namespace — it is injected into EVERY future session for this project, so you never repeat it. Use for rules/guardrails: "never X", "always Y", "don't Z without my permission".
+- `/memnos remember <fact>` saves a normal durable memory. `/memnos ns=…` manages the folder namespace. `/memnos ?` shows the cheat sheet.
+- `/memnos <anything else>` recalls memory — use the recalled memories shown above to answer: $ARGUMENTS
 """
 
 _CLAUDE_MD = """## memnos — long-term memory (auto)
