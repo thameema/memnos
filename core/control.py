@@ -73,6 +73,28 @@ CREATE TABLE IF NOT EXISTS memnos_control.namespace_links(
     created_by bigint REFERENCES memnos_control.principals(id),
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE(src_ns, dst_ns));
+-- ENFORCED CONSTRAINTS (issue #28): ask/block-level constraints only. advise-level
+-- constraints (the default, and everything #27's `/memnos constraint` writes) are plain
+-- memory_type='constraint' pinned memories in the TENANT schema — see
+-- core/store.py:pinned_constraints(). Only ask/block need a row HERE, in the control
+-- plane, because only those need a cheap, LLM-free, DB-free lookup on the PreToolUse hot
+-- path: a SessionStart hook caches this table's active rows for the session's namespace to
+-- a local file; PreToolUse matches against that cache with no server/DB/LLM round-trip on
+-- the common (no-match/allow) case. tool_matcher is NOT NULL (enforced in code at write
+-- time, not just this constraint) because a prose rule can't be matched to a structured
+-- tool call deterministically without an LLM, and enforcement is LLM-free by design — a
+-- --enforce ask|block with no --tool is REJECTED at `constraint add`, never silently
+-- downgraded (a silently-inert guardrail is worse than an error).
+CREATE TABLE IF NOT EXISTS memnos_control.constraint_enforcement(
+    id bigserial PRIMARY KEY,
+    namespace text NOT NULL,
+    rule_text text NOT NULL,
+    enforce_level text NOT NULL CHECK (enforce_level IN ('ask','block')),
+    tool_matcher text NOT NULL,
+    created_by bigint REFERENCES memnos_control.principals(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    active boolean NOT NULL DEFAULT true);
+CREATE INDEX IF NOT EXISTS constraint_enforcement_ns ON memnos_control.constraint_enforcement(namespace) WHERE active;
 -- encrypted secret vault: AES-256-GCM ciphertext only (plaintext NEVER stored).
 -- Referenced as value-refs (secret://name); resolved at use-time, never logged.
 CREATE TABLE IF NOT EXISTS memnos_control.secrets(
@@ -966,6 +988,52 @@ class Control:
                           "WHERE m.entity_id=e.id AND e.namespace=%s", (name,))
                 for t in ("edges", "entities", "semantic", "episodic", "raw_turns"):
                     c.execute(f"DELETE FROM tenant_memnos.{t} WHERE namespace=%s", (name,))
+
+    # --- enforced constraints (issue #28) -----------------------------------
+    @staticmethod
+    def add_constraint_enforcement(conn, namespace, rule_text, enforce_level, tool_matcher,
+                                   created_by=None):
+        """Register an ask/block enforcement rule (control-plane only — the pinned advisory
+        memory, if any, is written separately via the normal /remember path). Raises
+        ValueError on a level/matcher combination that can never be evaluated deterministically
+        — reject, don't silently write an inert rule the caller believes is enforced."""
+        if enforce_level not in ("ask", "block"):
+            raise ValueError("enforce_level must be 'ask' or 'block' — 'advise' constraints are "
+                             "plain pinned memories (memnos remember <rule> --type constraint), "
+                             "not control-plane rows")
+        if not tool_matcher:
+            raise ValueError("--tool is required for --enforce ask|block: a prose rule can't be "
+                             "matched to a tool call deterministically without an LLM, and "
+                             "enforcement is LLM-free by design")
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.constraint_enforcement"
+                      "(namespace,rule_text,enforce_level,tool_matcher,created_by) "
+                      "VALUES(%s,%s,%s,%s,%s) RETURNING id",
+                      (namespace, rule_text, enforce_level, tool_matcher, created_by))
+            return c.fetchone()["id"]
+
+    @staticmethod
+    def list_constraint_enforcement(conn, namespace=None, active_only=True):
+        with conn.cursor() as c:
+            q = ("SELECT id, namespace, rule_text, enforce_level, tool_matcher, created_at, active "
+                 "FROM memnos_control.constraint_enforcement WHERE true")
+            params = []
+            if namespace:
+                q += " AND namespace=%s"; params.append(namespace)
+            if active_only:
+                q += " AND active"
+            q += " ORDER BY namespace, id"
+            c.execute(q, params)
+            return c.fetchall()
+
+    @staticmethod
+    def remove_constraint_enforcement(conn, row_id) -> bool:
+        """Soft-delete (active=false) rather than DELETE — keeps a governance trail of what
+        WAS enforced, matching the audit-everything design goal."""
+        with conn.cursor() as c:
+            c.execute("UPDATE memnos_control.constraint_enforcement SET active=false "
+                      "WHERE id=%s AND active", (row_id,))
+            return c.rowcount > 0
 
     # --- listings for the console -----------------------------------------
     @staticmethod

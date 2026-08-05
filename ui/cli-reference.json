@@ -821,6 +821,75 @@
     {
      "args": [
       {
+       "arg": "namespace",
+       "help": "namespace this constraint governs",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "rule",
+       "help": "the constraint text",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--enforce",
+       "choices": [
+        "advise",
+        "ask",
+        "block"
+       ],
+       "default": "advise",
+       "help": "advise (default): pinned into recall only, like /memnos constraint. ask/block: ALSO enforced by the PreToolUse hook (requires --tool)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--tool",
+       "help": "glob matched against the pending tool name \u2014 required for --enforce ask|block",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "bearer token for the pinned-memory write (else $MEMNOS_TOKEN / config)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "constraint add",
+     "example": null,
+     "help": "add a constraint; --enforce ask|block also registers a PreToolUse enforcement rule"
+    },
+    {
+     "args": [
+      {
+       "arg": "namespace",
+       "help": "namespace (omit to list across all)",
+       "positional": true,
+       "required": false
+      }
+     ],
+     "command": "constraint ls",
+     "example": null,
+     "help": "list enforced (ask/block) constraints"
+    },
+    {
+     "args": [
+      {
+       "arg": "id",
+       "help": "",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "constraint rm",
+     "example": null,
+     "help": "deactivate an enforced constraint by id (see: constraint ls)"
+    },
+    {
+     "args": [
+      {
        "arg": "subcmd",
        "choices": [
         "rename"

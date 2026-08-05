@@ -497,6 +497,34 @@ pull server bindings into the local cache + register THIS host now
 |---|---|
 | `--token` | bearer token (else $MEMNOS_TOKEN / config) |
 
+### `memnos constraint add`
+
+add a constraint; --enforce ask|block also registers a PreToolUse enforcement rule
+
+| argument | description |
+|---|---|
+| `namespace` | namespace this constraint governs |
+| `rule` | the constraint text |
+| `--enforce` | advise (default): pinned into recall only, like /memnos constraint. ask/block: ALSO enforced by the PreToolUse hook (requires --tool) (one of: `advise`, `ask`, `block`; default `advise`) |
+| `--tool` | glob matched against the pending tool name — required for --enforce ask|block |
+| `--token` | bearer token for the pinned-memory write (else $MEMNOS_TOKEN / config) |
+
+### `memnos constraint ls`
+
+list enforced (ask/block) constraints
+
+| argument | description |
+|---|---|
+| `namespace` | namespace (omit to list across all) (optional) |
+
+### `memnos constraint rm`
+
+deactivate an enforced constraint by id (see: constraint ls)
+
+| argument | description |
+|---|---|
+| `id` |  |
+
 ### `memnos hosts`
 
 list this principal's machines, or `hosts rename <name>` for THIS one
