@@ -72,9 +72,13 @@ def main():
     print("=== recall memory-bounding (issue #15) ===")
 
     # --- 1. ARENA CONFIG -------------------------------------------------------------
-    # default = bounded: arena OFF, single thread (the allocation knobs from the fix).
+    # default = bounded: arena OFF (the allocation knob from the #15 fix). Threads default
+    # to min(4, cpu_count) (issue #12 field profiling) — the "N x arena slab" memory cost
+    # this file guards against only applies with the arena ON, so it's independent of
+    # thread count with the arena off (checked directly below).
     check("rerank arena DISABLED by default", rerank._arena_enabled() is False)
-    check("rerank session single-threaded by default", rerank._rerank_threads() == 1)
+    check("rerank threads default to min(4, cpu_count)",
+          rerank._rerank_threads() == min(4, os.cpu_count() or 1))
     os.environ["MEMNOS_RERANK_ARENA"] = "1"
     check("MEMNOS_RERANK_ARENA=1 re-enables the arena (operator escape hatch)",
           rerank._arena_enabled() is True)
@@ -98,6 +102,25 @@ def main():
     check("rerank scores byte-identical arena-off vs arena-on (no accuracy regression)",
           off == on)
     check("rerank produced a full ranking over the fixed input", len(off) == len(cands))
+
+    # --- 2b. RERANK PARITY: thread count must not change ranking (issue #12) ---------
+    # threads/arena affect allocation + scheduling only, not the computation (same
+    # weights, same logits) — the default bump from 1 to min(4, cpu_count) must be a
+    # pure latency win, never an accuracy change.
+    os.environ["MEMNOS_RERANK_CAP"] = "40"
+    try:
+        rerank._model.cache_clear()
+        os.environ["MEMNOS_RERANK_THREADS"] = "1"
+        t1 = [(i, round(s, 6)) for i, s in rerank.rerank(q, cands)]
+        rerank._model.cache_clear()
+        os.environ["MEMNOS_RERANK_THREADS"] = "4"
+        t4 = [(i, round(s, 6)) for i, s in rerank.rerank(q, cands)]
+    finally:
+        rerank._model.cache_clear()
+        os.environ.pop("MEMNOS_RERANK_THREADS", None)
+        os.environ.pop("MEMNOS_RERANK_CAP", None)
+    check("rerank scores byte-identical threads=1 vs threads=4 (no accuracy regression)",
+          t1 == t4)
 
     # --- 3. FTS clamp + LONG QUERY -> 200 (no tsquery crash) -------------------------
     short = "alpha billing ingest"
