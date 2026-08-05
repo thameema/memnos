@@ -203,6 +203,56 @@ def main():
                   f"AND kind='fact' AND memory_type IS NULL", (NSE,))
         check("untyped turn yields untyped facts", c.fetchone() is not None)
 
+    print("=== constraint verbatim bypass (issue #29): extraction never mangles a rule ===")
+    # A deliberately WRONG extractor -- if it's ever invoked for a constraint write,
+    # this mangled/inverted fragment would land in the DB. Call-counted so the test
+    # proves the extractor was never called, not just that its output was discarded.
+    calls = []
+    def mangler(text, date):
+        calls.append(text)
+        return [{"subject": "Sai", "predicate": "will_fix", "object": "",
+                 "statement": "Sai will fix the blockers through the SDLC."}]
+    mem2 = MemnosMemory(store, lambda t: None, llm=None, extract_fn=mangler, redact=False)
+    repro = ("If a reviewer leaves blockers on an MR, the agent must fix them through "
+             "the SDLC and re-request review; never bypass them.")
+    out = mem2.remember(NSE, repro, memory_type="constraint")
+    check("constraint remember() extracted zero facts", out["facts"] == 0)
+    check("the extractor was NEVER invoked for a constraint write (not just discarded)",
+          calls == [])
+    with conn.cursor() as c:
+        c.execute(f"SELECT text FROM {SCHEMA}.raw_turns WHERE namespace=%s "
+                  f"AND memory_type='constraint' AND text=%s", (NSE, repro))
+        turn_row = c.fetchone()
+        c.execute(f"SELECT statement FROM {SCHEMA}.semantic WHERE namespace=%s "
+                  f"AND memory_type='constraint' AND statement ILIKE %s", (NSE, "%Sai will fix%"))
+        mangled_row = c.fetchone()
+    check("raw turn stores the rule VERBATIM (unchanged, unmangled)", turn_row is not None)
+    check("the mangled/inverted fragment was never stored", mangled_row is None)
+
+    # regression guard: a NON-constraint typed write still extracts normally through
+    # the same extract_fn path -- the bypass is memory_type-scoped, not global.
+    calls2 = []
+    def normal_extractor(text, date):
+        calls2.append(text)
+        return [{"subject": "Engine", "predicate": "", "object": "",
+                 "statement": "The engine choice is Postgres."}]
+    mem3 = MemnosMemory(store, lambda t: None, llm=None, extract_fn=normal_extractor, redact=False)
+    mem3.remember(NSE, "We decided the engine is Postgres, again.", memory_type="decision")
+    check("a non-constraint typed write still runs extraction as before", calls2 != [])
+
+    # live-server end-to-end: the exact repro text through /remember with type=constraint,
+    # verified via /recall's pinned-constraint rendering (proves the fix holds through the
+    # full HTTP path, not just the service-layer call above).
+    s, j = call("/remember", TADM, {"namespace": NSX,
+                                    "text": "The deploy pipeline must never run on a Friday afternoon.",
+                                    "type": "constraint"})
+    check("live /remember with type=constraint 200", s == 200)
+    s, j = call("/recall", TADM, {"namespace": NSX, "query": "completely unrelated weather question"})
+    pins = [m for m in j.get("memories", []) if m.get("pinned")]
+    check("live: the new constraint is pinned verbatim (no paraphrase)",
+          any(m.get("content") == "The deploy pipeline must never run on a Friday afternoon."
+              for m in pins))
+
     print("=== episodic tier: unanimous type inheritance + pinning + recall arm ===")
     t0 = datetime.now(timezone.utc) - timedelta(hours=2)
     # session A: ALL turns typed constraint → episode inherits 'constraint'

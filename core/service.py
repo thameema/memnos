@@ -311,7 +311,7 @@ class MemnosMemory:
                                                     memory_type=memory_type)
         n_facts = n_super = 0
         if extract and (self.llm is not None or self.extract_fn is not None):
-            facts = self.extract_facts(text, observed_at)
+            facts = self.extract_facts(text, observed_at, memory_type=memory_type)
             n_facts, n_super = self.write_facts(namespace, facts, observed_at, tid,
                                                 memory_type=memory_type)
         return {"turn_id": tid, "facts": n_facts, "superseded": n_super}
@@ -335,9 +335,20 @@ class MemnosMemory:
                                          author=self.author, memory_type=memory_type)
         return tid, text, observed_at
 
-    def extract_facts(self, text, observed_at):
+    def extract_facts(self, text, observed_at, *, memory_type=None):
         """Phase 2 (slow, NO database use): LLM fact extraction. Safe to run with no
-        connection held — pure model I/O."""
+        connection held — pure model I/O.
+
+        CONSTRAINT BYPASS (issue #29): a constraint is a GUARDRAIL, not prose to
+        summarize. LLM extraction paraphrases, splits, and can INVERT a rule's
+        meaning or misattribute its actor (repro: "the agent must fix reviewer
+        blockers" extracted as "the reviewer will fix blockers"). memory_type=
+        'constraint' skips the LLM entirely — no facts are extracted, so nothing
+        paraphrased ever gets stored. The verbatim text is already durable via
+        remember_turn()'s raw_turn write (memory_type stamped there too), which
+        pinned_constraints() reads directly — the raw turn IS the constraint."""
+        if memory_type == "constraint":
+            return []
         return self._extract(text, observed_at)
 
     def write_facts(self, namespace, facts, observed_at, turn_id, *, memory_type=None) -> tuple:

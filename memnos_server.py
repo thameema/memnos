@@ -1042,7 +1042,7 @@ class Handler(BaseHTTPRequestHandler):
                                             "extraction": "queued", "namespace": ns})
                 except Exception:                                  # queue full → fall through to sync
                     pass
-            facts = mem.extract_facts(rtext, obs)                 # P2 — NO conn held
+            facts = mem.extract_facts(rtext, obs, memory_type=mtype)  # P2 — NO conn held
             if hasattr(EMBED, "prime") and facts:                 # batch-embed fact statements, NO conn
                 EMBED.prime([f["statement"] for f in facts])
             with POOL.connection() as conn:                       # P3
@@ -1445,7 +1445,7 @@ def _ingest_worker():
         try:
             usage = _UsageAcc()
             mem.on_usage = usage
-            facts = mem.extract_facts(rtext, obs)                 # NO conn held
+            facts = mem.extract_facts(rtext, obs, memory_type=mtype)  # NO conn held
             with POOL.connection() as conn:
                 # mem.author carries the AUTHENTICATED principal's name from the request
                 mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
