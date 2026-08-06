@@ -2137,11 +2137,30 @@ def _ensure_claude_token(cfg, extra_ns=None):
     """A principal+token for the Claude integration: default namespace user:<user> plus a
     proj:* wildcard so per-project + widened recall work. (Grants, not namespace creation.)
     If `extra_ns` is a custom namespace the wiring will write to, GRANT it too — otherwise
-    every write to that ns 403s and is silently swallowed. (Bug: agent-setup --namespace 403)"""
+    every write to that ns 403s and is silently swallowed. (Bug: agent-setup --namespace 403)
+
+    Remote/central-server mode: agent-setup is documented (docs/guides/team.md) to be
+    runnable by a client that only has MEMNOS_URL/MEMNOS_TOKEN, no direct Postgres access.
+    If MEMNOS_TOKEN is already set in the environment, use it verbatim and skip Postgres
+    entirely — minting here would require a DB connection the remote client may not have,
+    and would silently discard the admin-issued token the caller just exported. Gating on
+    MEMNOS_TOKEN alone (not also requiring MEMNOS_URL) matches the precedent already set
+    elsewhere in this CLI: "MEMNOS_URL/MEMNOS_TOKEN always win over the local
+    ~/.memnos/config.json" (see the embedded `memnos --help` reference, _CLI_MD_PREAMBLE).
+    Granting `extra_ns` on that token is then the server admin's job (`memnos grant`), not
+    ours — print a heads-up so a --namespace 403 doesn't look like a fresh bug.
+    Local/embedded mode (no MEMNOS_TOKEN set) is unchanged: mint via direct Postgres."""
+    name = (os.environ.get("USER") or "me").split()[0]
+    env_token = os.environ.get("MEMNOS_TOKEN")
+    if env_token:
+        if extra_ns and not _ns_covered(extra_ns, (f"user:{name}", "proj:*")):
+            print(f"[memnos] using MEMNOS_TOKEN from env for namespace '{extra_ns}' — "
+                  f"if it wasn't granted access to that namespace, writes will 403 "
+                  f"(the server admin grants it: memnos grant add <principal> {extra_ns}).")
+        return env_token, f"user:{name}"
     from core.control import Control
     conn = _conn(cfg)
     Control.init(conn)
-    name = (os.environ.get("USER") or "me").split()[0]
     try:
         pid = _principal_id(conn, name)
     except SystemExit:
@@ -2206,7 +2225,10 @@ def cmd_claude_setup(args, cfg):
     # issue #27 field report: bare `memnos recall/remember` (no inline token — e.g. the /admin
     # console's own instructions) 401 if config.json's admin_token was ever cleared (rotation,
     # partial reinstall). claude-setup is the tool people already re-run, so self-heal it here.
-    if not cfg.get("admin_token"):
+    # Remote/central-server mode (MEMNOS_TOKEN already set): skip — bare CLI calls already
+    # fall back to $MEMNOS_TOKEN before cfg's admin_token (see e.g. line ~1689), and minting a
+    # *local* admin_token would require the direct Postgres access a remote client doesn't have.
+    if not cfg.get("admin_token") and not os.environ.get("MEMNOS_TOKEN"):
         from core.control import Control
         aconn = _conn(cfg)
         Control.init(aconn)
