@@ -54,7 +54,8 @@ files = ["pypdf>=4", "python-docx>=1.1"]
 # console UI as data. Benchmarks and dev/eval scripts run from source and are not packaged.
 [tool.setuptools]
 packages = ["core", "integrations", "integrations.hermes"]
-py-modules = ["memnos_cli", "memnos_server", "memnos_admin", "memnos_mcp", "memnos_proxy", "nsresolve"]
+py-modules = ["memnos_cli", "memnos_server", "memnos_admin", "memnos_mcp", "memnos_proxy",
+              "nsresolve", "offline_queue"]
 
 [tool.setuptools.package-data]
 core = ["schema.sql"]
