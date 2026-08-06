@@ -167,12 +167,15 @@ concrete `memnos_url` gets baked into the generated YAML:
 | | `--mode embedded` (default) | `--mode central` |
 |---|---|---|
 | Where memnos runs | same machine as the omnigent server | a remote/shared memnos (docs/guides/team.md) |
-| Token | minted via direct Postgres access (or a pre-set `$MEMNOS_TOKEN`, used verbatim) | must already be set as `$MEMNOS_TOKEN` — never minted here (no DB access assumed) |
+| Token | ALWAYS minted fresh via direct Postgres access — a pre-set `$MEMNOS_TOKEN` in your shell is ignored, never reused (it's almost always your own personal token, not a service credential) | must already be set as `$MEMNOS_TOKEN` — never minted here (no DB access assumed) |
 | `memnos_url` in the YAML | baked in (`http://127.0.0.1:<port>`) | omitted — the server process's own `$MEMNOS_URL` decides at runtime |
 
-`server-setup omnigent` is idempotent (re-running without `--force` is a no-op once
-wired), merges into any existing `policies:` block without touching other policies
-already there, and backs up the config file before writing.
+`--mode embedded` therefore always needs a working `MEMNOS_DSN`/direct Postgres
+connection at setup time (whether or not `$MEMNOS_TOKEN` happens to be set) — `--mode
+central` never does. `server-setup omnigent` is idempotent (re-running without `--force`
+is a no-op once wired — pass a different `--namespace` and it says so explicitly rather
+than silently discarding it), merges into any existing `policies:` block without touching
+other policies already there, and backs up the config file before writing.
 
 ## Verifying it's working
 
