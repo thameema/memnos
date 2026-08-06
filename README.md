@@ -146,6 +146,19 @@ memnos agent-setup omnigent --agent-dir <path>   # Omnigent (Databricks) — wir
 
 Each mints a scoped token, is idempotent, and backs up any file it edits.
 
+**Omnigent server-wide capture** — a separate, additive command wires memnos into an
+Omnigent *server's* own `--config` YAML (not a single agent) as a native `type: function`
+policy, so every agent that server runs gets its assistant responses captured
+automatically, with zero Omnigent source changes:
+
+```bash
+memnos server-setup omnigent --config <path-to-omnigent-server-config.yaml> --mode embedded   # or --mode central
+```
+
+Write-only (captures responses; does not recall/inject) and fails open (never blocks or
+denies the live conversation). [Full guide, coverage caveats, and the embedded/central
+config split →](docs/integrations/omnigent.md)
+
 **Honest capture tiers** — clients differ in how reliably memory gets captured, and we'd
 rather tell you than pretend otherwise:
 
@@ -159,7 +172,12 @@ rather tell you than pretend otherwise:
    (streaming included, keys forwarded, never stored) and captures both sides of each
    completed exchange, with agent-loop noise filtered out.
    [Guide + capability matrix](docs/guides/proxy.md).
-3. **Discretionary (everything else):** MCP tools (`recall`, `recall_wide`, `remember`,
+3. **Deterministic, write-only, server-wide (Omnigent):** `memnos server-setup omnigent`
+   captures every covered agent's assistant response automatically — no model discretion,
+   no per-agent wiring. One-directional (no recall/injection — Omnigent has no
+   turn-boundary hook for that) and narrower than "every response" for one class of
+   session; see [the honest coverage caveats](docs/integrations/omnigent.md#what-actually-gets-captured).
+4. **Discretionary (everything else):** MCP tools (`recall`, `recall_wide`, `remember`,
    `reconcile_claim`, …) — called when the model decides to. Useful, but not guaranteed.
 
 Also: **REST** (`POST /remember`, `POST /recall` — Bearer token, namespace-scoped),

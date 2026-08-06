@@ -146,6 +146,18 @@ memnos agent-setup windsurf --namespace team:eng
 memnos agent-setup codex    --namespace team:eng
 ```
 
+Running an [Omnigent](https://github.com/omnigent-ai/omnigent) server for the team
+instead? Wire capture once, server-wide, rather than per agent — the token above is
+exactly what `--mode central` expects:
+
+```bash
+memnos server-setup omnigent --config <omnigent-server-config.yaml> --mode central --namespace team:eng
+```
+
+Deterministic, write-only (no recall/injection), fails open. See
+[`docs/integrations/omnigent.md`](../integrations/omnigent.md) for exact coverage and the
+embedded-vs-central split.
+
 Verify the wiring with a round-trip:
 
 ```bash
