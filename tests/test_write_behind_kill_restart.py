@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+from urllib.parse import urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -46,6 +47,33 @@ PASS = FAIL = 0
 def with_dbname(dsn, dbname):
     base, _, _ = dsn.rpartition("/")
     return f"{base}/{dbname}"
+
+
+def redacted(dsn):
+    u = urlsplit(dsn)
+    netloc = u.netloc
+    if "@" in netloc:
+        userinfo, host = netloc.rsplit("@", 1)
+        user = userinfo.split(":", 1)[0]
+        netloc = f"{user}:***@{host}"
+    return u._replace(netloc=netloc).geturl()
+
+
+def admin_dsn_candidates(dsn):
+    """Two ways to reach a Postgres role that can CREATE DATABASE / CREATE EXTENSION,
+    on the SAME host:port as BASE_DSN (never hardcoded — CI's Postgres service isn't
+    on the default 5432). Which one has the needed privilege differs by environment:
+    (1) BASE_DSN's own role against the 'postgres' maintenance db — this is the role
+        CI's docker Postgres service grants superuser to (POSTGRES_USER=memnos), same
+        pattern memnos_cli.py's cmd_setup uses to bootstrap a missing database.
+    (2) OS-user trust auth — covers a native local Postgres install where the BASE_DSN
+        role commonly has CREATEDB but not the superuser CREATE EXTENSION needs.
+    """
+    u = urlsplit(dsn)
+    host, port = (u.hostname or "localhost"), (u.port or 5432)
+    base_admin = dsn.rsplit("/", 1)[0] + "/postgres"
+    os_user_admin = f"postgresql://{os.environ.get('USER', 'postgres')}@{host}:{port}/postgres"
+    return [base_admin, os_user_admin]
 
 
 def check(name, cond):
@@ -123,18 +151,29 @@ def main():
     from psycopg.rows import dict_row
     from core.control import Control
 
-    # DB/extension creation needs superuser (pgvector's CREATE EXTENSION does); the local
-    # OS user is trust-authenticated as Postgres superuser on this dev box, same as
-    # `memnos setup` itself would prompt for. Everything AFTER this uses the ordinary
-    # `memnos` role from BASE_DSN, same as every other test.
-    su_dsn = f"postgresql://{os.environ.get('USER', 'postgres')}@localhost:5432/postgres"
-    maint = psycopg.connect(su_dsn, autocommit=True)
-    maint.execute(f'DROP DATABASE IF EXISTS "{TEST_DB}" WITH (FORCE)')
-    maint.execute(f'CREATE DATABASE "{TEST_DB}" OWNER memnos')
-    maint.close()
-    maint_db = psycopg.connect(with_dbname(su_dsn, TEST_DB), autocommit=True)
-    maint_db.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    maint_db.close()
+    # DB/extension creation needs superuser (pgvector's CREATE EXTENSION does). Which role
+    # has that privilege differs by environment — see admin_dsn_candidates() — so try each
+    # candidate in turn and use whichever actually has it. Everything AFTER this uses the
+    # ordinary role from BASE_DSN, same as every other test.
+    owner = urlsplit(BASE_DSN).username or "memnos"
+    su_dsn = None
+    errors = []
+    for candidate in admin_dsn_candidates(BASE_DSN):
+        try:
+            maint = psycopg.connect(candidate, autocommit=True)
+            maint.execute(f'DROP DATABASE IF EXISTS "{TEST_DB}" WITH (FORCE)')
+            maint.execute(f'CREATE DATABASE "{TEST_DB}" OWNER {owner}')
+            maint.close()
+            maint_db = psycopg.connect(with_dbname(candidate, TEST_DB), autocommit=True)
+            maint_db.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            maint_db.close()
+            su_dsn = candidate
+            break
+        except Exception as e:
+            errors.append(f"{redacted(candidate)}: {e}")
+    if su_dsn is None:
+        raise RuntimeError("could not bootstrap the test database via any admin DSN "
+                            "candidate:\n  " + "\n  ".join(errors))
     DSN = with_dbname(BASE_DSN, TEST_DB)
 
     conn = psycopg.connect(DSN, autocommit=True, row_factory=dict_row)
@@ -159,7 +198,11 @@ def main():
 
     try:
         proc, logf, logpath = start_server(server_home, DSN, port)
-        up = wait_up(url)
+        # Cold start: create_schema() on a brand-new DB + first model load. ci.yml's own
+        # server-start step budgets up to 5 min for this exact case ("an uncached run
+        # downloads the models") — match it here rather than the 45s default, which is
+        # tuned for the warm restart below.
+        up = wait_up(url, tries=150, interval=2)
         check("test server came up (isolated HOME -> local-384 mode, deterministic)", up)
         if not up:
             print("---- server log tail ----")
@@ -247,8 +290,9 @@ def main():
         shutil.rmtree(client_home, ignore_errors=True)
         # drop the dedicated throwaway database (only after the server + our own
         # connection are both closed) — leaves nothing behind on the shared Postgres.
+        # Reuse whichever admin DSN bootstrap actually worked with, rather than
+        # re-guessing — the two candidates aren't equally valid in every environment.
         try:
-            su_dsn = f"postgresql://{os.environ.get('USER', 'postgres')}@localhost:5432/postgres"
             maint2 = psycopg.connect(su_dsn, autocommit=True)
             maint2.execute(f'DROP DATABASE IF EXISTS "{TEST_DB}" WITH (FORCE)')
             maint2.close()
