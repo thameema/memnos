@@ -11,6 +11,8 @@ provenance-stamped portability. No second database; no LLM at query time.
 ## Integrations
 - **[Claude Code](integrations/claude-code.md)** — MCP tools and/or automatic hooks.
 - **[Any MCP client](integrations/mcp.md)** — Cursor, Windsurf, Zed, Claude Desktop, REST/SDK.
+- **[Omnigent](integrations/omnigent.md)** — server-wide, deterministic, write-only capture
+  of assistant responses via Omnigent's native function-policy mechanism.
 
 ## How it works (one screen)
 ```
