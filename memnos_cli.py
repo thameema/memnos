@@ -2221,10 +2221,19 @@ def cmd_claude_setup(args, cfg):
         d = json.load(open(cj)) if os.path.exists(cj) else {}
     except Exception:
         d = {}
-    cmd, cargs = _mcp_launcher()               # absolute path — GUI/min-PATH launches
-    d.setdefault("mcpServers", {})["memnos"] = {
-        "command": cmd, "args": cargs,
-        "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns}}
+    if getattr(args, "transport", "stdio") == "http":
+        # Streamable-HTTP MCP server config (issue #37 Layer 1): Claude Code requires an
+        # explicit "type" — a `url` with no `type` is a hard config error, not inferred —
+        # per docs.claude.com/en/docs/claude-code/mcp. Confirmed shape, not guessed:
+        #   {"type": "http", "url": "...", "headers": {"Authorization": "Bearer ..."}}
+        d.setdefault("mcpServers", {})["memnos"] = {
+            "type": "http", "url": f"{url}/mcp",
+            "headers": {"Authorization": f"Bearer {token}", "X-Memnos-Namespace": ns}}
+    else:
+        cmd, cargs = _mcp_launcher()           # absolute path — GUI/min-PATH launches
+        d.setdefault("mcpServers", {})["memnos"] = {
+            "command": cmd, "args": cargs,
+            "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns}}
     _backup(cj); json.dump(d, open(cj, "w"), indent=2)
 
     # 2. hooks -> ~/.claude/settings.json (recall before prompt, remember after)
@@ -2538,14 +2547,26 @@ def cmd_omnigent_setup(args, cfg):
     token, default_ns = _ensure_claude_token(cfg, extra_ns=args.namespace)
     ns = args.namespace or default_ns
     url = os.environ.get("MEMNOS_URL") or f"http://127.0.0.1:{cfg.get('port', 8900)}"
-    cmd, cargs = _mcp_launcher()
 
-    tools["memnos"] = {
-        "type": "mcp",
-        "command": cmd,
-        "args": cargs,
-        "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns},
-    }
+    if getattr(args, "transport", "stdio") == "http":
+        # Streamable-HTTP inline MCP entry (issue #37 Layer 1). Confirmed against
+        # omnigent's own parser (omnigent/spec/parser.py:_parse_inline_mcp_servers):
+        # transport is INFERRED from the fields present — `url` (no `command`) -> "http" —
+        # and MCPServerConfig(transport="http") REJECTS command/args/env
+        # (omnigent/spec/validator.py), so this entry must omit all three.
+        tools["memnos"] = {
+            "type": "mcp",
+            "url": f"{url}/mcp",
+            "headers": {"Authorization": f"Bearer {token}", "X-Memnos-Namespace": ns},
+        }
+    else:
+        cmd, cargs = _mcp_launcher()
+        tools["memnos"] = {
+            "type": "mcp",
+            "command": cmd,
+            "args": cargs,
+            "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns},
+        }
     spec["tools"] = tools
 
     _backup(config_path)
@@ -2578,7 +2599,8 @@ def cmd_agent_setup(args, cfg):
                 sub_args = argparse.Namespace(agent=name,
                                               namespace=getattr(args, "namespace", None),
                                               force=getattr(args, "force", False),
-                                              agent_dir=getattr(args, "agent_dir", None))
+                                              agent_dir=getattr(args, "agent_dir", None),
+                                              transport=getattr(args, "transport", "stdio"))
                 cmd_agent_setup(sub_args, cfg)
                 results.append((name, "wired"))
             except SystemExit as e:
@@ -2604,13 +2626,19 @@ def cmd_agent_setup(args, cfg):
     spec = _AGENTS.get(args.agent)
     if not spec:
         sys.exit(f"unknown agent '{args.agent}' — choose: {', '.join(_AGENTS)}")
+    transport = getattr(args, "transport", "stdio")
+    if transport == "http" and args.agent not in ("claude-code", "omnigent"):
+        sys.exit(f"--transport http is only supported for claude-code and omnigent "
+                 f"(got '{args.agent}') — its HTTP MCP config shape hasn't been verified yet.")
     if spec.get("special") == "claude":       # full Claude Code setup (MCP + hooks + /memnos)
         return cmd_claude_setup(argparse.Namespace(namespace=args.namespace,
-                                                   force=getattr(args, "force", False)), cfg)
+                                                   force=getattr(args, "force", False),
+                                                   transport=transport), cfg)
     if spec.get("special") == "omnigent":      # inline MCP entry in the agent's config.yaml
         return cmd_omnigent_setup(argparse.Namespace(namespace=args.namespace,
                                                       force=getattr(args, "force", False),
-                                                      agent_dir=getattr(args, "agent_dir", None)), cfg)
+                                                      agent_dir=getattr(args, "agent_dir", None),
+                                                      transport=transport), cfg)
     spec = dict(spec)
     if args.agent == "claude-desktop":        # app-data dir is platform-specific
         if sys.platform == "win32":
@@ -3356,10 +3384,17 @@ def build_parser():
     p.add_argument("--agent-dir",
                    help="omnigent only: path to an agent's config.yaml (or its containing "
                         "directory); defaults to ~/.omnigent/config.yaml's default_agent")
+    p.add_argument("--transport", choices=("stdio", "http"), default="stdio",
+                   help="MCP transport to wire (claude-code/omnigent only): 'stdio' (default, "
+                        "spawns `memnos mcp` as a subprocess) or 'http' (connects to the "
+                        "already-running server's streamable-HTTP endpoint at :8900/mcp — "
+                        "survives a memnos restart without a client-side session reset)")
     p.set_defaults(fn=cmd_agent_setup)
     p = sub.add_parser("claude-setup", help="(alias of: memnos agent-setup claude-code)")
     p.add_argument("--namespace", help="default namespace for Claude Code")
     p.add_argument("--force", action="store_true", help="set up even if ~/.claude is missing")
+    p.add_argument("--transport", choices=("stdio", "http"), default="stdio",
+                   help="MCP transport to wire — see `memnos agent-setup --help`")
     p.set_defaults(fn=cmd_claude_setup)
     p = sub.add_parser("hook", help="Claude Code hook entry (stdin JSON; wired by agent-setup)")
     p.add_argument("which", choices=["recall", "remember", "status", "enforce"], help="which hook")

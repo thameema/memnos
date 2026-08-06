@@ -1,11 +1,20 @@
 """memnos MCP server — makes memnos Claude-native (Claude Code / Desktop / API).
 
-Thin stdio adapter: each tool call forwards to the hardened memnos HTTP server with
-the configured Bearer token, so ALL the production guarantees apply unchanged
-(auth, namespace ACL, audit, usage ledger, pooling). No memory logic here — one core,
-thin adapters (the integration principle).
+Thin adapter: each tool call forwards to the hardened memnos HTTP server with a
+Bearer token, so ALL the production guarantees apply unchanged (auth, namespace
+ACL, audit, usage ledger, pooling). No memory logic here — one core, thin
+adapters (the integration principle).
 
-Configure (env):
+The SAME tool definitions below back TWO transports:
+  - stdio (this file run directly, `mcp.run()`): one token/namespace for the
+    life of the process, from env vars (below).
+  - streamable-HTTP (mounted at :8900/mcp by memnos_server.py, via
+    mcp.streamable_http_app()): a DIFFERENT caller can hit every request, so
+    token/namespace come from _REQUEST_CTX instead — a ContextVar the HTTP
+    mount's ASGI wrapper sets per-request from the incoming Authorization /
+    X-Memnos-Namespace headers before the tool call runs. See memnos_server.py.
+
+Configure (env, stdio only):
   MEMNOS_URL    default http://127.0.0.1:8900
   MEMNOS_TOKEN  Bearer token from `python memnos_admin.py token <principal>`
   MEMNOS_NS     namespace scope for this agent/user (e.g. user:alice, team:eng)
@@ -14,6 +23,7 @@ Wire into Claude Code (~/.claude/settings.json mcpServers), Claude Desktop, etc.
   { "memnos": { "command": "/path/.venv/bin/python", "args": ["/path/memnos_mcp.py"],
                 "env": { "MEMNOS_TOKEN": "mnk_...", "MEMNOS_NS": "user:alice" } } }
 """
+import contextvars
 import json
 import os
 import subprocess
@@ -28,7 +38,17 @@ URL = os.environ.get("MEMNOS_URL", "http://127.0.0.1:8900").rstrip("/")
 TOKEN = os.environ.get("MEMNOS_TOKEN", "")
 _OVR = os.path.join(os.path.expanduser("~"), ".memnos", "ns_overrides.json")
 
-mcp = FastMCP("memnos")
+# Per-request (token, namespace) for the HTTP-mounted transport — None on stdio,
+# where the module-level TOKEN/env resolution below applies instead.
+_REQUEST_CTX = contextvars.ContextVar("_memnos_mcp_request_ctx", default=None)
+
+mcp = FastMCP("memnos",
+              # HTTP mount only (memnos_server.py) — irrelevant to mcp.run() stdio below.
+              # stateless_http: a fresh transport per request, no server-side session to
+              # lose — so a memnos restart never forces a client-side session restart
+              # (issue #37 Layer 1's acceptance bar). json_response: plain JSON per POST,
+              # no SSE streaming needed for request/response tool calls.
+              stateless_http=True, json_response=True)
 
 
 def _git_root():
@@ -45,7 +65,14 @@ def _ns_source():
     so explicit tool calls and auto-save/recall never target different buckets, AND we know
     whether it's a real binding or a default fallback (issue #20, Part B). Returns
     (namespace, source). Falls back to the legacy local resolution if nsresolve isn't
-    importable (very old installs)."""
+    importable (very old installs).
+
+    HTTP mount: if _REQUEST_CTX is set (this call is running inside a request handled by
+    the streamable-HTTP transport), its namespace ALWAYS wins — cwd/git-root resolution
+    is meaningless for a shared server handling requests from many different callers."""
+    ctx = _REQUEST_CTX.get()
+    if ctx is not None:
+        return ctx[1], "http-header"
     try:
         import nsresolve
         return nsresolve.resolve_with_source()
@@ -74,10 +101,19 @@ def _ns():
 NS = _ns()
 
 
+def _token():
+    """Bearer token for the loopback call to the memnos HTTP server. HTTP mount: the
+    CALLER's own already-validated token (forwarded as-is, never re-minted) so the REST
+    layer's auth/ACL/audit runs exactly as it would for any other caller. stdio: the
+    fixed env-configured token for this process."""
+    ctx = _REQUEST_CTX.get()
+    return ctx[0] if ctx is not None else TOKEN
+
+
 def _post(path, payload, timeout=60):
     try:
         r = httpx.post(f"{URL}{path}", json={"namespace": _ns(), **payload},
-                       headers={"Authorization": f"Bearer {TOKEN}"}, timeout=timeout)
+                       headers={"Authorization": f"Bearer {_token()}"}, timeout=timeout)
     except (httpx.ConnectError, httpx.ConnectTimeout):
         # fail fast + clearly — a down server must never surface as a cryptic traceback
         raise RuntimeError(f"memnos server is not running at {URL} — "
@@ -141,7 +177,7 @@ def recall(query: str) -> str:
         if code == 401:
             return "(memnos: unauthorized — check MEMNOS_TOKEN)"
         if code == 403:
-            return f"(memnos: not authorized for namespace {NS})"
+            return f"(memnos: not authorized for namespace {_ns()})"
         return f"(memnos recall error: HTTP {code})"
     except Exception as e:
         return f"(memnos recall unavailable: {e})"

@@ -1,12 +1,14 @@
 # memnos × any MCP client (Cursor, Windsurf, Zed, …)
 
-memnos speaks the **Model Context Protocol** over stdio via `memnos_mcp.py`, so any
-MCP-compatible agent can use it. The tool surface is identical everywhere:
-`recall(query)`, `remember(text)`, `consolidate()`.
+memnos speaks the **Model Context Protocol** over **stdio** (`memnos_mcp.py`, spawned as
+a subprocess) and over **streamable-HTTP** (mounted at `{MEMNOS_URL}/mcp` on the same
+server that already serves the REST API), so any MCP-compatible agent can use whichever
+transport it supports — both are wired to the SAME tool definitions:
+`recall(query)`, `remember(text)`, `consolidate()`, and the rest of the tool surface.
 
 Prereq: a running memnos server + token (see [`../../QUICKSTART.md`](../../QUICKSTART.md)).
 
-## Generic MCP config
+## Generic MCP config (stdio)
 Point the client at the stdio command. With the package installed (`uv tool install memnos`):
 ```jsonc
 {
@@ -21,6 +23,23 @@ Point the client at the stdio command. With the package installed (`uv tool inst
 ```
 (From-source checkout: `"command": "/abs/path/.venv/bin/python", "args":
 ["/abs/path/memnos_mcp.py"]`.)
+
+## Streamable-HTTP config (no subprocess, survives a memnos restart)
+Point the client at the already-running server instead of spawning one. This is the
+better fit when the client can't spawn subprocesses, or when you want the MCP connection
+to keep working across a `memnos` upgrade/restart without the agent needing to reconnect:
+```jsonc
+{
+  "type": "http",
+  "url": "http://127.0.0.1:8900/mcp",
+  "headers": {
+    "Authorization": "Bearer mnk_...",
+    "X-Memnos-Namespace": "user:alice"   // required if the token is granted on more than one namespace
+  }
+}
+```
+`memnos agent-setup claude-code --transport http` / `memnos agent-setup omnigent
+--transport http` generate this automatically (stdio remains the default for both).
 
 ## Per-client locations
 | Client | Where to add it |
