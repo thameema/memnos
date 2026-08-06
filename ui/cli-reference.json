@@ -636,7 +636,7 @@
         "http"
        ],
        "default": "stdio",
-       "help": "MCP transport to wire (claude-code/omnigent only): 'stdio' (default, spawns `memnos mcp` as a subprocess) or 'http' (connects to the already-running server's streamable-HTTP endpoint at :8900/mcp \u2014 survives a memnos restart without a client-side session reset)",
+       "help": "MCP transport to wire (claude-code/omnigent only): 'stdio' (default, spawns `memnos mcp` as a subprocess) or 'http' (connects to the already-running server's streamable-HTTP endpoint at :8900/mcp \u2014 survives a memnos restart without a client-side session reset). The default stays 'stdio' \u2014 pass 'http' explicitly to actually close issue #37's subprocess-sprawl bug for your own setup",
        "positional": false,
        "required": false
       }

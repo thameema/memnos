@@ -3388,7 +3388,9 @@ def build_parser():
                    help="MCP transport to wire (claude-code/omnigent only): 'stdio' (default, "
                         "spawns `memnos mcp` as a subprocess) or 'http' (connects to the "
                         "already-running server's streamable-HTTP endpoint at :8900/mcp — "
-                        "survives a memnos restart without a client-side session reset)")
+                        "survives a memnos restart without a client-side session reset). "
+                        "The default stays 'stdio' — pass 'http' explicitly to actually "
+                        "close issue #37's subprocess-sprawl bug for your own setup")
     p.set_defaults(fn=cmd_agent_setup)
     p = sub.add_parser("claude-setup", help="(alias of: memnos agent-setup claude-code)")
     p.add_argument("--namespace", help="default namespace for Claude Code")

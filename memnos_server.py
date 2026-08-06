@@ -321,8 +321,9 @@ def _mcp_asgi_app(public_port):
         with POOL.connection() as conn:
             pid = Control.authenticate(conn, token)
             if pid is None:
-                return None, None
+                return None, None, 0
             ns = (ns_header or "").strip()
+            grants = []
             if not ns:
                 # No explicit namespace header (agent-setup --transport http always sends
                 # one; this is a fallback for hand-rolled clients): if the token is
@@ -335,7 +336,7 @@ def _mcp_asgi_app(public_port):
                          if g["can_read"] and g["namespace"] != "*" and not g["namespace"].endswith(":*")]
                 if len(grants) == 1:
                     ns = grants[0]
-            return pid, ns
+            return pid, ns, len(grants)
 
     async def app(scope, receive, send):
         if scope["type"] != "http":
@@ -344,12 +345,13 @@ def _mcp_asgi_app(public_port):
                   for k, v in scope.get("headers", [])}
         auth = headers.get("authorization", "")
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-        pid, ns = await asyncio.to_thread(_authenticate, token, headers.get("x-memnos-namespace"))
+        pid, ns, ngrants = await asyncio.to_thread(_authenticate, token, headers.get("x-memnos-namespace"))
         if pid is None:
             return await _send_json(send, 401, {"error": "unauthorized"})
         if not ns:
-            return await _send_json(send, 400, {"error": "X-Memnos-Namespace header required "
-                                                "(token is granted on more than one namespace)"})
+            reason = ("token has no read-granted namespaces" if ngrants == 0
+                      else "token is granted on more than one namespace")
+            return await _send_json(send, 400, {"error": f"X-Memnos-Namespace header required ({reason})"})
         rctx = memnos_mcp._REQUEST_CTX.set((token, ns))
         try:
             await inner(scope, receive, send)
@@ -517,6 +519,12 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             n = 0
         body = self.rfile.read(n) if n else b""
+        if MCP_INTERNAL_PORT is None:
+            # start_mcp_http_mount() never came up (see serve()) — degrade cleanly rather
+            # than building a URL around a nonexistent port. REST/stdio are unaffected.
+            return self._send(503, {"error": "memnos MCP-HTTP mount is not running (failed "
+                                    "to start at boot — see server logs); REST and the "
+                                    "stdio adapter remain fully available"})
         fwd_headers = {k: v for k, v in self.headers.items()
                       if k.lower() not in ("host", "content-length", "connection", "transfer-encoding")}
         url = f"http://127.0.0.1:{MCP_INTERNAL_PORT}{self.path}"
@@ -1671,7 +1679,7 @@ def _set_proc_title(title):
 
 def serve(port=None):
     """Boot + run the memnos server. Importable so the `memnos serve` CLI reuses it."""
-    global POOL, EMBED
+    global POOL, EMBED, MCP_INTERNAL_PORT
     _set_proc_title("memnos-server")
     port = int(port or PORT)
     # BACKGROUND reranker prewarm + self-calibration + residency keep-alive (follow-up
@@ -1731,9 +1739,22 @@ def serve(port=None):
     threading.Thread(target=_pusher_loop, name="memnos-webhook-pusher", daemon=True).start()
     for i in range(INGEST_WORKERS):
         threading.Thread(target=_ingest_worker, name=f"memnos-async-ingest-{i}", daemon=True).start()
-    start_mcp_http_mount(port)   # issue #37 Layer 1: streamable-HTTP MCP at /mcp
+    # issue #37 Layer 1: streamable-HTTP MCP at /mcp — additive. A failure here (bad
+    # MEMNOS_MCP_INTERNAL_PORT, port already taken, mount thread died, startup timeout)
+    # must NOT take down :8900 — that would break REST and the stdio adapter too, which
+    # depend on nothing here. Degrade: log loudly and keep serving without /mcp.
+    try:
+        start_mcp_http_mount(port)
+        mcp_status = "MCP HTTP transport at /mcp"
+    except Exception as e:
+        MCP_INTERNAL_PORT = None   # discard any partial state (e.g. a thread that died
+                                   # after claiming a port) — _forward_mcp must 503, not hang
+        mcp_status = "MCP HTTP transport UNAVAILABLE (see WARNING above)"
+        print(f"[memnos] WARNING: MCP-HTTP-mount (issue #37 Layer 1's /mcp endpoint) FAILED "
+              f"to start — continuing WITHOUT it. REST and the stdio `memnos mcp` adapter "
+              f"are unaffected. {type(e).__name__}: {e}", flush=True)
     print(f"[memnos] production server on http://127.0.0.1:{port} (pool max {POOL_MAX}; "
-          f"{INGEST_WORKERS} async-ingest workers; MCP HTTP transport at /mcp); "
+          f"{INGEST_WORKERS} async-ingest workers; {mcp_status}); "
           f"webhook pusher on", flush=True)
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 

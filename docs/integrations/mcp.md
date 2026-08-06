@@ -41,6 +41,15 @@ to keep working across a `memnos` upgrade/restart without the agent needing to r
 `memnos agent-setup claude-code --transport http` / `memnos agent-setup omnigent
 --transport http` generate this automatically (stdio remains the default for both).
 
+**Scope note:** this transport ships **opt-in only** (issue #37 Layer 1). `--transport`
+defaults to `stdio` for every target, so #37's own acceptance bar — *no `memnos mcp` child
+processes exist* — is **not** met by the default, documented command; existing installs
+(and any new install that doesn't pass `--transport http` explicitly) still spawn a
+per-session stdio subprocess, and the CRITICAL subprocess-sprawl bug #37 opened with
+remains open for them. Flipping the default is tracked separately in issue #39, once the
+HTTP transport has run in the field for a while. Pass `--transport http` explicitly today
+to actually close #37 for your own setup.
+
 ## Per-client locations
 | Client | Where to add it |
 |--------|-----------------|

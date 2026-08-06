@@ -7,14 +7,17 @@ bearer header, with ZERO validation errors.
 Omnigent (github.com/omnigent-ai/omnigent) requires Python >=3.12 and its own uv-managed
 virtualenv, incompatible with this repo's own interpreter — so the parser/validator run as
 a SUBPROCESS inside Omnigent's checkout via `uv run`, not an in-process import. If neither
-~/git/omnigent (or $OMNIGENT_REPO) nor `uv` is available, this test SKIPS (exit 0) rather
-than failing the suite — an external repo dependency, matching the task's own "clone if
-not already available, or reuse if present" framing.
+~/git/omnigent (or $OMNIGENT_REPO) nor `uv` is available, this test SKIPS — printed as a
+loud, visually distinct "SKIP:" line (never silently indistinguishable from a real pass)
+— UNLESS `MEMNOS_REQUIRE_OMNIGENT=1` is set, in which case the same conditions FAIL the
+suite instead. CI (.github/workflows/ci.yml) clones + syncs omnigent and sets that env var,
+so the real parser genuinely runs on every CI push/PR; locally, without omnigent cloned,
+it stays a loud skip rather than blocking unrelated work.
 
 Note: `uv run` on a checkout that has never been synced will run a (multi-minute) `uv sync`
-first, which can exceed this test's own subprocess timeouts — this test requires a
-CLONED AND SYNCED omnigent checkout (`cd ~/git/omnigent && uv sync`), not merely a cloned
-one. Once synced, `uv run` reuses the venv and stays well under the timeouts.
+first, which can exceed this test's own subprocess timeout — that's caught explicitly and
+reported as a skip/fail (per MEMNOS_REQUIRE_OMNIGENT above) with a clear reason, not an
+uncaught crash. Run `cd ~/git/omnigent && uv sync` once to avoid paying for it here.
 
 Run: python tests/test_agent_setup_http_transport.py
 """
@@ -33,6 +36,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PY = sys.executable
 OMNIGENT_REPO = os.environ.get("OMNIGENT_REPO", os.path.expanduser("~/git/omnigent"))
+# CI sets this (after cloning + `uv sync`-ing omnigent) so a missing dependency or a
+# timeout is a real, enforced FAIL there instead of a locally-convenient skip — see
+# .github/workflows/ci.yml. Unset by default so this test never blocks unrelated local work.
+REQUIRE_OMNIGENT = os.environ.get("MEMNOS_REQUIRE_OMNIGENT") == "1"
 PASS = FAIL = 0
 
 
@@ -40,6 +47,18 @@ def check(name, cond, detail=""):
     global PASS, FAIL
     print(f"  {'PASS' if cond else 'FAIL'}  {name}" + (f"  — {detail}" if (detail and not cond) else ""))
     PASS += cond; FAIL += (not cond)
+
+
+def _skip_or_fail(reason):
+    """The contract genuinely wasn't verified this run — say so loudly. Under
+    MEMNOS_REQUIRE_OMNIGENT=1 (CI, once omnigent is provisioned) that's a hard failure;
+    otherwise a visibly-labeled SKIP, never silently indistinguishable from a real pass."""
+    if REQUIRE_OMNIGENT:
+        print(f"FAIL: {reason} (MEMNOS_REQUIRE_OMNIGENT=1 — this environment must have "
+              "a synced omnigent checkout + uv)")
+        sys.exit(1)
+    print(f"SKIP: {reason}")
+    sys.exit(0)
 
 
 def run_cli(home, *args):
@@ -57,12 +76,11 @@ def run_cli(home, *args):
 
 def main():
     if not os.path.isdir(OMNIGENT_REPO):
-        print(f"SKIP: omnigent repo not found at {OMNIGENT_REPO} (set $OMNIGENT_REPO to override) "
-              "— config-generation contract not exercised against the real parser this run.")
-        sys.exit(0)
+        _skip_or_fail(f"omnigent repo not found at {OMNIGENT_REPO} (set $OMNIGENT_REPO to "
+                      "override) — config-generation contract not exercised against the "
+                      "real parser this run.")
     if not shutil.which("uv"):
-        print("SKIP: `uv` not on PATH — can't run omnigent's Python>=3.12 environment.")
-        sys.exit(0)
+        _skip_or_fail("`uv` not on PATH — can't run omnigent's Python>=3.12 environment.")
 
     home = tempfile.mkdtemp(prefix="memnos_omni_http_")
     agent_dir = os.path.join(home, "agent")
@@ -98,8 +116,17 @@ def main():
         "}\n"
         "print(json.dumps(out))\n"
     )
-    r = subprocess.run(["uv", "run", "python3", "-c", script], cwd=OMNIGENT_REPO,
-                       capture_output=True, text=True, timeout=120)
+    try:
+        r = subprocess.run(["uv", "run", "python3", "-c", script], cwd=OMNIGENT_REPO,
+                           capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        # An unsynced checkout pays for `uv sync` here (multi-minute, first use only) —
+        # that's an environment-provisioning gap, not a contract failure: none of the
+        # assertions below ran, so this must not read as either PASS or a raw crash.
+        shutil.rmtree(home, ignore_errors=True)
+        _skip_or_fail(f"`uv run` in {OMNIGENT_REPO} exceeded 120s — likely an unsynced "
+                      f"checkout paying for `uv sync` on first use; run `cd {OMNIGENT_REPO} "
+                      "&& uv sync` once, then re-run this test.")
     check("omnigent parser+validator subprocess exits 0", r.returncode == 0,
           (r.stdout + r.stderr)[-500:])
     try:
