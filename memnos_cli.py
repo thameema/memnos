@@ -3056,7 +3056,10 @@ def _enforce_cache_path(ns):
 def _refresh_enforce_cache(cfg, ns):
     """SessionStart-only. Best-effort: any failure here must never block SessionStart, and
     just leaves enforcement at its last-cached state for this session (or unenforced, if
-    there was never a prior cache) — never a hard failure of the session itself."""
+    there was never a prior cache) — never a hard failure of the session itself.
+
+    Returns the number of active enforce rules just cached for `ns` (issue #32: `hook
+    status` surfaces this count so a zero-load state is visible, not just fail-open-silent)."""
     from core.control import Control
     from datetime import datetime, timezone
     conn = _conn(cfg)
@@ -3072,6 +3075,7 @@ def _refresh_enforce_cache(cfg, ns):
     with open(tmp, "w") as f:
         json.dump(payload, f)
     os.replace(tmp, path)   # atomic — a concurrently-firing PreToolUse hook never sees a partial write
+    return len(rows)
 
 
 def _tool_match_subject(tool_name, tool_input):
@@ -3189,8 +3193,9 @@ def cmd_hook(args, cfg):
         # daylight even if a future SessionStart payload starts carrying a cwd/namespace
         # field PreToolUse's payload doesn't (caught in review).
         _enforce_ns = nsresolve.resolve()
-        try:
-            _refresh_enforce_cache(cfg, _enforce_ns)
+        _enforce_count = None                        # None = refresh failed; distinct from a
+        try:                                          # real 0, which must still be shown (#32)
+            _enforce_count = _refresh_enforce_cache(cfg, _enforce_ns)
         except Exception:
             pass
 
@@ -3215,6 +3220,12 @@ def cmd_hook(args, cfg):
         else:
             parts.append(f"⚠ memory OFF — server unreachable at {url}. Run `memnos start` "
                          "(`memnos autostart` makes it survive reboots)")
+        # issue #32: visible even at zero, so a namespace with no rules loaded (never
+        # `claude-setup`'d since a constraint was added, wrong resolved namespace, etc.)
+        # is obvious at session start rather than requiring a manual `constraint ls` check.
+        if _enforce_count is not None:
+            parts.append(f"{_enforce_count} enforce rule{'s' if _enforce_count != 1 else ''} "
+                         f"loaded for {_enforce_ns}")
         if cfg.get("proxy_token"):                  # proxy configured on this machine
             pport = (cfg.get("proxy") or {}).get("port", 8910)
             parts.append("capture proxy ACTIVE" if _server_up(f"http://127.0.0.1:{pport}", timeout=1)

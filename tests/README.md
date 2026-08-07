@@ -32,6 +32,7 @@ throwaway namespaces it creates.
 | `test_namespace_reconcile.py` | `memnos namespace reconcile` backfill: dry-run counts, close/dedupe, idempotency, `--limit` |
 | `test_recall_latency.py` | recall latency (issue #12): warm budget over a large seeded namespace, per-stage audit timings, query-embed cache, `deadline_ms`/`degraded`, `MEMNOS_RERANK` kill switch + candidate cap (size via `MEMNOS_LATENCY_FACTS`, default 5000) |
 | `test_recall_memory_bound.py` | recall memory bounding (issue #15): ONNX CPU arena disabled + single-threaded by default, rerank-score parity arena-off vs arena-on (no accuracy regression), FTS query token-clamp, long recall query returns 200 (no tsquery stack-overflow crash) |
+| `test_hook_status_enforce_count.py` | `hook status` enforce-rule visibility (issue #32): "N enforce rules loaded for `<ns>`" is accurate and updates as rules are added/removed, zero-rule state stays visible (not suppressed), namespace isolation, singular/plural wording |
 
 ## Running locally
 
