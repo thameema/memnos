@@ -17,6 +17,7 @@ Wire into Claude Code (~/.claude/settings.json mcpServers), Claude Desktop, etc.
 import json
 import os
 import subprocess
+import sys
 import httpx
 from mcp.server.fastmcp import FastMCP
 try:
@@ -44,11 +45,31 @@ def _drain_offline_queue():
     this is the ONLY drain path for hosts that never run the Claude Code hooks (Claude
     Desktop, omnigent, or any other MCP host talking to this same adapter), so a queued
     write here must not depend on `memnos hook status` ever running. Best-effort: a
-    failed drain must never break the write that triggered it."""
+    failed drain must never break the write that triggered it, so any exception here
+    yields (0, 0) rather than propagating.
+
+    Returns (drained, rejected). A permanently-rejected item (401/403/400-class, see
+    offline_queue.drain()) is otherwise invisible to the caller — this adapter has no
+    separate status/health tool to poll, so callers below fold `rejected` into the
+    text they return for the tool call that triggered the drain. Also logged to stderr
+    unconditionally (not just returned) so the startup-time call further down — before
+    any tool call exists to attach a note to — doesn't drop a rejection silently."""
     try:
-        offline_queue.drain(_config_dir(), URL, TOKEN, timeout=8)
+        drained, rejected = offline_queue.drain(_config_dir(), URL, TOKEN, timeout=8)
     except Exception:
-        pass
+        return 0, 0
+    if rejected:
+        print(f"memnos: ⚠ {rejected} previously-queued write{'s' if rejected != 1 else ''} "
+              f"permanently rejected during drain — see {_config_dir()}/offline_queue/*.rejected",
+              file=sys.stderr)
+    return drained, rejected
+
+
+def _rejected_note(rejected: int) -> str:
+    if not rejected:
+        return ""
+    return (f"\n(⚠ {rejected} previously-queued write{'s' if rejected != 1 else ''} "
+            f"permanently rejected — see offline_queue/*.rejected)")
 
 
 _drain_offline_queue()          # flush anything queued before this adapter process started
@@ -162,10 +183,11 @@ def recall(query: str) -> str:
         out = _post("/recall", {"query": query})
         ctx = out.get("context", "")
         offline_queue.save_snapshot(_config_dir(), ns, ctx, len(out.get("memories") or []))
-        _drain_offline_queue()
+        _, rejected = _drain_offline_queue()
+        note = _rejected_note(rejected)
         # tell the chat client which namespace we searched so it's never ambiguous.
         header = f"(recalled from '{ns}')\n"
-        return (header + ctx) if ctx else f"(no relevant memories found in '{ns}')"
+        return (header + ctx + note) if ctx else f"(no relevant memories found in '{ns}'){note}"
     except Exception as e:
         if offline_queue.is_transient(e):
             snap = offline_queue.load_snapshot(_config_dir(), ns)
@@ -217,7 +239,7 @@ def remember(text: str, memory_type: str = "") -> str:
             return (f"remembered in '{ns}' (queued — memnos is temporarily unreachable; "
                     f"will sync automatically once it recovers, nothing lost)")
         raise ToolError(_write_error(e, "remember")) from None
-    _drain_offline_queue()
+    _, rejected = _drain_offline_queue()
     # write-time attribution (issue #20, Part B): always name the destination namespace so
     # the chat client relays WHERE the memory landed.
     dest = out.get("namespace") or ns
@@ -236,6 +258,7 @@ def remember(text: str, memory_type: str = "") -> str:
     if isinstance(sugg, dict) and sugg.get("namespace"):
         msg += (f"\nhint: this looks like '{sugg['namespace']}' ({sugg.get('reason','')}) — "
                 f"bind future writes there if so.")
+    msg += _rejected_note(rejected)
     return msg
 
 
@@ -303,8 +326,8 @@ def memory_write(text: str) -> str:
             offline_queue.enqueue(_config_dir(), ns, text, "user")
             return f"written to '{ns}' (queued — memnos is temporarily unreachable; will sync automatically once it recovers, nothing lost)"
         raise ToolError(_write_error(e, "memory_write")) from None
-    _drain_offline_queue()
-    return f"written (turn {out.get('turn_id')}, {out.get('facts', 0)} facts)"
+    _, rejected = _drain_offline_queue()
+    return f"written (turn {out.get('turn_id')}, {out.get('facts', 0)} facts)" + _rejected_note(rejected)
 
 
 @mcp.tool()

@@ -136,6 +136,55 @@ def _post_remember(url: str, token: str, item: dict, timeout: float = 8) -> None
     urllib.request.urlopen(req, timeout=timeout).read()
 
 
+_CLAIM_RE = re.compile(r"\.claiming-\d+$")
+
+# Conservative multiple of _post_remember's default 8s timeout: a drainer legitimately
+# mid-POST resolves in well under this, so anything older is a claim orphaned by a
+# process that died between the claim-rename and the POST resolving.
+STALE_CLAIM_AGE = 60.0
+
+
+def _reclaim_stale_claims(d: str, max_age: float = STALE_CLAIM_AGE) -> None:
+    """Recover items orphaned by a drainer that was killed between claiming an item
+    (the `os.rename` to `<name>.json.claiming-<pid>`) and that item's POST resolving —
+    the exact crash window issue #37 exists to survive. Without this, drain()'s scan
+    (which only looks for `*.json`) never finds a `.claiming-*` file again: silent,
+    permanent data loss with no error.
+
+    Reclaimed by the CLAIM FILE's mtime age, deliberately NOT by checking whether the
+    claiming pid is still alive — a live process legitimately mid-POST must never have
+    its claim stolen out from under it (that would double-send the same write). A dead
+    pid can also be legitimately reused by an unrelated process on the same machine, so
+    pid-liveness isn't even a safe signal.
+
+    `os.rename` is a metadata-only operation and never touches mtime, so the claim call
+    below explicitly `os.utime`s each claim at claim time — otherwise a claim's mtime
+    would still reflect the original item's ENQUEUE time (possibly hours old, from a
+    long outage), and this sweep would steal a perfectly live in-flight claim on sight.
+    """
+    try:
+        entries = os.listdir(d)
+    except OSError:
+        return
+    now = time.time()
+    for fname in entries:
+        m = _CLAIM_RE.search(fname)
+        if not m:
+            continue
+        path = os.path.join(d, fname)
+        try:
+            age = now - os.path.getmtime(path)
+        except OSError:
+            continue                                  # already resolved/removed by its owner
+        if age < max_age:
+            continue                                  # plausibly still a live in-flight claim
+        orig = os.path.join(d, fname[:m.start()])
+        try:
+            os.rename(path, orig)
+        except OSError:
+            pass                                       # lost the race with its owner finishing
+
+
 def drain(config_dir: str, url: str, token: str, timeout: float = 8, max_items=None) -> tuple[int, int]:
     """Replay queued writes into the SAME store, oldest first (filenames are epoch-ms
     prefixed). Safe for CONCURRENT drainers (a hook's SessionStart drain and an MCP
@@ -143,6 +192,10 @@ def drain(config_dir: str, url: str, token: str, timeout: float = 8, max_items=N
     claimed via `os.rename` to a per-process `.claiming-<pid>` name before it is POSTed,
     so exactly one drainer ever sends a given item — the loser's rename simply fails and
     it moves on.
+
+    Before scanning, sweeps for and reclaims STALE `.claiming-*` files (see
+    `_reclaim_stale_claims`) left behind by a drainer that was killed mid-claim, so a
+    crash-during-drain never strands an item outside the `*.json` scan below forever.
 
     Returns (drained, rejected).
       - On a TRANSIENT failure (server still down/flaky): the claimed item is renamed
@@ -157,6 +210,7 @@ def drain(config_dir: str, url: str, token: str, timeout: float = 8, max_items=N
     d = queue_dir(config_dir)
     if not os.path.isdir(d):
         return 0, 0
+    _reclaim_stale_claims(d)
     qfiles = sorted(f for f in os.listdir(d) if f.endswith(".json"))
     drained = rejected = 0
     for fname in qfiles:
@@ -166,6 +220,7 @@ def drain(config_dir: str, url: str, token: str, timeout: float = 8, max_items=N
         claimed = src + f".claiming-{os.getpid()}"
         try:
             os.rename(src, claimed)
+            os.utime(claimed, None)                   # stamp CLAIM time, not enqueue time
         except OSError:
             continue                                  # another drainer already has it, or it's gone
         try:

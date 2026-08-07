@@ -1,6 +1,6 @@
-"""issue #37 Layer 3 — TEST 1 (the literal acceptance bar): kill the live memnos server
-process mid-write; the write is queued (never lost, never written to a separate store);
-restart the server; the queued write replays and becomes recallable from the SAME store.
+"""issue #37 Layer 3 — TEST 1: kill the live memnos server process; the write is queued
+or otherwise not lost (never silently dropped, never written to a separate store);
+restart the server; the write becomes recallable from the SAME store.
 
 Exercises the MCP adapter specifically (memnos_mcp.remember()/recall()) rather than the
 Claude Code hooks — the hooks are Claude-Code-only, but Claude Desktop and omnigent (the
@@ -8,6 +8,28 @@ harnesses issue #37's "Generalization" section names) talk to memnos ONLY throug
 adapter and never run a hook. So the adapter has to enqueue on failure and replay on its
 OWN, with no SessionStart drain to lean on — this test proves exactly that loop, against
 a REAL memnos_server.py subprocess (not a stub), on the local dev Postgres.
+
+Two distinct kill scenarios, both against the real server:
+  SCENARIO A — write attempted AFTER the server is confirmed fully down (`wait_down()`
+    polls /healthz to completion first). This is "write during an outage", not a kill
+    caught in flight — see SCENARIO B below for that.
+  SCENARIO B — the literal "mid-write kill" bar: a write is fired on a background thread
+    and the server process is torn down essentially concurrently with that request (no
+    prior confirmation of shutdown, no artificial delay inserted into the server's
+    request handling — this races real thread scheduling and real signal delivery
+    against a real in-flight HTTP request/response). Because the exact instant of
+    interruption isn't controllable without adding a test-only hook to production
+    request handling, the assertions accept either legitimate outcome — the request
+    completing successfully just before the kill lands, or a connection-level failure
+    that gets queued — and treat only "unhandled exception", "hangs", or "the write
+    never shows up anywhere after restart" as failures. That's the actual acceptance
+    bar: not lost, not silently dropped — not a specific classification of HOW it
+    resolved, since that's inherently racy and not something a black-box client-side
+    test can pin down without instrumenting the server.
+
+(An earlier revision of this test and PR #40's own description both called SCENARIO A
+"kill mid-write" — inaccurate; it never fires anything before the server is confirmed
+fully down. SCENARIO B was added to actually cover the claim.)
 
 Isolation: both the spawned server and the MCP adapter run with HOME pointed at their own
 temp dirs, so (a) the server never touches this machine's real ~/.memnos/config.json (no
@@ -23,6 +45,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 from urllib.parse import urlsplit
@@ -41,6 +64,7 @@ TEST_DB = "memnos_test_write_behind"
 SCHEMA = "tenant_memnos"
 NS = "test:wb-kill-restart"
 DISTINCTIVE_TEXT = "wb-kill-restart QUEUED FACT: the quokka summit relocated to Perth."
+MID_FLIGHT_TEXT = "wb-kill-restart MID-FLIGHT FACT: the puffin colony moved to Reykjavik."
 PASS = FAIL = 0
 
 
@@ -225,7 +249,7 @@ def main():
             check("control write while server is healthy: normal success (NOT queued)",
                   isinstance(r0, str) and "queued" not in r0.lower() and "remembered" in r0.lower())
 
-            # --- KILL THE SERVER --------------------------------------------------------
+            # --- SCENARIO A: kill, CONFIRM fully down, then write ------------------------
             stop(proc, logf)
             check("server process actually exited after termination", proc.poll() is not None)
             check("server no longer answers healthz", wait_down(url))
@@ -283,6 +307,84 @@ def main():
             last = recall("quokka summit relocation")
             check("the queued write is RECALLABLE (not just a row — the real read path)",
                   "quokka" in last.lower() or "perth" in last.lower())
+
+            # --- SCENARIO B: kill CONCURRENTLY with an in-flight write --------------------
+            # No wait_down() gate this time — the server (restarted above, currently healthy)
+            # is torn down as close as possible to when the request is actually fired, racing
+            # real thread scheduling and real signal delivery against a real in-flight HTTP
+            # call. `about_to_call` is set on the request thread immediately before it calls
+            # remember() (i.e. before the socket is even opened), and the main thread kills
+            # the server the instant that fires — no sleep in between — to bias toward the
+            # kill landing while the request is genuinely in flight rather than after a full
+            # round trip. This can't be made fully deterministic without adding a test-only
+            # delay hook to the server's own request handling (server registers no SIGTERM
+            # handler either — see stop()/wait_down() above — so once the signal lands the
+            # process dies immediately, no graceful in-flight completion to race against).
+            about_to_call = threading.Event()
+            outcome = {}
+
+            def _mid_flight_write():
+                about_to_call.set()
+                try:
+                    outcome["result"] = remember(MID_FLIGHT_TEXT)
+                except Exception as e:
+                    outcome["error"] = e
+
+            t = threading.Thread(target=_mid_flight_write)
+            t.start()
+            check("mid-flight write thread signaled readiness before the kill",
+                  about_to_call.wait(timeout=5))
+            stop(proc, logf)                            # fires as soon as possible after the signal
+            check("server process actually exited after the mid-flight kill",
+                  proc.poll() is not None)
+            t.join(timeout=20)
+            check("mid-flight write call returned instead of hanging after the kill",
+                  not t.is_alive())
+
+            check("mid-flight write resolved to a normal string outcome, not an unhandled "
+                  "exception (a connection reset mid-request must classify as transient, "
+                  "never surface raw to the caller)",
+                  "error" not in outcome and isinstance(outcome.get("result"), str))
+            result = outcome.get("result") or ""
+            # Either outcome is legitimate depending on exactly when the kill landed relative
+            # to the server's request handling — a normal completed success (the response beat
+            # the kill) or a queued-transient success (the connection was reset first). What
+            # must NOT happen: a raised/permanent-shaped failure, or neither phrase present.
+            check("mid-flight write outcome is a legitimate success shape "
+                  "(completed OR queued — never a bare/unclassified failure)",
+                  "remembered" in result.lower() or "queued" in result.lower())
+
+            # --- RESTART AGAIN and confirm the mid-flight write is not lost --------------
+            wait_down(url)                              # let the port free up before rebinding
+            proc, logf, logpath = start_server(server_home, DSN, port)
+            up3 = wait_up(url)
+            check("server came back up after the mid-flight-kill restart", up3)
+
+            mid_flight_landed = False
+            for _ in range(20):
+                recall("puffin colony Reykjavik")        # each call opportunistically drains
+                row3 = conn.execute(f"SELECT count(*) AS n FROM {SCHEMA}.raw_turns "
+                                    f"WHERE namespace=%s AND text=%s",
+                                    (NS, MID_FLIGHT_TEXT)).fetchone()
+                if row3["n"] > 0:
+                    mid_flight_landed = True
+                    break
+                time.sleep(0.5)
+            # Deliberately >= 1, not == 1: if the server had already committed the raw turn
+            # before the kill severed the response, the client can't distinguish that from a
+            # write that never landed at all — it correctly queues-and-replays either way,
+            # which can legitimately produce one accepted duplicate (documented tradeoff in
+            # offline_queue.is_transient()'s docstring: "accept the small risk of an eventual
+            # duplicate turn, since losing the memory outright is worse"). The bar here is
+            # "not lost", not "exactly-once" — this is the acceptance criterion SCENARIO B
+            # exists to prove.
+            check("mid-flight write is NOT LOST — it shows up in the store after restart "
+                  "(queued-and-replayed, or already committed pre-kill — either is acceptable, "
+                  "only silent loss is not)", mid_flight_landed)
+
+            last2 = recall("puffin colony Reykjavik")
+            check("the mid-flight write is RECALLABLE (real read path, not just a row)",
+                  "puffin" in last2.lower() or "reykjavik" in last2.lower())
     finally:
         stop(proc, logf)
         conn.close()
