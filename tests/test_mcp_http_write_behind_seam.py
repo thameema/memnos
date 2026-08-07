@@ -20,6 +20,17 @@ tag, produced by a REAL streamable-HTTP MCP client call (not a bare function cal
 resolved per-request — not from any process-wide default — even when two different
 tenants share the one mount.
 
+Also proves the other half of the same seam (issue #45): each tenant's queued item
+carries THAT tenant's own bearer token (memnos_mcp._token(), captured via _REQUEST_CTX),
+not memnos_mcp.TOKEN (permanently empty under this mount) and not the other tenant's
+token. Before issue #45's fix this wasn't captured at all — drain() later replayed
+every item with one shared token, misclassifying the 401 that produced as PERMANENT and
+discarding the write. See tests/test_write_behind_http_mount_token_drain.py for the
+drain-side proof (seeding both shapes and replaying against a real store); this test
+stays scoped to what it can prove deterministically over the real wire without a live
+server to drain against (the garbage-OPENAI_API_KEY server below can enqueue but, being
+broken by construction, can't also serve as a healthy drain target).
+
 Mechanism for a deterministic, portable (no docker/network-outage tricks) transient
 failure: the dedicated server subprocess is started with an OPENAI_API_KEY that is
 present but garbage. _build_embedder() only checks *presence* to switch into OpenAI
@@ -29,9 +40,9 @@ the real OpenAI API, which the server's own request handler turns into an uncaug
 httpx.HTTPStatusError(500) -> offline_queue.is_transient() == True -> enqueued, exactly
 the same failure shape the docstring in offline_queue.is_transient() describes as
 "an embed-time error inside /remember". No server process is killed and nothing is
-asserted about draining/replay — this test is scoped to the enqueue-time namespace
-tagging only; draining under the HTTP mount is a separate, NOT currently exercised,
-concern (see the merge report).
+asserted about draining/replay — this test is scoped to the enqueue-time namespace and
+token tagging only; draining under the HTTP mount is a separate concern, proven instead
+by tests/test_write_behind_http_mount_token_drain.py.
 
 Run: python tests/test_mcp_http_write_behind_seam.py
 (spawns its own server + throwaway database; does not require one already running)
@@ -266,6 +277,22 @@ def main():
               "never tenant A's — proves per-request resolution, not a shared/stale global",
               item_b.get("namespace") == NS_B,
               f"got {item_b.get('namespace')!r}")
+
+        # issue #45: the same per-request capture must apply to the BEARER TOKEN, not just
+        # the namespace — a queued item drains later using whatever token it carries (see
+        # offline_queue.drain()'s `fallback_token`), so if the token weren't captured here
+        # the same way the namespace is, every drain would fall back to memnos_mcp.TOKEN
+        # (permanently empty under this mount) regardless of which tenant queued the item.
+        check("tenant A's queued item carries tenant A's OWN per-request token (captured "
+              "via _REQUEST_CTX / _token() at enqueue time) — not empty, and not tenant "
+              "B's",
+              item_a.get("token") == tok_a,
+              f"got {item_a.get('token')!r}")
+        check("tenant B's queued item likewise carries tenant B's OWN token, never "
+              "tenant A's and never empty — proves per-item token capture, not a "
+              "shared/stale global (this is what issue #45's fix adds)",
+              item_b.get("token") == tok_b,
+              f"got {item_b.get('token')!r}")
     finally:
         stop(proc, logf)
         conn.close()

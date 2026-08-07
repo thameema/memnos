@@ -3378,7 +3378,12 @@ def cmd_hook(args, cfg):
             # rather than lost or diverted elsewhere. offline_queue.drain() (SessionStart,
             # below) isolates a genuinely permanent item (e.g. a revoked token) into
             # `.rejected` instead of letting it block every write behind it forever.
-            offline_queue.enqueue(CONFIG_DIR, ns, t, speaker)
+            # token=token (issue #45): captured here even though this hook is normally
+            # single-token-per-process, so the queue format stays uniform across every
+            # thin adapter that shares offline_queue.py and never silently regresses to
+            # a shared-token assumption if a future host ever runs one hook process for
+            # more than one principal.
+            offline_queue.enqueue(CONFIG_DIR, ns, t, speaker, token=token)
 
     text = (text or "").strip()
     low = text.lower()
