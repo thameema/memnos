@@ -92,6 +92,29 @@ def main():
     nss = Control.readable_namespaces(conn, pid)
     check(f"wildcard grant sees {NS_WRITE} immediately (no backfill needed)", NS_WRITE in nss)
 
+    # non-blocking review finding: the registry upsert must not re-run on every write to an
+    # already-registered namespace -- a process-level cache should skip it after the first
+    # successful write, so an N-turn ingest_session pays the round trip once, not N times.
+    print("=== registry upsert is cached per-process after the first write (no re-upsert) ===")
+    statements = []
+    orig_execute = psycopg.Cursor.execute
+
+    def _recording_execute(self, query, *a, **kw):
+        q = query if isinstance(query, str) else str(query)
+        if "memnos_control.namespaces" in q and "INSERT" in q:
+            statements.append(q)
+        return orig_execute(self, query, *a, **kw)
+
+    psycopg.Cursor.execute = _recording_execute
+    try:
+        for i in range(10):
+            store.insert_raw_turn(SCHEMA, NS_WRITE, None, "user", f"turn {i}", now, None)
+    finally:
+        psycopg.Cursor.execute = orig_execute
+    check(f"10 more writes to the already-registered {NS_WRITE} issued ZERO additional "
+          f"registry upserts ({len(statements)} issued) -- the process-level cache "
+          "skips the now-redundant round trip", len(statements) == 0)
+
     # --- 2. legacy data (pre-fix: no registry row) is invisible until backfill -------------
     print("=== pre-existing (unregistered) data + backfill ===")
     with conn.cursor() as c:
@@ -123,18 +146,28 @@ def main():
     nss = Control.readable_namespaces(conn, pid)
     check(f"AFTER backfill: wildcard grant now sees {NS_LEGACY}", NS_LEGACY in nss)
 
-    # idempotency: running the backfill again must not error or duplicate/alter the row
+    # idempotency: running the backfill's scan+insert logic again (still called directly,
+    # bypassing the guard, same as above) must not error or duplicate/alter any row --
+    # including the completion marker row this PR's fix added.
     with conn.cursor() as c:
         Control._run_namespace_registry_backfill(c)
         c.execute("SELECT count(*) AS n FROM memnos_control.namespaces WHERE name=%s", (NS_LEGACY,))
-        check("backfill is idempotent (re-running it doesn't duplicate the row)",
+        check("backfill is idempotent (re-running it doesn't duplicate the namespace row)",
               c.fetchone()["n"] == 1)
+        c.execute("SELECT count(*) AS n FROM memnos_control.namespace_registry_backfill")
+        check("the completion marker stays a singleton even after multiple direct backfill "
+              "calls (no duplicate/error on the marker row either)", c.fetchone()["n"] == 1)
 
-    # the boot-time guard: once ANY auto_registered row exists in this database (true by
-    # now, from every earlier step above), the guard reports "no backfill needed" — this
-    # is what keeps Control.init() from re-scanning tenant_memnos.* on every server restart.
+    # the boot-time guard is MARKER-driven (a dedicated completion row set unconditionally
+    # at the end of a successful backfill), NOT derived from whether any auto_registered
+    # row happens to exist -- PR #43 review finding 1(b): a deployment where every
+    # namespace was already explicitly registered before this PR shipped would never
+    # produce an auto_registered row via the backfill's ON CONFLICT DO NOTHING, which made
+    # an auto_registered-row-driven guard report "needs backfill" forever on that shape
+    # (see tests/test_namespace_backfill_resilience.py for that scenario end-to-end). This
+    # marker is what keeps Control.init() from re-scanning tenant_memnos.* on every restart.
     with conn.cursor() as c:
-        check("boot-time guard reports backfill NOT needed once an auto_registered row exists",
+        check("boot-time guard reports backfill NOT needed once the completion marker exists",
               Control._namespace_registry_needs_backfill(c) is False)
 
     # --- 3. explicit registration (no data yet) is also visible to the wildcard ------------

@@ -21,6 +21,12 @@ import secrets
 SUGGEST_MIN_ENTITIES = int(os.environ.get("MEMNOS_SUGGEST_MIN_ENTITIES", "2"))
 SUGGEST_DOMINANCE = float(os.environ.get("MEMNOS_SUGGEST_DOMINANCE", "0.6"))
 
+# namespace registry backfill (issue #41 fix A follow-up): rows scanned per keyset chunk
+# per source table. Bounds each individual query's cost regardless of table size, so a
+# huge pre-existing table means more batches, not one query holding the connection (and
+# its statement_timeout exemption) for the duration of a full scan.
+NAMESPACE_BACKFILL_BATCH = int(os.environ.get("MEMNOS_NAMESPACE_BACKFILL_BATCH", "50000"))
+
 CONTROL_DDL = """
 CREATE SCHEMA IF NOT EXISTS memnos_control;
 CREATE TABLE IF NOT EXISTS memnos_control.principals(
@@ -73,6 +79,15 @@ ALTER TABLE memnos_control.namespaces ADD COLUMN IF NOT EXISTS kind text NOT NUL
 -- has data (so wildcard-grant expansion never needs a data-table scan) while preserving
 -- the UI's "discovered" pill (ui/app.js) for namespaces nobody explicitly registered.
 ALTER TABLE memnos_control.namespaces ADD COLUMN IF NOT EXISTS auto_registered boolean NOT NULL DEFAULT false;
+-- BACKFILL COMPLETION MARKER: a singleton row (id is always `true`, enforced by the CHECK)
+-- inserted once _run_namespace_registry_backfill has scanned tenant_memnos.* to
+-- completion. Deliberately NOT derived from whether any auto_registered row exists --
+-- a deployment where every namespace was already explicitly registered before this PR
+-- would never produce one via ON CONFLICT DO NOTHING, which would make the "has it run"
+-- guard below true forever and re-scan tenant_memnos.* on every single boot.
+CREATE TABLE IF NOT EXISTS memnos_control.namespace_registry_backfill(
+    id boolean PRIMARY KEY DEFAULT true CHECK (id),
+    completed_at timestamptz NOT NULL DEFAULT now());
 -- GROUNDED RECALL links (0.1.6): recall on src_ns ALSO searches dst_ns — but only if the
 -- CALLING principal holds a read grant on dst_ns (link = policy, grant = permission;
 -- BOTH required). Skipped links are surfaced in the /recall response (links_skipped).
@@ -211,34 +226,59 @@ class Control:
 
     @staticmethod
     def _namespace_registry_needs_backfill(c) -> bool:
-        """Guard for _run_namespace_registry_backfill: true only before it's ever run
-        successfully (any auto_registered row existing means it has) AND once the tenant
-        schema actually exists (fresh install: create_schema() may not have run yet —
-        nothing to backfill). Split from the backfill itself so tests can invoke the
-        backfill directly regardless of this database's global guard state."""
+        """Guard for _run_namespace_registry_backfill: true only before the backfill has
+        ever completed (tracked by the namespace_registry_backfill marker row, set
+        unconditionally at the end of a successful run — see that method) AND once the
+        tenant schema actually exists (fresh install: create_schema() may not have run
+        yet — nothing to backfill). Split from the backfill itself so tests can invoke
+        the backfill directly regardless of this database's global guard state."""
         c.execute("""
-            SELECT (SELECT 1 FROM memnos_control.namespaces WHERE auto_registered LIMIT 1) IS NULL
+            SELECT NOT EXISTS(SELECT 1 FROM memnos_control.namespace_registry_backfill)
                    AND to_regclass('tenant_memnos.raw_turns') IS NOT NULL AS need_backfill""")
         return c.fetchone()["need_backfill"]
 
     @staticmethod
     def _run_namespace_registry_backfill(c):
-        """One-time (per-database) seed of memnos_control.namespaces from data that
+        """One-time (per-database, ever) seed of memnos_control.namespaces from data that
         predates issue #41's auto-registration (core/store.py insert_raw_turn now
         registers a namespace on its first write, but namespaces written BEFORE that
-        change exist only in tenant_memnos.raw_turns/semantic, not the registry).
-        Unconditional — callers gate with _namespace_registry_needs_backfill(). Runs at
-        server boot, never on the recall hot path: it's the same DISTINCT scan
-        readable_namespaces() used to run on every wide recall, but (via that guard) paid
-        at most once per fresh restart instead of per-request."""
-        c.execute("""
-            INSERT INTO memnos_control.namespaces(name, auto_registered)
-            SELECT namespace, true FROM (
-                SELECT namespace FROM tenant_memnos.raw_turns
-                UNION
-                SELECT namespace FROM tenant_memnos.semantic
-            ) existing
-            ON CONFLICT (name) DO NOTHING""")
+        change exist only in tenant_memnos.raw_turns/semantic, not the registry). Runs at
+        server boot, never on the recall hot path — gated by
+        _namespace_registry_needs_backfill() so it runs AT MOST ONCE ever, not on every
+        restart (the marker row is set unconditionally below, regardless of whether any
+        namespace actually needed inserting).
+
+        This used to be the same unbounded DISTINCT-scan-under-UNION query
+        readable_namespaces() ran on every wide recall — i.e. exactly the full-table-scan
+        pattern this issue exists to get off a 15s-statement_timeout connection, just
+        moved to boot instead of request time. Two changes fix that: (1) exempted from
+        this connection's statement_timeout for the duration (restored after, same
+        reasoning as create_schema()'s DDL exemption in memnos_server.py); (2) paginated
+        via keyset chunks on each table's bigserial id, so a single query is never itself
+        the failure point on a huge pre-existing table — a bigger table just means more
+        (small, bounded) batches, not one query holding a snapshot/locks for minutes."""
+        c.execute("SELECT setting FROM pg_settings WHERE name = 'statement_timeout'")
+        prior_timeout_ms = int(c.fetchone()["setting"])
+        c.execute("SET statement_timeout = 0")
+        try:
+            for table in ("raw_turns", "semantic"):
+                c.execute(f"SELECT max(id) AS max_id FROM tenant_memnos.{table}")
+                max_id = c.fetchone()["max_id"]
+                start = 0
+                while max_id is not None and start < max_id:
+                    end = start + NAMESPACE_BACKFILL_BATCH
+                    c.execute(
+                        f"INSERT INTO memnos_control.namespaces(name, auto_registered) "
+                        f"SELECT DISTINCT namespace, true FROM tenant_memnos.{table} "
+                        f"WHERE id > %s AND id <= %s "
+                        f"ON CONFLICT (name) DO NOTHING",
+                        (start, end))
+                    start = end
+            c.execute(
+                "INSERT INTO memnos_control.namespace_registry_backfill DEFAULT VALUES "
+                "ON CONFLICT (id) DO NOTHING")
+        finally:
+            c.execute(f"SET statement_timeout = {prior_timeout_ms}")
 
     # --- namespace pub/sub (cursor feed + optional webhook) -----------------
     @staticmethod

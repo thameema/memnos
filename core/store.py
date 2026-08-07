@@ -6,12 +6,15 @@ Schema identifiers are validated; values are parameterized.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Iterable, Sequence
 
 import psycopg
 from psycopg.rows import dict_row
+
+logger = logging.getLogger(__name__)
 
 _IDENT = re.compile(r"^[a-z0-9_]+$")
 
@@ -33,21 +36,27 @@ def vlit(vec: Sequence[float]) -> str:
 # overflow ("tsquery stack too small") is a function of the built tsquery's node/operator
 # count, not word count, so word count alone is the wrong thing to bound. Measured against
 # a live pg16 (numnode() on the built tsquery, same word count each time): a leading "-"
-# on every word measurably inflates node count ~1.5x over plain words (596 vs 397 nodes at
-# 199 words — a NOT-wrapper costs more than a plain AND term); a quoted phrase of the same
-# word count did NOT inflate node count on this Postgres version (identical numnode to
-# plain); "OR" doesn't inflate per-word either, it just spends one MORE whitespace token
-# per operator (so an OR-heavy query already partially self-limits under a word-count cap,
-# since the cap counts "OR" as a word too). Two changes: (1) the default cap is lower (an
-# operator can still raise MEMNOS_FTS_MAX_TOKENS if their workload needs longer FTS
-# queries — this default is just a more conservative starting point, not a hard ceiling);
-# (2) fts_clamp normalizes the text to a flat, single-operator-type (implicit AND)
-# sequence of plain words BEFORE capping, stripping quotes/"OR"/leading "-" — this removes
-# the one CONFIRMED per-word amplifier (leading "-") and, for the other two constructs
-# (which the issue also names as suspect but which didn't measurably amplify on this PG
-# version), is defense-in-depth against version-specific tsquery parser behavior rather
-# than a locally-measured need. No extra DB round trip and no new failure path either way
-# — the clamp itself is pure Python and can't fail.
+# on every word measurably inflates node count — but LINEARLY and ADDITIVELY, not as a
+# multiplier that compounds with query length: a flat chain of W plain words costs exactly
+# 2W-1 nodes (W lexeme nodes + W-1 AND-operator nodes), and a chain of W ALL-negated words
+# costs exactly (2W-1)+W — i.e. one extra NOT-wrapper node per negated word, flat, not
+# per-word-times-something-that-grows (confirmed at W=40: 79 vs 119 nodes, exactly matching
+# the formula; also confirmed at W=199: 397 vs 596). A quoted phrase of the same word count
+# did NOT inflate node count on this Postgres version (identical numnode to plain); "OR"
+# doesn't inflate per-word either, it just spends one MORE whitespace token per operator.
+#
+# Because the growth is linear and additive rather than compounding, bounding WORD COUNT
+# already bounds node count too, for any shape: a query at or under the cap has at most
+# `cap` negatable words, so its worst-case node count is (2*cap-1)+cap = 3*cap-1, a fixed,
+# finite ceiling regardless of how many "-"/quotes/OR it contains. There is therefore no
+# need to strip those constructs to make the bound hold — doing so was needless (see fix
+# history below) and, for "-" specifically, semantics-inverting: stripping a leading "-"
+# turns an EXCLUSION into an ordinary match term, flipping the query's meaning rather than
+# just losing precision. fts_clamp instead computes the SAME node-count estimate the tests
+# verify against real numnode() (_tsquery_node_estimate below) and only truncates by word
+# count when the query is actually over the cap or over the resulting node bound — a
+# query under both is returned byte-for-byte unchanged, "-"/""/OR included. No DB round
+# trip either way — the estimate is pure Python and can't fail.
 #
 # Investigated but NOT reproduced: despite the above, extensive testing against a live
 # pg16 instance (plain chains, single long phrases, many degenerate one-word "phrases",
@@ -63,13 +72,16 @@ def vlit(vec: Sequence[float]) -> str:
 # measured for "-") rather than a fix for a locally-reproduced crash — see the PR
 # description for the full writeup and numbers.
 #
-# NOT in scope here (issue #41 fix C, deferred until PR #40 merges — see the TODO at this
-# module's FTS call sites below): even with this bound, a single-arm timeout/error should
-# degrade the recall to a partial result rather than raising. That's a change to the
-# recall-failure/fallback contract PR #40 is concurrently reworking (durable write-behind,
-# issue #37 Layer 3) — sequencing it here risked a merge conflict / overlapping semantics.
-_FTS_DEFAULT_TOKENS = 40   # was 200; normalization (below) is the evidence-backed part —
+# NOT in scope here (issue #41 fix C, deferred — see the TODO at this module's FTS call
+# sites below for the current reasoning): even with this bound, a single-arm timeout/error
+# still propagates straight to the caller instead of degrading the recall to a partial
+# result.
+_FTS_DEFAULT_TOKENS = 40   # was 200; a lower cap is the evidence-backed part of the fix —
                            # this default is just more conservative, and still operator-tunable.
+
+# safety margin over the worst-case 3*cap-1 node count (all `cap` words negated) that a
+# word-count-bounded query can ever produce, per the linear model measured above.
+_FTS_NODE_BOUND_MULTIPLIER = 3
 
 
 def _fts_max_tokens() -> int:
@@ -79,29 +91,50 @@ def _fts_max_tokens() -> int:
         return _FTS_DEFAULT_TOKENS
 
 
+def _fts_node_bound(cap: int) -> int:
+    return _FTS_NODE_BOUND_MULTIPLIER * cap
+
+
+def _tsquery_node_estimate(qtext: str) -> int:
+    """Pure-Python estimate of the node count websearch_to_tsquery('english', qtext) would
+    build, using the linear, additive per-construct costs measured against a live pg16
+    (see the module comment above): a flat chain of W content words costs 2W-1 nodes, and
+    each leading "-" adds exactly one extra node. Quotes and "OR" don't add to the count on
+    this Postgres version, so they're not counted as amplifiers here — they still count as
+    content words. This is the actual complexity gate fts_clamp uses to decide whether
+    truncation is needed; ground truth is asserted against real numnode() output in
+    tests/test_fts_clamp_shape.py."""
+    words = nots = 0
+    for tok in qtext.split():
+        if tok == "OR":
+            continue
+        t = tok.replace('"', '')
+        if not t:
+            continue
+        words += 1
+        if t.startswith('-') and len(t) > 1:
+            nots += 1
+    return 0 if words == 0 else (2 * words - 1) + nots
+
+
 def fts_clamp(qtext: str) -> str:
-    """Bound both the SHAPE and the length of the text passed to websearch_to_tsquery
-    (issue #41): word count alone doesn't bound parser complexity — a leading "-" measurably
-    adds tsquery nodes beyond what a plain word would (see the module comment above for the
-    measurement); quotes and "OR" are stripped too as defense-in-depth even though they
-    didn't show the same amplification here. Folding the text to a flat AND-of-words shape
-    (still a normal FTS match, just without phrase/OR/negation semantics) before capping by
-    token count bounds the resulting node count the same way regardless of input shape. A
-    normal query with none of those constructs and under the cap is returned byte-for-byte,
-    unchanged, same as before."""
+    """Bound the complexity of the tsquery websearch_to_tsquery('english', qtext) will
+    build (issue #41), WITHOUT rewriting query semantics for queries that don't need it.
+    A query at or under the token cap AND at or under the measured node-count bound
+    (_tsquery_node_estimate <= _fts_node_bound(cap)) is returned byte-for-byte unchanged —
+    "-" exclusions, quoted phrases, and "OR" all keep their native websearch_to_tsquery
+    meaning. Only a query that actually exceeds one of those bounds gets truncated to the
+    first `cap` whitespace tokens (shape preserved on the surviving prefix — per the module
+    comment above, word-count alone already bounds node count linearly for any shape, so no
+    further rewriting is needed)."""
     if not qtext:
         return qtext
     cap = _fts_max_tokens()
+    bound = _fts_node_bound(cap)
     parts = qtext.split()
-    needs_normalize = '"' in qtext or any(p == "OR" or p.startswith("-") for p in parts)
-    if len(parts) <= cap and not needs_normalize:
+    if len(parts) <= cap and _tsquery_node_estimate(qtext) <= bound:
         return qtext
-    normalized = []
-    for tok in parts:
-        tok = tok.replace('"', '').lstrip('-')
-        if tok and tok != "OR":
-            normalized.append(tok)
-    return " ".join(normalized[:cap])
+    return " ".join(parts[:cap])
 
 
 # The #15 fix clamped only the FTS arm; the EMBEDDING and the cross-encoder RERANKER still
@@ -181,6 +214,15 @@ def detect_vector_type(conn) -> str:
         return "vector"
 
 
+# module-level, shared by every BrainStore instance in this process (issue #41 follow-up):
+# once a namespace's registry row is known to exist, insert_raw_turn skips the upsert for
+# it on every later call, for the rest of this process's life -- a 50-turn ingest_session
+# no longer issues 50 redundant no-op INSERTs. Two threads racing a first write to the same
+# new namespace can both miss the cache and both issue the upsert once; harmless (ON
+# CONFLICT DO NOTHING backstops correctness), so no lock is needed here.
+_known_registered_namespaces: set[str] = set()
+
+
 class BrainStore:
     def __init__(self, dsn: str | None = None, conn=None):
         # Accept a pooled connection (production) or open one from a DSN (scripts/tests).
@@ -253,10 +295,23 @@ class BrainStore:
             # harmless and self-healing: the next write to this namespace, or the boot-time
             # backfill in Control._run_namespace_registry_backfill, fills the gap. Nothing
             # downstream treats "missing from the registry" as more than "not yet
-            # observed", so it never needs to be atomic.
-            c.execute(
-                "INSERT INTO memnos_control.namespaces(name, auto_registered) VALUES(%s, true) "
-                "ON CONFLICT (name) DO NOTHING", (ns,))
+            # observed", so it never needs to be atomic -- which is also why a failure here
+            # must never fail the write: the raw_turn row above is ALREADY DURABLY COMMITTED
+            # (autocommit) by the time this statement runs, so letting an exception from it
+            # propagate would report a successful write as a failure, inviting a retrying
+            # caller to double-insert the turn. Skipped entirely once this process has seen
+            # this namespace registered before (module-level cache below) -- ON CONFLICT DO
+            # NOTHING makes the upsert a no-op after the first successful write anyway, so a
+            # 50-turn ingest_session no longer pays 50 redundant round trips for it.
+            if ns not in _known_registered_namespaces:
+                try:
+                    c.execute(
+                        "INSERT INTO memnos_control.namespaces(name, auto_registered) VALUES(%s, true) "
+                        "ON CONFLICT (name) DO NOTHING", (ns,))
+                    _known_registered_namespaces.add(ns)
+                except Exception:
+                    logger.warning("namespace registry upsert failed for %r; raw_turn %s "
+                                    "already committed, continuing", ns, tid, exc_info=True)
             return tid
 
     # --- episodic ---------------------------------------------------------
