@@ -700,6 +700,56 @@
   {
    "commands": [
     {
+     "args": [
+      {
+       "arg": "target",
+       "choices": [
+        "omnigent"
+       ],
+       "help": "which server integration to wire",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--config",
+       "help": "omnigent: path to the server's --config YAML (or set $OMNIGENT_CONFIG) \u2014 NOT ~/.omnigent/config.yaml's agent registry",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--mode",
+       "choices": [
+        "embedded",
+        "central"
+       ],
+       "default": "embedded",
+       "help": "embedded: local memnos on this machine (default). central: a remote/shared memnos via MEMNOS_URL+MEMNOS_TOKEN (must already be set)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--namespace",
+       "help": "default namespace captured turns are written to (default: agent:omnigent)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--force",
+       "help": "re-wire even if the capture policy is already present",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "server-setup",
+     "example": null,
+     "help": "wire memnos into a server-wide extension point (currently: omnigent)"
+    }
+   ],
+   "title": "Server integrations"
+  },
+  {
+   "commands": [
+    {
      "args": [],
      "command": "admin",
      "example": "memnos admin",

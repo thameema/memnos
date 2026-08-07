@@ -2137,11 +2137,30 @@ def _ensure_claude_token(cfg, extra_ns=None):
     """A principal+token for the Claude integration: default namespace user:<user> plus a
     proj:* wildcard so per-project + widened recall work. (Grants, not namespace creation.)
     If `extra_ns` is a custom namespace the wiring will write to, GRANT it too — otherwise
-    every write to that ns 403s and is silently swallowed. (Bug: agent-setup --namespace 403)"""
+    every write to that ns 403s and is silently swallowed. (Bug: agent-setup --namespace 403)
+
+    Remote/central-server mode: agent-setup is documented (docs/guides/team.md) to be
+    runnable by a client that only has MEMNOS_URL/MEMNOS_TOKEN, no direct Postgres access.
+    If MEMNOS_TOKEN is already set in the environment, use it verbatim and skip Postgres
+    entirely — minting here would require a DB connection the remote client may not have,
+    and would silently discard the admin-issued token the caller just exported. Gating on
+    MEMNOS_TOKEN alone (not also requiring MEMNOS_URL) matches the precedent already set
+    elsewhere in this CLI: "MEMNOS_URL/MEMNOS_TOKEN always win over the local
+    ~/.memnos/config.json" (see the embedded `memnos --help` reference, _CLI_MD_PREAMBLE).
+    Granting `extra_ns` on that token is then the server admin's job (`memnos grant`), not
+    ours — print a heads-up so a --namespace 403 doesn't look like a fresh bug.
+    Local/embedded mode (no MEMNOS_TOKEN set) is unchanged: mint via direct Postgres."""
+    name = (os.environ.get("USER") or "me").split()[0]
+    env_token = os.environ.get("MEMNOS_TOKEN")
+    if env_token:
+        if extra_ns and not _ns_covered(extra_ns, (f"user:{name}", "proj:*")):
+            print(f"[memnos] using MEMNOS_TOKEN from env for namespace '{extra_ns}' — "
+                  f"if it wasn't granted access to that namespace, writes will 403 "
+                  f"(the server admin grants it: memnos grant add <principal> {extra_ns}).")
+        return env_token, f"user:{name}"
     from core.control import Control
     conn = _conn(cfg)
     Control.init(conn)
-    name = (os.environ.get("USER") or "me").split()[0]
     try:
         pid = _principal_id(conn, name)
     except SystemExit:
@@ -2206,7 +2225,10 @@ def cmd_claude_setup(args, cfg):
     # issue #27 field report: bare `memnos recall/remember` (no inline token — e.g. the /admin
     # console's own instructions) 401 if config.json's admin_token was ever cleared (rotation,
     # partial reinstall). claude-setup is the tool people already re-run, so self-heal it here.
-    if not cfg.get("admin_token"):
+    # Remote/central-server mode (MEMNOS_TOKEN already set): skip — bare CLI calls already
+    # fall back to $MEMNOS_TOKEN before cfg's admin_token (see e.g. line ~1689), and minting a
+    # *local* admin_token would require the direct Postgres access a remote client doesn't have.
+    if not cfg.get("admin_token") and not os.environ.get("MEMNOS_TOKEN"):
         from core.control import Control
         aconn = _conn(cfg)
         Control.init(aconn)
@@ -2577,6 +2599,281 @@ def cmd_omnigent_setup(args, cfg):
     print("          Whatever harness Omnigent runs this agent through (Claude, Codex, "
           "Cursor, ...) now has the memnos recall/remember tools. Restart the agent "
           "session to activate.")
+
+
+_OMNIGENT_CAPTURE_HANDLER = "memnos_sdk.integrations.omnigent.capture_response"
+_OMNIGENT_CAPTURE_POLICY_NAME = "memnos_capture"
+
+
+def _verify_omnigent_grant(cfg, mode, token, ns, url=None):
+    """Best-effort, non-fatal check that `token` can actually reach namespace `ns` —
+    printed at setup time so a namespace/grant mismatch is caught HERE, not discovered
+    later as silent data loss. The capture policy's own write path never surfaces this:
+    a rejected write is swallowed and only logged server-side (see sdk/memnos_sdk/
+    integrations/omnigent.py `_do_remember`'s `except Exception: logger.warning(...)`) —
+    the operator would otherwise have no signal at all that nothing is being captured.
+
+    embedded mode: `token` was JUST minted via `_ensure_agent_token` against direct
+    Postgres access in this same process, so this re-checks the grant authoritatively
+    over that same connection — cheap (a couple of indexed lookups), no server needed.
+
+    central mode: no Postgres access by design, so this is a best-effort live HTTP probe
+    against `/recall` — cheap because the server's auth+ACL phase runs and can 403/401
+    BEFORE any embedding call (see memnos_server.py Handler._auth_short / _phased), so an
+    empty query never triggers real model work. This only confirms READ access (the
+    server's /recall ACL check is read-scoped); a namespace granted `--read-only` would
+    still reject the capture policy's writes, so the message says so rather than
+    overclaiming. Skipped entirely if no URL is known from this machine."""
+    if mode == "embedded":
+        try:
+            from core.control import Control
+            conn = _conn(cfg)
+            Control.init(conn)
+            pid = Control.authenticate(conn, token)
+            if pid is None or not Control.authorize(conn, pid, ns, write=True):
+                print(f"[memnos] WARNING: could not confirm the just-minted token can WRITE "
+                      f"to namespace '{ns}' — Omnigent capture would silently write nothing. "
+                      f"This should not happen right after minting; re-run with --force, or "
+                      f"grant it manually: memnos grant add omnigent {ns}")
+                return
+            print(f"[memnos] verified: the token can write to namespace '{ns}'.")
+        except Exception as e:
+            print(f"[memnos] NOTE: could not verify the '{ns}' grant ({type(e).__name__}: {e}).")
+        return
+
+    if not url:
+        print(f"[memnos] NOTE: cannot verify the '{ns}' grant from this machine (no MEMNOS_URL "
+              f"set here) — confirm it once the server is reachable, e.g.: "
+              f"MEMNOS_URL=<url> MEMNOS_TOKEN=... memnos whoami $MEMNOS_TOKEN")
+        return
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(
+        url.rstrip("/") + "/recall", method="POST",
+        data=json.dumps({"namespace": ns, "query": ""}).encode(),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+    try:
+        urllib.request.urlopen(req, timeout=5)
+        print(f"[memnos] verified: the token can at least READ namespace '{ns}' at {url} "
+              f"(if it was granted --read-only, capture writes will still be rejected).")
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            print(f"[memnos] WARNING: the token is NOT authorized for namespace '{ns}' at "
+                  f"{url} (403) — Omnigent capture will silently write nothing until this is "
+                  f"fixed. Ask the memnos admin to grant it: memnos grant add <principal> {ns}")
+        elif e.code == 401:
+            print(f"[memnos] WARNING: MEMNOS_TOKEN is not valid at {url} (401) — Omnigent "
+                  f"capture will fail to authenticate entirely.")
+        elif e.code == 400:      # auth+ACL passed; 400 is only the empty-query validation
+            print(f"[memnos] verified: the token can at least READ namespace '{ns}' at {url} "
+                  f"(if it was granted --read-only, capture writes will still be rejected).")
+        else:
+            print(f"[memnos] NOTE: could not verify the '{ns}' grant ({e.code} from {url}) "
+                  f"— check manually.")
+    except Exception as e:
+        print(f"[memnos] NOTE: could not verify the '{ns}' grant right now "
+              f"({type(e).__name__}: {e}) — the server may not be reachable yet. Confirm "
+              f"manually once it's up: MEMNOS_URL={url} MEMNOS_TOKEN=... memnos whoami "
+              f"$MEMNOS_TOKEN")
+
+
+def cmd_server_setup_omnigent(args, cfg):
+    """Wire memnos into an Omnigent SERVER as a server-wide `type: function` policy —
+    NOT into a single agent (that's `memnos agent-setup omnigent`, an unrelated, older
+    command that adds an inline `tools.memnos` MCP entry to one agent's config.yaml so
+    that agent can explicitly call recall/remember). This command instead edits the
+    server's own `--config` YAML (omnigent/spec/parser.py `parse_default_policies`,
+    ~line 3602) so EVERY agent Omnigent runs gets its assistant responses captured
+    automatically, with no per-agent wiring and no Omnigent source changes.
+
+    Deliberately does NOT default to ~/.omnigent/config.yaml: that path is where the
+    *agent registry* (`default_agent`) lives, a different file with a different schema
+    than the server's `-c/--config` YAML, even though a hosted/Docker deploy CAN
+    (confusingly) resolve its OWN separate `policies:`-bearing config to that same path
+    via $OMNIGENT_CONFIG (see omnigent/server/server_config.py `resolve_data_dir`). To
+    avoid silently writing into the wrong file — or the right file for the wrong reason
+    — this command requires the operator name the exact path explicitly (or set
+    $OMNIGENT_CONFIG, which both `omnigent server` hosted entrypoints and this command
+    honor identically).
+
+    Secrets stay out of the YAML: MEMNOS_TOKEN is read from the environment only, never
+    written into the generated `config:` block (that file is operator-editable and
+    often world-readable — same posture omnigent/server/server_config.py itself
+    documents). This command PRINTS the token/export instructions instead.
+
+    --mode embedded (default): the omnigent server and memnos run on the same machine.
+    ALWAYS mints a fresh `agent:omnigent` principal through direct Postgres access — same
+    mechanism `_ensure_agent_token` already uses for Hermes/OpenClaw — and bakes the
+    concrete local memnos_url into the YAML. A pre-set $MEMNOS_TOKEN in the operator's own
+    shell is deliberately IGNORED here, not reused: docs/guides/team.md tells developers
+    to export MEMNOS_TOKEN for their OWN personal agent-setup, so an operator who has that
+    set while running this command would otherwise silently get server-wide capture
+    authenticated as their PERSONAL identity instead of a dedicated service principal, with
+    no warning. (Only --mode central, which never touches Postgres, honors a pre-set
+    $MEMNOS_TOKEN — see below — because it has no other way to get a token.)
+
+    --mode central: the omnigent server talks to a remote/shared memnos over HTTP only
+    (docs/guides/team.md topology). Never touches Postgres — requires $MEMNOS_TOKEN to
+    already be set (minted by the memnos admin) exactly like `_ensure_claude_token`'s
+    already-fixed remote-mode precedent; omits memnos_url from the YAML so the server
+    process's own $MEMNOS_URL always decides where it talks to.
+
+    Idempotent (skips if the 'memnos_capture' policy already exists, unless --force);
+    merges into any existing `policies:` block rather than clobbering other policies;
+    backs up the file first via _backup()."""
+    import yaml as _yaml
+
+    config_path = getattr(args, "config", None) or os.environ.get("OMNIGENT_CONFIG")
+    if not config_path:
+        sys.exit(
+            "server-setup omnigent: no --config given and $OMNIGENT_CONFIG is not set.\n"
+            "         This must be the YAML file passed to `omnigent server --config <path>`\n"
+            "         (or, for a Docker/hosted deploy, the file $OMNIGENT_CONFIG points at) —\n"
+            "         it is NOT ~/.omnigent/config.yaml's 'default_agent' registry (the file\n"
+            "         `memnos agent-setup omnigent` reads/writes; that command is unrelated).\n"
+            "         Pass it explicitly:\n"
+            "           memnos server-setup omnigent --config <path-to-server-config.yaml>"
+        )
+    config_path = os.path.expanduser(str(config_path))
+
+    try:
+        spec = _yaml.safe_load(open(config_path)) if os.path.exists(config_path) else {}
+    except Exception as e:
+        sys.exit(f"server-setup omnigent: failed to parse {config_path}: {e}")
+    if spec is None:
+        spec = {}
+    if not isinstance(spec, dict):
+        sys.exit(f"server-setup omnigent: {config_path} is not a YAML mapping")
+
+    policies = spec.get("policies")
+    if policies is None:
+        policies = {}
+    elif not isinstance(policies, dict):
+        sys.exit(f"server-setup omnigent: {config_path}'s existing 'policies:' block "
+                 f"is not a mapping — refusing to overwrite it")
+
+    ns_override = getattr(args, "namespace", None)
+    if _OMNIGENT_CAPTURE_POLICY_NAME in policies and not getattr(args, "force", False):
+        print(f"[memnos] server-setup omnigent: '{_OMNIGENT_CAPTURE_POLICY_NAME}' already "
+              f"wired in {config_path} (use --force to re-wire).")
+        # --namespace (or any other flag) is NOT applied on this early-return path — say so
+        # explicitly, rather than exit 0 with no sign the requested override was skipped.
+        existing_ns = (policies[_OMNIGENT_CAPTURE_POLICY_NAME].get("config") or {}).get("memnos_namespace")
+        if ns_override and ns_override != existing_ns:
+            print(f"          NOTE: --namespace {ns_override!r} was NOT applied — the file "
+                  f"already wires namespace {existing_ns!r}. Re-run with --force to change it.")
+        return
+
+    mode = getattr(args, "mode", None) or "embedded"
+    env_token = os.environ.get("MEMNOS_TOKEN")
+
+    if mode == "central":
+        if not env_token:
+            sys.exit(
+                "server-setup omnigent --mode central: $MEMNOS_TOKEN is not set.\n"
+                "         Central mode wires the server to a remote/shared memnos over HTTP\n"
+                "         only — it never touches Postgres directly, so a token must already\n"
+                "         exist (an admin mints one: memnos token mint ... — see\n"
+                "         docs/guides/team.md). Set both, then re-run:\n"
+                "           export MEMNOS_URL=<https://your-shared-memnos>\n"
+                "           export MEMNOS_TOKEN=<the minted token>"
+            )
+        token = env_token
+        ns = ns_override or "agent:omnigent"
+        config_url = None      # the server process's own $MEMNOS_URL decides at runtime
+        url_for_print = os.environ.get("MEMNOS_URL") or "(set MEMNOS_URL in the server's own environment)"
+    else:
+        if mode != "embedded":
+            sys.exit(f"server-setup omnigent: unknown --mode {mode!r} (choose: embedded, central)")
+        # Always mint a fresh agent:omnigent principal via direct Postgres access — even if
+        # MEMNOS_TOKEN happens to be set in the operator's own shell. See the docstring: a
+        # pre-set MEMNOS_TOKEN there is virtually always the operator's OWN personal token
+        # (docs/guides/team.md tells developers to export it for that), and reusing it
+        # verbatim would silently authenticate server-wide capture as that personal identity
+        # instead of a dedicated service principal. Embedded mode already requires direct
+        # Postgres access for everything else this branch does, so minting has no new cost.
+        token, default_ns = _ensure_agent_token(cfg, "omnigent", extra_ns=ns_override)
+        ns = ns_override or default_ns
+        config_url = os.environ.get("MEMNOS_URL") or f"http://127.0.0.1:{cfg.get('port', 8900)}"
+        url_for_print = config_url
+
+    policy_config = {"memnos_namespace": ns}
+    if config_url:
+        policy_config["memnos_url"] = config_url
+    policies[_OMNIGENT_CAPTURE_POLICY_NAME] = {
+        "type": "function",
+        "handler": _OMNIGENT_CAPTURE_HANDLER,
+        "config": policy_config,
+    }
+    spec["policies"] = policies
+
+    parent = os.path.dirname(config_path) or "."
+    os.makedirs(parent, exist_ok=True)
+    _backup(config_path)
+    # Atomic write: a crash/kill mid-write must never leave the live Omnigent server config
+    # truncated or partially written. Write to a temp file in the SAME directory (so the
+    # final os.replace is a same-filesystem rename, not a copy) and swap it into place —
+    # the config file is always either the old complete content or the new complete content,
+    # never a partial state in between.
+    import tempfile
+    # mkstemp() always creates 0600 (security default) — os.replace() would then silently
+    # narrow an existing config from its real mode (this file is "operator-editable and
+    # often world-readable" per the docstring above, and a hosted/Docker `omnigent server`
+    # may run as a different user than whoever ran this command) down to owner-only on
+    # every single run. Preserve the pre-existing file's mode, or fall back to the normal
+    # umask-derived default for a brand-new file (matching what `open(path, "w")` would
+    # have created), so permissions never change as a side effect of this atomicity fix.
+    if os.path.exists(config_path):
+        prior_mode = os.stat(config_path).st_mode & 0o777
+    else:
+        _um = os.umask(0); os.umask(_um)      # read-only probe: umask() has no "peek" API
+        prior_mode = 0o666 & ~_um
+    fd, tmp_path = tempfile.mkstemp(prefix=".memnos-capture-", suffix=".yaml.tmp", dir=parent)
+    try:
+        with os.fdopen(fd, "w") as f:
+            _yaml.safe_dump(spec, f, sort_keys=False, default_flow_style=False)
+        os.chmod(tmp_path, prior_mode)
+        os.replace(tmp_path, config_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+    print(f"[memnos] server-setup omnigent wired -> {config_path} "
+          f"(policy '{_OMNIGENT_CAPTURE_POLICY_NAME}', mode={mode}, ns={ns}).")
+    print("          Every Omnigent-orchestrated agent turn's assistant response (posted "
+          "through the")
+    print("          standard message API) will be captured into memnos — one-directional, "
+          "write-only,")
+    print("          no recall/injection. See docs/integrations/omnigent.md for exact "
+          "coverage + caveats.")
+    print()
+    print("          The omnigent SERVER process's Python environment needs:")
+    print("              pip install memnos-sdk")
+    if mode == "central":
+        print(f"          And its own environment must already have MEMNOS_URL + MEMNOS_TOKEN "
+              f"set (currently MEMNOS_URL={url_for_print}).")
+    else:
+        print("          Set this in the server process's own environment before starting it "
+              "(never committed to the YAML):")
+        print(f"              export MEMNOS_TOKEN={token}")
+        print(f"          (memnos_url is baked into the generated config: {url_for_print})")
+    print()
+    _verify_omnigent_grant(cfg, mode, token, ns,
+                           url=os.environ.get("MEMNOS_URL") if mode == "central" else config_url)
+    print()
+    print(f"          Restart `omnigent server --config {config_path}` to activate.")
+
+
+def cmd_server_setup(args, cfg):
+    """Dispatch `memnos server-setup <target>` to the target-specific implementation.
+    Only 'omnigent' exists today; kept as a dispatcher (mirroring cmd_agent_setup's
+    shape) so a second server-wide integration doesn't need a new top-level verb."""
+    if args.target == "omnigent":
+        return cmd_server_setup_omnigent(args, cfg)
+    sys.exit(f"server-setup: unknown target {args.target!r}")
 
 
 def cmd_agent_setup(args, cfg):
@@ -3392,6 +3689,20 @@ def build_parser():
                         "The default stays 'stdio' — pass 'http' explicitly to actually "
                         "close issue #37's subprocess-sprawl bug for your own setup")
     p.set_defaults(fn=cmd_agent_setup)
+    p = sub.add_parser("server-setup",
+                       help="wire memnos into a server-wide extension point (currently: omnigent)")
+    p.add_argument("target", choices=["omnigent"], help="which server integration to wire")
+    p.add_argument("--config",
+                   help="omnigent: path to the server's --config YAML (or set $OMNIGENT_CONFIG) — "
+                        "NOT ~/.omnigent/config.yaml's agent registry")
+    p.add_argument("--mode", choices=["embedded", "central"], default="embedded",
+                   help="embedded: local memnos on this machine (default). central: a "
+                        "remote/shared memnos via MEMNOS_URL+MEMNOS_TOKEN (must already be set)")
+    p.add_argument("--namespace", help="default namespace captured turns are written to "
+                                       "(default: agent:omnigent)")
+    p.add_argument("--force", action="store_true",
+                   help="re-wire even if the capture policy is already present")
+    p.set_defaults(fn=cmd_server_setup)
     p = sub.add_parser("claude-setup", help="(alias of: memnos agent-setup claude-code)")
     p.add_argument("--namespace", help="default namespace for Claude Code")
     p.add_argument("--force", action="store_true", help="set up even if ~/.claude is missing")
@@ -3443,6 +3754,7 @@ _DOC_GROUPS = [
     ("Secrets", ["secret"]),
     ("Observability", ["stats", "health"]),
     ("Agent integrations", ["agent-setup", "claude-setup", "hook"]),
+    ("Server integrations", ["server-setup"]),
     ("Maintenance", ["admin", "migrate-embeddings", "help"]),
 ]
 

@@ -419,6 +419,21 @@ echo '{}' | memnos hook status
 ```
 
 
+## Server integrations
+
+### `memnos server-setup`
+
+wire memnos into a server-wide extension point (currently: omnigent)
+
+| argument | description |
+|---|---|
+| `target` | which server integration to wire (one of: `omnigent`) |
+| `--config` | omnigent: path to the server's --config YAML (or set $OMNIGENT_CONFIG) — NOT ~/.omnigent/config.yaml's agent registry |
+| `--mode` | embedded: local memnos on this machine (default). central: a remote/shared memnos via MEMNOS_URL+MEMNOS_TOKEN (must already be set) (one of: `embedded`, `central`; default `embedded`) |
+| `--namespace` | default namespace captured turns are written to (default: agent:omnigent) |
+| `--force` | re-wire even if the capture policy is already present |
+
+
 ## Maintenance
 
 ### `memnos admin`

@@ -35,7 +35,10 @@ def check(name, cond):
     PASS += cond; FAIL += (not cond)
 
 
-def run(home, *args):
+def run(home, *args, extra_env=None):
+    """extra_env: dict merged into the subprocess env after the defaults below — a value
+    of None DELETES that key, so a test can force e.g. MEMNOS_TOKEN absent regardless of
+    what the host shell happens to export."""
     env = dict(os.environ, MEMNOS_DSN=DSN, HOME=home)
     try:
         for line in open(os.path.join(ROOT, ".env")):
@@ -43,6 +46,12 @@ def run(home, *args):
                 env["MEMNOS_SECRET_KEY"] = line.strip().split("=", 1)[1]
     except FileNotFoundError:
         pass
+    if extra_env:
+        for k, v in extra_env.items():
+            if v is None:
+                env.pop(k, None)
+            else:
+                env[k] = v
     r = subprocess.run([PY, os.path.join(ROOT, "memnos_cli.py"), *args],
                        capture_output=True, text=True, env=env, timeout=60)
     return r.returncode, (r.stdout + r.stderr)
@@ -302,6 +311,87 @@ def main():
     rc, out = run(home2, "agent-setup", "omnigent")
     check("omnigent: fails loud with no --agent-dir and no ~/.omnigent/config.yaml",
           rc != 0 and "agent-dir" in out)
+
+    # --- Bug: agent-setup always minted a brand-new token via a direct Postgres connection
+    # (_ensure_claude_token -> Control.mint_token), ignoring a MEMNOS_TOKEN already present
+    # in the environment. That breaks the documented central/team-server workflow
+    # (docs/guides/team.md): a developer exports MEMNOS_URL + MEMNOS_TOKEN and runs
+    # `memnos agent-setup <agent>` expecting their admin-issued token to be wired in — the
+    # old code silently discarded it and tried to mint against a DSN the remote client may
+    # not even be able to reach. Fixed: an env MEMNOS_TOKEN is now used verbatim and
+    # Postgres is never touched. Point MEMNOS_DSN at an unreachable address below to PROVE
+    # no DB connection is attempted — if the fix regresses to minting, these would fail
+    # loud (connection error) instead of writing the preset token.
+    UNREACHABLE_DSN = "postgresql://nouser:nopass@127.0.0.1:1/nodb"
+    PRESET_TOKEN = "mnk_PRESET_REMOTE_TOKEN_FOR_TEST"
+    REMOTE_ENV = {"MEMNOS_DSN": UNREACHABLE_DSN,
+                  "MEMNOS_URL": "https://memnos.example.internal:8900",
+                  "MEMNOS_TOKEN": PRESET_TOKEN}
+
+    cur_remote = os.path.join(home, ".cursor", "mcp.json")
+    with open(cur_remote, "w") as f:
+        json.dump({"mcpServers": {}}, f)
+    rc, out = run(home, "agent-setup", "cursor", extra_env=REMOTE_ENV)
+    check("MEMNOS_TOKEN env: agent-setup exits 0 against an unreachable DSN (no DB touched)",
+          rc == 0)
+    cr = json.load(open(cur_remote)).get("mcpServers", {}).get("memnos", {}).get("env", {})
+    check("MEMNOS_TOKEN env: preset token is used verbatim in the generated config",
+          cr.get("MEMNOS_TOKEN") == PRESET_TOKEN)
+
+    # omnigent goes through the SAME shared helper (_ensure_claude_token) — this is the
+    # immediate motivating case: an Omnigent host wired to a central memnos server often
+    # has no direct Postgres access at all, so this integration was unusable before the fix.
+    omni_remote_dir = os.path.join(home, "omni_remote_agent")
+    os.makedirs(omni_remote_dir, exist_ok=True)
+    omni_remote_cfg = os.path.join(omni_remote_dir, "config.yaml")
+    with open(omni_remote_cfg, "w") as f:
+        yaml.safe_dump({"spec_version": 1, "name": "omni_remote_agent"}, f)
+    rc, out = run(home, "agent-setup", "omnigent", "--agent-dir", omni_remote_dir,
+                  extra_env=REMOTE_ENV)
+    check("omnigent + MEMNOS_TOKEN env: exits 0 against an unreachable DSN (no DB touched)",
+          rc == 0)
+    ot = yaml.safe_load(open(omni_remote_cfg)).get("tools", {}).get("memnos", {}).get("env", {})
+    check("omnigent + MEMNOS_TOKEN env: preset token is used verbatim in the generated config",
+          ot.get("MEMNOS_TOKEN") == PRESET_TOKEN)
+
+    # claude-code is the HEADLINE case: it's the exact command docs/guides/team.md:140 tells
+    # a developer to run after exporting MEMNOS_URL/MEMNOS_TOKEN. cmd_claude_setup does more
+    # than call _ensure_claude_token, though — it also self-heals cfg's local admin_token via
+    # its OWN independent _conn(cfg) call, which must be skipped too or this exact documented
+    # command still crashes remotely even with the shared-helper fix in place. Needs a FRESH
+    # home (no pre-existing ~/.memnos/config.json admin_token) to actually exercise that path.
+    home3 = tempfile.mkdtemp(prefix="memnos_agents_")
+    os.makedirs(os.path.join(home3, ".claude"), exist_ok=True)
+    rc, out = run(home3, "agent-setup", "claude-code", extra_env=REMOTE_ENV)
+    check("claude-code + MEMNOS_TOKEN env: exits 0 against an unreachable DSN (no DB touched)",
+          rc == 0)
+    cc_cfg = json.load(open(os.path.join(home3, ".claude.json")))
+    cc_env = cc_cfg.get("mcpServers", {}).get("memnos", {}).get("env", {})
+    check("claude-code + MEMNOS_TOKEN env: preset token is used verbatim in the MCP config",
+          cc_env.get("MEMNOS_TOKEN") == PRESET_TOKEN)
+    cc_settings = json.load(open(os.path.join(home3, ".claude", "settings.json")))
+    check("claude-code + MEMNOS_TOKEN env: hooks still wired (recall/remember) despite no DB",
+          "memnos hook recall" in json.dumps(cc_settings.get("hooks", {}))
+          and "memnos hook remember" in json.dumps(cc_settings.get("hooks", {})))
+    memnos_cfg_path = os.path.join(home3, ".memnos", "config.json")
+    memnos_cfg = json.load(open(memnos_cfg_path)) if os.path.exists(memnos_cfg_path) else {}
+    check("claude-code + MEMNOS_TOKEN env: no local admin_token minted (no DB access to mint it)",
+          not memnos_cfg.get("admin_token"))
+
+    # Regression guard: with NO MEMNOS_TOKEN in the env, the pre-existing local-mint-via-
+    # Postgres behavior is unchanged — a fresh mnk_ token is minted against the real DSN.
+    wind_local = os.path.join(home, ".codeium", "windsurf", "mcp_config.json")
+    os.makedirs(os.path.dirname(wind_local), exist_ok=True)
+    with open(wind_local, "w") as f:
+        json.dump({"mcpServers": {}}, f)
+    rc, out = run(home, "agent-setup", "windsurf",
+                  extra_env={"MEMNOS_TOKEN": None, "MEMNOS_URL": None})
+    check("no MEMNOS_TOKEN: agent-setup exits 0 (local-mint path unchanged)", rc == 0)
+    wl = json.load(open(wind_local)).get("mcpServers", {}).get("memnos", {}).get("env", {})
+    check("no MEMNOS_TOKEN: a fresh token is minted via Postgres (still starts with mnk_)",
+          wl.get("MEMNOS_TOKEN", "").startswith("mnk_"))
+    check("no MEMNOS_TOKEN: minted token differs from the unrelated preset token above",
+          wl.get("MEMNOS_TOKEN") != PRESET_TOKEN)
 
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
