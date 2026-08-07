@@ -50,6 +50,13 @@ jobs:
       # 500ms budget is the LOCAL/field gate; CI asserts a looser bound that still catches
       # gross regressions. (tests/test_recall_latency.py reads this.)
       MEMNOS_LATENCY_BUDGET_MS: "1500"
+      # tests/test_agent_setup_http_transport.py's Omnigent config-generation contract test
+      # (issue #37 Layer 1): provisioned below via clone+sync, so this MUST actually run in
+      # CI rather than silently skip — MEMNOS_REQUIRE_OMNIGENT turns a missing checkout/`uv`
+      # or a sync timeout into a hard failure here (locally, without it set, they're loud
+      # skips instead — see that test's docstring).
+      OMNIGENT_REPO: /home/runner/omnigent
+      MEMNOS_REQUIRE_OMNIGENT: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -100,6 +107,20 @@ jobs:
           [ "$ok" = 1 ] || { echo "::error::reranker/embedding model download failed after 3 attempts (HF Hub unreachable?)"; exit 1; }
       - name: Enable pgvector
         run: PGPASSWORD=memnos_ci psql -h localhost -p 5433 -U memnos -d memnos -c "CREATE EXTENSION IF NOT EXISTS vector"
+      - name: Install uv (for the Omnigent config-generation contract test)
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"       # Omnigent requires Python >=3.12; independent of
+          enable-cache: true            # this job's own 3.11 interpreter (setup-python above)
+      - name: Clone + sync Omnigent (issue #37 Layer 1 config-generation contract)
+        # Public repo, no auth needed. MEMNOS_REQUIRE_OMNIGENT=1 (job env, above) means
+        # tests/test_agent_setup_http_transport.py FAILS rather than skips if this step
+        # didn't leave a working checkout at $OMNIGENT_REPO. OMNIGENT_SKIP_WEB_UI: the
+        # test only needs omnigent.spec.parser/validator (pure Python) — the bundled web
+        # UI's `pnpm install --filter web` isn't available on this runner and isn't needed.
+        run: |
+          git clone --depth 1 https://github.com/omnigent-ai/omnigent "$OMNIGENT_REPO"
+          cd "$OMNIGENT_REPO" && OMNIGENT_SKIP_WEB_UI=true uv sync
       - name: Start server (free local-384 mode) + wait for ready
         run: |
           python memnos_server.py > /tmp/srv.log 2>&1 & echo $! > /tmp/srv.pid
