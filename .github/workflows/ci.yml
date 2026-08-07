@@ -101,7 +101,7 @@ jobs:
       - name: Enable pgvector
         run: PGPASSWORD=memnos_ci psql -h localhost -p 5433 -U memnos -d memnos -c "CREATE EXTENSION IF NOT EXISTS vector"
       - name: Install uv (for the Omnigent config-generation contract test)
-        uses: astral-sh/setup-uv@v9
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.12"       # Omnigent requires Python >=3.12; independent of
           enable-cache: true            # this job's own 3.11 interpreter (setup-python above)
