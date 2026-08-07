@@ -6,12 +6,15 @@ Schema identifiers are validated; values are parameterized.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Iterable, Sequence
 
 import psycopg
 from psycopg.rows import dict_row
+
+logger = logging.getLogger(__name__)
 
 _IDENT = re.compile(r"^[a-z0-9_]+$")
 
@@ -28,23 +31,167 @@ def vlit(vec: Sequence[float]) -> str:
 # FULL query is still used for the vector arm (the embedding is order-insensitive and
 # fixed-size) and for the cross-encoder, so retrieval quality on normal queries is
 # unchanged — only pathological queries are bounded. MEMNOS_FTS_MAX_TOKENS tunes the cap.
+#
+# issue #41 fix B: the #15 clamp bounded whitespace-token COUNT, but tsquery-parser
+# overflow ("tsquery stack too small") is a function of the built tsquery's node/operator
+# count, not word count, so word count alone is the wrong thing to bound. Measured against
+# a live pg16 (numnode() on the built tsquery, same word count each time): a leading "-"
+# on every word measurably inflates node count, but LINEARLY and ADDITIVELY (+1 node per
+# negated word, not a multiplier that compounds with query length); quoted phrases and
+# "OR" don't inflate at all on this Postgres version.
+#
+# A PRIOR version of this fix (see PR #43's review history) concluded from that data that
+# bounding WORD COUNT alone therefore bounds node count for ANY shape, and computed a
+# pure-Python estimate to gate on instead of asking Postgres directly. That conclusion was
+# FALSE, and a follow-up adversarial review found the counterexample: a word containing
+# INTERNAL hyphens (kebab-case identifiers — file paths, stack traces, branch names, CSS
+# selectors, exactly the text a coding-assistant memory store fields constantly) doesn't
+# cost one node like a plain word. Postgres's text-search parser DECOMPOSES a hyphenated
+# compound into multiple sub-lexemes joined by phrase operators — measured live: a single
+# word with 200 internal hyphens alone already produces >400 nodes, and 40 such words
+# together produced numnode() in the low thousands, versus a Python word-count estimate of
+# 79. At high enough hyphen density this reproduces a real, unhandled
+# `psycopg.errors.ProgramLimitExceeded: value is too big in tsquery` straight through the
+# pass-through path the estimate judged "safe" — the exact crash class issue #41 exists to
+# eliminate, just via a shape the leading-"-"/quote/OR analysis never covered.
+#
+# The lesson: modeling Postgres's tsquery-construction cost in Python is fragile by
+# construction — it's correct for exactly the constructs someone thought to measure, and
+# silently wrong (in the dangerous, UNDER-counting direction) for the next one nobody
+# fuzzed yet. So fts_clamp no longer estimates complexity at all. It asks Postgres
+# directly: build the actual tsquery and check its actual numnode() against the bound, via
+# a short-lived, tightly time-boxed probe (see _tsquery_within_bound) that can never itself
+# become the failure point — even a query so pathological that BUILDING it for the probe
+# would blow the tsquery parser's own internal limit is caught there and treated as "not
+# safe," never allowed to propagate. This is authoritative for any current or future
+# tsquery-expanding construct, not just the ones already known about.
+#
+# issue #41 fix B, round 3: the probe's own except clause repeated exactly the mistake this
+# section just described — it caught only the two specific error types (ProgramLimitExceeded,
+# QueryCanceled) observed from the shapes tested so far, and a THIRD live Postgres error
+# shape slipped straight through uncaught: a bare run of >=33 consecutive literal hyphens
+# (an ordinary markdown/YAML/ASCII divider — ordinary content, not adversarial fuzzing)
+# raises `psycopg.errors.InternalError_: tsquery stack too small` (SQLSTATE XX000), which
+# shares no ancestor with either caught type and reproduced issue #41's original crash
+# straight through the code path built to eliminate it. A NUL byte in the query text
+# (`psycopg.DataError`, raised by psycopg itself before the statement ever reaches the
+# server — no SQLSTATE, since Postgres never saw it) hits the same unguarded path.
+# Enumerating a third specific type would repeat the identical mistake a third time for
+# whatever shape nobody's tried yet, so the except clause now catches
+# `psycopg.DatabaseError` — every DatabaseError-class failure this probe query can raise,
+# both server-reported (SQLSTATE-carrying) errors and psycopg's own pre-flight input
+# rejections alike, by construction, not by enumeration. It deliberately does NOT catch
+# `psycopg.InterfaceError` (misuse of the driver/connection itself — e.g. executing
+# against an already-closed cursor — a bug in this code, not a property of the query
+# text, and one that should crash loudly rather than be silently filed as "unsafe
+# input").
+#
+# NOT in scope here (issue #41 fix C, deferred — see the TODO at this module's FTS call
+# sites below for the current reasoning): even with this bound, a single-arm timeout/error
+# still propagates straight to the caller instead of degrading the recall to a partial
+# result.
+_FTS_DEFAULT_TOKENS = 40   # was 200; a lower cap bounds the size of text the safety probe
+                           # itself has to evaluate, independent of the probe's own result.
+
+# safety ceiling on tsquery node count a clamped query may have. Somewhat arbitrary (not
+# derived from a hard Postgres limit — the real parser limit is far higher, see
+# ProgramLimitExceeded above) but small enough that numnode() evaluation itself stays fast.
+_FTS_NODE_BOUND_MULTIPLIER = 3
+
+# statement_timeout (ms) for the numnode() safety probe itself — deliberately much
+# tighter than the connection's normal request-scoped timeout, so an oversized/pathological
+# probe input fails fast as a caught QueryCanceled instead of tying up the probe for
+# seconds. Tunable in case a slower/busier deployment needs more headroom.
+_FTS_NODE_CHECK_TIMEOUT_MS = int(os.environ.get("MEMNOS_FTS_NODE_CHECK_TIMEOUT_MS", "300"))
+
+
 def _fts_max_tokens() -> int:
     try:
-        return max(1, int(os.environ.get("MEMNOS_FTS_MAX_TOKENS", "200")))
+        return max(1, int(os.environ.get("MEMNOS_FTS_MAX_TOKENS", str(_FTS_DEFAULT_TOKENS))))
     except (TypeError, ValueError):
-        return 200
+        return _FTS_DEFAULT_TOKENS
 
 
-def fts_clamp(qtext: str) -> str:
-    """Clamp the text passed to websearch_to_tsquery to the first N whitespace tokens so a
-    pathologically long query can never overflow the Postgres tsquery parser stack."""
+def _fts_node_bound(cap: int) -> int:
+    return _FTS_NODE_BOUND_MULTIPLIER * cap
+
+
+def _tsquery_within_bound(conn, qtext: str, bound: int) -> bool:
+    """Authoritative safety probe: ask Postgres directly whether
+    numnode(websearch_to_tsquery('english', qtext)) <= bound, rather than modeling the
+    parser's cost in Python (see the module comment above for why that was tried and
+    found unsafe). Runs under its own short statement_timeout, independent of and much
+    tighter than the connection's normal one, restored via `SET ... TO DEFAULT` afterward
+    (reverts to the value configured when this connection was opened, e.g. via the pool's
+    `-c statement_timeout=...` option — not a hardcoded system default). Any
+    DatabaseError-class failure for this query — a timeout (QueryCanceled), a parser
+    limit (ProgramLimitExceeded), an internal parser error (InternalError_, e.g. "tsquery
+    stack too small" on a bare run of hyphens), any other SQLSTATE-carrying error the
+    server reports, or input psycopg itself rejects before the statement ever reaches the
+    server (DataError, e.g. an embedded NUL byte -- no SQLSTATE, since Postgres never saw
+    it) — means "not measurable as safe," full stop: caught here via
+    `psycopg.DatabaseError` (the common ancestor of every such error, not an enumerated
+    list of the ones seen so far — see the module comment above), never allowed to
+    propagate. `psycopg.InterfaceError` (client/driver misuse, not a property of qtext)
+    is deliberately NOT caught here and propagates
+    normally. The connection is left usable afterward either way (autocommit means no
+    caught error poisons a transaction)."""
     if not qtext:
-        return qtext
-    parts = qtext.split()
+        return True
+    with conn.cursor() as c:
+        c.execute(f"SET statement_timeout = {_FTS_NODE_CHECK_TIMEOUT_MS}")
+        try:
+            c.execute(
+                "SELECT (numnode(websearch_to_tsquery('english', %s)) <= %s) AS ok",
+                (qtext, bound))
+            row = c.fetchone()
+            return bool(row["ok"] if isinstance(row, dict) else row[0])
+        except psycopg.DatabaseError:
+            return False
+        finally:
+            c.execute("SET statement_timeout = DEFAULT")
+
+
+def fts_clamp(qtext: str, conn) -> str:
+    """Bound the complexity of the tsquery websearch_to_tsquery('english', qtext) will
+    build (issue #41), WITHOUT rewriting query semantics for queries that don't need it.
+    `conn` is REQUIRED: the safety check is a real, bounded Postgres probe
+    (_tsquery_within_bound), not a Python estimate — see the module comment above for why
+    a pure-Python model was tried and found to silently undercount real tsquery cost for
+    hyphenated/kebab-case text. Every production call site is a BrainStore method with
+    `self.conn` already available.
+
+    A query at or under the token cap AND confirmed (via the probe) at or under the node
+    bound is returned byte-for-byte unchanged — "-" exclusions, quoted phrases, and "OR"
+    all keep their native websearch_to_tsquery meaning. A query over either bound is
+    shrunk (word count first, then — only if a single remaining word is itself still over
+    bound, e.g. one massively hyphen-decomposed identifier — that word's character length)
+    until the probe confirms it's safe."""
     cap = _fts_max_tokens()
-    if len(parts) <= cap:
-        return qtext
-    return " ".join(parts[:cap])
+    bound = _fts_node_bound(cap)
+    parts = qtext.split() if qtext else []
+    candidate = qtext if len(parts) <= cap else " ".join(parts[:cap])
+
+    if _tsquery_within_bound(conn, candidate, bound):
+        return candidate
+
+    # candidate is confirmed (not estimated) too complex -- shrink by halving word count
+    # until the probe confirms it's safe or a single word remains.
+    words = candidate.split()
+    while len(words) > 1:
+        words = words[: max(1, len(words) // 2)]
+        shrunk = " ".join(words)
+        if _tsquery_within_bound(conn, shrunk, bound):
+            return shrunk
+
+    # down to a single word and it's STILL unsafe -- the pathological complexity is
+    # packed into one token (e.g. a single identifier with hundreds of internal hyphens,
+    # confirmed live to exceed the bound on its own). Shrink its character length the
+    # same way, probe-verified at each step.
+    word = words[0] if words else ""
+    while len(word) > 1 and not _tsquery_within_bound(conn, word, bound):
+        word = word[: max(1, len(word) // 2)]
+    return word
 
 
 # The #15 fix clamped only the FTS arm; the EMBEDDING and the cross-encoder RERANKER still
@@ -124,6 +271,15 @@ def detect_vector_type(conn) -> str:
         return "vector"
 
 
+# module-level, shared by every BrainStore instance in this process (issue #41 follow-up):
+# once a namespace's registry row is known to exist, insert_raw_turn skips the upsert for
+# it on every later call, for the rest of this process's life -- a 50-turn ingest_session
+# no longer issues 50 redundant no-op INSERTs. Two threads racing a first write to the same
+# new namespace can both miss the cache and both issue the upsert once; harmless (ON
+# CONFLICT DO NOTHING backstops correctness), so no lock is needed here.
+_known_registered_namespaces: set[str] = set()
+
+
 class BrainStore:
     def __init__(self, dsn: str | None = None, conn=None):
         # Accept a pooled connection (production) or open one from a DSN (scripts/tests).
@@ -183,7 +339,37 @@ class BrainStore:
                 f"VALUES(%s,%s,%s,%s,%s,%s::{self.vtype},%s,%s) RETURNING id",
                 (ns, session_id, speaker, text, observed_at,
                  vlit(vec) if vec is not None else None, author, memory_type))
-            return c.fetchone()["id"]
+            tid = c.fetchone()["id"]
+            # issue #41 fix A: the single choke point every new namespace's first write
+            # passes through (remember/remember_turn/ingest_session all land here) — upsert
+            # it into the control-plane registry so readable_namespaces() can resolve
+            # wildcard grants against that small table instead of DISTINCT-scanning
+            # raw_turns/semantic on every wide recall. ON CONFLICT DO NOTHING: never
+            # downgrades a namespace an admin already explicitly registered (create_namespace
+            # sets auto_registered=false; this only fires for a name not already present).
+            # Connections run autocommit (memnos_server.py POOL / connect() below), so this
+            # isn't atomic with the raw_turn insert above -- a crash between the two is
+            # harmless and self-healing: the next write to this namespace, or the boot-time
+            # backfill in Control._run_namespace_registry_backfill, fills the gap. Nothing
+            # downstream treats "missing from the registry" as more than "not yet
+            # observed", so it never needs to be atomic -- which is also why a failure here
+            # must never fail the write: the raw_turn row above is ALREADY DURABLY COMMITTED
+            # (autocommit) by the time this statement runs, so letting an exception from it
+            # propagate would report a successful write as a failure, inviting a retrying
+            # caller to double-insert the turn. Skipped entirely once this process has seen
+            # this namespace registered before (module-level cache below) -- ON CONFLICT DO
+            # NOTHING makes the upsert a no-op after the first successful write anyway, so a
+            # 50-turn ingest_session no longer pays 50 redundant round trips for it.
+            if ns not in _known_registered_namespaces:
+                try:
+                    c.execute(
+                        "INSERT INTO memnos_control.namespaces(name, auto_registered) VALUES(%s, true) "
+                        "ON CONFLICT (name) DO NOTHING", (ns,))
+                    _known_registered_namespaces.add(ns)
+                except Exception:
+                    logger.warning("namespace registry upsert failed for %r; raw_turn %s "
+                                    "already committed, continuing", ns, tid, exc_info=True)
+            return tid
 
     # --- episodic ---------------------------------------------------------
     def insert_episodic(self, schema, ns, session_id, text, *, summary=None,
@@ -676,8 +862,9 @@ class BrainStore:
                   FROM (SELECT id,text,observed_at,memory_type,rnk FROM vec UNION ALL SELECT id,text,observed_at,memory_type,rnk FROM fts) r
                   GROUP BY id,text,observed_at,memory_type)
         SELECT id, text AS content, observed_at, memory_type, score FROM fused ORDER BY score DESC, id LIMIT %(k)s;"""
+        qt = fts_clamp(qtext, self.conn)
         with self.conn.cursor() as c:
-            c.execute(sql, {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k})
+            c.execute(sql, {"qv": vlit(qvec), "qt": qt, "ns": ns, "k": k})
             return c.fetchall()
 
     def search_raw_turns(self, schema, ns, qvec, qtext, k=40) -> list[dict]:
@@ -693,14 +880,23 @@ class BrainStore:
                   FROM (SELECT id,text,observed_at,author_principal,memory_type,rnk FROM vec UNION ALL SELECT id,text,observed_at,author_principal,memory_type,rnk FROM fts) r
                   GROUP BY id,text,observed_at,author_principal,memory_type)
         SELECT id, text AS content, observed_at, author_principal AS author, memory_type, score FROM fused ORDER BY score DESC, id LIMIT %(k)s;"""
+        qt = fts_clamp(qtext, self.conn)
         with self.conn.cursor() as c:
-            c.execute(sql, {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k})
+            c.execute(sql, {"qv": vlit(qvec), "qt": qt, "ns": ns, "k": k})
             return c.fetchall()
 
     def search_semantic(self, schema, ns, qvec, qtext, k=40, current_only=False) -> list[dict]:
         """Hybrid RRF (vector+FTS) over SEMANTIC; current_only filters superseded facts.
         Returns restatements + salience too — rank-time reinforcement signals for the
-        fact arm (issue #11). ADDITIVE columns only; fetch semantics unchanged."""
+        fact arm (issue #11). ADDITIVE columns only; fetch semantics unchanged.
+
+        TODO(issue #41 fix C, deferred): a statement_timeout cancellation on this query (or
+        any other error) still propagates straight to the caller and fails the whole
+        recall, instead of that arm degrading to a partial/vector-only result with
+        degraded=true. Fixing that means touching the recall_fetch failure/fallback path,
+        which PR #40 (durable write-behind queue, issue #37 Layer 3) is concurrently
+        reworking — deferred here to avoid a merge conflict / overlapping semantics; pick
+        it up once #40 merges to master."""
         self._chk(schema)
         valid = "AND valid_to IS NULL" if current_only else ""
         sql = f"""
@@ -714,8 +910,9 @@ class BrainStore:
                   GROUP BY id,statement,valid_from,author_principal,memory_type,restatements,salience,inference_confidence,inference_basis)
         SELECT f.id, f.statement AS content, f.valid_from, f.author_principal AS author, f.memory_type, f.restatements, f.salience, f.inference_confidence, f.inference_basis, f.score, s.subject_entity
         FROM fused f JOIN {schema}.semantic s ON s.id=f.id ORDER BY f.score DESC, f.id LIMIT %(k)s;"""
+        qt = fts_clamp(qtext, self.conn)
         with self.conn.cursor() as c:
-            c.execute(sql, {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k})
+            c.execute(sql, {"qv": vlit(qvec), "qt": qt, "ns": ns, "k": k})
             return c.fetchall()
 
     def search_semantic_temporal(self, schema, ns, qvec, qtext, k=40, *, start=None, end=None,
@@ -736,7 +933,7 @@ class BrainStore:
                   FROM (SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM fts) r
                   GROUP BY id,statement,valid_from,author_principal,memory_type,restatements,salience)
         SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience FROM fused ORDER BY score DESC, id LIMIT %(k)s"""
-        params = {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k}
+        params = {"qv": vlit(qvec), "qt": fts_clamp(qtext, self.conn), "ns": ns, "k": k}
         rows, seen = [], set()
         with self.conn.cursor() as c:
             c.execute(base, params)
