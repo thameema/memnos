@@ -28,23 +28,80 @@ def vlit(vec: Sequence[float]) -> str:
 # FULL query is still used for the vector arm (the embedding is order-insensitive and
 # fixed-size) and for the cross-encoder, so retrieval quality on normal queries is
 # unchanged — only pathological queries are bounded. MEMNOS_FTS_MAX_TOKENS tunes the cap.
+#
+# issue #41 fix B: the #15 clamp bounded whitespace-token COUNT, but tsquery-parser
+# overflow ("tsquery stack too small") is a function of the built tsquery's node/operator
+# count, not word count, so word count alone is the wrong thing to bound. Measured against
+# a live pg16 (numnode() on the built tsquery, same word count each time): a leading "-"
+# on every word measurably inflates node count ~1.5x over plain words (596 vs 397 nodes at
+# 199 words — a NOT-wrapper costs more than a plain AND term); a quoted phrase of the same
+# word count did NOT inflate node count on this Postgres version (identical numnode to
+# plain); "OR" doesn't inflate per-word either, it just spends one MORE whitespace token
+# per operator (so an OR-heavy query already partially self-limits under a word-count cap,
+# since the cap counts "OR" as a word too). Two changes: (1) the default cap is lower (an
+# operator can still raise MEMNOS_FTS_MAX_TOKENS if their workload needs longer FTS
+# queries — this default is just a more conservative starting point, not a hard ceiling);
+# (2) fts_clamp normalizes the text to a flat, single-operator-type (implicit AND)
+# sequence of plain words BEFORE capping, stripping quotes/"OR"/leading "-" — this removes
+# the one CONFIRMED per-word amplifier (leading "-") and, for the other two constructs
+# (which the issue also names as suspect but which didn't measurably amplify on this PG
+# version), is defense-in-depth against version-specific tsquery parser behavior rather
+# than a locally-measured need. No extra DB round trip and no new failure path either way
+# — the clamp itself is pure Python and can't fail.
+#
+# Investigated but NOT reproduced: despite the above, extensive testing against a live
+# pg16 instance (plain chains, single long phrases, many degenerate one-word "phrases",
+# OR-chains, leading-"-" chains, and irregular mixes of all of them, up to tens of
+# thousands of tokens, including with max_stack_depth forced to Postgres's enforced
+# minimum) never actually triggered a websearch_to_tsquery overflow — node counts stayed
+# linear in every shape tried, including the amplified leading-"-" case. The
+# "tsquery stack too small" error IS real and reproducible (confirmed via to_tsquery with
+# deeply nested parentheses, n>=10000), but websearch_to_tsquery's grammar has no
+# parenthesization syntax, so that specific path looks unreachable through the function
+# memnos actually calls, at least on pg16. The bound above is therefore preventative
+# hardening against the node-count-scales-with-shape mechanism the issue describes (real,
+# measured for "-") rather than a fix for a locally-reproduced crash — see the PR
+# description for the full writeup and numbers.
+#
+# NOT in scope here (issue #41 fix C, deferred until PR #40 merges — see the TODO at this
+# module's FTS call sites below): even with this bound, a single-arm timeout/error should
+# degrade the recall to a partial result rather than raising. That's a change to the
+# recall-failure/fallback contract PR #40 is concurrently reworking (durable write-behind,
+# issue #37 Layer 3) — sequencing it here risked a merge conflict / overlapping semantics.
+_FTS_DEFAULT_TOKENS = 40   # was 200; normalization (below) is the evidence-backed part —
+                           # this default is just more conservative, and still operator-tunable.
+
+
 def _fts_max_tokens() -> int:
     try:
-        return max(1, int(os.environ.get("MEMNOS_FTS_MAX_TOKENS", "200")))
+        return max(1, int(os.environ.get("MEMNOS_FTS_MAX_TOKENS", str(_FTS_DEFAULT_TOKENS))))
     except (TypeError, ValueError):
-        return 200
+        return _FTS_DEFAULT_TOKENS
 
 
 def fts_clamp(qtext: str) -> str:
-    """Clamp the text passed to websearch_to_tsquery to the first N whitespace tokens so a
-    pathologically long query can never overflow the Postgres tsquery parser stack."""
+    """Bound both the SHAPE and the length of the text passed to websearch_to_tsquery
+    (issue #41): word count alone doesn't bound parser complexity — a leading "-" measurably
+    adds tsquery nodes beyond what a plain word would (see the module comment above for the
+    measurement); quotes and "OR" are stripped too as defense-in-depth even though they
+    didn't show the same amplification here. Folding the text to a flat AND-of-words shape
+    (still a normal FTS match, just without phrase/OR/negation semantics) before capping by
+    token count bounds the resulting node count the same way regardless of input shape. A
+    normal query with none of those constructs and under the cap is returned byte-for-byte,
+    unchanged, same as before."""
     if not qtext:
         return qtext
-    parts = qtext.split()
     cap = _fts_max_tokens()
-    if len(parts) <= cap:
+    parts = qtext.split()
+    needs_normalize = '"' in qtext or any(p == "OR" or p.startswith("-") for p in parts)
+    if len(parts) <= cap and not needs_normalize:
         return qtext
-    return " ".join(parts[:cap])
+    normalized = []
+    for tok in parts:
+        tok = tok.replace('"', '').lstrip('-')
+        if tok and tok != "OR":
+            normalized.append(tok)
+    return " ".join(normalized[:cap])
 
 
 # The #15 fix clamped only the FTS arm; the EMBEDDING and the cross-encoder RERANKER still
@@ -183,7 +240,24 @@ class BrainStore:
                 f"VALUES(%s,%s,%s,%s,%s,%s::{self.vtype},%s,%s) RETURNING id",
                 (ns, session_id, speaker, text, observed_at,
                  vlit(vec) if vec is not None else None, author, memory_type))
-            return c.fetchone()["id"]
+            tid = c.fetchone()["id"]
+            # issue #41 fix A: the single choke point every new namespace's first write
+            # passes through (remember/remember_turn/ingest_session all land here) — upsert
+            # it into the control-plane registry so readable_namespaces() can resolve
+            # wildcard grants against that small table instead of DISTINCT-scanning
+            # raw_turns/semantic on every wide recall. ON CONFLICT DO NOTHING: never
+            # downgrades a namespace an admin already explicitly registered (create_namespace
+            # sets auto_registered=false; this only fires for a name not already present).
+            # Connections run autocommit (memnos_server.py POOL / connect() below), so this
+            # isn't atomic with the raw_turn insert above -- a crash between the two is
+            # harmless and self-healing: the next write to this namespace, or the boot-time
+            # backfill in Control._run_namespace_registry_backfill, fills the gap. Nothing
+            # downstream treats "missing from the registry" as more than "not yet
+            # observed", so it never needs to be atomic.
+            c.execute(
+                "INSERT INTO memnos_control.namespaces(name, auto_registered) VALUES(%s, true) "
+                "ON CONFLICT (name) DO NOTHING", (ns,))
+            return tid
 
     # --- episodic ---------------------------------------------------------
     def insert_episodic(self, schema, ns, session_id, text, *, summary=None,
@@ -700,7 +774,15 @@ class BrainStore:
     def search_semantic(self, schema, ns, qvec, qtext, k=40, current_only=False) -> list[dict]:
         """Hybrid RRF (vector+FTS) over SEMANTIC; current_only filters superseded facts.
         Returns restatements + salience too — rank-time reinforcement signals for the
-        fact arm (issue #11). ADDITIVE columns only; fetch semantics unchanged."""
+        fact arm (issue #11). ADDITIVE columns only; fetch semantics unchanged.
+
+        TODO(issue #41 fix C, deferred): a statement_timeout cancellation on this query (or
+        any other error) still propagates straight to the caller and fails the whole
+        recall, instead of that arm degrading to a partial/vector-only result with
+        degraded=true. Fixing that means touching the recall_fetch failure/fallback path,
+        which PR #40 (durable write-behind queue, issue #37 Layer 3) is concurrently
+        reworking — deferred here to avoid a merge conflict / overlapping semantics; pick
+        it up once #40 merges to master."""
         self._chk(schema)
         valid = "AND valid_to IS NULL" if current_only else ""
         sql = f"""

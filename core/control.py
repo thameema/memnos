@@ -57,14 +57,22 @@ CREATE INDEX IF NOT EXISTS eval_ts ON memnos_control.eval_runs(ts);
 CREATE TABLE IF NOT EXISTS memnos_control.feedback(
     id bigserial PRIMARY KEY, ts timestamptz NOT NULL DEFAULT now(), principal_id bigint,
     namespace text, query text, helpful boolean, note text);
--- namespace registry: namespaces are explicit, user-created objects (via the UI/CLI),
--- not implicit-on-write. Lets the console list/create/delete them.
+-- namespace registry: namespaces are explicit, user-created objects (via the UI/CLI) OR
+-- auto-registered the first time they receive data (see auto_registered below). Lets the
+-- console list/create/delete them, and (issue #41) lets readable_namespaces() resolve
+-- wildcard grants against this small table instead of DISTINCT-scanning the data tables.
 CREATE TABLE IF NOT EXISTS memnos_control.namespaces(
     name text PRIMARY KEY, created_by bigint REFERENCES memnos_control.principals(id),
     created_at timestamptz NOT NULL DEFAULT now(), description text);
 -- namespace KIND (0.1.6): 'memory' (default, conversational) or 'knowledge' (curated
 -- reference corpus meant to GROUND other namespaces' recall via namespace_links).
 ALTER TABLE memnos_control.namespaces ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'memory';
+-- AUTO-REGISTRATION (issue #41): true when this row was created by the write path's
+-- first-touch upsert (core/store.py insert_raw_turn), false when created explicitly via
+-- create_namespace() (UI/CLI). Keeps the registry a COMPLETE index of every namespace that
+-- has data (so wildcard-grant expansion never needs a data-table scan) while preserving
+-- the UI's "discovered" pill (ui/app.js) for namespaces nobody explicitly registered.
+ALTER TABLE memnos_control.namespaces ADD COLUMN IF NOT EXISTS auto_registered boolean NOT NULL DEFAULT false;
 -- GROUNDED RECALL links (0.1.6): recall on src_ns ALSO searches dst_ns — but only if the
 -- CALLING principal holds a read grant on dst_ns (link = policy, grant = permission;
 -- BOTH required). Skipped links are surfaced in the /recall response (links_skipped).
@@ -198,6 +206,39 @@ class Control:
     def init(conn):
         with conn.cursor() as c:
             c.execute(CONTROL_DDL)
+            if Control._namespace_registry_needs_backfill(c):
+                Control._run_namespace_registry_backfill(c)
+
+    @staticmethod
+    def _namespace_registry_needs_backfill(c) -> bool:
+        """Guard for _run_namespace_registry_backfill: true only before it's ever run
+        successfully (any auto_registered row existing means it has) AND once the tenant
+        schema actually exists (fresh install: create_schema() may not have run yet —
+        nothing to backfill). Split from the backfill itself so tests can invoke the
+        backfill directly regardless of this database's global guard state."""
+        c.execute("""
+            SELECT (SELECT 1 FROM memnos_control.namespaces WHERE auto_registered LIMIT 1) IS NULL
+                   AND to_regclass('tenant_memnos.raw_turns') IS NOT NULL AS need_backfill""")
+        return c.fetchone()["need_backfill"]
+
+    @staticmethod
+    def _run_namespace_registry_backfill(c):
+        """One-time (per-database) seed of memnos_control.namespaces from data that
+        predates issue #41's auto-registration (core/store.py insert_raw_turn now
+        registers a namespace on its first write, but namespaces written BEFORE that
+        change exist only in tenant_memnos.raw_turns/semantic, not the registry).
+        Unconditional — callers gate with _namespace_registry_needs_backfill(). Runs at
+        server boot, never on the recall hot path: it's the same DISTINCT scan
+        readable_namespaces() used to run on every wide recall, but (via that guard) paid
+        at most once per fresh restart instead of per-request."""
+        c.execute("""
+            INSERT INTO memnos_control.namespaces(name, auto_registered)
+            SELECT namespace, true FROM (
+                SELECT namespace FROM tenant_memnos.raw_turns
+                UNION
+                SELECT namespace FROM tenant_memnos.semantic
+            ) existing
+            ON CONFLICT (name) DO NOTHING""")
 
     # --- namespace pub/sub (cursor feed + optional webhook) -----------------
     @staticmethod
@@ -775,7 +816,12 @@ class Control:
         """Concrete namespaces this principal may WRITE to, capped at `limit`.
         Exact grants are included directly (even if the namespace has no data yet).
         Wildcard grants ('*' or 'prefix:*') are expanded against existing namespaces.
-        Used to populate the suggestion in write-403 responses."""
+        Used to populate the suggestion in write-403 responses.
+
+        NOTE: still does the DISTINCT-scan readable_namespaces() used to do before issue
+        #41 fix A. Deliberately not converted to the memnos_control.namespaces registry in
+        that fix — this only runs on a write-403 (cold path), not on every wide recall, so
+        it wasn't the timeout source and touching it wasn't needed to close the issue."""
         grants = [g for g in Control.authorized_namespaces(conn, principal_id) if g["can_write"]]
         if not grants:
             return []
@@ -806,7 +852,26 @@ class Control:
         Wildcard grants ('*' or 'prefix:*') are expanded against existing namespaces.
         Pass exclude=<namespace> to omit the current query namespace from the result
         (used to populate other_readable_namespaces in /recall scope metadata).
-        limit=None means no cap (backward-compatible default for wide recall)."""
+        limit=None means no cap (backward-compatible default for wide recall).
+
+        This is the fan-out driver for WIDE recall (memnos_server.py: `nss =
+        readable_namespaces(...)` feeds recall_wide_fetch/namespaces_searched directly),
+        not just a display hint — so the wildcard-expansion source below must stay a
+        COMPLETE index of every namespace that has data.
+
+        issue #41 fix A: wildcard grants used to expand against two full-table DISTINCT
+        scans over tenant_memnos.raw_turns/semantic, which blew the 15s statement_timeout
+        cold/under load on every wide recall for a wildcard-grant principal (e.g. the
+        admin '*' token). memnos_control.namespaces is now kept COMPLETE as a side effect
+        of every write (core/store.py insert_raw_turn upserts it on a namespace's first
+        turn) plus a one-time boot-time backfill for pre-existing data (Control.init ->
+        _run_namespace_registry_backfill) — so wildcard expansion reads that small registry
+        table instead of scanning the data tables. See memnos_control.namespaces' DDL
+        comment (CONTROL_DDL, near auto_registered) for how completeness is maintained.
+
+        NOTE: writable_namespaces() just above still does the old DISTINCT-scan — it is
+        deliberately NOT touched by issue #41 (out of scope for this fix; write-403
+        suggestions are a much colder path than every wide recall)."""
         grants = [g for g in Control.authorized_namespaces(conn, principal_id) if g["can_read"]]
         if not grants:
             return []
@@ -820,9 +885,8 @@ class Control:
                 result.add(ns)
         if wildcard_patterns:
             with conn.cursor() as c:
-                c.execute("SELECT DISTINCT namespace FROM tenant_memnos.raw_turns "
-                          "UNION SELECT DISTINCT namespace FROM tenant_memnos.semantic")
-                existing = [r["namespace"] for r in c.fetchall()]
+                c.execute("SELECT name FROM memnos_control.namespaces")
+                existing = [r["name"] for r in c.fetchall()]
             for ns in existing:
                 for p in wildcard_patterns:
                     if p == "*" or (p.endswith(":*") and ns.startswith(p[:-1])):
@@ -846,10 +910,14 @@ class Control:
     # --- namespace registry (explicit, user-created) ----------------------
     @staticmethod
     def create_namespace(conn, name, created_by=None, description=None):
-        """Register a namespace + grant its creator read/write. Idempotent on name."""
+        """Register a namespace + grant its creator read/write. Idempotent on name.
+        Explicit registration always claims/reclaims auto_registered=false — even if a
+        write already auto-registered this name first, an admin explicitly creating it
+        afterward should clear the UI's "discovered" pill (ui/app.js)."""
         with conn.cursor() as c:
-            c.execute("INSERT INTO memnos_control.namespaces(name,created_by,description) "
-                      "VALUES(%s,%s,%s) ON CONFLICT (name) DO UPDATE SET description=EXCLUDED.description",
+            c.execute("INSERT INTO memnos_control.namespaces(name,created_by,description,auto_registered) "
+                      "VALUES(%s,%s,%s,false) ON CONFLICT (name) DO UPDATE "
+                      "SET description=EXCLUDED.description, auto_registered=false",
                       (name, created_by, description))
         if created_by is not None:
             Control.grant(conn, created_by, name)
@@ -908,7 +976,12 @@ class Control:
     def list_namespaces(conn):
         """ALL real namespaces: the explicit registry UNION any namespace that has data
         (raw_turns/semantic) or a concrete grant — so implicitly-created namespaces (e.g.
-        from hooks) still show. `registered` flags whether it's in the registry."""
+        from hooks) still show. `registered` flags whether a human explicitly created it
+        (create_namespace, via the UI/CLI) as opposed to it only being present because a
+        write auto-registered it (auto_registered=true) — that distinction drives the
+        "discovered" pill in ui/app.js, so a namespace that only self-registered on write
+        must still read as unregistered here even though it now has a memnos_control.
+        namespaces row (issue #41 made every namespace with data get one)."""
         with conn.cursor() as c:
             c.execute("""
                 WITH names AS (
@@ -921,7 +994,7 @@ class Control:
                 SELECT nm.name, n.description, n.created_at, p.name AS created_by,
                   COALESCE(n.kind, 'memory') AS kind,
                   COALESCE(rt.cnt,0) AS turns, COALESCE(sm.cnt,0) AS facts,
-                  (n.name IS NOT NULL) AS registered
+                  (n.name IS NOT NULL AND NOT COALESCE(n.auto_registered, false)) AS registered
                 FROM names nm
                 LEFT JOIN memnos_control.namespaces n ON n.name=nm.name
                 LEFT JOIN memnos_control.principals p ON p.id=n.created_by
