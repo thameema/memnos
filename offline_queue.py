@@ -235,10 +235,17 @@ def drain(config_dir: str, url: str, token: str, timeout: float = 8, max_items=N
             _post_remember(url, token, item, timeout=timeout)
         except Exception as e:
             if is_transient(e):
-                os.rename(claimed, src)               # release — retry the whole queue later
+                try:
+                    os.rename(claimed, src)           # release — retry the whole queue later
+                except OSError:
+                    pass                               # a concurrent reclaim already took it
                 break
-            os.replace(claimed, src + ".rejected")     # permanent — set aside, keep draining
-            rejected += 1
+            try:
+                os.replace(claimed, src + ".rejected")  # permanent — set aside, keep draining
+            except OSError:
+                pass                                   # a concurrent reclaim already took it —
+            else:                                       # don't double-count what we didn't do
+                rejected += 1
             continue
         try:
             os.remove(claimed)

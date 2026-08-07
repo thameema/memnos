@@ -330,7 +330,11 @@ def main():
                 except Exception as e:
                     outcome["error"] = e
 
-            t = threading.Thread(target=_mid_flight_write)
+            # daemon=True: if the join below ever times out (e.g. under CI contention), a
+            # non-daemon thread would still be joined by interpreter shutdown afterward —
+            # blocking on httpx's own 60s request timeout — turning one flaky assertion
+            # into a wedged job instead of a clean failure.
+            t = threading.Thread(target=_mid_flight_write, daemon=True)
             t.start()
             check("mid-flight write thread signaled readiness before the kill",
                   about_to_call.wait(timeout=5))
