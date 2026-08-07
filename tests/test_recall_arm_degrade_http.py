@@ -190,6 +190,41 @@ def main():
         txt3 = " ".join(m.get("content", "") for m in j.get("memories", []))
         check("post-lock-release recall returns BOTH arms' content again",
               raw_text in txt3 and sem_text in txt3)
+
+        # issue #41 fix C: the WIDE path (`scope: "all"`) has its OWN degraded_reasons
+        # plumbing -- wide_degraded_reasons is threaded through recall_wide_fetch as a
+        # kwarg and read back separately from the narrow path's bundle.pop(). Every
+        # assertion above only exercised the narrow path; this repeats the same real-lock
+        # cancellation through /recall?scope=all end to end, so a mis-wired kwarg or a
+        # rebound-instead-of-mutated list would show up here as a silent 200 with no
+        # degraded key, instead of passing by accident because only the narrow path was
+        # ever checked. The token's grant is a concrete namespace (not a wildcard), so
+        # readable_namespaces() resolves to just [NS] without hitting the registry table
+        # -- the semantic arm inside recall_wide_fetch's per-namespace loop is what hits
+        # the lock here, not readable_namespaces() itself.
+        print("=== WIDE recall (scope=all) also degrades correctly under the same real lock ===")
+        lock_conn = psycopg.connect(DSN, autocommit=False)
+        try:
+            with lock_conn.cursor() as lc:
+                lc.execute(f"LOCK TABLE {SCHEMA}.semantic IN ACCESS EXCLUSIVE MODE")
+            s, j = call("/recall", token,
+                       {"namespace": NS, "query": "outage", "scope": "all", "constraint_cap": 0},
+                       timeout=30)
+        finally:
+            lock_conn.rollback()
+            lock_conn.close()
+
+        check("wide degraded recall is 200, NOT a 5xx/exception", s == 200, f"got {s}: {j}")
+        check("wide response is flagged degraded:true", j.get("degraded") is True, str(j))
+        wide_reasons = j.get("degraded_reasons") or []
+        check("wide degraded_reasons identifies the failed namespace + arm",
+              any(r.get("namespace") == NS and r.get("arm") == "semantic" for r in wide_reasons),
+              str(wide_reasons))
+        wide_txt = " ".join(m.get("content", "") for m in j.get("memories", []))
+        check("wide recall's surviving raw-turn content is still present",
+              raw_text in wide_txt)
+        check("wide recall's namespaces_searched still lists NS (attempted, not silently dropped)",
+              NS in (j.get("namespaces_searched") or []), str(j.get("namespaces_searched")))
     finally:
         proc.terminate()
         try:
