@@ -36,52 +36,53 @@ def vlit(vec: Sequence[float]) -> str:
 # overflow ("tsquery stack too small") is a function of the built tsquery's node/operator
 # count, not word count, so word count alone is the wrong thing to bound. Measured against
 # a live pg16 (numnode() on the built tsquery, same word count each time): a leading "-"
-# on every word measurably inflates node count — but LINEARLY and ADDITIVELY, not as a
-# multiplier that compounds with query length: a flat chain of W plain words costs exactly
-# 2W-1 nodes (W lexeme nodes + W-1 AND-operator nodes), and a chain of W ALL-negated words
-# costs exactly (2W-1)+W — i.e. one extra NOT-wrapper node per negated word, flat, not
-# per-word-times-something-that-grows (confirmed at W=40: 79 vs 119 nodes, exactly matching
-# the formula; also confirmed at W=199: 397 vs 596). A quoted phrase of the same word count
-# did NOT inflate node count on this Postgres version (identical numnode to plain); "OR"
-# doesn't inflate per-word either, it just spends one MORE whitespace token per operator.
+# on every word measurably inflates node count, but LINEARLY and ADDITIVELY (+1 node per
+# negated word, not a multiplier that compounds with query length); quoted phrases and
+# "OR" don't inflate at all on this Postgres version.
 #
-# Because the growth is linear and additive rather than compounding, bounding WORD COUNT
-# already bounds node count too, for any shape: a query at or under the cap has at most
-# `cap` negatable words, so its worst-case node count is (2*cap-1)+cap = 3*cap-1, a fixed,
-# finite ceiling regardless of how many "-"/quotes/OR it contains. There is therefore no
-# need to strip those constructs to make the bound hold — doing so was needless (see fix
-# history below) and, for "-" specifically, semantics-inverting: stripping a leading "-"
-# turns an EXCLUSION into an ordinary match term, flipping the query's meaning rather than
-# just losing precision. fts_clamp instead computes the SAME node-count estimate the tests
-# verify against real numnode() (_tsquery_node_estimate below) and only truncates by word
-# count when the query is actually over the cap or over the resulting node bound — a
-# query under both is returned byte-for-byte unchanged, "-"/""/OR included. No DB round
-# trip either way — the estimate is pure Python and can't fail.
+# A PRIOR version of this fix (see PR #43's review history) concluded from that data that
+# bounding WORD COUNT alone therefore bounds node count for ANY shape, and computed a
+# pure-Python estimate to gate on instead of asking Postgres directly. That conclusion was
+# FALSE, and a follow-up adversarial review found the counterexample: a word containing
+# INTERNAL hyphens (kebab-case identifiers — file paths, stack traces, branch names, CSS
+# selectors, exactly the text a coding-assistant memory store fields constantly) doesn't
+# cost one node like a plain word. Postgres's text-search parser DECOMPOSES a hyphenated
+# compound into multiple sub-lexemes joined by phrase operators — measured live: a single
+# word with 200 internal hyphens alone already produces >400 nodes, and 40 such words
+# together produced numnode() in the low thousands, versus a Python word-count estimate of
+# 79. At high enough hyphen density this reproduces a real, unhandled
+# `psycopg.errors.ProgramLimitExceeded: value is too big in tsquery` straight through the
+# pass-through path the estimate judged "safe" — the exact crash class issue #41 exists to
+# eliminate, just via a shape the leading-"-"/quote/OR analysis never covered.
 #
-# Investigated but NOT reproduced: despite the above, extensive testing against a live
-# pg16 instance (plain chains, single long phrases, many degenerate one-word "phrases",
-# OR-chains, leading-"-" chains, and irregular mixes of all of them, up to tens of
-# thousands of tokens, including with max_stack_depth forced to Postgres's enforced
-# minimum) never actually triggered a websearch_to_tsquery overflow — node counts stayed
-# linear in every shape tried, including the amplified leading-"-" case. The
-# "tsquery stack too small" error IS real and reproducible (confirmed via to_tsquery with
-# deeply nested parentheses, n>=10000), but websearch_to_tsquery's grammar has no
-# parenthesization syntax, so that specific path looks unreachable through the function
-# memnos actually calls, at least on pg16. The bound above is therefore preventative
-# hardening against the node-count-scales-with-shape mechanism the issue describes (real,
-# measured for "-") rather than a fix for a locally-reproduced crash — see the PR
-# description for the full writeup and numbers.
+# The lesson: modeling Postgres's tsquery-construction cost in Python is fragile by
+# construction — it's correct for exactly the constructs someone thought to measure, and
+# silently wrong (in the dangerous, UNDER-counting direction) for the next one nobody
+# fuzzed yet. So fts_clamp no longer estimates complexity at all. It asks Postgres
+# directly: build the actual tsquery and check its actual numnode() against the bound, via
+# a short-lived, tightly time-boxed probe (see _tsquery_within_bound) that can never itself
+# become the failure point — even a query so pathological that BUILDING it for the probe
+# would blow the tsquery parser's own internal limit is caught there and treated as "not
+# safe," never allowed to propagate. This is authoritative for any current or future
+# tsquery-expanding construct, not just the ones already known about.
 #
 # NOT in scope here (issue #41 fix C, deferred — see the TODO at this module's FTS call
 # sites below for the current reasoning): even with this bound, a single-arm timeout/error
 # still propagates straight to the caller instead of degrading the recall to a partial
 # result.
-_FTS_DEFAULT_TOKENS = 40   # was 200; a lower cap is the evidence-backed part of the fix —
-                           # this default is just more conservative, and still operator-tunable.
+_FTS_DEFAULT_TOKENS = 40   # was 200; a lower cap bounds the size of text the safety probe
+                           # itself has to evaluate, independent of the probe's own result.
 
-# safety margin over the worst-case 3*cap-1 node count (all `cap` words negated) that a
-# word-count-bounded query can ever produce, per the linear model measured above.
+# safety ceiling on tsquery node count a clamped query may have. Somewhat arbitrary (not
+# derived from a hard Postgres limit — the real parser limit is far higher, see
+# ProgramLimitExceeded above) but small enough that numnode() evaluation itself stays fast.
 _FTS_NODE_BOUND_MULTIPLIER = 3
+
+# statement_timeout (ms) for the numnode() safety probe itself — deliberately much
+# tighter than the connection's normal request-scoped timeout, so an oversized/pathological
+# probe input fails fast as a caught QueryCanceled instead of tying up the probe for
+# seconds. Tunable in case a slower/busier deployment needs more headroom.
+_FTS_NODE_CHECK_TIMEOUT_MS = int(os.environ.get("MEMNOS_FTS_NODE_CHECK_TIMEOUT_MS", "300"))
 
 
 def _fts_max_tokens() -> int:
@@ -95,46 +96,75 @@ def _fts_node_bound(cap: int) -> int:
     return _FTS_NODE_BOUND_MULTIPLIER * cap
 
 
-def _tsquery_node_estimate(qtext: str) -> int:
-    """Pure-Python estimate of the node count websearch_to_tsquery('english', qtext) would
-    build, using the linear, additive per-construct costs measured against a live pg16
-    (see the module comment above): a flat chain of W content words costs 2W-1 nodes, and
-    each leading "-" adds exactly one extra node. Quotes and "OR" don't add to the count on
-    this Postgres version, so they're not counted as amplifiers here — they still count as
-    content words. This is the actual complexity gate fts_clamp uses to decide whether
-    truncation is needed; ground truth is asserted against real numnode() output in
-    tests/test_fts_clamp_shape.py."""
-    words = nots = 0
-    for tok in qtext.split():
-        if tok == "OR":
-            continue
-        t = tok.replace('"', '')
-        if not t:
-            continue
-        words += 1
-        if t.startswith('-') and len(t) > 1:
-            nots += 1
-    return 0 if words == 0 else (2 * words - 1) + nots
+def _tsquery_within_bound(conn, qtext: str, bound: int) -> bool:
+    """Authoritative safety probe: ask Postgres directly whether
+    numnode(websearch_to_tsquery('english', qtext)) <= bound, rather than modeling the
+    parser's cost in Python (see the module comment above for why that was tried and
+    found unsafe). Runs under its own short statement_timeout, independent of and much
+    tighter than the connection's normal one, restored via `SET ... TO DEFAULT` afterward
+    (reverts to the value configured when this connection was opened, e.g. via the pool's
+    `-c statement_timeout=...` option — not a hardcoded system default). If even
+    COMPUTING numnode() is itself too expensive (times out) or the input is pathological
+    enough to blow the tsquery parser's own internal limit (ProgramLimitExceeded — real,
+    reproducible for extreme input), that is unambiguously "not safe": caught here, never
+    allowed to propagate, and the connection is left usable afterward either way
+    (autocommit means neither error poisons a transaction)."""
+    if not qtext:
+        return True
+    with conn.cursor() as c:
+        c.execute(f"SET statement_timeout = {_FTS_NODE_CHECK_TIMEOUT_MS}")
+        try:
+            c.execute(
+                "SELECT (numnode(websearch_to_tsquery('english', %s)) <= %s) AS ok",
+                (qtext, bound))
+            row = c.fetchone()
+            return bool(row["ok"] if isinstance(row, dict) else row[0])
+        except (psycopg.errors.ProgramLimitExceeded, psycopg.errors.QueryCanceled):
+            return False
+        finally:
+            c.execute("SET statement_timeout = DEFAULT")
 
 
-def fts_clamp(qtext: str) -> str:
+def fts_clamp(qtext: str, conn) -> str:
     """Bound the complexity of the tsquery websearch_to_tsquery('english', qtext) will
     build (issue #41), WITHOUT rewriting query semantics for queries that don't need it.
-    A query at or under the token cap AND at or under the measured node-count bound
-    (_tsquery_node_estimate <= _fts_node_bound(cap)) is returned byte-for-byte unchanged —
-    "-" exclusions, quoted phrases, and "OR" all keep their native websearch_to_tsquery
-    meaning. Only a query that actually exceeds one of those bounds gets truncated to the
-    first `cap` whitespace tokens (shape preserved on the surviving prefix — per the module
-    comment above, word-count alone already bounds node count linearly for any shape, so no
-    further rewriting is needed)."""
-    if not qtext:
-        return qtext
+    `conn` is REQUIRED: the safety check is a real, bounded Postgres probe
+    (_tsquery_within_bound), not a Python estimate — see the module comment above for why
+    a pure-Python model was tried and found to silently undercount real tsquery cost for
+    hyphenated/kebab-case text. Every production call site is a BrainStore method with
+    `self.conn` already available.
+
+    A query at or under the token cap AND confirmed (via the probe) at or under the node
+    bound is returned byte-for-byte unchanged — "-" exclusions, quoted phrases, and "OR"
+    all keep their native websearch_to_tsquery meaning. A query over either bound is
+    shrunk (word count first, then — only if a single remaining word is itself still over
+    bound, e.g. one massively hyphen-decomposed identifier — that word's character length)
+    until the probe confirms it's safe."""
     cap = _fts_max_tokens()
     bound = _fts_node_bound(cap)
-    parts = qtext.split()
-    if len(parts) <= cap and _tsquery_node_estimate(qtext) <= bound:
-        return qtext
-    return " ".join(parts[:cap])
+    parts = qtext.split() if qtext else []
+    candidate = qtext if len(parts) <= cap else " ".join(parts[:cap])
+
+    if _tsquery_within_bound(conn, candidate, bound):
+        return candidate
+
+    # candidate is confirmed (not estimated) too complex -- shrink by halving word count
+    # until the probe confirms it's safe or a single word remains.
+    words = candidate.split()
+    while len(words) > 1:
+        words = words[: max(1, len(words) // 2)]
+        shrunk = " ".join(words)
+        if _tsquery_within_bound(conn, shrunk, bound):
+            return shrunk
+
+    # down to a single word and it's STILL unsafe -- the pathological complexity is
+    # packed into one token (e.g. a single identifier with hundreds of internal hyphens,
+    # confirmed live to exceed the bound on its own). Shrink its character length the
+    # same way, probe-verified at each step.
+    word = words[0] if words else ""
+    while len(word) > 1 and not _tsquery_within_bound(conn, word, bound):
+        word = word[: max(1, len(word) // 2)]
+    return word
 
 
 # The #15 fix clamped only the FTS arm; the EMBEDDING and the cross-encoder RERANKER still
@@ -805,8 +835,9 @@ class BrainStore:
                   FROM (SELECT id,text,observed_at,memory_type,rnk FROM vec UNION ALL SELECT id,text,observed_at,memory_type,rnk FROM fts) r
                   GROUP BY id,text,observed_at,memory_type)
         SELECT id, text AS content, observed_at, memory_type, score FROM fused ORDER BY score DESC, id LIMIT %(k)s;"""
+        qt = fts_clamp(qtext, self.conn)
         with self.conn.cursor() as c:
-            c.execute(sql, {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k})
+            c.execute(sql, {"qv": vlit(qvec), "qt": qt, "ns": ns, "k": k})
             return c.fetchall()
 
     def search_raw_turns(self, schema, ns, qvec, qtext, k=40) -> list[dict]:
@@ -822,8 +853,9 @@ class BrainStore:
                   FROM (SELECT id,text,observed_at,author_principal,memory_type,rnk FROM vec UNION ALL SELECT id,text,observed_at,author_principal,memory_type,rnk FROM fts) r
                   GROUP BY id,text,observed_at,author_principal,memory_type)
         SELECT id, text AS content, observed_at, author_principal AS author, memory_type, score FROM fused ORDER BY score DESC, id LIMIT %(k)s;"""
+        qt = fts_clamp(qtext, self.conn)
         with self.conn.cursor() as c:
-            c.execute(sql, {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k})
+            c.execute(sql, {"qv": vlit(qvec), "qt": qt, "ns": ns, "k": k})
             return c.fetchall()
 
     def search_semantic(self, schema, ns, qvec, qtext, k=40, current_only=False) -> list[dict]:
@@ -851,8 +883,9 @@ class BrainStore:
                   GROUP BY id,statement,valid_from,author_principal,memory_type,restatements,salience,inference_confidence,inference_basis)
         SELECT f.id, f.statement AS content, f.valid_from, f.author_principal AS author, f.memory_type, f.restatements, f.salience, f.inference_confidence, f.inference_basis, f.score, s.subject_entity
         FROM fused f JOIN {schema}.semantic s ON s.id=f.id ORDER BY f.score DESC, f.id LIMIT %(k)s;"""
+        qt = fts_clamp(qtext, self.conn)
         with self.conn.cursor() as c:
-            c.execute(sql, {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k})
+            c.execute(sql, {"qv": vlit(qvec), "qt": qt, "ns": ns, "k": k})
             return c.fetchall()
 
     def search_semantic_temporal(self, schema, ns, qvec, qtext, k=40, *, start=None, end=None,
@@ -873,7 +906,7 @@ class BrainStore:
                   FROM (SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM fts) r
                   GROUP BY id,statement,valid_from,author_principal,memory_type,restatements,salience)
         SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience FROM fused ORDER BY score DESC, id LIMIT %(k)s"""
-        params = {"qv": vlit(qvec), "qt": fts_clamp(qtext), "ns": ns, "k": k}
+        params = {"qv": vlit(qvec), "qt": fts_clamp(qtext, self.conn), "ns": ns, "k": k}
         rows, seen = [], set()
         with self.conn.cursor() as c:
             c.execute(base, params)

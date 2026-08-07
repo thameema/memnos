@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
+
+logger = logging.getLogger(__name__)
 
 # suggest-on-mismatch (issue #20, Part B) thresholds — TUNABLE, env-overridable. Kept
 # conservative so the advisory never fires on noise, but a genuine strong match surfaces.
@@ -220,9 +223,19 @@ class Control:
     @staticmethod
     def init(conn):
         with conn.cursor() as c:
-            c.execute(CONTROL_DDL)
+            c.execute(CONTROL_DDL)               # DDL failures must still crash boot
             if Control._namespace_registry_needs_backfill(c):
-                Control._run_namespace_registry_backfill(c)
+                # The scan itself is timeout-exempt and paginated (safe even on a huge
+                # table -- see _run_namespace_registry_backfill), but the final marker-row
+                # INSERT is still one more statement that could transiently fail (lock
+                # contention, connection blip). That's now the only remaining crash
+                # surface here, and it's self-healing: log and continue rather than crash
+                # boot over it -- the next restart just redoes the (already-safe) scan.
+                try:
+                    Control._run_namespace_registry_backfill(c)
+                except Exception:
+                    logger.warning("namespace registry backfill failed; will retry on "
+                                    "next restart", exc_info=True)
 
     @staticmethod
     def _namespace_registry_needs_backfill(c) -> bool:

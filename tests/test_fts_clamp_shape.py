@@ -2,54 +2,74 @@
 
 Before this fix, fts_clamp bounded ONLY whitespace-token count (default 200), on the
 theory that a shorter query builds a smaller tsquery. That's false in general: node count
-is what determines parser cost, not word count, and (measured below) a leading "-" on
-every word inflates node count LINEARLY, not multiplicatively — exactly +1 node per
-negated word (confirmed at both 40 and 199 words). An earlier version of this fix reacted
-to that by unconditionally stripping quotes/"OR"/leading "-" from ANY query containing
-them, regardless of length — which silently mangled ordinary short queries too (a PR #43
-review found `'python -django'` -> `'python django'`, INVERTING an exclusion into a match)
-and was never actually necessary: since the per-word cost of "-" is additive and bounded,
-capping WORD COUNT alone already bounds node count for any shape (a `cap`-word query can
-have at most `cap` negated words, so worst case is `(2*cap-1)+cap = 3*cap-1` nodes — a
-fixed ceiling). fts_clamp now computes that bound directly (_tsquery_node_estimate /
-_fts_node_bound in core/store.py) and only truncates when a query is ACTUALLY over the
-token cap or the node bound — never rewrites shape a query didn't need rewritten.
+is what determines parser cost, not word count.
 
-What this file proves, against a REAL Postgres (numnode() is the ground truth for tsquery
-complexity, not a Python approximation):
+Two mechanisms have been tried and both left real gaps, found by successive adversarial
+reviews of PR #43:
+
+  1. Unconditionally stripping quotes/"OR"/leading "-" from ANY query containing them,
+     regardless of length -- silently mangled ordinary short queries (`'python -django'`
+     -> `'python django'`, INVERTING an exclusion into a match).
+  2. A pure-Python node-count ESTIMATE (measured: a leading "-" adds exactly +1 node per
+     negated word, linear and additive) used to justify "capping word count alone bounds
+     node count for any shape, so no rewriting is needed." That held for the constructs it
+     was measured against (leading "-", quotes, "OR") but is FALSE in general: a word
+     containing INTERNAL hyphens (kebab-case identifiers -- file paths, stack traces,
+     branch names, CSS selectors) gets DECOMPOSED by Postgres's text-search parser into
+     many extra sub-lexemes, which the estimate never counted. Measured live: a single
+     40-word query built from ordinary hyphenated identifiers estimated at 79 nodes
+     (comfortably under the 120 default bound) but had a REAL numnode() in the thousands,
+     and at high enough hyphen density this reproduces an actual, unhandled
+     `psycopg.errors.ProgramLimitExceeded: value is too big in tsquery` straight through
+     the "safe, pass through unchanged" path -- the exact crash class issue #41 exists to
+     eliminate.
+
+fts_clamp no longer estimates complexity at all. It asks Postgres directly
+(_tsquery_within_bound in core/store.py): build the real tsquery, check its real
+numnode(), under a short dedicated statement_timeout so the check itself can't become the
+failure point even if computing numnode() would itself overflow the parser. This is
+authoritative for hyphen-decomposition and for any other tsquery-expanding construct that
+hasn't been found yet -- it isn't a model of the parser, it's a measurement.
+
+What this file proves, against a REAL Postgres:
 
   1. NORMAL QUERY UNCHANGED: a plain query under the cap, with none of the shape-driving
-     constructs, is returned byte-for-byte identical — the fix doesn't touch what it
-     doesn't need to.
-  1b. SHORT QUERIES WITH OPERATORS UNCHANGED: a short query that DOES contain "-", a
-     quoted phrase, or "OR" — but stays under both the token cap and the node bound — is
-     ALSO returned byte-for-byte identical, negation/phrase/OR semantics intact. This is
-     the specific case the PR #43 review found broken (exclusion silently became a match).
-  2. SHAPE INVARIANCE: for an adversarial corpus (a single long quoted phrase, many
-     degenerate one-word "phrases", a long OR-chain, a leading-"-" chain, and an irregular
-     mix of all of them) fts_clamp's output builds a tsquery whose numnode() stays under
-     the same fixed safety bound the clamp itself is gated on — i.e. no shape can push a
-     capped query's real complexity past what the clamp is designed to guarantee.
-  3. FIX REDUCES COMPLEXITY: for the same adversarial input, the OLD clamp (200-token,
-     shape-blind) built a LARGER tsquery than the NEW clamp — a direct, measured
-     before/after contrast, not just an absolute bound.
-  4. NEVER RAISES: fts_clamp itself has no DB dependency and cannot fail on any input here
-     (empty string, pure operators, unicode).
-  5. TRUNCATION IS SAFE MID-PHRASE: truncating an over-cap query can leave a quote
-     unbalanced (e.g. a long quoted phrase cut mid-way) — confirmed against a live
-     Postgres that websearch_to_tsquery treats an unterminated quote leniently (same
-     result as if it had been closed), not as an error or degenerate empty match.
+     constructs, is returned byte-for-byte identical.
+  1b. SHORT QUERIES WITH OPERATORS UNCHANGED: the review's exact `-`/quote/OR repro
+     queries, and a few more, stay byte-for-byte identical -- they now round-trip through
+     the real probe, so this is also the regression guard that the probe doesn't
+     false-positive on ordinary text.
+  2. HYPHEN-DENSITY FUZZ (the gap the second review found): a range of internal-hyphen
+     densities, from mild (real kebab-case identifiers) to the exact density that
+     previously reproduced ProgramLimitExceeded, differentially checked against live
+     numnode() -- for every density, fts_clamp's output either passes through unchanged
+     (when genuinely safe) or is shrunk to something whose REAL numnode() is confirmed
+     under the bound. No case is judged "safe" on an estimate that turns out wrong.
+  3. THE TWO EXACT REPROS from the second review: the 40-word kebab-identifier query
+     (estimated 79 nodes, real numnode() far over bound) is shrunk, not passed through
+     unchecked; the 5000-hyphens/token density that raised a real ProgramLimitExceeded is
+     handled by fts_clamp WITHOUT raising.
+  4. SHAPE INVARIANCE (non-hyphen constructs): for the original adversarial corpus (a
+     single long quoted phrase, many degenerate one-word "phrases", a long OR-chain, a
+     leading-"-" chain, an irregular mix) fts_clamp's output builds a tsquery whose real
+     numnode() stays under the same fixed safety bound the clamp is gated on.
+  5. FIX REDUCES COMPLEXITY: for the same adversarial input, the OLD clamp (200-token,
+     shape-blind) built a LARGER tsquery than the NEW clamp.
+  6. NEVER RAISES: fts_clamp never lets a Postgres exception (QueryCanceled,
+     ProgramLimitExceeded) propagate, on any input tried here, including degenerate ones
+     (empty string, pure operators, unicode) and the reproduced-crash density.
+  7. TRUNCATION IS SAFE MID-PHRASE: truncating an over-cap query can leave a quote
+     unbalanced -- confirmed that websearch_to_tsquery treats an unterminated quote
+     leniently (same result as if it had been closed), not as an error or degenerate
+     match.
 
-HONESTY NOTE (see the PR description for the full writeup): extensive adversarial testing
-against a live pg16 instance — every shape below, up to tens of thousands of tokens, with
-max_stack_depth forced to Postgres's enforced minimum — never reproduced the
-"tsquery stack too small" crash issue #41 reports for websearch_to_tsquery specifically
-(numnode scaled linearly, ~2x word count, identically for phrase and plain input). That
-error IS real and reproducible via to_tsquery with deeply nested parentheses, but
-websearch_to_tsquery's grammar has no parenthesization syntax and looks unreachable
-through it on this Postgres version. This file therefore asserts what the fix actually,
-measurably does — bound tsquery complexity for adversarial shapes without rewriting
-queries that don't need it — rather than a fabricated crash repro.
+HONESTY NOTE (see the PR description for the full writeup): extensive earlier adversarial
+testing (plain chains, phrases, OR-chains, leading-"-" chains, up to tens of thousands of
+tokens) never reproduced the "tsquery stack too small" crash issue #41 originally reports
+for websearch_to_tsquery specifically -- but the hyphen-decomposition mechanism this file
+now covers DOES reproduce a real, distinct Postgres error (ProgramLimitExceeded) through
+the same guarded code path, via a shape ordinary adversarial testing hadn't tried. That's
+exactly why the guard is now a real measurement instead of a model.
 """
 import os
 import sys
@@ -59,8 +79,9 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 import psycopg
+from psycopg.rows import dict_row
 
-from core.store import fts_clamp, _fts_max_tokens, _fts_node_bound, _tsquery_node_estimate
+from core.store import fts_clamp, _fts_max_tokens, _fts_node_bound
 
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
 PASS = FAIL = 0
@@ -109,20 +130,38 @@ ADVERSARIAL_SHAPES = {
 }
 
 
+def _kebab_word(n_hyphens):
+    """A single whitespace-token with n_hyphens internal hyphens, e.g. n=3 -> 'p0-p1-p2-p3'
+    -- realistic stand-in for a file path segment, a long identifier, a git branch name."""
+    return "-".join(f"p{i}" for i in range(n_hyphens + 1))
+
+
 def main():
     print("=== fts_clamp shape-invariance (issue #41 fix B) ===")
     cap = _fts_max_tokens()
     check(f"effective FTS cap is a positive int (got {cap})", isinstance(cap, int) and cap >= 1)
+    node_bound = _fts_node_bound(cap)
+
+    conn = psycopg.connect(DSN, autocommit=True, row_factory=dict_row)
+
+    def numnode(qtext):
+        with conn.cursor() as c:
+            c.execute("SELECT numnode(websearch_to_tsquery('english', %s)) AS n", (qtext,))
+            return c.fetchone()["n"]
+
+    def session_statement_timeout():
+        with conn.cursor() as c:
+            c.execute("SELECT setting FROM pg_settings WHERE name = 'statement_timeout'")
+            return c.fetchone()["setting"]
+
+    baseline_statement_timeout = session_statement_timeout()
 
     # --- 1. normal query unchanged ----------------------------------------------------
     short = "alpha billing ingest"
     check("fts_clamp leaves a normal (no operators, under-cap) query byte-for-byte unchanged",
-          fts_clamp(short) == short)
+          fts_clamp(short, conn) == short)
 
     # --- 1b. SHORT queries WITH operators are ALSO byte-for-byte unchanged -------------
-    # This is the PR #43 review's actual finding: the old fix stripped these regardless of
-    # length. "python -django" is the sharpest case -- stripping "-" doesn't just lose
-    # precision, it INVERTS the query (an exclusion becomes a match).
     SHORT_OPERATOR_QUERIES = [
         ("negation (review repro)", 'python -django'),
         ("quoted phrase (review repro)", 'find memories about "kill switch"'),
@@ -130,40 +169,30 @@ def main():
         ("bare leading dash", "-secret plan"),
         ("multiple negations", "python -django -flask web"),
         ("quoted + negation mixed", '"exact phrase here" -excluded word'),
+        ("ordinary kebab-case identifier", "fix the co-worker-facing self-driving bug"),
     ]
     for label, q in SHORT_OPERATOR_QUERIES:
-        out = fts_clamp(q)
+        out = fts_clamp(q, conn)
         check(f"[{label}] under cap+bound: fts_clamp('{q}') is byte-for-byte unchanged "
-              f"(got {out!r}) -- negation/quote/OR semantics preserved", out == q)
+              f"(got {out!r}) -- negation/quote/OR/hyphen semantics preserved", out == q)
 
-    # --- 4. never raises, even on degenerate input --------------------------------------
+    # --- 6. never raises, even on degenerate input --------------------------------------
     for label, qtext in [("empty", ""), ("only-quotes", '"""""'), ("only-OR", "OR OR OR"),
                           ("only-dashes", "----"), ("unicode", "café ééé OR " * 5)]:
         try:
-            fts_clamp(qtext)
+            fts_clamp(qtext, conn)
             check(f"fts_clamp does not raise on degenerate input ({label})", True)
         except Exception as e:
             check(f"fts_clamp does not raise on degenerate input ({label}) -- {e}", False)
 
-    conn = psycopg.connect(DSN, autocommit=True)
-
-    def numnode(qtext):
-        with conn.cursor() as c:
-            c.execute("SELECT numnode(websearch_to_tsquery('english', %s))", (qtext,))
-            return c.fetchone()[0]
-
     # baseline: a plain query of `cap` words, no operators at all.
     plain_baseline = " ".join(f"w{i}" for i in range(cap))
-    baseline_nodes = numnode(fts_clamp(plain_baseline))
-    node_bound = _fts_node_bound(cap)
+    baseline_nodes = numnode(fts_clamp(plain_baseline, conn))
     print(f"  plain {cap}-word baseline numnode = {baseline_nodes}; safety bound = {node_bound}")
 
-    # --- 5. truncation mid-phrase is safe (unbalanced quote) ----------------------------
-    # An over-cap quoted-phrase query gets truncated to the first `cap` tokens, which can
-    # leave a dangling opening quote with no closing one. Confirm this is handled
-    # leniently (same result as if it HAD been closed), not an error or a degenerate match.
+    # --- 7. truncation mid-phrase is safe (unbalanced quote) ----------------------------
     long_phrase = '"' + " ".join(f"ph{i}" for i in range(cap + 20)) + '"'
-    truncated = fts_clamp(long_phrase)
+    truncated = fts_clamp(long_phrase, conn)
     check("truncating a quoted phrase leaves an unbalanced opening quote (expected -- "
           "this is exactly the case being verified as SAFE, not avoided)",
           truncated.count('"') == 1)
@@ -174,17 +203,117 @@ def main():
           f"({balanced_equivalent_nodes}), not an error or an empty/degenerate match",
           unbalanced_nodes == balanced_equivalent_nodes and unbalanced_nodes > 0)
 
-    # --- 2 & 3. shape invariance + before/after reduction, per adversarial shape --------
-    # N chosen so plain/phrase/quoted/dashed shapes (199 whitespace tokens each) stay
-    # UNDER the old 200-token cap -- isolating shape normalization's effect from
-    # truncation's. The OR-chain and mixed shapes exceed 200 raw tokens once the "OR"
-    # separators and multi-word phrases are counted, so the old clamp DOES truncate them
-    # too -- old_nodes reflects whatever the old clamp actually produced either way; the
-    # new-vs-old comparison below holds regardless.
+    # --- 2 & 3. THE SECOND REVIEW'S EXACT REPROS ----------------------------------------
+    print("=== hyphen-decomposition repros (PR #43 second review) ===")
+
+    # exact shape: 40 words (== cap), each a 27-part kebab identifier. The old pure-Python
+    # estimate judged this "safe" (79 nodes, under the 120 bound) -- it isn't.
+    q_headline = " ".join(_kebab_word(26) for _ in range(40))
+    headline_words = len(q_headline.split())
+    check(f"sanity: headline repro is exactly {cap} whitespace words (== cap, so the OLD "
+          "estimate would have judged it safe on word count alone)", headline_words == cap)
+    real_nodes_unclamped = numnode(q_headline)
+    check(f"the headline repro's REAL numnode() ({real_nodes_unclamped}) is drastically "
+          f"over the bound ({node_bound}) despite being AT the token cap -- this is the "
+          "gap the old Python estimate (79) missed entirely", real_nodes_unclamped > 1000)
+
+    out_headline = fts_clamp(q_headline, conn)
+    check("fts_clamp does NOT pass the headline repro through unchanged (the old, wrong "
+          "behavior) -- it's genuinely too complex and must be shrunk",
+          out_headline != q_headline)
+    out_headline_nodes = numnode(out_headline)
+    check(f"fts_clamp's shrunk output for the headline repro has a REAL numnode() "
+          f"({out_headline_nodes}) confirmed within the safety bound ({node_bound})",
+          out_headline_nodes <= node_bound)
+
+    # exact shape: the density that reproduced a real, unhandled ProgramLimitExceeded
+    # through the pass-through path before this fix. Uses the connection's own (generous,
+    # unrestricted) timeout -- not a tight one -- so a slow-but-eventually-erroring probe
+    # surfaces the real ProgramLimitExceeded rather than getting preempted by a timeout.
+    q_crash = " ".join(_kebab_word(5000) for _ in range(40))
+    try:
+        with conn.cursor() as c:
+            c.execute("SELECT numnode(websearch_to_tsquery('english', %s)) AS n", (q_crash,))
+            c.fetchone()
+        crash_confirmed = False
+    except (psycopg.errors.ProgramLimitExceeded, psycopg.errors.QueryCanceled):
+        crash_confirmed = True
+    check("sanity: computing numnode() directly on the crash-density input DOES raise "
+          "an error on this Postgres (ProgramLimitExceeded, or QueryCanceled if the "
+          "connection's own timeout preempts it first) -- confirms the trap is real",
+          crash_confirmed)
+
+    try:
+        out_crash = fts_clamp(q_crash, conn)
+        crash_raised = False
+    except Exception as e:
+        out_crash, crash_raised = None, True
+        print(f"    fts_clamp RAISED on the crash-density input: {type(e).__name__}: {e}")
+    check("fts_clamp handles the crash-density input WITHOUT raising -- the exact "
+          "unhandled-crash scenario the second review reproduced is now caught",
+          not crash_raised)
+    if not crash_raised:
+        out_crash_nodes = numnode(out_crash)
+        check(f"fts_clamp's output for the crash-density input has a REAL numnode() "
+              f"({out_crash_nodes}) confirmed within the safety bound ({node_bound})",
+              out_crash_nodes <= node_bound)
+
+    # the crash-density input forces multiple internal probes (each setting a tight
+    # statement_timeout, at least one of them timing out/erroring) before converging on a
+    # safe result -- confirm the session is left at its ORIGINAL statement_timeout
+    # afterward, not stuck at the probe's tight one. A leaked tight timeout wouldn't crash
+    # anything here, but it would silently sabotage the next (unrelated, possibly
+    # expensive) query run on this same pooled connection.
+    check("fts_clamp restores the session's original statement_timeout after the "
+          "multi-probe shrink path (no leaked tight timeout onto the next query)",
+          session_statement_timeout() == baseline_statement_timeout)
+
+    # --- differential hyphen-density fuzz against live numnode() ------------------------
+    # Not just the two fixed repros: sweep a range of densities (mild/realistic through
+    # pathological) so this class of gap can't silently reopen for some density nobody
+    # thought to pin as a named test case.
+    print("=== hyphen-density differential fuzz (vs live numnode()) ===")
+    passthrough_seen = False
+    # (word_count, hyphens/word) pairs: the first few are deliberately BELOW cap word
+    # count as well as low hyphen density, so at least one case is genuinely safe and
+    # must round-trip byte-for-byte unchanged -- exercising the "judged safe, no shrink"
+    # branch, not just "judged unsafe, shrink and reverify" every time.
+    density_cases = [(5, 1), (5, 2)] + [(cap, h) for h in (1, 2, 5, 26, 50, 200, 1000, 5000)]
+    for n_words, hyphens in density_cases:
+        q = " ".join(_kebab_word(hyphens) for _ in range(n_words))
+        out = fts_clamp(q, conn)
+        if out == q:
+            passthrough_seen = True
+            # fts_clamp judged this density safe to pass through unchanged -- verify that
+            # against REAL numnode(), not trust the judgment.
+            try:
+                real = numnode(out)
+                ok = real <= node_bound
+                detail = f"real numnode()={real} <= bound {node_bound}"
+            except (psycopg.errors.ProgramLimitExceeded, psycopg.errors.QueryCanceled) as e:
+                ok, detail = False, f"passed through UNCHANGED but numnode() itself raised {type(e).__name__}"
+        else:
+            # fts_clamp shrunk it -- verify the shrunk output is REALLY safe, not just
+            # shorter.
+            try:
+                real = numnode(out)
+                ok = real <= node_bound
+                detail = f"shrunk to {len(out.split())} word(s), real numnode()={real} <= bound {node_bound}"
+            except (psycopg.errors.ProgramLimitExceeded, psycopg.errors.QueryCanceled) as e:
+                ok, detail = False, f"shrunk output STILL raised {type(e).__name__}"
+        check(f"[{n_words}x kebab, {hyphens} hyphens/word] fts_clamp's decision is verified "
+              f"safe against live numnode() ({detail})", ok)
+
+    check("differential fuzz includes at least one genuinely-safe case that fts_clamp "
+          "passes through UNCHANGED (not just cases it shrinks) -- otherwise the "
+          "pass-through branch itself is never exercised by this fuzz",
+          passthrough_seen)
+
+    # --- 4 & 5. shape invariance + before/after reduction, non-hyphen adversarial shapes -
     N = 199
     for label, build in ADVERSARIAL_SHAPES.items():
         adversarial = build(N)
-        new_clamped = fts_clamp(adversarial)
+        new_clamped = fts_clamp(adversarial, conn)
         old_clamped = _old_clamp(adversarial, cap=200)
 
         check(f"[{label}] fts_clamp output respects the token cap (<= {cap})",
@@ -192,20 +321,9 @@ def main():
 
         new_nodes = numnode(new_clamped)
         old_nodes = numnode(old_clamped)
-        estimated_nodes = _tsquery_node_estimate(new_clamped)
 
-        check(f"[{label}] the pure-Python complexity estimate ({estimated_nodes}) matches "
-              f"real Postgres numnode() ({new_nodes}) -- the estimator fts_clamp gates on "
-              "is actually accurate, not just an unverified guess",
-              estimated_nodes == new_nodes)
-
-        # SAFETY BOUND (not "close to the plain-word baseline" -- the fix deliberately no
-        # longer flattens shape it doesn't need to, so a heavily-negated clamped query can
-        # legitimately have MORE nodes than the plain-word baseline. What must hold is the
-        # fixed worst-case ceiling the clamp is designed to guarantee: 3*cap-1.)
         check(f"[{label}] new-clamp numnode ({new_nodes}) stays within the safety bound "
-              f"({node_bound}) -- worst-case shape (all `cap` words negated) is a fixed, "
-              "bounded cost regardless of adversarial input", new_nodes <= node_bound)
+              f"({node_bound}), confirmed against real Postgres", new_nodes <= node_bound)
 
         check(f"[{label}] new clamp builds a SMALLER (or equal) tsquery than the old, "
               f"shape-blind clamp for the same adversarial input (old={old_nodes}, new={new_nodes})",
