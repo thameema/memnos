@@ -103,11 +103,28 @@ def is_transient(exc: BaseException) -> bool:
 
 # ---- write-behind queue: enqueue / drain ---------------------------------------------
 
-def enqueue(config_dir: str, namespace: str, text: str, speaker: str, memory_type: str = "") -> str:
+def enqueue(config_dir: str, namespace: str, text: str, speaker: str, memory_type: str = "",
+            token: str = "") -> str:
     """Durably park one turn for replay into the SAME memnos store, so the caller can
     still return success to whatever is upstream of it (a hook, an MCP tool call) —
     the write is never lost and never diverges into a separate store. Returns the queued
-    file's path."""
+    file's path.
+
+    `token`: the caller's OWN bearer token, live at the moment this item is queued —
+    captured here and replayed with THIS item at drain time (see drain()'s `fallback_token`
+    param), rather than whatever shared/global token happens to be configured on the
+    process that eventually drains the queue. This is what makes queuing safe under the
+    streamable-HTTP MCP mount (memnos_server.py): many different callers/tenants share
+    ONE mounted memnos_mcp.py process with no per-process token of its own (issue #45) —
+    each queued item carries the credential it actually needs to replay successfully,
+    which also means a multi-tenant queue drains each item as the tenant that queued it,
+    not as whichever tenant's token happened to be live at drain time. Empty string
+    (the default) preserves the pre-#45 behavior of relying entirely on the drainer's
+    own fallback token — still correct for the single-token-per-process stdio adapter.
+
+    The queue file may now carry a bearer credential, so its permissions are tightened
+    to owner-only, same as memnos_cli.py's own config file (best-effort — a chmod
+    failure must never block the write itself)."""
     d = queue_dir(config_dir)
     os.makedirs(d, exist_ok=True)
     now = time.time()
@@ -115,11 +132,17 @@ def enqueue(config_dir: str, namespace: str, text: str, speaker: str, memory_typ
             "queued_at": now}
     if memory_type:
         item["type"] = memory_type
+    if token:
+        item["token"] = token
     fname = f"{int(now * 1000)}_{speaker}_{uuid.uuid4().hex[:8]}.json"
     path = os.path.join(d, fname)
     tmp = path + ".tmp"
     with open(tmp, "w") as fh:
         json.dump(item, fh)
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
     os.replace(tmp, path)                             # atomic: never a partially-written entry
     return path
 
@@ -185,13 +208,24 @@ def _reclaim_stale_claims(d: str, max_age: float = STALE_CLAIM_AGE) -> None:
             pass                                       # lost the race with its owner finishing
 
 
-def drain(config_dir: str, url: str, token: str, timeout: float = 8, max_items=None) -> tuple[int, int]:
+def drain(config_dir: str, url: str, fallback_token: str, timeout: float = 8, max_items=None) -> tuple[int, int]:
     """Replay queued writes into the SAME store, oldest first (filenames are epoch-ms
     prefixed). Safe for CONCURRENT drainers (a hook's SessionStart drain and an MCP
     adapter's opportunistic drain can legitimately race): each item is atomically
     claimed via `os.rename` to a per-process `.claiming-<pid>` name before it is POSTed,
     so exactly one drainer ever sends a given item — the loser's rename simply fails and
     it moves on.
+
+    Each item is drained with ITS OWN token (captured at enqueue() time, see there) when
+    it has one, never a single token shared across the whole queue — issue #45: a queue
+    drained under the streamable-HTTP MCP mount can hold items from many different
+    tenants/callers, and draining tenant B's item with tenant A's (or nobody's) token
+    either 401s a write that would have succeeded, or worse, replays it under the wrong
+    principal. `fallback_token` is used only for items that predate per-item token
+    capture (pre-#45 queue files already on disk) or that were queued by a caller that
+    never had one to give — the single-token-per-process stdio adapter's normal case,
+    where the item's own captured token and the drainer's fallback are the same value
+    anyway.
 
     Before scanning, sweeps for and reclaims STALE `.claiming-*` files (see
     `_reclaim_stale_claims`) left behind by a drainer that was killed mid-claim, so a
@@ -231,8 +265,9 @@ def drain(config_dir: str, url: str, token: str, timeout: float = 8, max_items=N
             except OSError:
                 pass
             continue
+        item_token = item.get("token") or fallback_token
         try:
-            _post_remember(url, token, item, timeout=timeout)
+            _post_remember(url, item_token, item, timeout=timeout)
         except Exception as e:
             if is_transient(e):
                 try:

@@ -73,7 +73,13 @@ def _drain_offline_queue():
     separate status/health tool to poll, so callers below fold `rejected` into the
     text they return for the tool call that triggered the drain. Also logged to stderr
     unconditionally (not just returned) so the startup-time call further down — before
-    any tool call exists to attach a note to — doesn't drop a rejection silently."""
+    any tool call exists to attach a note to — doesn't drop a rejection silently.
+
+    `TOKEN` here is only ever a FALLBACK (see offline_queue.drain()'s `fallback_token`):
+    each item drains with its own captured token when it has one (issue #45). On stdio
+    TOKEN is the real per-process token and matches what every item already carries. On
+    the HTTP mount TOKEN is permanently empty (the mount has no token of its own) — that
+    used to mean every drain 401'd; now it's simply unused whenever an item has its own."""
     try:
         drained, rejected = offline_queue.drain(_config_dir(), URL, TOKEN, timeout=8)
     except Exception:
@@ -274,7 +280,13 @@ def remember(text: str, memory_type: str = "") -> str:
         # store once healthy) and tell the caller it's saved. A PERMANENT failure
         # (401/403/400 — Bug 4's contract) still raises unchanged below.
         if offline_queue.is_transient(e):
-            offline_queue.enqueue(_config_dir(), ns, text, "user", memory_type=memory_type)
+            # issue #45: capture THIS request's own token (the caller's, under the HTTP
+            # mount — see _token()) alongside the item, so a later drain replays it as
+            # THIS caller/tenant rather than whatever the drainer's own module-level
+            # TOKEN happens to be (empty under the HTTP mount, since the mount has no
+            # token of its own).
+            offline_queue.enqueue(_config_dir(), ns, text, "user", memory_type=memory_type,
+                                   token=_token())
             return (f"remembered in '{ns}' (queued — memnos is temporarily unreachable; "
                     f"will sync automatically once it recovers, nothing lost)")
         raise ToolError(_write_error(e, "remember")) from None
@@ -362,7 +374,7 @@ def memory_write(text: str) -> str:
         # /memory/write is a strict server-side alias of /remember (same handler), so
         # the queued item replays through the shared drain's POST /remember unchanged.
         if offline_queue.is_transient(e):
-            offline_queue.enqueue(_config_dir(), ns, text, "user")
+            offline_queue.enqueue(_config_dir(), ns, text, "user", token=_token())
             return f"written to '{ns}' (queued — memnos is temporarily unreachable; will sync automatically once it recovers, nothing lost)"
         raise ToolError(_write_error(e, "memory_write")) from None
     _, rejected = _drain_offline_queue()
