@@ -41,7 +41,8 @@ httpx.HTTPStatusError(500) -> offline_queue.is_transient() == True -> enqueued, 
 the same failure shape the docstring in offline_queue.is_transient() describes as
 "an embed-time error inside /remember". No server process is killed and nothing is
 asserted about draining/replay — this test is scoped to the enqueue-time namespace and
-token tagging only.
+token tagging only; draining under the HTTP mount is a separate concern, proven instead
+by tests/test_write_behind_http_mount_token_drain.py.
 
 Run: python tests/test_mcp_http_write_behind_seam.py
 (spawns its own server + throwaway database; does not require one already running)

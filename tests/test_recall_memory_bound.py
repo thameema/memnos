@@ -27,6 +27,9 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import psycopg
+from psycopg.rows import dict_row
+
 from core import rerank
 from core.store import fts_clamp, _fts_max_tokens
 
@@ -123,18 +126,20 @@ def main():
           t1 == t4)
 
     # --- 3. FTS clamp + LONG QUERY -> 200 (no tsquery crash) -------------------------
+    # fts_clamp's safety check is a real, bounded Postgres probe (not a Python estimate --
+    # see tests/test_fts_clamp_shape.py for why), so it needs a live connection.
+    _clamp_conn = psycopg.connect(DSN, autocommit=True, row_factory=dict_row)
     short = "alpha billing ingest"
-    check("fts_clamp leaves a normal query untouched", fts_clamp(short) == short)
+    check("fts_clamp leaves a normal query untouched", fts_clamp(short, _clamp_conn) == short)
     cap = _fts_max_tokens()
     long_tokens = " ".join(f"word{i}" for i in range(cap * 50))   # far above the cap
-    clamped = fts_clamp(long_tokens)
+    clamped = fts_clamp(long_tokens, _clamp_conn)
     check(f"fts_clamp bounds a long query to <= {cap} tokens",
           len(clamped.split()) <= cap and len(clamped) < len(long_tokens))
+    _clamp_conn.close()
 
     # HTTP arm: needs the server. Bootstrap a token via the control plane.
     try:
-        import psycopg
-        from psycopg.rows import dict_row
         from core.control import Control
         with psycopg.connect(DSN, autocommit=True, row_factory=dict_row) as conn:
             Control.init(conn)
