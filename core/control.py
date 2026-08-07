@@ -225,17 +225,23 @@ class Control:
         with conn.cursor() as c:
             c.execute(CONTROL_DDL)               # DDL failures must still crash boot
             if Control._namespace_registry_needs_backfill(c):
-                # The scan itself is timeout-exempt and paginated (safe even on a huge
-                # table -- see _run_namespace_registry_backfill), but the final marker-row
-                # INSERT is still one more statement that could transiently fail (lock
-                # contention, connection blip). That's now the only remaining crash
-                # surface here, and it's self-healing: log and continue rather than crash
-                # boot over it -- the next restart just redoes the (already-safe) scan.
+                # This wraps the WHOLE backfill call -- the paginated scan across both
+                # tables plus the final marker-row INSERT -- not just the marker row.
+                # Any statement in there (a chunk INSERT, lock contention, a connection
+                # blip, the marker row itself) can transiently fail, and it's
+                # self-healing either way: log and continue rather than crash boot over
+                # it -- the next restart just redoes the (already-safe, idempotent) scan.
+                # Narrowing this to just the marker-row INSERT would let a mid-scan
+                # failure crash server boot -- exactly the round-1 finding this broad
+                # scope exists to close.
                 try:
                     Control._run_namespace_registry_backfill(c)
                 except Exception:
-                    logger.warning("namespace registry backfill failed; will retry on "
-                                    "next restart", exc_info=True)
+                    logger.error("namespace registry backfill failed; namespace "
+                                 "registry may be incomplete until this succeeds, so "
+                                 "wildcard-grant wide recall may silently omit "
+                                 "namespaces until the next restart retries it",
+                                 exc_info=True)
 
     @staticmethod
     def _namespace_registry_needs_backfill(c) -> bool:

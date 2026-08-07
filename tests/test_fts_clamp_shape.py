@@ -31,6 +31,25 @@ failure point even if computing numnode() would itself overflow the parser. This
 authoritative for hyphen-decomposition and for any other tsquery-expanding construct that
 hasn't been found yet -- it isn't a model of the parser, it's a measurement.
 
+  3. A third review found the MEASUREMENT's own safety net had a hole of the identical
+     shape as gap 2 above, one level down: _tsquery_within_bound's except clause caught
+     only the two specific error types (ProgramLimitExceeded, QueryCanceled) observed
+     from the constructs tested so far -- and a bare run of >=33 consecutive literal
+     hyphens (a markdown divider, a YAML frontmatter delimiter -- ordinary text, not
+     adversarial fuzzing, and a categorically different shape from the kebab-identifier
+     "p0-p1-p2-..." fuzz above) raises `psycopg.errors.InternalError_: tsquery stack too
+     small`, which shares no ancestor with either caught type and propagated straight
+     through -- a live reproduction of issue #41's ORIGINAL crash through the exact code
+     path built to eliminate it. Enumerating that third type would repeat the same
+     mistake a third time, so the except clause now catches `psycopg.DatabaseError`
+     (broad by class -- every DatabaseError-class failure this probe can raise, both
+     server-reported SQLSTATE errors and psycopg's own pre-flight input rejections (e.g.
+     a NUL byte, rejected before the statement ever reaches the server -- no SQLSTATE)
+     alike -- not by enumeration), deliberately excluding `psycopg.InterfaceError`
+     (driver/connection misuse, not a property of the query text, which should still
+     propagate). This also closes that NUL-byte crash (`psycopg.DataError`) through the
+     same path, for free.
+
 What this file proves, against a REAL Postgres:
 
   1. NORMAL QUERY UNCHANGED: a plain query under the cap, with none of the shape-driving
@@ -62,6 +81,12 @@ What this file proves, against a REAL Postgres:
      unbalanced -- confirmed that websearch_to_tsquery treats an unterminated quote
      leniently (same result as if it had been closed), not as an error or degenerate
      match.
+  8. THE THIRD REVIEW'S EXACT REPROS (gap 3 above): a markdown-divider sentence and a
+     bare hyphen run (well past the ~33-hyphen cliff) both confirmed to raise
+     InternalError_ directly (sanity check the trap is real) yet handled by fts_clamp
+     WITHOUT raising; a NUL-byte query confirmed to raise DataError directly, also
+     handled without raising -- proving the
+     broad psycopg.DatabaseError catch, not a third enumerated exception type.
 
 HONESTY NOTE (see the PR description for the full writeup): extensive earlier adversarial
 testing (plain chains, phrases, OR-chains, leading-"-" chains, up to tens of thousands of
@@ -266,6 +291,97 @@ def main():
     # expensive) query run on this same pooled connection.
     check("fts_clamp restores the session's original statement_timeout after the "
           "multi-probe shrink path (no leaked tight timeout onto the next query)",
+          session_statement_timeout() == baseline_statement_timeout)
+
+    # --- THE THIRD REVIEW'S EXACT REPRO: bare hyphen run + NUL byte ---------------------
+    # _tsquery_within_bound's except clause originally caught only ProgramLimitExceeded
+    # and QueryCanceled -- the two error shapes the second review's kebab-identifier fuzz
+    # happened to hit. A third review found a THIRD, categorically different shape slips
+    # straight through uncaught: a single whitespace-token consisting of ONLY hyphens
+    # (no alphanumeric parts between them -- a markdown horizontal rule / YAML frontmatter
+    # delimiter / ASCII divider, not the "p0-p1-p2-..." kebab-identifier shape the fuzz
+    # above already covers) raises psycopg.errors.InternalError_ ("tsquery stack too
+    # small", SQLSTATE XX000) once the run is long enough (minimal repro measured at 33
+    # hyphens on this Postgres build -- the exact cliff isn't pinned as a hard assertion
+    # here since it's a property of Postgres's compiled stack-depth limit, not of this
+    # fix, and could shift a hyphen or two on a different build/arch) -- confirmed via
+    # MRO that InternalError_ shares no ancestor with either originally-caught type. This
+    # is a live reproduction of issue #41's original crash, through completely ordinary
+    # text, not adversarial fuzzing. The fix (store.py's _tsquery_within_bound) now
+    # catches psycopg.DatabaseError -- broad by class, not by enumerating a third specific
+    # type (repeating that mistake a third time is exactly what this round of review
+    # flagged).
+    print("=== bare-hyphen-run + NUL byte repros (PR #43 third review) ===")
+
+    divider_query = "find the ---------------------------------------- divider in my notes"
+    # comfortably past the ~33-hyphen cliff (not pinned exactly, see above) so this case
+    # stays a reliable repro even if the cliff shifts slightly on a different Postgres build
+    bare_hyphen_run = "-" * 200
+
+    for label, qtext in [("markdown-divider sentence (reviewer's exact repro)", divider_query),
+                          ("bare 200-hyphen token (comfortably past the cliff)", bare_hyphen_run)]:
+        try:
+            numnode(qtext)
+            direct_raised, direct_exc = False, None
+        except Exception as e:
+            direct_raised, direct_exc = True, e
+        check(f"sanity: [{label}] computing numnode() directly DOES raise on this "
+              f"Postgres (confirms the trap is real) "
+              f"{'-- ' + type(direct_exc).__name__ if direct_raised else ''}",
+              direct_raised)
+        check(f"sanity: [{label}] the raised error is InternalError_, NOT "
+              "ProgramLimitExceeded/QueryCanceled (a genuinely different exception "
+              "branch than the second review's repro -- proves this needs the broad "
+              "catch, not a third enumerated type)",
+              direct_raised and isinstance(direct_exc, psycopg.errors.InternalError_))
+
+        try:
+            out = fts_clamp(qtext, conn)
+            clamp_raised = False
+        except Exception as e:
+            out, clamp_raised = None, True
+            print(f"    fts_clamp RAISED on [{label}]: {type(e).__name__}: {e}")
+        check(f"fts_clamp handles [{label}] WITHOUT raising -- the exact unhandled "
+              "crash the third review reproduced is now caught", not clamp_raised)
+        if not clamp_raised:
+            out_nodes = numnode(out)
+            check(f"fts_clamp's output for [{label}] has a REAL numnode() ({out_nodes}) "
+                  f"confirmed within the safety bound ({node_bound})",
+                  out_nodes <= node_bound)
+
+    # bonus, same root cause: a NUL byte in the query text raises psycopg.DataError
+    # through the identical unguarded path -- not introduced by this PR, but the broad
+    # DatabaseError catch closes it for free (DataError is a DatabaseError subclass).
+    nul_query = "hello\x00world"
+    try:
+        numnode(nul_query)
+        nul_direct_raised, nul_direct_exc = False, None
+    except Exception as e:
+        nul_direct_raised, nul_direct_exc = True, e
+    check("sanity: NUL-byte query DOES raise directly (confirms the bonus trap is real) "
+          f"{'-- ' + type(nul_direct_exc).__name__ if nul_direct_raised else ''}",
+          nul_direct_raised)
+    check("sanity: the NUL-byte error is psycopg.DataError, a THIRD distinct exception "
+          "type from InternalError_ and ProgramLimitExceeded/QueryCanceled -- one more "
+          "reason an enumerated list of types is the wrong shape of fix",
+          nul_direct_raised and isinstance(nul_direct_exc, psycopg.DataError))
+
+    try:
+        nul_out = fts_clamp(nul_query, conn)
+        nul_clamp_raised = False
+    except Exception as e:
+        nul_out, nul_clamp_raised = None, True
+        print(f"    fts_clamp RAISED on NUL-byte query: {type(e).__name__}: {e}")
+    check("fts_clamp handles the NUL-byte query WITHOUT raising (closed for free by the "
+          "same broad-catch fix)", not nul_clamp_raised)
+    if not nul_clamp_raised:
+        nul_out_nodes = numnode(nul_out)
+        check(f"fts_clamp's output for the NUL-byte query has a REAL numnode() "
+              f"({nul_out_nodes}) confirmed within the safety bound ({node_bound})",
+              nul_out_nodes <= node_bound)
+
+    check("fts_clamp restores the session's original statement_timeout after the "
+          "bare-hyphen-run/NUL-byte repros too (no leaked tight timeout)",
           session_statement_timeout() == baseline_statement_timeout)
 
     # --- differential hyphen-density fuzz against live numnode() ------------------------

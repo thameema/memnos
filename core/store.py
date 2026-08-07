@@ -66,6 +66,26 @@ def vlit(vec: Sequence[float]) -> str:
 # safe," never allowed to propagate. This is authoritative for any current or future
 # tsquery-expanding construct, not just the ones already known about.
 #
+# issue #41 fix B, round 3: the probe's own except clause repeated exactly the mistake this
+# section just described — it caught only the two specific error types (ProgramLimitExceeded,
+# QueryCanceled) observed from the shapes tested so far, and a THIRD live Postgres error
+# shape slipped straight through uncaught: a bare run of >=33 consecutive literal hyphens
+# (an ordinary markdown/YAML/ASCII divider — ordinary content, not adversarial fuzzing)
+# raises `psycopg.errors.InternalError_: tsquery stack too small` (SQLSTATE XX000), which
+# shares no ancestor with either caught type and reproduced issue #41's original crash
+# straight through the code path built to eliminate it. A NUL byte in the query text
+# (`psycopg.DataError`, raised by psycopg itself before the statement ever reaches the
+# server — no SQLSTATE, since Postgres never saw it) hits the same unguarded path.
+# Enumerating a third specific type would repeat the identical mistake a third time for
+# whatever shape nobody's tried yet, so the except clause now catches
+# `psycopg.DatabaseError` — every DatabaseError-class failure this probe query can raise,
+# both server-reported (SQLSTATE-carrying) errors and psycopg's own pre-flight input
+# rejections alike, by construction, not by enumeration. It deliberately does NOT catch
+# `psycopg.InterfaceError` (misuse of the driver/connection itself — e.g. executing
+# against an already-closed cursor — a bug in this code, not a property of the query
+# text, and one that should crash loudly rather than be silently filed as "unsafe
+# input").
+#
 # NOT in scope here (issue #41 fix C, deferred — see the TODO at this module's FTS call
 # sites below for the current reasoning): even with this bound, a single-arm timeout/error
 # still propagates straight to the caller instead of degrading the recall to a partial
@@ -103,12 +123,19 @@ def _tsquery_within_bound(conn, qtext: str, bound: int) -> bool:
     found unsafe). Runs under its own short statement_timeout, independent of and much
     tighter than the connection's normal one, restored via `SET ... TO DEFAULT` afterward
     (reverts to the value configured when this connection was opened, e.g. via the pool's
-    `-c statement_timeout=...` option — not a hardcoded system default). If even
-    COMPUTING numnode() is itself too expensive (times out) or the input is pathological
-    enough to blow the tsquery parser's own internal limit (ProgramLimitExceeded — real,
-    reproducible for extreme input), that is unambiguously "not safe": caught here, never
-    allowed to propagate, and the connection is left usable afterward either way
-    (autocommit means neither error poisons a transaction)."""
+    `-c statement_timeout=...` option — not a hardcoded system default). Any
+    DatabaseError-class failure for this query — a timeout (QueryCanceled), a parser
+    limit (ProgramLimitExceeded), an internal parser error (InternalError_, e.g. "tsquery
+    stack too small" on a bare run of hyphens), any other SQLSTATE-carrying error the
+    server reports, or input psycopg itself rejects before the statement ever reaches the
+    server (DataError, e.g. an embedded NUL byte -- no SQLSTATE, since Postgres never saw
+    it) — means "not measurable as safe," full stop: caught here via
+    `psycopg.DatabaseError` (the common ancestor of every such error, not an enumerated
+    list of the ones seen so far — see the module comment above), never allowed to
+    propagate. `psycopg.InterfaceError` (client/driver misuse, not a property of qtext)
+    is deliberately NOT caught here and propagates
+    normally. The connection is left usable afterward either way (autocommit means no
+    caught error poisons a transaction)."""
     if not qtext:
         return True
     with conn.cursor() as c:
@@ -119,7 +146,7 @@ def _tsquery_within_bound(conn, qtext: str, bound: int) -> bool:
                 (qtext, bound))
             row = c.fetchone()
             return bool(row["ok"] if isinstance(row, dict) else row[0])
-        except (psycopg.errors.ProgramLimitExceeded, psycopg.errors.QueryCanceled):
+        except psycopg.DatabaseError:
             return False
         finally:
             c.execute("SET statement_timeout = DEFAULT")
