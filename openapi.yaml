@@ -1746,11 +1746,37 @@ components:
         degraded:
           type: boolean
           description: >
-            present (true) when results are best-available — retrieval (RRF) order
-            without the cross-encoder rerank (the stale-turn annotation pass may also be
-            skipped). Two causes: the request's `deadline_ms` expired mid-pipeline, OR
-            the reranker is still warming up at boot (the server accepts traffic
-            immediately and serves un-reranked results until the model finishes loading)
+            present (true) when results are best-available rather than complete. Three
+            causes: the request's `deadline_ms` expired mid-pipeline (retrieval/RRF order
+            without the cross-encoder rerank, stale-turn annotation may be skipped); the
+            reranker is still warming up at boot (same effect); or (issue #41 fix C) one
+            or more recall arms hit a live, reachable-server failure (a canceled/timed-out
+            query, a transient DB error) and were dropped — the OTHER arms' results are
+            still returned. See `degraded_reasons` to tell the arm-failure case apart from
+            the first two (which never populate it).
+        degraded_reasons:
+          type: array
+          description: >
+            present only when `degraded` is caused by one or more failed recall arms
+            (issue #41 fix C) — absent for the deadline/warming causes. One entry per
+            failed (namespace, arm) pair; the OTHER arms/namespaces not listed here
+            succeeded and their results ARE included in `memories`/`context`.
+          items: { $ref: "#/components/schemas/DegradedReason" }
+    DegradedReason:
+      type: object
+      required: [namespace, arm, error]
+      properties:
+        namespace: { type: string, description: namespace the failed arm was querying }
+        arm:
+          type: string
+          description: >
+            which query failed: raw (raw-turn search), semantic (semantic-fact search),
+            semantic_temporal (temporal semantic search), timeline (the entity-guarantee/
+            timeline arm), max_observed_at (the temporal-intent 'now' watermark), or
+            readable_namespaces (wide-recall's namespace fan-out — falls back to
+            searching just the query namespace)
+        error: { type: string, description: the exception's class name (never the raw message) }
+        sqlstate: { type: [string, "null"], description: Postgres SQLSTATE, when the failure came from the database }
     MemoriesResponse:
       type: object
       required: [memories]
@@ -1766,7 +1792,14 @@ components:
           items: { type: string }
         degraded:
           type: boolean
-          description: best-available, un-reranked results (deadline_ms expired, or reranker still warming at boot)
+          description: >
+            best-available results: deadline_ms expired, reranker still warming at boot,
+            or (issue #41 fix C) one or more recall arms failed and were dropped — see
+            degraded_reasons
+        degraded_reasons:
+          type: array
+          description: present only for the arm-failure cause of `degraded` — see RecallResponse.degraded_reasons
+          items: { $ref: "#/components/schemas/DegradedReason" }
     ContextResponse:
       type: object
       required: [context]
@@ -1780,7 +1813,14 @@ components:
           items: { type: string }
         degraded:
           type: boolean
-          description: best-available, un-reranked results (deadline_ms expired, or reranker still warming at boot)
+          description: >
+            best-available results: deadline_ms expired, reranker still warming at boot,
+            or (issue #41 fix C) one or more recall arms failed and were dropped — see
+            degraded_reasons
+        degraded_reasons:
+          type: array
+          description: present only for the arm-failure cause of `degraded` — see RecallResponse.degraded_reasons
+          items: { $ref: "#/components/schemas/DegradedReason" }
     ConsolidateResponse:
       type: object
       required: [dossiers]

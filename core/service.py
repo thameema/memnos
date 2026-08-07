@@ -7,17 +7,36 @@ Multi-tenant: ONE schema (tenant_memnos) with a `namespace` column per the desig
 """
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
 import time
 from datetime import datetime, timezone, timedelta
 
-from .store import BrainStore, query_clamp
+from .store import BrainStore, query_clamp, RECALL_ARM_FAILURES
 from . import rerank as brain_rerank
+
+logger = logging.getLogger(__name__)
 
 _TENANT = "memnos"
 _PROPER = re.compile(r"\b[A-Z][a-zA-Z]{2,}\b")
+
+
+def _record_arm_failure(reasons, namespace, arm, exc):
+    """issue #41 fix C: a recall arm (raw/semantic search, the timeline/entity-guarantee
+    arm, a wide-recall per-namespace fetch) hit a RECALL_ARM_FAILURES-class error — log
+    the FULL detail server-side (same place #41 was originally diagnosed from: the
+    server log) and, if the caller wants a client-visible record, append a SANITIZED
+    entry: namespace, which arm, the exception's class name, and its SQLSTATE if it has
+    one. Deliberately never the raw exception message — that can echo query text — into
+    anything that reaches the client; the message stays server-side in the log line."""
+    logger.warning("recall arm degraded: namespace=%s arm=%s %s: %s",
+                   namespace, arm, type(exc).__name__, exc)
+    if reasons is not None:
+        reasons.append({"namespace": namespace, "arm": arm,
+                        "error": type(exc).__name__,
+                        "sqlstate": getattr(exc, "sqlstate", None)})
 
 # Belief-change supersession applies ONLY to SINGLE-VALUED attributes (a person has one
 # current home/job/age — a new value replaces the old). MULTI-VALUED relations
@@ -555,12 +574,25 @@ class MemnosMemory:
         cosine — at field scale these are the expensive non-vector SQL). Pooled callers
         run this on a short connection WHILE the embedding round-trip is in flight,
         then pass the result to recall_fetch(pre=...). recall_fetch with pre=None calls
-        this itself, so in-process users (benchmark, scripts) are byte-identical."""
+        this itself, so in-process users (benchmark, scripts) are byte-identical.
+
+        issue #41 fix C: the 'now' watermark and the timeline/entity-guarantee query are
+        each a live per-arm DB call and can fail independently under load. A
+        RECALL_ARM_FAILURES-class error degrades that ONE arm — the watermark falls back
+        to wall-clock 'now' (the same fallback already used when the namespace has no
+        rows), the guarantee arm is simply absent (b['dump']/b['tl'] stay unset, which
+        recall_rank already treats as empty via .get()) — instead of failing the whole
+        prefetch. Reasons collect into b['_degraded_reasons'] the same shape recall_fetch
+        uses, so a caller passing this bundle via pre= merges them into one list."""
         from . import temporal as T
-        now = self.store.max_observed_at(self.schema, namespace) or datetime.now(timezone.utc)
+        reasons = []
+        try:
+            now = self.store.max_observed_at(self.schema, namespace) or datetime.now(timezone.utc)
+        except RECALL_ARM_FAILURES as e:
+            _record_arm_failure(reasons, namespace, "max_observed_at", e)
+            now = datetime.now(timezone.utc)
         intent = T.analyze(query, now)
         if intent.temporal:
-            import logging
             logging.getLogger("memnos.temporal").debug(
                 "temporal arm: query=%r matched=%r ents=%r",
                 query[:80], getattr(intent, "matched_pattern", None), T.query_entities(query),
@@ -572,8 +604,11 @@ class MemnosMemory:
                 # answers ('what martial arts' ≁ 'taekwondo'); 82% of eval failures were
                 # retrieval misses. Guarantee the facts about the query's entities — the
                 # same JOIN-not-cosine trick the timeline arm uses for temporal.
-                b["dump"] = self.store.timeline(self.schema, namespace, b["ents"],
-                                                order="desc", limit=20, current_only=True)
+                try:
+                    b["dump"] = self.store.timeline(self.schema, namespace, b["ents"],
+                                                    order="desc", limit=20, current_only=True)
+                except RECALL_ARM_FAILURES as e:
+                    _record_arm_failure(reasons, namespace, "timeline", e)
         else:
             # TEMPORAL: GUARANTEE the entity timeline (parity with the tested phaseA
             # engine). Vector search structurally misses dated evidence ('when did X'
@@ -582,9 +617,15 @@ class MemnosMemory:
             # current_only: "current/now/latest" with NO date range means the user wants
             # the present state, not a history walk — apply valid_to IS NULL filter.
             tl_current = intent.current and intent.start is None and intent.end is None
-            b["tl"] = self.store.timeline(self.schema, namespace, b["ents"], start=intent.start,
-                                          end=intent.end, order=intent.order or "asc", limit=12,
-                                          current_only=tl_current)
+            try:
+                b["tl"] = self.store.timeline(self.schema, namespace, b["ents"], start=intent.start,
+                                              end=intent.end, order=intent.order or "asc", limit=12,
+                                              current_only=tl_current)
+            except RECALL_ARM_FAILURES as e:
+                _record_arm_failure(reasons, namespace, "timeline", e)
+        if reasons:
+            b["_degraded"] = True
+            b["_degraded_reasons"] = reasons
         return b
 
     def recall_fetch(self, namespace: str, query: str, *, k=40, qv=None,
@@ -603,34 +644,68 @@ class MemnosMemory:
         recall_prefetch bundle computed while the embedding was in flight; `timings`
         = a dict the per-stage durations (sql_ms, staleness_ms) are accumulated into;
         `deadline` = a time.perf_counter() deadline — when already past it, the
-        staleness annotation pass is skipped and the bundle is marked '_degraded'."""
+        staleness annotation pass is skipped and the bundle is marked '_degraded'.
+
+        issue #41 fix C: each store call below is an independent recall arm (primary
+        raw-turn search, primary semantic search, and one pair per grounded namespace).
+        A RECALL_ARM_FAILURES-class error (a canceled/timed-out query, a live DB-side
+        error — see core/store.py's RECALL_ARM_FAILURES) degrades JUST that arm to an
+        empty contribution rather than failing the whole recall; the OTHER arms' results
+        are still returned. b['raw']/b['sem'] are always assigned a list (never left
+        missing), since recall_rank indexes them directly. Failures collect into
+        b['_degraded_reasons'] (namespace, arm, exception class, sqlstate) and flip
+        b['_degraded'] — merged with anything recall_prefetch already recorded in `pre`.
+        A bug in the calling code (e.g. psycopg.InterfaceError) is NOT in
+        RECALL_ARM_FAILURES and still propagates/crashes loudly, same as before."""
         b = pre if pre is not None else self.recall_prefetch(namespace, query)
         intent = b["intent"]
+        reasons = b.get("_degraded_reasons", [])
         if qv is None:
             qv = self.embed(query_clamp(query))   # #15 follow-up: bound a pathological query
         t_sql = time.perf_counter()
-        b["raw"] = self.store.search_raw_turns(self.schema, namespace, qv, query, k)
+        try:
+            b["raw"] = self.store.search_raw_turns(self.schema, namespace, qv, query, k)
+        except RECALL_ARM_FAILURES as e:
+            b["raw"] = []
+            _record_arm_failure(reasons, namespace, "raw", e)
         if not intent.temporal:
-            b["sem"] = self.store.search_semantic(self.schema, namespace, qv, query, k,
-                                                   current_only=True)
+            try:
+                b["sem"] = self.store.search_semantic(self.schema, namespace, qv, query, k,
+                                                       current_only=True)
+            except RECALL_ARM_FAILURES as e:
+                b["sem"] = []
+                _record_arm_failure(reasons, namespace, "semantic", e)
         else:
-            b["sem"] = self.store.search_semantic_temporal(
-                self.schema, namespace, qv, query, k,
-                start=intent.start, end=intent.end, current_only=intent.current,
-                order=intent.order)
+            try:
+                b["sem"] = self.store.search_semantic_temporal(
+                    self.schema, namespace, qv, query, k,
+                    start=intent.start, end=intent.end, current_only=intent.current,
+                    order=intent.order)
+            except RECALL_ARM_FAILURES as e:
+                b["sem"] = []
+                _record_arm_failure(reasons, namespace, "semantic_temporal", e)
         # grounded fan-out: per-knowledge-namespace fetches, merged for the SINGLE rerank
         for kns in extra_namespaces:
-            for r in self.store.search_raw_turns(self.schema, kns, qv, query, k):
-                r["_ns"] = kns; b["raw"].append(r)
-            for r in self.store.search_semantic(self.schema, kns, qv, query, k,
-                                                 current_only=True):
-                r["_ns"] = kns; b.setdefault("sem", []).append(r)
+            try:
+                for r in self.store.search_raw_turns(self.schema, kns, qv, query, k):
+                    r["_ns"] = kns; b["raw"].append(r)
+            except RECALL_ARM_FAILURES as e:
+                _record_arm_failure(reasons, kns, "raw", e)
+            try:
+                for r in self.store.search_semantic(self.schema, kns, qv, query, k,
+                                                     current_only=True):
+                    r["_ns"] = kns; b.setdefault("sem", []).append(r)
+            except RECALL_ARM_FAILURES as e:
+                _record_arm_failure(reasons, kns, "semantic", e)
         b["raw"] = self._dedup_candidates(b["raw"])   # issue #2: collapse cron-x10 dups
         t_stale = time.perf_counter()
         if deadline is not None and t_stale >= deadline:
             b["_degraded"] = True              # deadline hit: serve un-annotated turns
         else:
             self._mark_stale_turns(b["raw"])   # DB phase — see _mark_stale_turns
+        if reasons:
+            b["_degraded"] = True
+            b["_degraded_reasons"] = reasons
         if timings is not None:
             done = time.perf_counter()
             timings["sql_ms"] = timings.get("sql_ms", 0.0) + (t_stale - t_sql) * 1000.0
@@ -950,10 +1025,17 @@ class MemnosMemory:
                                      fact_quota=fact_quota)
 
     def recall_wide_fetch(self, namespaces, query, *, k=40, qv=None, timings=None,
-                          deadline=None):
+                          deadline=None, degraded_reasons=None):
         """DB phase of recall_wide: per-namespace hybrid search + RRF-score candidate cap.
         `timings`/`deadline` — same issue #12 semantics as recall_fetch (per-stage
-        accumulation; past-deadline skips the staleness pass)."""
+        accumulation; past-deadline skips the staleness pass).
+
+        issue #41 fix C: each namespace's raw/semantic query is an independent arm. A
+        RECALL_ARM_FAILURES-class error degrades JUST that (namespace, arm) pair — the
+        loop continues, so every OTHER namespace's results are unaffected. `degraded_
+        reasons`, if passed, is a list mutated in place (same convention as `timings`)
+        with one {namespace, arm, error, sqlstate} entry per failure; the caller decides
+        whether a non-empty list means the response is degraded=true."""
         if not namespaces:
             return [], []
         if qv is None:
@@ -961,11 +1043,17 @@ class MemnosMemory:
         t_sql = time.perf_counter()
         raw_c, sem_c = [], []
         for ns in namespaces:
-            for r in self.store.search_raw_turns(self.schema, ns, qv, query, k):
-                r["_ns"] = ns; raw_c.append(r)
-            for r in self.store.search_semantic(self.schema, ns, qv, query, k,
-                                                 current_only=True):
-                r["_ns"] = ns; sem_c.append(r)
+            try:
+                for r in self.store.search_raw_turns(self.schema, ns, qv, query, k):
+                    r["_ns"] = ns; raw_c.append(r)
+            except RECALL_ARM_FAILURES as e:
+                _record_arm_failure(degraded_reasons, ns, "raw", e)
+            try:
+                for r in self.store.search_semantic(self.schema, ns, qv, query, k,
+                                                     current_only=True):
+                    r["_ns"] = ns; sem_c.append(r)
+            except RECALL_ARM_FAILURES as e:
+                _record_arm_failure(degraded_reasons, ns, "semantic", e)
         # cap candidates by RRF score before the (CPU) cross-encoder rerank
         raw_c = sorted(raw_c, key=lambda x: x.get("score", 0), reverse=True)[:60]
         sem_c = sorted(sem_c, key=lambda x: x.get("score", 0), reverse=True)[:60]

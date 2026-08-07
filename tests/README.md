@@ -32,6 +32,8 @@ throwaway namespaces it creates.
 | `test_namespace_reconcile.py` | `memnos namespace reconcile` backfill: dry-run counts, close/dedupe, idempotency, `--limit` |
 | `test_recall_latency.py` | recall latency (issue #12): warm budget over a large seeded namespace, per-stage audit timings, query-embed cache, `deadline_ms`/`degraded`, `MEMNOS_RERANK` kill switch + candidate cap (size via `MEMNOS_LATENCY_FACTS`, default 5000) |
 | `test_recall_memory_bound.py` | recall memory bounding (issue #15): ONNX CPU arena disabled + single-threaded by default, rerank-score parity arena-off vs arena-on (no accuracy regression), FTS query token-clamp, long recall query returns 200 (no tsquery stack-overflow crash) |
+| `test_recall_arm_degrade.py` | recall arm degrade-not-raise (issue #41 fix C): a forced per-arm failure (raw/semantic/semantic_temporal/timeline/max_observed_at/wide per-namespace fan-out) degrades to a partial result instead of failing the whole recall, other arms' results survive, a genuine driver error (`psycopg.InterfaceError`) still raises, a REAL (non-mocked) Postgres `statement_timeout` cancellation degrades correctly |
+| `test_recall_arm_degrade_http.py` | recall arm degrade-not-raise (issue #41 fix C), end-to-end over HTTP: a REAL statement_timeout cancellation (ACCESS EXCLUSIVE lock) yields 200 + `degraded:true` + `degraded_reasons`, never a 5xx, with the surviving arm's content intact and the audit ledger flagged too |
 
 ## Running locally
 

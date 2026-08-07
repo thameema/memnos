@@ -79,7 +79,7 @@ from psycopg import OperationalError
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
 
-from core.store import BrainStore, query_clamp
+from core.store import BrainStore, query_clamp, RECALL_ARM_FAILURES
 from core.service import MemnosMemory
 from core.control import Control
 from core import rerank as brain_rerank
@@ -1385,13 +1385,34 @@ class Handler(BaseHTTPRequestHandler):
             wide = path == "/recall" and str(req.get("scope", "")).lower() in ("all", "wide")
             grounded, skipped = [], []
             other_readable = []    # issue #16: namespaces the principal may read beyond ns
+            # issue #41 fix C: readable_namespaces() fan-out failures collect here (wide
+            # scope only — the narrow-path other_readable lookup below is a scope HINT,
+            # not a results source, so its own failure never marks the recall degraded).
+            wide_degraded_reasons = []
             pre = None
             t_a = time.perf_counter()
             with POOL.connection() as conn:        # DB phase A — needs NO embedding
                 mem.store = BrainStore(conn=conn)
                 if wide:
-                    # WIDEN across every namespace this key may read (ACL-bounded)
-                    nss = Control.readable_namespaces(conn, principal)
+                    # WIDEN across every namespace this key may read (ACL-bounded).
+                    # issue #41 fix C: readable_namespaces() is itself a live DB call (it
+                    # drives WHICH namespaces get searched) and can fail the same way any
+                    # other recall arm can. A RECALL_ARM_FAILURES-class error falls back
+                    # to just [ns] — the caller is already known to hold a read grant on
+                    # ns (checked in _auth_short before this handler ever runs), so that
+                    # fallback is always safe — and flags the recall degraded, since the
+                    # search scope was cut from "everything readable" down to one
+                    # namespace, a real reduction in coverage, not just a hint.
+                    try:
+                        nss = Control.readable_namespaces(conn, principal)
+                    except RECALL_ARM_FAILURES as e:
+                        print(f"[memnos] recall degraded: readable_namespaces fan-out "
+                              f"failed for principal={principal} ({type(e).__name__}): {e} "
+                              f"— falling back to primary namespace only", flush=True)
+                        nss = [ns]
+                        wide_degraded_reasons.append(
+                            {"namespace": ns, "arm": "readable_namespaces",
+                             "error": type(e).__name__, "sqlstate": getattr(e, "sqlstate", None)})
                     # scope hint: other readable = all readable minus the query ns, cap 10
                     other_readable = [n for n in nss if n != ns][:10]
                     pin_nss = [ns]                 # pin the TARGET namespace's constraints
@@ -1403,14 +1424,30 @@ class Handler(BaseHTTPRequestHandler):
                     for kns in links:
                         (grounded if Control.authorize(conn, principal, kns, write=False)
                          else skipped).append(kns)
-                    # issue #16: scope observability — other namespaces this principal can read
+                    # issue #16: scope observability — other namespaces this principal can
+                    # read. issue #41 fix C: this is a DISPLAY HINT (scope.hint /
+                    # other_readable_namespaces), not a source of results, so a failure
+                    # here degrades to [] and is logged but never flips degraded=true —
+                    # that flag's job is "results are incomplete," not "a hint is missing."
                     if path == "/recall":
-                        other_readable = Control.readable_namespaces(
-                            conn, principal, exclude=ns, limit=10)
+                        try:
+                            other_readable = Control.readable_namespaces(
+                                conn, principal, exclude=ns, limit=10)
+                        except RECALL_ARM_FAILURES as e:
+                            print(f"[memnos] other_readable_namespaces hint degraded for "
+                                  f"principal={principal} ({type(e).__name__}): {e}", flush=True)
+                            other_readable = []
                     pre = mem.recall_prefetch(ns, q)   # timeline/entity arms, no qv
                     pin_nss = [ns] + grounded
                 # PINNED CONSTRAINT INJECTION: type='constraint' memories are ALWAYS in
-                # the output, regardless of query similarity (cap via constraint_cap)
+                # the output, regardless of query similarity (cap via constraint_cap).
+                # NOT covered by issue #41 fix C, deliberately: it isn't one of the four
+                # arms #41 names (semantic ANN, FTS, graph, readable_namespaces), it's a
+                # single fixed-shape query over a handful of namespaces (not a per-
+                # namespace fan-out that scales with wide-recall breadth), and — unlike
+                # a ranked result — silently dropping a pin on failure is the wrong
+                # default for content whose whole contract is "always present." Same
+                # style of explicit boundary PR #43 drew around writable_namespaces().
                 pins = mem.store.pinned_constraints(mem.schema, pin_nss, cap=pin_cap)
                 mem.store = None
             timings["sql_ms"] = (time.perf_counter() - t_a) * 1000.0
@@ -1420,8 +1457,12 @@ class Handler(BaseHTTPRequestHandler):
             with POOL.connection() as conn:        # DB phase B — vector + FTS arms
                 mem.store = BrainStore(conn=conn)
                 if wide:
+                    # issue #41 fix C: wide_degraded_reasons already may carry the phase-A
+                    # readable_namespaces failure (if any); recall_wide_fetch appends any
+                    # per-namespace arm failures from THIS phase to the same list.
                     raw_c, sem_c = mem.recall_wide_fetch(nss, q, qv=qv, timings=timings,
-                                                         deadline=deadline)
+                                                         deadline=deadline,
+                                                         degraded_reasons=wide_degraded_reasons)
                 else:
                     bundle = mem.recall_fetch(ns, q, qv=qv, extra_namespaces=grounded,
                                               pre=pre, timings=timings, deadline=deadline)
@@ -1438,7 +1479,18 @@ class Handler(BaseHTTPRequestHandler):
                 pin_rows.append(row)
             # CPU rerank phase — NO conn (ranking identical to pre-split recall).
             # Past-deadline: skip the cross-encoder, keep retrieval (RRF) order.
-            degraded = (not wide) and bool(bundle.pop("_degraded", False))
+            # issue #41 fix C: degraded_reasons — narrow path reads them off the bundle
+            # (recall_fetch/recall_prefetch populate bundle['_degraded_reasons']); wide
+            # path already has them in wide_degraded_reasons (readable_namespaces fallback
+            # + recall_wide_fetch's per-namespace failures). `bundle` is only bound on the
+            # narrow path, so this must stay inside the `if wide` guard, same as the
+            # original single-line version did via `(not wide) and ...` short-circuiting.
+            if wide:
+                degraded_reasons = wide_degraded_reasons
+                degraded = bool(degraded_reasons)
+            else:
+                degraded = bool(bundle.pop("_degraded", False))
+                degraded_reasons = bundle.pop("_degraded_reasons", [])
             # DEGRADED-WHILE-WARMING (follow-up to #12): if the reranker isn't ready yet
             # (background prewarm still loading the model), serve RRF-fused results NOW —
             # same degraded contract the deadline path uses — instead of blocking on the
@@ -1489,12 +1541,20 @@ class Handler(BaseHTTPRequestHandler):
                                      + " -- token can also read: "
                                      + ", ".join(other_readable))
                 out["scope"] = scope
-            if degraded:                   # deadline hit — partial pipeline, flagged
+            if degraded:                   # deadline hit / warming / arm failure — flagged
                 out["degraded"] = True
+                # issue #41 fix C: only present when a real arm failed (deadline/warming
+                # degrades leave degraded_reasons empty) — keys only appear when there's
+                # something to say, same "no drift" convention as grounded_in/links_skipped
+                # above.
+                if degraded_reasons:
+                    out["degraded_reasons"] = degraded_reasons
             timings["total_ms"] = (time.perf_counter() - t0) * 1000.0
             detail = {k: round(v, 1) for k, v in timings.items()}
             if degraded:
                 detail["degraded"] = True
+                if degraded_reasons:
+                    detail["degraded_reasons"] = degraded_reasons
             # rerank calibration (follow-up to #12): record what THIS box calibrated to
             # so an operator can see the derived cap / measured ms-per-pair per recall.
             cal = brain_rerank.calibration()
