@@ -2693,24 +2693,40 @@ def _verify_sdk_importable(python_executable):
         will run `omnigent server` (the common case for --mode embedded on one machine,
         much less safe an assumption for --mode central). See docs/integrations/omnigent.md.
 
+    ISOLATION: the probe runs under `-I` (Python's isolated mode), which ignores every
+    PYTHONPATH/PYTHONHOME/PYTHON*-family environment variable and skips the user
+    site-packages directory. Without this, the probe subprocess would inherit the
+    CALLING process's ambient environment (subprocess.run defaults to that when no `env=`
+    is given) — so an operator whose own shell happens to have PYTHONPATH pointing at a
+    local memnos_sdk checkout (an ordinary thing for an SDK developer to have set) would
+    get a false "importable" for a target `python_executable` that has nothing installed
+    in its own site-packages, regardless of which interpreter was actually named. `-I`
+    means only python_executable's own installed site-packages (the standard sys.path a
+    real `omnigent server` process launched with no ambient shell env — e.g. via
+    systemd/supervisor/Docker entrypoint — would actually see) can satisfy the import.
+
     Returns (ok, kind, detail):
       ok=True                          -> importable; kind=None, detail="".
       ok=False, kind="not_installed"   -> `import memnos_sdk` itself failed (not installed,
-                                          or a transitively broken install).
+                                          or a transitively broken install — a broken
+                                          transitive dependency pulled in by memnos_sdk's
+                                          own __init__ import chain surfaces here too,
+                                          since it fails before the submodule import is
+                                          even attempted).
       ok=False, kind="handler_missing" -> memnos_sdk imports fine, but
                                           memnos_sdk.integrations.omnigent.capture_response
                                           does not (an install predating the Omnigent
-                                          integration, or a partial/broken one).
+                                          integration, a partial/broken one, or a broken
+                                          transitive dependency pulled in only by the
+                                          omnigent submodule itself).
       ok=False, kind="probe_failed"    -> couldn't even run python_executable (bad path,
                                           timeout, ...) — not a statement about memnos_sdk.
     `detail` is always the raw underlying error text, even when the not_installed/
-    handler_missing bucketing below is a guess (e.g. a broken transitive dependency of
-    memnos_sdk itself surfaces as an ImportError and would get bucketed as
-    "handler_missing" with the wrong suggested remedy — showing the real text lets the
-    operator see what's actually wrong regardless of which bucket this picked)."""
+    handler_missing bucketing above is a guess — showing the real text lets the operator
+    see what's actually wrong regardless of which bucket this picked."""
     import subprocess
     try:
-        r = subprocess.run([python_executable, "-c", _SDK_IMPORT_PROBE],
+        r = subprocess.run([python_executable, "-I", "-c", _SDK_IMPORT_PROBE],
                            capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, "probe_failed", f"could not run {python_executable!r}: {e}"
@@ -2820,8 +2836,14 @@ def cmd_server_setup_omnigent(args, cfg):
     # broken since the last successful run; skipping this on the "nothing to do" path
     # would let that regress silently. Runs for both --mode embedded and --mode central —
     # this precondition has nothing to do with how the token/URL are obtained.
-    python_for_check = getattr(args, "python", None) or sys.executable
-    explicit_python = bool(getattr(args, "python", None))
+    raw_python_arg = getattr(args, "python", None)
+    if raw_python_arg == "":
+        print("[memnos] WARNING: --python was given an empty string — ignoring it and "
+              "falling back to this command's own interpreter (sys.executable) instead, "
+              "same as if --python had been omitted entirely. Pass a real path, e.g. "
+              "--python /path/to/venv/bin/python3.")
+    python_for_check = raw_python_arg or sys.executable
+    explicit_python = bool(raw_python_arg)
     sdk_ok, sdk_kind, sdk_detail = _verify_sdk_importable(python_for_check)
     ctx = _sdk_import_check_context(python_for_check, explicit_python)
     if not sdk_ok:
