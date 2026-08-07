@@ -20,6 +20,12 @@ dotted Python import path), not a fork or a patch.
 - **Coverage is narrower than "every assistant response."** See
   [What actually gets captured](#what-actually-gets-captured) — there is a real,
   documented gap for one class of Omnigent session.
+- **The `memnos_sdk` import precondition is verified, but only as far as this CLI can
+  actually see.** `server-setup omnigent` refuses to write the policy if the handler
+  isn't importable — but read
+  [exactly what that does and doesn't prove](#precondition-memnos_sdk-must-be-importable-where-omnigent-will-load-it)
+  before assuming it covers a target environment different from the one you ran the
+  command in.
 
 ---
 
@@ -44,6 +50,37 @@ Docker/hosted deploy, whatever `$OMNIGENT_CONFIG` points at) — not
 `~/.omnigent/config.yaml`'s `default_agent` registry, which is a different file with a
 different schema (see the callout below). The command requires this path explicitly
 (or `$OMNIGENT_CONFIG`) rather than guessing, specifically to avoid that mix-up.
+
+## Precondition: `memnos_sdk` must be importable where Omnigent will load it
+
+Before writing the `policies:` block (in both `--mode embedded` and `--mode central`,
+and even on an already-wired idempotent re-run), `server-setup omnigent` verifies that
+`memnos_sdk.integrations.omnigent.capture_response` — the exact handler it's about to
+wire in — is actually importable. If it isn't, the command refuses: a loud error,
+non-zero exit, and no config written, instead of leaving a policy pointed at a handler
+nothing installed. This matters because a handler Omnigent's policy engine can't
+resolve hits the same fail-closed contract described
+[below](#failure-behavior-and-why-it-matters) as a handler that raises — which can mean
+every agent's every turn on that server gets blocked, not just memnos capture silently
+doing nothing.
+
+**What this check can and cannot actually prove — a real limit, not boilerplate:**
+
+- By default it checks importability in **the same Python interpreter running this
+  `server-setup omnigent` command** (`sys.executable`) — *not* the `omnigent server`
+  process's own interpreter. This CLI has no reliable way to discover that other
+  interpreter from a `--config` YAML path alone (the file has no python-path field, and
+  in `--mode central` the server may not even be on this machine).
+- That default is a real, useful guarantee only when you run `memnos server-setup
+  omnigent` under the *same* python/venv that will run `omnigent server` — typically
+  true for a single-machine `--mode embedded` setup, much less safe an assumption
+  otherwise.
+- When the two interpreters differ (a dedicated venv, a container, a different host),
+  pass `--python <path-to-the-omnigent-server's-python>` so the check probes the
+  interpreter that actually matters, or verify it yourself directly:
+  ```bash
+  <omnigent-server-python> -c "from memnos_sdk.integrations.omnigent import capture_response"
+  ```
 
 ## Not to be confused with: `agent-setup omnigent`
 
@@ -183,8 +220,12 @@ other policies already there, and backs up the config file before writing.
 memnos recall "<something the agent recently said>" --namespace agent:omnigent
 ```
 
-If nothing comes back: confirm `memnos_sdk` is importable in the omnigent server's own
-Python environment (`pip show memnos-sdk` there, not just wherever you ran
-`server-setup`), confirm `MEMNOS_TOKEN` is actually set in that process's environment,
-and check the omnigent server's own logs for `omnigent capture:` warning lines — failures
-are logged there, by design, rather than surfaced anywhere in the conversation.
+If nothing comes back: `server-setup omnigent` already checked `memnos_sdk` importability
+somewhere (see the [precondition section](#precondition-memnos_sdk-must-be-importable-where-omnigent-will-load-it)
+above) — but unless you passed `--python` pointing at the omnigent server's own
+interpreter, that check may not have been run against the process that's actually
+loading the handler. Confirm directly there (`pip show memnos-sdk` in the omnigent
+server's own Python environment, not just wherever you ran `server-setup`), confirm
+`MEMNOS_TOKEN` is actually set in that process's environment, and check the omnigent
+server's own logs for `omnigent capture:` warning lines — failures are logged there, by
+design, rather than surfaced anywhere in the conversation.
