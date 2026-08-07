@@ -27,12 +27,14 @@ import contextvars
 import json
 import os
 import subprocess
+import sys
 import httpx
 from mcp.server.fastmcp import FastMCP
 try:
     from mcp.server.fastmcp.exceptions import ToolError
 except Exception:                                   # very old SDKs — fall back to RuntimeError
     ToolError = RuntimeError
+import offline_queue
 
 URL = os.environ.get("MEMNOS_URL", "http://127.0.0.1:8900").rstrip("/")
 TOKEN = os.environ.get("MEMNOS_TOKEN", "")
@@ -49,6 +51,48 @@ mcp = FastMCP("memnos",
               # (issue #37 Layer 1's acceptance bar). json_response: plain JSON per POST,
               # no SSE streaming needed for request/response tool calls.
               stateless_http=True, json_response=True)
+
+
+def _config_dir():
+    """Resolved fresh on every call (not cached at import time) so tests can point HOME
+    at a temp dir without needing a module reload."""
+    return os.path.join(os.path.expanduser("~"), ".memnos")
+
+
+def _drain_offline_queue():
+    """Opportunistically replay any queued writes now that we know the server answered
+    (issue #37 Layer 3). Called at adapter startup and after every successful write —
+    this is the ONLY drain path for hosts that never run the Claude Code hooks (Claude
+    Desktop, omnigent, or any other MCP host talking to this same adapter), so a queued
+    write here must not depend on `memnos hook status` ever running. Best-effort: a
+    failed drain must never break the write that triggered it, so any exception here
+    yields (0, 0) rather than propagating.
+
+    Returns (drained, rejected). A permanently-rejected item (401/403/400-class, see
+    offline_queue.drain()) is otherwise invisible to the caller — this adapter has no
+    separate status/health tool to poll, so callers below fold `rejected` into the
+    text they return for the tool call that triggered the drain. Also logged to stderr
+    unconditionally (not just returned) so the startup-time call further down — before
+    any tool call exists to attach a note to — doesn't drop a rejection silently."""
+    try:
+        drained, rejected = offline_queue.drain(_config_dir(), URL, TOKEN, timeout=8)
+    except Exception:
+        return 0, 0
+    if rejected:
+        print(f"memnos: ⚠ {rejected} previously-queued write{'s' if rejected != 1 else ''} "
+              f"permanently rejected during drain — see {_config_dir()}/offline_queue/*.rejected",
+              file=sys.stderr)
+    return drained, rejected
+
+
+def _rejected_note(rejected: int) -> str:
+    if not rejected:
+        return ""
+    return (f"\n(⚠ {rejected} previously-queued write{'s' if rejected != 1 else ''} "
+            f"permanently rejected — see offline_queue/*.rejected)")
+
+
+_drain_offline_queue()          # flush anything queued before this adapter process started
 
 
 def _git_root():
@@ -165,21 +209,39 @@ def recall(query: str) -> str:
     """Search the user's long-term memory for information relevant to the query.
     Returns remembered facts and statements (current values preferred over superseded
     ones). Call this whenever the user references past conversations, stated
-    preferences, prior decisions, people/projects, or context not in this session."""
+    preferences, prior decisions, people/projects, or context not in this session.
+
+    On a TRANSIENT outage (server unreachable) this serves the last-synced snapshot
+    from THIS SAME namespace instead of nothing — the response is explicitly prefixed
+    "(STALE — ...)" so it is never mistaken for a live answer (issue #37 Layer 3)."""
+    ns = _ns()
     try:
-        ns = _ns()
-        ctx = _post("/recall", {"query": query}).get("context", "")
+        out = _post("/recall", {"query": query})
+        ctx = out.get("context", "")
+        offline_queue.save_snapshot(_config_dir(), ns, ctx, len(out.get("memories") or []))
+        _, rejected = _drain_offline_queue()
+        note = _rejected_note(rejected)
         # tell the chat client which namespace we searched so it's never ambiguous.
         header = f"(recalled from '{ns}')\n"
-        return (header + ctx) if ctx else f"(no relevant memories found in '{ns}')"
-    except httpx.HTTPStatusError as e:
-        code = e.response.status_code
-        if code == 401:
-            return "(memnos: unauthorized — check MEMNOS_TOKEN)"
-        if code == 403:
-            return f"(memnos: not authorized for namespace {_ns()})"
-        return f"(memnos recall error: HTTP {code})"
+        return (header + ctx + note) if ctx else f"(no relevant memories found in '{ns}'){note}"
     except Exception as e:
+        if offline_queue.is_transient(e):
+            snap = offline_queue.load_snapshot(_config_dir(), ns)
+            if snap and snap.get("context"):
+                age = offline_queue.format_snapshot_age(snap)
+                return (f"(STALE — memnos is unreachable; showing the last-synced snapshot "
+                        f"from {age} for '{ns}'. This may be outdated.)\n" + snap["context"])
+            return f"(memnos recall unavailable: {e})"
+        if isinstance(e, httpx.HTTPStatusError):
+            code = e.response.status_code
+            if code == 401:
+                return "(memnos: unauthorized — check MEMNOS_TOKEN)"
+            if code == 403:
+                # _ns(), not the module-level NS global: on the HTTP-mounted transport a
+                # different caller/namespace can hit every request (see _ns_source), so the
+                # stale import-time NS would report the wrong namespace here.
+                return f"(memnos: not authorized for namespace {_ns()})"
+            return f"(memnos recall error: HTTP {code})"
         return f"(memnos recall unavailable: {e})"
 
 
@@ -205,8 +267,18 @@ def remember(text: str, memory_type: str = "") -> str:
         # and drop the write. The raw turn is durable the moment this returns.
         out = _post("/remember", body)
     except Exception as e:
-        # Bug 4: raise so the MCP result is flagged isError=true — never a false "saved".
+        # issue #37 Layer 3: a TRANSIENT failure (server down, or a 5xx from an
+        # embed-time/adapter-time error) must never surface as "FAILED — NOT saved" —
+        # that's exactly the failure mode that pushes a session toward improvising some
+        # OTHER store. Enqueue into memnos's own offline_queue (replays into this SAME
+        # store once healthy) and tell the caller it's saved. A PERMANENT failure
+        # (401/403/400 — Bug 4's contract) still raises unchanged below.
+        if offline_queue.is_transient(e):
+            offline_queue.enqueue(_config_dir(), ns, text, "user", memory_type=memory_type)
+            return (f"remembered in '{ns}' (queued — memnos is temporarily unreachable; "
+                    f"will sync automatically once it recovers, nothing lost)")
         raise ToolError(_write_error(e, "remember")) from None
+    _, rejected = _drain_offline_queue()
     # write-time attribution (issue #20, Part B): always name the destination namespace so
     # the chat client relays WHERE the memory landed.
     dest = out.get("namespace") or ns
@@ -225,6 +297,7 @@ def remember(text: str, memory_type: str = "") -> str:
     if isinstance(sugg, dict) and sugg.get("namespace"):
         msg += (f"\nhint: this looks like '{sugg['namespace']}' ({sugg.get('reason','')}) — "
                 f"bind future writes there if so.")
+    msg += _rejected_note(rejected)
     return msg
 
 
@@ -281,11 +354,19 @@ def memory_search(query: str) -> str:
 def memory_write(text: str) -> str:
     """Write a durable memory (alias of remember). Stores the text and extracts
     bi-temporal facts; supersedes a changed single-valued fact automatically."""
+    ns = _ns()
     try:
         out = _post("/memory/write", {"text": text, "speaker": "user"})
     except Exception as e:
+        # issue #37 Layer 3 — same transient/permanent split as remember() above.
+        # /memory/write is a strict server-side alias of /remember (same handler), so
+        # the queued item replays through the shared drain's POST /remember unchanged.
+        if offline_queue.is_transient(e):
+            offline_queue.enqueue(_config_dir(), ns, text, "user")
+            return f"written to '{ns}' (queued — memnos is temporarily unreachable; will sync automatically once it recovers, nothing lost)"
         raise ToolError(_write_error(e, "memory_write")) from None
-    return f"written (turn {out.get('turn_id')}, {out.get('facts', 0)} facts)"
+    _, rejected = _drain_offline_queue()
+    return f"written (turn {out.get('turn_id')}, {out.get('facts', 0)} facts)" + _rejected_note(rejected)
 
 
 @mcp.tool()
