@@ -105,7 +105,14 @@ def main():
                 # leaving bloat for autovacuum to clean up on its own schedule, so
                 # whatever test runs next in the same CI job's shared Postgres doesn't
                 # inherit a slower raw_turns table.
-                c.execute(f"VACUUM {SCHEMA}.raw_turns")
+                # PARALLEL 0: at this row count, a plain VACUUM decides raw_turns' GIN/HNSW
+                # indexes are worth parallel index cleanup and requests a dead-tuple DSM
+                # segment sized off maintenance_work_mem (64MB default) -- which exceeds
+                # Docker's default 64MB /dev/shm on GitHub-hosted runners and fails with
+                # psycopg.errors.DiskFull. Single-worker vacuum reclaims the same dead
+                # tuples without that shared-memory allocation; cleanup speed doesn't matter
+                # here, only that it completes.
+                c.execute(f"VACUUM (PARALLEL 0) {SCHEMA}.raw_turns")
 
     reset()
 
@@ -118,7 +125,7 @@ def main():
     with conn.cursor() as c:
         for _ in range(5):            # warm the connection so round-trip overhead is steady
             c.execute("SELECT 1")
-        n = 2_000_000
+        n = 5_000_000
         c.execute(
             f"INSERT INTO {SCHEMA}.raw_turns(namespace,session_id,speaker,text,observed_at) "
             f"SELECT %s||(i%%50), NULL, 'user', 'turn '||i, now() "
@@ -130,8 +137,11 @@ def main():
     # baseline is the MAX (not min) of many samples, and the multiplier/floor are generous
     # -- this test can run alongside a live server + the rest of the suite hammering the
     # same DB, so trivial-query latency can spike well above an idle-machine reading; a
-    # 2M-row table keeps the old-style scan orders of magnitude slower than that spike
-    # headroom regardless.
+    # 5M-row table keeps the old-style scan orders of magnitude slower than that spike
+    # headroom regardless. (Issue #50: 2M rows measured 428-479ms on GitHub-hosted
+    # runners against this check's >500ms bar -- effectively zero margin, so the check
+    # flaked under any concurrent CI load. 5M rows measured multiple seconds on the same
+    # class of runner, comfortably clearing the bar with real headroom to spare.)
     baseline_ms = max(_measure_ms(conn, "SELECT 1") for _ in range(20))
     old_scan_ms = _measure_ms(conn, _OLD_STYLE_SCAN, fetch=True)
     timeout_ms = max(int(baseline_ms * 10), 100)
