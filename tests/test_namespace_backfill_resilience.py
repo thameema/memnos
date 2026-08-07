@@ -118,7 +118,7 @@ def main():
     with conn.cursor() as c:
         for _ in range(5):            # warm the connection so round-trip overhead is steady
             c.execute("SELECT 1")
-        n = 2_000_000
+        n = 5_000_000
         c.execute(
             f"INSERT INTO {SCHEMA}.raw_turns(namespace,session_id,speaker,text,observed_at) "
             f"SELECT %s||(i%%50), NULL, 'user', 'turn '||i, now() "
