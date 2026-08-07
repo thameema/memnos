@@ -96,6 +96,12 @@ MAX_BODY = 256 * 1024          # 256 KB request cap
 # query returns 200 — the embedder truncates and the FTS arm is token-clamped, so it is
 # safe. Generous default; only a genuinely abusive payload exceeds it.
 _QUERY_MAX_CHARS = int(os.environ.get("MEMNOS_QUERY_MAX_CHARS", "20000"))
+# issue #41 fix C: degraded_reasons has no natural bound (a pathological wide recall
+# could fan out to many namespaces, each contributing its own entry) — cap what reaches
+# the client/audit ledger so one bad recall can't inflate the response/ledger row size.
+# The full, uncapped detail is still in the server log (each failure is printed there
+# before this cap is ever applied).
+_DEGRADED_REASONS_CAP = 25
 # issue #14: optional budget thresholds — float USD or None (unconfigured)
 def _parse_budget_env(name):
     v = os.environ.get(name, "").strip()
@@ -1441,17 +1447,45 @@ class Handler(BaseHTTPRequestHandler):
                     pin_nss = [ns] + grounded
                 # PINNED CONSTRAINT INJECTION: type='constraint' memories are ALWAYS in
                 # the output, regardless of query similarity (cap via constraint_cap).
-                # NOT covered by issue #41 fix C, deliberately: it isn't one of the four
-                # arms #41 names (semantic ANN, FTS, graph, readable_namespaces), it's a
-                # single fixed-shape query over a handful of namespaces (not a per-
-                # namespace fan-out that scales with wide-recall breadth), and — unlike
-                # a ranked result — silently dropping a pin on failure is the wrong
-                # default for content whose whole contract is "always present." Same
-                # style of explicit boundary PR #43 drew around writable_namespaces().
-                pins = mem.store.pinned_constraints(mem.schema, pin_nss, cap=pin_cap)
+                # issue #41 fix C: pin_cap defaults to 10 (see above), not 0, so this is a
+                # LIVE query against {schema}.semantic/raw_turns/episodic — same tables,
+                # same connection, same statement_timeout as every other recall arm — on
+                # the DEFAULT request path, before recall_fetch's own (correctly-guarded)
+                # arms even run. An earlier pass left this uncaught on the theory that
+                # silently dropping an always-present pin was the wrong failure mode; that
+                # reasoning missed that "uncaught" here doesn't mean "the pin is dropped",
+                # it means the exception propagates out of this whole handler and the
+                # ENTIRE recall 500s — defeating #41's own acceptance criterion (recall
+                # must never hard-fail on a live arm failure) for any client that doesn't
+                # know to send constraint_cap:0. Guarded the same way every other arm in
+                # this file is: degrade to an empty pin list and record the failure.
+                pin_reasons = (wide_degraded_reasons if wide
+                               else pre.setdefault("_degraded_reasons", []))
+                try:
+                    pins = mem.store.pinned_constraints(mem.schema, pin_nss, cap=pin_cap)
+                except RECALL_ARM_FAILURES as e:
+                    pins = []
+                    print(f"[memnos] pinned_constraints degraded for ns={pin_nss} "
+                          f"({type(e).__name__}): {e}", flush=True)
+                    pin_reasons.append({"namespace": ns, "arm": "pinned_constraints",
+                                        "error": type(e).__name__,
+                                        "sqlstate": getattr(e, "sqlstate", None)})
+                    if not wide:
+                        # set directly rather than relying on recall_fetch's own
+                        # `if reasons: b["_degraded"] = True` epilogue to notice this
+                        # list is non-empty — keeps this failure self-sufficient even
+                        # if that epilogue's control flow ever changes.
+                        pre["_degraded"] = True
                 mem.store = None
             timings["sql_ms"] = (time.perf_counter() - t_a) * 1000.0
             if fut is not None:
+                # TODO(issue #41 follow-up, embed/rerank-phase degrade): fut.result() —
+                # and the rerank call below — sit entirely outside RECALL_ARM_FAILURES
+                # coverage. A live failure here (e.g. a network reset mid-embed) still
+                # propagates and 500s the whole recall, same symptom #41 fixed for the
+                # four DB arms. Out of #41's stated scope (raw/semantic/semantic_temporal/
+                # timeline + wide fan-out) — deserves its own scoped issue/PR rather than
+                # folding it into this one, same call PR #43 made deferring this fix.
                 qv = fut.result()                  # join the embed — NO conn held
                 _QUERY_CACHE.put(q, model_key, qv)
             with POOL.connection() as conn:        # DB phase B — vector + FTS arms
@@ -1491,6 +1525,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 degraded = bool(bundle.pop("_degraded", False))
                 degraded_reasons = bundle.pop("_degraded_reasons", [])
+            degraded_reasons = degraded_reasons[:_DEGRADED_REASONS_CAP]
             # DEGRADED-WHILE-WARMING (follow-up to #12): if the reranker isn't ready yet
             # (background prewarm still loading the model), serve RRF-fused results NOW —
             # same degraded contract the deadline path uses — instead of blocking on the

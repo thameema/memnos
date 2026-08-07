@@ -26,6 +26,22 @@ statement_timeout cancels it -- a genuine psycopg.errors.QueryCanceled, not a mo
 phase A, which also reads {schema}.semantic) so the lock only collides with the ONE arm
 under test, not an earlier, unrelated phase of the same request.
 
+Review-round-2 additions cover two gaps the first pass left untested:
+  - pinned_constraints() itself was left UNGUARDED at its memnos_server.py call site --
+    constraint_cap defaults to 10, not 0, so every scenario above (which always sends
+    constraint_cap:0 to isolate the arm under test) accidentally also skipped the one
+    query that ran unguarded on the real default. That scenario below deliberately
+    omits constraint_cap from the request body -- the actual default a real client
+    sends -- under the same real semantic-table lock, and proves it now degrades
+    instead of 500ing.
+  - readable_namespaces()'s wildcard-grant expansion (memnos_control.namespaces) was
+    already correctly guarded at both its call sites (wide-scope fan-out and the
+    narrow-path other_readable hint) but had no test coverage -- the wide-recall
+    scenario above uses a CONCRETE-namespace grant, which never reaches the wildcard
+    query at all. Those scenarios mint a '*'-grant principal and lock
+    memnos_control.namespaces itself (not tenant_memnos.semantic) so only the registry
+    scan fails, not the recall arms.
+
 Run: python tests/test_recall_arm_degrade_http.py
 (spawns its own server; does not require one already running)
 """
@@ -85,11 +101,12 @@ def cleanup(conn):
     with conn.cursor() as c:
         c.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s", (NS,))
         c.execute(f"DELETE FROM {SCHEMA}.semantic WHERE namespace=%s", (NS,))
-        c.execute("DELETE FROM memnos_control.api_tokens t USING memnos_control.principals p "
-                  "WHERE t.principal_id=p.id AND p.name='armdegrade-http-bot'")
-        c.execute("DELETE FROM memnos_control.grants g USING memnos_control.principals p "
-                  "WHERE g.principal_id=p.id AND p.name='armdegrade-http-bot'")
-        c.execute("DELETE FROM memnos_control.principals WHERE name='armdegrade-http-bot'")
+        for bot in ("armdegrade-http-bot", "armdegrade-http-wcbot"):
+            c.execute("DELETE FROM memnos_control.api_tokens t USING memnos_control.principals p "
+                      "WHERE t.principal_id=p.id AND p.name=%s", (bot,))
+            c.execute("DELETE FROM memnos_control.grants g USING memnos_control.principals p "
+                      "WHERE g.principal_id=p.id AND p.name=%s", (bot,))
+            c.execute("DELETE FROM memnos_control.principals WHERE name=%s", (bot,))
 
 
 def main():
@@ -225,6 +242,131 @@ def main():
               raw_text in wide_txt)
         check("wide recall's namespaces_searched still lists NS (attempted, not silently dropped)",
               NS in (j.get("namespaces_searched") or []), str(j.get("namespaces_searched")))
+
+        # issue #41 fix C follow-up (review round 2): pinned_constraints() was left
+        # UNGUARDED at the memnos_server.py call site -- constraint_cap defaults to 10,
+        # not 0, so a real client that doesn't know to send constraint_cap:0 hits this
+        # live {schema}.semantic/raw_turns/episodic query on EVERY /recall, before
+        # recall_fetch's own guarded arms even run. Every scenario above deliberately
+        # sent constraint_cap:0, the one flag that skips this exact query -- so none of
+        # them ever exercised the real default. This repeats the same real ACCESS
+        # EXCLUSIVE lock cancellation WITHOUT constraint_cap in the request body (the
+        # real-world default a client sends when it has never heard of this flag),
+        # proving pinned_constraints now degrades instead of 500ing.
+        print("=== pinned_constraints degrades under a REAL lock, using the DEFAULT constraint_cap (no override) ===")
+        pin_text = "Pinned budgets MUST be approved before spend."
+        s, j = call("/remember", token, {"namespace": NS, "type": "constraint", "text": pin_text})
+        check("seeding a constraint memory is 200", s == 200, f"got {s}: {j}")
+
+        s, j = call("/recall", token, {"namespace": NS, "query": "outage"})
+        check("baseline (no constraint_cap field) /recall is 200", s == 200)
+        check("baseline is NOT degraded", not j.get("degraded"), str(j))
+        base_pins = [m for m in j.get("memories", []) if m.get("pinned")]
+        check("baseline pins the seeded constraint under the real default cap",
+              any(pin_text in p.get("content", "") for p in base_pins), str(base_pins))
+
+        lock_conn = psycopg.connect(DSN, autocommit=False)
+        try:
+            with lock_conn.cursor() as lc:
+                lc.execute(f"LOCK TABLE {SCHEMA}.semantic IN ACCESS EXCLUSIVE MODE")
+            # deliberately NO constraint_cap field here -- this is the exact gap: before
+            # the fix, this request 500'd ("internal error") instead of degrading.
+            s, j = call("/recall", token, {"namespace": NS, "query": "outage"}, timeout=30)
+        finally:
+            lock_conn.rollback()
+            lock_conn.close()
+
+        check("pinned_constraints degraded recall is 200, NOT a 5xx (the exact gap this round found)",
+              s == 200, f"got {s}: {j}")
+        check("response is flagged degraded:true", j.get("degraded") is True, str(j))
+        pin_reasons = j.get("degraded_reasons") or []
+        check("degraded_reasons identifies arm=pinned_constraints for this namespace",
+              any(r.get("namespace") == NS and r.get("arm") == "pinned_constraints" for r in pin_reasons),
+              str(pin_reasons))
+        check("degraded_reasons never leaks the raw exception message (class name only)",
+              all(set(r.keys()) <= {"namespace", "arm", "error", "sqlstate"} for r in pin_reasons),
+              str(pin_reasons))
+        degraded_mems = j.get("memories", [])
+        check("no pinned rows survive the failed pinned_constraints arm (that's what degraded means)",
+              not any(m.get("pinned") for m in degraded_mems), str(degraded_mems))
+        check("the OTHER (raw-turn) arm's content is STILL present despite pinned_constraints failing",
+              raw_text in " ".join(m.get("content", "") for m in degraded_mems))
+
+        print("=== recovers to non-degraded, pin restored, once the lock is released ===")
+        s, j = call("/recall", token, {"namespace": NS, "query": "outage"})
+        check("post-lock-release recall is 200", s == 200)
+        check("post-lock-release recall is no longer degraded", not j.get("degraded"), str(j))
+        post_pins = [m for m in j.get("memories", []) if m.get("pinned")]
+        check("post-lock-release recall pins the constraint again",
+              any(pin_text in p.get("content", "") for p in post_pins), str(post_pins))
+
+        # issue #41 fix C follow-up (review round 2, cheap non-blocking finding):
+        # readable_namespaces() is only ever exercised above by a token with a CONCRETE
+        # namespace grant, which never reaches the wildcard-expansion query at all (see
+        # the wide-recall comment above -- it resolves to [NS] without hitting the
+        # registry table). Both call sites that guard THAT query --
+        # memnos_server.py's wide-scope readable_namespaces() fan-out and the narrow-path
+        # other_readable hint -- are correctly wrapped in RECALL_ARM_FAILURES already,
+        # but had zero test coverage before this round (verified manually via real-lock
+        # repros, never in CI). A wildcard ('*') grant is required to reach
+        # memnos_control.namespaces at all -- lock THAT table (not tenant_memnos.semantic)
+        # so only the registry scan fails, not the recall arms themselves.
+        print("=== readable_namespaces() wildcard fan-out degrades under a REAL lock on the registry table ===")
+        wc_user_id = Control.create_principal(conn, "armdegrade-http-wcbot", "agent")
+        wc_token = Control.mint_token(conn, wc_user_id, "t")
+        Control.grant(conn, wc_user_id, "*", can_read=True, can_write=False)
+
+        lock_conn = psycopg.connect(DSN, autocommit=False)
+        try:
+            with lock_conn.cursor() as lc:
+                lc.execute("LOCK TABLE memnos_control.namespaces IN ACCESS EXCLUSIVE MODE")
+            s, j = call("/recall", wc_token,
+                       {"namespace": NS, "query": "outage", "scope": "all", "constraint_cap": 0},
+                       timeout=30)
+        finally:
+            lock_conn.rollback()
+            lock_conn.close()
+
+        check("wide recall under a wildcard grant still 200s when the registry scan is canceled",
+              s == 200, f"got {s}: {j}")
+        check("wildcard-fan-out degrade is flagged degraded:true", j.get("degraded") is True, str(j))
+        wc_reasons = j.get("degraded_reasons") or []
+        check("degraded_reasons identifies arm=readable_namespaces",
+              any(r.get("arm") == "readable_namespaces" for r in wc_reasons), str(wc_reasons))
+        check("search scope fell back to just the query namespace (safe: caller already holds a grant on it)",
+              j.get("namespaces_searched") == [NS], str(j.get("namespaces_searched")))
+        wc_txt = " ".join(m.get("content", "") for m in j.get("memories", []))
+        check("the query namespace's own content still comes back despite the registry scan failing",
+              raw_text in wc_txt)
+
+        print("=== the narrow-path other_readable HINT degrades to [] under the same lock, without flipping degraded ===")
+        lock_conn = psycopg.connect(DSN, autocommit=False)
+        try:
+            with lock_conn.cursor() as lc:
+                lc.execute("LOCK TABLE memnos_control.namespaces IN ACCESS EXCLUSIVE MODE")
+            s, j = call("/recall", wc_token,
+                       {"namespace": NS, "query": "outage", "constraint_cap": 0}, timeout=30)
+        finally:
+            lock_conn.rollback()
+            lock_conn.close()
+
+        check("narrow recall under a wildcard grant still 200s when the registry scan is canceled",
+              s == 200, f"got {s}: {j}")
+        check("a HINT failure alone does NOT flip degraded:true (it's not a results source)",
+              not j.get("degraded"), str(j))
+        check("other_readable_namespaces falls back to [] (hint absent, not stale/wrong data)",
+              j.get("scope", {}).get("other_readable_namespaces") == [], str(j.get("scope")))
+        check("no scope.hint key when other_readable is empty (no-drift convention)",
+              "hint" not in j.get("scope", {}), str(j.get("scope")))
+        narrow_txt = " ".join(m.get("content", "") for m in j.get("memories", []))
+        check("the primary namespace's own content is unaffected by the hint failure",
+              raw_text in narrow_txt)
+
+        print("=== both wildcard-grant paths recover once the registry lock is released ===")
+        s, j = call("/recall", wc_token,
+                   {"namespace": NS, "query": "outage", "scope": "all", "constraint_cap": 0})
+        check("post-lock-release wide recall under wildcard grant is 200 and not degraded",
+              s == 200 and not j.get("degraded"), str(j))
     finally:
         proc.terminate()
         try:
