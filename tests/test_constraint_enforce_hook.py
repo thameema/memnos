@@ -54,16 +54,18 @@ def run_hook(ns, stdin_obj, cache_dir):
 def refresh_cache(ns, home):
     """Drive _refresh_enforce_cache the same way `hook status` (SessionStart) would, but
     directly, so cache-population isn't entangled with the rest of the status hook's
-    behavior (server health, offline queue, nudges) in this test."""
+    behavior (server health, offline queue, nudges) in this test. Returns the rule count
+    _refresh_enforce_cache reports (issue #32: `hook status` surfaces this)."""
     env = {**os.environ, "MEMNOS_DSN": DSN, "HOME": home}
     code = (
         "import sys; sys.path.insert(0, %r)\n"
         "import memnos_cli\n"
         "cfg = memnos_cli.load_config()\n"
-        "memnos_cli._refresh_enforce_cache(cfg, %r)\n"
+        "print(memnos_cli._refresh_enforce_cache(cfg, %r))\n"
     ) % (ROOT, ns)
     r = subprocess.run([PY, "-c", code], capture_output=True, text=True, timeout=30, env=env)
     assert r.returncode == 0, r.stdout + r.stderr
+    return int(r.stdout.strip())
 
 
 def main():
@@ -93,7 +95,8 @@ def main():
 
     # --- 2. cache refreshed, but zero active rules: still fails OPEN ------------------------
     print("=== cache refreshed, zero rules ===")
-    refresh_cache(NS, home)
+    count = refresh_cache(NS, home)
+    check("issue #32: refresh reports 0 rules cached", count == 0)
     rc, out, err = run_hook(NS, {"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}}, home)
     check("zero rules: exits 0, no output", rc == 0 and out == "")
 
@@ -101,7 +104,8 @@ def main():
     print("=== block rule, matching call ===")
     Control.add_constraint_enforcement(conn, NS, "never rm -rf without confirmation",
                                        "block", "Bash(rm*)")
-    refresh_cache(NS, home)
+    count = refresh_cache(NS, home)
+    check("issue #32: refresh reports 1 rule cached after adding one", count == 1)
     rc, out, err = run_hook(NS, {"tool_name": "Bash", "tool_input": {"command": "rm -rf /tmp/x"}}, home)
     check("match: exits 0", rc == 0)
     body = json.loads(out) if out else {}
@@ -122,7 +126,8 @@ def main():
     print("=== bare-tool-name matcher ===")
     reset()
     Control.add_constraint_enforcement(conn, NS, "never touch the Read tool", "ask", "Read")
-    refresh_cache(NS, home)
+    count = refresh_cache(NS, home)
+    check("issue #32: refresh reports 1 rule cached after reset+add", count == 1)
     rc, out, err = run_hook(NS, {"tool_name": "Read", "tool_input": {"file_path": "/etc/passwd"}}, home)
     body = json.loads(out) if out else {}
     check("bare-name match: permissionDecision == ask",
@@ -133,7 +138,8 @@ def main():
     reset()
     Control.add_constraint_enforcement(conn, NS, "ask before any bash", "ask", "Bash*")
     Control.add_constraint_enforcement(conn, NS, "block rm specifically", "block", "Bash(rm*)")
-    refresh_cache(NS, home)
+    count = refresh_cache(NS, home)
+    check("issue #32: refresh reports 2 rules cached (ask + block)", count == 2)
     rc, out, err = run_hook(NS, {"tool_name": "Bash", "tool_input": {"command": "rm -rf /tmp/x"}}, home)
     body = json.loads(out) if out else {}
     check("both match: block wins over ask",
