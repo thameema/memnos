@@ -360,6 +360,194 @@ def main():
     else:
         print(f"  SKIP  live central-mode grant-verification test (no memnos server at {_LIVE_URL})")
 
+    # --- Issue #44: memnos_sdk importability in the target Omnigent runtime is now a
+    # verified precondition, not an assumed one, before the policy is ever written — for
+    # BOTH modes, and even on the idempotent-return path. These prove it against REAL
+    # Python environments (a genuinely SDK-less interpreter, and a real package on disk
+    # missing just the integration submodule) via sys.path/--python manipulation, not
+    # mocking — the probe subprocess genuinely succeeds or genuinely raises ImportError. ---
+    print("=== server-setup omnigent: memnos_sdk import precondition (issue #44) ===")
+
+    # A real interpreter with no memnos_sdk installed at all (no pip, nothing beyond the
+    # stdlib) — built once, reused by every "not installed" case below. Explicitly clear
+    # PYTHONPATH in every extra_env that targets it: this test file itself may be run
+    # with PYTHONPATH pointing at ./sdk (the usual way to exercise a freshly-edited SDK
+    # without a global pip install), and that would otherwise leak into this "genuinely
+    # not installed" venv's subprocess env too (the probe inherits the CLI's env — see
+    # _verify_sdk_importable's docstring) and silently defeat the test.
+    bare_venv_dir = os.path.join(home, "bare_venv_no_sdk")
+    subprocess.run([PY, "-m", "venv", "--without-pip", bare_venv_dir],
+                   check=True, capture_output=True, timeout=60)
+    bare_python = os.path.join(bare_venv_dir, "bin", "python3")
+    if not os.path.exists(bare_python):        # Windows venv layout
+        bare_python = os.path.join(bare_venv_dir, "Scripts", "python.exe")
+    check("venv setup: bare_python (no memnos_sdk) resolved to a real interpreter",
+          os.path.exists(bare_python))
+    NO_SDK_ENV = dict(REMOTE_ENV, PYTHONPATH=None)
+
+    # A real interpreter with memnos_sdk GENUINELY installed in its OWN site-packages, but
+    # missing JUST the omnigent integration submodule — simulates an older/partial
+    # memnos-sdk install. Distinct from "not installed at all": `import memnos_sdk`
+    # genuinely succeeds here, only `from memnos_sdk.integrations.omnigent import
+    # capture_response` genuinely raises. Deliberately NOT built via a PYTHONPATH-shadowed
+    # package in THIS process's own interpreter (the old approach): now that the probe
+    # runs under `-I` (ignores PYTHONPATH — the fix for the ambient-contamination bug
+    # below), a PYTHONPATH-only stub would no longer shadow this interpreter's own
+    # genuinely-installed real memnos_sdk and the test would silently stop testing what it
+    # claims to. Writing the stub directly into a dedicated venv's site-packages (no pip
+    # needed — it's pure Python files) proves the "handler missing" bucket still works
+    # against a real partial install, independent of any PYTHONPATH trick.
+    handler_missing_venv_dir = os.path.join(home, "venv_handler_missing")
+    subprocess.run([PY, "-m", "venv", "--without-pip", handler_missing_venv_dir],
+                   check=True, capture_output=True, timeout=60)
+    handler_missing_python = os.path.join(handler_missing_venv_dir, "bin", "python3")
+    if not os.path.exists(handler_missing_python):     # Windows venv layout
+        handler_missing_python = os.path.join(handler_missing_venv_dir, "Scripts", "python.exe")
+    check("venv setup: handler_missing_python resolved to a real interpreter",
+          os.path.exists(handler_missing_python))
+    site_pkgs_out = subprocess.run(
+        [handler_missing_python, "-c", "import site; print(site.getsitepackages()[0])"],
+        capture_output=True, text=True, timeout=30)
+    handler_missing_site_packages = site_pkgs_out.stdout.strip()
+    check("venv setup: site.getsitepackages() returned a usable path",
+          site_pkgs_out.returncode == 0 and bool(handler_missing_site_packages))
+    os.makedirs(os.path.join(handler_missing_site_packages, "memnos_sdk", "integrations"),
+                exist_ok=True)
+    with open(os.path.join(handler_missing_site_packages, "memnos_sdk", "__init__.py"), "w") as f:
+        f.write("__version__ = '0.0.0-stub'\n")
+    with open(os.path.join(handler_missing_site_packages, "memnos_sdk", "integrations",
+                            "__init__.py"), "w") as f:
+        f.write("")
+    # Sanity check the stub is genuinely what this interpreter resolves `memnos_sdk` to
+    # (not, say, some other install already sitting in this venv) — run under -I, the same
+    # isolation the real probe uses, so this proves exactly what the CLI will actually see.
+    stub_probe = subprocess.run(
+        [handler_missing_python, "-I", "-c", "import memnos_sdk; print(memnos_sdk.__version__)"],
+        capture_output=True, text=True, timeout=30)
+    check("venv setup: handler_missing_python's own memnos_sdk is genuinely the stub",
+          stub_probe.returncode == 0 and stub_probe.stdout.strip() == "0.0.0-stub")
+
+    # (a) genuinely importable: every successful-wire assertion earlier in this file
+    # already exercises this path implicitly (this test process runs with a real,
+    # importable memnos_sdk — see tests/README or CI's sdk-tests job for how). Assert the
+    # precondition's own success message actually fires, so a future change that quietly
+    # dropped the check — while setup kept succeeding for some unrelated reason — would
+    # be caught here specifically.
+    importable_cfg = os.path.join(home, "importable_server.yaml")
+    rc, out = run(home, "server-setup", "omnigent", "--config", importable_cfg, "--mode", "central",
+                  extra_env=REMOTE_ENV)
+    check("(a) genuinely importable: exits 0 and proceeds", rc == 0)
+    check("(a) genuinely importable: prints the new verified-importable message",
+          "verified: memnos_sdk.integrations.omnigent.capture_response is importable" in out)
+    check("(a) genuinely importable: policy actually written", os.path.exists(importable_cfg))
+
+    # (b) NOT installed at all — pointed at the bare venv via --python. Must refuse loud,
+    # exit non-zero, and — the part a weaker test would miss — never write the config.
+    not_installed_cfg = os.path.join(home, "not_installed_server.yaml")
+    rc, out = run(home, "server-setup", "omnigent", "--config", not_installed_cfg, "--mode", "central",
+                  "--python", bare_python, extra_env=NO_SDK_ENV)
+    check("(b) not installed: exits non-zero", rc != 0)
+    check("(b) not installed: names memnos_sdk as NOT INSTALLED", "NOT INSTALLED" in out)
+    check("(b) not installed: gives the exact remediation command", "pip install memnos-sdk" in out)
+    check("(b) not installed: no config file written", not os.path.exists(not_installed_cfg))
+
+    # (c) installed, but the omnigent integration/capture_response is missing — a
+    # DIFFERENT failure mode from (b), with a different remedy (upgrade, not install).
+    # Targets the dedicated venv_handler_missing interpreter (a REAL partial install in
+    # its own site-packages), with PYTHONPATH explicitly cleared to prove the "handler
+    # missing" verdict comes from that interpreter's own installed state, not from
+    # anything leaking in via the caller's ambient env.
+    handler_missing_cfg = os.path.join(home, "handler_missing_server.yaml")
+    rc, out = run(home, "server-setup", "omnigent", "--config", handler_missing_cfg, "--mode", "central",
+                  "--python", handler_missing_python,
+                  extra_env=dict(REMOTE_ENV, PYTHONPATH=None))
+    check("(c) handler missing: exits non-zero", rc != 0)
+    check("(c) handler missing: distinguishes from 'not installed' (different message)",
+          "NOT INSTALLED" not in out and "is installed, but" in out)
+    check("(c) handler missing: gives a DIFFERENT remediation command (upgrade, not install)",
+          "pip install --upgrade memnos-sdk" in out)
+    check("(c) handler missing: no config file written", not os.path.exists(handler_missing_cfg))
+
+    # (d) idempotent re-run: the check must still fire even on the "already wired,
+    # nothing to do" early-return path — reuses (a)'s already-successfully-wired config,
+    # re-run against the now-SDK-less bare venv. If the early return skipped the check
+    # (the bug this fix closes), this would print "already wired" and exit 0 instead.
+    before_idempotent_sdk = open(importable_cfg).read()
+    rc, out = run(home, "server-setup", "omnigent", "--config", importable_cfg, "--mode", "central",
+                  "--python", bare_python, extra_env=NO_SDK_ENV)
+    check("(d) idempotent re-run, SDK now missing: exits non-zero (check not skipped by early return)",
+          rc != 0)
+    check("(d) idempotent re-run, SDK now missing: names it NOT INSTALLED, not 'already wired'",
+          "NOT INSTALLED" in out and "already wired" not in out)
+    check("(d) idempotent re-run, SDK now missing: file left completely unchanged",
+          open(importable_cfg).read() == before_idempotent_sdk)
+
+    # --mode embedded must ALSO run this check, and run it BEFORE ever touching Postgres —
+    # proven with a deliberately unreachable MEMNOS_DSN: if Postgres were contacted
+    # first, this would fail with a connection error instead of the SDK message.
+    embedded_missing_cfg = os.path.join(home, "embedded_missing_sdk_server.yaml")
+    rc, out = run(home, "server-setup", "omnigent", "--config", embedded_missing_cfg, "--mode", "embedded",
+                  "--python", bare_python,
+                  extra_env={"MEMNOS_DSN": _UNREACHABLE_DSN, "MEMNOS_TOKEN": None,
+                            "MEMNOS_URL": None, "PYTHONPATH": None})
+    check("embedded mode: import check also runs, exits non-zero", rc != 0)
+    check("embedded mode: fails on the SDK check, not a Postgres connection error",
+          "NOT INSTALLED" in out and "psycopg" not in out and "could not connect" not in out.lower())
+    check("embedded mode: no config file written", not os.path.exists(embedded_missing_cfg))
+
+    # --- Adversarial-review follow-up (post-#44): PYTHONPATH contamination of the CALLING
+    # process must NOT leak into the probe subprocess and produce a false "importable" for
+    # a --python target that has nothing installed. Repro shape: a fully working stub
+    # memnos_sdk (memnos_sdk + memnos_sdk.integrations.omnigent.capture_response, a
+    # genuinely importable package start-to-finish, simulating a leftover local SDK dev
+    # checkout) reachable ONLY via PYTHONPATH set in the env that invokes `memnos
+    # server-setup omnigent` itself — i.e. the operator's own ambient shell, not anything
+    # this test passes to --python. --python points at the bare venv, which has nothing
+    # installed in its own site-packages. Before the -I isolation fix, _verify_sdk_
+    # importable's subprocess.run had no `env=` override, so the probe subprocess (however
+    # it was invoked) inherited this PYTHONPATH too and satisfied the import from the
+    # contaminant, regardless of --python — a false "verified: importable" for a target
+    # interpreter that genuinely lacks the package. Must now correctly report
+    # NOT_INSTALLED and exit non-zero. ---
+    full_stub_sdk_root = os.path.join(home, "full_stub_sdk_ambient_contaminant")
+    os.makedirs(os.path.join(full_stub_sdk_root, "memnos_sdk", "integrations"), exist_ok=True)
+    with open(os.path.join(full_stub_sdk_root, "memnos_sdk", "__init__.py"), "w") as f:
+        f.write("__version__ = '0.0.0-ambient-contaminant'\n")
+    with open(os.path.join(full_stub_sdk_root, "memnos_sdk", "integrations", "__init__.py"), "w") as f:
+        f.write("")
+    with open(os.path.join(full_stub_sdk_root, "memnos_sdk", "integrations", "omnigent.py"), "w") as f:
+        f.write("def capture_response(*args, **kwargs):\n    pass\n")
+
+    # Sanity check the stub is genuinely importable end-to-end (not just present on disk) —
+    # otherwise a false negative below would prove nothing about the actual bug. Checked in
+    # THIS process's own interpreter with the stub prepended to sys.path, then removed.
+    sys.path.insert(0, full_stub_sdk_root)
+    try:
+        for _mod in ("memnos_sdk", "memnos_sdk.integrations", "memnos_sdk.integrations.omnigent"):
+            sys.modules.pop(_mod, None)
+        import importlib
+        _stub_mod = importlib.import_module("memnos_sdk.integrations.omnigent")
+        stub_genuinely_importable = hasattr(_stub_mod, "capture_response")
+        for _mod in ("memnos_sdk", "memnos_sdk.integrations", "memnos_sdk.integrations.omnigent"):
+            sys.modules.pop(_mod, None)
+    finally:
+        sys.path.remove(full_stub_sdk_root)
+    check("contamination repro setup: the stub package is genuinely importable end-to-end",
+          stub_genuinely_importable)
+
+    contaminated_cfg = os.path.join(home, "pythonpath_contaminated_server.yaml")
+    rc, out = run(home, "server-setup", "omnigent", "--config", contaminated_cfg, "--mode", "central",
+                  "--python", bare_python,
+                  extra_env=dict(REMOTE_ENV, PYTHONPATH=full_stub_sdk_root))
+    check("PYTHONPATH contamination: exits non-zero for a --python target with nothing "
+          "installed, despite a fully-importable stub reachable via the CALLER's ambient "
+          "PYTHONPATH", rc != 0)
+    check("PYTHONPATH contamination: correctly reports NOT INSTALLED for the target "
+          "interpreter (not a false 'importable')", "NOT INSTALLED" in out)
+    check("PYTHONPATH contamination: never falsely claims the handler is importable",
+          "is importable" not in out)
+    check("PYTHONPATH contamination: no config file written", not os.path.exists(contaminated_cfg))
+
     # No cleanup of the "omnigent" principal or its agent:omnigent grant: that namespace
     # is this feature's real production default, not a test scratch namespace — purging
     # it here would delete a real deployment's already-captured memories. This test never

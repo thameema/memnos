@@ -734,6 +734,12 @@
        "required": false
       },
       {
+       "arg": "--python",
+       "help": "omnigent: path to the Python interpreter that will actually run `omnigent server` \u2014 used to verify memnos_sdk is importable THERE before wiring the capture policy (default: this command's own interpreter, which only proves importability here)",
+       "positional": false,
+       "required": false
+      },
+      {
        "arg": "--force",
        "help": "re-wire even if the capture policy is already present",
        "positional": false,
