@@ -789,6 +789,14 @@ class MemnosMemory:
         # it cannot crater single_hop/verbatim. MEMNOS_RECALL_FACT_BOOST=0 disables.
         fb = _env_float("MEMNOS_RECALL_FACT_BOOST", 0.06)
         fact_boost = fb if qi != "verbatim" else 0.0
+        # issue #22: operator-tunable PRECISION floor — candidates whose raw cross-encoder
+        # score falls below MEMNOS_RERANK_MIN_SCORE are dropped entirely, before quotas are
+        # applied (trades recall breadth for precision). Read on the RAW rerank() score, not
+        # the rank-adjusted one (length penalty / salience / fact / entity boosts below) —
+        # those are ranking heuristics, not the reranker's own confidence. Default 0.0
+        # preserves today's behavior: rerank() scores are a sigmoid output in (0, 1), so a
+        # >=0.0 floor never filters anything.
+        min_rerank_score = _env_float("MEMNOS_RERANK_MIN_SCORE", 0.0)
 
         # --- issue #17: ENTITY-AWARE recall (subject disambiguation) ----------------
         # When the query names a known entity, two semantically-adjacent subjects in the
@@ -873,6 +881,8 @@ class MemnosMemory:
                 order = brain_rerank.rerank(rq, [c["content"] for c in items], self.reranker)
             else:                                  # deadline-degraded: retrieval order
                 order = [(i, 1.0 / (1.0 + i)) for i in range(len(items))]
+            if min_rerank_score > 0.0:             # issue #22: precision floor
+                order = [(i, s) for i, s in order if s >= min_rerank_score]
             scored = []
             for i, s in order:
                 s = adjust(float(s), items[i], kind)
@@ -994,6 +1004,9 @@ class MemnosMemory:
         fb = _env_float("MEMNOS_RECALL_FACT_BOOST", 0.06)
         fact_boost = fb if qi != "verbatim" else 0.0
         rq = query_clamp(query)                    # #15 follow-up: bound the reranker's query side
+        # issue #22: same precision floor as recall_rank (see that docstring) — filters on
+        # the RAW rerank() score, before the length/salience/fact adjustments below.
+        min_rerank_score = _env_float("MEMNOS_RERANK_MIN_SCORE", 0.0)
 
         def rr(items, kind, quota):
             if not items:
@@ -1002,6 +1015,8 @@ class MemnosMemory:
                 order = brain_rerank.rerank(rq, [c["content"] for c in items], self.reranker)
             else:                                  # deadline-degraded: retrieval order
                 order = [(i, 1.0 / (1.0 + i)) for i in range(len(items))]
+            if min_rerank_score > 0.0:             # issue #22: precision floor
+                order = [(i, s) for i, s in order if s >= min_rerank_score]
             scored = []
             for i, s in order:
                 it = items[i]
