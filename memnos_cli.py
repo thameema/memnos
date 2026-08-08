@@ -2679,6 +2679,110 @@ def _verify_omnigent_grant(cfg, mode, token, ns, url=None):
               f"$MEMNOS_TOKEN")
 
 
+_SDK_IMPORT_PROBE = (
+    "import sys\n"
+    "try:\n"
+    "    import memnos_sdk\n"
+    "except Exception as e:\n"
+    "    print('NOT_INSTALLED:' + str(e)); sys.exit(1)\n"
+    "try:\n"
+    "    from memnos_sdk.integrations.omnigent import capture_response\n"
+    "except Exception as e:\n"
+    "    print('HANDLER_MISSING:' + str(e)); sys.exit(1)\n"
+    "print('OK')\n"
+)
+
+
+def _verify_sdk_importable(python_executable):
+    """Check that `memnos_sdk.integrations.omnigent.capture_response` — the handler
+    `server-setup omnigent` is about to wire into the target config — is importable
+    under `python_executable`, by actually running it in a subprocess (not just checking
+    whether *this* process can import it, which would prove nothing about a different
+    interpreter).
+
+    HONESTY CAVEAT (read before trusting this): this can only probe the interpreter it is
+    actually given. There is no reliable way for this CLI to introspect, from a --config
+    YAML path alone, which interpreter/venv/container the *target* `omnigent server`
+    process will actually run under — it might be this machine's default `python3`, a
+    dedicated venv, a Docker image, or (in --mode central) a different host entirely. So:
+      - if the caller passes an explicit `python_executable` (the CLI's --python flag),
+        this verifies importability in exactly that interpreter, and that guarantee is
+        only as good as whether that path really is the one `omnigent server` runs under;
+      - otherwise the caller is expected to pass `sys.executable` (this command's own
+        interpreter), which only proves importability HERE — a real guarantee only when
+        the operator runs `memnos server-setup omnigent` under the same python/venv that
+        will run `omnigent server` (the common case for --mode embedded on one machine,
+        much less safe an assumption for --mode central). See docs/integrations/omnigent.md.
+
+    ISOLATION: the probe runs under `-I` (Python's isolated mode), which ignores every
+    PYTHONPATH/PYTHONHOME/PYTHON*-family environment variable and skips the user
+    site-packages directory. Without this, the probe subprocess would inherit the
+    CALLING process's ambient environment (subprocess.run defaults to that when no `env=`
+    is given) — so an operator whose own shell happens to have PYTHONPATH pointing at a
+    local memnos_sdk checkout (an ordinary thing for an SDK developer to have set) would
+    get a false "importable" for a target `python_executable` that has nothing installed
+    in its own site-packages, regardless of which interpreter was actually named. `-I`
+    means only python_executable's own installed site-packages (the standard sys.path a
+    real `omnigent server` process launched with no ambient shell env — e.g. via
+    systemd/supervisor/Docker entrypoint — would actually see) can satisfy the import.
+
+    Returns (ok, kind, detail):
+      ok=True                          -> importable; kind=None, detail="".
+      ok=False, kind="not_installed"   -> `import memnos_sdk` itself failed (not installed,
+                                          or a transitively broken install — a broken
+                                          transitive dependency pulled in by memnos_sdk's
+                                          own __init__ import chain surfaces here too,
+                                          since it fails before the submodule import is
+                                          even attempted).
+      ok=False, kind="handler_missing" -> memnos_sdk imports fine, but
+                                          memnos_sdk.integrations.omnigent.capture_response
+                                          does not (an install predating the Omnigent
+                                          integration, a partial/broken one, or a broken
+                                          transitive dependency pulled in only by the
+                                          omnigent submodule itself).
+      ok=False, kind="probe_failed"    -> couldn't even run python_executable (bad path,
+                                          timeout, ...) — not a statement about memnos_sdk.
+    `detail` is always the raw underlying error text, even when the not_installed/
+    handler_missing bucketing above is a guess — showing the real text lets the operator
+    see what's actually wrong regardless of which bucket this picked."""
+    import subprocess
+    try:
+        r = subprocess.run([python_executable, "-I", "-c", _SDK_IMPORT_PROBE],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, "probe_failed", f"could not run {python_executable!r}: {e}"
+    out = (r.stdout or "").strip()
+    if r.returncode == 0 and out == "OK":
+        return True, None, ""
+    if out.startswith("NOT_INSTALLED:"):
+        return False, "not_installed", out[len("NOT_INSTALLED:"):]
+    if out.startswith("HANDLER_MISSING:"):
+        return False, "handler_missing", out[len("HANDLER_MISSING:"):]
+    return False, "probe_failed", (r.stderr or out or f"python exited {r.returncode}").strip()
+
+
+def _sdk_import_check_context(python_used, explicit):
+    """The honest-guarantee explanation appended to both the success print and every
+    failure message — see _verify_sdk_importable's docstring for why this can't claim
+    more than it checked."""
+    if explicit:
+        return (f"         Checked in the interpreter you passed via --python:\n"
+                f"             {python_used}\n"
+                f"         Make sure that path really is the interpreter `omnigent server` "
+                f"runs under.\n")
+    return (
+        f"         Checked in this command's own Python interpreter (no --python given):\n"
+        f"             {python_used}\n"
+        f"         This only proves importability HERE — not in whatever interpreter/venv/\n"
+        f"         container the `omnigent server` process itself will run under, which this\n"
+        f"         CLI has no reliable way to introspect from a --config YAML path alone. If\n"
+        f"         they differ, verify directly in the server's own interpreter:\n"
+        f"             <omnigent-server-python> -c \"from memnos_sdk.integrations.omnigent "
+        f"import capture_response\"\n"
+        f"         or re-run this command with: --python <path-to-that-interpreter>\n"
+    )
+
+
 def cmd_server_setup_omnigent(args, cfg):
     """Wire memnos into an Omnigent SERVER as a server-wide `type: function` policy —
     NOT into a single agent (that's `memnos agent-setup omnigent`, an unrelated, older
@@ -2720,6 +2824,16 @@ def cmd_server_setup_omnigent(args, cfg):
     already-fixed remote-mode precedent; omits memnos_url from the YAML so the server
     process's own $MEMNOS_URL always decides where it talks to.
 
+    Precondition, checked before anything is written (both modes, and even on the
+    already-wired idempotent-return path — see _verify_sdk_importable): the handler this
+    command is about to wire in, memnos_sdk.integrations.omnigent.capture_response, must
+    actually be importable — by default in this command's own interpreter, or in
+    --python's interpreter if given. Refuses (loud, non-zero exit) rather than wiring a
+    policy that would point Omnigent at an unimportable handler. This only proves
+    importability in whichever interpreter was actually checked, which is not
+    unconditionally the one `omnigent server` itself will run under — see
+    docs/integrations/omnigent.md and --python's help text.
+
     Idempotent (skips if the 'memnos_capture' policy already exists, unless --force);
     merges into any existing `policies:` block rather than clobbering other policies;
     backs up the file first via _backup()."""
@@ -2737,6 +2851,66 @@ def cmd_server_setup_omnigent(args, cfg):
             "           memnos server-setup omnigent --config <path-to-server-config.yaml>"
         )
     config_path = os.path.expanduser(str(config_path))
+
+    # Always re-verify, on every invocation — including an idempotent re-run that's about
+    # to hit the already-wired early return below. The SDK could have been uninstalled or
+    # broken since the last successful run; skipping this on the "nothing to do" path
+    # would let that regress silently. Runs for both --mode embedded and --mode central —
+    # this precondition has nothing to do with how the token/URL are obtained.
+    raw_python_arg = getattr(args, "python", None)
+    if raw_python_arg == "":
+        print("[memnos] WARNING: --python was given an empty string — ignoring it and "
+              "falling back to this command's own interpreter (sys.executable) instead, "
+              "same as if --python had been omitted entirely. Pass a real path, e.g. "
+              "--python /path/to/venv/bin/python3.")
+    python_for_check = raw_python_arg or sys.executable
+    explicit_python = bool(raw_python_arg)
+    sdk_ok, sdk_kind, sdk_detail = _verify_sdk_importable(python_for_check)
+    ctx = _sdk_import_check_context(python_for_check, explicit_python)
+    if not sdk_ok:
+        if sdk_kind == "not_installed":
+            sys.exit(
+                f"server-setup omnigent: memnos_sdk is NOT INSTALLED where this check ran.\n"
+                f"         Refusing to write the '{_OMNIGENT_CAPTURE_POLICY_NAME}' policy into\n"
+                f"         {config_path} — wiring it anyway would point Omnigent at a handler\n"
+                f"         module ({_OMNIGENT_CAPTURE_HANDLER}) that can't be imported where\n"
+                f"         Omnigent will actually try to load it: best case, capture silently\n"
+                f"         writes nothing; worst case, if Omnigent fails closed on a policy\n"
+                f"         whose handler can't import, every agent's every turn on that server\n"
+                f"         gets blocked.\n"
+                f"         Fix — install it in the SAME Python environment that will run\n"
+                f"         `omnigent server`, then re-run this command:\n"
+                f"             pip install memnos-sdk\n"
+                f"         (underlying error: {sdk_detail})\n"
+                f"{ctx}"
+            )
+        elif sdk_kind == "handler_missing":
+            sys.exit(
+                f"server-setup omnigent: memnos_sdk is installed, but "
+                f"{_OMNIGENT_CAPTURE_HANDLER}\n"
+                f"         could not be imported where this check ran.\n"
+                f"         Refusing to write the '{_OMNIGENT_CAPTURE_POLICY_NAME}' policy into\n"
+                f"         {config_path} for the same reason as an outright missing install —\n"
+                f"         Omnigent would be pointed at a handler it can't load. This usually\n"
+                f"         means an older memnos-sdk install that predates the Omnigent capture\n"
+                f"         integration, or a partial/broken one.\n"
+                f"         Fix — upgrade it in the SAME Python environment that will run\n"
+                f"         `omnigent server`, then re-run this command:\n"
+                f"             pip install --upgrade memnos-sdk\n"
+                f"         (underlying error: {sdk_detail})\n"
+                f"{ctx}"
+            )
+        else:
+            hint = ("Check the --python path you passed." if explicit_python else
+                    "Unexpected for sys.executable — check this machine's Python install.")
+            sys.exit(
+                f"server-setup omnigent: could not check memnos_sdk importability — "
+                f"failed to run\n"
+                f"         the Python interpreter itself ({sdk_detail}).\n"
+                f"         {hint}"
+            )
+    print(f"[memnos] verified: {_OMNIGENT_CAPTURE_HANDLER} is importable.")
+    print(ctx, end="")
 
     try:
         spec = _yaml.safe_load(open(config_path)) if os.path.exists(config_path) else {}
@@ -3716,6 +3890,11 @@ def build_parser():
                         "remote/shared memnos via MEMNOS_URL+MEMNOS_TOKEN (must already be set)")
     p.add_argument("--namespace", help="default namespace captured turns are written to "
                                        "(default: agent:omnigent)")
+    p.add_argument("--python", help="omnigent: path to the Python interpreter that will "
+                                    "actually run `omnigent server` — used to verify "
+                                    "memnos_sdk is importable THERE before wiring the "
+                                    "capture policy (default: this command's own "
+                                    "interpreter, which only proves importability here)")
     p.add_argument("--force", action="store_true",
                    help="re-wire even if the capture policy is already present")
     p.set_defaults(fn=cmd_server_setup)

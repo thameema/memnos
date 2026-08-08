@@ -71,6 +71,13 @@ jobs:
           pip install -r requirements.txt
           pip install pytest    # CI-only: a few pytest-style test files (fixtures/mocks);
                                  # not a production dep, so not in requirements.txt
+          pip install ./sdk     # memnos_sdk itself is NOT a memnos dependency (it's the
+                                 # separately-published client package) — installed here
+                                 # anyway because tests/test_server_setup_omnigent.py now
+                                 # exercises `server-setup omnigent`'s real import-check
+                                 # precondition (issue #44), which needs a genuine,
+                                 # importable memnos_sdk.integrations.omnigent in this job
+                                 # for its "happy path" (SDK present) assertions to hold.
       - name: Prefetch + verify models (retry; clean-redownload on a corrupt cache)
         # The reranker/embedding ONNX weights are pulled from HF Hub, which rate-limits
         # unauthenticated pulls. A bare constructor is lazy, so a partial/corrupt cache only
