@@ -86,10 +86,26 @@ def vlit(vec: Sequence[float]) -> str:
 # text, and one that should crash loudly rather than be silently filed as "unsafe
 # input").
 #
-# NOT in scope here (issue #41 fix C, deferred — see the TODO at this module's FTS call
-# sites below for the current reasoning): even with this bound, a single-arm timeout/error
-# still propagates straight to the caller instead of degrading the recall to a partial
-# result.
+# issue #41 fix C: even with the bound above, a single recall arm's statement_timeout
+# cancellation or DB-side error used to propagate straight out of core/service.py's
+# recall_fetch/recall_wide_fetch and fail the WHOLE recall — the hybrid design has
+# independent arms (raw-turn search, semantic search, the timeline/entity-guarantee
+# arms, the wide-recall per-namespace fan-out), so one arm's live, reachable-server
+# failure shouldn't cost the others. RECALL_ARM_FAILURES is the exception tuple those
+# call sites catch to degrade instead of raise. Caught BY CLASS, not enumerated by
+# specific error, per the exact precedent set by _tsquery_within_bound below (issue #41
+# fix B, round 3) — an enumerated except list is correct for exactly the failure shapes
+# someone thought to test and silently wrong for the next one nobody hit yet.
+# psycopg.DatabaseError is the common ancestor of every server-reported failure
+# (statement_timeout cancellation, internal errors, data errors, operational errors —
+# psycopg_pool.PoolTimeout included, since it subclasses psycopg.OperationalError) and
+# of input psycopg itself rejects before it ever reaches the server; the bare
+# TimeoutError covers any non-psycopg wait timeout the same call could hit. Deliberately
+# does NOT include psycopg.InterfaceError — client/driver misuse (e.g. executing against
+# an already-closed cursor) is a bug in the CALLING code, not a property of the query or
+# the data, and must still crash loudly rather than be silently degraded away.
+RECALL_ARM_FAILURES = (psycopg.DatabaseError, TimeoutError)
+
 _FTS_DEFAULT_TOKENS = 40   # was 200; a lower cap bounds the size of text the safety probe
                            # itself has to evaluate, independent of the probe's own result.
 
@@ -890,13 +906,13 @@ class BrainStore:
         Returns restatements + salience too — rank-time reinforcement signals for the
         fact arm (issue #11). ADDITIVE columns only; fetch semantics unchanged.
 
-        TODO(issue #41 fix C, deferred): a statement_timeout cancellation on this query (or
-        any other error) still propagates straight to the caller and fails the whole
-        recall, instead of that arm degrading to a partial/vector-only result with
-        degraded=true. Fixing that means touching the recall_fetch failure/fallback path,
-        which PR #40 (durable write-behind queue, issue #37 Layer 3) is concurrently
-        reworking — deferred here to avoid a merge conflict / overlapping semantics; pick
-        it up once #40 merges to master."""
+        issue #41 fix C: a statement_timeout cancellation on this query (or any other
+        RECALL_ARM_FAILURES-class error) no longer propagates straight to the caller —
+        core/service.py's recall_fetch/recall_wide_fetch catch it at the call site and
+        degrade that arm to a partial result with degraded=true instead of failing the
+        whole recall. This method itself is unchanged; it still raises on failure, same
+        as every other store method — degrading is the CALLER's decision, made once, at
+        the point the arms are orchestrated."""
         self._chk(schema)
         valid = "AND valid_to IS NULL" if current_only else ""
         sql = f"""
