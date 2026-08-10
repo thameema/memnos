@@ -67,10 +67,9 @@ def call(path, token=None, body=None):
         return e.code, json.loads(e.read() or b"{}")
 
 
-def _observed_at(conn, text):
+def _observed_at_by_id(conn, turn_id):
     with conn.cursor() as c:
-        c.execute(f"SELECT observed_at FROM {SCHEMA}.raw_turns "
-                  f"WHERE namespace=%s AND text=%s", (NS, text))
+        c.execute(f"SELECT observed_at FROM {SCHEMA}.raw_turns WHERE id=%s", (turn_id,))
         row = c.fetchone()
     return row["observed_at"] if row else None
 
@@ -95,7 +94,11 @@ def main():
         os.environ.get("TMPDIR", "/tmp"), f"memnos_wb_bitemporal_{os.getpid()}")
 
     print("=== 1. replayed write is stamped with replay-commit time, not enqueue time ===")
-    text1 = f"outage-queued-write-{os.getpid()}"
+    # Plain natural-language text — a hyphenated word+pid token trips the server's
+    # high-entropy secret redaction, which would replace the stored text and break an
+    # exact-text lookup. NS was just cleared above, so the row this write produces is
+    # unambiguously identifiable as "the newest row in NS" without needing to match text.
+    text1 = "the office queue was stuck during the network outage this morning"
     offline_queue.enqueue(config_dir, NS, text1, "user", token=token)
 
     # Simulate a long outage: back-date the queue item's own queued_at by 6 hours.
@@ -116,7 +119,11 @@ def main():
     t_after_replay = datetime.now(timezone.utc)
     check("drain() replayed exactly 1 item, 0 rejected", drained == 1 and rejected == 0)
 
-    obs1 = _observed_at(conn, text1)
+    with conn.cursor() as c:
+        c.execute(f"SELECT observed_at FROM {SCHEMA}.raw_turns "
+                  f"WHERE namespace=%s ORDER BY id DESC LIMIT 1", (NS,))
+        row = c.fetchone()
+    obs1 = row["observed_at"] if row else None
     check("replayed write landed in the store", obs1 is not None)
     if obs1 is not None:
         check("observed_at falls within the drain() call window (replay-commit time)",
@@ -127,7 +134,7 @@ def main():
               gap_from_old_queued_at > 3000)
 
     print("=== 2. a client-supplied observed_at/known_at in the request body is ignored ===")
-    text2 = f"forged-timestamp-write-{os.getpid()}"
+    text2 = "someone insists this note was written a very long time ago"
     forged = "2001-09-09T01:46:40+00:00"          # nowhere near "now"
     t_before_direct = datetime.now(timezone.utc)
     # A real replaying client (offline_queue._post_remember) never sends this field —
@@ -139,7 +146,7 @@ def main():
     t_after_direct = datetime.now(timezone.utc)
     check("forged-timestamp write still succeeds (200)", s == 200)
 
-    obs2 = _observed_at(conn, text2)
+    obs2 = _observed_at_by_id(conn, j.get("turn_id")) if j.get("turn_id") else None
     check("forged write landed in the store", obs2 is not None)
     if obs2 is not None:
         check("observed_at reflects the server's OWN receipt time, not the forged value",
