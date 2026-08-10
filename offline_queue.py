@@ -148,6 +148,16 @@ def enqueue(config_dir: str, namespace: str, text: str, speaker: str, memory_typ
 
 
 def _post_remember(url: str, token: str, item: dict, timeout: float = 8) -> None:
+    """POST one queued item to the server's /remember. Deliberately whitelists exactly
+    the fields below — `item["queued_at"]` (captured by enqueue(), used only for FIFO
+    ordering via the filename's epoch-ms prefix) is NEVER forwarded as an
+    observed_at/known_at override (issue #42): the server always stamps that
+    OBSERVATION-axis timestamp itself, at the moment it actually receives and commits
+    this replayed write, so a replaying client can never backdate a stale write to win
+    a bi-temporal supersession over a fact someone else wrote while the queue was down.
+    Do not "fix" the accuracy loss by wiring queued_at through here — that reopens
+    exactly the gap issue #42 closed (the server ignores the field anyway, see
+    memnos_server.py's _remember_phased, but don't even hand it a value to ignore)."""
     body = {"namespace": item["namespace"], "text": item["text"],
             "speaker": item.get("speaker"), "async": True}
     if item.get("type"):
