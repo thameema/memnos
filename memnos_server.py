@@ -1189,6 +1189,20 @@ class Handler(BaseHTTPRequestHandler):
         ok, mtype = _memory_type(req)              # typed memory (decision|incident|...)
         if not ok:
             return self._send(400, mtype)
+        # SECURITY (issue #42): the OBSERVATION-axis timestamp that drives bi-temporal
+        # supersession (`obs`, stamped a few lines below from remember_turn()'s own
+        # datetime.now(timezone.utc)) is ALWAYS the server's own clock at the moment
+        # this write is received and committed (P1b, just below) — NEVER the request
+        # body. This path is also what offline_queue.drain() POSTs to when replaying a
+        # queued write, so the guard applies there too: a replaying client that could
+        # supply its own observed_at/known_at would have a timestamp-backdating
+        # primitive, able to dress up a stale queued write as "just learned" and force
+        # it to win a supersession over a fact genuinely written by someone else while
+        # the queue was down. Explicitly dropped here even though nothing downstream
+        # reads them — do not "fix" the accuracy loss by wiring either through later;
+        # that reopens exactly this gap.
+        req.pop("observed_at", None)
+        req.pop("known_at", None)
         run_async = bool(req.get("async"))
         usage = _UsageAcc()
         cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
