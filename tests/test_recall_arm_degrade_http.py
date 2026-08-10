@@ -154,7 +154,10 @@ def main():
         print("=== baseline: recall succeeds normally (no lock yet) ===")
         s, j = call("/recall", token, {"namespace": NS, "query": "outage", "constraint_cap": 0})
         check("baseline /recall is 200", s == 200)
-        check("baseline is NOT degraded", not j.get("degraded"))
+        # detail on failure: which arm/namespace tripped, not just true/false -- a
+        # cold-start-dependent false positive here (PR #58 round 2) is otherwise
+        # undiagnosable from CI output alone.
+        check("baseline is NOT degraded", not j.get("degraded"), str(j.get("degraded_reasons")))
         txt = " ".join(m.get("content", "") for m in j.get("memories", []))
         check("baseline returns both raw and semantic content", raw_text in txt and sem_text in txt)
 

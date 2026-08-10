@@ -48,6 +48,19 @@ Covers:
      as issue #41 fix C's existing arm-degrade tests, now covering the probe-
      infrastructure failure mode specifically instead of a failure in the arm's main
      query.
+  6. issue #49 ROUND 2 (PR #58): the control probe from point 2 above shared the main
+     probe's tight 300ms budget until this round -- meaning the ambiguous-DatabaseError
+     path needed TWO round-trips to fit inside a window only ONE previously had to. On a
+     cold-started connection (a freshly booted server's first-ever query -- exactly what
+     broke PR #58's own CI run: a healthy baseline recall against a just-booted server
+     came back degraded:true), that's a false positive: the control probe's REAL,
+     healthy-but-slower-than-300ms round trip got cancelled too, and a perfectly ordinary
+     query was misfiled as a probe-infrastructure failure. This test makes the control
+     probe genuinely slow (a real pg_sleep() on the live connection, not a mock) --
+     comfortably past the main probe's 300ms but well inside the control probe's own,
+     now-decoupled timeout -- and proves it resolves as "clamp" (control succeeded, so the
+     original ambiguous failure really is attributed to the query), not a re-raised
+     probe-infrastructure failure.
 
 No server needed (direct-DB store path, same pattern as test_recall_arm_degrade.py /
 test_fts_clamp_shape.py). Exception injection follows test_recall_arm_degrade.py's
@@ -67,7 +80,9 @@ from datetime import datetime, timezone
 import psycopg
 from psycopg.rows import dict_row
 
-from core.store import BrainStore, _tsquery_within_bound, fts_clamp, _fts_max_tokens, _fts_node_bound
+from core.store import (BrainStore, _tsquery_within_bound, fts_clamp, _fts_max_tokens,
+                         _fts_node_bound, _FTS_NODE_CHECK_TIMEOUT_MS,
+                         _FTS_CONTROL_PROBE_TIMEOUT_MS)
 from core.service import MemnosMemory
 
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
@@ -298,6 +313,61 @@ def main():
         c.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s", (NS,))
         c.execute(f"DELETE FROM {SCHEMA}.semantic WHERE namespace=%s", (NS,))
         c.execute(f"DELETE FROM {SCHEMA}.episodic WHERE namespace=%s", (NS,))
+
+    print("=== 6. issue #49 round 2 (PR #58 CI false-positive degrade): a genuinely SLOW "
+          "but healthy control probe must resolve as 'clamp', not a re-raised failure ===")
+    assert _FTS_CONTROL_PROBE_TIMEOUT_MS > _FTS_NODE_CHECK_TIMEOUT_MS, (
+        "test assumption: the control probe's budget must exceed the main probe's tight "
+        "budget, or this scenario proves nothing")
+    # > the main probe's 300ms budget (the bug: pre-fix, the control probe inherited THAT
+    # budget too), comfortably < the control probe's own decoupled budget.
+    sleep_ms = _FTS_NODE_CHECK_TIMEOUT_MS + 150
+    assert sleep_ms < _FTS_CONTROL_PROBE_TIMEOUT_MS, "sleep must still fit the control budget"
+
+    target = "cold-start-control-probe-marker"
+    log = []
+    def rule_cold_start(kind, params):
+        if kind == "main" and params and params[0] == target:
+            return psycopg.errors.AdminShutdown("simulated AdminShutdown on a cold-started connection")
+        return None
+
+    def _execute_with_slow_control(self, query, *a, **kw):
+        q = query if isinstance(query, str) else str(query)
+        kind = _classify(q)
+        if kind:
+            params = a[0] if a else kw.get("params")
+            log.append((kind, params))
+            exc = rule_cold_start(kind, params)
+            if exc is not None:
+                raise exc
+            if kind == "control":
+                # a REAL, slow-but-healthy round trip via pg_sleep() -- not a mock -- so
+                # this genuinely exercises whichever statement_timeout is actually active
+                # on the connection the moment this query runs, same as a real
+                # cold-started round trip would.
+                slow_query = query.replace(
+                    "SELECT numnode", f"SELECT pg_sleep({sleep_ms / 1000.0}), numnode", 1)
+                return orig_execute(self, slow_query, *a, **kw)
+        return orig_execute(self, query, *a, **kw)
+
+    psycopg.Cursor.execute = _execute_with_slow_control
+    try:
+        result = _tsquery_within_bound(conn, target, bound)
+        raised = None
+    except Exception as e:
+        result, raised = None, e
+    finally:
+        psycopg.Cursor.execute = orig_execute
+    check(f"slow-but-healthy control probe ({sleep_ms}ms, > main budget "
+          f"{_FTS_NODE_CHECK_TIMEOUT_MS}ms, < control budget {_FTS_CONTROL_PROBE_TIMEOUT_MS}ms) "
+          "does NOT raise (no false-positive probe-infrastructure failure)",
+          raised is None, f"raised {type(raised).__name__}: {raised}" if raised else "")
+    check("resolves as 'clamp' -- the control succeeded, so the original ambiguous "
+          "failure is attributed to the query, exactly as a healthy server would produce "
+          "-- rather than being mis-filed as a probe-infrastructure failure",
+          result is False, str(result))
+    check("exactly one main + one (slow) control probe fired -- no extra retries",
+          log == [("main", (target, bound)), ("control", None)], str(log))
 
     conn.close()
     store.conn.close()

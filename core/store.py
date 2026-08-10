@@ -149,6 +149,38 @@ _FTS_NODE_BOUND_MULTIPLIER = 3
 # seconds. Tunable in case a slower/busier deployment needs more headroom.
 _FTS_NODE_CHECK_TIMEOUT_MS = int(os.environ.get("MEMNOS_FTS_NODE_CHECK_TIMEOUT_MS", "300"))
 
+# issue #49 round 2: the control probe below (see the `except psycopg.DatabaseError as
+# probe_exc` branch of _tsquery_within_bound) answers a different question than the main
+# probe above it, and doesn't belong on the same budget. The main probe's 300ms bounds
+# "how long do we wait before assuming THIS query might be pathologically expensive to
+# parse" — deliberately tight, tuned for that one job. The control probe's only job is "is
+# the connection/server alive and responsive AT ALL", a fundamentally more forgiving
+# question. Reusing the same 300ms for both meant the ambiguous-DatabaseError path now
+# gets TWO independent chances to trip that tight a threshold instead of one (each `SET
+# statement_timeout` starts a fresh per-statement clock, so this isn't one shared window
+# getting split thinner — it's the SAME tight window applied twice in a row, doubling the
+# exposure to any single cold-start-latency blip that legitimately -- nothing actually
+# wrong -- runs past 300ms on a cold-started connection pool: a freshly booted
+# memnos_server.py opening its first-ever connection to Postgres, e.g.
+# test_recall_arm_degrade_http.py's dedicated subprocess, or CI's first test against a
+# just-started service container). A control probe that trips on cold-start latency alone
+# misfiles a healthy server as "probe infrastructure is broken" and false-positive
+# degrades the arm.
+#
+# Sized from a real measurement, not a guess: a brand-new connection's first-ever
+# statement against a freshly-started pgvector/pgvector:pg16 container (this probe's exact
+# shape) totals ~32-48ms locally. This repo already has an established, deliberately
+# generous "safe against a cold DB on this exact CI" figure for a related purpose —
+# MEMNOS_STMT_TIMEOUT_MS=1800 in test_recall_arm_degrade_http.py's own server setup,
+# chosen so a forced cancellation "is fast without flaking on a cold DB" (see that file's
+# docstring). 1500ms stays UNDER that existing precedent — preserving this module's own
+# stated invariant that a probe timeout is always tighter than the connection's normal
+# request-scoped budget, never looser — while still clearing the measured cold-start
+# latency by roughly 30x, real margin for a slower/busier shared CI runner without being
+# so long that a control probe hitting it could plausibly be legitimate cold-start work
+# rather than a genuinely dead/hung connection.
+_FTS_CONTROL_PROBE_TIMEOUT_MS = int(os.environ.get("MEMNOS_FTS_CONTROL_PROBE_TIMEOUT_MS", "1500"))
+
 
 def _fts_max_tokens() -> int:
     try:
@@ -183,9 +215,12 @@ def _tsquery_within_bound(conn, qtext: str, bound: int) -> bool:
         "the probe legitimately ran out of its own tight budget building THIS query" and
         "something unrelated -- admin contention, another session's cancel, a dropped
         connection -- interrupted it") gets a CONTROL PROBE before a verdict is reached:
-        one trivial numnode() call, under the same tight budget, on the same cursor. If
-        the control succeeds, the server just answered a text-search query fine, so the
-        original failure really is this query's fault -- return False, exactly as before.
+        one trivial numnode() call, on the same cursor, under its OWN more generous
+        timeout (_FTS_CONTROL_PROBE_TIMEOUT_MS -- deliberately NOT this probe's own tight
+        budget; see that constant's comment for why a cold-started connection needs the
+        room). If the control succeeds, the server just answered a text-search query
+        fine, so the original failure really is this query's fault -- return False,
+        exactly as before.
         If the control ALSO fails, the probe itself is broken, not the query -- the
         ORIGINAL exception is re-raised rather than filed as either "safe" or
         "pathological" (see the RECALL_ARM_FAILURES comment above for what happens to it
@@ -211,7 +246,22 @@ def _tsquery_within_bound(conn, qtext: str, bound: int) -> bool:
                     psycopg.DataError):
                 return False
             except psycopg.DatabaseError as probe_exc:
+                # INVARIANT: this control probe -- and the discrimination logic around it
+                # -- requires `conn` to be autocommit. True of every current call site
+                # (fts_clamp opens no transaction of its own; BrainStore's self.conn is
+                # opened with autocommit=True). On a non-autocommit connection, the main
+                # probe's caught error above would poison the transaction, so THIS SELECT
+                # would itself raise psycopg.errors.InFailedSqlTransaction (also a DatabaseError)
+                # regardless of whether the server is actually healthy -- collapsing every
+                # ambiguous case into "control also failed, re-raise" and silently
+                # defeating the whole point of this branch. A future non-autocommit call
+                # site must rollback (or savepoint) before reaching here, or this
+                # discrimination breaks without ever raising an obvious error.
                 try:
+                    # Deliberately NOT the main probe's 300ms budget -- see
+                    # _FTS_CONTROL_PROBE_TIMEOUT_MS above for why this needs its own,
+                    # more generous, cold-start-tolerant timeout.
+                    c.execute(f"SET statement_timeout = {_FTS_CONTROL_PROBE_TIMEOUT_MS}")
                     c.execute("SELECT numnode(websearch_to_tsquery('english', 'x')) AS n")
                     c.fetchone()
                 except psycopg.DatabaseError:
@@ -221,8 +271,14 @@ def _tsquery_within_bound(conn, qtext: str, bound: int) -> bool:
         finally:
             try:
                 c.execute("SET statement_timeout = DEFAULT")
-            except psycopg.DatabaseError:
-                pass  # connection's already unusable; nothing left to restore it for
+            except (psycopg.DatabaseError, psycopg.InterfaceError):
+                # connection's already unusable (DatabaseError) or gone (InterfaceError,
+                # e.g. closed underneath us) -- nothing left to restore it for. Widened
+                # from DatabaseError-only so a genuine InterfaceError propagating out of
+                # the try block (client/driver misuse, meant to crash loudly per this
+                # function's docstring) can never get silently clobbered by THIS cleanup
+                # statement failing the same way.
+                pass
 
 
 def fts_clamp(qtext: str, conn) -> str:
