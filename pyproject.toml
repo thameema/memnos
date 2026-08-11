@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memnos"
-version = "0.1.19"
+version = "0.1.20"
 description = "Self-hostable, governed, vendor-neutral memory for AI agents — zero-dependency embedded mode (PostgreSQL + pgvector bundled)."
 readme = "README.md"
 requires-python = ">=3.10"
