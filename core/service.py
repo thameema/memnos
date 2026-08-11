@@ -478,18 +478,52 @@ class MemnosMemory:
         hist = bool(_HISTORICAL_RE.search(stmt)) and not _CHANGE_OF_STATE_RE.search(stmt)
         explicit_ev = parse_event_date(stmt, None) if hist else None
         superseded_ids = []
+        insert_kwargs = dict(subject=subj, predicate=pred, obj=obj, valid_from=ev,
+                             salience=0.5, vec=vec, source_turn_ids=source_turn_ids,
+                             author=self.author, memory_type=memory_type, observed_at=obs)
         if (subj and pred and _supersedable(pred, obj)       # belief-change ONLY for single-valued attrs
                 and not (hist and explicit_ev is None)):     # (cue list OR quantified-object rule)
-            superseded_ids = self.store.supersede_predicate(
-                self.schema, namespace, subj, pred, obj, ev, observed_at=obs,
-                historical=hist, event_date=explicit_ev)
-        fid = self.store.insert_semantic(self.schema, namespace, "fact", stmt,
-                                         subject=subj, predicate=pred, obj=obj,
-                                         valid_from=ev, salience=0.5, vec=vec,
-                                         source_turn_ids=source_turn_ids, author=self.author,
-                                         memory_type=memory_type, observed_at=obs)
-        if superseded_ids:
-            self.store.mark_superseded_by(self.schema, superseded_ids, fid)
+            # issue #60 — CONCURRENT/OUT-OF-ORDER WRITER GUARD. Two facts for the same
+            # (namespace, subject, predicate) can commit out of OBSERVATION order: plain
+            # concurrent /remember calls, or replayed write-behind writes landing on
+            # different MEMNOS_INGEST_WORKERS threads (offline_queue.drain() explicitly
+            # supports concurrent drainers). A Postgres advisory xact lock alone does NOT
+            # fix this — it only serializes the two writers, it doesn't stop a smaller-obs
+            # write from being inserted live AFTER a larger-obs write already committed.
+            # The actual fix is `dominant_live_fact` below (the mirror image of
+            # supersede_predicate); the lock is what makes that check race-safe instead of
+            # a TOCTOU read — without it, two concurrent writers could each see "not
+            # dominated" before either commits, and both still land live. Lock scope is
+            # this fact only (acquired/released within this transaction), so it can't
+            # deadlock against itself or hold across unrelated keys. It blocks under the
+            # connection's normal statement_timeout (MEMNOS_STMT_TIMEOUT_MS, default 15s)
+            # — contention on one subject+predicate should be rare and brief; if it isn't,
+            # surfacing a clear timeout is preferable to the silent corruption this guards
+            # against.
+            lock_key = f"{namespace}\x01{subj.lower()}\x01{pred.lower()}"
+            with self.store.conn.transaction():
+                with self.store.conn.cursor() as c:
+                    c.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (lock_key,))
+                superseded_ids = self.store.supersede_predicate(
+                    self.schema, namespace, subj, pred, obj, ev, observed_at=obs,
+                    historical=hist, event_date=explicit_ev)
+                dominant = self.store.dominant_live_fact(
+                    self.schema, namespace, subj, pred, obj, obs,
+                    historical=hist, event_date=explicit_ev)
+                fid = self.store.insert_semantic(self.schema, namespace, "fact", stmt,
+                                                 **insert_kwargs)
+                if superseded_ids:
+                    self.store.mark_superseded_by(self.schema, superseded_ids, fid)
+                if dominant is not None:
+                    # born already-superseded — a MORE RECENTLY observed fact is already
+                    # live. Same clamp as the reversal/negation close-out below (ev or obs
+                    # never precedes this fact's own start).
+                    self.store.close_out(self.schema, namespace, fid,
+                                         valid_to=(dominant["valid_from"] or obs),
+                                         superseded_by=dominant["id"])
+        else:
+            fid = self.store.insert_semantic(self.schema, namespace, "fact", stmt,
+                                             **insert_kwargs)
         n_super = len(superseded_ids)
 
         # REVERSAL/NEGATION close-out: extraction often emits reversals with no usable
