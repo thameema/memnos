@@ -35,11 +35,12 @@ services:
       # true for the checks right after start, and again after any Postgres-level
       # reconnect — see memnos_server.py's /readyz handler). On a genuinely large/cold
       # table that can legitimately take longer than a bare connectivity check without
-      # the server actually being stuck; 5s had no margin for that. Widened so a single
-      # slow-but-healthy check isn't killed and counted as a failure before Postgres's
-      # own statement_timeout (unbounded during boot warm-up, see serve()) would have
-      # returned first.
-      timeout: 15s
+      # the server actually being stuck; 5s had no margin for that. Widened, but kept
+      # BELOW `interval` on purpose: Docker doesn't start the next check until the
+      # current one finishes, so a timeout >= interval would stretch the real cadence
+      # to (timeout + interval) once a check is ever slow, undermining the retry math
+      # below.
+      timeout: 10s
       retries: 5
       # issue #59: the server now holds its port closed (connection refused, not just
       # /readyz 200/503) until the HNSW index warm-up completes at boot — issue #31's
@@ -55,10 +56,12 @@ services:
       # long external tooling that DOES react to health status — `docker inspect`,
       # this same compose file's `depends_on: condition: service_healthy`, an
       # orchestrator's rolling-update gate — waits before observing "unhealthy": without
-      # it, that was ~75s (retries(5) x interval(15s)) from container start; with it,
-      # ~195s (120s start_period + 75s of subsequent retries), giving a genuinely cold
-      # boot the room issue #31's field data says it needs before anything external
-      # treats a still-warming server as failed.
+      # it, that was ~75s (retries(5) x interval(15s)) from container start, ASSUMING
+      # checks return promptly (a check that hits the full `timeout` pushes the real
+      # cadence to timeout+interval per retry instead); with it, ~195s (120s
+      # start_period + 75s of subsequent retries) under that same assumption, giving a
+      # genuinely cold boot the room issue #31's field data says it needs before
+      # anything external treats a still-warming server as failed.
       start_period: 120s
     restart: unless-stopped
 
