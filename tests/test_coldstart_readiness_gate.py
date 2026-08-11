@@ -42,6 +42,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -81,12 +82,41 @@ def _server_env():
     return env
 
 
-def start_server_locked():
+_SERVER_LOGS = []  # (label, proc, log_path) — diagnostic dump on failure, see _dump_server_logs
+
+
+def start_server_locked(label="server"):
     """Launch memnos_server.py and return the Popen handle immediately — does NOT wait
-    for readiness (the caller controls a lock that determines when boot can finish)."""
-    return subprocess.Popen([sys.executable, os.path.join(ROOT, "memnos_server.py")],
+    for readiness (the caller controls a lock that determines when boot can finish).
+    stdout/stderr go to a temp file (not DEVNULL) so a failing scenario can print the
+    server's own boot/degrade log lines (e.g. "rerank calibrated: ..." / "recall arm
+    degraded: ...") instead of silently discarding the diagnostic that explains why."""
+    fd, path = tempfile.mkstemp(prefix=f"coldstart_{label.replace(' ', '_')}_", suffix=".log")
+    log = os.fdopen(fd, "w")
+    proc = subprocess.Popen([sys.executable, os.path.join(ROOT, "memnos_server.py")],
                             cwd=ROOT, env=_server_env(),
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            stdout=log, stderr=subprocess.STDOUT)
+    log.close()  # child has its own dup'd fd; safe to close the parent's handle now
+    _SERVER_LOGS.append((label, proc, path))
+    return proc
+
+
+def _dump_server_logs():
+    for label, proc, path in _SERVER_LOGS:
+        print(f"\n--- {label} (pid={proc.pid}) stdout+stderr ---")
+        try:
+            with open(path) as f:
+                sys.stdout.write(f.read())
+        except OSError as e:
+            print(f"  (could not read log at {path}: {e})")
+
+
+def _cleanup_server_logs():
+    for _, _, path in _SERVER_LOGS:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def port_accepts_connection(port, timeout=0.5):
@@ -161,7 +191,7 @@ def main():
     print("=== SCENARIO A: a genuine restart's readiness gate under a real lock ===")
     print("  starting server A normally first (same #38 pattern: prove a REAL restart, "
           "not just a single cold boot)")
-    proc_a = start_server_locked()
+    proc_a = start_server_locked("server A")
     check("server A comes up normally with no lock in the way", wait_ready(timeout_s=30))
     s, j = call("/recall", token, {"namespace": NS, "query": "baseline"})
     # degraded_reasons (not the bare `degraded` flag): `degraded` also flips True while
@@ -184,7 +214,7 @@ def main():
     print("  raw_turns locked — relaunching server B on the SAME port, expecting it to "
           "NOT open its port until the lock releases")
 
-    proc = start_server_locked()
+    proc = start_server_locked("server B")
     try:
         try:
             # give the process a moment to run past import/argv parsing, then confirm the
@@ -288,6 +318,9 @@ def main():
         stop_server(proc)
 
     cleanup(conn)
+    if FAIL:
+        _dump_server_logs()
+    _cleanup_server_logs()
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 

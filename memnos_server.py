@@ -266,6 +266,10 @@ DIM = 384
 # instead of re-deriving "tenant_" + tenant, so there is exactly one place that mapping
 # lives.
 SCHEMA = None
+# set True once warm_indexes() has succeeded at least once (normally at boot, in serve(),
+# before the listener opens). /readyz reads this to decide whether it needs to re-run the
+# real ANN probe or can trust a cheap SELECT 1 — see the /readyz handler for why.
+_READYZ_WARM_PROVEN = False
 
 # Issue #12 — recall latency. Query-embed cache: hooks/Desktop repeat near-identical
 # queries within seconds; a short-TTL LRU keyed (query, model) lets repeats skip the
@@ -876,16 +880,38 @@ class Handler(BaseHTTPRequestHandler):
             # loop, most of tests/*'s "wait for server" helpers, the SDK's healthy())
             # treat "ready" as license to send real traffic. serve()'s boot-time
             # warm_indexes() call already pages every HNSW index in before the listener
-            # ever opens, so this is normally an already-warm no-op — it exists for the
-            # ongoing case (a long-lived server whose Postgres was restarted underneath
-            # it) rather than to redo boot's work on every poll.
+            # ever opens and sets _READYZ_WARM_PROVEN — so by the time this endpoint is
+            # even reachable, the real ANN probe has already run once, successfully.
+            #
+            # Production trade-off (found in review): warm_indexes() takes a real,
+            # lock-compatible read on every HNSW-indexed table, so re-running it on
+            # EVERY poll (as an earlier version of this endpoint did) means any ACCESS
+            # EXCLUSIVE lock holder elsewhere (VACUUM FULL, ALTER TABLE, a migration)
+            # makes an otherwise-perfectly-healthy server's /readyz report 503 for
+            # however long that DDL runs — a false "server is down" signal to
+            # Docker/orchestrator tooling polling this endpoint on an interval. Once
+            # _READYZ_WARM_PROVEN is True, this endpoint stops re-running the ANN probe
+            # and trusts a cheap `SELECT 1` instead — accepted gap: if a specific HNSW
+            # index becomes unusable (dropped, corrupted) while the base connection
+            # keeps working, /readyz will keep reporting ready until the next real
+            # connectivity failure re-arms the probe below; real /recall traffic still
+            # independently catches and reports that via core/store.py's per-arm
+            # degrade-not-raise path regardless of what /readyz last said, so this is a
+            # narrower observability gap on this one endpoint, not a silent one overall.
+            # If `SELECT 1` itself ever fails, we un-prove: Postgres may have genuinely
+            # restarted (fresh, cold-cached), so the next successful connection re-runs
+            # the real ANN probe once rather than trusting a stale proof.
+            global _READYZ_WARM_PROVEN
             try:
                 with POOL.connection() as conn:
                     with conn.cursor() as c:
                         c.execute("SELECT 1")
-                    BrainStore(conn=conn).warm_indexes(SCHEMA, DIM)
+                    if not _READYZ_WARM_PROVEN:
+                        BrainStore(conn=conn).warm_indexes(SCHEMA, DIM)
+                        _READYZ_WARM_PROVEN = True
                 return self._send(200, {"ready": True})
             except Exception as e:
+                _READYZ_WARM_PROVEN = False
                 # the exception CLASS NAME only, same disclosure level as
                 # degraded_reasons' `error` field elsewhere in this file — never the raw
                 # message (could echo internal detail), but enough for an operator
@@ -1932,7 +1958,7 @@ def _set_proc_title(title):
 
 def serve(port=None):
     """Boot + run the memnos server. Importable so the `memnos serve` CLI reuses it."""
-    global POOL, EMBED, MCP_INTERNAL_PORT, SCHEMA
+    global POOL, EMBED, MCP_INTERNAL_PORT, SCHEMA, _READYZ_WARM_PROVEN
     _set_proc_title("memnos-server")
     port = int(port or PORT)
     # BACKGROUND reranker prewarm + self-calibration + residency keep-alive (follow-up
@@ -2017,6 +2043,7 @@ def serve(port=None):
         try:
             bs.warm_indexes(SCHEMA, DIM)
             print("[memnos] HNSW index warm-up complete", flush=True)
+            _READYZ_WARM_PROVEN = True
         except Exception as e:
             print(f"[memnos] WARNING: HNSW index warm-up probe failed ({type(e).__name__}: "
                   f"{e}) — continuing; the first real recall may pay this cost instead", flush=True)

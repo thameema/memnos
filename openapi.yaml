@@ -83,13 +83,18 @@ paths:
       summary: Readiness — database reachable AND HNSW vector indexes responsive
       description: >-
         issue #59: more than a bare connectivity check — runs a real ANN probe against
-        each HNSW-indexed table so "ready" means the first real /recall won't pay a
-        cold index page-in cost, not just that a connection exists. Poll THIS endpoint
-        (not /healthz) before sending real traffic after a restart.
+        each HNSW-indexed table so "ready" means the index-scan path is live and its
+        entry point is warm, not just that a connection exists. This is NOT a guarantee
+        that the first real /recall pays zero cold-page-in cost: HNSW's logarithmic
+        traversal means one boot-time probe only pages in the entry point and the one
+        candidate path it happens to walk (measured on a 50K-row index: ~1% of the
+        index's pages), not the whole graph — a query that lands on a different path
+        can still page-fault. Poll THIS endpoint (not /healthz) before sending real
+        traffic after a restart.
       security: []
       responses:
         "200":
-          description: ready — database reachable and vector indexes warm
+          description: ready — database reachable and each vector index's entry point is warm
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Readyz" }
