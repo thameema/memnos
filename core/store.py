@@ -790,6 +790,47 @@ class BrainStore:
                  "obs": obs, "hist": bool(historical), "ev": event_date})
             return [r["id"] for r in c.fetchall()]
 
+    def dominant_live_fact(self, schema, ns, subject, predicate, obj, observed_at,
+                           historical=False, event_date=None) -> dict | None:
+        """issue #60 — the MIRROR of supersede_predicate, read-only: is the fact about to
+        be inserted already dominated by an EXISTING live fact for the same
+        subject+predicate (different object) that was observed STRICTLY LATER?
+
+        supersede_predicate alone only closes existing facts observed no later than the
+        incoming one — it has no opinion on the reverse case. Under out-of-order commits
+        (concurrent /remember calls, or replayed write-behind writes landing on different
+        MEMNOS_INGEST_WORKERS threads) a later-observed fact can commit BEFORE an
+        earlier-observed one, and without this check the earlier-observed fact would land
+        live right alongside it — two simultaneously "current" contradictory facts, no
+        automatic reconciliation. When this returns a row, _write_fact must insert the
+        new fact already closed (see store.close_out) instead of live.
+
+        Ties (`observed_at` exactly equal) intentionally resolve in the ARRIVING fact's
+        favor — the mirror image of supersede_predicate's own `<=` — so the two checks
+        can never BOTH fire for the same pair. Same historical/event-date guard as
+        supersede_predicate, so a backdated historical statement neither closes nor is
+        closed by the current value.
+
+        Caller MUST hold the (namespace, subject, predicate) advisory lock (_write_fact)
+        for the whole supersede+insert critical section — on its own this is just a
+        point-in-time read and does not close the race."""
+        self._chk(schema)
+        if not subject or not predicate:
+            return None
+        with self.conn.cursor() as c:
+            c.execute(
+                f"SELECT id, valid_from FROM {schema}.semantic "
+                f"WHERE namespace=%(ns)s AND valid_to IS NULL AND expired_at IS NULL "
+                f"AND lower(subject_entity)=lower(%(sub)s) AND lower(predicate)=lower(%(pred)s) "
+                f"AND lower(coalesce(object,'')) <> lower(coalesce(%(obj)s,'')) "
+                f"AND observed_at > %(obs)s "
+                f"AND (NOT %(hist)s OR valid_from IS NULL "
+                f"     OR (%(ev)s::timestamptz IS NOT NULL AND valid_from <= %(ev)s)) "
+                f"ORDER BY observed_at DESC LIMIT 1",
+                {"ns": ns, "sub": subject, "pred": predicate, "obj": obj,
+                 "obs": observed_at, "hist": bool(historical), "ev": event_date})
+            return c.fetchone()
+
     def mark_superseded_by(self, schema, ids, new_id) -> None:
         """Stamp the supersession LINK (additive column): which fact replaced these."""
         self._chk(schema)
