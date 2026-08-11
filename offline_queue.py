@@ -122,9 +122,16 @@ def enqueue(config_dir: str, namespace: str, text: str, speaker: str, memory_typ
     (the default) preserves the pre-#45 behavior of relying entirely on the drainer's
     own fallback token — still correct for the single-token-per-process stdio adapter.
 
-    The queue file may now carry a bearer credential, so its permissions are tightened
-    to owner-only, same as memnos_cli.py's own config file (best-effort — a chmod
-    failure must never block the write itself)."""
+    The queue file may now carry a bearer credential, so it is created at owner-only
+    permissions (0600) from the very first syscall — same end state as memnos_cli.py's
+    own config file, but via `os.open(..., O_CREAT|O_EXCL, 0o600)` rather than an
+    open()-then-chmod() pair. An open()-then-chmod() sequence has a real TOCTOU window:
+    the file exists at the umask-derived default (typically 0644, world-readable) from
+    the moment `open()` creates it until the later `chmod()` call lands, during which
+    another local user/process can read the token. Passing the mode directly to the
+    creating syscall closes that window — the file is never observably anything but
+    0600. O_EXCL additionally guarantees this never silently reuses/overwrites a
+    stray `.tmp` file left at the wrong permissions by some earlier crash."""
     d = queue_dir(config_dir)
     os.makedirs(d, exist_ok=True)
     now = time.time()
@@ -137,12 +144,9 @@ def enqueue(config_dir: str, namespace: str, text: str, speaker: str, memory_typ
     fname = f"{int(now * 1000)}_{speaker}_{uuid.uuid4().hex[:8]}.json"
     path = os.path.join(d, fname)
     tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as fh:
         json.dump(item, fh)
-    try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
     os.replace(tmp, path)                             # atomic: never a partially-written entry
     return path
 
