@@ -99,9 +99,30 @@ def _explicit_cap() -> int | None:
         return None
 
 
+_sim_sequence_idx = 0   # issue #34 test hook state — see _simulated_ms_per_pair
+
+
 def _simulated_ms_per_pair() -> float | None:
     """Test hook: force a per-pair latency so a fast runner can simulate a CPU-class box
-    deterministically (gate requirement). None = measure for real."""
+    deterministically (gate requirement). None = measure for real.
+
+    issue #34: MEMNOS_RERANK_SIMULATED_MS_PER_PAIR_SEQUENCE is a comma-separated list
+    consumed ONE value per call (a fresh module-level counter, reset by
+    _reset_calibration_for_tests) — lets a test prove prewarm()'s min-of-N sampling
+    picks the actual minimum across successive calls rather than the first/last/average,
+    deterministically, against a real subprocess boot. Takes precedence over the
+    single-value hook below when set; the last value repeats once the list is exhausted."""
+    global _sim_sequence_idx
+    seq = os.environ.get("MEMNOS_RERANK_SIMULATED_MS_PER_PAIR_SEQUENCE")
+    if seq and seq.strip():
+        try:
+            vals = [float(v) for v in seq.split(",") if v.strip()]
+        except (TypeError, ValueError):
+            vals = []
+        if vals:
+            v = vals[min(_sim_sequence_idx, len(vals) - 1)]
+            _sim_sequence_idx += 1
+            return v if v > 0 else None
     raw = os.environ.get("MEMNOS_RERANK_SIMULATED_MS_PER_PAIR")
     if raw is None or raw.strip() == "":
         return None
@@ -159,11 +180,12 @@ def calibration() -> dict:
 
 def _reset_calibration_for_tests():
     """Test-only: clear calibration state so a fresh prewarm can recalibrate."""
-    global _measured_ms_per_pair, _effective_cap
+    global _measured_ms_per_pair, _effective_cap, _sim_sequence_idx
     with _calib_lock:
         _measured_ms_per_pair = None
         _effective_cap = None
     _ready.clear()
+    _sim_sequence_idx = 0
 
 
 def _sigmoid(x: float) -> float:
@@ -336,13 +358,30 @@ def prewarm(model: str = DEFAULT_RERANKER, n: int = 32) -> float:
     CPU-class box gets a small cap and a fast box a large one — instead of the fixed
     cap=100 that made rerank 85% of every warm call on a laptop. Sets the ready flag so
     recalls before this point serve degraded (RRF order) rather than blocking on the load.
-    No-op when MEMNOS_RERANK=0. Returns elapsed ms (logged by the server)."""
+    No-op when MEMNOS_RERANK=0. Returns elapsed ms (logged by the server).
+
+    issue #34: a SINGLE boot-time sample can be inflated by concurrent CPU-heavy startup
+    work racing this exact timed inference batch (real field regression: measured
+    316->470ms/pair after a threads=1->4 change that should have made this FASTER, not
+    slower). Delaying WHEN this whole function starts running (so it no longer overlaps
+    boot's other synchronous work) was tried and reverted -- it measurably delays
+    is_ready() itself, since this call is what actually loads the ONNX model in the
+    first place, and losing its head-start against pool/schema setup is a worse, more
+    user-visible regression (every recall in that widened window serves degraded) than
+    an occasionally-noisy calibration number. Min-of-N instead, entirely self-contained
+    here: sample twice. `_model` is lru_cached, so only the FIRST sample pays model-load
+    cost; the second measures pure inference and, since it runs after whatever
+    contention the first sample raced, is often the cleaner reading. Noise can only
+    INFLATE a timed sample, never deflate it below true cost, so min() rejects an
+    outlier without needing to know WHEN the contention actually happened."""
     global _measured_ms_per_pair, _effective_cap
     if not _enabled():
         _ready.set()
         return 0.0
     t0 = time.perf_counter()
-    mpp = _measure_ms_per_pair(model, n)
+    mpp1 = _measure_ms_per_pair(model, n)
+    mpp2 = _measure_ms_per_pair(model, n)
+    mpp = min(mpp1, mpp2)
     rerank(_PREWARM_QUERY, _prewarm_candidates(n), model)   # warm the real (capped) path
     cap = derive_cap(mpp)
     with _calib_lock:
@@ -351,8 +390,8 @@ def prewarm(model: str = DEFAULT_RERANKER, n: int = 32) -> float:
     _ready.set()
     eff = _explicit_cap()
     print(f"[memnos] rerank calibrated: measured_ms_per_pair={mpp:.2f} "
-          f"derived_cap={cap}" + (f" (overridden by MEMNOS_RERANK_CAP={eff})"
-                                  if eff is not None else ""), flush=True)
+          f"(samples={mpp1:.2f},{mpp2:.2f}) derived_cap={cap}" +
+          (f" (overridden by MEMNOS_RERANK_CAP={eff})" if eff is not None else ""), flush=True)
     return (time.perf_counter() - t0) * 1000.0
 
 

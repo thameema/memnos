@@ -164,8 +164,16 @@ def main():
     proc_a = start_server_locked()
     check("server A comes up normally with no lock in the way", wait_ready(timeout_s=30))
     s, j = call("/recall", token, {"namespace": NS, "query": "baseline"})
-    check("server A's baseline recall is 200 and not degraded",
-          s == 200 and not j.get("degraded"), f"{s}: {j}")
+    # degraded_reasons (not the bare `degraded` flag): `degraded` also flips True while
+    # the reranker's own background prewarm is still loading right after boot (a
+    # completely orthogonal, expected cause — recall_prefetch/recall_fetch never set
+    # degraded_reasons for it) — that's issue #34's OWN design (serve fast-but-degraded
+    # rather than block on the model load), not an index/pool arm failure, which is
+    # what this scenario is actually about. Checking the bare flag here is what made
+    # this same class of assertion an undiagnosed CI flake in
+    # test_recall_arm_degrade_http.py (see PR #58's history) before this fix.
+    check("server A's baseline recall is 200 and has no ARM failures",
+          s == 200 and not j.get("degraded_reasons"), f"{s}: {j}")
     pid_a = proc_a.pid
     stop_server(proc_a)
     check("server A actually exited on SIGTERM", proc_a.poll() is not None)
@@ -200,8 +208,10 @@ def main():
             s, j = call("/recall", token, {"namespace": NS, "query": "anything"})
             check("the FIRST real recall against the freshly-restarted server is 200",
                   s == 200, f"{s}: {j}")
-            check("the first real recall is NOT degraded (warm_indexes already ran during boot)",
-                  not j.get("degraded"), str(j))
+            # degraded_reasons, not the bare flag — see the identical note on server A's
+            # baseline check above.
+            check("the first real recall has no ARM failures (warm_indexes already ran "
+                  "during boot)", not j.get("degraded_reasons"), str(j))
         finally:
             locker.close()
 

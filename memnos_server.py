@@ -1935,6 +1935,31 @@ def serve(port=None):
     global POOL, EMBED, MCP_INTERNAL_PORT, SCHEMA
     _set_proc_title("memnos-server")
     port = int(port or PORT)
+    # BACKGROUND reranker prewarm + self-calibration + residency keep-alive (follow-up
+    # to #12): prewarm runs OFF the request path so the server accepts traffic
+    # IMMEDIATELY once the listener opens below — the synchronous version cost 13-114s
+    # at boot and recalls blocked behind it (field cold first-call 49.9s). While
+    # warming, is_ready() is False and recalls serve degraded (RRF order, degraded:true).
+    # Prewarm also measures this box's ms-per-pair and DERIVES the rerank cap from a
+    # latency budget (a CPU laptop gets a small cap, a fast box a large one) — fixing the
+    # fixed cap=100 that was 85% of every warm call. See core/rerank.py — MEMNOS_RERANK=0
+    # skips both; MEMNOS_RERANK_CAP overrides the derived cap; MEMNOS_RERANK_BUDGET_MS /
+    # MIN_CAP / MAX_CAP tune it.
+    #
+    # issue #34: starting this FIRST, before POOL/schema/index warm-up even begin, is
+    # deliberate, not an oversight -- this is what actually loads the ONNX model, so
+    # starting it here gives it the maximum possible head start against is_ready() (a
+    # trial reordering that started this AFTER the pool+schema+index warm-up block below
+    # was tried and reverted: it measurably widened the "server answers but every recall
+    # is degraded" window right after boot -- confirmed live, and the true, previously
+    # undiagnosed cause of a documented-but-unresolved CI flake in
+    # test_recall_arm_degrade_http.py's own baseline-not-degraded assertion, see PR #58's
+    # history). The real fix for #34's contention concern lives entirely inside
+    # core/rerank.py's prewarm() (min-of-N timed samples) instead -- see that function's
+    # docstring for why sampling twice, self-contained, is safe here where reordering
+    # boot wasn't.
+    brain_rerank.prewarm_background()
+    brain_rerank.start_keepalive()
     # timeout=5: a request against a dead DB fails in 5s with a clear 503 — clients
     # (hooks/MCP/agents) must never sit behind a 30s pool wait.
     # max_idle=60: shrink back to min_size within a minute after bursts — a congested
@@ -1998,28 +2023,6 @@ def serve(port=None):
         conn.execute(f"SET statement_timeout = {stmt_ms}")
         Control.audit(conn, None, "server_start", "-", True,      # heartbeat (uptime/crash-loop signal)
                       detail={"dim": DIM})
-    # BACKGROUND reranker prewarm + self-calibration + residency keep-alive (follow-up
-    # to #12): prewarm runs OFF the request path so the server accepts traffic
-    # IMMEDIATELY once the listener opens below — the synchronous version cost 13-114s
-    # at boot and recalls blocked behind it (field cold first-call 49.9s). While
-    # warming, is_ready() is False and recalls serve degraded (RRF order, degraded:true).
-    # Prewarm also measures this box's ms-per-pair and DERIVES the rerank cap from a
-    # latency budget (a CPU laptop gets a small cap, a fast box a large one) — fixing the
-    # fixed cap=100 that was 85% of every warm call. See core/rerank.py — MEMNOS_RERANK=0
-    # skips both; MEMNOS_RERANK_CAP overrides the derived cap; MEMNOS_RERANK_BUDGET_MS /
-    # MIN_CAP / MAX_CAP tune it.
-    #
-    # issue #34: this used to start at the very top of serve(), before POOL/schema/index
-    # warm-up even began — its timed ms-per-pair measurement then raced ALL of that CPU-
-    # heavy synchronous startup work, producing a pessimistic/noisy snapshot on a box
-    # that's actually much faster once warm (measured regression: 316->470ms/pair after a
-    # threads=1->4 fix that should have made it FASTER). Starting it here, after the pool
-    # + schema + index warm-up above has already finished, means the calibration's own
-    # background thread is no longer competing with that work — it still runs off the
-    # request path (traffic isn't blocked on it), it just no longer measures during the
-    # noisiest part of boot.
-    brain_rerank.prewarm_background()
-    brain_rerank.start_keepalive()
     threading.Thread(target=_pusher_loop, name="memnos-webhook-pusher", daemon=True).start()
     for i in range(INGEST_WORKERS):
         threading.Thread(target=_ingest_worker, name=f"memnos-async-ingest-{i}", daemon=True).start()

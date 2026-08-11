@@ -157,10 +157,16 @@ def main():
         print("=== baseline: recall succeeds normally (no lock yet) ===")
         s, j = call("/recall", token, {"namespace": NS, "query": "outage", "constraint_cap": 0})
         check("baseline /recall is 200", s == 200)
-        # detail on failure: which arm/namespace tripped, not just true/false -- a
-        # cold-start-dependent false positive here (PR #58 round 2) is otherwise
-        # undiagnosable from CI output alone.
-        check("baseline is NOT degraded", not j.get("degraded"), str(j.get("degraded_reasons")))
+        # issue #59: this is the actual, previously-undiagnosed mechanism behind PR #58's
+        # documented-but-unresolved "baseline is NOT degraded" CI flake -- a bare
+        # `degraded` check also trips on the reranker's own background prewarm still
+        # loading right after this dedicated server's boot (core/rerank.py's
+        # is_ready()), a completely orthogonal, expected cause with no arm involved at
+        # all (recall_prefetch/recall_fetch never populate degraded_reasons for it). CI's
+        # own failed run showed exactly this: `degraded: true` with degraded_reasons
+        # `None`. This file is about ARM health specifically, not reranker warm-up
+        # timing -- degraded_reasons is the correct signal to check here, not the flag.
+        check("baseline has no ARM failures", not j.get("degraded_reasons"), str(j))
         txt = " ".join(m.get("content", "") for m in j.get("memories", []))
         check("baseline returns both raw and semantic content", raw_text in txt and sem_text in txt)
 
@@ -266,7 +272,9 @@ def main():
 
         s, j = call("/recall", token, {"namespace": NS, "query": "outage"})
         check("baseline (no constraint_cap field) /recall is 200", s == 200)
-        check("baseline is NOT degraded", not j.get("degraded"), str(j))
+        # degraded_reasons, not the bare flag — same reranker-warming-is-orthogonal
+        # reasoning as the first baseline check above.
+        check("baseline has no ARM failures", not j.get("degraded_reasons"), str(j))
         base_pins = [m for m in j.get("memories", []) if m.get("pinned")]
         check("baseline pins the seeded constraint under the real default cap",
               any(pin_text in p.get("content", "") for p in base_pins), str(base_pins))
