@@ -148,10 +148,29 @@ def enqueue(config_dir: str, namespace: str, text: str, speaker: str, memory_typ
 
 
 def _post_remember(url: str, token: str, item: dict, timeout: float = 8) -> None:
+    """POST one queued item to the server's /remember. Deliberately whitelists exactly
+    the fields below.
+
+    `item["queued_at"]` (captured by enqueue(), also used for FIFO ordering via the
+    filename's epoch-ms prefix) IS forwarded — but ONLY as `queued_at`, a hint the server
+    uses solely to anchor this fact's EVENT-time (`valid_from`) resolution, so a long
+    outage doesn't shift a relative date like "yesterday" to mean the day before replay
+    instead of the day before it was actually said (issue #42). It is NEVER forwarded as,
+    and the server NEVER treats it as, an observed_at/known_at override: that
+    OBSERVATION-axis timestamp — the one bi-temporal supersession is actually keyed on —
+    is always the server's own clock at the moment it receives and commits this replayed
+    write. Conflating the two would hand a replaying client a timestamp-backdating
+    primitive able to force a stale write to win a supersession race against a fact
+    someone else wrote while the queue was down. Do not widen this to also send/accept
+    an observed_at/known_at field from the client — that reopens exactly the gap issue
+    #42 closed. See memnos_server.py's `_remember_phased` / `_replay_valid_anchor` for
+    the receiving side of this contract."""
     body = {"namespace": item["namespace"], "text": item["text"],
             "speaker": item.get("speaker"), "async": True}
     if item.get("type"):
         body["type"] = item["type"]
+    if item.get("queued_at") is not None:
+        body["queued_at"] = item["queued_at"]
     hdr = {"Content-Type": "application/json",
            **({"Authorization": "Bearer " + token} if token else {})}
     req = urllib.request.Request(f"{url.rstrip('/')}/remember", method="POST",
