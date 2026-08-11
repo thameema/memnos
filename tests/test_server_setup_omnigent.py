@@ -315,9 +315,12 @@ def main():
     # per its own docstring) -- skip gracefully if one isn't up at _LIVE_URL; CI and `make
     # test` both start one before running tests/test_*.py, so this is exercised for real
     # there. ---
+    # issue #59: /readyz, not /healthz — real grant-verification traffic follows below
+    # when this probe succeeds, and /healthz's 200 (liveness only) gives no guarantee
+    # the pool/HNSW indexes are actually warm. /readyz does.
     import urllib.request
     try:
-        urllib.request.urlopen(_LIVE_URL + "/healthz", timeout=3)
+        urllib.request.urlopen(_LIVE_URL + "/readyz", timeout=3)
         live_server_up = True
     except Exception:
         live_server_up = False

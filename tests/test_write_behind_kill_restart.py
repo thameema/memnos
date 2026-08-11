@@ -115,9 +115,12 @@ def free_port():
 
 
 def wait_up(url, tries=90, interval=0.5):
+    # issue #59: /readyz, not /healthz — every caller of wait_up() is about to send
+    # real writes/reads, and /healthz's 200 (liveness only) gives no guarantee the
+    # pool/HNSW indexes are actually warm. /readyz does.
     for _ in range(tries):
         try:
-            urllib.request.urlopen(url + "/healthz", timeout=2)
+            urllib.request.urlopen(url + "/readyz", timeout=2)
             return True
         except Exception:
             time.sleep(interval)

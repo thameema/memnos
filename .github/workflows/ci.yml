@@ -125,8 +125,14 @@ jobs:
         run: |
           python memnos_server.py > /tmp/srv.log 2>&1 & echo $! > /tmp/srv.pid
           up=0
+          # issue #59: poll /readyz, not /healthz. /healthz is cheap liveness by design
+          # (200 unconditionally unless MEMNOS_BUDGET_*_USD is set — it never touches
+          # POOL) and every test file below is about to send real recall/remember
+          # traffic — /readyz actually proves the pool has a connection AND the HNSW
+          # vector indexes are responsive (not just that the process is up), which is
+          # what this gate is actually supposed to guarantee before the suite runs.
           for i in $(seq 1 150); do   # up to 5 min — an uncached run downloads the models
-            curl -sf "$MEMNOS_URL/healthz" && { up=1; break; } || sleep 2
+            curl -sf "$MEMNOS_URL/readyz" && { up=1; break; } || sleep 2
           done
           if [ "$up" != 1 ]; then
             echo "::error::server never became ready — log follows"; cat /tmp/srv.log; exit 1

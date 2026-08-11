@@ -135,6 +135,62 @@ def vlit(vec: Sequence[float]) -> str:
 # ordinary query as "pathological."
 RECALL_ARM_FAILURES = (psycopg.DatabaseError, TimeoutError)
 
+# issue #59: cold-start-aware classification for the phase-A recall arms
+# (max_observed_at/timeline here; readable_namespaces/pinned_constraints's call sites in
+# memnos_server.py) that recall_prefetch runs FIRST, before the query embedding even
+# arrives -- the most likely DB touches to race a cold connection/cache right after a
+# restart. This mirrors fts_clamp's two-tier probe (#49/#58) in SPIRIT, not mechanism.
+# fts_clamp needs a genuinely DIFFERENT control query because a pathological tsquery
+# never succeeds no matter how long you wait -- the ambiguity there is "probe infra
+# broken" vs "query shape is the problem". These arms have no such pathology risk: an
+# ordinary query that got cancelled here is either (a) the connection/server is actually
+# unresponsive, or (b) it's legitimately slow because the HNSW/GIN indexes it touches
+# haven't paged into cache yet (issue #31, real field data: 20-60s of exactly this right
+# after a restart at 143K-fact scale). RETRYING the same slow query inline under a much
+# wider timeout was considered and rejected: it would turn a fast, already-correct
+# degrade (issue #41 fix C) into a multi-second-to-multi-minute hang on the client's
+# /recall call, which is worse than today's behavior, not better. Instead this runs ONE
+# cheap, short control probe (SELECT 1) on the SAME connection when an arm fails: if it
+# succeeds, the connection/server is alive, so the ORIGINAL failure is plausibly the
+# cold-cache case -- give the client a legible "likely still warming up, retry shortly"
+# hint instead of a bare exception class name (issue #31 acceptance criterion: recall
+# must return "a clear 'warming up, retry' signal... rather than an opaque
+# QueryCanceled"). If the control ALSO fails, the connection itself is the problem, not
+# a warm-up delay, and the hint says so -- worth investigating, not just waiting out.
+_COLDSTART_CONTROL_TIMEOUT_MS = int(os.environ.get("MEMNOS_COLDSTART_CONTROL_TIMEOUT_MS", "1500"))
+
+
+def classify_arm_failure(conn, exc: Exception) -> str | None:
+    """Best-effort hint for WHY a RECALL_ARM_FAILURES-class exception happened, via one
+    cheap control probe on `conn` (same autocommit-required invariant as
+    _tsquery_within_bound's control probe -- true of every BrainStore connection).
+    Classification is diagnostic only and must never itself raise or replace the
+    original exception; any failure to classify returns None (caller falls back to the
+    exception class name alone, exactly today's behavior).
+
+    NOTE: a control probe can only prove "the connection/server is alive", not WHY the
+    original query was slow — cold cache (issue #31) is one cause, but lock contention
+    (e.g. the ACCESS EXCLUSIVE lock test_recall_arm_degrade_http.py itself uses to force
+    this path) or ordinary load are others. The hint is worded to match exactly what was
+    proven, not to guess a specific cause it can't actually distinguish."""
+    try:
+        with conn.cursor() as c:
+            c.execute(f"SET statement_timeout = {_COLDSTART_CONTROL_TIMEOUT_MS}")
+            try:
+                c.execute("SELECT 1")
+                c.fetchone()
+                return ("connection is responsive — this arm's own query was transient "
+                        "(blocked, slow, or a cold cache right after a restart); safe to retry")
+            except psycopg.DatabaseError:
+                return "connection itself is unresponsive — not a transient per-query delay"
+            finally:
+                try:
+                    c.execute("SET statement_timeout = DEFAULT")
+                except (psycopg.DatabaseError, psycopg.InterfaceError):
+                    pass
+    except Exception:
+        return None
+
 _FTS_DEFAULT_TOKENS = 40   # was 200; a lower cap bounds the size of text the safety probe
                            # itself has to evaluate, independent of the probe's own result.
 
@@ -463,6 +519,37 @@ class BrainStore:
         s = f"tenant_{tenant}"; self._chk(s)
         with self.conn.cursor() as c:
             c.execute(f"DROP SCHEMA IF EXISTS {s} CASCADE")
+
+    # issue #59: tables carrying an HNSW vector index — the ones warm_indexes() below
+    # (and the boot-time call in memnos_server.py's serve()) actually probe. Kept as one
+    # named tuple so the boot probe and every future caller stay in sync automatically.
+    _HNSW_TABLES = ("raw_turns", "semantic", "episodic")
+
+    def warm_indexes(self, schema: str, dim: int) -> None:
+        """Force each HNSW vector index into cache with one trivial real ANN query per
+        table (issue #59/#31). `SELECT 1` (what /readyz already did) proves Postgres is
+        reachable but proves nothing about whether the FIRST real recall after a restart
+        pays a cold page-in cost against these indexes' on-disk graphs — confirmed live
+        (EXPLAIN) to be exactly what a plain `SELECT 1`-only readiness check misses, and
+        exactly the failure mode issue #31 reports as a burst of statement_timeout
+        cancellations right after a restart at 143K-fact scale. A `LIMIT 1` ANN probe
+        against each table is enough to pull its HNSW graph into shared_buffers/OS
+        cache; an empty table (fresh install, nothing to page in yet) is a harmless
+        no-op that still exercises the index's query path. Uses a fixed, nonzero unit
+        vector (not all-zero — cosine distance from the zero vector is a degenerate
+        edge case on some pgvector builds; verified live that a genuine unit vector has
+        no such ambiguity) so results are deterministic and never depend on real data.
+        Runs on `self.conn` under whatever statement_timeout the caller already set —
+        callers doing this at boot (before the server accepts any traffic) should widen
+        it first the same way create_schema's DDL does, since a fresh restart at scale
+        is exactly the case this needs room to actually finish in."""
+        self._chk(schema)
+        qv = vlit([1.0] + [0.0] * (dim - 1))
+        with self.conn.cursor() as c:
+            for table in self._HNSW_TABLES:
+                c.execute(f"SELECT id FROM {schema}.{table} "
+                          f"ORDER BY embedding <=> %s::{self.vtype} LIMIT 1", (qv,))
+                c.fetchone()
 
     # --- sensory / verbatim ----------------------------------------------
     def insert_raw_turn(self, schema, ns, session_id, speaker, text, observed_at, vec,

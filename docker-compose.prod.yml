@@ -30,8 +30,39 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8900/readyz').status==200 else 1)\""]
       interval: 15s
-      timeout: 5s
+      # /readyz's own handler now runs SELECT 1 + a real ANN probe against each
+      # HNSW-indexed table whenever it hasn't yet proven them warm this boot (always
+      # true for the checks right after start, and again after any Postgres-level
+      # reconnect — see memnos_server.py's /readyz handler). On a genuinely large/cold
+      # table that can legitimately take longer than a bare connectivity check without
+      # the server actually being stuck; 5s had no margin for that. Widened, but kept
+      # BELOW `interval` on purpose: Docker doesn't start the next check until the
+      # current one finishes, so a timeout >= interval would stretch the real cadence
+      # to (timeout + interval) once a check is ever slow, undermining the retry math
+      # below.
+      timeout: 10s
       retries: 5
+      # issue #59: the server now holds its port closed (connection refused, not just
+      # /readyz 200/503) until the HNSW index warm-up completes at boot — issue #31's
+      # own field data puts a cold restart at real scale (143K facts) at 20-60s. Without
+      # start_period, a plain retries*interval budget (75s here) leaves little real
+      # margin over that.
+      #
+      # What start_period actually changes: NOT restart behavior — `restart:
+      # unless-stopped` only ever restarts a container on its own exit (crash,
+      # OOM-kill, `docker stop`); it does not react to healthcheck status at all, so a
+      # server reporting "unhealthy" while still legitimately warming up was never at
+      # risk of being restarted by this policy. What start_period actually gates is how
+      # long external tooling that DOES react to health status — `docker inspect`,
+      # this same compose file's `depends_on: condition: service_healthy`, an
+      # orchestrator's rolling-update gate — waits before observing "unhealthy": without
+      # it, that was ~75s (retries(5) x interval(15s)) from container start, ASSUMING
+      # checks return promptly (a check that hits the full `timeout` pushes the real
+      # cadence to timeout+interval per retry instead); with it, ~195s (120s
+      # start_period + 75s of subsequent retries) under that same assumption, giving a
+      # genuinely cold boot the room issue #31's field data says it needs before
+      # anything external treats a still-warming server as failed.
+      start_period: 120s
     restart: unless-stopped
 
 volumes:
