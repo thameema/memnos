@@ -16,6 +16,7 @@ import asyncio
 import base64
 import io
 import json
+import math
 import os
 import queue
 import re
@@ -456,6 +457,46 @@ EXTRACT_FN = _fake_extract if os.environ.get("MEMNOS_FAKE_EXTRACT", "").strip().
 def _have_extraction():
     """True when the /remember path should run extraction (real LLM OR the test extractor)."""
     return LLM is not None or EXTRACT_FN is not None
+
+
+def _replay_valid_anchor(req):
+    """issue #42 — the write-behind replay path's ONLY client-influenced timestamp knob.
+
+    `req.get("queued_at")` (epoch seconds, sent by offline_queue.py's `_post_remember`
+    when replaying a queued write) anchors `parse_event_date`'s RELATIVE-date fallback
+    (core/service.py's `_write_fact` `valid_anchor` param) — so a long outage doesn't
+    shift "yesterday" in the queued text to mean the day before it finally replayed
+    instead of the day before it was actually said. This is the EVENT-time axis
+    (`valid_from`), never the OBSERVATION axis (`observed_at`/known_at) that bi-temporal
+    supersession is keyed on — that axis is ALWAYS this server's own clock at
+    receive/commit time (see `_remember_phased`) and is never read from `req` on any
+    path, replay included. A client that could backdate the observation axis would have
+    a supersession-race backdating primitive; a client nudging only the event-date
+    fallback cannot — it can, at most, affect the `valid_to` clamp on whichever fact its
+    own new fact supersedes (via `supersede_predicate`'s existing GREATEST(...) floor at
+    that fact's own valid_from), the same bounded effect any client already has today by
+    simply putting an explicit date in the statement text.
+
+    Returns None (== "no anchor override, behave exactly as before this fix") for
+    anything absent or not a finite number `datetime.fromtimestamp` can actually convert,
+    so every caller that never sends `queued_at` (i.e. every normal, non-replay write) is
+    completely unaffected. Deliberately NOT range-checked beyond that (e.g. epoch/negative
+    values are accepted, not just "recent" ones) — this knob has no auth weight (see
+    above), so there is nothing to gain by narrowing it, and a maximally backdated value
+    is exactly what the malicious-client regression test (issue #42) exercises."""
+    v = req.get("queued_at")
+    if v is None:
+        return None
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v):
+        return None
+    try:
+        return datetime.fromtimestamp(v, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _build_embedder():
@@ -1189,6 +1230,24 @@ class Handler(BaseHTTPRequestHandler):
         ok, mtype = _memory_type(req)              # typed memory (decision|incident|...)
         if not ok:
             return self._send(400, mtype)
+        # SECURITY (issue #42): the OBSERVATION-axis timestamp that drives bi-temporal
+        # supersession (`obs`, stamped a few lines below from remember_turn()'s own
+        # datetime.now(timezone.utc)) is ALWAYS the server's own clock at the moment
+        # this write is received and committed (P1b, just below) — NEVER the request
+        # body. This path is also what offline_queue.drain() POSTs to when replaying a
+        # queued write, so the guard applies there too: a replaying client that could
+        # supply its own observed_at would have a timestamp-backdating primitive, able
+        # to dress up a stale queued write as "just learned" and force it to win a
+        # supersession over a fact genuinely written by someone else while the queue
+        # was down. `observed_at`/`known_at` are explicitly dropped here even though
+        # nothing downstream reads them — do not "fix" the accuracy loss by wiring
+        # either through later; that reopens exactly this gap. The ONLY client-supplied
+        # timestamp this path honors is `queued_at`, and only as an EVENT-time anchor
+        # (see `_replay_valid_anchor` — an orthogonal axis with no bearing on which
+        # fact wins a supersession race).
+        req.pop("observed_at", None)
+        req.pop("known_at", None)
+        valid_anchor = _replay_valid_anchor(req)
         run_async = bool(req.get("async"))
         usage = _UsageAcc()
         cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
@@ -1226,12 +1285,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, out)
             if run_async:
                 try:
-                    _INGEST_Q.put_nowait((ns, rtext, obs, tid, principal, mem, cost0, t0, mtype))
+                    _INGEST_Q.put_nowait((ns, rtext, obs, tid, principal, mem, cost0, t0, mtype,
+                                          valid_anchor))
                     return self._send(200, {"turn_id": tid, "facts": None,
                                             "extraction": "queued", "namespace": ns})
                 except Exception:                                  # queue full → fall through to sync
                     pass
-            facts = mem.extract_facts(rtext, obs, memory_type=mtype)  # P2 — NO conn held
+            # date_anchor: event-time (valid_from) fallback only — see _replay_valid_anchor.
+            # `obs` (observation axis / known_at) is untouched and passed to write_facts below.
+            date_anchor = valid_anchor if valid_anchor is not None else obs
+            facts = mem.extract_facts(rtext, date_anchor, memory_type=mtype)  # P2 — NO conn held
             if hasattr(EMBED, "prime") and facts:                 # batch-embed fact statements, NO conn
                 EMBED.prime([f["statement"] for f in facts])
             with POOL.connection() as conn:                       # P3
@@ -1245,7 +1308,8 @@ class Handler(BaseHTTPRequestHandler):
                 # fire (the write ns trivially dominates its own write). We judge against
                 # the PRE-write entity state of every namespace.
                 suggestion = _write_suggestion(conn, principal, ns, facts, rtext)
-                nf, nsup = mem3.write_facts(ns, facts, obs, tid, memory_type=mtype)
+                nf, nsup = mem3.write_facts(ns, facts, obs, tid, memory_type=mtype,
+                                            valid_anchor=valid_anchor)
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 Control.record_usage(conn, principal, ns, action, mem3.extract_model,
                                      usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))
@@ -1719,11 +1783,16 @@ def _ingest_worker():
     so a burst of async remembers doesn't serialize behind one extraction at a time —
     each worker's P2 is pure model I/O, so they overlap cleanly."""
     while True:
-        ns, rtext, obs, tid, principal, mem, cost0, t0, mtype = _INGEST_Q.get()
+        ns, rtext, obs, tid, principal, mem, cost0, t0, mtype, valid_anchor = _INGEST_Q.get()
         try:
             usage = _UsageAcc()
             mem.on_usage = usage
-            facts = mem.extract_facts(rtext, obs, memory_type=mtype)  # NO conn held
+            # date_anchor: event-time (valid_from) fallback only — see _replay_valid_anchor.
+            # `obs` (observation axis / known_at) is untouched and passed to write_facts below.
+            # This is the branch that actually matters for a replayed write: offline_queue.py
+            # always sends async=True, so replays land here, not in the sync path above.
+            date_anchor = valid_anchor if valid_anchor is not None else obs
+            facts = mem.extract_facts(rtext, date_anchor, memory_type=mtype)  # NO conn held
             with POOL.connection() as conn:
                 # mem.author carries the AUTHENTICATED principal's name from the request
                 mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
@@ -1740,7 +1809,8 @@ def _ingest_worker():
                                              suggestion.get("reason"), turn_id=tid)
                     except Exception:
                         pass                                       # a write never fails on the nudge
-                nf, nsup = mem3.write_facts(ns, facts, obs, tid, memory_type=mtype)
+                nf, nsup = mem3.write_facts(ns, facts, obs, tid, memory_type=mtype,
+                                            valid_anchor=valid_anchor)
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 Control.record_usage(conn, principal, ns, "remember", mem3.extract_model,
                                      usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))

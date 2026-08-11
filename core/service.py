@@ -370,13 +370,19 @@ class MemnosMemory:
             return []
         return self._extract(text, observed_at)
 
-    def write_facts(self, namespace, facts, observed_at, turn_id, *, memory_type=None) -> tuple:
+    def write_facts(self, namespace, facts, observed_at, turn_id, *, memory_type=None,
+                    valid_anchor=None) -> tuple:
         """Phase 3 (fast, DB only): supersession + store + graph for extracted facts.
-        `memory_type` = the source TURN's type — derived facts INHERIT it."""
+        `memory_type` = the source TURN's type — derived facts INHERIT it.
+
+        `valid_anchor` (issue #42, default None): optional override for the EVENT-time
+        (`valid_from`) fallback anchor ONLY — see `_write_fact` for why this is safe to
+        decouple from `observed_at`. None (every caller except the server's write-behind
+        replay path) preserves the original single-anchor behavior exactly."""
         n_facts = n_super = 0
         for f in facts:
             df, ds = self._write_fact(namespace, f, observed_at, source_turn_ids=[turn_id],
-                                      memory_type=memory_type)
+                                      memory_type=memory_type, valid_anchor=valid_anchor)
             n_facts += df; n_super += ds
         return n_facts, n_super
 
@@ -410,7 +416,7 @@ class MemnosMemory:
         return {"turns": len(turns), "facts": n_facts, "superseded": n_super}
 
     def _write_fact(self, namespace, f, fallback_date, *, source_turn_ids=(),
-                    memory_type=None):
+                    memory_type=None, valid_anchor=None):
         """Write ONE SPO fact: near-duplicate collapse → absolute event date →
         belief-change supersession (SPO + reversal/negation close-out) → store with
         subject/predicate/object (+ provenance to its source turn) → populate the
@@ -428,13 +434,28 @@ class MemnosMemory:
         the current value's valid_from: that describes the past, it does not change the
         current belief, so it must NOT supersede. valid_to on the closed fact is the new
         fact's event date (or observed date when no event date), clamped to never precede
-        the closed fact's own valid_from. Deterministic; no LLM at this layer."""
+        the closed fact's own valid_from. Deterministic; no LLM at this layer.
+
+        `valid_anchor` (issue #42, default None → falls back to `fallback_date`, i.e. the
+        ORIGINAL unchanged behavior for every caller except the server's write-behind
+        replay path): the fallback anchor `parse_event_date` uses to resolve a RELATIVE
+        date ("yesterday") when the statement carries no explicit absolute date. This is
+        deliberately a SEPARATE knob from `fallback_date`/`obs` below — `obs` (observation
+        axis, `known_at`) MUST always be the server's own write/replay-commit time (never
+        client-influenced — see memnos_server.py's `_remember_phased` and
+        offline_queue.py's `_post_remember` for the auth rationale: trusting a client
+        timestamp there is a supersession-race backdating primitive). `valid_anchor` only
+        affects the EVENT-time axis of THIS fact (and, via the existing GREATEST(...)
+        clamp in supersede_predicate, the `valid_to` boundary stamped on whichever fact it
+        supersedes) — orthogonal to which fact wins that race, which stays governed
+        entirely by `obs`."""
         from .temporal import parse_event_date
         stmt = f["statement"]
         subj = (f["subject"][:100] if f["subject"] else None)
         pred = f["predicate"] or None
         obj = f["object"] or None
-        ev = parse_event_date(stmt, fallback_date)          # relative → absolute event date
+        date_anchor = valid_anchor if valid_anchor is not None else fallback_date
+        ev = parse_event_date(stmt, date_anchor)             # relative → absolute event date
         obs = fallback_date                                  # observation/knowledge axis
         vec = self.embed(stmt)
 
