@@ -117,9 +117,12 @@ def free_port():
 
 
 def wait_up(url, tries=90, interval=0.5):
+    # issue #59: /readyz, not /healthz — this is a "wait until the server can serve
+    # real traffic" gate; /healthz's 200 (liveness only) gives no guarantee the
+    # pool/HNSW indexes are actually warm. /readyz does.
     for _ in range(tries):
         try:
-            r = httpx.get(url + "/healthz", timeout=2)
+            r = httpx.get(url + "/readyz", timeout=2)
             if r.status_code == 200:
                 return True
         except httpx.TransportError:

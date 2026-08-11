@@ -54,10 +54,13 @@ def check(name, cond):
 
 
 def wait_for_server(timeout_s=20):
+    # issue #59: /readyz, not /healthz — this gates real /recall and /remember calls
+    # below, and /healthz's 200 (liveness only) gives no guarantee the pool/HNSW
+    # indexes are actually warm. /readyz does.
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            urllib.request.urlopen(URL + "/healthz", timeout=2)
+            urllib.request.urlopen(URL + "/readyz", timeout=2)
             return True
         except Exception:
             time.sleep(0.5)
@@ -122,7 +125,7 @@ def main():
     print("=== omnigent capture policy: REAL event -> REAL memnos server ===")
 
     if not wait_for_server():
-        print(f"FAIL  memnos server not reachable at {URL}/healthz within 20s — "
+        print(f"FAIL  memnos server not ready at {URL}/readyz within 20s — "
               f"start it first (`memnos start` or `python memnos_server.py`) and re-run.")
         sys.exit(1)
     check(f"memnos server reachable at {URL}", True)

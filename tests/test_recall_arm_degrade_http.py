@@ -120,10 +120,13 @@ def main():
     proc = subprocess.Popen([sys.executable, "memnos_server.py"], cwd=ROOT, env=_server_env(),
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
+        # issue #59: poll /readyz, not /healthz — this test is about to send REAL
+        # recall traffic against forced-cold arms, and /healthz's 200 (liveness only)
+        # gives no guarantee the pool/HNSW indexes are actually warm. /readyz does.
         up = False
         for _ in range(60):
             try:
-                if urllib.request.urlopen(f"{URL}/healthz", timeout=2).status == 200:
+                if urllib.request.urlopen(f"{URL}/readyz", timeout=2).status == 200:
                     up = True; break
             except Exception:
                 pass
@@ -154,10 +157,16 @@ def main():
         print("=== baseline: recall succeeds normally (no lock yet) ===")
         s, j = call("/recall", token, {"namespace": NS, "query": "outage", "constraint_cap": 0})
         check("baseline /recall is 200", s == 200)
-        # detail on failure: which arm/namespace tripped, not just true/false -- a
-        # cold-start-dependent false positive here (PR #58 round 2) is otherwise
-        # undiagnosable from CI output alone.
-        check("baseline is NOT degraded", not j.get("degraded"), str(j.get("degraded_reasons")))
+        # issue #59: this is the actual, previously-undiagnosed mechanism behind PR #58's
+        # documented-but-unresolved "baseline is NOT degraded" CI flake -- a bare
+        # `degraded` check also trips on the reranker's own background prewarm still
+        # loading right after this dedicated server's boot (core/rerank.py's
+        # is_ready()), a completely orthogonal, expected cause with no arm involved at
+        # all (recall_prefetch/recall_fetch never populate degraded_reasons for it). CI's
+        # own failed run showed exactly this: `degraded: true` with degraded_reasons
+        # `None`. This file is about ARM health specifically, not reranker warm-up
+        # timing -- degraded_reasons is the correct signal to check here, not the flag.
+        check("baseline has no ARM failures", not j.get("degraded_reasons"), str(j))
         txt = " ".join(m.get("content", "") for m in j.get("memories", []))
         check("baseline returns both raw and semantic content", raw_text in txt and sem_text in txt)
 
@@ -263,7 +272,9 @@ def main():
 
         s, j = call("/recall", token, {"namespace": NS, "query": "outage"})
         check("baseline (no constraint_cap field) /recall is 200", s == 200)
-        check("baseline is NOT degraded", not j.get("degraded"), str(j))
+        # degraded_reasons, not the bare flag — same reranker-warming-is-orthogonal
+        # reasoning as the first baseline check above.
+        check("baseline has no ARM failures", not j.get("degraded_reasons"), str(j))
         base_pins = [m for m in j.get("memories", []) if m.get("pinned")]
         check("baseline pins the seeded constraint under the real default cap",
               any(pin_text in p.get("content", "") for p in base_pins), str(base_pins))
@@ -286,8 +297,18 @@ def main():
         check("degraded_reasons identifies arm=pinned_constraints for this namespace",
               any(r.get("namespace") == NS and r.get("arm") == "pinned_constraints" for r in pin_reasons),
               str(pin_reasons))
-        check("degraded_reasons never leaks the raw exception message (class name only)",
-              all(set(r.keys()) <= {"namespace", "arm", "error", "sqlstate"} for r in pin_reasons),
+        # issue #59: pinned_constraints is one of the phase-A-adjacent arms that now runs
+        # a cheap control probe on failure and attaches a crafted, non-leaking `hint`
+        # string (see openapi.yaml's DegradedReason.hint) — added to the allow-list, not
+        # a leak of the raw exception text, which the second check below still guards.
+        check("degraded_reasons never leaks the raw exception message (class name only, "
+              "plus the optional crafted `hint` issue #59 adds)",
+              all(set(r.keys()) <= {"namespace", "arm", "error", "sqlstate", "hint"}
+                  for r in pin_reasons),
+              str(pin_reasons))
+        check("when present, `hint` is a crafted classification string, never the raw "
+              "psycopg exception message",
+              all("canceling statement" not in r.get("hint", "") for r in pin_reasons),
               str(pin_reasons))
         degraded_mems = j.get("memories", [])
         check("no pinned rows survive the failed pinned_constraints arm (that's what degraded means)",

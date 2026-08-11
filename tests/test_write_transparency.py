@@ -337,15 +337,29 @@ def test_remember_suggests_on_mismatch_llm_ordering(conn, a_ns, b_ns):
     env["MEMNOS_FAKE_EXTRACT"] = "1"
     env["MEMNOS_PORT"] = str(port)
     env["MEMNOS_DSN"] = DSN
-    env.pop("OPENAI_API_KEY", None)          # force local-384 embeddings + fake extraction
+    # issue #59 follow-up: popping (rather than overriding) OPENAI_API_KEY only helps if
+    # the PARENT process's env had it set — on a dev machine with a real ~/.memnos/
+    # config.json, memnos_server.py's own _load_config() does
+    # `os.environ.setdefault("OPENAI_API_KEY", cfg["openai"])` at import time, which
+    # fires whenever the var is ABSENT (exactly what .pop() produces), silently booting
+    # this subprocess in OpenAI 1536-d mode against a schema this test already seeded at
+    # 384-d — every real vector query then fails with a dimension mismatch, and (since
+    # this test now polls /readyz rather than /healthz — the whole point of this branch)
+    # that surfaces as a permanent 503 instead of a previously-silent wrong-mode boot.
+    # Setting it to an explicit empty string is PRESENT, not absent, so setdefault never
+    # fires — same pattern test_recall_arm_degrade_http.py / test_mcp_http_restart_
+    # resilience.py already use for the identical reason.
+    env["OPENAI_API_KEY"] = ""               # force local-384 embeddings + fake extraction
     proc = subprocess.Popen([sys.executable, "memnos_server.py"], cwd=ROOT, env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        # wait for liveness
+        # issue #59: /readyz, not /healthz — this test sends real writes right after,
+        # and /healthz's 200 (liveness only) gives no guarantee the pool/HNSW indexes
+        # are actually warm. /readyz does.
         up = False
         for _ in range(60):
             try:
-                urllib.request.urlopen(base + "/healthz", timeout=2)
+                urllib.request.urlopen(base + "/readyz", timeout=2)
                 up = True
                 break
             except Exception:

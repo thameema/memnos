@@ -80,16 +80,26 @@ paths:
   /readyz:
     get:
       tags: [health]
-      summary: Readiness — database reachable
+      summary: Readiness — database reachable AND HNSW vector indexes responsive
+      description: >-
+        issue #59: more than a bare connectivity check — runs a real ANN probe against
+        each HNSW-indexed table so "ready" means the index-scan path is live and its
+        entry point is warm, not just that a connection exists. This is NOT a guarantee
+        that the first real /recall pays zero cold-page-in cost: HNSW's logarithmic
+        traversal means one boot-time probe only pages in the entry point and the one
+        candidate path it happens to walk (measured on a 50K-row index: ~1% of the
+        index's pages), not the whole graph — a query that lands on a different path
+        can still page-fault. Poll THIS endpoint (not /healthz) before sending real
+        traffic after a restart.
       security: []
       responses:
         "200":
-          description: ready
+          description: ready — database reachable and each vector index's entry point is warm
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Readyz" }
         "503":
-          description: database unreachable
+          description: not ready — database unreachable, or an index probe failed
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Readyz" }
@@ -1450,6 +1460,13 @@ components:
       required: [ready]
       properties:
         ready: { type: boolean }
+        error:
+          type: string
+          description: >-
+            present only when ready=false — the failing exception's class name (never
+            the raw message; this endpoint takes no auth). Distinguishes a transient
+            cold-start delay from a persistent misconfiguration (e.g. an embedding-
+            dimension mismatch after switching providers) that won't resolve on its own.
     Metrics:
       type: object
       required: [window_hours, ops]
@@ -1777,6 +1794,15 @@ components:
             searching just the query namespace)
         error: { type: string, description: the exception's class name (never the raw message) }
         sqlstate: { type: [string, "null"], description: Postgres SQLSTATE, when the failure came from the database }
+        hint:
+          type: string
+          description: >
+            issue #59: present only for the phase-A arms (max_observed_at, timeline,
+            readable_namespaces, pinned_constraints) — a cheap control probe run on the
+            same connection classifies the failure as "connection responsive, this
+            arm's query was transient (blocked, slow, or a cold cache after a restart) —
+            safe to retry" or "connection itself is unresponsive". A crafted,
+            non-leaking string (like error/sqlstate), never the raw exception message.
     MemoriesResponse:
       type: object
       required: [memories]
