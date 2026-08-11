@@ -80,7 +80,7 @@ from psycopg import OperationalError
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
 
-from core.store import BrainStore, query_clamp, RECALL_ARM_FAILURES
+from core.store import BrainStore, query_clamp, RECALL_ARM_FAILURES, classify_arm_failure
 from core.service import MemnosMemory
 from core.control import Control
 from core import rerank as brain_rerank
@@ -261,6 +261,11 @@ _INGEST_Q = queue.Queue(maxsize=1024)   # async /remember extraction queue
 EMBED = None
 LLM = None
 DIM = 384
+# issue #59: the memory schema name, set once in serve() right after create_schema().
+# /readyz's live probe (and anything else that needs the schema post-boot) reads this
+# instead of re-deriving "tenant_" + tenant, so there is exactly one place that mapping
+# lives.
+SCHEMA = None
 
 # Issue #12 — recall latency. Query-embed cache: hooks/Desktop repeat near-identical
 # queries within seconds; a short-TTL LRU keyed (query, model) lets repeats skip the
@@ -865,12 +870,31 @@ class Handler(BaseHTTPRequestHandler):
                 resp["budget"] = budget
             return self._send(200, resp)
         if self.path == "/readyz":
+            # issue #59: `SELECT 1` alone proves the pool has a live connection, not that
+            # a real recall's vector arms are actually responsive — those are the HNSW
+            # indexes, and this repo's own readiness pollers (CI's `curl .../healthz`
+            # loop, most of tests/*'s "wait for server" helpers, the SDK's healthy())
+            # treat "ready" as license to send real traffic. serve()'s boot-time
+            # warm_indexes() call already pages every HNSW index in before the listener
+            # ever opens, so this is normally an already-warm no-op — it exists for the
+            # ongoing case (a long-lived server whose Postgres was restarted underneath
+            # it) rather than to redo boot's work on every poll.
             try:
-                with POOL.connection() as conn, conn.cursor() as c:
-                    c.execute("SELECT 1")
+                with POOL.connection() as conn:
+                    with conn.cursor() as c:
+                        c.execute("SELECT 1")
+                    BrainStore(conn=conn).warm_indexes(SCHEMA, DIM)
                 return self._send(200, {"ready": True})
-            except Exception:
-                return self._send(503, {"ready": False})
+            except Exception as e:
+                # the exception CLASS NAME only, same disclosure level as
+                # degraded_reasons' `error` field elsewhere in this file — never the raw
+                # message (could echo internal detail), but enough for an operator
+                # debugging a stuck /readyz (e.g. a real one found in review: a
+                # persistent embedding-dimension mismatch after switching providers,
+                # which — unlike a transient cold-start delay — won't resolve on its
+                # own and needs a human to notice and act, not just retry). No auth on
+                # this endpoint, so nothing more sensitive than that is included.
+                return self._send(503, {"ready": False, "error": type(e).__name__})
         if self.path.startswith("/metrics"):
             try:
                 hours = 24
@@ -1286,7 +1310,7 @@ class Handler(BaseHTTPRequestHandler):
             if run_async:
                 try:
                     _INGEST_Q.put_nowait((ns, rtext, obs, tid, principal, mem, cost0, t0, mtype,
-                                          valid_anchor))
+                                          valid_anchor, 0))     # 0 = first attempt (issue #31 retry count)
                     return self._send(200, {"turn_id": tid, "facts": None,
                                             "extraction": "queued", "namespace": ns})
                 except Exception:                                  # queue full → fall through to sync
@@ -1480,9 +1504,16 @@ class Handler(BaseHTTPRequestHandler):
                               f"failed for principal={principal} ({type(e).__name__}): {e} "
                               f"— falling back to primary namespace only", flush=True)
                         nss = [ns]
-                        wide_degraded_reasons.append(
-                            {"namespace": ns, "arm": "readable_namespaces",
-                             "error": type(e).__name__, "sqlstate": getattr(e, "sqlstate", None)})
+                        # issue #59: readable_namespaces drives WHICH namespaces wide
+                        # recall searches — a live DB call at the front of the request,
+                        # same cold-start exposure as recall_prefetch's phase-A arms.
+                        # Classify before recording, same as those.
+                        reason = {"namespace": ns, "arm": "readable_namespaces",
+                                  "error": type(e).__name__, "sqlstate": getattr(e, "sqlstate", None)}
+                        hint = classify_arm_failure(conn, e)
+                        if hint:
+                            reason["hint"] = hint
+                        wide_degraded_reasons.append(reason)
                     # scope hint: other readable = all readable minus the query ns, cap 10
                     other_readable = [n for n in nss if n != ns][:10]
                     pin_nss = [ns]                 # pin the TARGET namespace's constraints
@@ -1531,9 +1562,16 @@ class Handler(BaseHTTPRequestHandler):
                     pins = []
                     print(f"[memnos] pinned_constraints degraded for ns={pin_nss} "
                           f"({type(e).__name__}): {e}", flush=True)
-                    pin_reasons.append({"namespace": ns, "arm": "pinned_constraints",
-                                        "error": type(e).__name__,
-                                        "sqlstate": getattr(e, "sqlstate", None)})
+                    # issue #59: same cold-start-vs-genuinely-broken classification as
+                    # recall_prefetch's phase-A arms — this runs before recall_fetch's
+                    # own arms too, on the same connection.
+                    pin_reason = {"namespace": ns, "arm": "pinned_constraints",
+                                  "error": type(e).__name__,
+                                  "sqlstate": getattr(e, "sqlstate", None)}
+                    hint = classify_arm_failure(conn, e)
+                    if hint:
+                        pin_reason["hint"] = hint
+                    pin_reasons.append(pin_reason)
                     if not wide:
                         # set directly rather than relying on recall_fetch's own
                         # `if reasons: b["_degraded"] = True` epilogue to notice this
@@ -1775,15 +1813,54 @@ class Handler(BaseHTTPRequestHandler):
 
 INGEST_WORKERS = max(1, min(int(os.environ.get("MEMNOS_INGEST_WORKERS", "2")), 8))
 
+# issue #31: a restart-window DB failure (cold HNSW/GIN index, pool not yet warm) used to
+# permanently drop a turn's extraction — the raw turn already survived durably (P1b
+# commits before this queue item is ever created), so retrying the SAME work against it
+# is safe and cheap, unlike re-doing the whole /remember call. Bounded + backed off so a
+# genuinely broken DB (not just a slow-to-warm one) doesn't retry forever or flood the
+# queue: 5 attempts at 2/4/8/16/30s (capped) covers issue #31's own reported 20-60s
+# cold-start window with real margin, entirely off the client's request path (the client
+# already got its 200 "queued" response — retries are invisible to it). Only
+# RECALL_ARM_FAILURES-class exceptions (the same live-DB-failure class #41 fix C already
+# degrades recall arms on, imported above) are retried — an LLM extraction bug or any
+# other programming error must still fail fast and visibly, not loop silently.
+MEMNOS_INGEST_MAX_RETRIES = int(os.environ.get("MEMNOS_INGEST_MAX_RETRIES", "5"))
+MEMNOS_INGEST_RETRY_BASE_S = float(os.environ.get("MEMNOS_INGEST_RETRY_BASE_S", "2.0"))
+MEMNOS_INGEST_RETRY_MAX_S = float(os.environ.get("MEMNOS_INGEST_RETRY_MAX_S", "30.0"))
+
+
+def _log_ingest_drop(tid, ns, principal, t0, exc, note=None):
+    """issue #31: async ingest is NOT being retried further for this turn (either a
+    non-transient error, or a transient one that exhausted its retry budget) — the raw
+    turn is already durably stored, but its extraction is permanently lost. This must be
+    VISIBLE, not swallowed: logged to stdout AND the audit ledger (unchanged shape from
+    before this fix; `note` adds retry context when there is any)."""
+    suffix = f" ({note})" if note else ""
+    print(f"[memnos] async ingest DROPPED for turn {tid} (raw turn IS stored){suffix}: "
+          f"{type(exc).__name__}: {exc}", flush=True)
+    try:
+        with POOL.connection() as conn:
+            detail = {"async": True, "turn_id": tid, "error": type(exc).__name__,
+                      "msg": str(exc)[:300]}
+            if note:
+                detail["note"] = note
+            Control.audit(conn, principal, "remember", ns, False, detail,
+                          latency_ms=int((time.perf_counter() - t0) * 1000), status=500)
+    except Exception:
+        pass
+
 
 def _ingest_worker():
     """Background extraction for async /remember: P2 with no conn, then a short P3.
-    Failures are logged — the raw turn is already durably stored either way.
+    A transient (RECALL_ARM_FAILURES-class) failure is RETRIED against the same
+    surviving raw turn with backoff (issue #31) rather than dropped; a non-transient
+    failure, or a transient one that exhausts its retry budget, is logged + audited
+    (_log_ingest_drop) — never silent either way.
     INGEST_WORKERS (env MEMNOS_INGEST_WORKERS, default 2, max 8) threads drain the queue
     so a burst of async remembers doesn't serialize behind one extraction at a time —
     each worker's P2 is pure model I/O, so they overlap cleanly."""
     while True:
-        ns, rtext, obs, tid, principal, mem, cost0, t0, mtype, valid_anchor = _INGEST_Q.get()
+        ns, rtext, obs, tid, principal, mem, cost0, t0, mtype, valid_anchor, attempt = _INGEST_Q.get()
         try:
             usage = _UsageAcc()
             mem.on_usage = usage
@@ -1818,19 +1895,30 @@ def _ingest_worker():
                               latency_ms=int((time.perf_counter() - t0) * 1000), status=200,
                               detail={"async": True, "facts": nf, "superseded": nsup})
             _DELIVER_EVENT.set()
+        except RECALL_ARM_FAILURES as e:
+            if attempt < MEMNOS_INGEST_MAX_RETRIES:
+                delay = min(MEMNOS_INGEST_RETRY_BASE_S * (2 ** attempt), MEMNOS_INGEST_RETRY_MAX_S)
+                print(f"[memnos] async ingest for turn {tid} hit a transient DB error "
+                      f"({type(e).__name__}: {e}) — retrying in {delay:.0f}s "
+                      f"(attempt {attempt + 1}/{MEMNOS_INGEST_MAX_RETRIES}; raw turn IS stored)",
+                      flush=True)
+                item = (ns, rtext, obs, tid, principal, mem, cost0, t0, mtype, valid_anchor,
+                        attempt + 1)
+
+                def _requeue(item=item, exc=e):
+                    try:
+                        _INGEST_Q.put_nowait(item)
+                    except queue.Full:
+                        # the queue itself is the thing under pressure now, not just this
+                        # one turn's DB call — no point retrying into a full queue.
+                        _log_ingest_drop(tid, ns, principal, t0, exc, note="queue full on retry")
+
+                threading.Timer(delay, _requeue).start()
+            else:
+                _log_ingest_drop(tid, ns, principal, t0, e,
+                                 note=f"retries exhausted ({MEMNOS_INGEST_MAX_RETRIES})")
         except Exception as e:
-            print(f"[memnos] async ingest failed for turn {tid} (raw turn IS stored): "
-                  f"{type(e).__name__}: {e}", flush=True)
-            # audit-parity with the sync path: async extraction failures must be visible
-            # in the audit log, not only in the server's stdout
-            try:
-                with POOL.connection() as conn:
-                    Control.audit(conn, principal, "remember", ns, False,
-                                  {"async": True, "turn_id": tid, "error": type(e).__name__,
-                                   "msg": str(e)[:300]},
-                                  latency_ms=int((time.perf_counter() - t0) * 1000), status=500)
-            except Exception:
-                pass
+            _log_ingest_drop(tid, ns, principal, t0, e)
 
 
 def _set_proc_title(title):
@@ -1844,20 +1932,9 @@ def _set_proc_title(title):
 
 def serve(port=None):
     """Boot + run the memnos server. Importable so the `memnos serve` CLI reuses it."""
-    global POOL, EMBED, MCP_INTERNAL_PORT
+    global POOL, EMBED, MCP_INTERNAL_PORT, SCHEMA
     _set_proc_title("memnos-server")
     port = int(port or PORT)
-    # BACKGROUND reranker prewarm + self-calibration + residency keep-alive (follow-up
-    # to #12): prewarm now runs OFF the request path so the server accepts traffic
-    # IMMEDIATELY — the synchronous version cost 13-114s at boot and recalls blocked
-    # behind it (field cold first-call 49.9s). While warming, is_ready() is False and
-    # recalls serve degraded (RRF order, degraded:true). Prewarm also measures this box's
-    # ms-per-pair and DERIVES the rerank cap from a latency budget (a CPU laptop gets a
-    # small cap, a fast box a large one) — fixing the fixed cap=100 that was 85% of every
-    # warm call. See core/rerank.py — MEMNOS_RERANK=0 skips both; MEMNOS_RERANK_CAP
-    # overrides the derived cap; MEMNOS_RERANK_BUDGET_MS / MIN_CAP / MAX_CAP tune it.
-    brain_rerank.prewarm_background()
-    brain_rerank.start_keepalive()
     # timeout=5: a request against a dead DB fails in 5s with a clear 503 — clients
     # (hooks/MCP/agents) must never sit behind a 30s pool wait.
     # max_idle=60: shrink back to min_size within a minute after bursts — a congested
@@ -1895,12 +1972,54 @@ def serve(port=None):
     EMBED = _build_embedder()
     with POOL.connection() as conn:
         # schema DDL (HNSW/GIN builds on a fresh install over existing data) may
-        # legitimately exceed the request statement_timeout — exempt it
+        # legitimately exceed the request statement_timeout — exempt it. issue #59: the
+        # HNSW/GIN index WARM-UP probe just below needs the same exemption and for the
+        # same reason — a cold restart at real scale (issue #31: 143K facts, 20-60s of
+        # QueryCanceled) is exactly the case this has to have room to actually finish in,
+        # not race against the request-scoped budget.
         conn.execute("SET statement_timeout = 0")
-        BrainStore(conn=conn).create_schema("memnos", dim=DIM)   # memory schema
+        bs = BrainStore(conn=conn)
+        SCHEMA = bs.create_schema("memnos", dim=DIM)   # memory schema
+        # issue #59/#31: `SELECT 1` above (and /readyz's own, below) proves Postgres is
+        # reachable but says nothing about whether the FIRST real recall pays a cold
+        # page-in cost against the HNSW indexes — confirmed live (EXPLAIN) to be a real,
+        # separate cost a bare connectivity check can't see. Page every HNSW index in
+        # BEFORE the HTTP listener opens below, so "the port answers" and "the indexes
+        # are warm" become the same fact instead of a race a client can lose. A failure
+        # here degrades loudly (same pattern as the MCP-mount failure below) rather than
+        # blocking boot forever — an index that can't be warmed is a real problem, but a
+        # server that refuses to start over it is a worse one.
+        try:
+            bs.warm_indexes(SCHEMA, DIM)
+            print("[memnos] HNSW index warm-up complete", flush=True)
+        except Exception as e:
+            print(f"[memnos] WARNING: HNSW index warm-up probe failed ({type(e).__name__}: "
+                  f"{e}) — continuing; the first real recall may pay this cost instead", flush=True)
         conn.execute(f"SET statement_timeout = {stmt_ms}")
         Control.audit(conn, None, "server_start", "-", True,      # heartbeat (uptime/crash-loop signal)
                       detail={"dim": DIM})
+    # BACKGROUND reranker prewarm + self-calibration + residency keep-alive (follow-up
+    # to #12): prewarm runs OFF the request path so the server accepts traffic
+    # IMMEDIATELY once the listener opens below — the synchronous version cost 13-114s
+    # at boot and recalls blocked behind it (field cold first-call 49.9s). While
+    # warming, is_ready() is False and recalls serve degraded (RRF order, degraded:true).
+    # Prewarm also measures this box's ms-per-pair and DERIVES the rerank cap from a
+    # latency budget (a CPU laptop gets a small cap, a fast box a large one) — fixing the
+    # fixed cap=100 that was 85% of every warm call. See core/rerank.py — MEMNOS_RERANK=0
+    # skips both; MEMNOS_RERANK_CAP overrides the derived cap; MEMNOS_RERANK_BUDGET_MS /
+    # MIN_CAP / MAX_CAP tune it.
+    #
+    # issue #34: this used to start at the very top of serve(), before POOL/schema/index
+    # warm-up even began — its timed ms-per-pair measurement then raced ALL of that CPU-
+    # heavy synchronous startup work, producing a pessimistic/noisy snapshot on a box
+    # that's actually much faster once warm (measured regression: 316->470ms/pair after a
+    # threads=1->4 fix that should have made it FASTER). Starting it here, after the pool
+    # + schema + index warm-up above has already finished, means the calibration's own
+    # background thread is no longer competing with that work — it still runs off the
+    # request path (traffic isn't blocked on it), it just no longer measures during the
+    # noisiest part of boot.
+    brain_rerank.prewarm_background()
+    brain_rerank.start_keepalive()
     threading.Thread(target=_pusher_loop, name="memnos-webhook-pusher", daemon=True).start()
     for i in range(INGEST_WORKERS):
         threading.Thread(target=_ingest_worker, name=f"memnos-async-ingest-{i}", daemon=True).start()

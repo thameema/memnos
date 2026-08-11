@@ -32,6 +32,14 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
+      # issue #59: the server now holds its port closed (connection refused, not just
+      # /readyz 200/503) until the HNSW index warm-up completes at boot — issue #31's
+      # own field data puts a cold restart at real scale (143K facts) at 20-60s. Without
+      # start_period, a plain retries*interval budget (75s here) leaves little real
+      # margin over that; an explicit, generous start_period avoids `restart:
+      # unless-stopped` compounding the problem by restarting a server that's still
+      # legitimately warming up, resetting its own clock.
+      start_period: 120s
     restart: unless-stopped
 
 volumes:

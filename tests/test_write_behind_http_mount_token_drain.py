@@ -101,9 +101,12 @@ def free_port():
 
 def wait_up(url, tries=150, interval=2):
     import urllib.request
+    # issue #59: /readyz, not /healthz — this is a "wait until the server can serve
+    # real traffic" gate; /healthz's 200 (liveness only) gives no guarantee the
+    # pool/HNSW indexes are actually warm. /readyz does.
     for _ in range(tries):
         try:
-            urllib.request.urlopen(url + "/healthz", timeout=2)
+            urllib.request.urlopen(url + "/readyz", timeout=2)
             return True
         except Exception:
             time.sleep(interval)
