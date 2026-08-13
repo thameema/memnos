@@ -19,7 +19,7 @@ H=(-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
 ```
 
 ```python
-# pip install memnos-sdk
+# uv pip install memnos-sdk   (or: pip install memnos-sdk)
 from memnos_sdk import MemnosClient
 m = MemnosClient("http://127.0.0.1:8900", token="mnk_...", namespace="proj:myapp")
 ```

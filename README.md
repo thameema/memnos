@@ -83,7 +83,7 @@ memnos start                  # background server → open http://127.0.0.1:8900
 ```
 
 `memnos setup --embedded` downloads a pre-built PostgreSQL 16 + pgvector binary into
-`~/.memnos/embedded_pg/` on first run. No Docker, no `brew`, no `apt` — just `pipx install`
+`~/.memnos/embedded_pg/` on first run. No Docker, no `brew`, no `apt` — just `uv tool install`
 and you're done. `memnos start` auto-restarts the embedded PG on every boot.
 
 Operate it like any daemon: `memnos status` / `stop` / `restart`; `memnos serve` runs in
