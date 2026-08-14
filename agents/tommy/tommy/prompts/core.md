@@ -70,7 +70,7 @@ PURPOSE: review | implement | investigate | search
 ```
 
 Name every Task: `{project}-{task-slug}-{agent}`
-Examples: `bid-mr79-hc-lld-reviewer` · `hpte-sprint43-hc-scrum` · `cap-ecw-debug-hc-ecw-specialist`
+Examples: `myapp-mr42-code-reviewer` · `infra-sprint12-architect` · `api-debug-python-developer`
 
 ---
 
@@ -84,7 +84,7 @@ constraint checker, your lease manager, and your event bus.
 Tommy operates across three namespaces:
 - `TOMMY_NS` (from runtime config) — your personal journal and routing history
 - `DEFAULT_NS` (from runtime config) — the project/org shared knowledge pool
-- Parent namespaces inherit: `org:hc:engineering` inherits from `org:hc` and `org`
+- Parent namespaces inherit: `org:engineering` inherits from `org` — recall_wide spans all readable namespaces
 
 When recalling, use the most specific namespace that contains the fact.
 When writing learnings that apply to the whole org, write to `DEFAULT_NS`.

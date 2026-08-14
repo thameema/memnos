@@ -44,9 +44,9 @@ sub = namespace_subscribe()
 namespace_feed(subscription_id=sub["subscription_id"])
 ```
 
-## Namespaces (Health Chain)
+## Namespaces (examples)
 | Namespace | Purpose |
 |-----------|---------|
-| `user:thameema:tommy` | Tommy personal journal |
-| `org:hc:engineering` | Shared engineering knowledge |
-| `org:hc` | Org-wide facts |
+| `user:me:tommy` | Tommy personal journal |
+| `org:engineering` | Shared engineering knowledge |
+| `org` | Org-wide facts |

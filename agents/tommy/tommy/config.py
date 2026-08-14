@@ -30,9 +30,9 @@ def _parse_kv(path: Path) -> dict[str, str]:
 
 @dataclass
 class ProjectEntry:
-    key: str          # short key, e.g. "hdig"
-    name: str         # display name, e.g. "HDIG"
-    jira_project: str # JIRA key, e.g. "HPTE"
+    key: str          # short key, e.g. "myapp"
+    name: str         # display name, e.g. "MyApp"
+    jira_project: str # JIRA key, e.g. "APP"
     git_root: Path    # absolute path
 
 
@@ -62,7 +62,7 @@ class TommyConfig:
     org: str = "hc"
     prompts_dir: Path = field(default_factory=lambda: Path(__file__).parent / "prompts")
     tommy_ns: str = "user:tommy"
-    default_ns: str = "org:hc:engineering"
+    default_ns: str = "org:engineering"
     default_model: str = "claude-sonnet-4-5"
     projects: list[ProjectEntry] = field(default_factory=list)
     smart_routing: bool = True

@@ -3,7 +3,7 @@ Tommy CLI entrypoint.
 
 Usage:
     tommy                           # launch with default harness
-    tommy --project hdig            # activate project context
+    tommy --project myapp           # activate project context
     tommy --install                 # first-time setup
     tommy --list-projects           # show configured projects
     tommy --list-harnesses          # show detected harnesses
