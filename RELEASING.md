@@ -34,9 +34,9 @@ The version number is the single source of truth; bump it, tag it, release it:
 4. The **Release to PyPI** workflow builds both packages and publishes them. Watch it under
    the repo's **Actions** tab.
 
-That's it — `pip install -U memnos` / `uv tool upgrade memnos` picks up the new version once
-the workflow goes green. Keep `memnos` + `memnos-sdk` + the git tag on the same version line
-(stay in **0.x** until adoption).
+That's it — `uv tool upgrade memnos` (or, fallback: `pip install -U memnos`) picks up the new
+version once the workflow goes green. Keep `memnos` + `memnos-sdk` + the git tag on the same
+version line (stay in **0.x** until adoption).
 
 ## Why not publish on every push to `master`?
 

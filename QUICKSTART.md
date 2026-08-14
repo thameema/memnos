@@ -61,7 +61,7 @@ Verify:
 memnos --help
 ```
 
-> Inside your own virtualenv, plain `pip` is fine too:
+> Fallback, if you don't have `uv`/`pipx`: inside your own virtualenv, plain `pip` works too:
 > `python -m venv .venv && .venv/bin/pip install memnos`.
 > If a fresh shell can't find `memnos`, run `hash -r` and open a new terminal (the
 > installer already added its bin dir to your PATH).

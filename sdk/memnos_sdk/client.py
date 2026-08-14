@@ -1,8 +1,9 @@
 """memnos SDK — typed REST client (sync + async) for app developers.
 
-Lightweight (httpx only) so agentic apps can `pip install memnos-sdk` without the server's
-heavy deps. Talks to a running memnos server. Auth = a bearer token; every call is scoped
-to a namespace (set once on the client or per call).
+Lightweight (httpx only) so agentic apps can `uv pip install memnos-sdk` (or, fallback:
+`pip install memnos-sdk`) without the server's heavy deps. Talks to a running memnos
+server. Auth = a bearer token; every call is scoped to a namespace (set once on the
+client or per call).
 
     from memnos_sdk import MemnosClient
     mem = MemnosClient(base_url="http://127.0.0.1:8900", token="mnk_...", namespace="org:acme")

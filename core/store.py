@@ -528,7 +528,7 @@ _known_registered_namespaces: set[str] = set()
 
 
 class BrainStore:
-    def __init__(self, dsn: str | None = None, conn=None):
+    def __init__(self, dsn: str | None = None, conn=None, vtype: str | None = None):
         # Accept a pooled connection (production) or open one from a DSN (scripts/tests).
         if conn is not None:
             self.conn = conn
@@ -536,7 +536,12 @@ class BrainStore:
         else:
             self.conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
             self._owns = True
-        self._vtype = None
+        # issue #12 phase 2: a short-lived BrainStore wrapping one of a concurrent
+        # recall's ephemeral pooled connections can be handed the ALREADY-detected
+        # vtype from the long-lived store it's standing in for, so it skips its own
+        # detect_vector_type() catalog round trip. None (every existing call site)
+        # keeps the original lazy-detect-on-first-use behavior.
+        self._vtype = vtype
 
     @property
     def vtype(self) -> str:

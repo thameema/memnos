@@ -8,7 +8,7 @@ dotted Python import path (see omnigent/policies/function.py `resolve_function_p
 Omnigent source changes are involved — this file just needs to be importable in
 whatever Python environment the `omnigent server` process runs in:
 
-    pip install memnos-sdk
+    uv pip install memnos-sdk        # (or: pip install memnos-sdk, same environment)
 
 Generate the YAML wiring with `memnos server-setup omnigent` (see memnos_cli.py) rather
 than hand-writing it. The generated `handler:` value points at `capture_response` below.
