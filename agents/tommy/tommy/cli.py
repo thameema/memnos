@@ -257,41 +257,52 @@ def _launch_harness(
 # ---------------------------------------------------------------------------
 
 
+def _detect_installer(package: str) -> str:
+    """Return 'uv', 'pip', 'pipx', or 'unknown' from the INSTALLER dist-info file."""
+    import importlib.metadata
+    try:
+        dist = importlib.metadata.Distribution.from_name(package)
+        for f in dist.files or []:
+            if f.name == "INSTALLER":
+                return f.read_text().strip().lower()
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    from pathlib import Path
+    exe = Path(sys.executable).resolve()
+    uv_root = (Path.home() / ".local" / "share" / "uv" / "tools").resolve()
+    if str(exe).startswith(str(uv_root)):
+        return "uv"
+    return "unknown"
+
+
 def _do_upgrade() -> None:
-    """Upgrade Tommy using the same installer that installed it (uv / pipx / pip)."""
+    """Upgrade Tommy using the same installer that originally installed it."""
     import shutil
     import subprocess
     from pathlib import Path
 
     home = Path.home()
-    exe  = Path(sys.executable).resolve()
-    uv_tools_root = (home / ".local" / "share" / "uv" / "tools").resolve()
+    installer = _detect_installer("tommy-orchestrator")
 
-    # 1. uv tool path heuristic (fastest, works even with broken CWD)
-    if str(exe).startswith(str(uv_tools_root)) and shutil.which("uv"):
-        cmd = ["uv", "tool", "upgrade", "tommy-orchestrator"]
-    # 2. uv tool list (safe CWD)
-    elif shutil.which("uv"):
-        try:
-            out = subprocess.run(
-                ["uv", "tool", "list"], capture_output=True, text=True, cwd=str(home),
-            ).stdout
-            if "tommy" in out:
-                cmd = ["uv", "tool", "upgrade", "tommy-orchestrator"]
-            else:
-                cmd = [sys.executable, "-m", "pip", "install", "-U", "tommy-orchestrator"]
-        except Exception:
-            cmd = [sys.executable, "-m", "pip", "install", "-U", "tommy-orchestrator"]
-    # 3. pipx
-    elif shutil.which("pipx"):
+    if installer == "uv":
+        uv = shutil.which("uv")
+        if uv:
+            cmd = [uv, "tool", "upgrade", "tommy-orchestrator"]
+        else:
+            click.echo(
+                "  [warn] INSTALLER=uv but 'uv' not on PATH. Run manually:\n"
+                "         cd ~ && uv tool upgrade tommy-orchestrator",
+                err=True,
+            )
+            sys.exit(1)
+    elif installer in ("pipx", "unknown") and shutil.which("pipx"):
         try:
             out = subprocess.run(
                 ["pipx", "list", "--short"], capture_output=True, text=True, cwd=str(home),
             ).stdout
-            if "tommy" in out:
-                cmd = ["pipx", "upgrade", "tommy-orchestrator"]
-            else:
-                cmd = [sys.executable, "-m", "pip", "install", "-U", "tommy-orchestrator"]
+            cmd = ["pipx", "upgrade", "tommy-orchestrator"] if "tommy" in out else [
+                sys.executable, "-m", "pip", "install", "-U", "tommy-orchestrator"
+            ]
         except Exception:
             cmd = [sys.executable, "-m", "pip", "install", "-U", "tommy-orchestrator"]
     else:
