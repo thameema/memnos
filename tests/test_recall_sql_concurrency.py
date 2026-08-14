@@ -68,6 +68,9 @@ ALL_NS = [NS, NS_A, NS_B, NS_WIDE_1, NS_WIDE_2, NS_WIDE_3]
 _RAW_FINGERPRINT = f"{SCHEMA}.raw_turns"
 _SEM_FINGERPRINT = "inference_basis"          # search_semantic only
 _SEM_TEMPORAL_FINGERPRINT = "salience, row_number()"  # search_semantic_temporal only
+# core/store.py's detect_vector_type -- the ONLY query that touches pg_attribute for
+# an 'embedding' column; unique in the codebase (verified via grep).
+_VTYPE_PROBE_FINGERPRINT = "a.attname = 'embedding'"
 
 
 def check(name, cond, detail=""):
@@ -448,6 +451,59 @@ def main():
     check("failed arm degrades to an EMPTY contribution, not a crash", b_qfail2.get("raw") == [])
     check("the OTHER arm (semantic, new pooled connection) still returned real content",
           any(row.get("content") == sem_text for row in b_qfail2.get("sem", [])))
+
+    # ================================================================================
+    # Cross-vendor review finding: _dispatch_sql_jobs' EAGER vtype probe
+    # (self.store.vtype, run on the main thread before any job is even submitted)
+    # was unguarded -- a live DB catalog failure there (core/store.py's
+    # detect_vector_type, e.g. a dropped/terminated phase-B connection) propagated
+    # straight out of recall_fetch and 500'd the whole request instead of degrading,
+    # a regression of issue #41's degrade-not-crash guarantee. Simulates exactly
+    # that: self.store's connection persistently fails ONLY the vtype probe (a
+    # fresh pooled connection, e.g. job[1]'s, is untouched and healthy).
+    # ================================================================================
+    print("=== eager vtype probe fails on self.store's connection -- degrades to the "
+          "raw arm instead of 500ing the whole recall ===")
+    reset()
+    seed_turn(NS, "vtype probe raw content survives via a healthy pooled connection")
+    seed_fact(NS, "vtype probe semantic content survives via a healthy pooled connection")
+    mem.store._vtype = None   # force re-detection (create_schema() cached it earlier)
+    broken_conn = mem.store.conn
+
+    def _vtype_probe_fails_on_broken_conn(self_cur, query, *a, **kw):
+        q = query if isinstance(query, str) else str(query)
+        if _VTYPE_PROBE_FINGERPRINT in q and self_cur.connection is broken_conn:
+            raise psycopg.OperationalError("simulated dropped connection during vtype probe")
+        return orig_execute(self_cur, query, *a, **kw)
+
+    psycopg.Cursor.execute = _vtype_probe_fails_on_broken_conn
+    try:
+        q8 = "vtype probe"
+        b_vtype = mem.recall_fetch(NS, q8, qv=crafted_embed(q8), conn_factory=pool.connection)
+    except Exception as e:
+        b_vtype = None
+        vtype_probe_exc = e
+    else:
+        vtype_probe_exc = None
+    finally:
+        psycopg.Cursor.execute = orig_execute
+        mem.store._vtype = None   # leave store clean for anything after this section
+
+    check("recall_fetch did NOT raise/500 despite the broken vtype probe",
+          b_vtype is not None, repr(vtype_probe_exc))
+    if b_vtype is not None:
+        check("bundle is flagged degraded", b_vtype.get("_degraded") is True)
+        reasons3 = b_vtype.get("_degraded_reasons") or []
+        check("the raw arm (self.store's broken connection) is recorded as degraded",
+              any(r.get("arm") == "raw" and r.get("namespace") == NS for r in reasons3),
+              str(reasons3))
+        check("raw arm degraded to an EMPTY contribution, not a crash",
+              b_vtype.get("raw") == [])
+        check("the semantic arm (fresh, healthy pooled connection) still returned real content",
+              any(row.get("content") ==
+                  "vtype probe semantic content survives via a healthy pooled connection"
+                  for row in b_vtype.get("sem", [])),
+              str(b_vtype.get("sem")))
 
     pool.close()
     print(f"\n{PASS} passed, {FAIL} failed")

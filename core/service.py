@@ -763,11 +763,29 @@ class MemnosMemory:
         tolerates exactly this "first statement on a cold connection" case with a
         1500ms budget — 30x the measured cold-start cost — so a probe that's
         genuinely slow on a brand-new connection degrades that arm, it doesn't
-        stall or crash the recall."""
+        stall or crash the recall.
+
+        Cross-vendor review caught a real issue #41 regression here: the vtype
+        lookup below is a live DB catalog probe (core/store.py's
+        detect_vector_type, via self.store.vtype) that can fail the same way any
+        other arm can (e.g. a dropped/terminated phase-B connection) — in the OLD
+        sequential code this same probe ran LAZILY, inside the first arm's own
+        try/except, so a failure degraded just that arm. Done eagerly and
+        unguarded here, it would instead propagate straight out of
+        _dispatch_sql_jobs (and recall_fetch/recall_wide_fetch, neither of which
+        wraps this call) and 500 the whole request. Guarded the same way every
+        other arm in this file is: on failure, fall back to vtype=None — each
+        ephemeral store then lazily re-detects vtype on its OWN connection (jobs
+        on a healthy pooled connection succeed normally; job[0], still on the
+        same bad self.store connection, fails again inside its own try/except at
+        the call site and degrades to an empty arm exactly as before this fix)."""
         if conn_factory is None or len(jobs) <= 1:
             return [functools.partial(job, self.store) for job in jobs]
         cap = max(1, min(len(jobs), _sql_concurrency_cap()))
-        vtype = self.store.vtype if self.store is not None else None
+        try:
+            vtype = self.store.vtype if self.store is not None else None
+        except RECALL_ARM_FAILURES:
+            vtype = None
 
         def _run_reused(job):
             return job(self.store)
