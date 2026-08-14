@@ -331,3 +331,58 @@ class TestTaskEviction:
         for i in range(10, _TASK_CAP + 10):
             assert f"t-{i}" in _tasks
         _tasks.clear()
+
+
+class TestCLILaunchHarness:
+    """Structural guards on _launch_harness in cli.py."""
+
+    def test_cli_popen_has_no_start_new_session(self):
+        """
+        The interactive CLI-path Popen must NOT use start_new_session=True.
+        With it the harness lands in a new session; Ctrl-C only kills Tommy
+        while the harness keeps running unattended (confirmed remote-reviewer repro).
+        The MCP-path Popen in mcp_server.py correctly keeps start_new_session=True
+        for background dispatches.
+        """
+        import re
+        src = (Path(__file__).parent.parent / "tommy" / "cli.py").read_text()
+        # Find the _launch_harness function body
+        fn_start = src.find("def _launch_harness(")
+        assert fn_start != -1, "_launch_harness not found in cli.py"
+        fn_body = src[fn_start:]
+        # All Popen calls in _launch_harness that set start_new_session=True
+        popen_calls = re.findall(
+            r"subprocess\.Popen\([^)]*start_new_session\s*=\s*True[^)]*\)",
+            fn_body,
+            re.DOTALL,
+        )
+        assert popen_calls == [], (
+            "_launch_harness has a Popen with start_new_session=True. "
+            "This detaches the harness from the terminal process group — "
+            "Ctrl-C only kills Tommy while the harness keeps running. Remove it."
+        )
+
+    def test_cli_cleanup_in_finally(self):
+        """
+        ctrl.close() and os.unlink(prompt_file) must be inside a finally block
+        so they run even when proc.wait() is interrupted by KeyboardInterrupt.
+        """
+        import re
+        src = (Path(__file__).parent.parent / "tommy" / "cli.py").read_text()
+        fn_start = src.find("def _launch_harness(")
+        fn_body = src[fn_start:]
+        # 'finally:' must appear in the function
+        assert "finally:" in fn_body, (
+            "_launch_harness has no finally block. "
+            "ctrl.close() and os.unlink(prompt_file) will be skipped on KeyboardInterrupt."
+        )
+        # ctrl.close() must come AFTER finally:
+        finally_pos = fn_body.find("finally:")
+        close_pos = fn_body.find("ctrl.close()", finally_pos)
+        assert close_pos != -1 and close_pos > finally_pos, (
+            "ctrl.close() must be inside the finally block in _launch_harness"
+        )
+        unlink_pos = fn_body.find("os.unlink(prompt_file)", finally_pos)
+        assert unlink_pos != -1 and unlink_pos > finally_pos, (
+            "os.unlink(prompt_file) must be inside the finally block in _launch_harness"
+        )

@@ -269,17 +269,30 @@ def _launch_harness(
             if candidate.is_dir():
                 ws_path = candidate
 
-    proc = subprocess.Popen(cmd, env=env, cwd=str(ws_path), start_new_session=True)
-    proc.wait()
-    exit_code = proc.returncode
-    ctrl.close()
-    # ─────────────────────────────────────────────────────────────────────
-
-    # Cleanup temp file
+    # Do NOT use start_new_session=True on the interactive CLI path.
+    # Tommy is the foreground process; without it the harness shares the same
+    # process group so Ctrl-C (SIGINT) reaches both. With start_new_session=True
+    # the harness lands in a new session, SIGINT only kills Tommy, and the harness
+    # keeps running unattended — confirmed repro by the remote reviewer.
+    # (mcp_server.py keeps start_new_session=True for background MCP dispatches.)
+    proc = subprocess.Popen(cmd, env=env, cwd=str(ws_path))
     try:
-        os.unlink(prompt_file)
-    except OSError:
-        pass
+        proc.wait()
+    except KeyboardInterrupt:
+        # Ctrl-C propagated to the whole process group (Tommy + harness).
+        # Wait for the harness to finish its own graceful shutdown before cleanup.
+        try:
+            proc.wait()
+        except KeyboardInterrupt:
+            pass  # second Ctrl-C: don't block further
+    finally:
+        # Cleanup always runs — even on KeyboardInterrupt or unexpected exceptions.
+        exit_code = proc.returncode if proc.returncode is not None else 130
+        ctrl.close()
+        try:
+            os.unlink(prompt_file)
+        except OSError:
+            pass
 
     # Post-run capture (Layer 3: ingest transcript, Layer 4: consolidate)
     if memnos_client:
