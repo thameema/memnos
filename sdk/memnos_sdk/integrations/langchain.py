@@ -1,6 +1,6 @@
 """LangChain adapter — memnos as a retriever (and a tiny save helper).
 
-    pip install 'memnos-sdk[langchain]'
+    uv pip install 'memnos-sdk[langchain]'    # (or: pip install 'memnos-sdk[langchain]')
     from memnos_sdk import MemnosClient
     from memnos_sdk.integrations.langchain import MemnosRetriever
 
@@ -20,7 +20,8 @@ try:
     from langchain_core.documents import Document
     from langchain_core.retrievers import BaseRetriever
 except ImportError as e:  # pragma: no cover
-    raise ImportError("LangChain integration needs langchain_core: pip install 'memnos-sdk[langchain]'") from e
+    raise ImportError("LangChain integration needs langchain_core: uv pip install "
+                       "'memnos-sdk[langchain]' (or: pip install 'memnos-sdk[langchain]')") from e
 
 from ..client import MemnosClient
 

@@ -32,7 +32,8 @@ dotted Python import path), not a fork or a patch.
 ## Quick start
 
 ```bash
-pip install memnos-sdk               # in the OMNIGENT SERVER's own Python environment
+uv pip install memnos-sdk             # in the OMNIGENT SERVER's own Python environment
+                                       # (or: pip install memnos-sdk, same environment)
 
 # Embedded: memnos and the omnigent server run on the same machine.
 memnos server-setup omnigent --config /path/to/omnigent-server-config.yaml --mode embedded
@@ -120,7 +121,8 @@ policies:
 ```
 
 Because the handler is just an importable Python function, this needs **no Omnigent
-source changes** — only `pip install memnos-sdk` in whatever Python environment the
+source changes** — only `uv pip install memnos-sdk` (or, fallback: `pip install
+memnos-sdk`) in whatever Python environment the
 `omnigent server` process runs in. `memnos_sdk` (not the full `memnos` package) is
 exactly the lightweight, httpx-only client library this repo already publishes for
 third-party frameworks — the same one the LangChain/LangGraph/LlamaIndex adapters use
