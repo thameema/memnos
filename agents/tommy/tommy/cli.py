@@ -12,9 +12,13 @@ Usage:
 """
 from __future__ import annotations
 
+import glob
 import os
+import subprocess
 import sys
 import tempfile
+import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -26,8 +30,12 @@ from .install import run_install
 from .discovery.harnesses import all_harnesses
 
 
-def _memnos_health(cfg: TommyConfig) -> bool:
-    """Return True if memnos server is reachable."""
+# ---------------------------------------------------------------------------
+# memnos helpers
+# ---------------------------------------------------------------------------
+
+def _memnos_client(cfg: TommyConfig):
+    """Return a MemnosClient or None if memnos is unreachable."""
     try:
         from memnos_sdk import MemnosClient  # type: ignore
         client = MemnosClient(
@@ -35,20 +43,56 @@ def _memnos_health(cfg: TommyConfig) -> bool:
             token=cfg.memnos_token,
             namespace=cfg.tommy_ns,
         )
-        return client.healthy()
+        if client.healthy():
+            return client
     except Exception:
-        return False
+        pass
+    return None
 
 
-def _journal_start(cfg: TommyConfig, project_key: Optional[str]) -> None:
+def _ensure_memnos_running(cfg: TommyConfig) -> bool:
+    """
+    Check if memnos HTTP server is reachable.
+    If not, attempt to start it in the background (best-effort).
+    Returns True if memnos is usable.
+    """
+    import urllib.request
+    import urllib.error
+
+    def _reachable() -> bool:
+        try:
+            urllib.request.urlopen(f"{cfg.memnos_url}/health", timeout=2)
+            return True
+        except Exception:
+            return False
+
+    if _reachable():
+        return True
+
+    # Not reachable — try to start the daemon
+    click.echo("  memnos not running — attempting auto-start...", err=True)
+    try:
+        subprocess.Popen(
+            ["memnos", "start", "--http", "--port", "8900"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        # Give it 3s to come up
+        for _ in range(6):
+            time.sleep(0.5)
+            if _reachable():
+                click.echo("  memnos started ✓", err=True)
+                return True
+    except FileNotFoundError:
+        pass  # memnos binary not on PATH
+
+    return False
+
+
+def _journal_start(client, cfg: TommyConfig, project_key: Optional[str]) -> None:
     """Write a 'session started' memory to TOMMY_NS."""
     try:
-        from memnos_sdk import MemnosClient  # type: ignore
-        client = MemnosClient(
-            base_url=cfg.memnos_url,
-            token=cfg.memnos_token,
-            namespace=cfg.tommy_ns,
-        )
         proj_note = f", project={project_key}" if project_key else ""
         client.remember(
             f"Tommy session started (harness={cfg.harness}, model={cfg.default_model}"
@@ -56,11 +100,73 @@ def _journal_start(cfg: TommyConfig, project_key: Optional[str]) -> None:
             namespace=cfg.tommy_ns,
         )
     except Exception:
-        pass  # memnos journaling is best-effort
+        pass
 
 
-def _launch_harness(cfg: TommyConfig, project_key: Optional[str], extra_args: tuple) -> None:
-    """Build prompt, write to temp file, exec the configured harness."""
+def _find_latest_claude_transcript() -> Optional[Path]:
+    """
+    Locate the most recently modified Claude Code conversation JSONL.
+    Claude Code stores conversations at:
+      ~/.claude/projects/<hash>/conversations/<uuid>.jsonl
+    """
+    pattern = str(Path.home() / ".claude" / "projects" / "*" / "conversations" / "*.jsonl")
+    files = glob.glob(pattern)
+    if not files:
+        return None
+    return Path(max(files, key=os.path.getmtime))
+
+
+def _post_run_capture(client, cfg: TommyConfig, run_id: str, project_key: Optional[str]) -> None:
+    """
+    After the sub-agent exits:
+    1. Poll namespace_feed for anything the sub-agent wrote to memnos
+    2. Ingest the Claude Code conversation transcript
+    3. Call segment_episodes so this run becomes a searchable episode
+    """
+    try:
+        # Layer 2: feed — what did the sub-agent write?
+        # (subscription was created before Popen; we stored sub_id in run context)
+        pass  # sub_id is threaded through via caller; nothing to do here
+
+        # Layer 3: ingest conversation transcript
+        transcript = _find_latest_claude_transcript()
+        if transcript:
+            text = transcript.read_text(errors="replace")
+            client.ingest_file(
+                filename=f"tommy-run-{run_id}.jsonl",
+                text=text,
+                extract=True,
+            )
+            click.echo(f"  📥 Transcript ingested ({len(text):,} chars) → memnos")
+
+        # Layer 4: segment episodes
+        try:
+            client.segment_episodes(gap_minutes=30)
+            click.echo("  🧠 Episode segmented → memnos")
+        except Exception:
+            pass  # segment_episodes is best-effort
+
+        # Journal completion
+        proj_note = f", project={project_key}" if project_key else ""
+        client.remember(
+            f"Tommy session ended (run_id={run_id}{proj_note}, transcript_ingested={transcript is not None})",
+            namespace=cfg.tommy_ns,
+        )
+    except Exception:
+        pass  # capture is best-effort — never block the user
+
+
+# ---------------------------------------------------------------------------
+# Launch harness via Popen (stays alive for capture)
+# ---------------------------------------------------------------------------
+
+def _launch_harness(
+    cfg: TommyConfig,
+    project_key: Optional[str],
+    extra_args: tuple,
+    memnos_client=None,
+) -> None:
+    """Build prompt, write to temp file, Popen the harness, capture output after."""
     harnesses = all_harnesses()
     spec = harnesses.get(cfg.harness)
 
@@ -79,20 +185,25 @@ def _launch_harness(cfg: TommyConfig, project_key: Optional[str], extra_args: tu
 
     prompt = build_prompt(cfg, project_key=project_key)
 
-    # Write prompt to a temp file (harnesses read from file, not stdin)
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".md",
-        prefix="tommy-prompt-",
-        delete=False,
-    ) as f:
-        f.write(prompt)
-        prompt_file = f.name
+    # Write prompt to temp file (deleted after harness exits)
+    tf = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", prefix="tommy-prompt-", delete=False
+    )
+    tf.write(prompt)
+    tf.flush()
+    tf.close()
+    prompt_file = tf.name
 
     cmd = [
         part.replace("{prompt_file}", prompt_file)
         for part in spec.launch_template
     ] + list(extra_args)
+
+    # Inject MEMNOS_URL so the sub-agent's MCP config picks it up
+    env = os.environ.copy()
+    env["MEMNOS_URL"] = cfg.memnos_url
+    env["TOMMY_NS"] = cfg.tommy_ns
+    env["TOMMY_DEFAULT_NS"] = cfg.default_ns
 
     click.echo(f"🟣 Tommy → {cfg.harness}  (smart_routing={'on' if cfg.smart_routing else 'off'})")
     if project_key:
@@ -100,10 +211,49 @@ def _launch_harness(cfg: TommyConfig, project_key: Optional[str], extra_args: tu
         if proj:
             click.echo(f"   Project: {proj.name} ({proj.jira_project}) @ {proj.git_root}")
 
-    # exec — replace this process with the harness
-    os.execvp(cmd[0], cmd)
-    # never reached (exec replaces the process); temp file is cleaned by OS on exit
+    # Subscribe to namespace BEFORE launching (capture what sub-agent writes)
+    sub_id: Optional[int] = None
+    if memnos_client:
+        try:
+            sub = memnos_client.namespace_subscribe()
+            sub_id = sub.get("subscription_id")
+        except Exception:
+            pass
 
+    run_id = str(uuid.uuid4())[:8]
+
+    # ── Popen: Tommy stays alive ──────────────────────────────────────────
+    proc = subprocess.Popen(cmd, env=env)
+    proc.wait()
+    exit_code = proc.returncode
+    # ─────────────────────────────────────────────────────────────────────
+
+    # Cleanup temp file
+    try:
+        os.unlink(prompt_file)
+    except OSError:
+        pass
+
+    # Post-run capture (Layer 2: feed, Layer 3: ingest, Layer 4: segment)
+    if memnos_client:
+        # Layer 2: drain namespace feed
+        if sub_id is not None:
+            try:
+                new_memories = memnos_client.namespace_feed(sub_id)
+                count = len(new_memories.get("items", []))
+                if count:
+                    click.echo(f"  📡 {count} new memor{'y' if count == 1 else 'ies'} written by sub-agent")
+            except Exception:
+                pass
+
+        _post_run_capture(memnos_client, cfg, run_id, project_key)
+
+    sys.exit(exit_code)
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
 
 @click.command(
     context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
@@ -154,16 +304,26 @@ def main(
             click.echo(f"  {status} {name:<16} {spec.description}{active}")
         return
 
-    # memnos health check
+    # ── memnos startup sequence ──────────────────────────────────────────
+    client = None
     if not no_memnos_check:
-        if _memnos_health(cfg):
-            click.echo("🟢 memnos connected")
-            _journal_start(cfg, project)
+        memnos_ok = _ensure_memnos_running(cfg)
+        if memnos_ok:
+            client = _memnos_client(cfg)
+            if client:
+                click.echo("🟢 memnos connected (HTTP)")
+                _journal_start(client, cfg, project)
+            else:
+                click.echo(
+                    f"⚠️  memnos reachable but SDK init failed — memory features disabled.",
+                    err=True,
+                )
         else:
             click.echo(
                 f"⚠️  memnos not reachable at {cfg.memnos_url} — memory features disabled.\n"
                 "   (Start memnos or use --no-memnos-check to suppress this warning.)",
                 err=True,
             )
+    # ────────────────────────────────────────────────────────────────────
 
-    _launch_harness(cfg, project_key=project, extra_args=extra_args)
+    _launch_harness(cfg, project_key=project, extra_args=extra_args, memnos_client=client)
