@@ -8,8 +8,9 @@ Hardening vs the early prototype:
   - Audit log (who/what/when) + usage ledger (cost) — the governance moat
   - /healthz (liveness) + /readyz (DB reachable)
 
-Config via env: MEMNOS_DSN, MEMNOS_PORT, MEMNOS_POOL_MAX, OPENAI_API_KEY (enables
-1536-d embeddings + extraction; else free local 384-d).
+Config via env: MEMNOS_DSN, MEMNOS_PORT, MEMNOS_POOL_MAX, MEMNOS_RECALL_SQL_CONCURRENCY
+(issue #12 phase 2: hybrid recall's SQL arms in flight per request, default 2),
+OPENAI_API_KEY (enables 1536-d embeddings + extraction; else free local 384-d).
 Bootstrap identity with: python memnos_admin.py ...
 """
 import asyncio
@@ -1624,10 +1625,12 @@ class Handler(BaseHTTPRequestHandler):
                     # per-namespace arm failures from THIS phase to the same list.
                     raw_c, sem_c = mem.recall_wide_fetch(nss, q, qv=qv, timings=timings,
                                                          deadline=deadline,
-                                                         degraded_reasons=wide_degraded_reasons)
+                                                         degraded_reasons=wide_degraded_reasons,
+                                                         conn_factory=POOL.connection)
                 else:
                     bundle = mem.recall_fetch(ns, q, qv=qv, extra_namespaces=grounded,
-                                              pre=pre, timings=timings, deadline=deadline)
+                                              pre=pre, timings=timings, deadline=deadline,
+                                              conn_factory=POOL.connection)
                 mem.store = None
             timings.setdefault("staleness_ms", 0.0)   # wide+empty-namespace edge
             pin_rows = []
