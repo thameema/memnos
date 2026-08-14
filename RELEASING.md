@@ -16,11 +16,6 @@ Do this once for **`memnos`**, once for **`memnos-sdk`**, and once for **`tommy-
    - **Environment:** *(leave blank)*
 3. Save. (After this, you can delete the manual PyPI API token — it's no longer needed.)
 
-`tommy-orchestrator` (`agents/tommy`) is versioned independently of `memnos`/`memnos-sdk` — it
-is **not** part of the lockstep bump described below. It publishes off the same `release:
-published` trigger, and `skip-existing` means a memnos-only release is simply a no-op upload
-for it once its own version has been published once.
-
 ## Cutting a release
 
 The version number is the single source of truth; bump it, tag it, release it:
@@ -29,6 +24,11 @@ The version number is the single source of truth; bump it, tag it, release it:
    one changed (`skip-existing` makes the unchanged one a no-op upload):
    - `pyproject.toml` → `version = "0.1.3"` (the `memnos` package)
    - `sdk/pyproject.toml` → `version = "0.1.3"` (the `memnos-sdk` package — same number)
+
+   `tommy-orchestrator` (`agents/tommy`) is versioned independently of `memnos`/`memnos-sdk` —
+   it is **not** part of this lockstep bump. It publishes off the same `release: published`
+   trigger, and `skip-existing` means a memnos-only release is simply a no-op upload for it
+   once its own version has been published once.
 2. Commit + push to `master`.
 3. Create the GitHub release (this is what triggers publishing):
    ```bash
