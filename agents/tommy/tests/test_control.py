@@ -346,13 +346,16 @@ class TestCLILaunchHarness:
         """
         import re
         src = (Path(__file__).parent.parent / "tommy" / "cli.py").read_text()
-        # Find the _launch_harness function body
+        # Find the _launch_harness function body (stop at the next top-level def/class)
         fn_start = src.find("def _launch_harness(")
         assert fn_start != -1, "_launch_harness not found in cli.py"
-        fn_body = src[fn_start:]
-        # All Popen calls in _launch_harness that set start_new_session=True
+        next_def = re.search(r"^(?:def |class )", src[fn_start + 1:], re.MULTILINE)
+        fn_end = fn_start + 1 + next_def.start() if next_def else len(src)
+        fn_body = src[fn_start:fn_end]
+        # All Popen calls in _launch_harness that set start_new_session=True.
+        # Use .*? (DOTALL) so the pattern crosses nested parens like cwd=str(ws_path).
         popen_calls = re.findall(
-            r"subprocess\.Popen\([^)]*start_new_session\s*=\s*True[^)]*\)",
+            r"subprocess\.Popen\(.*?start_new_session\s*=\s*True.*?\)",
             fn_body,
             re.DOTALL,
         )
@@ -370,7 +373,10 @@ class TestCLILaunchHarness:
         import re
         src = (Path(__file__).parent.parent / "tommy" / "cli.py").read_text()
         fn_start = src.find("def _launch_harness(")
-        fn_body = src[fn_start:]
+        assert fn_start != -1, "_launch_harness not found in cli.py"
+        next_def = re.search(r"^(?:def |class )", src[fn_start + 1:], re.MULTILINE)
+        fn_end = fn_start + 1 + next_def.start() if next_def else len(src)
+        fn_body = src[fn_start:fn_end]
         # 'finally:' must appear in the function
         assert "finally:" in fn_body, (
             "_launch_harness has no finally block. "
