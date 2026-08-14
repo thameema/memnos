@@ -63,7 +63,7 @@ def _ensure_memnos_running(cfg: TommyConfig) -> bool:
 
     def _reachable() -> bool:
         try:
-            urllib.request.urlopen(f"{cfg.memnos_url}/health", timeout=2)
+            urllib.request.urlopen(f"{cfg.memnos_url}/healthz", timeout=2)
             return True
         except Exception:
             return False
