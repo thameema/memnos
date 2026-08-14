@@ -319,20 +319,74 @@ def _safe_ns_key(namespace: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", namespace or "") or "_"
 
 
+# Matches both this fix's tmp files (`<ns>.json.tmp-<epoch_ms>-<rand8>`) and any
+# deterministic `<ns>.json.tmp` left behind by the pre-#63 code — both are swept so a
+# world/group-readable leftover (the exact leak #63 closes) never lingers on disk.
+_SNAPSHOT_TMP_RE = re.compile(r"\.json\.tmp(-\d+-[0-9a-f]{8})?$")
+
+# Generous multiple of how long a single json.dump()+os.replace() could plausibly take,
+# so the sweep below never races a legitimately in-flight write on a slow disk.
+STALE_SNAPSHOT_TMP_AGE = 3600.0
+
+
+def _sweep_stale_snapshot_tmp(d: str, max_age: float = STALE_SNAPSHOT_TMP_AGE) -> None:
+    """Best-effort cleanup of tmp files orphaned by a process that crashed between
+    creating a snapshot's tmp file and the os.replace() that publishes it. Purely
+    disk/leak hygiene — save_snapshot() never revisits an old tmp name (see its
+    docstring), so a stale leftover is inert to correctness but, being unhardened or
+    from an interrupted write, shouldn't be left sitting on disk indefinitely."""
+    try:
+        entries = os.listdir(d)
+    except OSError:
+        return
+    now = time.time()
+    for fname in entries:
+        if not _SNAPSHOT_TMP_RE.search(fname):
+            continue
+        path = os.path.join(d, fname)
+        try:
+            if now - os.path.getmtime(path) < max_age:
+                continue                                  # plausibly still in flight
+            os.remove(path)
+        except OSError:
+            pass                                           # already gone / lost a benign race
+
+
 def save_snapshot(config_dir: str, namespace: str, context: str, mem_count=None) -> None:
     """Cache the last SUCCESSFUL /recall context for `namespace`. Called after every
     live recall so an outage can serve this instead of silently returning nothing (or,
     worse, improvised local data) — the snapshot always came from THIS store, just not
-    the current instant of it."""
+    the current instant of it.
+
+    Created at owner-only permissions (0600) from the first syscall, same reasoning as
+    enqueue()'s queue files (issue #48/#62) — this file holds actual recalled memory
+    content, not just a token, so it must never sit at the umask-derived default even
+    briefly.
+
+    Unlike enqueue()'s queue items (a fresh, never-revisited filename per write), this
+    is one file PER NAMESPACE that every recall for that namespace overwrites, and
+    save_snapshot() genuinely races: two sessions on the same namespace (memnos_cli.py's
+    hook is a fresh process per prompt) can both hit /recall around the same moment.
+    Porting #62's fix as-is — a deterministic tmp path plus O_EXCL — would make a crash
+    between create and os.replace() permanently break every future save for that
+    namespace (nothing sweeps or unlinks it), and would also raise FileExistsError on a
+    genuine concurrent writer rather than a same-instant collision (issue #63's review
+    comment). So each attempt gets its own unique tmp filename (epoch-ms + random
+    suffix, matching enqueue()'s pattern) — O_EXCL then only ever guards a same-ms
+    same-suffix collision, never a concurrent writer or a past crash's leftover.
+    Orphaned tmp files are swept best-effort rather than left to accumulate."""
     if not context:
         return
     d = snapshot_dir(config_dir)
     os.makedirs(d, exist_ok=True)
+    _sweep_stale_snapshot_tmp(d)
     path = os.path.join(d, _safe_ns_key(namespace) + ".json")
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
+    now = time.time()
+    tmp = f"{path}.tmp-{int(now * 1000)}-{uuid.uuid4().hex[:8]}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as fh:
         json.dump({"namespace": namespace, "context": context, "mem_count": mem_count,
-                   "saved_at": time.time()}, fh)
+                   "saved_at": now}, fh)
     os.replace(tmp, path)
 
 
