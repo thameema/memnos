@@ -6,7 +6,7 @@ short-lived OIDC credentials via **Trusted Publishing**.
 
 ## One-time setup (per PyPI project)
 
-Do this once for **`memnos`** and once for **`memnos-sdk`**:
+Do this once for **`memnos`**, once for **`memnos-sdk`**, and once for **`tommy-orchestrator`**:
 
 1. Sign in to PyPI → open the project → **Manage → Publishing**.
 2. Under **"Add a new trusted publisher" → GitHub**, enter:
@@ -15,6 +15,11 @@ Do this once for **`memnos`** and once for **`memnos-sdk`**:
    - **Workflow name:** `release.yml`
    - **Environment:** *(leave blank)*
 3. Save. (After this, you can delete the manual PyPI API token — it's no longer needed.)
+
+`tommy-orchestrator` (`agents/tommy`) is versioned independently of `memnos`/`memnos-sdk` — it
+is **not** part of the lockstep bump described below. It publishes off the same `release:
+published` trigger, and `skip-existing` means a memnos-only release is simply a no-op upload
+for it once its own version has been published once.
 
 ## Cutting a release
 
@@ -31,8 +36,9 @@ The version number is the single source of truth; bump it, tag it, release it:
    gh release create v0.1.2 --target master --title "memnos v0.1.2 — <summary>" --generate-notes
    ```
    (or click **Releases → Draft a new release** in the GitHub UI.)
-4. The **Release to PyPI** workflow builds both packages and publishes them. Watch it under
-   the repo's **Actions** tab.
+4. The **Release to PyPI** workflow builds all three packages (`memnos`, `memnos-sdk`,
+   `tommy-orchestrator`) and publishes them, with `skip-existing` making the no-op cases
+   quiet. Watch it under the repo's **Actions** tab.
 
 That's it — `uv tool upgrade memnos` (or, fallback: `pip install -U memnos`) picks up the new
 version once the workflow goes green. Keep `memnos` + `memnos-sdk` + the git tag on the same
