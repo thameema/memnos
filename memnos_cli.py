@@ -65,17 +65,57 @@ def _latest_pypi_version(timeout=4):
 
 
 def _upgrade_cmd():
-    """Pick the right upgrade command for however memnos was installed (uv tool / pipx / pip)."""
+    """Pick the right upgrade command for however memnos was installed.
+
+    Detection order:
+      1. Executable path heuristic — fastest, no subprocess, works even with broken CWD.
+         uv tool venvs live under ~/.local/share/uv/tools/<name>/.
+      2. `uv tool list` subprocess (with safe CWD=home) — catches edge-case installs.
+      3. pipx list — same pattern.
+      4. pip fallback — last resort; logged as a warning since uv venvs have no pip.
+    """
     import shutil
     import subprocess
+    from pathlib import Path
+    home = Path.home()
+
+    # 1. Heuristic: is our own executable inside a uv tools tree?
+    exe = Path(sys.executable).resolve()
+    uv_tools_root = (home / ".local" / "share" / "uv" / "tools").resolve()
+    if str(exe).startswith(str(uv_tools_root)) and shutil.which("uv"):
+        return ["uv", "tool", "upgrade", "memnos"]
+
+    # 2. uv tool list (with safe CWD so it never fails on a deleted directory)
     if shutil.which("uv"):
-        out = subprocess.run(["uv", "tool", "list"], capture_output=True, text=True).stdout
-        if "memnos" in out:
-            return ["uv", "tool", "upgrade", "memnos"]
+        try:
+            out = subprocess.run(
+                ["uv", "tool", "list"],
+                capture_output=True, text=True, cwd=str(home),
+            ).stdout
+            if "memnos" in out:
+                return ["uv", "tool", "upgrade", "memnos"]
+        except Exception:
+            pass
+
+    # 3. pipx
     if shutil.which("pipx"):
-        out = subprocess.run(["pipx", "list", "--short"], capture_output=True, text=True).stdout
-        if "memnos" in out:
-            return ["pipx", "upgrade", "memnos"]
+        try:
+            out = subprocess.run(
+                ["pipx", "list", "--short"],
+                capture_output=True, text=True, cwd=str(home),
+            ).stdout
+            if "memnos" in out:
+                return ["pipx", "upgrade", "memnos"]
+        except Exception:
+            pass
+
+    # 4. pip fallback — warn if we're inside a uv/pipx venv that has no pip
+    print(
+        "  [warn] falling back to pip upgrade — if this fails, run:
+"
+        "         cd ~ && uv tool upgrade memnos",
+        file=sys.stderr,
+    )
     return [sys.executable, "-m", "pip", "install", "-U", "memnos"]
 
 

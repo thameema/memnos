@@ -256,6 +256,65 @@ def _launch_harness(
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+
+def _do_upgrade() -> None:
+    """Upgrade Tommy using the same installer that installed it (uv / pipx / pip)."""
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    home = Path.home()
+    exe  = Path(sys.executable).resolve()
+    uv_tools_root = (home / ".local" / "share" / "uv" / "tools").resolve()
+
+    # 1. uv tool path heuristic (fastest, works even with broken CWD)
+    if str(exe).startswith(str(uv_tools_root)) and shutil.which("uv"):
+        cmd = ["uv", "tool", "upgrade", "tommy-orchestrator"]
+    # 2. uv tool list (safe CWD)
+    elif shutil.which("uv"):
+        try:
+            out = subprocess.run(
+                ["uv", "tool", "list"], capture_output=True, text=True, cwd=str(home),
+            ).stdout
+            if "tommy" in out:
+                cmd = ["uv", "tool", "upgrade", "tommy-orchestrator"]
+            else:
+                cmd = [sys.executable, "-m", "pip", "install", "-U", "tommy-orchestrator"]
+        except Exception:
+            cmd = [sys.executable, "-m", "pip", "install", "-U", "tommy-orchestrator"]
+    # 3. pipx
+    elif shutil.which("pipx"):
+        try:
+            out = subprocess.run(
+                ["pipx", "list", "--short"], capture_output=True, text=True, cwd=str(home),
+            ).stdout
+            if "tommy" in out:
+                cmd = ["pipx", "upgrade", "tommy-orchestrator"]
+            else:
+                cmd = [sys.executable, "-m", "pip", "install", "-U", "tommy-orchestrator"]
+        except Exception:
+            cmd = [sys.executable, "-m", "pip", "install", "-U", "tommy-orchestrator"]
+    else:
+        click.echo(
+            "  [warn] falling back to pip — if this fails, run:\n"
+            "         cd ~ && uv tool upgrade tommy-orchestrator",
+            err=True,
+        )
+        cmd = [sys.executable, "-m", "pip", "install", "-U", "tommy-orchestrator"]
+
+    click.echo(f"🔄 Upgrading Tommy ... ({' '.join(cmd)})")
+    rc = subprocess.run(cmd, cwd=str(home)).returncode
+    if rc == 0:
+        click.echo("✓ Tommy upgraded. Restart any running sessions.")
+    else:
+        click.echo(
+            f"✗ Upgrade failed (exit {rc}).\n"
+            "  Try manually:  cd ~ && uv tool upgrade tommy-orchestrator",
+            err=True,
+        )
+        sys.exit(rc)
+
+
 @click.command(
     context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
     help="Tommy — personal coding orchestrator built on memnos.",
@@ -267,6 +326,7 @@ def _launch_harness(
 @click.option("--list-projects", is_flag=True, help="List configured projects.")
 @click.option("--list-harnesses", is_flag=True, help="List detected harnesses.")
 @click.option("--mcp", "mcp_mode", is_flag=True, help="Run as MCP stdio server (editor-managed subprocess, no daemon, no port).")
+@click.option("--upgrade", "do_upgrade", is_flag=True, help="Upgrade Tommy via uv tool install (same venv, no pip).")
 @click.option("--no-memnos-check", is_flag=True, help="Skip memnos health check at startup.")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 def main(
@@ -277,10 +337,16 @@ def main(
     list_projects: bool,
     list_harnesses: bool,
     mcp_mode: bool,
+    do_upgrade: bool,
     no_memnos_check: bool,
     extra_args: tuple,
 ) -> None:
     cfg = TommyConfig.load(conf_path=Path(conf) if conf else None)
+
+    # --upgrade
+    if do_upgrade:
+        _do_upgrade()
+        return
 
     # --mcp: hand off to stdio MCP server immediately; editor owns our lifecycle
     if mcp_mode:
