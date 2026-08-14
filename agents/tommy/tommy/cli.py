@@ -27,6 +27,7 @@ import click
 from .config import TommyConfig
 from .prompt import build_prompt
 from .install import run_install
+from .mcp_server import run_stdio
 from .discovery.harnesses import all_harnesses
 
 
@@ -265,6 +266,7 @@ def _launch_harness(
 @click.option("--force", is_flag=True, help="With --install: overwrite existing files.")
 @click.option("--list-projects", is_flag=True, help="List configured projects.")
 @click.option("--list-harnesses", is_flag=True, help="List detected harnesses.")
+@click.option("--mcp", "mcp_mode", is_flag=True, help="Run as MCP stdio server (editor-managed subprocess, no daemon, no port).")
 @click.option("--no-memnos-check", is_flag=True, help="Skip memnos health check at startup.")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 def main(
@@ -274,10 +276,16 @@ def main(
     force: bool,
     list_projects: bool,
     list_harnesses: bool,
+    mcp_mode: bool,
     no_memnos_check: bool,
     extra_args: tuple,
 ) -> None:
     cfg = TommyConfig.load(conf_path=Path(conf) if conf else None)
+
+    # --mcp: hand off to stdio MCP server immediately; editor owns our lifecycle
+    if mcp_mode:
+        run_stdio()
+        return
 
     # --install
     if do_install:

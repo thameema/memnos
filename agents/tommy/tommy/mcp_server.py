@@ -1,0 +1,355 @@
+"""
+Tommy MCP stdio server.
+
+Invoked by editors (Cursor, Claude Desktop, VS Code+Continue, Zed) as:
+
+    tommy --mcp
+
+Tommy reads MCP JSON-RPC from stdin and writes to stdout.  The editor owns
+the process — Tommy never opens a port and never runs as a daemon.
+
+Seven tools:
+  tommy_recall          — query memnos memory
+  tommy_remember        — persist a fact to memnos
+  tommy_dispatch        — launch a harness task (async by default)
+  tommy_status          — check a running task's output / exit code
+  tommy_switch_project  — set the active project context
+  tommy_route           — dry-run: which harness would Tommy pick?
+  tommy_list_harnesses  — available harnesses + health + active routing
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tempfile
+import threading
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+from fastmcp import FastMCP
+
+from .config import TommyConfig, ProjectEntry
+from .discovery.harnesses import all_harnesses
+
+
+# ---------------------------------------------------------------------------
+# In-process task registry (lives for the lifetime of this stdio process)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Task:
+    task_id: str
+    harness: str
+    proc: subprocess.Popen
+    output_lines: list = field(default_factory=list)
+    _lock: object = field(default_factory=threading.Lock, repr=False)
+    _drain_thread: Optional[threading.Thread] = field(default=None, repr=False)
+
+    def status(self) -> str:
+        rc = self.proc.poll()
+        if rc is None:
+            return "running"
+        return "done" if rc == 0 else f"failed (exit {rc})"
+
+    def tail(self, n: int = 50) -> str:
+        with self._lock:
+            lines = self.output_lines[-n:]
+        return "\n".join(lines)
+
+
+_tasks: dict = {}
+_active_project: Optional[str] = None
+_cfg: Optional[TommyConfig] = None
+
+
+def _get_cfg() -> TommyConfig:
+    global _cfg
+    if _cfg is None:
+        _cfg = TommyConfig.load()
+    return _cfg
+
+
+def _effective_namespace(cfg: TommyConfig) -> str:
+    """Return the memnos namespace for the active project, or the default."""
+    if _active_project:
+        proj = cfg.project_by_key(_active_project)
+        if proj:
+            return getattr(proj, "namespace", cfg.default_ns)
+    return cfg.default_ns
+
+
+def _memnos_client(cfg: TommyConfig):
+    """Return a MemnosClient or None if memnos is unreachable."""
+    try:
+        from memnos_sdk import MemnosClient  # type: ignore
+        client = MemnosClient(
+            base_url=cfg.memnos_url,
+            token=cfg.memnos_token,
+            namespace=_effective_namespace(cfg),
+        )
+        if client.healthy():
+            return client
+    except Exception:
+        pass
+    return None
+
+
+def _drain_stdout(proc: subprocess.Popen, task: Task) -> None:
+    """Background thread: drain proc stdout into task.output_lines."""
+    try:
+        for line in proc.stdout:
+            decoded = line.decode(errors="replace").rstrip()
+            with task._lock:
+                task.output_lines.append(decoded)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# FastMCP server
+# ---------------------------------------------------------------------------
+
+mcp = FastMCP(
+    name="tommy",
+    instructions=(
+        "Tommy is your memnos-native coding orchestrator. "
+        "Use tommy_dispatch to start coding tasks, tommy_recall to retrieve "
+        "persistent memory, and tommy_remember to save decisions across sessions."
+    ),
+)
+
+
+@mcp.tool()
+def tommy_recall(
+    query: str,
+    namespace: str = "",
+    limit: int = 10,
+) -> str:
+    """
+    Query Tommy's persistent memory (memnos) for context relevant to the
+    current task.  Returns ranked fragments with provenance.
+
+    Args:
+        query:     Natural language query.
+        namespace: memnos namespace, e.g. 'org:engineering'. Omit for
+                   the current project namespace.
+        limit:     Max fragments to return (default 10).
+    """
+    cfg = _get_cfg()
+    client = _memnos_client(cfg)
+    if client is None:
+        return "memnos unreachable — no memory available."
+    try:
+        ns = namespace or _effective_namespace(cfg)
+        results = client.recall(query, namespace=ns, limit=limit)
+        if not results:
+            return f"No memories found for: {query!r}"
+        return "\n".join(f"[{i+1}] {r}" for i, r in enumerate(results))
+    except Exception as exc:
+        return f"memnos recall error: {exc}"
+
+
+@mcp.tool()
+def tommy_remember(
+    content: str,
+    namespace: str = "",
+    kind: str = "fact",
+) -> str:
+    """
+    Persist a fact, decision, or constraint to Tommy's memory so it survives
+    across sessions and editors.
+
+    Args:
+        content:   The fact to store (plain language).
+        namespace: Target namespace. Omit for the current project namespace.
+        kind:      One of: fact, constraint, decision, learning.
+    """
+    cfg = _get_cfg()
+    client = _memnos_client(cfg)
+    if client is None:
+        return "memnos unreachable — memory not saved."
+    try:
+        ns = namespace or _effective_namespace(cfg)
+        client.remember(content, namespace=ns, memory_type=kind if kind != "fact" else "")
+        return f"Saved to {ns} ({kind})"
+    except Exception as exc:
+        return f"memnos remember error: {exc}"
+
+
+@mcp.tool()
+def tommy_dispatch(
+    task: str,
+    harness: str = "auto",
+    workspace: str = "",
+    async_run: bool = True,
+    inject_memory: bool = True,
+) -> dict:
+    """
+    Dispatch a coding task to the best available harness (Claude Code, Codex,
+    etc.).  Returns a task handle immediately when async_run is True.
+
+    Args:
+        task:         Task description / full prompt.
+        harness:      Which harness: 'auto', 'claude', 'codex', etc.
+        workspace:    Absolute path for the harness to run in.
+        async_run:    Return task_id immediately (default True).
+        inject_memory: Enrich prompt with memnos recall before dispatch.
+    """
+    cfg = _get_cfg()
+    harnesses = all_harnesses()
+
+    chosen = harness if harness != "auto" else cfg.harness
+    spec = harnesses.get(chosen)
+    if spec is None or not spec.available:
+        available = [n for n, s in harnesses.items() if s.available]
+        return {"error": f"Harness '{chosen}' not available. Available: {available or ['none']}"}
+
+    ws_path = Path(workspace) if workspace else Path.cwd()
+    if _active_project:
+        proj = cfg.project_by_key(_active_project)
+        if proj and not workspace:
+            ws_path = Path(getattr(proj, "git_root", str(Path.cwd())))
+
+    # Optionally inject memnos context
+    full_task = task
+    if inject_memory:
+        client = _memnos_client(cfg)
+        if client:
+            try:
+                context = client.recall(task, limit=5)
+                if context:
+                    ctx_block = "\n".join(f"- {r}" for r in context)
+                    full_task = f"## Context from memory\n{ctx_block}\n\n---\n\n{task}"
+            except Exception:
+                pass
+
+    tf = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", prefix="tommy-mcp-", delete=False
+    )
+    tf.write(full_task)
+    tf.flush()
+    tf.close()
+
+    cmd = [part.replace("{prompt_file}", tf.name) for part in spec.launch_template]
+    env = os.environ.copy()
+    env["MEMNOS_URL"] = cfg.memnos_url
+    env["TOMMY_NS"] = cfg.tommy_ns
+
+    task_id = uuid.uuid4().hex[:8]
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(ws_path),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,   # decouple from Tommy's process group / TTY
+    )
+
+    t = Task(task_id=task_id, harness=chosen, proc=proc)
+    drain = threading.Thread(target=_drain_stdout, args=(proc, t), daemon=True)
+    drain.start()
+    t._drain_thread = drain
+    _tasks[task_id] = t
+
+    if async_run:
+        return {"task_id": task_id, "status": "running", "harness": chosen}
+
+    proc.wait()
+    return {"task_id": task_id, "status": t.status(), "output": t.tail(200)}
+
+
+@mcp.tool()
+def tommy_status(task_id: str, tail: int = 50) -> dict:
+    """
+    Check the status and partial output of a task dispatched via tommy_dispatch.
+
+    Args:
+        task_id: The task_id returned by tommy_dispatch.
+        tail:    Return the last N lines of stdout (default 50).
+    """
+    t = _tasks.get(task_id)
+    if t is None:
+        return {"error": f"Unknown task_id: {task_id!r}"}
+    return {"task_id": task_id, "harness": t.harness, "status": t.status(), "output": t.tail(tail)}
+
+
+@mcp.tool()
+def tommy_switch_project(project: str) -> str:
+    """
+    Set the active project context for this Tommy session.  Affects which
+    memnos namespace is used by default and which workspace path is the
+    default for tommy_dispatch.
+
+    Args:
+        project: Project key — must match a key in tommy.conf [projects].
+    """
+    global _active_project
+    cfg = _get_cfg()
+    entry = cfg.project_by_key(project)
+    if entry is None:
+        keys = [p.key for p in cfg.projects]
+        return f"Unknown project '{project}'. Configured: {keys or ['(none)']}"
+    _active_project = project
+    return (
+        f"Active project: {entry.name} ({entry.key})\n"
+        f"  JIRA: {entry.jira_project}\n"
+        f"  Workspace: {entry.git_root}"
+    )
+
+
+@mcp.tool()
+def tommy_route(task: str, explain: bool = False) -> dict:
+    """
+    Ask Tommy's routing engine which harness it would choose for a task,
+    without dispatching.
+
+    Args:
+        task:    Task description.
+        explain: Include routing rationale.
+    """
+    cfg = _get_cfg()
+    harnesses = all_harnesses()
+    chosen = cfg.harness
+    spec = harnesses.get(chosen)
+    result: dict = {
+        "chosen_harness": chosen,
+        "available": spec.available if spec else False,
+    }
+    if explain:
+        result["rationale"] = (
+            f"smart_routing={'enabled' if cfg.smart_routing else 'disabled'}. "
+            f"Default harness is '{cfg.harness}' (from tommy.conf). "
+            "Task-type routing will be added in a future release."
+        )
+    return result
+
+
+@mcp.tool()
+def tommy_list_harnesses() -> dict:
+    """Return available harnesses, health, and current routing config."""
+    cfg = _get_cfg()
+    harnesses = all_harnesses()
+    return {
+        "harnesses": [
+            {
+                "name": name,
+                "available": spec.available,
+                "description": spec.description,
+                "active": name == cfg.harness,
+            }
+            for name, spec in harnesses.items()
+        ],
+        "smart_routing": cfg.smart_routing,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Entry point called from cli.py
+# ---------------------------------------------------------------------------
+
+def run_stdio() -> None:
+    """Run Tommy as an MCP stdio server (invoked via `tommy --mcp`)."""
+    mcp.run(transport="stdio")
