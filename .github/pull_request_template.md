@@ -28,4 +28,4 @@ python -m pytest tools/test_learning.py -v
 - [ ] Docstrings / comments updated if behaviour changed
 - [ ] `memnos.yaml.example` updated if config schema changed
 - [ ] `README.md` or relevant `docs/` file updated if user-facing behaviour changed
-- [ ] No credentials, customer names, or Acme Health–specific data included
+- [ ] No credentials, customer names, or employer/client-specific data included

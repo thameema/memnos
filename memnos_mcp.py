@@ -651,7 +651,7 @@ def get_context(query: str) -> str:
 @mcp.tool()
 def lease_acquire(key: str, holder_id: str, ttl_seconds: int = 1200) -> str:
     """Atomically acquire an exclusive lease on a work item (e.g. 'ticket:PROJ-543',
-    'mr:!51', 'repo:gridops-platform'). Returns granted=true if you now hold the lease;
+    'mr:!51', 'repo:example-platform'). Returns granted=true if you now hold the lease;
     granted=false with held_by/expires_at if another agent is already working it.
     Always call this before starting work on any shared item; heartbeat while working;
     release on completion."""

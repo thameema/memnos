@@ -153,7 +153,7 @@ def test_session_dedupe():
 def test_suggestion_helper(conn, pid, a_ns, b_ns):
     print("=== suggest-on-mismatch helper (entities seeded directly, $0) ===")
     # seed B's entity world; A stays empty of these names
-    for name in ("Gateway", "Nimbus", "Falcon", "Crosswalk"):
+    for name in ("Gateway", "Nimbus", "Falcon", "Beacon"):
         conn.execute(f"INSERT INTO {SCHEMA}.entities(namespace,name) VALUES(%s,%s) "
                      f"ON CONFLICT DO NOTHING", (b_ns, name))
 
