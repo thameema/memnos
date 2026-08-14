@@ -27,6 +27,20 @@ this test) makes the driver block in proc.wait() for the harness either way.
 The red/green proof below (see PR description) toggles only the
 start_new_session=True line and shows the harness then fails to receive/act
 on the signal within a tight bound — the mechanism #77 actually fixes.
+
+Second scope note, on the control-socket assertions specifically: connecting
+to the captured port and observing ConnectionRefusedError proves the port is
+no longer listening once the driver process is gone. It does NOT by itself
+distinguish "ctrl.close() in the finally block ran" from "the driver process
+exited and the OS reclaimed its sockets regardless" — sys.exit(exit_code) is
+the very next statement after cleanup either way, so both explanations are
+observationally identical from outside the process without instrumenting
+cli.py itself (out of scope for a test-only change). The os.unlink(prompt_file)
+assertion is the one that's genuinely finally-block-specific: a missing
+os.unlink call would leave the file on disk forever, independent of whether
+the process has exited. Treat the socket check as end-state confirmation
+alongside that, not as independent proof of the finally block's ctrl.close()
+line.
 """
 from __future__ import annotations
 
@@ -50,7 +64,6 @@ HARNESS_SCRIPT = FIXTURES / "sigint_harness_stub.py"
 
 _HARNESS_DEATH_BUDGET = 3.0   # tight bound: fixed code kills the harness in ms
 _DRIVER_EXIT_BUDGET = 10.0    # generous: covers cleanup + process teardown
-_SETTLE = 0.3                 # let the harness finish installing its SIGINT handler
 
 
 def _wait_for_file(path: Path, timeout: float) -> None:
@@ -99,6 +112,7 @@ class _Rig:
 
         self.pid_file = tmp_path / "harness.pid"
         self.marker_file = tmp_path / "harness.marker"
+        self.ready_file = tmp_path / "harness.ready"
         self.port_file = tmp_path / "ctrl.port"
         self.log_file = tmp_path / "driver.log"
 
@@ -109,6 +123,7 @@ class _Rig:
             "TOMMY_TEST_HARNESS_SCRIPT": str(HARNESS_SCRIPT),
             "TOMMY_TEST_HARNESS_PIDFILE": str(self.pid_file),
             "TOMMY_TEST_HARNESS_MARKERFILE": str(self.marker_file),
+            "TOMMY_TEST_HANDLER_READY_FILE": str(self.ready_file),
             "TOMMY_TEST_CTRL_PORT_FILE": str(self.port_file),
             "TOMMY_TEST_HARNESS_MODE": mode,
             "TOMMY_TEST_HARNESS_SLEEP": str(harness_sleep),
@@ -168,7 +183,10 @@ def test_sigint_to_process_group_kills_harness_and_cleans_up(rig):
 
     _wait_for_file(r.pid_file, timeout=10)
     harness_pid = int(r.pid_file.read_text().strip())
-    time.sleep(_SETTLE)  # let the harness finish installing its SIGINT handler
+    # Wait on the real fact (handler installed), not a guessed handshake
+    # delay — a SIGINT that beats a fixed sleep on a loaded runner would hit
+    # the harness's default disposition instead of its handler.
+    _wait_for_file(r.ready_file, timeout=10)
 
     # Precondition: the driver really is its own process-group leader, and
     # the harness (Popen'd without start_new_session, per the #77 fix)
@@ -219,6 +237,7 @@ def test_sigint_to_process_group_kills_harness_and_cleans_up(rig):
         f"prompt file {prompt_file} was not cleaned up after SIGINT\n{r.diag()}"
     )
 
+    # End-state check, not finally-block-specific proof — see module docstring.
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(2.0)
     try:
@@ -254,6 +273,7 @@ def test_clean_exit_returns_harness_exit_code(rig):
 
     _wait_for_file(r.port_file, timeout=5)
     ctrl_port = int(r.port_file.read_text().strip())
+    # End-state check, not finally-block-specific proof — see module docstring.
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(2.0)
     try:

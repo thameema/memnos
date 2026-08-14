@@ -6,11 +6,15 @@ way a real harness binary (claude, codex, ...) would be. Two modes, selected
 by TOMMY_TEST_HARNESS_MODE:
 
   "sleep" (default) — writes its own PID to TOMMY_TEST_HARNESS_PIDFILE, installs
-      a SIGINT handler that records "sigint-received" in TOMMY_TEST_HARNESS_MARKERFILE
-      and exits, then sleeps for TOMMY_TEST_HARNESS_SLEEP seconds. If the sleep
-      completes without SIGINT ever arriving, it appends "timeout-no-sigint" to
-      the marker file instead — this is what happens under the pre-#77 bug,
-      where the harness lands in a different process group and never sees Ctrl-C.
+      a SIGINT handler, then (only once the handler is actually installed)
+      writes "handler-installed" to TOMMY_TEST_HANDLER_READY_FILE so the test
+      can wait on a real fact instead of sleeping a guessed handshake delay.
+      On SIGINT the handler records "sigint-received" in
+      TOMMY_TEST_HARNESS_MARKERFILE and exits. If the sleep of
+      TOMMY_TEST_HARNESS_SLEEP seconds completes without SIGINT ever arriving,
+      it appends "timeout-no-sigint" to the marker file instead — this is what
+      happens under the pre-#77 bug, where the harness lands in a different
+      process group and never sees Ctrl-C.
 
   "exit" — writes its PID, then exits immediately with TOMMY_TEST_HARNESS_EXITCODE.
       Used to exercise the normal (non-interrupted) exit path.
@@ -22,6 +26,7 @@ import time
 
 pid_file = os.environ["TOMMY_TEST_HARNESS_PIDFILE"]
 marker_file = os.environ["TOMMY_TEST_HARNESS_MARKERFILE"]
+ready_file = os.environ["TOMMY_TEST_HANDLER_READY_FILE"]
 mode = os.environ.get("TOMMY_TEST_HARNESS_MODE", "sleep")
 
 with open(pid_file, "w") as f:
@@ -40,6 +45,12 @@ def _on_sigint(signum, frame):
 
 
 signal.signal(signal.SIGINT, _on_sigint)
+
+# Only after the handler is actually installed — a SIGINT that arrives before
+# this point would hit the process's default disposition instead.
+with open(ready_file, "w") as f:
+    f.write("handler-installed")
+    f.flush()
 
 time.sleep(float(os.environ.get("TOMMY_TEST_HARNESS_SLEEP", "30")))
 
