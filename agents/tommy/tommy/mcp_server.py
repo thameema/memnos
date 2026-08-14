@@ -32,6 +32,7 @@ from typing import Optional
 from fastmcp import FastMCP
 
 from .config import TommyConfig, ProjectEntry
+from .control import ControlServer
 from .discovery.harnesses import all_harnesses
 
 
@@ -47,6 +48,7 @@ class Task:
     output_lines: list = field(default_factory=list)
     _lock: object = field(default_factory=threading.Lock, repr=False)
     _drain_thread: Optional[threading.Thread] = field(default=None, repr=False)
+    _ctrl: Optional[ControlServer] = field(default=None, repr=False)
 
     def status(self) -> str:
         rc = self.proc.poll()
@@ -239,6 +241,14 @@ def tommy_dispatch(
     env["TOMMY_NS"] = cfg.tommy_ns
 
     task_id = uuid.uuid4().hex[:8]
+
+    # Control channel: lets Tommy send wrap_up / abort / pivot mid-run
+    def _ctrl_msg(msg: dict) -> None:
+        with t._lock:
+            t.output_lines.append(f"[ctrl:{msg.get('type','')}] {msg}")
+    ctrl = ControlServer(on_message=_ctrl_msg, connect_timeout=30.0)
+    env["TOMMY_CTRL_PORT"] = str(ctrl.port)
+
     proc = subprocess.Popen(
         cmd,
         cwd=str(ws_path),
@@ -249,6 +259,7 @@ def tommy_dispatch(
     )
 
     t = Task(task_id=task_id, harness=chosen, proc=proc)
+    t._ctrl = ctrl
     drain = threading.Thread(target=_drain_stdout, args=(proc, t), daemon=True)
     drain.start()
     t._drain_thread = drain
@@ -344,6 +355,57 @@ def tommy_list_harnesses() -> dict:
         ],
         "smart_routing": cfg.smart_routing,
     }
+
+
+@mcp.tool()
+def tommy_control(
+    task_id: str,
+    action: str,
+    message: str = "",
+    budget_seconds: int = 60,
+) -> dict:
+    """
+    Send a mid-run control message to a dispatched task.
+
+    Args:
+        task_id:        The task_id returned by tommy_dispatch.
+        action:         One of: wrap_up, abort, pivot, answer.
+                        wrap_up — ask harness to finish gracefully.
+                        abort   — tell harness to stop immediately.
+                        pivot   — redirect harness to a new goal (set `message`).
+                        answer  — reply to a question the harness asked.
+        message:        For pivot: the new goal.  For answer: the reply text.
+        budget_seconds: For wrap_up: how many seconds to give the harness.
+    """
+    t = _tasks.get(task_id)
+    if t is None:
+        return {"error": f"Unknown task_id: {task_id!r}"}
+    if t._ctrl is None:
+        return {"error": "Task has no control channel (was it dispatched with an older Tommy?)"}
+    if t.status() != "running":
+        return {"error": f"Task is not running: {t.status()}"}
+
+    ok: bool
+    if action == "wrap_up":
+        ok = t._ctrl.wrap_up(budget_seconds=budget_seconds)
+    elif action == "abort":
+        ok = t._ctrl.abort()
+    elif action == "pivot":
+        if not message:
+            return {"error": "pivot requires a `message` (the new goal)."}
+        ok = t._ctrl.pivot(message)
+    elif action == "answer":
+        ok = t._ctrl.answer(message)
+    else:
+        return {"error": f"Unknown action '{action}'. Use: wrap_up, abort, pivot, answer."}
+
+    return {
+        "task_id": task_id,
+        "action": action,
+        "sent": ok,
+        "harness_connected": t._ctrl.harness_connected,
+    }
+
 
 
 # ---------------------------------------------------------------------------

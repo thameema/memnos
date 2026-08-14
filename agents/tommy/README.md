@@ -1,235 +1,348 @@
 # Tommy — memnos-native coding orchestrator
 
-Tommy is a personal coding orchestrator that sits above LLM harnesses (Claude Code, Codex, Cursor, Hermes, and others) and uses memnos as its memory and governance backbone.
+Tommy is a lightweight CLI orchestrator that sits between your editor and your
+coding harness (Claude Code, Codex, etc.).  It enriches every task with
+long-term memory from [memnos](../../README.md), routes work to the right
+harness, and lets you steer a running sub-agent mid-run without waiting for it
+to finish.
 
-It works in any terminal, on any machine, with any installed harness. No cloud control plane. No vendor lock-in.
+```
+┌─────────────┐   tommy --mcp   ┌──────────────────────────────────────────┐
+│  Editor /   │ ─────────────→  │             Tommy (stdio process)         │
+│  IDE        │ ←────────────── │  7 MCP tools  ·  memnos  ·  harness mgr  │
+└─────────────┘  JSON-RPC/stdio └──────────────────────┬───────────────────┘
+                                                        │ Popen
+                                              TOMMY_CTRL_PORT
+                                                        │
+                                         ┌──────────────▼──────────────┐
+                                         │  Harness (Claude Code, etc.) │
+                                         │  progress / wrap_up / abort  │
+                                         └─────────────────────────────┘
+```
+
+**Key design decisions:**
+- Tommy is a **stdio subprocess**, not a daemon or HTTP server.  The editor
+  spawns it (`tommy --mcp`) and owns its lifecycle.
+- **memnos is the only persistent server.**  Tommy talks to memnos for memory;
+  it opens no ports of its own.
+- A **TCP loopback control channel** (`TOMMY_CTRL_PORT`) lets Tommy send
+  `wrap_up` / `abort` / `pivot` to a running sub-agent and receive live
+  progress without polling.
+
+---
+
+## Requirements
+
+| Dependency | Version |
+|-----------|---------|
+| Python    | ≥ 3.11  |
+| [uv](https://docs.astral.sh/uv/) | any recent |
+| memnos    | installed and running (HTTP or stdio) |
+| A supported harness | Claude Code (`claude`), Codex, etc. |
 
 ---
 
 ## Install
 
 ```bash
-cd agents/tommy && pip install -e .
+# From the memnos repo root (editable, uv-managed):
+uv tool install -e ~/git/memnos/agents/tommy
 
-# First-time setup: writes ~/.memnos/agents/tommy/tommy.conf
-# and installs /memnos-* slash commands into your harness
+# Verify:
+tommy --version
+```
+
+> **Note:** always use `--force` when pyproject.toml dependencies change:
+> ```bash
+> uv tool install -e ~/git/memnos/agents/tommy --force
+> ```
+
+### First-time setup
+
+```bash
 tommy --install
 ```
 
-Or, when published to PyPI:
-```bash
-pip install memnos-tommy && tommy --install
-```
-
----
-
-## Quick start
-
-```bash
-# List detected harnesses on this machine
-tommy --list-harnesses
-
-# Launch with no project context (general tasks)
-tommy
-
-# Launch with a project loaded
-tommy --project myapp
-
-# List configured projects
-tommy --list-projects
-```
+This creates `~/.memnos/agents/tommy/tommy.conf` with sensible defaults.
 
 ---
 
 ## Configuration
 
-All config lives in one file: `~/.memnos/agents/tommy/tommy.conf`
+Edit `~/.memnos/agents/tommy/tommy.conf`:
 
 ```ini
 # Who you are
-TOMMY_USER=developer
-
-# Org layer (loads prompts/orgs/<ORG>.md if present)
-ORG=org
-
-# Where to find your prompt layers (core.md + org/project overrides)
-PROMPTS_DIR=~/.memnos/agents/tommy/prompts
+TOMMY_USER=YourName
+ORG=your-org
 
 # memnos namespaces
-TOMMY_NS=user:me:tommy        # Tommy's personal orchestration journal
-DEFAULT_NS=org:engineering    # shared team/project constraints pool
+TOMMY_NS=user:yourname:tommy          # where Tommy journals its own sessions
+DEFAULT_NS=org:your-org:engineering   # default namespace for new memories
 
-# LLM harness to use (must be installed on PATH)
-HARNESS=claude
+# Model & harness
 DEFAULT_MODEL=claude-sonnet-4-5
-
-# Smart routing: on = corpus_check before every dispatch
-#               off = use static model table in core.md
+HARNESS=claude                        # claude | codex | auto
 SMART_ROUTING=on
 
-# MCP tool introspection (reads harness MCP configs at startup)
-MCP_INTROSPECT=off
-
-# Projects: key:DISPLAY_NAME:JIRA_KEY:~/git/repo  (comma-separated)
-PROJECTS=myapp:MyApp:APP:~/git/myapp,infra:Infra:INFRA:~/git/infra
+# Projects — format: key:Name:JIRA_PROJECT:absolute/path/to/repo
+# (one per line, comma-separated)
+PROJECTS=\
+  myapp:MyApp:MYAPP:~/git/myapp,\
+  platform:Platform:PLAT:~/git/platform,\
+  infra:Infra:PLAT:~/git/infra
 ```
+
+### Project fields
+
+| Field | Meaning |
+|-------|---------|
+| `key` | Short identifier used in `tommy --project <key>` |
+| `Name` | Human-readable label |
+| `JIRA_PROJECT` | Jira project key (used in commit messages, ticket links) |
+| `path` | Absolute path — the workspace Tommy gives to the harness |
 
 ---
 
-## Project context
+## Usage
 
-Tommy loads project-specific context automatically when you pass `--project`:
-
-```
-tommy --project myapp
-```
-
-This stacks:
-1. `prompts/core.md` — Tommy's orchestrator brain (bundled)
-2. `prompts/orgs/<ORG>.md` — org-level conventions (you create this)
-3. `prompts/projects/<key>.md` — project-specific context (you create this)
-4. `$PWD/.tommy.md` — repo-local override (dropped in any git root)
-5. Runtime block — harness list, memnos namespaces, project variables
-
----
-
-## Prompt customisation
-
-Drop a `.tommy.md` file in any repo root:
+### CLI
 
 ```bash
-echo "This repo is the payments API. Dispatch all work to the python-developer role agent." \
-  > ~/git/myapp/.tommy.md
-tommy   # launched from ~/git/myapp — picks it up automatically
+# Launch harness with memory context
+tommy
+
+# Activate a project (workspace + namespace auto-set)
+tommy --project myapp
+
+# List configured projects
+tommy --list-projects
+
+# List detected harnesses
+tommy --list-harnesses
+
+# Upgrade (respects uv/pipx/pip — never mixes installers)
+tommy --upgrade
 ```
 
-For org-level conventions, create `~/.memnos/agents/tommy/prompts/orgs/myorg.md` and set `ORG=myorg` in your conf.
+### MCP stdio mode (for editors)
+
+```bash
+tommy --mcp
+```
+
+The editor spawns this process, sends JSON-RPC over stdin/stdout, and kills
+the process when done.  Tommy never opens a port in this mode.
 
 ---
 
-## Harness discovery
+## Editor integration
 
-Tommy detects harnesses on PATH at startup. Supported out of the box:
+### Claude Desktop
 
-| Harness | Binary | Best for |
-|---|---|---|
-| claude | `claude` | Default — full tool + MCP, large context |
-| codex | `codex` | Diff-as-deliverable, single-file focus |
-| cursor-agent | `cursor-agent` | IDE-integrated |
-| hermes | `hermes` | Local, zero data egress — PHI/sensitive work |
-| aider | `aider` | Autonomous coding, longer unattended runs |
-| goose | `goose` | Autonomous coding agent |
-| kiro | `kiro` | Amazon IDE agent |
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
-To add a custom harness, drop a TOML file in `~/.memnos/harnesses/`:
+```json
+{
+  "mcpServers": {
+    "tommy": {
+      "command": "tommy",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
 
-```toml
-[myharness]
-binary = "myharness"
-description = "My custom harness"
-launch_template = ["myharness", "--system-prompt", "{prompt_file}"]
+### Cursor
+
+Add to `.cursor/mcp.json` in your project root (or the global
+`~/.cursor/mcp.json`):
+
+```json
+{
+  "servers": {
+    "tommy": {
+      "command": "tommy",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+### VS Code + Continue
+
+In `.continue/config.json`:
+
+```json
+{
+  "mcpServers": [
+    {
+      "name": "tommy",
+      "command": "tommy",
+      "args": ["--mcp"]
+    }
+  ]
+}
+```
+
+### Zed
+
+In `~/.config/zed/settings.json`:
+
+```json
+{
+  "context_servers": {
+    "tommy": {
+      "command": {
+        "path": "tommy",
+        "args": ["--mcp"]
+      }
+    }
+  }
+}
 ```
 
 ---
 
-## Smart LLM routing
+## MCP tools
 
-When `SMART_ROUTING=on`, Tommy calls `memnos corpus_check` before every dispatch to route tasks by capability. A `model-registry.md` file (ingested as a corpus document) defines the routing rules in plain language:
+| Tool | Description |
+|------|-------------|
+| `tommy_recall` | Query memnos memory for context |
+| `tommy_remember` | Persist a fact / decision to memnos |
+| `tommy_dispatch` | Launch a harness task (async by default) |
+| `tommy_status` | Check a running task's output / exit code |
+| `tommy_control` | Send `wrap_up` / `abort` / `pivot` / `answer` to a running task |
+| `tommy_switch_project` | Set active project (workspace + namespace) |
+| `tommy_route` | Dry-run: which harness would Tommy pick? |
+| `tommy_list_harnesses` | Available harnesses + active routing config |
 
-```
-SHALL use hermes for any task where privacy=sensitive
-SHALL use claude-opus for quality_tier=high_stakes
-SHALL use claude-haiku for quality_tier=draft AND latency=realtime
-```
-
-Update the registry by re-ingesting after vendors release new models — no code change needed.
-
----
-
-## memnos integration
-
-Tommy uses memnos across its full lifecycle:
-
-| Feature | When Tommy uses it |
-|---|---|
-| `recall` | Load project constraints and prior decisions before dispatch |
-| `remember` | Journal session start/end and key outcomes |
-| `namespace_subscribe` / `namespace_feed` | Capture everything the sub-agent writes in real-time |
-| `lease_acquire` / `lease_heartbeat` / `lease_release` | Prevent two Tommy sessions from working the same ticket simultaneously |
-| `corpus_check` | Enforce architecture constraints; drive smart routing |
-| `corpus_ingest` | Feed vendor model docs into routing registry |
-| `ingest_file` | Store the sub-agent conversation transcript after each session |
-| `segment_episodes` | Make each orchestration run a searchable episode |
-| `consolidate` | Distil orchestration patterns into durable facts over time |
-
----
-
-## Slash commands (installed into your harness)
-
-`tommy --install` writes these into your harness's custom command directory:
-
-| Command | What it does |
-|---|---|
-| `/memnos` | Cheat sheet of all memnos tools |
-| `/memnos-constraint <rule>` | Save a governing constraint (pinned to every future session) |
-| `/memnos-save <text>` | Save a plain fact |
-| `/memnos-recall <topic>` | Explicit recall + recall_wide fallback |
-| `/memnos-pin` | Save the current exchange as a memory |
-
----
-
-## CLI reference
+### `tommy_dispatch`
 
 ```
-tommy [OPTIONS] [HARNESS_ARGS]...
-
-Options:
-  --project, -p KEY    Activate a project context
-  --conf PATH          Path to tommy.conf override
-  --install            First-time setup (conf + slash commands)
-  --force              With --install: overwrite existing files
-  --list-projects      List configured projects
-  --list-harnesses     List detected harnesses on PATH
-  --no-memnos-check    Skip memnos health check (offline mode)
+tommy_dispatch(
+    task="refactor the auth module to use PKCE",
+    harness="auto",          # or "claude", "codex", …
+    workspace="/path/to/repo",
+    async_run=True,          # return task_id immediately
+    inject_memory=True,      # prepend memnos recall to prompt
+)
+→ {"task_id": "a3f1b2c4", "status": "running", "harness": "claude"}
 ```
 
-Any extra arguments after the Tommy options are passed through to the harness unchanged.
+### `tommy_control` — steer a running task
+
+```
+# Ask the harness to wrap up (gives it 60 s to finish gracefully)
+tommy_control(task_id="a3f1b2c4", action="wrap_up", budget_seconds=60)
+
+# Stop immediately
+tommy_control(task_id="a3f1b2c4", action="abort")
+
+# Redirect to a different goal mid-run
+tommy_control(task_id="a3f1b2c4", action="pivot",
+              message="focus only on the login flow, skip registration")
+
+# Answer a question the harness asked
+tommy_control(task_id="a3f1b2c4", action="answer", message="yes, overwrite")
+```
+
+The harness receives the message over a **TCP loopback control channel**
+(`TOMMY_CTRL_PORT` env var) — no polling required.
 
 ---
 
-## How sub-agents share memnos
+## Control channel (for harness authors)
 
-Tommy uses `subprocess.Popen` (not `exec`) so it stays alive as a supervisor. Before launching the harness, Tommy:
+If you write a custom harness in Python, connect back to Tommy using the
+bundled `ControlClient`:
 
-1. Calls `ensure_memnos_running()` — health-checks the HTTP daemon, starts it if needed
-2. Injects `MEMNOS_URL` into the sub-agent's process environment
-3. Calls `namespace_subscribe()` to snapshot the cursor
+```python
+from tommy.control import ControlClient
 
-After the harness exits, Tommy:
+def handle_tommy_message(msg: dict) -> None:
+    if msg["type"] == "wrap_up":
+        # save state and exit within msg["budget_seconds"]
+        ...
+    elif msg["type"] == "abort":
+        raise SystemExit(1)
+    elif msg["type"] == "pivot":
+        current_goal = msg["new_goal"]
 
-4. Calls `namespace_feed()` — drains everything the sub-agent wrote
-5. Ingests the harness's conversation transcript via `ingest_file()`
-6. Calls `segment_episodes()` — makes the run a searchable memory episode
+client = ControlClient(on_control=handle_tommy_message)
 
-Both Tommy and the harness connect to the **same HTTP memnos daemon** — no state split, no two-writer conflict.
+# Report progress
+client.progress(25, "parsed 250 / 1000 files")
+client.checkpoint("analysis", "found 3 duplicate patterns")
+
+# Ask Tommy / user a question (blocks until answered via tommy_control)
+client.question("Should I overwrite existing tests?", options=["yes", "no"])
+
+client.done("refactoring complete — 12 files changed")
+client.close()
+```
+
+The client auto-reads `TOMMY_CTRL_PORT` from the environment.
+
+**Protocol (newline-delimited JSON):**
+
+| Direction | `type` | Extra fields |
+|-----------|--------|-------------|
+| Harness → Tommy | `progress` | `pct`, `detail` |
+| Harness → Tommy | `checkpoint` | `phase`, `summary` |
+| Harness → Tommy | `done` | `summary` |
+| Harness → Tommy | `error` | `message` |
+| Harness → Tommy | `question` | `text`, `options` |
+| Tommy → Harness | `wrap_up` | `reason`, `budget_seconds` |
+| Tommy → Harness | `abort` | — |
+| Tommy → Harness | `pivot` | `new_goal` |
+| Tommy → Harness | `answer` | `text` |
+
+The control channel uses TCP loopback (`127.0.0.1`), which works on macOS,
+Linux, and Windows without any extra setup.
 
 ---
 
-## Repository layout
+## Upgrade
+
+```bash
+tommy --upgrade
+```
+
+Tommy detects whether it was installed with `uv`, `pipx`, or `pip` and uses
+the same tool to upgrade — so the venv is never mixed.
+
+To upgrade manually with uv:
+
+```bash
+uv tool install -e ~/git/memnos/agents/tommy --force
+```
+
+---
+
+## Project structure
 
 ```
 agents/tommy/
+├── README.md               ← you are here
 ├── pyproject.toml
 └── tommy/
-    ├── cli.py                  # Popen supervisor + memnos lifecycle
-    ├── config.py               # KEY=VALUE conf loader
-    ├── prompt.py               # Prompt layer stacker
-    ├── install.py              # tommy --install
-    ├── discovery/
-    │   ├── harnesses.py        # Registry + PATH detection
-    │   └── mcp.py              # MCP config reader
-    ├── prompts/
-    │   └── core.md             # Tommy's orchestrator brain
-    ├── slash_commands/         # /memnos-* custom commands
-    └── tommy.conf.default      # Bundled defaults
+    ├── __init__.py
+    ├── cli.py              ← click entrypoint, _launch_harness
+    ├── config.py           ← TommyConfig, ProjectEntry
+    ├── control.py          ← ControlServer + ControlClient (TCP IPC)
+    ├── install.py          ← tommy --install
+    ├── mcp_server.py       ← FastMCP stdio server, 8 tools
+    ├── prompt.py           ← memnos-enriched system prompt builder
+    └── discovery/
+        └── harnesses.py    ← auto-detect installed harnesses
 ```
+
+---
+
+## Roadmap
+
+- [ ] Supervision loop: idle + wall-clock timeout with automatic `wrap_up`
+- [ ] Smart harness routing by task type (coding vs. research vs. review)
+- [ ] memnos lease heartbeat while harness is running
+- [ ] Multi-harness fan-out (run two harnesses in parallel, merge outputs)

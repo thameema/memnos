@@ -28,6 +28,7 @@ from .config import TommyConfig
 from .prompt import build_prompt
 from .install import run_install
 from .mcp_server import run_stdio
+from .control import ControlServer
 from .discovery.harnesses import all_harnesses
 
 
@@ -161,6 +162,31 @@ def _post_run_capture(client, cfg: TommyConfig, run_id: str, project_key: Option
 # Launch harness via Popen (stays alive for capture)
 # ---------------------------------------------------------------------------
 
+
+def _on_ctrl_message(msg: dict) -> None:
+    """Handle progress / checkpoint / question messages from a running harness."""
+    mtype = msg.get("type", "")
+    if mtype == "progress":
+        pct = msg.get("pct", "?")
+        detail = msg.get("detail", "")
+        click.echo(f"  ◌ {pct}% — {detail}" if detail else f"  ◌ {pct}%")
+    elif mtype == "checkpoint":
+        phase = msg.get("phase", "")
+        summary = msg.get("summary", "")
+        click.echo(f"  ✔ [{phase}] {summary}")
+    elif mtype == "done":
+        click.echo(f"  ✔ done — {msg.get('summary', '')}")
+    elif mtype == "error":
+        click.echo(f"  ✗ harness error: {msg.get('message', '')}", err=True)
+    elif mtype == "question":
+        text = msg.get("text", "")
+        opts = msg.get("options")
+        opts_str = f" ({'/'.join(opts)})" if opts else ""
+        click.echo(f"  ❓ {text}{opts_str}")
+    # Unknown message types are silently ignored (forward compat)
+
+
+
 def _launch_harness(
     cfg: TommyConfig,
     project_key: Optional[str],
@@ -223,10 +249,19 @@ def _launch_harness(
 
     run_id = str(uuid.uuid4())[:8]
 
+    # ── Control channel (bidirectional IPC) ──────────────────────────────────
+    ctrl = ControlServer(
+        on_message=_on_ctrl_message,
+        connect_timeout=30.0,
+    )
+    env["TOMMY_CTRL_PORT"] = str(ctrl.port)
+    # ─────────────────────────────────────────────────────────────────────────────
+
     # ── Popen: Tommy stays alive ──────────────────────────────────────────
     proc = subprocess.Popen(cmd, env=env)
     proc.wait()
     exit_code = proc.returncode
+    ctrl.close()
     # ─────────────────────────────────────────────────────────────────────
 
     # Cleanup temp file
