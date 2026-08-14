@@ -79,6 +79,19 @@ HARNESS_REGISTRY: dict[str, HarnessSpec] = {
 }
 
 
+
+# Harnesses that accept --dangerously-skip-permissions
+_SUPPORTS_SKIP_PERMISSIONS = {"claude"}
+
+
+def apply_skip_permissions(cmd: list[str], harness_name: str, skip: bool) -> list[str]:
+    """Prepend --dangerously-skip-permissions to cmd for supported harnesses."""
+    if skip and harness_name in _SUPPORTS_SKIP_PERMISSIONS:
+        # Insert right after the binary name
+        return [cmd[0], "--dangerously-skip-permissions"] + cmd[1:]
+    return cmd
+
+
 def discover() -> dict[str, HarnessSpec]:
     """Return a copy of the registry with `available` set based on PATH."""
     result = {}

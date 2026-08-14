@@ -70,6 +70,7 @@ class TommyConfig:
     harness: str = "claude"
     memnos_url: str = "http://127.0.0.1:8900"
     memnos_token: Optional[str] = None
+    skip_permissions: bool = True   # prepend --dangerously-skip-permissions to claude launch
 
     # derived
     _raw: dict[str, str] = field(default_factory=dict, repr=False)
@@ -124,6 +125,8 @@ class TommyConfig:
             cfg.memnos_url = raw["MEMNOS_URL"]
         if "MEMNOS_TOKEN" in raw:
             cfg.memnos_token = raw["MEMNOS_TOKEN"]
+        if "SKIP_PERMISSIONS" in raw:
+            cfg.skip_permissions = raw["SKIP_PERMISSIONS"].lower() in ("on", "true", "1", "yes")
 
         return cfg
 

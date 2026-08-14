@@ -29,7 +29,7 @@ from .prompt import build_prompt
 from .install import run_install
 from .mcp_server import run_stdio
 from .control import ControlServer
-from .discovery.harnesses import all_harnesses
+from .discovery.harnesses import all_harnesses, apply_skip_permissions
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +225,7 @@ def _launch_harness(
         part.replace("{prompt_file}", prompt_file)
         for part in spec.launch_template
     ] + list(extra_args)
+    cmd = apply_skip_permissions(cmd, cfg.harness, cfg.skip_permissions)
 
     # Inject MEMNOS_URL so the sub-agent's MCP config picks it up
     env = os.environ.copy()
@@ -384,6 +385,7 @@ def _do_upgrade() -> None:
 @click.option("--mcp", "mcp_mode", is_flag=True, help="Run as MCP stdio server (editor-managed subprocess, no daemon, no port).")
 @click.option("--upgrade", "do_upgrade", is_flag=True, help="Upgrade Tommy via uv tool install (same venv, no pip).")
 @click.option("--no-memnos-check", is_flag=True, help="Skip memnos health check at startup.")
+@click.option("--ask-permissions", is_flag=True, help="Require manual approval for every harness tool call (overrides SKIP_PERMISSIONS=on).")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 def main(
     conf: Optional[str],
@@ -395,6 +397,7 @@ def main(
     mcp_mode: bool,
     do_upgrade: bool,
     no_memnos_check: bool,
+    ask_permissions: bool,
     extra_args: tuple,
 ) -> None:
     cfg = TommyConfig.load(conf_path=Path(conf) if conf else None)
@@ -456,4 +459,6 @@ def main(
             )
     # ────────────────────────────────────────────────────────────────────
 
+    if ask_permissions:
+        cfg.skip_permissions = False
     _launch_harness(cfg, project_key=project, extra_args=extra_args, memnos_client=client)

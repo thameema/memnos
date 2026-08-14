@@ -24,3 +24,8 @@ MCP_INTROSPECT=off
 # Example:
 # PROJECTS=myapp:MyApp:APP:~/git/myapp,infra:Infra:INFRA:~/git/infra
 PROJECTS=
+
+# Permission bypass: on = harness runs without asking for tool approvals
+#                    off = harness asks for approval on every tool call
+# Per-session override: tommy --ask-permissions
+SKIP_PERMISSIONS=on
