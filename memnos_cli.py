@@ -2867,6 +2867,32 @@ def cmd_server_setup_omnigent(args, cfg):
     explicit_python = bool(raw_python_arg)
     sdk_ok, sdk_kind, sdk_detail = _verify_sdk_importable(python_for_check)
     ctx = _sdk_import_check_context(python_for_check, explicit_python)
+    # uv is this project's primary install method; pip is a documented fallback only.
+    # Only interpolate `python_for_check` into the `uv pip install --python` form when the
+    # operator explicitly passed --python: that's the one case where python_for_check is
+    # actually known to be the omnigent server's own interpreter. Without --python it
+    # defaults to sys.executable (this CLI's OWN interpreter — e.g. memnos's isolated `uv
+    # tool install` venv), which is very often NOT where `omnigent server` runs; printing
+    # that path as the install target would tell the operator to install into the wrong
+    # environment. See _sdk_import_check_context's own caveat above for the same distinction.
+    if explicit_python:
+        install_cmd = f"             uv pip install --python {python_for_check} memnos-sdk\n"
+        install_cmd_upgrade = (
+            f"             uv pip install --python {python_for_check} --upgrade memnos-sdk\n"
+        )
+        no_uv_note = "         (no uv there? that interpreter's own pip works too, same command shape)\n"
+        no_uv_note_upgrade = no_uv_note
+    else:
+        install_cmd = "             uv pip install memnos-sdk\n"
+        install_cmd_upgrade = "             uv pip install --upgrade memnos-sdk\n"
+        no_uv_note = (
+            "         (no uv there? pip install memnos-sdk works too — just make sure\n"
+            "         it targets the SAME environment `omnigent server` will use)\n"
+        )
+        no_uv_note_upgrade = (
+            "         (no uv there? pip install --upgrade memnos-sdk works too — just make\n"
+            "         sure it targets the SAME environment `omnigent server` will use)\n"
+        )
     if not sdk_ok:
         if sdk_kind == "not_installed":
             sys.exit(
@@ -2880,7 +2906,8 @@ def cmd_server_setup_omnigent(args, cfg):
                 f"         gets blocked.\n"
                 f"         Fix — install it in the SAME Python environment that will run\n"
                 f"         `omnigent server`, then re-run this command:\n"
-                f"             pip install memnos-sdk\n"
+                f"{install_cmd}"
+                f"{no_uv_note}"
                 f"         (underlying error: {sdk_detail})\n"
                 f"{ctx}"
             )
@@ -2896,7 +2923,8 @@ def cmd_server_setup_omnigent(args, cfg):
                 f"         integration, or a partial/broken one.\n"
                 f"         Fix — upgrade it in the SAME Python environment that will run\n"
                 f"         `omnigent server`, then re-run this command:\n"
-                f"             pip install --upgrade memnos-sdk\n"
+                f"{install_cmd_upgrade}"
+                f"{no_uv_note_upgrade}"
                 f"         (underlying error: {sdk_detail})\n"
                 f"{ctx}"
             )
@@ -3026,8 +3054,14 @@ def cmd_server_setup_omnigent(args, cfg):
     print("          no recall/injection. See docs/integrations/omnigent.md for exact "
           "coverage + caveats.")
     print()
-    print("          The omnigent SERVER process's Python environment needs:")
-    print("              pip install memnos-sdk")
+    print("          The omnigent SERVER process's Python environment needs memnos-sdk:")
+    if explicit_python:
+        print(f"              uv pip install --python {python_for_check} memnos-sdk")
+        print("              (no uv there? that interpreter's own pip works too)")
+    else:
+        print("              uv pip install memnos-sdk")
+        print("              (no uv there? pip install memnos-sdk works too — just make")
+        print("              sure it targets the SAME environment `omnigent server` will use)")
     if mode == "central":
         print(f"          And its own environment must already have MEMNOS_URL + MEMNOS_TOKEN "
               f"set (currently MEMNOS_URL={url_for_print}).")

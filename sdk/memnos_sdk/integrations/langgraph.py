@@ -1,6 +1,6 @@
 """LangGraph adapter — memnos as a long-term-memory `BaseStore`.
 
-    pip install 'memnos-sdk[langgraph]'
+    uv pip install 'memnos-sdk[langgraph]'    # (or: pip install 'memnos-sdk[langgraph]')
     from memnos_sdk import MemnosClient
     from memnos_sdk.integrations.langgraph import MemnosStore
 
@@ -24,7 +24,8 @@ try:
     from langgraph.store.base import (BaseStore, GetOp, Item, ListNamespacesOp, PutOp,
                                       SearchItem, SearchOp)
 except ImportError as e:  # pragma: no cover
-    raise ImportError("LangGraph integration needs langgraph: pip install 'memnos-sdk[langgraph]'") from e
+    raise ImportError("LangGraph integration needs langgraph: uv pip install "
+                       "'memnos-sdk[langgraph]' (or: pip install 'memnos-sdk[langgraph]')") from e
 
 from ..client import AsyncMemnosClient, MemnosClient
 
