@@ -1,0 +1,31 @@
+# Tommy default configuration
+# Copy this to ~/.memnos/agents/tommy/tommy.conf and edit.
+
+TOMMY_USER=developer
+ORG=org
+PROMPTS_DIR=~/.memnos/agents/tommy/prompts
+
+# memnos namespaces
+TOMMY_NS=user:tommy
+DEFAULT_NS=org:engineering
+
+# model + harness
+DEFAULT_MODEL=claude-sonnet-4-5
+HARNESS=claude
+
+# smart routing: on = corpus_check before every dispatch
+#                off = use static model table in core.md
+SMART_ROUTING=on
+
+# MCP tool introspection (spawns each MCP server briefly to read its tool list)
+MCP_INTROSPECT=off
+
+# Projects: key:DISPLAY_NAME:JIRA_PROJECT:~/git/repo  (comma-separated)
+# Example:
+# PROJECTS=myapp:MyApp:APP:~/git/myapp,infra:Infra:INFRA:~/git/infra
+PROJECTS=
+
+# Permission bypass: on = harness runs without asking for tool approvals
+#                    off = harness asks for approval on every tool call
+# Per-session override: tommy --ask-permissions
+SKIP_PERMISSIONS=on

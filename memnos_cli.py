@@ -64,18 +64,65 @@ def _latest_pypi_version(timeout=4):
         return None
 
 
+def _detect_installer(package: str) -> str:
+    """Return 'uv', 'pip', 'pipx', or 'unknown' — reads the INSTALLER dist-info file."""
+    import importlib.metadata
+    try:
+        dist = importlib.metadata.Distribution.from_name(package)
+        for f in dist.files or []:
+            if f.name == "INSTALLER":
+                return f.read_text().strip().lower()
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    # Fallback: exe-path heuristic for uv tool installs
+    from pathlib import Path
+    exe = Path(sys.executable).resolve()
+    uv_root = (Path.home() / ".local" / "share" / "uv" / "tools").resolve()
+    if str(exe).startswith(str(uv_root)):
+        return "uv"
+    return "unknown"
+
+
 def _upgrade_cmd():
-    """Pick the right upgrade command for however memnos was installed (uv tool / pipx / pip)."""
+    """Pick the right upgrade command for however memnos was installed.
+
+    Uses the INSTALLER dist-info file (written by pip/uv at install time) as
+    primary signal — cross-platform, no subprocess, immune to CWD issues.
+    Falls back to an exe-path heuristic, then pip as last resort with a warning.
+    """
     import shutil
-    import subprocess
-    if shutil.which("uv"):
-        out = subprocess.run(["uv", "tool", "list"], capture_output=True, text=True).stdout
-        if "memnos" in out:
-            return ["uv", "tool", "upgrade", "memnos"]
-    if shutil.which("pipx"):
-        out = subprocess.run(["pipx", "list", "--short"], capture_output=True, text=True).stdout
-        if "memnos" in out:
-            return ["pipx", "upgrade", "memnos"]
+    from pathlib import Path
+
+    installer = _detect_installer("memnos")
+
+    if installer == "uv":
+        uv = shutil.which("uv")
+        if uv:
+            return [uv, "tool", "upgrade", "memnos"]
+        print(
+            "  [warn] INSTALLER=uv but 'uv' not on PATH. Run manually:\n"
+            "         cd ~ && uv tool upgrade memnos",
+            file=sys.stderr,
+        )
+
+    if installer in ("pipx", "unknown") and shutil.which("pipx"):
+        try:
+            import subprocess
+            out = subprocess.run(
+                ["pipx", "list", "--short"],
+                capture_output=True, text=True, cwd=str(Path.home()),
+            ).stdout
+            if "memnos" in out:
+                return ["pipx", "upgrade", "memnos"]
+        except Exception:
+            pass
+
+    # pip / unknown fallback
+    print(
+        "  [warn] falling back to pip — if this fails, run:\n"
+        "         cd ~ && uv tool upgrade memnos",
+        file=sys.stderr,
+    )
     return [sys.executable, "-m", "pip", "install", "-U", "memnos"]
 
 
