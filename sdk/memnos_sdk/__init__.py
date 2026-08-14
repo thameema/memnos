@@ -3,8 +3,9 @@
     from memnos_sdk import MemnosClient, AsyncMemnosClient
 
 Framework adapters are optional extras (import only if the framework is installed):
-    from memnos_sdk.integrations.langchain import MemnosRetriever   # pip install 'memnos-sdk[langchain]'
-    from memnos_sdk.integrations.langgraph import MemnosStore        # pip install 'memnos-sdk[langgraph]'
+    from memnos_sdk.integrations.langchain import MemnosRetriever   # uv pip install 'memnos-sdk[langchain]'
+    from memnos_sdk.integrations.langgraph import MemnosStore        # uv pip install 'memnos-sdk[langgraph]'
+    # (no uv? pip install 'memnos-sdk[langchain]' / [langgraph] works too)
 """
 from .client import AsyncMemnosClient, MemnosClient, MemnosError
 

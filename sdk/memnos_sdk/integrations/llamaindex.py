@@ -1,6 +1,6 @@
 """LlamaIndex adapter — memnos as a retriever (and a tiny save helper).
 
-    pip install 'memnos-sdk[llamaindex]'
+    uv pip install 'memnos-sdk[llamaindex]'    # (or: pip install 'memnos-sdk[llamaindex]')
     from memnos_sdk import MemnosClient
     from memnos_sdk.integrations.llamaindex import MemnosRetriever
 
@@ -20,7 +20,8 @@ try:
     from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
 except ImportError as e:  # pragma: no cover
     raise ImportError("LlamaIndex integration needs llama-index-core: "
-                      "pip install 'memnos-sdk[llamaindex]'") from e
+                      "uv pip install 'memnos-sdk[llamaindex]' "
+                      "(or: pip install 'memnos-sdk[llamaindex]')") from e
 
 from ..client import MemnosClient
 

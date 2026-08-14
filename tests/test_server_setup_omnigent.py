@@ -102,7 +102,8 @@ def main():
           "memnos_url" not in entry.get("config", {}))
     check("central mode: the bearer token is NEVER written into the YAML",
           PRESET_TOKEN not in open(central_cfg).read())
-    check("central mode: instructs pip install memnos-sdk", "pip install memnos-sdk" in out)
+    check("central mode: instructs uv pip install memnos-sdk (uv-first, no --python given)",
+          "uv pip install memnos-sdk" in out)
     # Fix #2 (grant verification), degraded path: the fake MEMNOS_URL is unreachable, so the
     # live /recall probe can't run — must degrade to a clear, non-fatal NOTE, never crash
     # or silently say nothing (rc == 0 was already asserted above).
@@ -451,7 +452,8 @@ def main():
                   "--python", bare_python, extra_env=NO_SDK_ENV)
     check("(b) not installed: exits non-zero", rc != 0)
     check("(b) not installed: names memnos_sdk as NOT INSTALLED", "NOT INSTALLED" in out)
-    check("(b) not installed: gives the exact remediation command", "pip install memnos-sdk" in out)
+    check("(b) not installed: gives the exact remediation command (uv-first, targeting --python)",
+          f"uv pip install --python {bare_python} memnos-sdk" in out)
     check("(b) not installed: no config file written", not os.path.exists(not_installed_cfg))
 
     # (c) installed, but the omnigent integration/capture_response is missing — a
@@ -468,7 +470,7 @@ def main():
     check("(c) handler missing: distinguishes from 'not installed' (different message)",
           "NOT INSTALLED" not in out and "is installed, but" in out)
     check("(c) handler missing: gives a DIFFERENT remediation command (upgrade, not install)",
-          "pip install --upgrade memnos-sdk" in out)
+          f"uv pip install --python {handler_missing_python} --upgrade memnos-sdk" in out)
     check("(c) handler missing: no config file written", not os.path.exists(handler_missing_cfg))
 
     # (d) idempotent re-run: the check must still fire even on the "already wired,
