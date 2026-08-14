@@ -384,7 +384,7 @@ TOMMY_LOGO = r"""
 def _print_banner(cfg: TommyConfig, project_key: Optional[str] = None) -> None:
     """Print the Tommy launch banner to stderr (never mixed into JSON output)."""
     import sys
-    ORANGE = "\033[38;5;208m"
+    PURPLE = "\033[38;5;99m"
     BLUE   = "\033[38;5;27m"
     GREY   = "\033[38;5;245m"
     RESET  = "\033[0m"
@@ -392,7 +392,7 @@ def _print_banner(cfg: TommyConfig, project_key: Optional[str] = None) -> None:
 
     # Only colour if stderr is a real TTY
     tty = sys.stderr.isatty()
-    o = ORANGE if tty else ""
+    o = PURPLE if tty else ""
     b = BLUE   if tty else ""
     g = GREY   if tty else ""
     r = RESET  if tty else ""
