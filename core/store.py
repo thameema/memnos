@@ -191,6 +191,62 @@ def classify_arm_failure(conn, exc: Exception) -> str | None:
     except Exception:
         return None
 
+
+def record_arm_failure(reasons, namespace, arm, exc, hint=None):
+    """issue #41 fix C: a recall/diagnostic arm (raw/semantic search, the timeline/
+    entity-guarantee arm, a wide-recall per-namespace fetch, one of knowledge_health's
+    structural-signal queries -- issue #69) hit a RECALL_ARM_FAILURES-class error — log
+    the FULL detail server-side (same place #41 was originally diagnosed from: the
+    server log) and, if the caller wants a client-visible record, append a SANITIZED
+    entry: namespace, which arm, the exception's class name, and its SQLSTATE if it has
+    one. Deliberately never the raw exception message — that can echo query text — into
+    anything that reaches the client; the message stays server-side in the log line.
+
+    Lives here (not core/service.py, where it originated) so core/store.py — the module
+    that already owns RECALL_ARM_FAILURES and classify_arm_failure — can call it directly
+    from BrainStore methods like health() without a store->service->store import cycle
+    (core/service.py imports FROM core/store.py, never the reverse). core/service.py
+    imports this same function rather than keeping its own copy, so every caller shares
+    ONE degrade-not-raise implementation instead of two that could drift apart.
+
+    issue #59: `hint` is an OPTIONAL, already-classified string (see classify_arm_failure
+    above) a caller can pass when it ran the cheap cold-start-vs-genuinely-broken control
+    probe — turns an opaque exception name into a legible "still warming up, retry" or
+    "connection itself is unresponsive" signal. Callers that pass no hint get exactly
+    today's behavior."""
+    logger.warning("arm degraded: namespace=%s arm=%s %s: %s",
+                   namespace, arm, type(exc).__name__, exc)
+    if reasons is not None:
+        entry = {"namespace": namespace, "arm": arm,
+                 "error": type(exc).__name__,
+                 "sqlstate": getattr(exc, "sqlstate", None)}
+        if hint:
+            entry["hint"] = hint
+        reasons.append(entry)
+
+# issue #69: BrainStore.health()'s full set of output keys -- kept as one tuple so the
+# "the call itself never got to run" fallback (memnos_server.py's /knowledge/health
+# handler, via health_unavailable() below) can't silently drift out of sync with
+# health()'s own key set as signals are added there.
+_HEALTH_SIGNAL_KEYS = ("facts_current", "facts_superseded", "facts_expired",
+                       "entities", "orphan_entities", "contradiction_groups")
+
+
+def health_unavailable(reasons) -> dict:
+    """The all-signals-unknown shape /knowledge/health falls back to when
+    BrainStore.health() itself raises rather than degrading internally. In practice this
+    is unreachable while health() is intact -- every signal it queries is ALREADY
+    individually guarded by RECALL_ARM_FAILURES (see health()'s own docstring), so a
+    live DB failure degrades PER SIGNAL there, never by raising out of the whole call.
+    Kept anyway as the same defense-in-depth every other diagnostic/recall arm in this
+    codebase gets (issue #41 fix C) -- e.g. a future signal added to health() without
+    its own guard, or the connection dying between this call and the one before it."""
+    out = {"score": None}
+    out.update({k: None for k in _HEALTH_SIGNAL_KEYS})
+    out["degraded"] = True
+    out["degraded_reasons"] = reasons
+    return out
+
 _FTS_DEFAULT_TOKENS = 40   # was 200; a lower cap bounds the size of text the safety probe
                            # itself has to evaluate, independent of the probe's own result.
 
@@ -1385,28 +1441,92 @@ class BrainStore:
             return [{"subject": r["subject_entity"], "predicate": r["predicate"],
                      "objects": r["objects"], "ids": r["ids"]} for r in c.fetchall()]
 
+    def orphan_entities_sql(self, schema) -> str:
+        """SQL for the orphan-entities count (issue #69): entities that appear as
+        neither endpoint of any edge. Exposed as a method (not inlined only in health())
+        so a regression test can EXPLAIN the exact production query text instead of a
+        hand-copied approximation that could silently drift out of sync.
+
+        Deliberately NOT a single correlated `NOT EXISTS (... WHERE g.src_entity=e.id OR
+        g.dst_entity=e.id)` — an OR across two columns can't be satisfied by one index
+        scan (Postgres can't turn "src_entity=X OR dst_entity=X" into a single btree
+        seek), so that form forces a per-entity scan over ALL of `edges`, O(entities x
+        edges) — confirmed via EXPLAIN ANALYZE to blow past the 15s statement_timeout on
+        a namespace at real production scale (~20k entities / ~19k edges): the OR form
+        costs ~33M and takes ~9.8s on 190k edges spread across ten namespaces, this
+        rewrite costs ~6.5K and takes ~20ms on the same data.
+
+        Each arm of this UNION is instead an UNCORRELATED scan filtered only by
+        namespace (no reference to e.id), so it's a single index-only scan of the
+        `(namespace, src_entity, dst_entity)` unique index per arm — namespace is the
+        index's leading column (bounds the scan to just this namespace's edges) and
+        src_entity/dst_entity are both already IN the index, so neither arm needs a heap
+        fetch. Total cost is O(edges in namespace), independent of entity count.
+        src_entity/dst_entity are NOT NULL (schema.sql), so NOT IN is NULL-safe here —
+        it would otherwise misbehave if the subquery could ever produce a NULL."""
+        return (f"SELECT count(*) n FROM {schema}.entities e WHERE e.namespace=%s "
+                f"AND e.id NOT IN ("
+                f"SELECT src_entity FROM {schema}.edges WHERE namespace=%s "
+                f"UNION "
+                f"SELECT dst_entity FROM {schema}.edges WHERE namespace=%s)")
+
     def health(self, schema, ns) -> dict:
         """KNOWLEDGE HEALTH — a 0-100 score from structural signals over one namespace:
-        contradictions, orphan entities (no edges), and the superseded ratio. Pure SQL."""
+        contradictions, orphan entities (no edges), and the superseded ratio. Pure SQL.
+
+        issue #69: each signal below is queried independently and, on a
+        RECALL_ARM_FAILURES-class error (e.g. a canceled/timed-out statement), degrades
+        to None for THAT signal alone instead of failing the whole report — reuses the
+        same record_arm_failure/classify_arm_failure helpers #41 fix C already uses for
+        recall arms, so this diagnostic fails soft the same way every recall arm does.
+        Safe to keep going on the same cursor after a failed statement: every BrainStore
+        connection is autocommit (see classify_arm_failure's docstring), so a canceled
+        statement doesn't poison a shared transaction for the signals queried after it.
+        score is computed only from the signals that succeeded."""
         self._chk(schema)
+        reasons = []
         with self.conn.cursor() as c:
             def one(sql, *p):
                 c.execute(sql, p); return c.fetchone()["n"]
-            facts_current = one(f"SELECT count(*) n FROM {schema}.semantic WHERE namespace=%s AND valid_to IS NULL AND expired_at IS NULL", ns)
-            facts_super = one(f"SELECT count(*) n FROM {schema}.semantic WHERE namespace=%s AND valid_to IS NOT NULL", ns)
-            facts_expired = one(f"SELECT count(*) n FROM {schema}.semantic WHERE namespace=%s AND expired_at IS NOT NULL", ns)
-            ent_total = one(f"SELECT count(*) n FROM {schema}.entities WHERE namespace=%s", ns)
-            orphans = one(f"""SELECT count(*) n FROM {schema}.entities e WHERE e.namespace=%s
-                              AND NOT EXISTS (SELECT 1 FROM {schema}.edges g WHERE g.src_entity=e.id OR g.dst_entity=e.id)""", ns)
-            contra = len(self.contradictions(schema, ns, limit=1000))
-        orphan_ratio = (orphans / ent_total) if ent_total else 0.0
-        score = 100
-        score -= min(40, contra * 5)                       # contradictions hurt most
-        score -= int(min(30, orphan_ratio * 30))           # disconnected entities
-        score = max(0, score)
-        return {"score": score, "facts_current": facts_current, "facts_superseded": facts_super,
-                "facts_expired": facts_expired, "entities": ent_total, "orphan_entities": orphans,
-                "contradiction_groups": contra}
+
+            def signal(arm, fn):
+                try:
+                    return fn()
+                except RECALL_ARM_FAILURES as e:
+                    record_arm_failure(reasons, ns, arm, e, hint=classify_arm_failure(self.conn, e))
+                    return None
+
+            facts_current = signal("facts_current", lambda: one(
+                f"SELECT count(*) n FROM {schema}.semantic WHERE namespace=%s AND valid_to IS NULL AND expired_at IS NULL", ns))
+            facts_super = signal("facts_superseded", lambda: one(
+                f"SELECT count(*) n FROM {schema}.semantic WHERE namespace=%s AND valid_to IS NOT NULL", ns))
+            facts_expired = signal("facts_expired", lambda: one(
+                f"SELECT count(*) n FROM {schema}.semantic WHERE namespace=%s AND expired_at IS NOT NULL", ns))
+            ent_total = signal("entities", lambda: one(
+                f"SELECT count(*) n FROM {schema}.entities WHERE namespace=%s", ns))
+            orphans = signal("orphan_entities", lambda: one(
+                self.orphan_entities_sql(schema), ns, ns, ns))
+            contra_rows = signal("contradictions", lambda: self.contradictions(schema, ns, limit=1000))
+        contra = None if contra_rows is None else len(contra_rows)
+        # issue #69: score is None (not a best-effort number that silently ignores a
+        # failed input) if any signal IT DEPENDS ON failed -- a namespace with real
+        # contradictions/orphans that happened to fail THIS call must not score as if
+        # they don't exist. This is what health_unavailable()'s score:null already does
+        # for the "call never ran" fallback; a reader that only checks `score` (not
+        # `degraded`) can't be misled by either path — the original issue #69 complaint
+        # was exactly a knowledge_health output misleading a session.
+        if contra is None or orphans is None or ent_total is None:
+            score = None
+        else:
+            orphan_ratio = (orphans / ent_total) if ent_total else 0.0
+            score = max(0, 100 - min(40, contra * 5) - int(min(30, orphan_ratio * 30)))
+        out = {"score": score, "facts_current": facts_current, "facts_superseded": facts_super,
+               "facts_expired": facts_expired, "entities": ent_total, "orphan_entities": orphans,
+               "contradiction_groups": contra}
+        if reasons:
+            out["degraded"] = True
+            out["degraded_reasons"] = reasons
+        return out
 
     def get_semantic(self, schema, ns, semantic_id) -> dict | None:
         """Fetch a single semantic fact by id (for memory_delete confirmation)."""

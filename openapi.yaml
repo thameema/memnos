@@ -1789,20 +1789,25 @@ components:
           description: >
             which query failed: raw (raw-turn search), semantic (semantic-fact search),
             semantic_temporal (temporal semantic search), timeline (the entity-guarantee/
-            timeline arm), max_observed_at (the temporal-intent 'now' watermark), or
+            timeline arm), max_observed_at (the temporal-intent 'now' watermark),
             readable_namespaces (wide-recall's namespace fan-out — falls back to
-            searching just the query namespace)
+            searching just the query namespace), pinned_constraints, or — for
+            knowledge_health (issue #69) — one of facts_current, facts_superseded,
+            facts_expired, entities, orphan_entities, contradictions, or health (the
+            whole call failed before any individual signal ran)
         error: { type: string, description: the exception's class name (never the raw message) }
         sqlstate: { type: [string, "null"], description: Postgres SQLSTATE, when the failure came from the database }
         hint:
           type: string
           description: >
-            issue #59: present only for the phase-A arms (max_observed_at, timeline,
-            readable_namespaces, pinned_constraints) — a cheap control probe run on the
-            same connection classifies the failure as "connection responsive, this
-            arm's query was transient (blocked, slow, or a cold cache after a restart) —
-            safe to retry" or "connection itself is unresponsive". A crafted,
-            non-leaking string (like error/sqlstate), never the raw exception message.
+            issue #59: a cheap control probe run on the same connection classifies the
+            failure as "connection responsive, this arm's query was transient (blocked,
+            slow, or a cold cache after a restart) — safe to retry" or "connection
+            itself is unresponsive". Present when the caller ran that probe — every
+            recall phase-A arm (max_observed_at, timeline, readable_namespaces,
+            pinned_constraints) and every knowledge_health signal (issue #69) do; other
+            recall arms don't and omit this field. A crafted, non-leaking string (like
+            error/sqlstate), never the raw exception message.
     MemoriesResponse:
       type: object
       required: [memories]
@@ -1974,13 +1979,39 @@ components:
       required: [score, facts_current, facts_superseded, facts_expired, entities,
                  orphan_entities, contradiction_groups]
       properties:
-        score: { type: integer, minimum: 0, maximum: 100 }
-        facts_current: { type: integer }
-        facts_superseded: { type: integer }
-        facts_expired: { type: integer }
-        entities: { type: integer }
-        orphan_entities: { type: integer }
-        contradiction_groups: { type: integer }
+        score:
+          type: [integer, "null"]
+          minimum: 0
+          maximum: 100
+          description: >
+            null (not a best-effort number) if contradiction_groups, orphan_entities, or
+            entities failed to compute (issue #69) — those three feed the score
+            calculation, so a partial value would silently understate a namespace's real
+            contradiction/orphan count. Non-null whenever all three succeeded, even if a
+            different signal (e.g. facts_current) failed.
+        facts_current: { type: [integer, "null"] }
+        facts_superseded: { type: [integer, "null"] }
+        facts_expired: { type: [integer, "null"] }
+        entities: { type: [integer, "null"] }
+        orphan_entities: { type: [integer, "null"] }
+        contradiction_groups: { type: [integer, "null"] }
+        degraded:
+          type: boolean
+          description: >
+            present (true) when one or more of the structural signals above hit a live,
+            reachable-server failure (a canceled/timed-out query, a transient DB error —
+            issue #69, same RECALL_ARM_FAILURES-class failure and degrade-not-raise
+            principle as #41 fix C) and are reported as null instead of failing the
+            whole report. See degraded_reasons for which signal(s) failed, and `score`'s
+            own description for how a failure there affects the score.
+        degraded_reasons:
+          type: array
+          description: >
+            one entry per failed signal — see DegradedReason. `arm` here is one of
+            facts_current, facts_superseded, facts_expired, entities, orphan_entities,
+            contradictions (or, for a failure in the call itself rather than one
+            signal, health).
+          items: { $ref: "#/components/schemas/DegradedReason" }
     NamespaceCopyResponse:
       type: object
       required: [mode, src, dst, raw_turns, facts, episodes]

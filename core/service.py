@@ -14,38 +14,14 @@ import re
 import time
 from datetime import datetime, timezone, timedelta
 
-from .store import BrainStore, query_clamp, RECALL_ARM_FAILURES, classify_arm_failure
+from .store import (BrainStore, query_clamp, RECALL_ARM_FAILURES, classify_arm_failure,
+                    record_arm_failure as _record_arm_failure)
 from . import rerank as brain_rerank
 
 logger = logging.getLogger(__name__)
 
 _TENANT = "memnos"
 _PROPER = re.compile(r"\b[A-Z][a-zA-Z]{2,}\b")
-
-
-def _record_arm_failure(reasons, namespace, arm, exc, hint=None):
-    """issue #41 fix C: a recall arm (raw/semantic search, the timeline/entity-guarantee
-    arm, a wide-recall per-namespace fetch) hit a RECALL_ARM_FAILURES-class error — log
-    the FULL detail server-side (same place #41 was originally diagnosed from: the
-    server log) and, if the caller wants a client-visible record, append a SANITIZED
-    entry: namespace, which arm, the exception's class name, and its SQLSTATE if it has
-    one. Deliberately never the raw exception message — that can echo query text — into
-    anything that reaches the client; the message stays server-side in the log line.
-
-    issue #59: `hint` is an OPTIONAL, already-classified string (see
-    core/store.py:classify_arm_failure) a phase-A caller can pass when it ran the cheap
-    cold-start-vs-genuinely-broken control probe — turns an opaque exception name into a
-    legible "still warming up, retry" or "connection itself is unresponsive" signal.
-    Every other call site keeps passing no hint and gets exactly today's behavior."""
-    logger.warning("recall arm degraded: namespace=%s arm=%s %s: %s",
-                   namespace, arm, type(exc).__name__, exc)
-    if reasons is not None:
-        entry = {"namespace": namespace, "arm": arm,
-                 "error": type(exc).__name__,
-                 "sqlstate": getattr(exc, "sqlstate", None)}
-        if hint:
-            entry["hint"] = hint
-        reasons.append(entry)
 
 # Belief-change supersession applies ONLY to SINGLE-VALUED attributes (a person has one
 # current home/job/age — a new value replaces the old). MULTI-VALUED relations
