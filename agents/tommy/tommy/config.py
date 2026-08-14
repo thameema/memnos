@@ -59,7 +59,7 @@ def _parse_projects(raw: str) -> list[ProjectEntry]:
 @dataclass
 class TommyConfig:
     tommy_user: str = "developer"
-    org: str = "hc"
+    org: str = "myorg"
     prompts_dir: Path = field(default_factory=lambda: Path(__file__).parent / "prompts")
     tommy_ns: str = "user:tommy"
     default_ns: str = "org:engineering"
