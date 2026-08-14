@@ -81,7 +81,8 @@ from psycopg import OperationalError
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
 
-from core.store import BrainStore, query_clamp, RECALL_ARM_FAILURES, classify_arm_failure
+from core.store import (BrainStore, query_clamp, RECALL_ARM_FAILURES, classify_arm_failure,
+                        record_arm_failure, health_unavailable)
 from core.service import MemnosMemory
 from core.control import Control
 from core import rerank as brain_rerank
@@ -1104,7 +1105,20 @@ class Handler(BaseHTTPRequestHandler):
                     elif self.path == "/contradictions":   # check_contradictions
                         out = {"contradictions": store.contradictions(mem.schema, ns)}
                     elif self.path == "/knowledge/health":  # knowledge_health (namespace)
-                        out = store.health(mem.schema, ns)
+                        # issue #69: store.health() already degrades each of its own
+                        # structural signals individually (a canceled orphan-entities
+                        # query no longer costs the other signals — see its docstring).
+                        # This is a defense-in-depth guard for the call itself: same
+                        # RECALL_ARM_FAILURES-class catch every other diagnostic/recall
+                        # arm uses (#41 fix C), so a live DB failure here degrades to an
+                        # all-unavailable report instead of ever reaching an unhandled
+                        # 500 — the exact symptom this issue reported.
+                        try:
+                            out = store.health(mem.schema, ns)
+                        except RECALL_ARM_FAILURES as e:
+                            reasons = []
+                            record_arm_failure(reasons, ns, "health", e)
+                            out = health_unavailable(reasons)
                     # --- copy / move memories between namespaces ---
                     elif self.path == "/namespace/copy":   # namespace = DESTINATION (write-authed above)
                         src = str(req.get("src", "")).strip()
