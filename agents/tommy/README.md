@@ -9,7 +9,7 @@ to finish.
 ```
 ┌─────────────┐   tommy --mcp   ┌──────────────────────────────────────────┐
 │  Editor /   │ ─────────────→  │             Tommy (stdio process)         │
-│  IDE        │ ←────────────── │  7 MCP tools  ·  memnos  ·  harness mgr  │
+│  IDE        │ ←────────────── │  8 MCP tools  ·  memnos  ·  harness mgr  │
 └─────────────┘  JSON-RPC/stdio └──────────────────────┬───────────────────┘
                                                         │ Popen
                                               TOMMY_CTRL_PORT
@@ -36,7 +36,7 @@ to finish.
 
 | Dependency | Version |
 |-----------|---------|
-| Python    | ≥ 3.11  |
+| Python    | ≥ 3.10  |
 | [uv](https://docs.astral.sh/uv/) | any recent |
 | memnos    | installed and running (HTTP or stdio) |
 | A supported harness | Claude Code (`claude`), Codex, etc. |
@@ -133,7 +133,9 @@ tommy --mcp
 ```
 
 The editor spawns this process, sends JSON-RPC over stdin/stdout, and kills
-the process when done.  Tommy never opens a port in this mode.
+the process when done.  In MCP mode Tommy itself has no persistent listening
+port — but each `tommy_dispatch` call opens a transient `127.0.0.1:0` TCP
+control channel that is closed when the sub-agent exits.
 
 ---
 
@@ -269,6 +271,9 @@ def handle_tommy_message(msg: dict) -> None:
         raise SystemExit(1)
     elif msg["type"] == "pivot":
         current_goal = msg["new_goal"]
+    elif msg["type"] == "answer":
+        # Reply to a question you sent via client.question()
+        user_answer = msg["text"]
 
 client = ControlClient(on_control=handle_tommy_message)
 
@@ -276,7 +281,7 @@ client = ControlClient(on_control=handle_tommy_message)
 client.progress(25, "parsed 250 / 1000 files")
 client.checkpoint("analysis", "found 3 duplicate patterns")
 
-# Ask Tommy / user a question (blocks until answered via tommy_control)
+# Send a question to Tommy/user; answer arrives via the on_control callback as {"type": "answer", "text": ...}
 client.question("Should I overwrite existing tests?", options=["yes", "no"])
 
 client.done("refactoring complete — 12 files changed")
