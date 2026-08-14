@@ -8,11 +8,12 @@ Invoked by editors (Cursor, Claude Desktop, VS Code+Continue, Zed) as:
 Tommy reads MCP JSON-RPC from stdin and writes to stdout.  The editor owns
 the process — Tommy never opens a port and never runs as a daemon.
 
-Seven tools:
+Eight tools:
   tommy_recall          — query memnos memory
   tommy_remember        — persist a fact to memnos
   tommy_dispatch        — launch a harness task (async by default)
   tommy_status          — check a running task's output / exit code
+  tommy_control         — send wrap_up / abort / pivot / answer to a running task
   tommy_switch_project  — set the active project context
   tommy_route           — dry-run: which harness would Tommy pick?
   tommy_list_harnesses  — available harnesses + health + active routing
@@ -295,6 +296,10 @@ def tommy_dispatch(
         return {"task_id": task_id, "status": "running", "harness": chosen}
 
     proc.wait()
+    # Join the drain thread so all buffered stdout is captured before tail().
+    # Without this, tail() may return truncated output on fast-exiting processes.
+    drain.join(timeout=10.0)
+    ctrl.close()  # release the control channel socket (no harness will reconnect now)
     return {"task_id": task_id, "status": t.status(), "output": t.tail(200)}
 
 

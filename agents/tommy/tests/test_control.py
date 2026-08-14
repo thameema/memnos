@@ -210,3 +210,71 @@ class TestSDKApiContract:
             text = src.read_text()
             bad = re.findall(r"client\.remember\([^)]*memory_type[^)]*\)", text)
             assert bad == [], f"{src.name} calls remember() with 'memory_type=': {bad}"
+
+
+# ---------------------------------------------------------------------------
+# mcp_server structural tests — sync dispatch correctness
+# ---------------------------------------------------------------------------
+
+class TestMcpServerStructure:
+    """Structural checks on mcp_server.py that don't require a live harness."""
+
+    def test_sync_dispatch_joins_drain_before_tail(self):
+        """
+        When async_run=False, the sync dispatch path must join the drain
+        thread before calling tail() — otherwise output is truncated on
+        fast-exiting processes.
+        """
+        import re
+        src = (Path(__file__).parent.parent / "tommy" / "mcp_server.py").read_text()
+        # Find the sync block: proc.wait() … tail(200)
+        # drain.join() must appear BETWEEN proc.wait() and tail(200)
+        # We locate the positions of all three in the source text.
+        wait_pos = src.find("proc.wait()")
+        join_pos = src.find("drain.join(", wait_pos)
+        tail_pos = src.find("t.tail(200)", wait_pos)
+        assert wait_pos != -1, "proc.wait() not found in mcp_server.py"
+        assert join_pos != -1, (
+            "drain.join() missing after proc.wait() — sync dispatch will return "
+            "truncated output on fast-exiting processes"
+        )
+        assert join_pos < tail_pos, (
+            f"drain.join() (pos {join_pos}) must come before t.tail(200) (pos {tail_pos})"
+        )
+
+    def test_sync_dispatch_closes_ctrl_before_return(self):
+        """
+        When async_run=False, ctrl.close() must be called to release the
+        control channel socket — otherwise sockets/threads leak per sync dispatch.
+        """
+        import re
+        src = (Path(__file__).parent.parent / "tommy" / "mcp_server.py").read_text()
+        wait_pos = src.find("proc.wait()")
+        close_pos = src.find("ctrl.close()", wait_pos)
+        tail_pos = src.find("t.tail(200)", wait_pos)
+        assert close_pos != -1, (
+            "ctrl.close() not called after proc.wait() — ControlServer leaks "
+            "socket + accept thread on every sync dispatch"
+        )
+        assert close_pos < tail_pos, (
+            "ctrl.close() must be called before returning tail output"
+        )
+
+    def test_module_docstring_tool_count(self):
+        """Module docstring tool count must match the number of @mcp.tool() decorators."""
+        import re
+        src = (Path(__file__).parent.parent / "tommy" / "mcp_server.py").read_text()
+        # Count @mcp.tool() decorators
+        actual = len(re.findall(r"@mcp\.tool\(\)", src))
+        # Extract the number from the docstring  "Eight tools:" / "Seven tools:" etc.
+        m = re.search(r"(\w+) tools?:", src[:500])
+        assert m is not None, "Could not find 'N tools:' in module docstring"
+        word_to_int = {
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        }
+        stated = word_to_int.get(m.group(1).lower())
+        assert stated == actual, (
+            f"Module docstring says '{m.group(1)} tools' but {actual} @mcp.tool() "
+            "decorators are defined — update the docstring when adding/removing tools"
+        )
