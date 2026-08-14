@@ -237,6 +237,7 @@ def _launch_harness(
         proj = cfg.project_by_key(project_key)
         if proj:
             click.echo(f"   Project: {proj.name} ({proj.jira_project}) @ {proj.git_root}")
+            click.echo(f"   Workspace: {proj.git_root}")
 
     # Subscribe to namespace BEFORE launching (capture what sub-agent writes)
     sub_id: Optional[int] = None
@@ -258,7 +259,16 @@ def _launch_harness(
     # ─────────────────────────────────────────────────────────────────────────────
 
     # ── Popen: Tommy stays alive ──────────────────────────────────────────
-    proc = subprocess.Popen(cmd, env=env)
+    # Resolve working directory: project git_root > CWD
+    ws_path: Path = Path.cwd()
+    if project_key:
+        proj = cfg.project_by_key(project_key)
+        if proj:
+            candidate = Path(proj.git_root).expanduser().resolve()
+            if candidate.is_dir():
+                ws_path = candidate
+
+    proc = subprocess.Popen(cmd, env=env, cwd=str(ws_path))
     proc.wait()
     exit_code = proc.returncode
     ctrl.close()
