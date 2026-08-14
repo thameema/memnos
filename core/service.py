@@ -7,11 +7,13 @@ Multi-tenant: ONE schema (tenant_memnos) with a `namespace` column per the desig
 """
 from __future__ import annotations
 
+import functools
 import logging
 import math
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 
 from .store import BrainStore, query_clamp, RECALL_ARM_FAILURES, classify_arm_failure
@@ -214,6 +216,29 @@ def _env_float(name: str, default: float) -> float:
         return float(os.environ.get(name, default))
     except (TypeError, ValueError):
         return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+# issue #12 phase 2: bound on how many of a hybrid recall's independent SQL arms
+# (primary raw-turn + semantic, plus one raw+semantic pair per grounded/wide
+# namespace) run AT ONCE via their own short-lived pooled connection. Default 2 —
+# NOT #12 phase 1's rerank threads=min(4,cpu_count) precedent — because this cap
+# multiplies POOL-WIDE connection pressure, not just one process's CPU: every
+# simultaneous in-flight recall claims up to this many connections at once (see
+# _dispatch_sql_jobs), so the real constraint is MEMNOS_POOL_MAX shared across every
+# concurrent request the server is handling, not this one recall's own speed. 2
+# covers the common case (no grounded/wide fan-out — just primary raw + semantic,
+# where the issue's own profiling says most of the win lives) at the smallest
+# possible pool cost; a deployment with headroom (bigger MEMNOS_POOL_MAX, low
+# concurrent-request volume) can raise it.
+def _sql_concurrency_cap() -> int:
+    return max(1, _env_int("MEMNOS_RECALL_SQL_CONCURRENCY", 2))
 
 
 def _pred_tokens(pred: str) -> set[str]:
@@ -698,8 +723,80 @@ class MemnosMemory:
             b["_degraded_reasons"] = reasons
         return b
 
+    def _dispatch_sql_jobs(self, jobs, conn_factory):
+        """issue #12 phase 2: fire every independent hybrid-recall SQL arm in `jobs`
+        (each a 1-arg `lambda store: ...` callable) AT ONCE instead of one after
+        another, then return a list, in the SAME order as `jobs`, of zero-arg
+        resolvers the caller invokes to get each job's result (or have it re-raise
+        the job's own RECALL_ARM_FAILURES-class error). This indirection is what
+        keeps every degrade/dedup/ordering rule downstream byte-identical to the
+        pre-#12 sequential code: concurrency only changes WHEN a query ran, never
+        which try/except observes its outcome or what order results land in the
+        bundle — callers resolve jobs[i] at the exact call site the old blocking
+        `self.store.search_...(...)` call used to sit.
+
+        `conn_factory` is None (in-process/test callers — scripts, benchmarks,
+        tests/test_recall_arm_degrade.py's direct-DB harness — with no pool to draw
+        extra connections from) or there's only one job: resolvers close over
+        self.store and run sequentially/lazily on first call, unchanged from before
+        this fix.
+
+        `conn_factory` given (production, POOL.connection): jobs[0] reuses THIS
+        request's already-checked-out phase-B connection (self.store) — no new
+        checkout — and jobs[1:] each get their own short-lived pooled connection.
+        Concurrency is bounded to MEMNOS_RECALL_SQL_CONCURRENCY (default 2, see
+        _sql_concurrency_cap) so this ONE recall can't fan out past a couple of pool
+        slots — the cap isn't about this recall's own speed, it's about how many
+        connections EVERY simultaneously in-flight recall claims against the
+        shared, server-wide MEMNOS_POOL_MAX; jobs past the cap simply queue for a
+        freed worker/connection. A connection-acquisition failure (e.g.
+        psycopg_pool.PoolTimeout — a psycopg.OperationalError subclass, itself a
+        RECALL_ARM_FAILURES member) surfaces through that job's resolver exactly
+        like a query failure, so a saturated pool degrades that ONE arm instead of
+        the whole recall or the other concurrent arms.
+
+        Each ephemeral connection's search_* call re-runs its own fts_clamp probe
+        (core/store.py) — the SAME per-arm probe the sequential code already ran on
+        every call, just now possibly on a freshly-grown pool connection rather
+        than the one already-warm connection every arm shared before. fts_clamp's
+        own control-probe path (core/store.py's _tsquery_within_bound) already
+        tolerates exactly this "first statement on a cold connection" case with a
+        1500ms budget — 30x the measured cold-start cost — so a probe that's
+        genuinely slow on a brand-new connection degrades that arm, it doesn't
+        stall or crash the recall."""
+        if conn_factory is None or len(jobs) <= 1:
+            return [functools.partial(job, self.store) for job in jobs]
+        cap = max(1, min(len(jobs), _sql_concurrency_cap()))
+        vtype = self.store.vtype if self.store is not None else None
+
+        def _run_reused(job):
+            return job(self.store)
+
+        def _run_new(job):
+            with conn_factory() as conn:
+                return job(BrainStore(conn=conn, vtype=vtype))
+
+        with ThreadPoolExecutor(max_workers=cap) as ex:
+            futures = [ex.submit(_run_reused, jobs[0])]
+            futures += [ex.submit(_run_new, job) for job in jobs[1:]]
+            outcomes = []
+            for f in futures:
+                try:
+                    outcomes.append((f.result(), None))
+                except Exception as e:      # captured here, re-raised lazily below —
+                    outcomes.append((None, e))   # same shape a live call would raise
+
+        def _resolver(value, exc):
+            def resolve():
+                if exc is not None:
+                    raise exc
+                return value
+            return resolve
+        return [_resolver(v, e) for v, e in outcomes]
+
     def recall_fetch(self, namespace: str, query: str, *, k=40, qv=None,
-                     extra_namespaces=(), pre=None, timings=None, deadline=None) -> dict:
+                     extra_namespaces=(), pre=None, timings=None, deadline=None,
+                     conn_factory=None) -> dict:
         """DB phase of recall: temporal intent + ALL store queries (raw, semantic,
         timeline/entity-guarantee arms). `qv` lets pooled callers pre-embed the query
         (network) before acquiring a connection. Returns a bundle for recall_rank.
@@ -715,6 +812,10 @@ class MemnosMemory:
         = a dict the per-stage durations (sql_ms, staleness_ms) are accumulated into;
         `deadline` = a time.perf_counter() deadline — when already past it, the
         staleness annotation pass is skipped and the bundle is marked '_degraded'.
+        `conn_factory` (issue #12 phase 2, e.g. POOL.connection): the primary raw +
+        primary semantic arms, and every grounded namespace's raw+semantic pair, run
+        CONCURRENTLY instead of sequentially — see _dispatch_sql_jobs. None (every
+        caller before this fix) keeps the original one-at-a-time behavior exactly.
 
         issue #41 fix C: each store call below is an independent recall arm (primary
         raw-turn search, primary semantic search, and one pair per grounded namespace).
@@ -733,37 +834,47 @@ class MemnosMemory:
         if qv is None:
             qv = self.embed(query_clamp(query))   # #15 follow-up: bound a pathological query
         t_sql = time.perf_counter()
+
+        jobs = [lambda store: store.search_raw_turns(self.schema, namespace, qv, query, k)]
+        if not intent.temporal:
+            jobs.append(lambda store: store.search_semantic(
+                self.schema, namespace, qv, query, k, current_only=True))
+        else:
+            jobs.append(lambda store: store.search_semantic_temporal(
+                self.schema, namespace, qv, query, k, start=intent.start, end=intent.end,
+                current_only=intent.current, order=intent.order))
+        for kns in extra_namespaces:
+            jobs.append(lambda store, kns=kns: store.search_raw_turns(self.schema, kns, qv, query, k))
+            jobs.append(lambda store, kns=kns: store.search_semantic(
+                self.schema, kns, qv, query, k, current_only=True))
+        resolve = iter(self._dispatch_sql_jobs(jobs, conn_factory))
+
         try:
-            b["raw"] = self.store.search_raw_turns(self.schema, namespace, qv, query, k)
+            b["raw"] = next(resolve)()
         except RECALL_ARM_FAILURES as e:
             b["raw"] = []
             _record_arm_failure(reasons, namespace, "raw", e)
         if not intent.temporal:
             try:
-                b["sem"] = self.store.search_semantic(self.schema, namespace, qv, query, k,
-                                                       current_only=True)
+                b["sem"] = next(resolve)()
             except RECALL_ARM_FAILURES as e:
                 b["sem"] = []
                 _record_arm_failure(reasons, namespace, "semantic", e)
         else:
             try:
-                b["sem"] = self.store.search_semantic_temporal(
-                    self.schema, namespace, qv, query, k,
-                    start=intent.start, end=intent.end, current_only=intent.current,
-                    order=intent.order)
+                b["sem"] = next(resolve)()
             except RECALL_ARM_FAILURES as e:
                 b["sem"] = []
                 _record_arm_failure(reasons, namespace, "semantic_temporal", e)
         # grounded fan-out: per-knowledge-namespace fetches, merged for the SINGLE rerank
         for kns in extra_namespaces:
             try:
-                for r in self.store.search_raw_turns(self.schema, kns, qv, query, k):
+                for r in next(resolve)():
                     r["_ns"] = kns; b["raw"].append(r)
             except RECALL_ARM_FAILURES as e:
                 _record_arm_failure(reasons, kns, "raw", e)
             try:
-                for r in self.store.search_semantic(self.schema, kns, qv, query, k,
-                                                     current_only=True):
+                for r in next(resolve)():
                     r["_ns"] = kns; b.setdefault("sem", []).append(r)
             except RECALL_ARM_FAILURES as e:
                 _record_arm_failure(reasons, kns, "semantic", e)
@@ -1105,10 +1216,13 @@ class MemnosMemory:
                                      fact_quota=fact_quota)
 
     def recall_wide_fetch(self, namespaces, query, *, k=40, qv=None, timings=None,
-                          deadline=None, degraded_reasons=None):
+                          deadline=None, degraded_reasons=None, conn_factory=None):
         """DB phase of recall_wide: per-namespace hybrid search + RRF-score candidate cap.
         `timings`/`deadline` — same issue #12 semantics as recall_fetch (per-stage
-        accumulation; past-deadline skips the staleness pass).
+        accumulation; past-deadline skips the staleness pass). `conn_factory` (issue
+        #12 phase 2, e.g. POOL.connection) runs every namespace's raw+semantic pair
+        concurrently instead of one namespace at a time — see _dispatch_sql_jobs.
+        None (every caller before this fix) keeps one-namespace-at-a-time exactly.
 
         issue #41 fix C: each namespace's raw/semantic query is an independent arm. A
         RECALL_ARM_FAILURES-class error degrades JUST that (namespace, arm) pair — the
@@ -1121,19 +1235,24 @@ class MemnosMemory:
         if qv is None:
             qv = self.embed(query_clamp(query))   # #15 follow-up: bound a pathological query
         t_sql = time.perf_counter()
-        raw_c, sem_c = [], []
+        jobs, job_meta = [], []
         for ns in namespaces:
+            jobs.append(lambda store, ns=ns: store.search_raw_turns(self.schema, ns, qv, query, k))
+            job_meta.append((ns, "raw"))
+            jobs.append(lambda store, ns=ns: store.search_semantic(
+                self.schema, ns, qv, query, k, current_only=True))
+            job_meta.append((ns, "semantic"))
+        resolvers = self._dispatch_sql_jobs(jobs, conn_factory)
+        raw_c, sem_c = [], []
+        for (ns, arm), resolve in zip(job_meta, resolvers):
             try:
-                for r in self.store.search_raw_turns(self.schema, ns, qv, query, k):
-                    r["_ns"] = ns; raw_c.append(r)
+                rows = resolve()
             except RECALL_ARM_FAILURES as e:
-                _record_arm_failure(degraded_reasons, ns, "raw", e)
-            try:
-                for r in self.store.search_semantic(self.schema, ns, qv, query, k,
-                                                     current_only=True):
-                    r["_ns"] = ns; sem_c.append(r)
-            except RECALL_ARM_FAILURES as e:
-                _record_arm_failure(degraded_reasons, ns, "semantic", e)
+                _record_arm_failure(degraded_reasons, ns, arm, e)
+                continue
+            dest = raw_c if arm == "raw" else sem_c
+            for r in rows:
+                r["_ns"] = ns; dest.append(r)
         # cap candidates by RRF score before the (CPU) cross-encoder rerank
         raw_c = sorted(raw_c, key=lambda x: x.get("score", 0), reverse=True)[:60]
         sem_c = sorted(sem_c, key=lambda x: x.get("score", 0), reverse=True)[:60]
