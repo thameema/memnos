@@ -24,10 +24,11 @@ to finish.
 - Tommy is a **stdio subprocess**, not a daemon or HTTP server.  The editor
   spawns it (`tommy --mcp`) and owns its lifecycle.
 - **memnos is the only persistent server.**  Tommy talks to memnos for memory;
-  it opens no ports of its own.
-- A **TCP loopback control channel** (`TOMMY_CTRL_PORT`) lets Tommy send
-  `wrap_up` / `abort` / `pivot` to a running sub-agent and receive live
-  progress without polling.
+  it exposes no long-lived listening ports.
+- A **TCP loopback control channel** (`TOMMY_CTRL_PORT`) is opened
+  *transiently* — one ephemeral `127.0.0.1:0` socket per dispatch, closed
+  when the sub-agent exits.  This lets Tommy send `wrap_up` / `abort` /
+  `pivot` to a running sub-agent and receive live progress without polling.
 
 ---
 

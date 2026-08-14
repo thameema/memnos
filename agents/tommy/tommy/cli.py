@@ -74,8 +74,11 @@ def _ensure_memnos_running(cfg: TommyConfig) -> bool:
     # Not reachable — try to start the daemon
     click.echo("  memnos not running — attempting auto-start...", err=True)
     try:
+        from urllib.parse import urlparse as _urlparse
+        _parsed = _urlparse(cfg.memnos_url)
+        _port = _parsed.port or 8900
         subprocess.Popen(
-            ["memnos", "start", "--http", "--port", "8900"],
+            ["memnos", "start", "--http", "--port", str(_port)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -109,9 +112,10 @@ def _find_latest_claude_transcript() -> Optional[Path]:
     """
     Locate the most recently modified Claude Code conversation JSONL.
     Claude Code stores conversations at:
-      ~/.claude/projects/<hash>/conversations/<uuid>.jsonl
+      ~/.claude/projects/<project-dir>/<uuid>.jsonl
+    (No 'conversations/' subdirectory — each project dir holds .jsonl files directly.)
     """
-    pattern = str(Path.home() / ".claude" / "projects" / "*" / "conversations" / "*.jsonl")
+    pattern = str(Path.home() / ".claude" / "projects" / "*" / "*.jsonl")
     files = glob.glob(pattern)
     if not files:
         return None
@@ -343,6 +347,9 @@ def _do_upgrade() -> None:
                 err=True,
             )
             sys.exit(1)
+    elif installer == "pip":
+        # Explicit pip install — upgrade in-place, no warning
+        cmd = [sys.executable, "-m", "pip", "install", "-U", "tommy-orchestrator"]
     elif installer in ("pipx", "unknown") and shutil.which("pipx"):
         try:
             out = subprocess.run(
@@ -354,8 +361,9 @@ def _do_upgrade() -> None:
         except Exception:
             cmd = [sys.executable, "-m", "pip", "install", "-U", "tommy-orchestrator"]
     else:
+        # installer==unknown and pipx not available — last resort
         click.echo(
-            "  [warn] falling back to pip — if this fails, run:\n"
+            "  [warn] installer unknown, falling back to pip — if this fails, run:\n"
             "         cd ~ && uv tool upgrade tommy-orchestrator",
             err=True,
         )

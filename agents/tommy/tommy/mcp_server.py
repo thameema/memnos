@@ -99,8 +99,10 @@ def _memnos_client(cfg: TommyConfig):
     return None
 
 
-def _drain_stdout(proc: subprocess.Popen, task: Task) -> None:
-    """Background thread: drain proc stdout into task.output_lines."""
+def _drain_stdout(proc: subprocess.Popen, task: Task, prompt_file: str = "") -> None:
+    """Background thread: drain proc stdout into task.output_lines.
+    Cleans up the temp prompt file once the process exits.
+    """
     try:
         for line in proc.stdout:
             decoded = line.decode(errors="replace").rstrip()
@@ -108,6 +110,14 @@ def _drain_stdout(proc: subprocess.Popen, task: Task) -> None:
                 task.output_lines.append(decoded)
     except Exception:
         pass
+    finally:
+        # Clean up the temp prompt file that was created with delete=False
+        if prompt_file:
+            try:
+                import os as _os
+                _os.unlink(prompt_file)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -234,8 +244,9 @@ def tommy_dispatch(
     tf.write(full_task)
     tf.flush()
     tf.close()
+    _tf_path = tf.name  # capture for cleanup after proc exits
 
-    cmd = [part.replace("{prompt_file}", tf.name) for part in spec.launch_template]
+    cmd = [part.replace("{prompt_file}", _tf_path) for part in spec.launch_template]
     cmd = apply_skip_permissions(cmd, chosen, cfg.skip_permissions)
     _mcp_session_name = f"Tommy | {_active_project.upper()}" if _active_project else "Tommy"
     cmd = apply_session_name(cmd, chosen, _mcp_session_name)
@@ -245,10 +256,18 @@ def tommy_dispatch(
 
     task_id = uuid.uuid4().hex[:8]
 
-    # Control channel: lets Tommy send wrap_up / abort / pivot mid-run
+    # Control channel: lets Tommy send wrap_up / abort / pivot mid-run.
+    # Use a ref-cell so _ctrl_msg doesn't capture `t` before Task() is constructed
+    # (harness can connect and send messages between ControlServer() and Task()).
+    _task_ref: list = [None]
+
     def _ctrl_msg(msg: dict) -> None:
-        with t._lock:
-            t.output_lines.append(f"[ctrl:{msg.get('type','')}] {msg}")
+        task_obj = _task_ref[0]
+        if task_obj is None:
+            return  # message arrived before Task was constructed — safe to drop
+        with task_obj._lock:
+            task_obj.output_lines.append(f"[ctrl:{msg.get('type','')}] {msg}")
+
     ctrl = ControlServer(on_message=_ctrl_msg, connect_timeout=30.0)
     env["TOMMY_CTRL_PORT"] = str(ctrl.port)
 
@@ -262,8 +281,9 @@ def tommy_dispatch(
     )
 
     t = Task(task_id=task_id, harness=chosen, proc=proc)
+    _task_ref[0] = t  # publish Task before any ctrl messages can be delivered
     t._ctrl = ctrl
-    drain = threading.Thread(target=_drain_stdout, args=(proc, t), daemon=True)
+    drain = threading.Thread(target=_drain_stdout, args=(proc, t, _tf_path), daemon=True)
     drain.start()
     t._drain_thread = drain
     _tasks[task_id] = t
