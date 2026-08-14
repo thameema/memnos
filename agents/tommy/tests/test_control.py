@@ -278,3 +278,56 @@ class TestMcpServerStructure:
             f"Module docstring says '{m.group(1)} tools' but {actual} @mcp.tool() "
             "decorators are defined — update the docstring when adding/removing tools"
         )
+
+
+class TestTaskEviction:
+    """_tasks dict is capped at _TASK_CAP; oldest completed tasks evicted first."""
+
+    def test_evict_completed_before_running(self):
+        from unittest.mock import MagicMock, patch
+        from tommy.mcp_server import _evict_tasks, _tasks, _TASK_CAP
+
+        # Clear and populate with fake tasks
+        _tasks.clear()
+
+        def _fake_task(status):
+            t = MagicMock()
+            t.status.return_value = status
+            return t
+
+        # Fill with (cap) completed tasks
+        for i in range(_TASK_CAP):
+            _tasks[f"done-{i}"] = _fake_task("done")
+        # Add one running task that would push us over cap
+        _tasks["running-0"] = _fake_task("running")
+
+        assert len(_tasks) == _TASK_CAP + 1
+        _evict_tasks()
+
+        # Should now be at cap
+        assert len(_tasks) == _TASK_CAP
+        # The running task must NOT have been evicted (completed go first)
+        assert "running-0" in _tasks
+        # The oldest completed task (done-0) should be evicted first
+        assert "done-0" not in _tasks
+        _tasks.clear()
+
+    def test_cap_enforced_on_overflow(self):
+        from unittest.mock import MagicMock
+        from tommy.mcp_server import _evict_tasks, _tasks, _TASK_CAP
+
+        _tasks.clear()
+        def _fake_done():
+            t = MagicMock()
+            t.status.return_value = "done"
+            return t
+
+        for i in range(_TASK_CAP + 10):
+            _tasks[f"t-{i}"] = _fake_done()
+
+        _evict_tasks()
+        assert len(_tasks) == _TASK_CAP
+        # Newest entries should survive (eviction is oldest-first)
+        for i in range(10, _TASK_CAP + 10):
+            assert f"t-{i}" in _tasks
+        _tasks.clear()

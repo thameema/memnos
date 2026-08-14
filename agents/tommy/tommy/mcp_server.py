@@ -63,7 +63,8 @@ class Task:
         return "\n".join(lines)
 
 
-_tasks: dict = {}
+_tasks: dict = {}       # task_id -> Task; capped at _TASK_CAP entries
+_TASK_CAP = 100         # oldest completed tasks are evicted when limit is hit
 _active_project: Optional[str] = None
 _cfg: Optional[TommyConfig] = None
 
@@ -73,6 +74,23 @@ def _get_cfg() -> TommyConfig:
     if _cfg is None:
         _cfg = TommyConfig.load()
     return _cfg
+
+def _evict_tasks() -> None:
+    """
+    Keep _tasks at or below _TASK_CAP entries.
+    Eviction order: oldest completed first, then oldest running if still over cap.
+    dict insertion order (Python 3.7+) is used as a proxy for age.
+    """
+    if len(_tasks) <= _TASK_CAP:
+        return
+    # Separate completed from running, preserving insertion order
+    completed = [tid for tid, t in _tasks.items() if t.status() != "running"]
+    running   = [tid for tid, t in _tasks.items() if t.status() == "running"]
+    evict_order = completed + running          # evict completed before killing running
+    to_remove = len(_tasks) - _TASK_CAP
+    for tid in evict_order[:to_remove]:
+        del _tasks[tid]
+
 
 
 def _effective_namespace(cfg: TommyConfig) -> str:
@@ -290,6 +308,7 @@ def tommy_dispatch(
     drain = threading.Thread(target=_drain_stdout, args=(proc, t, _tf_path), daemon=True)
     drain.start()
     t._drain_thread = drain
+    _evict_tasks()
     _tasks[task_id] = t
 
     if async_run:
