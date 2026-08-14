@@ -23,7 +23,7 @@ HARNESS_REGISTRY: dict[str, HarnessSpec] = {
     "claude": HarnessSpec(
         name="claude",
         binary="claude",
-        launch_template=["claude", "--name", "Tommy", "--append-system-prompt-file", "{prompt_file}"],
+        launch_template=["claude", "--append-system-prompt-file", "{prompt_file}"],
         supports_tools=True,
         supports_mcp=True,
         description="Anthropic Claude Code — full tool + MCP support, 200K context",
@@ -89,6 +89,17 @@ def apply_skip_permissions(cmd: list[str], harness_name: str, skip: bool) -> lis
     if skip and harness_name in _SUPPORTS_SKIP_PERMISSIONS:
         # Insert right after the binary name
         return [cmd[0], "--dangerously-skip-permissions"] + cmd[1:]
+    return cmd
+
+
+
+_SUPPORTS_SESSION_NAME = {"claude"}
+
+
+def apply_session_name(cmd: list[str], harness_name: str, name: str) -> list[str]:
+    """Inject --name <name> right after the binary for supported harnesses."""
+    if harness_name in _SUPPORTS_SESSION_NAME and name:
+        return [cmd[0], "--name", name] + cmd[1:]
     return cmd
 
 

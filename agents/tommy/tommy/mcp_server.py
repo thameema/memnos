@@ -33,7 +33,7 @@ from fastmcp import FastMCP
 
 from .config import TommyConfig, ProjectEntry
 from .control import ControlServer
-from .discovery.harnesses import all_harnesses, apply_skip_permissions
+from .discovery.harnesses import all_harnesses, apply_skip_permissions, apply_session_name
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +237,8 @@ def tommy_dispatch(
 
     cmd = [part.replace("{prompt_file}", tf.name) for part in spec.launch_template]
     cmd = apply_skip_permissions(cmd, chosen, cfg.skip_permissions)
+    _mcp_session_name = f"Tommy | {_active_project.upper()}" if _active_project else "Tommy"
+    cmd = apply_session_name(cmd, chosen, _mcp_session_name)
     env = os.environ.copy()
     env["MEMNOS_URL"] = cfg.memnos_url
     env["TOMMY_NS"] = cfg.tommy_ns

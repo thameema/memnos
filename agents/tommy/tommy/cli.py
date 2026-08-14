@@ -29,7 +29,7 @@ from .prompt import build_prompt
 from .install import run_install
 from .mcp_server import run_stdio
 from .control import ControlServer
-from .discovery.harnesses import all_harnesses, apply_skip_permissions
+from .discovery.harnesses import all_harnesses, apply_skip_permissions, apply_session_name
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +226,8 @@ def _launch_harness(
         for part in spec.launch_template
     ] + list(extra_args)
     cmd = apply_skip_permissions(cmd, cfg.harness, cfg.skip_permissions)
+    _session_name = f"Tommy | {project_key.upper()}" if project_key else "Tommy"
+    cmd = apply_session_name(cmd, cfg.harness, _session_name)
 
     # Inject MEMNOS_URL so the sub-agent's MCP config picks it up
     env = os.environ.copy()
@@ -404,11 +406,7 @@ def _print_banner(cfg: TommyConfig, project_key: Optional[str] = None) -> None:
     click.echo(logo_coloured, err=True)
     click.echo(f"  {bold}memnos-native coding orchestrator{r}  {g}v0.1.0{r}", err=True)
 
-    # Set the terminal/Orca tab title: Tommy | PROJECT
-    title_suffix = f" | {project_key.upper()}" if project_key else ""
-    if tty:
-        sys.stderr.write(f"\033]0;Tommy{title_suffix}\007")
-        sys.stderr.flush()
+
 
     click.echo("", err=True)
 
