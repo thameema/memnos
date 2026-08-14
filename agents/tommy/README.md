@@ -133,5 +133,5 @@ tommy/
 └── tommy.conf.default  # Bundled default config
 ```
 
-Tommy has no dependency on Omnigent, no cloud control plane, no vendor lock-in.
+Tommy has no cloud control plane dependency, no vendor lock-in.
 It works with any harness that accepts a system prompt file.
