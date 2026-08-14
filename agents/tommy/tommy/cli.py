@@ -125,9 +125,8 @@ def _find_latest_claude_transcript() -> Optional[Path]:
 def _post_run_capture(client, cfg: TommyConfig, run_id: str, project_key: Optional[str]) -> None:
     """
     After the sub-agent exits:
-    1. Poll namespace_feed for anything the sub-agent wrote to memnos
-    2. Ingest the Claude Code conversation transcript
-    3. Call segment_episodes so this run becomes a searchable episode
+    1. Ingest the Claude Code conversation transcript
+    2. Consolidate recent turns into durable semantic facts
     """
     try:
         # Layer 2: feed — what did the sub-agent write?
@@ -145,12 +144,12 @@ def _post_run_capture(client, cfg: TommyConfig, run_id: str, project_key: Option
             )
             click.echo(f"  📥 Transcript ingested ({len(text):,} chars) → memnos")
 
-        # Layer 4: segment episodes
+        # Layer 4: consolidate (extract durable facts from recent turns)
         try:
-            client.segment_episodes(gap_minutes=30)
-            click.echo("  🧠 Episode segmented → memnos")
+            client.consolidate()
+            click.echo("  🧠 Session consolidated → memnos")
         except Exception:
-            pass  # segment_episodes is best-effort
+            pass  # consolidate is best-effort
 
         # Journal completion
         proj_note = f", project={project_key}" if project_key else ""
@@ -246,14 +245,9 @@ def _launch_harness(
             click.echo(f"   Project: {proj.name} ({proj.jira_project}) @ {proj.git_root}")
             click.echo(f"   Workspace: {proj.git_root}")
 
-    # Subscribe to namespace BEFORE launching (capture what sub-agent writes)
+    # Note: namespace_subscribe/feed are MCP-only tools; SDK has no such methods.
+    # Post-run capture uses ingest_file + consolidate instead.
     sub_id: Optional[int] = None
-    if memnos_client:
-        try:
-            sub = memnos_client.namespace_subscribe()
-            sub_id = sub.get("subscription_id")
-        except Exception:
-            pass
 
     run_id = str(uuid.uuid4())[:8]
 
@@ -275,7 +269,7 @@ def _launch_harness(
             if candidate.is_dir():
                 ws_path = candidate
 
-    proc = subprocess.Popen(cmd, env=env, cwd=str(ws_path))
+    proc = subprocess.Popen(cmd, env=env, cwd=str(ws_path), start_new_session=True)
     proc.wait()
     exit_code = proc.returncode
     ctrl.close()
@@ -287,18 +281,8 @@ def _launch_harness(
     except OSError:
         pass
 
-    # Post-run capture (Layer 2: feed, Layer 3: ingest, Layer 4: segment)
+    # Post-run capture (Layer 3: ingest transcript, Layer 4: consolidate)
     if memnos_client:
-        # Layer 2: drain namespace feed
-        if sub_id is not None:
-            try:
-                new_memories = memnos_client.namespace_feed(sub_id)
-                count = len(new_memories.get("items", []))
-                if count:
-                    click.echo(f"  📡 {count} new memor{'y' if count == 1 else 'ies'} written by sub-agent")
-            except Exception:
-                pass
-
         _post_run_capture(memnos_client, cfg, run_id, project_key)
 
     sys.exit(exit_code)

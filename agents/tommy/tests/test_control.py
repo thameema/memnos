@@ -3,6 +3,7 @@ Tests for the Tommy control channel (ControlServer / ControlClient).
 These tests use real loopback TCP — no mocking needed; fast on any OS.
 """
 import json
+from pathlib import Path
 import socket
 import threading
 import time
@@ -147,3 +148,65 @@ class TestTranscriptGlob:
         matches = glob.glob(pattern)
         assert len(matches) == 1
         assert pathlib.Path(matches[0]) == transcript
+
+
+# ---------------------------------------------------------------------------
+# SDK API contract tests — guard against calling non-existent SDK methods
+# ---------------------------------------------------------------------------
+
+import inspect
+import sys
+
+
+def _tommy_uses_only_valid_sdk_methods(source_file: str, valid_methods: set) -> list[str]:
+    """Parse source for client.<method>() calls and report any not in valid_methods."""
+    import re
+    text = Path(source_file).read_text()
+    found = re.findall(r"client\.(\w+)\(", text)
+    return [m for m in found if m not in valid_methods]
+
+
+SDK_METHODS = {
+    # MemnosClient public API (sync)
+    "remember", "recall", "ingest_file", "context", "consolidate",
+    "feedback", "healthy", "close",
+}
+
+TOMMY_SOURCES = [
+    Path(__file__).parent.parent / "tommy" / "cli.py",
+    Path(__file__).parent.parent / "tommy" / "mcp_server.py",
+]
+
+
+class TestSDKApiContract:
+    """Ensure Tommy only calls SDK methods that actually exist."""
+
+    def test_no_invalid_sdk_calls_in_cli(self):
+        invalid = _tommy_uses_only_valid_sdk_methods(str(TOMMY_SOURCES[0]), SDK_METHODS)
+        assert invalid == [], (
+            f"cli.py calls non-existent SDK methods: {invalid}. "
+            "Check MemnosClient in sdk/memnos_sdk/client.py."
+        )
+
+    def test_no_invalid_sdk_calls_in_mcp_server(self):
+        invalid = _tommy_uses_only_valid_sdk_methods(str(TOMMY_SOURCES[1]), SDK_METHODS)
+        assert invalid == [], (
+            f"mcp_server.py calls non-existent SDK methods: {invalid}. "
+            "Check MemnosClient in sdk/memnos_sdk/client.py."
+        )
+
+    def test_recall_uses_fact_quota_not_limit(self):
+        """recall() has no 'limit' param — must use fact_quota."""
+        import re
+        for src in TOMMY_SOURCES:
+            text = src.read_text()
+            bad = re.findall(r"client\.recall\([^)]*\blimit\s*=[^=][^)]*\)", text)
+            assert bad == [], f"{src.name} calls recall() with 'limit=': {bad}"
+
+    def test_remember_has_no_memory_type_param(self):
+        """remember() has no 'memory_type' param."""
+        import re
+        for src in TOMMY_SOURCES:
+            text = src.read_text()
+            bad = re.findall(r"client\.remember\([^)]*memory_type[^)]*\)", text)
+            assert bad == [], f"{src.name} calls remember() with 'memory_type=': {bad}"

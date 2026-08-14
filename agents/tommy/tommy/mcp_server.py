@@ -156,10 +156,11 @@ def tommy_recall(
         return "memnos unreachable — no memory available."
     try:
         ns = namespace or _effective_namespace(cfg)
-        results = client.recall(query, namespace=ns, limit=limit)
-        if not results:
+        result = client.recall(query, namespace=ns, fact_quota=limit)
+        context = result.get("context", "")
+        if not context:
             return f"No memories found for: {query!r}"
-        return "\n".join(f"[{i+1}] {r}" for i, r in enumerate(results))
+        return context
     except Exception as exc:
         return f"memnos recall error: {exc}"
 
@@ -185,7 +186,9 @@ def tommy_remember(
         return "memnos unreachable — memory not saved."
     try:
         ns = namespace or _effective_namespace(cfg)
-        client.remember(content, namespace=ns, memory_type=kind if kind != "fact" else "")
+        # SDK doesn't support memory_type — prefix kind into text for searchability
+        text = f"[{kind}] {content}" if kind and kind != "fact" else content
+        client.remember(text, namespace=ns)
         return f"Saved to {ns} ({kind})"
     except Exception as exc:
         return f"memnos remember error: {exc}"
@@ -231,10 +234,10 @@ def tommy_dispatch(
         client = _memnos_client(cfg)
         if client:
             try:
-                context = client.recall(task, limit=5)
-                if context:
-                    ctx_block = "\n".join(f"- {r}" for r in context)
-                    full_task = f"## Context from memory\n{ctx_block}\n\n---\n\n{task}"
+                recall_result = client.recall(task, fact_quota=5)
+                ctx_text = recall_result.get("context", "")
+                if ctx_text:
+                    full_task = f"## Context from memory\n{ctx_text}\n\n---\n\n{task}"
             except Exception:
                 pass
 
