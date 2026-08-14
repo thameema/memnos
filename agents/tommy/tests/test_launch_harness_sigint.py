@@ -134,6 +134,14 @@ class _Rig:
 
     def close(self) -> None:
         _kill_process_group(self.proc)
+        # Belt-and-suspenders: on the pre-#77 bug shape the harness lands in
+        # its own process group, so killing the driver's group above never
+        # reaches it. Try the harness pid directly too.
+        if self.pid_file.exists():
+            try:
+                os.kill(int(self.pid_file.read_text().strip()), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError, ValueError):
+                pass
         self._log_fh.close()
 
 
