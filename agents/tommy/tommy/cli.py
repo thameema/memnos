@@ -372,6 +372,48 @@ def _do_upgrade() -> None:
         sys.exit(rc)
 
 
+TOMMY_LOGO = r"""
+  ████████╗ ██████╗ ███╗   ███╗███╗   ███╗██╗   ██╗
+  ╚══██╔══╝██╔═══██╗████╗ ████║████╗ ████║╚██╗ ██╔╝
+     ██║   ██║   ██║██╔████╔██║██╔████╔██║ ╚████╔╝
+     ██║   ██║   ██║██║╚██╔╝██║██║╚██╔╝██║  ╚██╔╝
+     ██║   ╚██████╔╝██║ ╚═╝ ██║██║ ╚═╝ ██║   ██║
+     ╚═╝    ╚═════╝ ╚═╝     ╚═╝╚═╝     ╚═╝   ╚═╝
+"""
+
+def _print_banner(cfg: TommyConfig, project_key: Optional[str] = None) -> None:
+    """Print the Tommy launch banner to stderr (never mixed into JSON output)."""
+    import sys
+    ORANGE = "\033[38;5;208m"
+    BLUE   = "\033[38;5;27m"
+    GREY   = "\033[38;5;245m"
+    RESET  = "\033[0m"
+    BOLD   = "\033[1m"
+
+    # Only colour if stderr is a real TTY
+    tty = sys.stderr.isatty()
+    o = ORANGE if tty else ""
+    b = BLUE   if tty else ""
+    g = GREY   if tty else ""
+    r = RESET  if tty else ""
+    bold = BOLD if tty else ""
+
+    logo_coloured = "\n".join(
+        f"{o}{line}{r}" for line in TOMMY_LOGO.splitlines()
+    )
+    click.echo(logo_coloured, err=True)
+    click.echo(f"  {bold}memnos-native coding orchestrator{r}  {g}v0.1.0{r}", err=True)
+
+    # Set the terminal/Orca tab title: Tommy | PROJECT
+    title_suffix = f" | {project_key.upper()}" if project_key else ""
+    if tty:
+        sys.stderr.write(f"\033]0;Tommy{title_suffix}\007")
+        sys.stderr.flush()
+
+    click.echo("", err=True)
+
+
+
 @click.command(
     context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
     help="Tommy — personal coding orchestrator built on memnos.",
@@ -401,6 +443,10 @@ def main(
     extra_args: tuple,
 ) -> None:
     cfg = TommyConfig.load(conf_path=Path(conf) if conf else None)
+
+    # Logo + terminal title (only when actually launching, not for --install/--list-*)
+    if not (do_upgrade or mcp_mode or do_install or list_projects or list_harnesses):
+        _print_banner(cfg, project_key=project)
 
     # --upgrade
     if do_upgrade:

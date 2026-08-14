@@ -23,7 +23,7 @@ HARNESS_REGISTRY: dict[str, HarnessSpec] = {
     "claude": HarnessSpec(
         name="claude",
         binary="claude",
-        launch_template=["claude", "--append-system-prompt-file", "{prompt_file}"],
+        launch_template=["claude", "--name", "Tommy", "--append-system-prompt-file", "{prompt_file}"],
         supports_tools=True,
         supports_mcp=True,
         description="Anthropic Claude Code — full tool + MCP support, 200K context",
