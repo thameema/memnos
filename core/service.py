@@ -150,7 +150,7 @@ def query_specificity(query: str) -> str:
 
 
 # --- list/aggregation intent (issue #2: the #11-class ranking gap) -------------------
-# EXTENDS the #11 classifier (does NOT build a parallel one). The HDIG field case ("what
+# EXTENDS the #11 classifier (does NOT build a parallel one). The EXAMPLE field case ("what
 # projects does the MR reviewer monitor") FOUND the answer facts but ranked them 15-22,
 # under raw-turn noise — a list/aggregation question whose crisp answer lives in distilled
 # facts/dossiers, not in any single discursive turn. Such questions want the DISTILLED
@@ -158,7 +158,7 @@ def query_specificity(query: str) -> str:
 # these enumerate ('which / how many / what <plural> …'). High precision: a VERBATIM cue
 # (query_specificity == 'specific') ALWAYS wins — "what exactly did X say" is not a list
 # question even if phrased 'what …'. Entity-density does NOT veto here: "what projects does
-# the HDIG MR reviewer monitor" names entities yet is squarely a list question.
+# the EXAMPLE MR reviewer monitor" names entities yet is squarely a list question.
 _LIST_RE = re.compile(
     r"\b(how many|how much|which|what (?:projects?|agents?|services?|systems?|tools?|"
     r"tickets?|tasks?|items?|repos?|repositories|hosts?|servers?|clients?|vendors?|"
@@ -894,7 +894,7 @@ class MemnosMemory:
 
     def _dedup_candidates(self, raw_rows) -> list:
         """RECALL-PATH DEDUPE (issue #2, DB phase): collapse near-identical RAW-TURN
-        candidates BEFORE the cross-encoder. This is the cron-x10 killer — the HDIG field
+        candidates BEFORE the cross-encoder. This is the cron-x10 killer — the EXAMPLE field
         case had the SAME operational turn duplicated ~10x crowding ranks 1-4 above the
         answer-bearing facts. Two collapse rules, both deterministic and cheap:
           1. EXACT: whitespace/case-normalized content hash (no embedding needed) — kills
@@ -1350,7 +1350,7 @@ class MemnosMemory:
         FACT-FIRST RENDERING (issue #2): when `query` is a list/aggregation or broad-status
         question, lead with distilled FACTS/dossiers ('what's known') and put raw turns
         below as supporting evidence — so the crisp answer is read FIRST regardless of the
-        rerank float order (the HDIG case: answer facts that floated to rank 15-22). Pins
+        rerank float order (the EXAMPLE case: answer facts that floated to rank 15-22). Pins
         always stay first; verbatim/neutral queries keep the rerank order. query=None
         (legacy callers) is unchanged. MEMNOS_RECALL_FACT_FIRST=0 disables."""
         if (query and _env_float("MEMNOS_RECALL_FACT_FIRST", 1.0) > 0

@@ -1,6 +1,6 @@
 """Recall answer-quality / ranking gap (issue #2 — the #11-class field case).
 
-Field evidence (HDIG): on "what projects does the HDIG MR reviewer monitor", recall
+Field evidence (EXAMPLE): on "what projects does the EXAMPLE MR reviewer monitor", recall
 FOUND the answer facts but ranked them 15-22, UNDER noise — ranks 1-4 were raw turns,
 including the SAME cron-command turn duplicated ~10x. The data was right; ranking +
 presentation buried it. Three rank/render-path layers (write path untouched), each
@@ -61,7 +61,7 @@ def test_intent():
     print("query_intent battery (extends #11 classifier)")
     battery = [
         # list / aggregation -> facts lead
-        ("what projects does the HDIG MR reviewer monitor", "list"),
+        ("what projects does the EXAMPLE MR reviewer monitor", "list"),
         ("which agents can handle deploys?", "list"),
         ("how many tickets are open", "list"),
         ("what services run on host27", "list"),
@@ -83,20 +83,20 @@ def test_intent():
         check(f"{want:8s} <- {q[:54]}", query_intent(q) == want)
 
 
-# --- HDIG repro seed ----------------------------------------------------------------
+# --- EXAMPLE repro seed ----------------------------------------------------------------
 # (a) the SAME operational raw turn duplicated ~10x (the dup source — exact content);
 # (b) one NEAR-identical variant (embedding-close, not byte-identical);
 # (c) a few answer-bearing distilled facts the list question should surface.
-CRON_TURN = ("bot: cron job hdig-mr-reviewer ran at 02:00 UTC; command "
-             "`python -m hdig.mr_reviewer --scan`; exit 0; nothing to review.")
-NEAR_VARIANT = ("bot: cron job hdig-mr-reviewer ran at 02:00 UTC; command "
-                "`python -m hdig.mr_reviewer --scan`; exit 0; no changes to review.")
+CRON_TURN = ("bot: cron job example-mr-reviewer ran at 02:00 UTC; command "
+             "`python -m example.mr_reviewer --scan`; exit 0; nothing to review.")
+NEAR_VARIANT = ("bot: cron job example-mr-reviewer ran at 02:00 UTC; command "
+                "`python -m example.mr_reviewer --scan`; exit 0; no changes to review.")
 ANSWER_FACTS = [
-    "The HDIG MR reviewer monitors the payments-core project.",
-    "The HDIG MR reviewer monitors the ledger-service project.",
-    "The HDIG MR reviewer monitors the fraud-detection project.",
+    "The EXAMPLE MR reviewer monitors the payments-core project.",
+    "The EXAMPLE MR reviewer monitors the ledger-service project.",
+    "The EXAMPLE MR reviewer monitors the fraud-detection project.",
 ]
-VERBATIM_TURN = ("reviewer: I told the team the cron job for hdig-mr-reviewer "
+VERBATIM_TURN = ("reviewer: I told the team the cron job for example-mr-reviewer "
                  "should never auto-merge, only flag.")
 
 
@@ -127,14 +127,14 @@ def near_vec(v):
 # --- 2. dedup collapses the cron x10 ------------------------------------------------
 def test_dedup(mem):
     print("dedup: cron-x10 collapses to one candidate")
-    q = "what projects does the HDIG MR reviewer monitor"
+    q = "what projects does the EXAMPLE MR reviewer monitor"
     def cron_count(rows):
         return sum(1 for r in rows if r["kind"] == "turn"
-                   and "hdig-mr-reviewer ran" in r["content"])
+                   and "example-mr-reviewer ran" in r["content"])
 
     rows = mem.recall(NS, q)
     cron_rows = [r for r in rows if r["kind"] == "turn"
-                 and "hdig-mr-reviewer ran" in r["content"]]
+                 and "example-mr-reviewer ran" in r["content"]]
     on_count = len(cron_rows)
     check("cron-style turns collapsed to a single survivor", on_count <= 1)
     if cron_rows:
@@ -165,7 +165,7 @@ def test_dedup(mem):
 # --- 3. fact-first: the answer facts lead the list-intent result + context ----------
 def test_fact_first(mem):
     print("fact-first: answer facts surface above the turns (list intent)")
-    q = "what projects does the HDIG MR reviewer monitor"
+    q = "what projects does the EXAMPLE MR reviewer monitor"
     rows = mem.recall(NS, q)
     kinds = [r["kind"] for r in rows]
     check("list (fact-first ON): the FIRST result is a fact",
