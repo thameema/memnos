@@ -17,6 +17,13 @@ jobs:
     name: Build & publish (memnos + memnos-sdk + tommy-orchestrator)
     runs-on: ubuntu-latest
     permissions:
+      contents: read              # job-level permissions REPLACE the workflow-level block
+                                   # above rather than adding to it, so this must be repeated
+                                   # here too — otherwise actions/checkout gets no repo read
+                                   # access. Harmless no-op while the repo was public (anonymous
+                                   # HTTPS checkout worked regardless); a hard failure now that
+                                   # the repo is private (2026-08-14) — checkout gets GitHub's
+                                   # private-repo "repository not found" instead of real auth.
       id-token: write            # required for PyPI Trusted Publishing — no API token needed
     steps:
       - uses: actions/checkout@v4
