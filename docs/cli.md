@@ -298,6 +298,119 @@ memnos whoami mnk_...
 ```
 
 
+## Roles
+
+### `memnos role create`
+
+create a role (idempotent on name)
+
+| argument | description |
+|---|---|
+| `name` | role name |
+| `--desc` | description |
+
+```bash
+memnos role create architects --desc 'standards writers'
+```
+
+### `memnos role ls`
+
+list roles with member/grant counts
+
+```bash
+memnos role ls
+```
+
+### `memnos role rm`
+
+delete a role (and its grants + memberships)
+
+| argument | description |
+|---|---|
+| `name` | role name |
+
+```bash
+memnos role rm architects
+```
+
+### `memnos role grant`
+
+grant a role access to a namespace
+
+| argument | description |
+|---|---|
+| `name` | role name |
+| `namespace` | namespace (exact, prefix like team:*, or *) |
+| `--read-only` | read access only (default read+write) |
+
+```bash
+memnos role grant architects org:acme:standards
+```
+
+### `memnos role revoke`
+
+revoke a role's grant on a namespace
+
+| argument | description |
+|---|---|
+| `name` | role name |
+| `namespace` | namespace of the grant to revoke |
+
+```bash
+memnos role revoke architects org:acme:standards
+```
+
+### `memnos role grants`
+
+list a role's namespace grants
+
+| argument | description |
+|---|---|
+| `name` | role name |
+
+```bash
+memnos role grants architects
+```
+
+### `memnos role add-member`
+
+add a principal to a role
+
+| argument | description |
+|---|---|
+| `name` | role name |
+| `principal` | principal name |
+
+```bash
+memnos role add-member architects alice
+```
+
+### `memnos role rm-member`
+
+remove a principal from a role
+
+| argument | description |
+|---|---|
+| `name` | role name |
+| `principal` | principal name |
+
+```bash
+memnos role rm-member architects alice
+```
+
+### `memnos role members`
+
+list a role's members
+
+| argument | description |
+|---|---|
+| `name` | role name |
+
+```bash
+memnos role members architects
+```
+
+
 ## Namespaces
 
 ### `memnos namespace`
