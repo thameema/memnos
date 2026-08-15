@@ -40,9 +40,11 @@ Concretely, Tommy ships two entry points from one `tommy` binary:
   `tommy_status`, `tommy_control`, `tommy_switch_project`, `tommy_route`,
   `tommy_list_harnesses`) — see the README for their signatures.
 
-These two paths share the harness registry and memnos config but **do not share the same
-prompt-injection behavior** — see [How it works](#how-it-works) below; the difference
-matters for what you should expect from each.
+These two paths share the harness registry and memnos config, and now also share the same
+core.md coordinator prompt-injection — both call `tommy/prompt.py`'s `build_prompt()`. See
+[How it works](#how-it-works) below for the one remaining difference: a non-interactive
+framing note on the `tommy_dispatch` path, since there's no human turn to greet or ask a
+clarifying question.
 
 ---
 
@@ -102,13 +104,17 @@ acquiring leases, checking corpus rules, respecting wave limits — is **the har
 session choosing to follow those instructions**, using tools that must independently be
 available to it.
 
-That has a concrete, important consequence: **`build_prompt()` — and therefore core.md — is
-only invoked on the interactive `tommy` CLI path.** The `tommy_dispatch` MCP tool (the one
-an editor calls via `tommy --mcp`) does **not** load core.md. It optionally prepends a single
-memnos `recall()` result to the task text and launches the harness directly with that as the
-prompt file. A task dispatched through `tommy_dispatch` gets memory-primed; it does not get
-the lease/corpus/wave-dispatch coordinator identity — that only happens when a human runs
-`tommy` directly and the harness reads `core.md`.
+`build_prompt()` is invoked on both paths. The interactive `tommy` CLI calls it as
+`build_prompt(cfg, project_key=...)`; the `tommy_dispatch` MCP tool calls the same function as
+`build_prompt(cfg, project_key=_active_project, task=task_with_memory)` —
+`task_with_memory` being the dispatched task, optionally prefixed with a single memnos
+`recall()` result. A `task` parameter on `build_prompt()` appends the dispatched task as a
+final layer, so a task dispatched through `tommy_dispatch` gets the same
+lease/corpus/wave-dispatch coordinator identity core.md gives the interactive path, not just
+memory-priming. The one difference: since there's no human at the other end of a headless
+dispatch, that final layer opens with a short framing note overriding core.md's two
+interactive-only instructions (the session-start greeting and asking the user a clarifying
+question) — every other coordinator rule is unchanged.
 
 ### memnos-native memory (what Tommy's own code actually does)
 
@@ -326,10 +332,10 @@ Pick the harness in `tommy.conf`'s `HARNESS=` key, or override per-invocation wi
 itself over MCP — dispatching tasks, checking status, sending control messages, switching
 project context — instead of a human running `tommy` at a terminal. See
 [`agents/tommy/README.md`](../../agents/tommy/README.md#editor-integration) for the exact
-config JSON for each editor. Remember the asymmetry from
-[How it works](#how-it-works): tasks dispatched this way are memory-primed with a single
-`recall()`, but do not get the core.md coordinator prompt — that only loads on the
-interactive `tommy` CLI path.
+config JSON for each editor. Tasks dispatched this way get the same core.md coordinator prompt
+as the interactive `tommy` CLI path (see [How it works](#how-it-works)), memory-primed with a
+single `recall()`, plus a short non-interactive framing note since there's no human at the
+terminal to greet or ask a clarifying question.
 
 ### 3. The harness needs its own memnos MCP wiring — Tommy doesn't do this for it
 
@@ -368,9 +374,18 @@ won't reflect them.
 
 ## Known limitations
 
-- **The core.md coordinator behavior only loads on the interactive `tommy` CLI path.**
-  `tommy_dispatch` (the MCP tool) launches the harness directly with a memory-primed task
-  string — no lease/corpus/wave-dispatch identity.
+- **`tommy_dispatch` overrides two of core.md's interactive-only instructions, not the rest.**
+  Both entry points load the same core.md coordinator prompt via `build_prompt()`, but
+  `tommy_dispatch` has no human at the terminal, so its final prompt layer explicitly tells
+  the harness not to print core.md's session-start greeting and not to ask the user a
+  clarifying question (make the most reasonable assumption and proceed instead). Every other
+  coordinator rule — leases, `corpus_check`, wave-based fan-out, spawn bounds — is unchanged
+  and applies identically to both paths.
+- **`MCP_INTROSPECT=on` now costs per `tommy_dispatch` call, not just once per CLI launch.**
+  Since `tommy_dispatch` now calls the same `build_prompt()` the CLI path does,
+  `format_mcp_manifest(introspect=cfg.mcp_introspect)` runs on every dispatch when
+  `MCP_INTROSPECT` is on — each configured MCP server gets spawned with a 5s timeout while the
+  editor blocks on the tool call. Default is `off`.
 - **The control channel is inert against every harness in the built-in registry.** It's
   real, tested infrastructure, but `claude`, `codex`, `aider`, `goose`, `cursor-agent`, and
   `kiro` don't read `TOMMY_CTRL_PORT` or connect to it. Useful only for a harness you
