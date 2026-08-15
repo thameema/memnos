@@ -232,10 +232,10 @@ later.
 # uv (recommended — matches the rest of this repo's tooling)
 uv tool install tommy-orchestrator
 
-# pip
+# Fallback if you don't have uv:
 pip install tommy-orchestrator
 
-# From a checkout of this repo, editable:
+# From a checkout of this repo, editable (uv):
 uv tool install -e agents/tommy
 ```
 
