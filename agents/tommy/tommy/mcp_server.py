@@ -26,7 +26,7 @@ import sys
 import tempfile
 import threading
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional
 
@@ -35,6 +35,7 @@ from fastmcp import FastMCP
 from .config import TommyConfig, ProjectEntry
 from .control import ControlServer
 from .discovery.harnesses import all_harnesses, apply_skip_permissions, apply_session_name
+from .prompt import build_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +226,12 @@ def tommy_dispatch(
     Dispatch a coding task to the best available harness (Claude Code, Codex,
     etc.).  Returns a task handle immediately when async_run is True.
 
+    The launched harness receives the same core.md coordinator system prompt
+    (thin-coordinator identity, leases, corpus_check, wave-based fan-out —
+    see tommy/prompts/core.md) that the interactive `tommy` CLI injects, via
+    the same tommy.prompt.build_prompt() loader, plus a non-interactive
+    framing note and this task appended as the final layer.
+
     Args:
         task:         Task description / full prompt.
         harness:      Which harness: 'auto', 'claude', 'codex', etc.
@@ -248,7 +255,7 @@ def tommy_dispatch(
             ws_path = Path(getattr(proj, "git_root", str(Path.cwd())))
 
     # Optionally inject memnos context
-    full_task = task
+    task_with_memory = task
     if inject_memory:
         client = _memnos_client(cfg)
         if client:
@@ -256,14 +263,25 @@ def tommy_dispatch(
                 recall_result = client.recall(task, fact_quota=5)
                 ctx_text = recall_result.get("context", "")
                 if ctx_text:
-                    full_task = f"## Context from memory\n{ctx_text}\n\n---\n\n{task}"
+                    task_with_memory = f"## Context from memory\n{ctx_text}\n\n---\n\n{task}"
             except Exception:
                 pass
+
+    # Same coordinator prompt the interactive CLI builds (core.md -> org ->
+    # project -> workspace-local -> runtime config -> MCP manifest), via the
+    # same build_prompt() helper cli.py's _launch_harness() calls — not a
+    # reimplementation — plus the dispatched task as build_prompt()'s final
+    # layer, since there's no live human turn to type it on this path.
+    # `chosen` (not cfg.harness) drives the runtime-config block's "Active
+    # harness" line so it reflects what's actually being launched even when
+    # the caller overrides the default harness via the `harness` argument.
+    prompt_cfg = replace(cfg, harness=chosen)
+    full_prompt = build_prompt(prompt_cfg, project_key=_active_project, task=task_with_memory)
 
     tf = tempfile.NamedTemporaryFile(
         mode="w", suffix=".md", prefix="tommy-mcp-", delete=False
     )
-    tf.write(full_task)
+    tf.write(full_prompt)
     tf.flush()
     tf.close()
     _tf_path = tf.name  # capture for cleanup after proc exits

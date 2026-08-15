@@ -8,6 +8,17 @@ Layer order (each layer appended):
   4. .tommy.md        — workspace-local overrides (optional, cwd/.tommy.md)
   5. Runtime config block — harness list, project info, config values
   6. MCP manifest     — available MCP servers/tools
+  7. Dispatched task  — optional; the specific work item for a headless run
+                         (tommy_dispatch only — the interactive CLI path never
+                         passes this; a human types the task into the live
+                         harness session instead)
+
+build_prompt() is the single loader for this whole stack. Both Tommy entry
+points call it: the interactive `tommy` CLI (tommy.cli._launch_harness) and
+the `tommy_dispatch` MCP tool (tommy.mcp_server.tommy_dispatch) — the latter
+via the `task` parameter below, so a harness launched over MCP gets the same
+core.md coordinator contract as one launched from a terminal, not a
+reimplementation of a subset of it.
 """
 from __future__ import annotations
 
@@ -32,7 +43,18 @@ def _layer(title: str, content: str) -> str:
     return f"\n\n---\n<!-- {title} -->\n{content}"
 
 
-def build_prompt(cfg: TommyConfig, project_key: Optional[str] = None) -> str:
+def build_prompt(
+    cfg: TommyConfig,
+    project_key: Optional[str] = None,
+    task: Optional[str] = None,
+) -> str:
+    """
+    Build the full layered system prompt (see module docstring for layer order).
+
+    `task`, when given, appends the specific work item for a headless dispatch
+    as a final layer (see layer 7). The interactive CLI path never passes it —
+    build_prompt(cfg, project_key=...) there is exactly what it's always been.
+    """
     layers: list[str] = []
 
     prompts_dir = cfg.prompts_dir
@@ -112,5 +134,24 @@ def build_prompt(cfg: TommyConfig, project_key: Optional[str] = None) -> str:
     mcp_manifest = format_mcp_manifest(mcp_servers, introspect=cfg.mcp_introspect)
     if mcp_manifest:
         layers.append(_layer("mcp-manifest", mcp_manifest))
+
+    # 7. Dispatched task (tommy_dispatch only) — core.md above assumes an
+    # interactive session (it opens by printing a greeting and permits asking
+    # the user a clarifying question). A headless dispatch has no human turn
+    # to answer either one, so this layer overrides both before handing over
+    # the actual task.
+    if task:
+        dispatch_note = (
+            "**Non-interactive dispatch.** This session was launched headlessly "
+            "via `tommy_dispatch` — there is no human at the terminal to answer "
+            "a question or read a greeting. Do not print the session-start "
+            "greeting instructed above, and do not ask a clarifying "
+            "question; if the task is ambiguous, make the most reasonable "
+            "assumption, state it, and proceed. Every other rule above "
+            "(dispatch-first, spawn bounds, leases, corpus_check, wave-based "
+            "fan-out, memnos journaling) still applies.\n\n"
+            f"## Task\n\n{task}"
+        )
+        layers.append(_layer("dispatched-task", dispatch_note))
 
     return "\n".join(layers)
