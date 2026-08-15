@@ -1886,8 +1886,15 @@ def cmd_whoami(args, cfg):
     if pid is None:
         print("auth: FAIL"); return
     print(f"auth OK principal_id={pid}")
-    print("grants:", [(g["namespace"], g["can_read"], g["can_write"])
-                      for g in Control.authorized_namespaces(conn, pid)])
+    direct = Control.authorized_namespaces(conn, pid)
+    print("grants (direct):", [(g["namespace"], g["can_read"], g["can_write"]) for g in direct])
+    # role-inherited (issue #81): shown SEPARATELY from direct grants, not blended in --
+    # authorize() already unions the two, so without this a role-only principal would
+    # see an empty "grants" list here while actually having access.
+    direct_ns = {g["namespace"] for g in direct}
+    via_role = [g for g in Control.effective_namespaces(conn, pid) if g["namespace"] not in direct_ns]
+    if via_role:
+        print("grants (via role):", [(g["namespace"], g["can_read"], g["can_write"]) for g in via_role])
 
 
 def cmd_ns(args, cfg):

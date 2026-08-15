@@ -505,8 +505,9 @@ class Control:
         want = sorted(want)
         if len(want) < min_entities:
             return None
-        # the principal's OWN writable namespaces (can_write), excluding the write target.
-        writable = [g["namespace"] for g in Control.authorized_namespaces(conn, principal_id)
+        # the principal's writable namespaces (can_write, direct OR role-inherited --
+        # issue #81), excluding the write target.
+        writable = [g["namespace"] for g in Control.effective_namespaces(conn, principal_id)
                     if g.get("can_write")]
 
         def covered(ns):

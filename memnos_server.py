@@ -350,7 +350,10 @@ def _mcp_asgi_app(public_port):
                 # gets a resolved namespace to recall from; a subsequent write correctly
                 # 403s downstream (REST enforces write grants exactly as for any caller),
                 # it just does so via the normal write path rather than at this fallback.
-                grants = [g["namespace"] for g in Control.authorized_namespaces(conn, pid)
+                # effective_namespaces() (issue #81), not authorized_namespaces() -- this is
+                # an access-decision path (which namespace does this token resolve to?), so
+                # a role-only read grant must count, same as authorize() already does.
+                grants = [g["namespace"] for g in Control.effective_namespaces(conn, pid)
                          if g["can_read"] and g["namespace"] != "*" and not g["namespace"].endswith(":*")]
                 if len(grants) == 1:
                     ns = grants[0]
