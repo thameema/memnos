@@ -6,6 +6,12 @@ long-term memory from [memnos](../../README.md), routes work to the right
 harness, and lets you steer a running sub-agent mid-run without waiting for it
 to finish.
 
+> This file is the mechanical reference (CLI flags, config keys, MCP tool
+> signatures, the control-channel wire protocol). For what Tommy is, why it
+> exists, how the pieces fit together, and what's genuinely still prompted
+> behavior vs. code-enforced, see
+> [`docs/guides/tommy.md`](../../docs/guides/tommy.md).
+
 ```
 ┌─────────────┐   tommy --mcp   ┌──────────────────────────────────────────┐
 │  Editor /   │ ─────────────→  │             Tommy (stdio process)         │

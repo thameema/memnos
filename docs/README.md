@@ -14,6 +14,11 @@ provenance-stamped portability. No second database; no LLM at query time.
 - **[Omnigent](integrations/omnigent.md)** — server-wide, deterministic, write-only capture
   of assistant responses via Omnigent's native function-policy mechanism.
 
+## Built on memnos
+- **[Tommy](guides/tommy.md)** — a memnos-native coding orchestrator (`agents/tommy`,
+  published as `tommy-orchestrator`) that dispatches to Claude Code, Codex, and other
+  coding-agent CLIs.
+
 ## How it works (one screen)
 ```
 write:  message ──► raw turn (verbatim, embedded)
