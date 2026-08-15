@@ -3511,8 +3511,13 @@ def cmd_hook(args, cfg):
         is_stale = False
         snap = None
         try:
+            # issue #82: session_id (resolved above from the hook payload) rides along so
+            # the server's per-constraint injection audit event can record WHICH session a
+            # pinned constraint was shown to — durable, queryable proof of what guardrails
+            # this agent session actually saw, not just that memory was recalled.
             req = urllib.request.Request(f"{url}/recall", method="POST",
-                data=json.dumps({"namespace": ns, "query": prompt}).encode(), headers=hdr)
+                data=json.dumps({"namespace": ns, "query": prompt,
+                                 "session_id": session_id}).encode(), headers=hdr)
             _resp = json.load(urllib.request.urlopen(req, timeout=8))
             ctx = _resp.get("context", "")
             _mem_count = len(_resp.get("memories") or [])

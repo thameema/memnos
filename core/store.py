@@ -1549,26 +1549,32 @@ class BrainStore:
         episodic events (an episode inherits 'constraint' only when its source turns are
         UNANIMOUSLY that type — so the episode body is constraint material). Oldest-first
         (constraints are durable ground rules — earliest laid down come first), deduped on
-        content, capped. Pure SQL, no embedding involved."""
+        content, capped. Pure SQL, no embedding involved.
+
+        Each row carries `id` (the source table's own bigserial PK — semantic.id / raw_turns.id
+        / episodic.id, each an INDEPENDENT sequence) alongside `kind` so a caller can build an
+        unambiguous per-constraint identifier as f"{kind}:{id}" — issue #82's per-injection
+        audit event needs exactly this to record WHICH constraint row was shown to a session,
+        not just its content."""
         self._chk(schema)
         nss = [ns for ns in namespaces if ns]
         if not nss or cap <= 0:
             return []
         with self.conn.cursor() as c:
             c.execute(
-                f"SELECT content, kind, ts, author, namespace FROM ("
-                f"  SELECT statement AS content, 'fact'::text AS kind,"
+                f"SELECT id, content, kind, ts, author, namespace FROM ("
+                f"  SELECT id, statement AS content, 'fact'::text AS kind,"
                 f"         COALESCE(valid_from, created_at) AS ts,"
                 f"         author_principal AS author, namespace"
                 f"  FROM {schema}.semantic WHERE namespace = ANY(%(nss)s)"
                 f"    AND memory_type='constraint' AND valid_to IS NULL AND expired_at IS NULL"
                 f"    AND (source_turn_ids IS NULL OR cardinality(source_turn_ids) = 0)"
                 f"  UNION ALL"
-                f"  SELECT text AS content, 'turn'::text AS kind, observed_at AS ts,"
+                f"  SELECT id, text AS content, 'turn'::text AS kind, observed_at AS ts,"
                 f"         author_principal AS author, namespace"
                 f"  FROM {schema}.raw_turns WHERE namespace = ANY(%(nss)s) AND memory_type='constraint'"
                 f"  UNION ALL"
-                f"  SELECT text AS content, 'episode'::text AS kind,"
+                f"  SELECT id, text AS content, 'episode'::text AS kind,"
                 f"         COALESCE(t_start, observed_at) AS ts,"
                 f"         author_principal AS author, namespace"
                 f"  FROM {schema}.episodic WHERE namespace = ANY(%(nss)s) AND memory_type='constraint'"
