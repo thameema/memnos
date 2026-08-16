@@ -34,7 +34,12 @@ DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/me
 URL = os.environ.get("MEMNOS_URL", "http://127.0.0.1:8900")
 SCHEMA = "tenant_memnos"
 NS = "test:inj-audit"          # seeded with 3 pinned constraints
-NS_EMPTY = "test:inj-audit:empty"   # never gets a constraint written
+# issue #85: deliberately NOT a ':'-prefix descendant of NS ("test:inj-audit:empty" would
+# be) -- once same-root ancestor inheritance (Mechanism A) is live, a namespace nested
+# under NS automatically pins NS's 3 seeded constraints too, which breaks this file's
+# "genuinely nothing pinned" negative-path fixture. A hyphen keeps the name readable and
+# obviously related without creating an accidental parent/child relationship.
+NS_EMPTY = "test:inj-audit-empty"   # never gets a constraint written
 PASS = FAIL = 0
 
 
