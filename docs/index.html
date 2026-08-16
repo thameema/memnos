@@ -145,6 +145,7 @@
     <div class="hidden md:flex items-center gap-7">
       <a href="#features" class="text-sm text-gray-400 hover:text-white transition-colors">Features</a>
       <a href="use-cases.html" class="text-sm text-gray-400 hover:text-white transition-colors">Use Cases</a>
+      <a href="agents.html" class="text-sm text-gray-400 hover:text-white transition-colors">Agents</a>
       <a href="#sdk" class="text-sm text-gray-400 hover:text-white transition-colors">SDK</a>
       <a href="governance.html" class="text-sm text-gray-400 hover:text-white transition-colors">Policies</a>
       <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="text-sm text-gray-400 hover:text-white transition-colors">Docs</a>
@@ -170,6 +171,7 @@
     <div class="max-w-6xl mx-auto px-6 py-5 flex flex-col gap-1">
       <a href="#features" onclick="toggleMobileNav()" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Features</a>
       <a href="use-cases.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Use Cases</a>
+      <a href="agents.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Agents</a>
       <a href="#sdk" onclick="toggleMobileNav()" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">SDK</a>
       <a href="governance.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Policies</a>
       <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Docs</a>
@@ -1130,13 +1132,13 @@ curl -s -H <span class="token-str">"Authorization: Bearer $MEMNOS_TOKEN"</span> 
               <h3 class="text-white font-semibold text-lg">Tommy</h3>
               <span class="text-[10px] uppercase tracking-wide bg-purple-500/15 border border-purple-500/25 text-purple-300 px-2 py-0.5 rounded-full whitespace-nowrap">memnos-native coding orchestrator</span>
             </div>
-            <p class="text-sm text-gray-400 leading-relaxed mb-4">Tommy sits in front of a coding-agent CLI &mdash; Claude Code, Codex, aider, goose, cursor-agent or kiro &mdash; and gives that session memnos memory it wouldn&rsquo;t otherwise have: it recalls relevant context before dispatching a task, ingests the finished session&rsquo;s transcript back into memory (Claude Code today), and instructs the harness to acquire memnos leases before starting long-running work, so two concurrent sessions don&rsquo;t quietly pick up the same ticket. One binary, two entry points &mdash; an interactive CLI and an MCP server.</p>
+            <p class="text-sm text-gray-400 leading-relaxed mb-4">Tommy sits in front of a coding-agent CLI &mdash; Claude Code, Codex, aider, goose, cursor-agent or kiro &mdash; and gives that session memnos memory it wouldn&rsquo;t otherwise have: recall before dispatch, session journaling (Claude Code today), and prompted memnos leases so two concurrent sessions don&rsquo;t pick up the same ticket. One binary, two entry points &mdash; an interactive CLI and an MCP server.</p>
             <div class="flex flex-wrap items-center gap-4">
               <div class="code-block px-4 py-2 text-xs flex items-center gap-2">
                 <span class="text-gray-500">$</span>
                 <span class="text-green-300">uv tool install tommy-orchestrator</span>
               </div>
-              <a href="https://github.com/thameema/memnos/blob/master/docs/guides/tommy.md" class="text-sm text-purple-400 hover:text-purple-300 transition-colors font-medium">Read the Tommy guide &rarr;</a>
+              <a href="agents.html" class="text-sm text-purple-400 hover:text-purple-300 transition-colors font-medium">See Tommy &rarr;</a>
             </div>
           </div>
         </div>
@@ -1226,6 +1228,7 @@ curl -s -H <span class="token-str">"Authorization: Bearer $MEMNOS_TOKEN"</span> 
       <a href="https://github.com/thameema/memnos/blob/master/docs/cli.md" class="hover:text-gray-300 transition-colors">CLI Reference</a>
       <a href="https://github.com/thameema/memnos" class="hover:text-gray-300 transition-colors">GitHub</a>
       <a href="use-cases.html" class="hover:text-gray-300 transition-colors">Use Cases</a>
+      <a href="agents.html" class="hover:text-gray-300 transition-colors">Agents</a>
       <a href="governance.html" class="hover:text-gray-300 transition-colors">Policies</a>
       <a href="compare.html" class="hover:text-gray-300 transition-colors">Compare</a>
       <a href="https://github.com/thameema/memnos/blob/master/LICENSE" class="hover:text-gray-300 transition-colors">Apache-2.0 License</a>

@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-K7M6RWTW1P"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-K7M6RWTW1P');
+  </script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tommy — memnos-native coding-agent orchestrator | memnos</title>
+  <meta name="description" content="Tommy is a memnos-native coding orchestrator: one binary, an interactive CLI and an MCP server, that gives Claude Code, Codex, aider, goose, cursor-agent and kiro sessions memnos memory — recall before dispatch, leases against duplicate work, and multi-harness supervision." />
+  <meta name="keywords" content="Tommy orchestrator, memnos agents, coding agent orchestrator, Claude Code orchestration, Codex orchestration, multi-agent coordination, tommy-orchestrator, AI coding agent memory, memnos MCP" />
+  <link rel="canonical" href="https://memnos.net/agents.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://memnos.net/agents.html" />
+  <meta property="og:title" content="Tommy — memnos-native coding-agent orchestrator" />
+  <meta property="og:description" content="One binary, two entry points. Tommy sits in front of Claude Code, Codex, aider, goose, cursor-agent or kiro and gives that session memnos memory it wouldn't otherwise have." />
+  <meta property="og:image" content="https://memnos.net/og-image.png" />
+  <meta property="og:site_name" content="memnos" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Tommy — memnos-native coding-agent orchestrator" />
+  <meta name="twitter:description" content="One binary, two entry points. Tommy sits in front of Claude Code, Codex, aider, goose, cursor-agent or kiro and gives that session memnos memory it wouldn't otherwise have." />
+  <meta name="twitter:image" content="https://memnos.net/og-image.png" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'], mono: ['JetBrains Mono', 'monospace'] },
+          colors: {
+            brand: { purple: '#7c5cfc', blue: '#4f9cf9', cyan: '#00d2ff', dim: '#1a1a2e' },
+          },
+        }
+      }
+    }
+  </script>
+  <style>
+    :root { --bg: #09090f; --surface: #111118; --border: #1e1e2e; --muted: #6b7280; }
+    body { background: var(--bg); font-family: 'Inter', sans-serif; color: #e5e7eb; }
+    .hero-display { font-family: 'Space Grotesk', 'Inter', sans-serif; letter-spacing: -0.02em; }
+    .gradient-text {
+      background: linear-gradient(135deg, #a78bfa 0%, #60a5fa 50%, #34d399 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .glow-btn {
+      background: linear-gradient(135deg, #7c5cfc, #4f9cf9);
+      box-shadow: 0 0 20px rgba(124, 92, 252, 0.4);
+      transition: box-shadow 0.3s, transform 0.2s;
+    }
+    .glow-btn:hover { box-shadow: 0 0 35px rgba(124, 92, 252, 0.65); transform: translateY(-1px); }
+    .glass {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.07);
+      backdrop-filter: blur(12px);
+      transition: border-color 0.3s, transform 0.2s, box-shadow 0.3s;
+    }
+    .glass:hover {
+      border-color: rgba(124,92,252,0.35);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(124,92,252,0.12);
+    }
+    body::before {
+      content: '';
+      position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background-image: radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+    .code-block {
+      background: #0d0d1a;
+      border: 1px solid #1e1e3f;
+      border-radius: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      line-height: 1.7;
+    }
+    .token-fn   { color: #7dd3fc; }
+    .token-str  { color: #86efac; }
+    .token-kw   { color: #c084fc; }
+    .token-cmt  { color: #4b5563; }
+    .token-num  { color: #fb923c; }
+    .token-var  { color: #e5e7eb; }
+    .fade-in { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease, transform 0.6s ease; }
+    .fade-in.visible { opacity: 1; transform: translateY(0); }
+    nav { backdrop-filter: blur(20px); background: rgba(9,9,15,0.8); border-bottom: 1px solid var(--border); }
+    .gradient-border {
+      position: relative; border-radius: 16px; padding: 1px;
+      background: linear-gradient(135deg, rgba(124,92,252,0.4), rgba(79,156,249,0.2), rgba(0,210,255,0.1));
+    }
+    .gradient-border-inner { background: var(--surface); border-radius: 15px; }
+    .nav-active { color: #a78bfa !important; }
+    .layer-tag {
+      font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em;
+      padding: 0.15rem 0.55rem; border-radius: 999px; font-weight: 600;
+    }
+  </style>
+</head>
+<body class="antialiased overflow-x-hidden">
+
+<!-- ── NAV ─────────────────────────────────────────────────────────── -->
+<nav class="fixed top-0 left-0 right-0 z-50">
+  <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.6"/>
+        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.8"/>
+        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gnav)"/>
+        <defs>
+          <linearGradient id="gnav" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <span class="text-white font-semibold text-lg tracking-tight">memnos</span>
+    </a>
+    <!-- Desktop links -->
+    <div class="hidden md:flex items-center gap-7">
+      <a href="index.html#features" class="text-sm text-gray-400 hover:text-white transition-colors">Features</a>
+      <a href="use-cases.html" class="text-sm text-gray-400 hover:text-white transition-colors">Use Cases</a>
+      <a href="agents.html" class="text-sm nav-active hover:text-white transition-colors">Agents</a>
+      <a href="index.html#sdk" class="text-sm text-gray-400 hover:text-white transition-colors">SDK</a>
+      <a href="governance.html" class="text-sm text-gray-400 hover:text-white transition-colors">Policies</a>
+      <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="text-sm text-gray-400 hover:text-white transition-colors">Docs</a>
+      <a href="benchmarks.html" class="text-sm text-gray-400 hover:text-white transition-colors">Benchmarks</a>
+      <a href="compare.html" class="text-sm text-gray-400 hover:text-white transition-colors">Compare</a>
+      <a href="https://github.com/thameema/memnos" class="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-1.5">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        GitHub
+      </a>
+    </div>
+    <!-- Right: CTA + hamburger -->
+    <div class="flex items-center gap-3">
+      <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white text-sm font-medium px-5 py-2 rounded-full hidden md:inline-flex">Deploy Free</a>
+      <button id="nav-toggle" onclick="toggleMobileNav()" class="md:hidden flex flex-col justify-center items-center w-9 h-9 rounded-lg border border-gray-700 bg-gray-900/60 gap-1.5 px-2">
+        <span id="ham-1" class="block w-4 h-0.5 bg-gray-300 transition-all duration-300 origin-center"></span>
+        <span id="ham-2" class="block w-4 h-0.5 bg-gray-300 transition-all duration-300"></span>
+        <span id="ham-3" class="block w-4 h-0.5 bg-gray-300 transition-all duration-300 origin-center"></span>
+      </button>
+    </div>
+  </div>
+  <!-- Mobile menu -->
+  <div id="mobile-nav" class="hidden md:hidden border-t border-gray-800 bg-gray-950/95 backdrop-blur-xl">
+    <div class="max-w-6xl mx-auto px-6 py-5 flex flex-col gap-1">
+      <a href="index.html#features" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Features</a>
+      <a href="use-cases.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Use Cases</a>
+      <a href="agents.html" class="text-sm text-white font-medium py-2.5 border-b border-gray-900">Agents</a>
+      <a href="index.html#sdk" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">SDK</a>
+      <a href="governance.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Policies</a>
+      <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Docs</a>
+      <a href="benchmarks.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Benchmarks</a>
+      <a href="compare.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Compare</a>
+      <a href="https://github.com/thameema/memnos" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900 flex items-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        GitHub
+      </a>
+      <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white text-sm font-medium px-5 py-2.5 rounded-full text-center mt-3">Deploy Free</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ── HERO ─────────────────────────────────────────────────────────── -->
+<section class="relative pt-32 pb-16 overflow-hidden">
+  <div class="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-600 rounded-full blur-[140px] opacity-10 pointer-events-none"></div>
+  <div class="relative z-10 max-w-4xl mx-auto px-6 text-center">
+    <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Agents</span>
+    <h1 class="hero-display text-4xl md:text-6xl font-bold text-white leading-[1.05] mt-4 mb-6">
+      Tommy gives your coding-agent<br class="hidden md:block" /> sessions <span class="gradient-text">memnos memory.</span>
+    </h1>
+    <p class="text-gray-400 text-lg leading-relaxed max-w-2xl mx-auto mb-8">
+      A memnos-native coding orchestrator, published independently as <code class="text-green-300 text-base">tommy-orchestrator</code>. It sits in front of a coding-agent CLI &mdash; Claude Code, Codex, aider, goose, cursor-agent or kiro &mdash; and gives that session the persistent, shared memory it wouldn&rsquo;t have on its own.
+    </p>
+    <div class="flex flex-wrap items-center justify-center gap-3">
+      <div class="code-block px-4 py-2 text-xs flex items-center gap-2">
+        <span class="text-gray-500">$</span>
+        <span class="text-green-300">uv tool install tommy-orchestrator</span>
+      </div>
+      <a href="https://github.com/thameema/memnos/blob/master/docs/guides/tommy.md" class="text-sm text-purple-400 hover:text-purple-300 transition-colors font-medium border border-purple-500/30 hover:border-purple-500/50 rounded-full px-5 py-2.5">Read the full guide &rarr;</a>
+    </div>
+  </div>
+</section>
+
+<!-- ── WHAT TOMMY IS ────────────────────────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">One binary, two entry points</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">What Tommy is</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Tommy is <strong class="text-gray-200">not</strong> a domain-capability agent &mdash; it doesn&rsquo;t read code, write diffs, or review a merge request itself. It launches a coding-agent CLI, gives that session your relevant memnos memory up front, and &mdash; on its interactive path &mdash; hands it a coordinator system prompt built on one rule: a coordinator that does the work itself has become the thing it&rsquo;s supposed to dispatch to. The real implementation happens inside the harness session Tommy launches, using that harness&rsquo;s own subagent mechanism &mdash; not inside Tommy.</p>
+    </div>
+    <div class="grid md:grid-cols-2 gap-6">
+      <div class="glass rounded-2xl p-7">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-10 h-10 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center flex-shrink-0">
+            <svg class="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z"/></svg>
+          </div>
+          <h3 class="text-white font-semibold text-lg"><code class="text-green-300">tommy</code> &mdash; interactive CLI</h3>
+        </div>
+        <p class="text-sm text-gray-400 leading-relaxed">Resolves your config, runs a memnos health check, builds a layered system prompt, and launches your configured harness in the foreground with that prompt attached &mdash; staying alive to capture its transcript once the harness exits.</p>
+      </div>
+      <div class="glass rounded-2xl p-7">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-10 h-10 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-center flex-shrink-0">
+            <svg class="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5m-15 3.75H3m18 0h-1.5M8.25 19.5V21M12 3v1.5m0 15V21m3.75-18v1.5m0 15V21m-9-1.5h10.5a2.25 2.25 0 002.25-2.25V6.75a2.25 2.25 0 00-2.25-2.25H6.75A2.25 2.25 0 004.5 6.75v10.5a2.25 2.25 0 002.25 2.25z"/></svg>
+          </div>
+          <h3 class="text-white font-semibold text-lg"><code class="text-green-300">tommy --mcp</code> &mdash; MCP server</h3>
+        </div>
+        <p class="text-sm text-gray-400 leading-relaxed">Runs as an MCP stdio server that an editor &mdash; Claude Desktop, Cursor, Continue, Zed &mdash; drives directly over JSON-RPC, instead of a human running the CLI at a terminal. Exposes 8 tools, including <code class="text-purple-300 font-mono text-xs">tommy_recall</code>, <code class="text-purple-300 font-mono text-xs">tommy_dispatch</code> and <code class="text-purple-300 font-mono text-xs">tommy_status</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── WHY IT EXISTS ────────────────────────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">The gap it sits in front of</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Why it exists</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Every fresh coding-agent session starts with no memory of yesterday&rsquo;s work &mdash; the harness itself is stateless between invocations. Tommy sits in front of that gap.</p>
+    </div>
+    <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Recalls before it dispatches</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Tommy queries memnos for context relevant to the task and front-loads it into the harness&rsquo;s prompt &mdash; the harness session itself won&rsquo;t call memnos on its own initiative unless it&rsquo;s separately wired to.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Journals after</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">On the interactive CLI path, Tommy ingests the harness&rsquo;s own session transcript into memnos and consolidates it, so decisions made during the session become recallable in the next one. This step is Claude-Code-specific today.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-orange-500/10 border border-orange-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Guards against duplicate work</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">If you (or a teammate) run more than one Tommy session against the same ticket at once, a memnos lease &mdash; acquire, heartbeat, release &mdash; keyed on the work item is meant to stop two sessions from picking it up independently.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-cyan-500/10 border border-cyan-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1 1 .03 2.798-1.442 2.798H4.24c-1.47 0-2.441-1.798-1.442-2.798L4.2 15.3"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Routes to the right model or harness</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Rather than always reaching for the same model regardless of task, a static routing table or (with <code class="text-cyan-300 font-mono text-xs">SMART_ROUTING</code> on) a memnos-backed policy corpus picks the model/harness tier for the work.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-green-500/10 border border-green-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Supervises whichever harness you use</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">A built-in registry knows how to launch <code class="text-green-300 font-mono text-xs">claude</code>, <code class="text-green-300 font-mono text-xs">codex</code>, <code class="text-green-300 font-mono text-xs">aider</code>, <code class="text-green-300 font-mono text-xs">goose</code>, <code class="text-green-300 font-mono text-xs">cursor-agent</code> and <code class="text-green-300 font-mono text-xs">kiro</code> as a subprocess &mdash; plus TOML drop-ins for anything the registry doesn&rsquo;t know yet.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-yellow-500/10 border border-yellow-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Bounds fan-out, keeps it auditable</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Rather than dispatching everything at once, the coordinator prompt asks for wave-based dispatch, typed <code class="text-yellow-300 font-mono text-xs">PURPOSE</code> headers, and named tasks &mdash; so a human reviewing a session can tell what was dispatched, to what, and why.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── HOW IT WORKS ─────────────────────────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-10">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">No fine print</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">How it works, honestly</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Tommy is two different things that both get called &ldquo;the orchestrator.&rdquo; Knowing which is which is the most important thing to understand about how Tommy actually behaves.</p>
+    </div>
+    <div class="grid md:grid-cols-2 gap-6 mb-8">
+      <div class="glass rounded-2xl p-7">
+        <span class="layer-tag bg-green-500/15 border border-green-500/25 text-green-300 mb-3 inline-block">Real code &middot; always runs</span>
+        <h3 class="text-white font-semibold text-lg mb-2">Layer 1 &mdash; Tommy's own Python process</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">A launcher and memory bridge. It detects harnesses on <code class="text-purple-300 font-mono text-xs">PATH</code>, builds the prompt, opens a control-channel socket, launches the harness as a subprocess, writes &ldquo;session started/ended&rdquo; facts to memnos, and &mdash; on the interactive CLI path only &mdash; ingests the finished Claude Code session's transcript and consolidates it. This talks to memnos directly through <code class="text-purple-300 font-mono text-xs">memnos-sdk</code> and doesn't depend on anything the harness does.</p>
+      </div>
+      <div class="glass rounded-2xl p-7">
+        <span class="layer-tag bg-purple-500/15 border border-purple-500/25 text-purple-300 mb-3 inline-block">System prompt &middot; needs harness MCP wiring</span>
+        <h3 class="text-white font-semibold text-lg mb-2">Layer 2 &mdash; the coordinator prompt (<code class="text-sm">core.md</code>)</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">The lease/routing/wave-dispatch rules described above are <strong class="text-gray-200">not</strong> implemented in Tommy's Python code &mdash; they're a system prompt attached to the harness session. Whether the harness actually acquires a lease or calls <code class="text-purple-300 font-mono text-xs">corpus_check</code> depends entirely on that specific harness's own LLM session choosing to follow the instruction, using memnos MCP tools that must be separately registered with it.</p>
+      </div>
+    </div>
+    <div class="gradient-border">
+      <div class="gradient-border-inner px-8 py-6 rounded-2xl">
+        <p class="text-gray-300 text-sm leading-relaxed text-center">Layer 2 only does something once the harness you're launching has memnos registered as its <em>own</em> MCP server &mdash; a separate, one-time setup per harness (<code class="text-purple-300 font-mono text-xs">memnos claude-setup</code> for Claude Code, <code class="text-purple-300 font-mono text-xs">memnos agent-setup codex</code> for Codex). Skip that step and core.md's instructions to call <code class="text-purple-300 font-mono text-xs">recall</code>, <code class="text-purple-300 font-mono text-xs">lease_acquire</code> or <code class="text-purple-300 font-mono text-xs">corpus_check</code> simply have nothing to call. And transcript journaling &mdash; part of Layer 1 &mdash; looks specifically for a Claude Code session transcript today; running a different harness through Tommy doesn't get that step yet. <a href="https://github.com/thameema/memnos/blob/master/docs/guides/tommy.md#how-it-works" class="text-purple-400 hover:text-purple-300 underline underline-offset-2">Full breakdown in the guide &rarr;</a></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── SUPPORTED HARNESSES ──────────────────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-6xl mx-auto px-6 text-center">
+    <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Harnesses</span>
+    <h2 class="text-3xl font-bold text-white mt-3 mb-8">Launches whichever CLI you already use</h2>
+    <div class="flex flex-wrap justify-center gap-4">
+      <div class="glass rounded-lg px-4 py-2 flex items-center gap-2 text-sm text-gray-300"><span class="text-purple-400">&#x2713;</span> Claude Code</div>
+      <div class="glass rounded-lg px-4 py-2 flex items-center gap-2 text-sm text-gray-300"><span class="text-purple-400">&#x2713;</span> Codex</div>
+      <div class="glass rounded-lg px-4 py-2 flex items-center gap-2 text-sm text-gray-300"><span class="text-purple-400">&#x2713;</span> aider</div>
+      <div class="glass rounded-lg px-4 py-2 flex items-center gap-2 text-sm text-gray-300"><span class="text-purple-400">&#x2713;</span> goose</div>
+      <div class="glass rounded-lg px-4 py-2 flex items-center gap-2 text-sm text-gray-300"><span class="text-purple-400">&#x2713;</span> cursor-agent</div>
+      <div class="glass rounded-lg px-4 py-2 flex items-center gap-2 text-sm text-gray-300"><span class="text-purple-400">&#x2713;</span> kiro</div>
+    </div>
+    <p class="text-xs text-gray-600 mt-6 max-w-xl mx-auto">Plus any harness that isn't in the built-in registry yet, via a <code class="text-gray-500">~/.memnos/harnesses/*.toml</code> drop-in.</p>
+  </div>
+</section>
+
+<!-- ── INSTALLATION ─────────────────────────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-4xl mx-auto px-6">
+    <div class="text-center mb-10">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Install &amp; run</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Two commands to get started</h2>
+      <p class="text-gray-400 max-w-xl mx-auto">Requires Python &ge; 3.10. Talks to memnos over HTTP &mdash; it doesn't need the full memnos server package installed in the same environment.</p>
+    </div>
+    <div class="code-block p-6">
+      <div class="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800">
+        <div class="w-3 h-3 rounded-full bg-red-500/60"></div>
+        <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
+        <div class="w-3 h-3 rounded-full bg-green-500/60"></div>
+        <span class="ml-3 text-xs text-gray-600">install &amp; first-time setup</span>
+      </div>
+      <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># uv (recommended)</span>
+<span class="token-fn">uv</span> tool install <span class="token-str">tommy-orchestrator</span>
+
+<span class="token-cmt"># fallback if you don't have uv</span>
+<span class="token-fn">pip</span> install <span class="token-str">tommy-orchestrator</span>
+
+<span class="token-cmt"># first-time setup — writes tommy.conf, copies prompt layers you can edit</span>
+<span class="token-fn">tommy</span> --install
+
+<span class="token-cmt"># launch — recalls context, runs your configured harness, journals after</span>
+<span class="token-fn">tommy</span></code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ── CTA ──────────────────────────────────────────────────────────── -->
+<section class="relative z-10 py-16 fade-in">
+  <div class="max-w-2xl mx-auto px-6 text-center">
+    <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+      <div class="w-96 h-96 bg-purple-600 rounded-full blur-[160px] opacity-8"></div>
+    </div>
+    <h2 class="text-3xl font-bold text-white mb-5 relative">Want the full reference?</h2>
+    <p class="text-gray-400 mb-8 relative">CLI flags, MCP tool signatures, the control-channel wire protocol, configuration keys, and every documented limitation &mdash; the complete Tommy guide covers all of it.</p>
+    <div class="flex items-center justify-center gap-4 relative flex-wrap">
+      <a href="https://github.com/thameema/memnos/blob/master/docs/guides/tommy.md" class="glow-btn text-white font-semibold px-8 py-3.5 rounded-full text-sm">Read the full guide &rarr;</a>
+      <a href="https://github.com/thameema/memnos" class="text-sm text-gray-300 hover:text-white border border-gray-700 hover:border-gray-500 px-8 py-3.5 rounded-full transition-colors flex items-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        memnos on GitHub
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ───────────────────────────────────────────────────────── -->
+<footer class="relative z-10 border-t border-gray-800/60 py-12">
+  <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6">
+    <div class="flex items-center gap-2.5">
+      <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gfoot)" opacity="0.6"/>
+        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gfoot)" opacity="0.8"/>
+        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gfoot)"/>
+        <defs><linearGradient id="gfoot" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/></linearGradient></defs>
+      </svg>
+      <span class="text-white font-semibold">memnos</span>
+      <span class="text-gray-600 text-sm ml-2">Memory for AI agents</span>
+    </div>
+    <div class="flex items-center gap-8 text-sm text-gray-500">
+      <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="hover:text-gray-300 transition-colors">Docs</a>
+      <a href="https://github.com/thameema/memnos/blob/master/docs/api.md" class="hover:text-gray-300 transition-colors">API Reference</a>
+      <a href="https://github.com/thameema/memnos/blob/master/docs/cli.md" class="hover:text-gray-300 transition-colors">CLI Reference</a>
+      <a href="https://github.com/thameema/memnos" class="hover:text-gray-300 transition-colors">GitHub</a>
+      <a href="use-cases.html" class="hover:text-gray-300 transition-colors">Use Cases</a>
+      <a href="agents.html" class="hover:text-gray-300 transition-colors">Agents</a>
+      <a href="governance.html" class="hover:text-gray-300 transition-colors">Policies</a>
+      <a href="compare.html" class="hover:text-gray-300 transition-colors">Compare</a>
+      <a href="https://github.com/thameema/memnos/blob/master/LICENSE" class="hover:text-gray-300 transition-colors">Apache-2.0 License</a>
+    </div>
+    <div class="text-xs text-gray-700">Built by AI agents, for AI agents.</div>
+  </div>
+</footer>
+
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+  document.querySelectorAll('a[href^="#"]').forEach(a => {
+    a.addEventListener('click', e => {
+      const target = document.querySelector(a.getAttribute('href'));
+      if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth' }); }
+    });
+  });
+
+  function toggleMobileNav() {
+    const menu = document.getElementById('mobile-nav');
+    const h1 = document.getElementById('ham-1');
+    const h2 = document.getElementById('ham-2');
+    const h3 = document.getElementById('ham-3');
+    const open = menu.classList.toggle('hidden') === false;
+    h1.style.transform = open ? 'translateY(6px) rotate(45deg)' : '';
+    h2.style.opacity   = open ? '0' : '';
+    h3.style.transform = open ? 'translateY(-6px) rotate(-45deg)' : '';
+  }
+</script>
+</body>
+</html>
