@@ -11,6 +11,11 @@
     <priority>0.8</priority>
   </url>
   <url>
+    <loc>https://memnos.net/agents.html</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
     <loc>https://memnos.net/compare.html</loc>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
