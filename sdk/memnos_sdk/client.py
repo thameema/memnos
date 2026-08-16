@@ -59,9 +59,15 @@ class MemnosClient:
             "namespace": _ns(namespace, self.namespace), "text": text,
             "speaker": speaker, "session_id": session_id, "async": async_}))
 
-    def recall(self, query, *, namespace=None, raw_quota=None, fact_quota=None, max_chars=None) -> dict:
+    def recall(self, query, *, namespace=None, raw_quota=None, fact_quota=None, max_chars=None,
+               session_id=None) -> dict:
+        """session_id (issue #82): optional, has no effect on retrieval/ranking — recorded on
+        the server's per-constraint injection audit event for every pinned constraint this
+        recall returns, so a compliance query can prove which guardrails a given agent
+        session actually saw."""
         body = {"namespace": _ns(namespace, self.namespace), "query": query}
-        for k, v in (("raw_quota", raw_quota), ("fact_quota", fact_quota), ("max_chars", max_chars)):
+        for k, v in (("raw_quota", raw_quota), ("fact_quota", fact_quota), ("max_chars", max_chars),
+                     ("session_id", session_id)):
             if v is not None:
                 body[k] = v
         return _raise(self._c.post("/recall", json=body))
@@ -118,9 +124,12 @@ class AsyncMemnosClient:
             "namespace": _ns(namespace, self.namespace), "text": text,
             "speaker": speaker, "session_id": session_id, "async": async_}))
 
-    async def recall(self, query, *, namespace=None, raw_quota=None, fact_quota=None, max_chars=None) -> dict:
+    async def recall(self, query, *, namespace=None, raw_quota=None, fact_quota=None, max_chars=None,
+                     session_id=None) -> dict:
+        """session_id (issue #82): see MemnosClient.recall's docstring."""
         body = {"namespace": _ns(namespace, self.namespace), "query": query}
-        for k, v in (("raw_quota", raw_quota), ("fact_quota", fact_quota), ("max_chars", max_chars)):
+        for k, v in (("raw_quota", raw_quota), ("fact_quota", fact_quota), ("max_chars", max_chars),
+                     ("session_id", session_id)):
             if v is not None:
                 body[k] = v
         return _raise(await self._c.post("/recall", json=body))
