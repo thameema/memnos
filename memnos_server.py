@@ -663,12 +663,16 @@ class Handler(BaseHTTPRequestHandler):
                 if sub == "namespaces/links" and method == "POST":
                     src = str(body.get("src", "")).strip()
                     dst = str(body.get("dst", "")).strip()
+                    kind = str(body.get("kind") or "link").strip()
                     if not src or not dst:
                         return 400, {"error": "src and dst required"}
                     if src == dst:
                         return 400, {"error": "src and dst must differ"}
-                    Control.link_namespaces(conn, src, dst, created_by=pid)
-                    return 200, {"ok": True, "src": src, "dst": dst}
+                    try:
+                        Control.link_namespaces(conn, src, dst, created_by=pid, kind=kind)
+                    except ValueError as e:
+                        return 400, {"error": str(e)}
+                    return 200, {"ok": True, "src": src, "dst": dst, "kind": kind}
                 if sub == "namespaces/links" and method == "DELETE":
                     src = (qs.get("src", [""])[0]).strip()
                     dst = (qs.get("dst", [""])[0]).strip()
@@ -683,6 +687,15 @@ class Handler(BaseHTTPRequestHandler):
                     Control.set_namespace_kind(conn, name, kind)
                     _NS_CACHE["data"] = None
                     return 200, {"ok": True, "name": name, "kind": kind}
+                # issue #85 Mechanism A opt-out (admin UI parity with namespaces/kind above)
+                if sub == "namespaces/inherit-ancestors" and method == "POST":
+                    name = str(body.get("name", "")).strip()
+                    if not name or "inherit" not in body:
+                        return 400, {"error": "name and inherit (bool) required"}
+                    inherit = bool(body["inherit"])
+                    Control.set_namespace_inherit_ancestors(conn, name, inherit)
+                    _NS_CACHE["data"] = None
+                    return 200, {"ok": True, "name": name, "inherit_ancestors": inherit}
                 if sub == "namespaces" and method == "DELETE":
                     name = (qs.get("name", [""])[0]).strip()
                     if not name:
@@ -1131,6 +1144,19 @@ class Handler(BaseHTTPRequestHandler):
                             return self._send(400, {"error": "src and destination must differ"})
                         out = store.migrate_namespace(mem.schema, src, ns, mode=mode,
                                                       like=(str(req["like"]) if req.get("like") else None))
+                        # issue #85 item 5: record minimal copy provenance (who copied
+                        # what into `ns`, from where, when) — a prerequisite for any
+                        # future staleness signal on this one-time-snapshot path, NOT a
+                        # staleness signal itself (the live-link paths above need none —
+                        # nothing to go stale when the read is live). Best-effort: a
+                        # failure here must never undo or fail the copy that already
+                        # committed.
+                        try:
+                            Control.record_namespace_copy(conn, dst_ns=ns, src_ns=src,
+                                                          mode=mode, copied_by=principal)
+                        except Exception as e:
+                            print(f"[memnos] namespace copy provenance record failed for "
+                                  f"{src}->{ns}: {type(e).__name__}: {e}", flush=True)
                     # --- namespace pub/sub (Batch 3) ---
                     elif self.path == "/subscribe":        # namespace_subscribe
                         wh = (str(req.get("webhook")).strip() or None) if req.get("webhook") else None
@@ -1519,6 +1545,7 @@ class Handler(BaseHTTPRequestHandler):
                 timings["embed_ms"] = 0.0                         # cache hit
             wide = path == "/recall" and str(req.get("scope", "")).lower() in ("all", "wide")
             grounded, skipped = [], []
+            inherited, inherited_skipped = [], []  # issue #85 Mechanism A (narrow path only)
             other_readable = []    # issue #16: namespaces the principal may read beyond ns
             # issue #41 fix C: readable_namespaces() fan-out failures collect here (wide
             # scope only — the narrow-path other_readable lookup below is a scope HINT,
@@ -1580,7 +1607,51 @@ class Handler(BaseHTTPRequestHandler):
                                   f"principal={principal} ({type(e).__name__}): {e}", flush=True)
                             other_readable = []
                     pre = mem.recall_prefetch(ns, q)   # timeline/entity arms, no qv
-                    pin_nss = [ns] + grounded
+                    # issue #85 Mechanism A: same-root ancestors (customer:example:widgets
+                    # -> customer:example -> customer), automatic UNLESS `ns` opted out
+                    # (inherit_ancestors=false). Same grant gate as explicit links above —
+                    # "the user owns the whole subtree" is true for the OWNER, not
+                    # necessarily for every caller with a narrower grant on just the leaf
+                    # namespace, so an ancestor without a read grant is skipped, not
+                    # silently pulled in. Feeds pin_nss ONLY (constraint pins) below, NOT
+                    # extra_namespaces/recall_fetch — this issue's gap is specifically
+                    # "parent constraints don't propagate to children," not "child search
+                    # results should widen to include parent content." Kept as separate
+                    # inherited_in/inheritance_skipped response keys rather than folded
+                    # into grounded_in/links_skipped: those two are Mechanism B's
+                    # (explicit-link) transparency contract and existing callers may
+                    # assert on them exactly (see tests/test_grounded_recall.py) — a
+                    # namespace with no links must keep getting a response with no
+                    # grounded_in/links_skipped keys at all, unaffected by this addition.
+                    # Guarded (issue #41-style): effective_ancestors() reads
+                    # memnos_control.namespaces (the SAME table readable_namespaces()'s
+                    # wildcard fan-out reads) — a live failure there must degrade this
+                    # recall, not 500 it. Placed AFTER recall_prefetch (not before, where
+                    # an earlier draft had it) purely so `pre` already exists here to carry
+                    # the degraded-reasons list, same convention pinned_constraints uses
+                    # right below.
+                    # pin_cap<=0 means pinned_constraints() below is a guaranteed no-op
+                    # (it has its own `if cap <= 0: return []` short-circuit) — skip this
+                    # arm entirely rather than doing (and being exposed to a failure from)
+                    # work whose result would be thrown away, mirroring exactly what a
+                    # caller sending constraint_cap:0 is asking for.
+                    ancestors = []
+                    if pin_cap > 0:
+                        try:
+                            ancestors = Control.effective_ancestors(conn, ns)
+                        except RECALL_ARM_FAILURES as e:
+                            hint = classify_arm_failure(conn, e)
+                            record_arm_failure(pre.setdefault("_degraded_reasons", []), ns,
+                                               "namespace_ancestors", e, hint=hint)
+                            pre["_degraded"] = True
+                    for ans in ancestors:
+                        (inherited if Control.authorize(conn, principal, ans, write=False)
+                         else inherited_skipped).append(ans)
+                    # NOTE (issue #85): pinned_constraints() dedupes+caps ACROSS this whole
+                    # list by (ts, content), not per-source — a namespace's own old
+                    # constraints can fill the cap before a newer ancestor/linked rule is
+                    # reached. Pre-existing behavior for Mechanism B; unchanged here.
+                    pin_nss = [ns] + grounded + inherited
                 # PINNED CONSTRAINT INJECTION: type='constraint' memories are ALWAYS in
                 # the output, regardless of query similarity (cap via constraint_cap).
                 # issue #41 fix C: pin_cap defaults to 10 (see above), not 0, so this is a
@@ -1707,6 +1778,11 @@ class Handler(BaseHTTPRequestHandler):
                 if grounded or skipped:    # keys only appear when links exist (no drift)
                     out["grounded_in"] = grounded
                     out["links_skipped"] = skipped
+                # issue #85 Mechanism A — separate keys, same no-drift convention: only
+                # appear when there's an ancestor to report (authorized or skipped).
+                if inherited or inherited_skipped:
+                    out["inherited_in"] = inherited
+                    out["inheritance_skipped"] = inherited_skipped
             # issue #16: scope observability — always attach for /recall (both wide + narrow)
             if path == "/recall":
                 ns_searched = nss if wide else [ns]

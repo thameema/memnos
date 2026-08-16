@@ -473,6 +473,28 @@
        "required": false
       },
       {
+       "arg": "--inherit-ancestors",
+       "choices": [
+        "true",
+        "false"
+       ],
+       "help": "set: opt this namespace in/out of automatically consulting its same-root ancestors' pinned constraints at recall/enforce time (default true \u2014 see `namespace` epic #70 Mechanism A)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--link-kind",
+       "choices": [
+        "link",
+        "inherits",
+        "governed_by"
+       ],
+       "default": "link",
+       "help": "link: taxonomy for this explicit edge (informational; default 'link' = today's grounding semantics \u2014 recall on src also searches dst)",
+       "positional": false,
+       "required": false
+      },
+      {
        "arg": "--purge",
        "help": "rm: also delete the stored memories",
        "positional": false,

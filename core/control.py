@@ -82,6 +82,17 @@ ALTER TABLE memnos_control.namespaces ADD COLUMN IF NOT EXISTS kind text NOT NUL
 -- has data (so wildcard-grant expansion never needs a data-table scan) while preserving
 -- the UI's "discovered" pill (ui/app.js) for namespaces nobody explicitly registered.
 ALTER TABLE memnos_control.namespaces ADD COLUMN IF NOT EXISTS auto_registered boolean NOT NULL DEFAULT false;
+-- SAME-ROOT INHERITANCE OPT-OUT (issue #85, epic #70 Mechanism A): true (default) means
+-- this namespace automatically also consults its ':'-prefix ancestors' PINNED CONSTRAINTS
+-- at recall/enforce time (customer:example:widgets -> customer:example -> customer) —
+-- implicit and safe because the user owns the whole subtree, but each ancestor is still
+-- gated by the caller's own read grant on it (see Control.effective_ancestors /
+-- memnos_server.py's grounded-recall branch), same as an explicit namespace_links target.
+-- Set false to opt a namespace OUT of automatic ancestor consultation entirely (all
+-- levels at once — this is a property of the CONSULTING namespace, not a per-ancestor
+-- edge, so there is no separate table here). Missing row (namespace never registered)
+-- MUST read as true, not false — see Control.namespace_inherits_ancestors's COALESCE.
+ALTER TABLE memnos_control.namespaces ADD COLUMN IF NOT EXISTS inherit_ancestors boolean NOT NULL DEFAULT true;
 -- BACKFILL COMPLETION MARKER: a singleton row (id is always `true`, enforced by the CHECK)
 -- inserted once _run_namespace_registry_backfill has scanned tenant_memnos.* to
 -- completion. Deliberately NOT derived from whether any auto_registered row exists --
@@ -99,6 +110,39 @@ CREATE TABLE IF NOT EXISTS memnos_control.namespace_links(
     created_by bigint REFERENCES memnos_control.principals(id),
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE(src_ns, dst_ns));
+-- LINK KIND (issue #85): taxonomy for explicit namespace_links edges, distinct from the
+-- automatic same-root walk-up (Mechanism A, above — that mechanism has NO row here at
+-- all; it's derived purely from ':'-prefix string structure at query time, gated by
+-- inherit_ancestors + the caller's grant, never stored as an edge). Default 'link' is
+-- deliberately the ONLY value every EXISTING row gets on this migration — it names what
+-- these rows have always meant ("recall on src also searches dst", i.e. grounding), not
+-- a retroactive relabeling to 'governed_by'/'inherits'. Callers may pass kind='inherits'
+-- or kind='governed_by' when creating a NEW link to record explicit cross-root
+-- inheritance/governance intent for humans reading `namespace links` — informational only
+-- today (no runtime behavior currently branches on kind; #83's constraint_overrides is
+-- the actual precedence mechanism and intentionally stays a separate table/concept, see
+-- its own DDL comment). Kept open (no CHECK) — same as namespaces.kind above; validated at
+-- the application layer in Control.link_namespaces instead.
+ALTER TABLE memnos_control.namespace_links ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'link';
+-- COPY PROVENANCE (issue #85 item 5): one row per copy_memories_from / `namespace
+-- copy|move` call — an APPEND-ONLY event log, not an edge. Deliberately NOT folded into
+-- namespace_links: that table's UNIQUE(src_ns,dst_ns) + ON CONFLICT DO NOTHING models a
+-- single deduped policy edge, but a copy is a repeatable point-in-time EVENT (the same
+-- src->dst pair can be copied more than once, each at its own timestamp) — reusing
+-- namespace_links would silently collapse repeat copies into one row and lose exactly the
+-- history this exists to capture. This is intentionally ONLY provenance (who copied what,
+-- from where, when) — no staleness signal is computed from it. The live-link paths
+-- (Mechanism A/B above) need no staleness signal by design (nothing ever goes stale when
+-- the read is live); a one-time snapshot's staleness is a distinct, NOT-yet-built feature
+-- this table is a prerequisite for, not a replacement for building it now.
+CREATE TABLE IF NOT EXISTS memnos_control.namespace_copy_provenance(
+    id bigserial PRIMARY KEY,
+    dst_ns text NOT NULL,
+    src_ns text NOT NULL,
+    mode text NOT NULL,
+    copied_by bigint REFERENCES memnos_control.principals(id),
+    copied_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS namespace_copy_provenance_dst ON memnos_control.namespace_copy_provenance(dst_ns);
 -- ENFORCED CONSTRAINTS (issue #28): ask/block-level constraints only. advise-level
 -- constraints (the default, and everything #27's `/memnos constraint` writes) are plain
 -- memory_type='constraint' pinned memories in the TENANT schema — see
@@ -992,14 +1036,32 @@ class Control:
                       "ON CONFLICT (name) DO UPDATE SET kind=EXCLUDED.kind", (name, kind))
 
     @staticmethod
-    def link_namespaces(conn, src, dst, created_by=None):
+    def set_namespace_inherit_ancestors(conn, name, inherit: bool):
+        """Opt a namespace in/out of Mechanism A's automatic same-root ancestor
+        consultation (issue #85). Registers the namespace if needed, same pattern as
+        set_namespace_kind."""
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.namespaces(name, inherit_ancestors) VALUES(%s,%s) "
+                      "ON CONFLICT (name) DO UPDATE SET inherit_ancestors=EXCLUDED.inherit_ancestors",
+                      (name, bool(inherit)))
+
+    _LINK_KINDS = ("link", "inherits", "governed_by")
+
+    @staticmethod
+    def link_namespaces(conn, src, dst, created_by=None, kind="link"):
         """Declare that recall on `src` should also be GROUNDED in `dst` (policy only —
-        each caller still needs a read grant on `dst` for the fan-out to happen)."""
+        each caller still needs a read grant on `dst` for the fan-out to happen). `kind`
+        (issue #85) is informational taxonomy only — every existing caller keeps getting
+        the default 'link' (today's grounding semantics); 'inherits'/'governed_by' let a
+        NEW explicit cross-root link record intent for humans reading `namespace links`.
+        No runtime behavior currently branches on kind."""
         if src == dst:
             raise ValueError("src and dst must differ")
+        if kind not in Control._LINK_KINDS:
+            raise ValueError(f"kind must be one of {Control._LINK_KINDS}")
         with conn.cursor() as c:
-            c.execute("INSERT INTO memnos_control.namespace_links(src_ns,dst_ns,created_by) "
-                      "VALUES(%s,%s,%s) ON CONFLICT (src_ns,dst_ns) DO NOTHING", (src, dst, created_by))
+            c.execute("INSERT INTO memnos_control.namespace_links(src_ns,dst_ns,created_by,kind) "
+                      "VALUES(%s,%s,%s,%s) ON CONFLICT (src_ns,dst_ns) DO NOTHING", (src, dst, created_by, kind))
 
     @staticmethod
     def unlink_namespaces(conn, src, dst) -> bool:
@@ -1010,7 +1072,11 @@ class Control:
 
     @staticmethod
     def linked_namespaces(conn, src):
-        """The dst namespaces linked FROM `src` (recall fan-out targets), stable order."""
+        """The dst namespaces linked FROM `src` (recall fan-out targets), stable order.
+        Single-hop by design (issue #85): a link is an explicit, deliberate act per pair;
+        the epic's framing never demanded transitive closure for explicit cross-root
+        links, unlike Mechanism A's same-root walk-up (which IS multi-level, but derived
+        from ':'-prefix structure, not from chasing this table recursively)."""
         with conn.cursor() as c:
             c.execute("SELECT dst_ns FROM memnos_control.namespace_links WHERE src_ns=%s "
                       "ORDER BY dst_ns", (src,))
@@ -1020,16 +1086,57 @@ class Control:
     def list_links(conn, src=None):
         with conn.cursor() as c:
             if src:
-                c.execute("SELECT l.src_ns, l.dst_ns, l.created_at, p.name AS created_by "
+                c.execute("SELECT l.src_ns, l.dst_ns, l.kind, l.created_at, p.name AS created_by "
                           "FROM memnos_control.namespace_links l "
                           "LEFT JOIN memnos_control.principals p ON p.id=l.created_by "
                           "WHERE l.src_ns=%s ORDER BY l.dst_ns", (src,))
             else:
-                c.execute("SELECT l.src_ns, l.dst_ns, l.created_at, p.name AS created_by "
+                c.execute("SELECT l.src_ns, l.dst_ns, l.kind, l.created_at, p.name AS created_by "
                           "FROM memnos_control.namespace_links l "
                           "LEFT JOIN memnos_control.principals p ON p.id=l.created_by "
                           "ORDER BY l.src_ns, l.dst_ns")
             return c.fetchall()
+
+    # --- same-root automatic ancestor inheritance (issue #85, epic #70 Mechanism A) -----
+    @staticmethod
+    def namespace_ancestors(ns):
+        """Pure string derivation of `ns`'s ':'-prefix ancestors, NEAREST-FIRST, ALL
+        levels (multi-hop is free here — it's a closed-form split, not a graph walk):
+        'customer:example:widgets' -> ['customer:example', 'customer']. No DB access, no
+        recursion needed. Deliberately prefix-only: 'customer:a:widgets' and
+        'customer:b:widgets' share a leaf segment but NEITHER is a prefix of the other,
+        so this never treats them as related (issue #85 acceptance criterion)."""
+        parts = (ns or "").split(":")
+        return [":".join(parts[:i]) for i in range(len(parts) - 1, 0, -1)]
+
+    @staticmethod
+    def namespace_inherits_ancestors(conn, ns) -> bool:
+        """The opt-out flag (namespaces.inherit_ancestors), COALESCE-safe: a namespace
+        with NO registry row (never explicitly registered, e.g. one that only exists via
+        grants/data) has never opted out, so missing-row MUST read as True, matching how
+        list_namespaces() already treats a missing kind as its default via COALESCE."""
+        with conn.cursor() as c:
+            c.execute("SELECT inherit_ancestors FROM memnos_control.namespaces WHERE name=%s", (ns,))
+            row = c.fetchone()
+            return True if row is None else bool(row["inherit_ancestors"])
+
+    @staticmethod
+    def effective_ancestors(conn, ns):
+        """Mechanism A's actual consultation list: [] if `ns` opted out (a property of
+        the CONSULTING namespace — opting out suppresses ALL levels at once, there is no
+        per-ancestor-pair opt-out), else every same-root ancestor, nearest-first.
+
+        Checks namespace_ancestors() FIRST (pure string, no DB) and short-circuits on []
+        before ever querying the opt-out flag: a single-segment namespace has nothing to
+        inherit regardless of that flag's value, so there is no reason to pay a DB round
+        trip (or be exposed to a failure on memnos_control.namespaces) for a namespace
+        that could never have anything to consult anyway."""
+        anc = Control.namespace_ancestors(ns)
+        if not anc:
+            return []
+        if not Control.namespace_inherits_ancestors(conn, ns):
+            return []
+        return anc
 
     @staticmethod
     def list_namespaces(conn):
@@ -1052,6 +1159,7 @@ class Control:
                 )
                 SELECT nm.name, n.description, n.created_at, p.name AS created_by,
                   COALESCE(n.kind, 'memory') AS kind,
+                  COALESCE(n.inherit_ancestors, true) AS inherit_ancestors,
                   COALESCE(rt.cnt,0) AS turns, COALESCE(sm.cnt,0) AS facts,
                   (n.name IS NOT NULL AND NOT COALESCE(n.auto_registered, false)) AS registered
                 FROM names nm
@@ -1166,6 +1274,61 @@ class Control:
             c.execute("UPDATE memnos_control.constraint_enforcement SET active=false "
                       "WHERE id=%s AND active", (row_id,))
             return c.rowcount > 0
+
+    @staticmethod
+    def list_constraint_enforcement_fanout(conn, ns):
+        """issue #85 item 4: the REAL set of active ask/block rules that govern `ns` —
+        its own rows PLUS Mechanism A's same-root ancestors PLUS Mechanism B's explicit
+        namespace_links targets. Before this, `_refresh_enforce_cache` (memnos_cli.py)
+        called list_constraint_enforcement(namespace=ns) directly, an EXACT-namespace
+        filter — so an ask/block rule written on a parent or linked namespace was
+        invisible to the PreToolUse hook's cache and to `hook status`'s loaded-count,
+        even though the SAME rule's advisory (pinned-memory) form already flows correctly
+        through /recall via pin_nss. This closes that gap.
+
+        No grant/authorize() gate here (unlike the /recall grounded-recall branch): this
+        runs from `_refresh_enforce_cache`, which has no principal/token context at all —
+        it's a direct-DSN, single-trusted-config CLI path, same trust model as every other
+        `memnos namespace`/`hook status` verb that talks straight to Postgres.
+
+        Dedup by id (a rule could in principle be reachable via both an ancestor AND a
+        link — e.g. ns links to its own parent). Order: own rules first, then ancestors
+        nearest-first, then links — informational only; the PreToolUse matcher doesn't
+        care about order, it just needs a level match."""
+        seen_ids, out = set(), []
+        for src_ns in [ns] + Control.effective_ancestors(conn, ns) + Control.linked_namespaces(conn, ns):
+            for r in Control.list_constraint_enforcement(conn, namespace=src_ns):
+                if r["id"] in seen_ids:
+                    continue
+                seen_ids.add(r["id"])
+                out.append(r)
+        return out
+
+    # --- copy provenance (issue #85 item 5) ---------------------------------
+    @staticmethod
+    def record_namespace_copy(conn, dst_ns, src_ns, mode, copied_by=None):
+        """One append-only row per copy_memories_from / `namespace copy|move` call.
+        Provenance only — no staleness signal is computed here (see the DDL comment on
+        namespace_copy_provenance for why that's deliberately out of scope for this PR)."""
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.namespace_copy_provenance"
+                      "(dst_ns,src_ns,mode,copied_by) VALUES(%s,%s,%s,%s) RETURNING id",
+                      (dst_ns, src_ns, mode, copied_by))
+            return c.fetchone()["id"]
+
+    @staticmethod
+    def list_namespace_copy_provenance(conn, ns=None):
+        """Provenance rows touching `ns` (as either side), newest first; all rows if ns
+        is None."""
+        with conn.cursor() as c:
+            if ns:
+                c.execute("SELECT id, dst_ns, src_ns, mode, copied_by, copied_at "
+                          "FROM memnos_control.namespace_copy_provenance "
+                          "WHERE dst_ns=%s OR src_ns=%s ORDER BY copied_at DESC", (ns, ns))
+            else:
+                c.execute("SELECT id, dst_ns, src_ns, mode, copied_by, copied_at "
+                          "FROM memnos_control.namespace_copy_provenance ORDER BY copied_at DESC")
+            return c.fetchall()
 
     # --- listings for the console -----------------------------------------
     @staticmethod

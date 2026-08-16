@@ -313,6 +313,8 @@ manage namespaces: add | ls | rm | prune | set | link | unlink | links | copy | 
 | `--like` | copy/move: only memories containing this substring |
 | `--desc` | add: description |
 | `--kind` | set: namespace kind (one of: `memory`, `knowledge`) |
+| `--inherit-ancestors` | set: opt this namespace in/out of automatically consulting its same-root ancestors' pinned constraints at recall/enforce time (default true — see `namespace` epic #70 Mechanism A) (one of: `true`, `false`) |
+| `--link-kind` | link: taxonomy for this explicit edge (informational; default 'link' = today's grounding semantics — recall on src also searches dst) (one of: `link`, `inherits`, `governed_by`; default `link`) |
 | `--purge` | rm: also delete the stored memories |
 | `--dry-run` | reconcile/prune: report only, write nothing (prune's default even without this flag) |
 | `--limit` | reconcile: cap the number of facts walked this run (newest first) |
