@@ -1521,6 +1521,80 @@ def cmd_grant_rm(args, cfg):
     print(f"revoked {args.principal} -> {args.namespace}")
 
 
+def cmd_role_create(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    rid = Control.create_role(conn, args.name, args.desc)
+    print(f"role '{args.name}' id={rid}")
+
+
+def cmd_role_ls(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    for r in Control.list_roles(conn):
+        print(f"  {r['id']:<5} {r['name']:<24} members={r['member_count']:<4} "
+              f"grants={r['grant_count']:<4} {r['description'] or ''}")
+
+
+def cmd_role_rm(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    ok = Control.delete_role(conn, args.name)
+    print(f"role '{args.name}' " + ("removed" if ok else "not found"))
+
+
+def cmd_role_grant(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    try:
+        Control.grant_role(conn, args.name, args.namespace,
+                           can_read=True, can_write=not args.read_only)
+    except ValueError as e:
+        sys.exit(str(e))
+    print(f"granted role '{args.name}' -> {args.namespace} "
+          f"({'read' if args.read_only else 'read+write'})")
+
+
+def cmd_role_revoke(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    Control.revoke_role_grant(conn, args.name, args.namespace)
+    print(f"revoked role '{args.name}' -> {args.namespace}")
+
+
+def cmd_role_grants(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    for g in Control.list_role_grants(conn, args.name):
+        mode = ("read" if g["can_read"] else "") + ("+write" if g["can_write"] else "")
+        print(f"  {g['namespace']:<32} {mode.lstrip('+') or 'none'}")
+
+
+def cmd_role_add_member(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    try:
+        Control.add_role_member(conn, args.name, _principal_id(conn, args.principal))
+    except ValueError as e:
+        sys.exit(str(e))
+    print(f"added {args.principal} to role '{args.name}'")
+
+
+def cmd_role_rm_member(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    ok = Control.remove_role_member(conn, args.name, _principal_id(conn, args.principal))
+    print(f"removed {args.principal} from role '{args.name}'" if ok
+          else f"{args.principal} was not a member of role '{args.name}'")
+
+
+def cmd_role_members(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    for p in Control.list_role_members(conn, args.name):
+        print(f"  {p['id']:<5} {p['name']:<24} {p['kind']}")
+
+
 def cmd_constraint_add(args, cfg):
     """issue #28: `advise` (default) writes ONLY the pinned memory, same as `/memnos
     constraint <rule>` (#27). `ask`/`block` ALSO registers a control-plane enforcement row
@@ -1532,8 +1606,16 @@ def cmd_constraint_add(args, cfg):
                  "matched to a tool call deterministically without an LLM, and enforcement "
                  "is LLM-free by design. (Use --enforce advise for a pinned-only constraint.)")
     tok = args.token or os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token")
-    _post(cfg, "/remember", {"namespace": args.namespace, "text": args.rule, "type": "constraint"}, tok)
+    body = {"namespace": args.namespace, "text": args.rule, "type": "constraint"}
+    if args.subject:
+        body["constraint_subject"] = args.subject
+    resp = _post(cfg, "/remember", body, tok)
     print(f"→ constraint pinned in {args.namespace}")
+    if args.subject:
+        retired = (resp or {}).get("constraints_retired") or []
+        if retired:
+            ids = ", ".join(f"{r['kind']}:{r['id']}" for r in retired)
+            print(f"  superseded (subject={args.subject!r}): {ids}")
     if args.enforce != "advise":
         conn = _conn(cfg)
         Control.init(conn)
@@ -1588,6 +1670,47 @@ def cmd_constraint_rm(args, cfg):
     Control.init(conn)
     ok = Control.remove_constraint_enforcement(conn, args.id)
     print(f"constraint {args.id} deactivated" if ok else f"no active constraint with id {args.id}")
+
+
+def cmd_constraint_override_add(args, cfg):
+    """issue #83: declare CHILD wins a precedence conflict against its ':'-prefix
+    ancestor PARENT instead of the default (parent wins). Direct-DB, admin-only path —
+    same pattern as constraint ls/rm (issue #28) for the enforcement table."""
+    from core.control import Control
+    conn = _conn(cfg)
+    Control.init(conn)
+    created_by = None
+    try:
+        created_by = _principal_id(conn, "admin")
+    except SystemExit:
+        pass
+    try:
+        oid = Control.add_constraint_override(conn, args.child_namespace, args.parent_namespace,
+                                              created_by=created_by)
+    except ValueError as e:
+        sys.exit(str(e))
+    print(f"→ override id={oid}: '{args.child_namespace}' now wins vs. ancestor "
+          f"'{args.parent_namespace}' for any shared --subject constraint")
+
+
+def cmd_constraint_override_ls(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    Control.init(conn)
+    rows = Control.list_constraint_overrides(conn, namespace=args.namespace)
+    if not rows:
+        print("no override edges" + (f" touching '{args.namespace}'" if args.namespace else ""))
+        return
+    for r in rows:
+        print(f"  {r['id']:<5} {r['child_namespace']:<24} wins over  {r['parent_namespace']}")
+
+
+def cmd_constraint_override_rm(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    Control.init(conn)
+    ok = Control.remove_constraint_override(conn, args.id)
+    print(f"override {args.id} removed" if ok else f"no override with id {args.id}")
 
 
 def cmd_namespace(args, cfg):
@@ -1823,8 +1946,15 @@ def cmd_whoami(args, cfg):
     if pid is None:
         print("auth: FAIL"); return
     print(f"auth OK principal_id={pid}")
-    print("grants:", [(g["namespace"], g["can_read"], g["can_write"])
-                      for g in Control.authorized_namespaces(conn, pid)])
+    direct = Control.authorized_namespaces(conn, pid)
+    print("grants (direct):", [(g["namespace"], g["can_read"], g["can_write"]) for g in direct])
+    # role-inherited (issue #81): shown SEPARATELY from direct grants, not blended in --
+    # authorize() already unions the two, so without this a role-only principal would
+    # see an empty "grants" list here while actually having access.
+    direct_ns = {g["namespace"] for g in direct}
+    via_role = [g for g in Control.effective_namespaces(conn, pid) if g["namespace"] not in direct_ns]
+    if via_role:
+        print("grants (via role):", [(g["namespace"], g["can_read"], g["can_write"]) for g in via_role])
 
 
 def cmd_ns(args, cfg):
@@ -3537,8 +3667,13 @@ def cmd_hook(args, cfg):
         is_stale = False
         snap = None
         try:
+            # issue #82: session_id (resolved above from the hook payload) rides along so
+            # the server's per-constraint injection audit event can record WHICH session a
+            # pinned constraint was shown to — durable, queryable proof of what guardrails
+            # this agent session actually saw, not just that memory was recalled.
             req = urllib.request.Request(f"{url}/recall", method="POST",
-                data=json.dumps({"namespace": ns, "query": prompt}).encode(), headers=hdr)
+                data=json.dumps({"namespace": ns, "query": prompt,
+                                 "session_id": session_id}).encode(), headers=hdr)
             _resp = json.load(urllib.request.urlopen(req, timeout=8))
             ctx = _resp.get("context", "")
             _mem_count = len(_resp.get("memories") or [])
@@ -3730,6 +3865,15 @@ EXAMPLES = {
     "grant add": "memnos grant add ci-bot proj:myapp --read-only",
     "grant ls": "memnos grant ls ci-bot",
     "grant rm": "memnos grant rm ci-bot proj:myapp",
+    "role create": "memnos role create architects --desc 'standards writers'",
+    "role ls": "memnos role ls",
+    "role rm": "memnos role rm architects",
+    "role grant": "memnos role grant architects org:acme:standards",
+    "role revoke": "memnos role revoke architects org:acme:standards",
+    "role grants": "memnos role grants architects",
+    "role add-member": "memnos role add-member architects alice",
+    "role rm-member": "memnos role rm-member architects alice",
+    "role members": "memnos role members architects",
     "namespace": "memnos namespace add proj:myapp --desc 'my app'",
     "secret": "memnos secret set openai",
     "stats": "memnos stats",
@@ -3885,6 +4029,45 @@ def build_parser():
     v.add_argument("namespace", help="namespace of the grant to revoke")
     v.set_defaults(fn=cmd_grant_rm)
 
+    # ---- role-based grants (issue #81): roles/groups as grantable subjects, layered
+    # over the per-principal grants above. `grant` still means direct per-principal
+    # access; `role` is the group-of-principals indirection over the SAME ACL semantics
+    # (exact / prefix 'team:*' / '*' wildcard matching) ----
+    p = sub.add_parser("role", help="manage roles/groups: create | ls | rm | grant | revoke | grants | add-member | rm-member | members")
+    p.set_defaults(fn=lambda a, c, _p=p: _p.print_help())
+    ps = p.add_subparsers(dest="verb", metavar="<verb>")
+    v = ps.add_parser("create", help="create a role (idempotent on name)")
+    v.add_argument("name", help="role name")
+    v.add_argument("--desc", help="description")
+    v.set_defaults(fn=cmd_role_create)
+    ps.add_parser("ls", help="list roles with member/grant counts").set_defaults(fn=cmd_role_ls)
+    v = ps.add_parser("rm", help="delete a role (and its grants + memberships)")
+    v.add_argument("name", help="role name")
+    v.set_defaults(fn=cmd_role_rm)
+    v = ps.add_parser("grant", help="grant a role access to a namespace")
+    v.add_argument("name", help="role name")
+    v.add_argument("namespace", help="namespace (exact, prefix like team:*, or *)")
+    v.add_argument("--read-only", action="store_true", help="read access only (default read+write)")
+    v.set_defaults(fn=cmd_role_grant)
+    v = ps.add_parser("revoke", help="revoke a role's grant on a namespace")
+    v.add_argument("name", help="role name")
+    v.add_argument("namespace", help="namespace of the grant to revoke")
+    v.set_defaults(fn=cmd_role_revoke)
+    v = ps.add_parser("grants", help="list a role's namespace grants")
+    v.add_argument("name", help="role name")
+    v.set_defaults(fn=cmd_role_grants)
+    v = ps.add_parser("add-member", help="add a principal to a role")
+    v.add_argument("name", help="role name")
+    v.add_argument("principal", help="principal name")
+    v.set_defaults(fn=cmd_role_add_member)
+    v = ps.add_parser("rm-member", help="remove a principal from a role")
+    v.add_argument("name", help="role name")
+    v.add_argument("principal", help="principal name")
+    v.set_defaults(fn=cmd_role_rm_member)
+    v = ps.add_parser("members", help="list a role's members")
+    v.add_argument("name", help="role name")
+    v.set_defaults(fn=cmd_role_members)
+
     # ---- enforced constraints (issue #28) ----
     p = sub.add_parser("constraint", help="manage constraints: add | ls | rm (advise=pinned memory, ask|block=enforced)")
     p.set_defaults(fn=lambda a, c, _p=p: _p.print_help())
@@ -3897,6 +4080,10 @@ def build_parser():
                         "ask/block: ALSO enforced by the PreToolUse hook (requires --tool)")
     v.add_argument("--tool", help="glob matched against the pending tool name — required for --enforce ask|block")
     v.add_argument("--token", help="bearer token for the pinned-memory write (else $MEMNOS_TOKEN / config)")
+    v.add_argument("--subject", help="issues #83/#84: optional grouping key. A newer constraint with the "
+                        "SAME --subject in the SAME namespace automatically retires the older one "
+                        "(supersession); across namespaces sharing --subject, the ':'-prefix ANCESTOR "
+                        "namespace wins by default (precedence) — see `constraint override`")
     v.set_defaults(fn=cmd_constraint_add)
     v = ps.add_parser("ls", help="list enforced (ask/block) constraints")
     v.add_argument("namespace", nargs="?", help="namespace (omit to list across all)")
@@ -3904,6 +4091,20 @@ def build_parser():
     v = ps.add_parser("rm", help="deactivate an enforced constraint by id (see: constraint ls)")
     v.add_argument("id", type=int)
     v.set_defaults(fn=cmd_constraint_rm)
+    vo = ps.add_parser("override", help="issue #83: manage precedence override edges (child wins vs. an ancestor)")
+    vo.set_defaults(fn=lambda a, c, _p=vo: _p.print_help())
+    vos = vo.add_subparsers(dest="override_verb", metavar="<verb>")
+    vv = vos.add_parser("add", help="declare CHILD wins precedence over its ':'-prefix ancestor PARENT "
+                            "for same --subject constraints (default is parent wins)")
+    vv.add_argument("child_namespace")
+    vv.add_argument("parent_namespace")
+    vv.set_defaults(fn=cmd_constraint_override_add)
+    vv = vos.add_parser("ls", help="list precedence override edges")
+    vv.add_argument("namespace", nargs="?", help="filter to edges touching this namespace")
+    vv.set_defaults(fn=cmd_constraint_override_ls)
+    vv = vos.add_parser("rm", help="remove an override edge by id (see: constraint override ls)")
+    vv.add_argument("id", type=int)
+    vv.set_defaults(fn=cmd_constraint_override_rm)
 
     # ---- namespaces & secrets (already noun-verb via the action positional) ----
     p = sub.add_parser("namespace", help="manage namespaces: add | ls | rm | prune | set | link | unlink | links | copy | move | reconcile")
@@ -4070,6 +4271,8 @@ _DOC_GROUPS = [
                           "autostart", "upgrade", "proxy", "mcp"]),
     ("Identity & access", ["principal create", "principal ls", "token mint", "token ls",
                            "token revoke", "grant add", "grant ls", "grant rm", "whoami"]),
+    ("Roles", ["role create", "role ls", "role rm", "role grant", "role revoke",
+              "role grants", "role add-member", "role rm-member", "role members"]),
     ("Namespaces", ["namespace", "ns"]),
     ("Secrets", ["secret"]),
     ("Observability", ["stats", "health"]),

@@ -414,6 +414,157 @@
     {
      "args": [
       {
+       "arg": "name",
+       "help": "role name",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--desc",
+       "help": "description",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "role create",
+     "example": "memnos role create architects --desc 'standards writers'",
+     "help": "create a role (idempotent on name)"
+    },
+    {
+     "args": [],
+     "command": "role ls",
+     "example": "memnos role ls",
+     "help": "list roles with member/grant counts"
+    },
+    {
+     "args": [
+      {
+       "arg": "name",
+       "help": "role name",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "role rm",
+     "example": "memnos role rm architects",
+     "help": "delete a role (and its grants + memberships)"
+    },
+    {
+     "args": [
+      {
+       "arg": "name",
+       "help": "role name",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "namespace",
+       "help": "namespace (exact, prefix like team:*, or *)",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--read-only",
+       "help": "read access only (default read+write)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "role grant",
+     "example": "memnos role grant architects org:acme:standards",
+     "help": "grant a role access to a namespace"
+    },
+    {
+     "args": [
+      {
+       "arg": "name",
+       "help": "role name",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "namespace",
+       "help": "namespace of the grant to revoke",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "role revoke",
+     "example": "memnos role revoke architects org:acme:standards",
+     "help": "revoke a role's grant on a namespace"
+    },
+    {
+     "args": [
+      {
+       "arg": "name",
+       "help": "role name",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "role grants",
+     "example": "memnos role grants architects",
+     "help": "list a role's namespace grants"
+    },
+    {
+     "args": [
+      {
+       "arg": "name",
+       "help": "role name",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "principal",
+       "help": "principal name",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "role add-member",
+     "example": "memnos role add-member architects alice",
+     "help": "add a principal to a role"
+    },
+    {
+     "args": [
+      {
+       "arg": "name",
+       "help": "role name",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "principal",
+       "help": "principal name",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "role rm-member",
+     "example": "memnos role rm-member architects alice",
+     "help": "remove a principal from a role"
+    },
+    {
+     "args": [
+      {
+       "arg": "name",
+       "help": "role name",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "role members",
+     "example": "memnos role members architects",
+     "help": "list a role's members"
+    }
+   ],
+   "title": "Roles"
+  },
+  {
+   "commands": [
+    {
+     "args": [
+      {
        "arg": "action",
        "choices": [
         "add",
@@ -956,6 +1107,12 @@
        "help": "bearer token for the pinned-memory write (else $MEMNOS_TOKEN / config)",
        "positional": false,
        "required": false
+      },
+      {
+       "arg": "--subject",
+       "help": "issues #83/#84: optional grouping key. A newer constraint with the SAME --subject in the SAME namespace automatically retires the older one (supersession); across namespaces sharing --subject, the ':'-prefix ANCESTOR namespace wins by default (precedence) \u2014 see `constraint override`",
+       "positional": false,
+       "required": false
       }
      ],
      "command": "constraint add",
@@ -974,6 +1131,51 @@
      "command": "constraint ls",
      "example": null,
      "help": "list enforced (ask/block) constraints"
+    },
+    {
+     "args": [
+      {
+       "arg": "child_namespace",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "parent_namespace",
+       "help": "",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "constraint override add",
+     "example": null,
+     "help": "declare CHILD wins precedence over its ':'-prefix ancestor PARENT for same --subject constraints (default is parent wins)"
+    },
+    {
+     "args": [
+      {
+       "arg": "namespace",
+       "help": "filter to edges touching this namespace",
+       "positional": true,
+       "required": false
+      }
+     ],
+     "command": "constraint override ls",
+     "example": null,
+     "help": "list precedence override edges"
+    },
+    {
+     "args": [
+      {
+       "arg": "id",
+       "help": "",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "constraint override rm",
+     "example": null,
+     "help": "remove an override edge by id (see: constraint override ls)"
     },
     {
      "args": [

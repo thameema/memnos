@@ -87,10 +87,10 @@ def main():
     print("== remember_turn precomputed-vec path ==")
     t0 = datetime(2024, 5, 1, tzinfo=timezone.utc)
     vec = fake_embed("Ada moved to Lisbon in 2024.")
-    tid1, rt1, _ = mem.remember_turn(NS, "Ada moved to Lisbon in 2024.", session_id="s1",
-                                     observed_at=t0, vec=vec)
-    tid2, rt2, _ = mem.remember_turn(NS, "Ada moved to Lisbon in 2024. (default path)",
-                                     session_id="s1", observed_at=t0 + timedelta(minutes=1))
+    tid1, rt1, _, _ = mem.remember_turn(NS, "Ada moved to Lisbon in 2024.", session_id="s1",
+                                        observed_at=t0, vec=vec)
+    tid2, rt2, _, _ = mem.remember_turn(NS, "Ada moved to Lisbon in 2024. (default path)",
+                                        session_id="s1", observed_at=t0 + timedelta(minutes=1))
     with conn.cursor() as c:
         c.execute(f"SELECT id, text, embedding IS NOT NULL AS has_vec FROM {SCHEMA}.raw_turns "
                   f"WHERE namespace=%s ORDER BY id", (NS,))

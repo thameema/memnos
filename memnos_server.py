@@ -168,6 +168,32 @@ def _memory_type(req):
     return True, t
 
 
+CONSTRAINT_SUBJECT_MAX = 200
+
+
+def _constraint_subject(req):
+    """Parse + validate the optional `constraint_subject` field (issues #83/#84): an
+    author-supplied (NEVER LLM-inferred — see #29 and core/schema.sql) grouping key
+    used only for memory_type='constraint' writes. Returns (True, None) when absent,
+    (True, value) when valid, (False, {error}) when malformed.
+
+    Normalized (lowercased) HERE, at the FIRST point this value is bound server-side —
+    so every downstream use in this request (the remember_turn() call, and the
+    constraint.retire audit detail below) sees the SAME canonical value.
+    MemnosMemory.remember_turn() normalizes again independently (defense in depth for
+    non-HTTP callers — direct service-layer use has no validator to pass through) —
+    lowercasing an already-lowercased string is a no-op, so doing it twice is harmless."""
+    v = req.get("constraint_subject")
+    if v is None or (isinstance(v, str) and v.strip() == ""):
+        return True, None
+    if not isinstance(v, str):
+        return False, {"error": "constraint_subject must be a string"}
+    v = v.strip().lower()
+    if len(v) > CONSTRAINT_SUBJECT_MAX:
+        return False, {"error": f"constraint_subject too long (max {CONSTRAINT_SUBJECT_MAX} chars)"}
+    return True, v
+
+
 def _chunk_text(text, size=1200, overlap=150):
     """Paragraph-aware chunking: pack paragraphs up to ~size chars; hard-split any
     paragraph longer than size (with overlap). Keeps semantically-coherent chunks."""
@@ -350,7 +376,10 @@ def _mcp_asgi_app(public_port):
                 # gets a resolved namespace to recall from; a subsequent write correctly
                 # 403s downstream (REST enforces write grants exactly as for any caller),
                 # it just does so via the normal write path rather than at this fallback.
-                grants = [g["namespace"] for g in Control.authorized_namespaces(conn, pid)
+                # effective_namespaces() (issue #81), not authorized_namespaces() -- this is
+                # an access-decision path (which namespace does this token resolve to?), so
+                # a role-only read grant must count, same as authorize() already does.
+                grants = [g["namespace"] for g in Control.effective_namespaces(conn, pid)
                          if g["can_read"] and g["namespace"] != "*" and not g["namespace"].endswith(":*")]
                 if len(grants) == 1:
                     ns = grants[0]
@@ -1321,6 +1350,9 @@ class Handler(BaseHTTPRequestHandler):
         ok, mtype = _memory_type(req)              # typed memory (decision|incident|...)
         if not ok:
             return self._send(400, mtype)
+        ok, cs = _constraint_subject(req)           # issues #83/#84: optional grouping key
+        if not ok:
+            return self._send(400, cs)
         # SECURITY (issue #42): the OBSERVATION-axis timestamp that drives bi-temporal
         # supersession (`obs`, stamped a few lines below from remember_turn()'s own
         # datetime.now(timezone.utc)) is ALWAYS the server's own clock at the moment
@@ -1355,9 +1387,18 @@ class Handler(BaseHTTPRequestHandler):
                 mem = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
                                    extract_model=EXTRACT_MODEL, on_usage=usage, author=pname,
                                    extract_fn=EXTRACT_FN)
-                tid, rtext, obs = mem.remember_turn(ns, rtext0, speaker=req.get("speaker"),
-                                                    session_id=req.get("session_id"), vec=vec,
-                                                    memory_type=mtype)
+                tid, rtext, obs, retired = mem.remember_turn(
+                    ns, rtext0, speaker=req.get("speaker"), session_id=req.get("session_id"),
+                    vec=vec, memory_type=mtype, constraint_subject=cs)
+                if retired:
+                    # issue #84: supersession/expiry event — recorded + queryable
+                    # (`memnos_admin.py errors`-style audit_log query on action=
+                    # 'constraint.retire') the moment the retiring write itself commits,
+                    # same connection, so this can never be true without the retirement
+                    # it describes also being true.
+                    Control.audit(conn, principal, "constraint.retire", ns, True,
+                                  {"subject": cs, "superseded_by": f"turn:{tid}",
+                                   "retired": retired}, status=200)
             # conn is back in the pool. `mem` is reused ONLY for extract_facts below,
             # which never touches its store.
             if not _have_extraction():                            # local mode: no extraction
@@ -1373,13 +1414,17 @@ class Handler(BaseHTTPRequestHandler):
                 out = {"turn_id": tid, "facts": 0, "superseded": 0, "namespace": ns}
                 if suggestion:
                     out["suggestion"] = suggestion
+                if retired:
+                    out["constraints_retired"] = retired
                 return self._send(200, out)
             if run_async:
                 try:
                     _INGEST_Q.put_nowait((ns, rtext, obs, tid, principal, mem, cost0, t0, mtype,
                                           valid_anchor, 0))     # 0 = first attempt (issue #31 retry count)
-                    return self._send(200, {"turn_id": tid, "facts": None,
-                                            "extraction": "queued", "namespace": ns})
+                    out = {"turn_id": tid, "facts": None, "extraction": "queued", "namespace": ns}
+                    if retired:      # retirement already happened synchronously in P1b above
+                        out["constraints_retired"] = retired
+                    return self._send(200, out)
                 except Exception:                                  # queue full → fall through to sync
                     pass
             # date_anchor: event-time (valid_from) fallback only — see _replay_valid_anchor.
@@ -1410,6 +1455,8 @@ class Handler(BaseHTTPRequestHandler):
             out = {"turn_id": tid, "facts": nf, "superseded": nsup, "namespace": ns}
             if suggestion:
                 out["suggestion"] = suggestion
+            if retired:
+                out["constraints_retired"] = retired
             return self._send(200, out)
         except (PoolTimeout, OperationalError) as e:
             print(f"[memnos] DB unreachable ({type(e).__name__}): {e}", flush=True)
@@ -1436,6 +1483,19 @@ class Handler(BaseHTTPRequestHandler):
         usage = _UsageAcc()
         cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
         self._audit_detail = None      # per-stage timings (recall ops set this)
+        # issue #82: per-constraint injection audit rows recall ops stash here (see
+        # _phased_op) — flushed below ONLY on the 200 path. Reset every call, same as
+        # `_audit_detail` immediately above: this server runs HTTP/1.0 (no protocol_version
+        # override), so in practice each accepted connection gets its own Handler instance
+        # and this is a fresh list either way — but explicit beats implicit, and it costs
+        # nothing to not depend on that staying true if protocol_version ever changes.
+        self._pin_audit = []
+        # issue #83: per-suppression audit rows _phased_op stashes here (recall's
+        # precedence adjudication) — flushed below ONLY on the confirmed 200 path, same
+        # discipline `_audit_detail` above already follows: a request that fails
+        # downstream of the DB phase that computed this must never leave a false
+        # "constraint X was suppressed from a session that never actually returned" row.
+        self._suppress_audit = []
         try:
             principal, pname, err = self._auth_short(ns, token, write=self.path in WRITE_OPS,
                                                      action=action)
@@ -1466,6 +1526,23 @@ class Handler(BaseHTTPRequestHandler):
                 Control.audit(conn, principal, action, ns, True, self._audit_detail,
                               latency_ms=int((time.perf_counter() - t0) * 1000),
                               result_count=rcount, status=200)
+                # issue #82: flush the per-constraint injection audit rows stashed by
+                # _phased_op — ONLY reached once the recall genuinely returned 200, so
+                # this never records a constraint as "shown" for a request that failed
+                # downstream of the DB phase that fetched it (embed/rerank/render_context).
+                for pa in self._pin_audit:
+                    Control.audit(conn, principal, "constraint.inject", pa["namespace"],
+                                  True, {"constraint_id": pa["constraint_id"],
+                                         "session_id": pa["session_id"]}, status=200)
+                # issue #83: flush the precedence-suppression audit rows stashed by
+                # _phased_op — one row per constraint that lost a precedence conflict
+                # this recall detected, so a suppressed constraint is still auditable
+                # ("detected but suppressed") without ever being returned as an active
+                # pin (acceptance criterion). Reached only once the recall genuinely
+                # returned 200.
+                for sup in self._suppress_audit:
+                    Control.audit(conn, principal, "constraint.suppress", sup["namespace"],
+                                  True, sup, status=200)
             if self.path in WRITE_OPS:
                 _DELIVER_EVENT.set()
             return self._send(200, out)
@@ -1525,6 +1602,11 @@ class Handler(BaseHTTPRequestHandler):
             # issue #17: optional hard SUBJECT scope — recall returns only the named
             # entity's facts (single-namespace path only; ignored for wide recall).
             subject_scope = (str(req["subject"]).strip() if req.get("subject") else None)
+            # issue #82: optional caller-supplied session id, carried into the per-constraint
+            # injection audit event below. Not every caller has one (recorded null then) —
+            # `memnos_cli.py`'s UserPromptSubmit hook (`hook recall`) already resolves a real
+            # session_id from the Claude Code hook payload and sends it here.
+            session_id = (str(req["session_id"]).strip() if req.get("session_id") else None)
             ckw = {"max_chars": int(req["max_chars"])} if "max_chars" in req else {}
             timings = {}
             # QUERY EMBED: short-TTL cache hit skips the round-trip; a miss runs on the
@@ -1669,7 +1751,25 @@ class Handler(BaseHTTPRequestHandler):
                 pin_reasons = (wide_degraded_reasons if wide
                                else pre.setdefault("_degraded_reasons", []))
                 try:
-                    pins = mem.store.pinned_constraints(mem.schema, pin_nss, cap=pin_cap)
+                    # issue #83: override edges relevant to this call's namespace set —
+                    # resolved here (Control owns all memnos_control SQL) and handed
+                    # into pinned_constraints() as plain data, so BrainStore's precedence
+                    # adjudication never queries memnos_control directly.
+                    overrides = Control.get_constraint_overrides(conn, pin_nss)
+                    pins, suppressed = mem.store.pinned_constraints(
+                        mem.schema, pin_nss, cap=pin_cap, overrides=overrides)
+                    # defensive: _phased is the only caller today and always sets this
+                    # first, but a future direct call to _phased_op must degrade to "no
+                    # suppression audit" rather than 500 the whole recall over it.
+                    if not hasattr(self, "_suppress_audit"):
+                        self._suppress_audit = []
+                    self._suppress_audit.extend({
+                        "namespace": s["namespace"],
+                        "constraint_id": f"{s['kind']}:{s['id']}",
+                        "subject": s["subject"],
+                        "winner_namespace": s["winner_namespace"],
+                        "winner_constraint_id": f"{s['winner_kind']}:{s['winner_id']}",
+                    } for s in suppressed)
                 except RECALL_ARM_FAILURES as e:
                     pins = []
                     print(f"[memnos] pinned_constraints degraded for ns={pin_nss} "
@@ -1690,6 +1790,29 @@ class Handler(BaseHTTPRequestHandler):
                         # list is non-empty — keeps this failure self-sufficient even
                         # if that epilogue's control flow ever changes.
                         pre["_degraded"] = True
+                # PER-CONSTRAINT INJECTION AUDIT (issue #82 / epic #70 item 3): durable,
+                # queryable proof of which guardrails THIS session actually saw — one
+                # audit_log row per constraint actually injected, distinct from the
+                # general recall-level audit row (Control.audit(...,'recall',...) in
+                # _phased) and from the #28 constraint.enforce ask/block path
+                # (memnos_cli.py's PreToolUse hook covers enforce; this covers the
+                # pinned/advise path — everything `/memnos constraint` writes by default).
+                # Stashed here, NOT written yet: this DB phase runs before the embed
+                # future is joined and before rerank/render_context, any of which can
+                # still fail the request. Writing eagerly here would leave a false
+                # "constraint X was shown to session Y" row on a request that never
+                # actually returned. `_phased` (below) only flushes this list once the
+                # recall as a whole reaches its 200 response. constraint_id is
+                # "{kind}:{id}" — kind disambiguates, since fact/turn/episode ids are
+                # independent bigserial sequences and a bare id could collide across
+                # kinds. session_id is optional (not every caller supplies one) —
+                # recorded null rather than omitted, so `detail->>'session_id'` queries
+                # stay uniform whether or not this recall's caller had one.
+                self._pin_audit = [
+                    {"namespace": p["namespace"], "constraint_id": f"{p['kind']}:{p['id']}",
+                     "session_id": session_id}
+                    for p in pins
+                ]
                 mem.store = None
             timings["sql_ms"] = (time.perf_counter() - t_a) * 1000.0
             if fut is not None:
@@ -1919,8 +2042,8 @@ class Handler(BaseHTTPRequestHandler):
             with POOL.connection() as conn:                       # short DB write phase
                 mem.store = BrainStore(conn=conn)
                 for i, ch in enumerate(chunks):
-                    tid, _, _ = mem.remember_turn(ns, ch, session_id=filename,
-                                                  observed_at=observed_at)
+                    tid, _, _, _ = mem.remember_turn(ns, ch, session_id=filename,
+                                                     observed_at=observed_at)
                     if facts_per:
                         mem.write_facts(ns, facts_per[i], observed_at, tid)
                     tids.append(tid)

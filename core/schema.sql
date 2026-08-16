@@ -108,6 +108,52 @@ BEGIN
   -- (unanimous — conservative; mixed/partly-typed groups stay NULL).
   EXECUTE format('ALTER TABLE %I.episodic  ADD COLUMN IF NOT EXISTS memory_type text', s);
 
+  -- CONSTRAINT SUBJECT + RETIREMENT (issues #83/#84, epic #70 items 2 + 5): an
+  -- OPTIONAL, AUTHOR-SUPPLIED grouping key for memory_type='constraint' rows — NEVER
+  -- LLM-inferred (issue #29: extraction is fully bypassed for constraints because it
+  -- can paraphrase or misattribute a guardrail's meaning; deriving a subject/predicate
+  -- via the same extraction path would carry the identical risk, just for the
+  -- MATCHING key instead of the stored text — so constraint_subject is a value the
+  -- caller declares, same trust model as the constraint text itself). Two constraints
+  -- only ever compete for precedence (#83, cross-namespace) or supersession (#84,
+  -- same-namespace) when they share BOTH memory_type='constraint' AND a non-null,
+  -- equal constraint_subject. Untagged (NULL) constraints — every constraint written
+  -- before this change, and every one whose author doesn't tag it — never group and
+  -- are therefore never auto-suppressed or auto-retired: a conservative default that
+  -- leaves existing behavior for every untagged write exactly as it was.
+  -- Stored NORMALIZED (stripped + lowercased by MemnosMemory.remember_turn before it
+  -- ever reaches insert_raw_turn) — the same case-insensitive-identity convention this
+  -- schema already uses for subject_entity/predicate (see sem_supersede_pred's
+  -- lower(...) below), so 'Deploy-Policy' and 'deploy-policy' are the SAME group.
+  EXECUTE format('ALTER TABLE %I.raw_turns ADD COLUMN IF NOT EXISTS constraint_subject text', s);
+  EXECUTE format('ALTER TABLE %I.semantic  ADD COLUMN IF NOT EXISTS constraint_subject text', s);
+  EXECUTE format('ALTER TABLE %I.episodic  ADD COLUMN IF NOT EXISTS constraint_subject text', s);
+  -- RETIREMENT (issue #84): stamped by BrainStore.retire_constraints() when a NEWER
+  -- constraint with the same (namespace, constraint_subject) is written. NULL = live.
+  -- constraint_retired_by = "{kind}:{id}" of the successor row (kind disambiguates —
+  -- fact/turn/episode ids are independent bigserial sequences, so a bare id could
+  -- collide across kinds; same convention epic #70 item 3's per-injection audit uses).
+  -- pinned_constraints() excludes retired rows outright, so a retired constraint stops
+  -- injecting immediately, no separate expiry sweep needed.
+  --
+  -- Deliberately a SEPARATE mechanism from valid_to/expired_at just above: those drive
+  -- belief-change supersession (supersede_predicate/dominant_live_fact) keyed on
+  -- subject_entity/predicate, which constraint rows never populate (issue #29 again —
+  -- that's the extraction-derived structure the bypass exists to avoid). Routing
+  -- constraints through that pipeline would require either inferring subject_entity/
+  -- predicate for them (the #29 risk) or giving raw_turns bi-temporal columns it has
+  -- never had. This is issue #84's option B: a parallel, constraint-scoped path that
+  -- extends the #29 bypass rather than reversing it — extract_facts() still returns
+  -- [] for memory_type='constraint', the verbatim text is still stored unmodified in
+  -- raw_turns; retirement adds metadata ALONGSIDE that row, never re-reads or
+  -- rewrites its text.
+  EXECUTE format('ALTER TABLE %I.raw_turns ADD COLUMN IF NOT EXISTS constraint_retired_at timestamptz', s);
+  EXECUTE format('ALTER TABLE %I.semantic  ADD COLUMN IF NOT EXISTS constraint_retired_at timestamptz', s);
+  EXECUTE format('ALTER TABLE %I.episodic  ADD COLUMN IF NOT EXISTS constraint_retired_at timestamptz', s);
+  EXECUTE format('ALTER TABLE %I.raw_turns ADD COLUMN IF NOT EXISTS constraint_retired_by text', s);
+  EXECUTE format('ALTER TABLE %I.semantic  ADD COLUMN IF NOT EXISTS constraint_retired_by text', s);
+  EXECUTE format('ALTER TABLE %I.episodic  ADD COLUMN IF NOT EXISTS constraint_retired_by text', s);
+
   -- INFERENTIAL MEMORY (issue #24): LLM-derived conclusions from patterns across stated
   -- facts, written with kind='inferred' + memory_type='inferred' (a distinct kind, so
   -- they never get swept into the kind='fact' reversal/negation-close-out queries that
@@ -198,6 +244,19 @@ BEGIN
                  '(namespace, memory_type) WHERE memory_type IS NOT NULL', s);
   EXECUTE format('CREATE INDEX IF NOT EXISTS epi_mtype ON %I.episodic '
                  '(namespace, memory_type) WHERE memory_type IS NOT NULL', s);
+  -- CONSTRAINT SUBJECT lookup (issues #83/#84): retire_constraints() UPDATEs, and
+  -- pinned_constraints() reads, LIVE constraint rows by (namespace, constraint_subject)
+  -- — partial on the same "typed rows are a minority" + "live only" logic as the
+  -- indexes just above and sem_supersede_pred's live-rows pattern.
+  EXECUTE format('CREATE INDEX IF NOT EXISTS raw_cons_subj ON %I.raw_turns '
+                 '(namespace, constraint_subject) '
+                 'WHERE memory_type=''constraint'' AND constraint_retired_at IS NULL', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS sem_cons_subj ON %I.semantic '
+                 '(namespace, constraint_subject) '
+                 'WHERE memory_type=''constraint'' AND constraint_retired_at IS NULL', s);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS epi_cons_subj ON %I.episodic '
+                 '(namespace, constraint_subject) '
+                 'WHERE memory_type=''constraint'' AND constraint_retired_at IS NULL', s);
   -- STALE-TURN lookup (issue #10 residual B): recall checks, for the retrieved turn ids
   -- only, whether ALL semantic facts derived from a turn are superseded
   -- (semantic.source_turn_ids @> ARRAY[turn_id]). GIN makes that containment probe an
