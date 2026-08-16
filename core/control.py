@@ -45,6 +45,35 @@ CREATE TABLE IF NOT EXISTS memnos_control.grants(
     principal_id bigint NOT NULL REFERENCES memnos_control.principals(id),
     namespace text NOT NULL, can_read boolean NOT NULL DEFAULT true, can_write boolean NOT NULL DEFAULT true,
     UNIQUE(principal_id, namespace));
+-- ROLE-BASED GRANTS (issue #81, epic #70 item 4): roles/groups as grantable subjects,
+-- layered OVER the `grants` table above -- never modifies it. A principal's EFFECTIVE
+-- access is the union of its own direct grants (`grants`) and the grants of every role
+-- it's a member of (`role_grants` via `role_members`) -- see effective_namespaces()
+-- below, the single resolver authorize()/readable_namespaces()/writable_namespaces()/
+-- is_admin() all call so role support composes everywhere instead of being
+-- re-implemented per call site. Two NEW tables rather than a nullable role_id column on
+-- `grants` (which would require relaxing grants.principal_id's NOT NULL -- exactly the
+-- schema-breaking change issue #81 rules out): `grants` and every existing grant row is
+-- completely untouched.
+CREATE TABLE IF NOT EXISTS memnos_control.roles(
+    id bigserial PRIMARY KEY, name text UNIQUE NOT NULL, description text,
+    created_by bigint REFERENCES memnos_control.principals(id),
+    created_at timestamptz NOT NULL DEFAULT now());
+-- role membership: which principals hold which role. Same join-table shape as `bindings`.
+CREATE TABLE IF NOT EXISTS memnos_control.role_members(
+    role_id bigint NOT NULL REFERENCES memnos_control.roles(id),
+    principal_id bigint NOT NULL REFERENCES memnos_control.principals(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(role_id, principal_id));
+CREATE INDEX IF NOT EXISTS role_members_principal ON memnos_control.role_members(principal_id);
+-- role grants: same shape as `grants` (can_read/can_write, exact/prefix-'*'/'*' wildcard
+-- matching reused VERBATIM by authorize() via effective_namespaces()) -- just keyed by
+-- role_id instead of principal_id, so "architects can write to standards" is one row
+-- instead of one row per architect.
+CREATE TABLE IF NOT EXISTS memnos_control.role_grants(
+    role_id bigint NOT NULL REFERENCES memnos_control.roles(id),
+    namespace text NOT NULL, can_read boolean NOT NULL DEFAULT true, can_write boolean NOT NULL DEFAULT true,
+    UNIQUE(role_id, namespace));
 CREATE TABLE IF NOT EXISTS memnos_control.audit_log(
     id bigserial PRIMARY KEY, ts timestamptz NOT NULL DEFAULT now(), principal_id bigint,
     action text NOT NULL, namespace text, ok boolean NOT NULL, detail jsonb);
@@ -476,8 +505,9 @@ class Control:
         want = sorted(want)
         if len(want) < min_entities:
             return None
-        # the principal's OWN writable namespaces (can_write), excluding the write target.
-        writable = [g["namespace"] for g in Control.authorized_namespaces(conn, principal_id)
+        # the principal's writable namespaces (can_write, direct OR role-inherited --
+        # issue #81), excluding the write target.
+        writable = [g["namespace"] for g in Control.effective_namespaces(conn, principal_id)
                     if g.get("can_write")]
 
         def covered(ns):
@@ -848,26 +878,65 @@ class Control:
 
     @staticmethod
     def authorize(conn, principal_id, namespace, write=False) -> bool:
-        """A grant on the exact namespace, a parent prefix ('team:eng:*'), or '*' (admin)."""
+        """A grant on the exact namespace, a parent prefix ('team:eng:*'), or '*' (admin) --
+        from the principal's own direct grant OR any role it's a member of (issue #81,
+        resolved via effective_namespaces())."""
         col = "can_write" if write else "can_read"
-        with conn.cursor() as c:
-            c.execute(f"SELECT namespace, {col} AS ok FROM memnos_control.grants WHERE principal_id=%s",
-                      (principal_id,))
-            for g in c.fetchall():
-                gns = g["namespace"]
-                if not g["ok"]:
-                    continue
-                if gns == "*" or gns == namespace:
-                    return True
-                if gns.endswith(":*") and namespace.startswith(gns[:-1]):
-                    return True
+        for g in Control.effective_namespaces(conn, principal_id):
+            if not g[col]:
+                continue
+            gns = g["namespace"]
+            if gns == "*" or gns == namespace:
+                return True
+            if gns.endswith(":*") and namespace.startswith(gns[:-1]):
+                return True
         return False
 
     @staticmethod
     def authorized_namespaces(conn, principal_id):
+        """This principal's OWN DIRECT grants only (memnos_control.grants) -- the
+        management accessor backing the admin API's GET /admin/grants and `memnos grant
+        ls`. Deliberately does NOT blend in role-inherited grants: its paired mutator
+        revoke_grant() only deletes from `grants`, so a row here is always exactly what a
+        `grant rm` on this principal can remove. For the ENFORCEMENT-path view that
+        includes role-inherited access (what a principal can actually do), see
+        effective_namespaces()."""
         with conn.cursor() as c:
             c.execute("SELECT namespace, can_read, can_write FROM memnos_control.grants WHERE principal_id=%s",
                       (principal_id,))
+            return c.fetchall()
+
+    @staticmethod
+    def effective_namespaces(conn, principal_id):
+        """ALL namespace ACL entries visible to this principal: its own direct grants
+        (memnos_control.grants) UNIONED with the grants of every role it's a member of
+        (memnos_control.role_grants via role_members) -- issue #81. This is the
+        ENFORCEMENT-path resolver: authorize(), readable_namespaces(),
+        writable_namespaces(), and is_admin() all call this (never `grants` directly) so
+        role support composes everywhere for free instead of being re-implemented per
+        call site.
+
+        Aggregated per namespace (bool_or) so a namespace granted BOTH directly (e.g.
+        read-only) and via a role (e.g. read+write) yields ONE row with the union of
+        permissions -- a direct grant and a role grant on the same namespace compose
+        additively, never conflict.
+
+        NOT the same as authorized_namespaces() -- see that method's docstring for why
+        the management accessor stays direct-grants-only."""
+        with conn.cursor() as c:
+            c.execute("""
+                SELECT namespace, bool_or(can_read) AS can_read, bool_or(can_write) AS can_write
+                FROM (
+                    SELECT namespace, can_read, can_write
+                    FROM memnos_control.grants WHERE principal_id=%s
+                    UNION ALL
+                    SELECT rg.namespace, rg.can_read, rg.can_write
+                    FROM memnos_control.role_grants rg
+                    JOIN memnos_control.role_members rm ON rm.role_id = rg.role_id
+                    WHERE rm.principal_id = %s
+                ) x
+                GROUP BY namespace
+            """, (principal_id, principal_id))
             return c.fetchall()
 
     @staticmethod
@@ -880,8 +949,11 @@ class Control:
         NOTE: still does the DISTINCT-scan readable_namespaces() used to do before issue
         #41 fix A. Deliberately not converted to the memnos_control.namespaces registry in
         that fix — this only runs on a write-403 (cold path), not on every wide recall, so
-        it wasn't the timeout source and touching it wasn't needed to close the issue."""
-        grants = [g for g in Control.authorized_namespaces(conn, principal_id) if g["can_write"]]
+        it wasn't the timeout source and touching it wasn't needed to close the issue.
+
+        Uses effective_namespaces() (issue #81) so a role's write grant (direct or
+        wildcard) is included, not just the principal's own direct grants."""
+        grants = [g for g in Control.effective_namespaces(conn, principal_id) if g["can_write"]]
         if not grants:
             return []
         result = set()
@@ -930,8 +1002,12 @@ class Control:
 
         NOTE: writable_namespaces() just above still does the old DISTINCT-scan — it is
         deliberately NOT touched by issue #41 (out of scope for this fix; write-403
-        suggestions are a much colder path than every wide recall)."""
-        grants = [g for g in Control.authorized_namespaces(conn, principal_id) if g["can_read"]]
+        suggestions are a much colder path than every wide recall).
+
+        Uses effective_namespaces() (issue #81) so a role's read grant (direct or
+        wildcard) is included in the wide-recall fan-out, not just the principal's own
+        direct grants."""
+        grants = [g for g in Control.effective_namespaces(conn, principal_id) if g["can_read"]]
         if not grants:
             return []
         result = set()
@@ -958,12 +1034,23 @@ class Control:
 
     @staticmethod
     def is_admin(conn, principal_id) -> bool:
-        """Admin = holds the '*' grant. Gates the management console endpoints."""
+        """Admin = holds the '*' grant, directly OR via a role membership (issue #81) --
+        kept consistent with authorize(), which already resolves role grants. Gates the
+        management console endpoints. Role management is direct-DB access (same trust
+        boundary as `memnos grant add <p> '*'`), so this adds no new privilege-escalation
+        path."""
         if principal_id is None:
             return False
         with conn.cursor() as c:
-            c.execute("SELECT 1 FROM memnos_control.grants WHERE principal_id=%s AND namespace='*' "
-                      "AND can_read LIMIT 1", (principal_id,))
+            c.execute("""
+                SELECT 1 FROM memnos_control.grants
+                WHERE principal_id=%s AND namespace='*' AND can_read
+                UNION ALL
+                SELECT 1 FROM memnos_control.role_grants rg
+                JOIN memnos_control.role_members rm ON rm.role_id = rg.role_id
+                WHERE rm.principal_id=%s AND rg.namespace='*' AND rg.can_read
+                LIMIT 1
+            """, (principal_id, principal_id))
             return c.fetchone() is not None
 
     # --- namespace registry (explicit, user-created) ----------------------
@@ -1196,6 +1283,123 @@ class Control:
         with conn.cursor() as c:
             c.execute("DELETE FROM memnos_control.grants WHERE principal_id=%s AND namespace=%s",
                       (principal_id, namespace))
+
+    # --- roles (issue #81) --------------------------------------------------
+    @staticmethod
+    def create_role(conn, name, description=None, created_by=None) -> int:
+        """Register a role (idempotent on name — a repeat create just updates the
+        description, same UPSERT shape as create_principal())."""
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.roles(name,description,created_by) "
+                      "VALUES(%s,%s,%s) ON CONFLICT (name) DO UPDATE "
+                      "SET description=COALESCE(EXCLUDED.description, memnos_control.roles.description) "
+                      "RETURNING id", (name, description, created_by))
+            return c.fetchone()["id"]
+
+    @staticmethod
+    def list_roles(conn):
+        """All roles with member/grant counts, for `memnos role ls`."""
+        with conn.cursor() as c:
+            c.execute("""
+                SELECT r.id, r.name, r.description, r.created_at, p.name AS created_by,
+                  count(DISTINCT rm.principal_id) AS member_count,
+                  count(DISTINCT rg.namespace) AS grant_count
+                FROM memnos_control.roles r
+                LEFT JOIN memnos_control.principals p ON p.id = r.created_by
+                LEFT JOIN memnos_control.role_members rm ON rm.role_id = r.id
+                LEFT JOIN memnos_control.role_grants rg ON rg.role_id = r.id
+                GROUP BY r.id, p.name
+                ORDER BY r.name""")
+            return c.fetchall()
+
+    @staticmethod
+    def role_id(conn, name):
+        """Role name -> id, or None if no such role."""
+        with conn.cursor() as c:
+            c.execute("SELECT id FROM memnos_control.roles WHERE name=%s", (name,))
+            r = c.fetchone()
+            return r["id"] if r else None
+
+    @staticmethod
+    def delete_role(conn, name) -> bool:
+        """Delete a role and its grants + memberships. Explicit child-row deletes (no
+        ON DELETE CASCADE — this codebase has no precedent for it; delete_namespace()
+        follows the same explicit-multi-statement pattern) in dependency order:
+        role_grants/role_members (reference roles.id) before roles itself."""
+        rid = Control.role_id(conn, name)
+        if rid is None:
+            return False
+        with conn.cursor() as c:
+            c.execute("DELETE FROM memnos_control.role_grants WHERE role_id=%s", (rid,))
+            c.execute("DELETE FROM memnos_control.role_members WHERE role_id=%s", (rid,))
+            c.execute("DELETE FROM memnos_control.roles WHERE id=%s", (rid,))
+        return True
+
+    @staticmethod
+    def grant_role(conn, role_name, namespace, can_read=True, can_write=True):
+        """Grant a role access to a namespace — the exact/prefix('team:*')/'*' wildcard
+        matching authorize() already applies to per-principal grants applies identically
+        here once resolved through effective_namespaces() (issue #81)."""
+        rid = Control.role_id(conn, role_name)
+        if rid is None:
+            raise ValueError(f"no role '{role_name}'")
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.role_grants(role_id,namespace,can_read,can_write) "
+                      "VALUES(%s,%s,%s,%s) ON CONFLICT (role_id,namespace) "
+                      "DO UPDATE SET can_read=EXCLUDED.can_read, can_write=EXCLUDED.can_write",
+                      (rid, namespace, can_read, can_write))
+
+    @staticmethod
+    def revoke_role_grant(conn, role_name, namespace):
+        rid = Control.role_id(conn, role_name)
+        if rid is None:
+            return
+        with conn.cursor() as c:
+            c.execute("DELETE FROM memnos_control.role_grants WHERE role_id=%s AND namespace=%s",
+                      (rid, namespace))
+
+    @staticmethod
+    def list_role_grants(conn, role_name):
+        rid = Control.role_id(conn, role_name)
+        if rid is None:
+            return []
+        with conn.cursor() as c:
+            c.execute("SELECT namespace, can_read, can_write FROM memnos_control.role_grants "
+                      "WHERE role_id=%s ORDER BY namespace", (rid,))
+            return c.fetchall()
+
+    @staticmethod
+    def add_role_member(conn, role_name, principal_id):
+        rid = Control.role_id(conn, role_name)
+        if rid is None:
+            raise ValueError(f"no role '{role_name}'")
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.role_members(role_id,principal_id) "
+                      "VALUES(%s,%s) ON CONFLICT (role_id,principal_id) DO NOTHING",
+                      (rid, principal_id))
+
+    @staticmethod
+    def remove_role_member(conn, role_name, principal_id) -> bool:
+        """Remove one principal's membership only — other members of the same role are
+        untouched (issue #81: revoking one member's access must not affect the rest)."""
+        rid = Control.role_id(conn, role_name)
+        if rid is None:
+            return False
+        with conn.cursor() as c:
+            c.execute("DELETE FROM memnos_control.role_members WHERE role_id=%s AND principal_id=%s",
+                      (rid, principal_id))
+            return c.rowcount > 0
+
+    @staticmethod
+    def list_role_members(conn, role_name):
+        rid = Control.role_id(conn, role_name)
+        if rid is None:
+            return []
+        with conn.cursor() as c:
+            c.execute("SELECT p.id, p.name, p.kind FROM memnos_control.role_members rm "
+                      "JOIN memnos_control.principals p ON p.id = rm.principal_id "
+                      "WHERE rm.role_id=%s ORDER BY p.name", (rid,))
+            return c.fetchall()
 
     @staticmethod
     def memory_feed(conn, limit=50, offset=0, namespace=None, memory_type=None):
