@@ -699,6 +699,7 @@ correlation IDs in all log entries.
             <div class="bg-purple-900/20 border border-purple-500/20 rounded-xl p-4">
               <p class="text-purple-300 text-sm font-medium mb-1">How memnos fixes it</p>
               <p class="text-gray-400 text-sm leading-relaxed">All agents share the same memnos namespace. When Agent A writes a decision, Agent B sees it in the next memory injection — within seconds. Agents can also subscribe to a namespace and pick up new memories by webhook push or cursor polling. One source of truth, all agents synchronized.</p>
+              <p class="text-gray-500 text-xs leading-relaxed mt-3">Want that coordination automated rather than wired by hand? <a href="https://github.com/thameema/memnos/blob/master/docs/guides/tommy.md" class="text-purple-400 hover:text-purple-300 underline underline-offset-2">Tommy</a> is a memnos-native coding orchestrator that dispatches to your CLI of choice and instructs it to acquire a memnos lease before starting work, so two sessions don&rsquo;t duplicate the same ticket.</p>
             </div>
           </div>
         </div>
