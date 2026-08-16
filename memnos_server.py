@@ -168,6 +168,32 @@ def _memory_type(req):
     return True, t
 
 
+CONSTRAINT_SUBJECT_MAX = 200
+
+
+def _constraint_subject(req):
+    """Parse + validate the optional `constraint_subject` field (issues #83/#84): an
+    author-supplied (NEVER LLM-inferred — see #29 and core/schema.sql) grouping key
+    used only for memory_type='constraint' writes. Returns (True, None) when absent,
+    (True, value) when valid, (False, {error}) when malformed.
+
+    Normalized (lowercased) HERE, at the FIRST point this value is bound server-side —
+    so every downstream use in this request (the remember_turn() call, and the
+    constraint.retire audit detail below) sees the SAME canonical value.
+    MemnosMemory.remember_turn() normalizes again independently (defense in depth for
+    non-HTTP callers — direct service-layer use has no validator to pass through) —
+    lowercasing an already-lowercased string is a no-op, so doing it twice is harmless."""
+    v = req.get("constraint_subject")
+    if v is None or (isinstance(v, str) and v.strip() == ""):
+        return True, None
+    if not isinstance(v, str):
+        return False, {"error": "constraint_subject must be a string"}
+    v = v.strip().lower()
+    if len(v) > CONSTRAINT_SUBJECT_MAX:
+        return False, {"error": f"constraint_subject too long (max {CONSTRAINT_SUBJECT_MAX} chars)"}
+    return True, v
+
+
 def _chunk_text(text, size=1200, overlap=150):
     """Paragraph-aware chunking: pack paragraphs up to ~size chars; hard-split any
     paragraph longer than size (with overlap). Keeps semantically-coherent chunks."""
@@ -1295,6 +1321,9 @@ class Handler(BaseHTTPRequestHandler):
         ok, mtype = _memory_type(req)              # typed memory (decision|incident|...)
         if not ok:
             return self._send(400, mtype)
+        ok, cs = _constraint_subject(req)           # issues #83/#84: optional grouping key
+        if not ok:
+            return self._send(400, cs)
         # SECURITY (issue #42): the OBSERVATION-axis timestamp that drives bi-temporal
         # supersession (`obs`, stamped a few lines below from remember_turn()'s own
         # datetime.now(timezone.utc)) is ALWAYS the server's own clock at the moment
@@ -1329,9 +1358,18 @@ class Handler(BaseHTTPRequestHandler):
                 mem = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
                                    extract_model=EXTRACT_MODEL, on_usage=usage, author=pname,
                                    extract_fn=EXTRACT_FN)
-                tid, rtext, obs = mem.remember_turn(ns, rtext0, speaker=req.get("speaker"),
-                                                    session_id=req.get("session_id"), vec=vec,
-                                                    memory_type=mtype)
+                tid, rtext, obs, retired = mem.remember_turn(
+                    ns, rtext0, speaker=req.get("speaker"), session_id=req.get("session_id"),
+                    vec=vec, memory_type=mtype, constraint_subject=cs)
+                if retired:
+                    # issue #84: supersession/expiry event — recorded + queryable
+                    # (`memnos_admin.py errors`-style audit_log query on action=
+                    # 'constraint.retire') the moment the retiring write itself commits,
+                    # same connection, so this can never be true without the retirement
+                    # it describes also being true.
+                    Control.audit(conn, principal, "constraint.retire", ns, True,
+                                  {"subject": cs, "superseded_by": f"turn:{tid}",
+                                   "retired": retired}, status=200)
             # conn is back in the pool. `mem` is reused ONLY for extract_facts below,
             # which never touches its store.
             if not _have_extraction():                            # local mode: no extraction
@@ -1347,13 +1385,17 @@ class Handler(BaseHTTPRequestHandler):
                 out = {"turn_id": tid, "facts": 0, "superseded": 0, "namespace": ns}
                 if suggestion:
                     out["suggestion"] = suggestion
+                if retired:
+                    out["constraints_retired"] = retired
                 return self._send(200, out)
             if run_async:
                 try:
                     _INGEST_Q.put_nowait((ns, rtext, obs, tid, principal, mem, cost0, t0, mtype,
                                           valid_anchor, 0))     # 0 = first attempt (issue #31 retry count)
-                    return self._send(200, {"turn_id": tid, "facts": None,
-                                            "extraction": "queued", "namespace": ns})
+                    out = {"turn_id": tid, "facts": None, "extraction": "queued", "namespace": ns}
+                    if retired:      # retirement already happened synchronously in P1b above
+                        out["constraints_retired"] = retired
+                    return self._send(200, out)
                 except Exception:                                  # queue full → fall through to sync
                     pass
             # date_anchor: event-time (valid_from) fallback only — see _replay_valid_anchor.
@@ -1384,6 +1426,8 @@ class Handler(BaseHTTPRequestHandler):
             out = {"turn_id": tid, "facts": nf, "superseded": nsup, "namespace": ns}
             if suggestion:
                 out["suggestion"] = suggestion
+            if retired:
+                out["constraints_retired"] = retired
             return self._send(200, out)
         except (PoolTimeout, OperationalError) as e:
             print(f"[memnos] DB unreachable ({type(e).__name__}): {e}", flush=True)
@@ -1410,6 +1454,12 @@ class Handler(BaseHTTPRequestHandler):
         usage = _UsageAcc()
         cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
         self._audit_detail = None      # per-stage timings (recall ops set this)
+        # issue #83: per-suppression audit rows _phased_op stashes here (recall's
+        # precedence adjudication) — flushed below ONLY on the confirmed 200 path, same
+        # discipline `_audit_detail` above already follows: a request that fails
+        # downstream of the DB phase that computed this must never leave a false
+        # "constraint X was suppressed from a session that never actually returned" row.
+        self._suppress_audit = []
         try:
             principal, pname, err = self._auth_short(ns, token, write=self.path in WRITE_OPS,
                                                      action=action)
@@ -1440,6 +1490,15 @@ class Handler(BaseHTTPRequestHandler):
                 Control.audit(conn, principal, action, ns, True, self._audit_detail,
                               latency_ms=int((time.perf_counter() - t0) * 1000),
                               result_count=rcount, status=200)
+                # issue #83: flush the precedence-suppression audit rows stashed by
+                # _phased_op — one row per constraint that lost a precedence conflict
+                # this recall detected, so a suppressed constraint is still auditable
+                # ("detected but suppressed") without ever being returned as an active
+                # pin (acceptance criterion). Reached only once the recall genuinely
+                # returned 200.
+                for sup in self._suppress_audit:
+                    Control.audit(conn, principal, "constraint.suppress", sup["namespace"],
+                                  True, sup, status=200)
             if self.path in WRITE_OPS:
                 _DELIVER_EVENT.set()
             return self._send(200, out)
@@ -1598,7 +1657,25 @@ class Handler(BaseHTTPRequestHandler):
                 pin_reasons = (wide_degraded_reasons if wide
                                else pre.setdefault("_degraded_reasons", []))
                 try:
-                    pins = mem.store.pinned_constraints(mem.schema, pin_nss, cap=pin_cap)
+                    # issue #83: override edges relevant to this call's namespace set —
+                    # resolved here (Control owns all memnos_control SQL) and handed
+                    # into pinned_constraints() as plain data, so BrainStore's precedence
+                    # adjudication never queries memnos_control directly.
+                    overrides = Control.get_constraint_overrides(conn, pin_nss)
+                    pins, suppressed = mem.store.pinned_constraints(
+                        mem.schema, pin_nss, cap=pin_cap, overrides=overrides)
+                    # defensive: _phased is the only caller today and always sets this
+                    # first, but a future direct call to _phased_op must degrade to "no
+                    # suppression audit" rather than 500 the whole recall over it.
+                    if not hasattr(self, "_suppress_audit"):
+                        self._suppress_audit = []
+                    self._suppress_audit.extend({
+                        "namespace": s["namespace"],
+                        "constraint_id": f"{s['kind']}:{s['id']}",
+                        "subject": s["subject"],
+                        "winner_namespace": s["winner_namespace"],
+                        "winner_constraint_id": f"{s['winner_kind']}:{s['winner_id']}",
+                    } for s in suppressed)
                 except RECALL_ARM_FAILURES as e:
                     pins = []
                     print(f"[memnos] pinned_constraints degraded for ns={pin_nss} "
@@ -1843,8 +1920,8 @@ class Handler(BaseHTTPRequestHandler):
             with POOL.connection() as conn:                       # short DB write phase
                 mem.store = BrainStore(conn=conn)
                 for i, ch in enumerate(chunks):
-                    tid, _, _ = mem.remember_turn(ns, ch, session_id=filename,
-                                                  observed_at=observed_at)
+                    tid, _, _, _ = mem.remember_turn(ns, ch, session_id=filename,
+                                                     observed_at=observed_at)
                     if facts_per:
                         mem.write_facts(ns, facts_per[i], observed_at, tid)
                     tids.append(tid)

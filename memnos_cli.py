@@ -1532,8 +1532,16 @@ def cmd_constraint_add(args, cfg):
                  "matched to a tool call deterministically without an LLM, and enforcement "
                  "is LLM-free by design. (Use --enforce advise for a pinned-only constraint.)")
     tok = args.token or os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token")
-    _post(cfg, "/remember", {"namespace": args.namespace, "text": args.rule, "type": "constraint"}, tok)
+    body = {"namespace": args.namespace, "text": args.rule, "type": "constraint"}
+    if args.subject:
+        body["constraint_subject"] = args.subject
+    resp = _post(cfg, "/remember", body, tok)
     print(f"→ constraint pinned in {args.namespace}")
+    if args.subject:
+        retired = (resp or {}).get("constraints_retired") or []
+        if retired:
+            ids = ", ".join(f"{r['kind']}:{r['id']}" for r in retired)
+            print(f"  superseded (subject={args.subject!r}): {ids}")
     if args.enforce != "advise":
         conn = _conn(cfg)
         Control.init(conn)
@@ -1588,6 +1596,47 @@ def cmd_constraint_rm(args, cfg):
     Control.init(conn)
     ok = Control.remove_constraint_enforcement(conn, args.id)
     print(f"constraint {args.id} deactivated" if ok else f"no active constraint with id {args.id}")
+
+
+def cmd_constraint_override_add(args, cfg):
+    """issue #83: declare CHILD wins a precedence conflict against its ':'-prefix
+    ancestor PARENT instead of the default (parent wins). Direct-DB, admin-only path —
+    same pattern as constraint ls/rm (issue #28) for the enforcement table."""
+    from core.control import Control
+    conn = _conn(cfg)
+    Control.init(conn)
+    created_by = None
+    try:
+        created_by = _principal_id(conn, "admin")
+    except SystemExit:
+        pass
+    try:
+        oid = Control.add_constraint_override(conn, args.child_namespace, args.parent_namespace,
+                                              created_by=created_by)
+    except ValueError as e:
+        sys.exit(str(e))
+    print(f"→ override id={oid}: '{args.child_namespace}' now wins vs. ancestor "
+          f"'{args.parent_namespace}' for any shared --subject constraint")
+
+
+def cmd_constraint_override_ls(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    Control.init(conn)
+    rows = Control.list_constraint_overrides(conn, namespace=args.namespace)
+    if not rows:
+        print("no override edges" + (f" touching '{args.namespace}'" if args.namespace else ""))
+        return
+    for r in rows:
+        print(f"  {r['id']:<5} {r['child_namespace']:<24} wins over  {r['parent_namespace']}")
+
+
+def cmd_constraint_override_rm(args, cfg):
+    from core.control import Control
+    conn = _conn(cfg)
+    Control.init(conn)
+    ok = Control.remove_constraint_override(conn, args.id)
+    print(f"override {args.id} removed" if ok else f"no override with id {args.id}")
 
 
 def cmd_namespace(args, cfg):
@@ -3871,6 +3920,10 @@ def build_parser():
                         "ask/block: ALSO enforced by the PreToolUse hook (requires --tool)")
     v.add_argument("--tool", help="glob matched against the pending tool name — required for --enforce ask|block")
     v.add_argument("--token", help="bearer token for the pinned-memory write (else $MEMNOS_TOKEN / config)")
+    v.add_argument("--subject", help="issues #83/#84: optional grouping key. A newer constraint with the "
+                        "SAME --subject in the SAME namespace automatically retires the older one "
+                        "(supersession); across namespaces sharing --subject, the ':'-prefix ANCESTOR "
+                        "namespace wins by default (precedence) — see `constraint override`")
     v.set_defaults(fn=cmd_constraint_add)
     v = ps.add_parser("ls", help="list enforced (ask/block) constraints")
     v.add_argument("namespace", nargs="?", help="namespace (omit to list across all)")
@@ -3878,6 +3931,20 @@ def build_parser():
     v = ps.add_parser("rm", help="deactivate an enforced constraint by id (see: constraint ls)")
     v.add_argument("id", type=int)
     v.set_defaults(fn=cmd_constraint_rm)
+    vo = ps.add_parser("override", help="issue #83: manage precedence override edges (child wins vs. an ancestor)")
+    vo.set_defaults(fn=lambda a, c, _p=vo: _p.print_help())
+    vos = vo.add_subparsers(dest="override_verb", metavar="<verb>")
+    vv = vos.add_parser("add", help="declare CHILD wins precedence over its ':'-prefix ancestor PARENT "
+                            "for same --subject constraints (default is parent wins)")
+    vv.add_argument("child_namespace")
+    vv.add_argument("parent_namespace")
+    vv.set_defaults(fn=cmd_constraint_override_add)
+    vv = vos.add_parser("ls", help="list precedence override edges")
+    vv.add_argument("namespace", nargs="?", help="filter to edges touching this namespace")
+    vv.set_defaults(fn=cmd_constraint_override_ls)
+    vv = vos.add_parser("rm", help="remove an override edge by id (see: constraint override ls)")
+    vv.add_argument("id", type=int)
+    vv.set_defaults(fn=cmd_constraint_override_rm)
 
     # ---- namespaces & secrets (already noun-verb via the action positional) ----
     p = sub.add_parser("namespace", help="manage namespaces: add | ls | rm | prune | set | link | unlink | links | copy | move | reconcile")

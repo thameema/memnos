@@ -526,6 +526,7 @@ add a constraint; --enforce ask|block also registers a PreToolUse enforcement ru
 | `--enforce` | advise (default): pinned into recall only, like /memnos constraint. ask/block: ALSO enforced by the PreToolUse hook (requires --tool) (one of: `advise`, `ask`, `block`; default `advise`) |
 | `--tool` | glob matched against the pending tool name — required for --enforce ask|block |
 | `--token` | bearer token for the pinned-memory write (else $MEMNOS_TOKEN / config) |
+| `--subject` | issues #83/#84: optional grouping key. A newer constraint with the SAME --subject in the SAME namespace automatically retires the older one (supersession); across namespaces sharing --subject, the ':'-prefix ANCESTOR namespace wins by default (precedence) — see `constraint override` |
 
 ### `memnos constraint ls`
 
@@ -534,6 +535,31 @@ list enforced (ask/block) constraints
 | argument | description |
 |---|---|
 | `namespace` | namespace (omit to list across all) (optional) |
+
+### `memnos constraint override add`
+
+declare CHILD wins precedence over its ':'-prefix ancestor PARENT for same --subject constraints (default is parent wins)
+
+| argument | description |
+|---|---|
+| `child_namespace` |  |
+| `parent_namespace` |  |
+
+### `memnos constraint override ls`
+
+list precedence override edges
+
+| argument | description |
+|---|---|
+| `namespace` | filter to edges touching this namespace (optional) |
+
+### `memnos constraint override rm`
+
+remove an override edge by id (see: constraint override ls)
+
+| argument | description |
+|---|---|
+| `id` |  |
 
 ### `memnos constraint rm`
 

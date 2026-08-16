@@ -614,14 +614,15 @@ class BrainStore:
 
     # --- sensory / verbatim ----------------------------------------------
     def insert_raw_turn(self, schema, ns, session_id, speaker, text, observed_at, vec,
-                        author=None, memory_type=None) -> int:
+                        author=None, memory_type=None, constraint_subject=None) -> int:
         self._chk(schema)
         with self.conn.cursor() as c:
             c.execute(
-                f"INSERT INTO {schema}.raw_turns(namespace,session_id,speaker,text,observed_at,embedding,author_principal,memory_type) "
-                f"VALUES(%s,%s,%s,%s,%s,%s::{self.vtype},%s,%s) RETURNING id",
+                f"INSERT INTO {schema}.raw_turns(namespace,session_id,speaker,text,observed_at,embedding,author_principal,memory_type,constraint_subject) "
+                f"VALUES(%s,%s,%s,%s,%s,%s::{self.vtype},%s,%s,%s) RETURNING id",
                 (ns, session_id, speaker, text, observed_at,
-                 vlit(vec) if vec is not None else None, author, memory_type))
+                 vlit(vec) if vec is not None else None, author, memory_type,
+                 constraint_subject))
             tid = c.fetchone()["id"]
             # issue #41 fix A: the single choke point every new namespace's first write
             # passes through (remember/remember_turn/ingest_session all land here) — upsert
@@ -1541,7 +1542,7 @@ class BrainStore:
                       (semantic_id, ns))
             return c.fetchone()
 
-    def pinned_constraints(self, schema, namespaces, *, cap=10) -> list[dict]:
+    def pinned_constraints(self, schema, namespaces, *, cap=10, overrides=None) -> tuple:
         """PINNED CONSTRAINT INJECTION (0.1.6): every LIVE memory typed 'constraint' in the
         given namespaces — regardless of query similarity. Covers ALL THREE stores:
         semantic facts (extraction inheritance / direct fact writes), raw turns (local
@@ -1549,40 +1550,210 @@ class BrainStore:
         episodic events (an episode inherits 'constraint' only when its source turns are
         UNANIMOUSLY that type — so the episode body is constraint material). Oldest-first
         (constraints are durable ground rules — earliest laid down come first), deduped on
-        content, capped. Pure SQL, no embedding involved."""
+        content. Pure SQL, no embedding involved.
+
+        Each row carries `id` (the source table's own bigserial PK — semantic.id /
+        raw_turns.id / episodic.id, each an INDEPENDENT sequence, so a caller builds an
+        unambiguous per-constraint identifier as f"{kind}:{id}") and `constraint_subject`
+        (issues #83/#84 — see core/schema.sql for why this is author-supplied, never
+        LLM-derived). RETIRED rows (`constraint_retired_at IS NOT NULL` — see
+        retire_constraints()) are excluded outright: retirement is a WRITE-time event,
+        already durable and already auditable by its own caller, so a retired row must
+        never separately re-enter here to be evaluated by precedence below — that would
+        double-count one supersession as two events (issue #84 acceptance criterion).
+
+        Returns (pins, suppressed): `pins` is the deterministic set to actually inject —
+        resolve_constraint_precedence() runs on the retirement-filtered, deduped
+        candidates BEFORE the `cap` truncation below, so a precedence LOSER never
+        consumes a cap slot a legitimate winner needed. `suppressed` is the precedence
+        losers only, each carrying enough identity for the caller to audit a "detected
+        but suppressed" event (issue #83 acceptance criterion — a loser is audited, not
+        silently dropped) without ever being returned as an active pin.
+
+        `overrides` — optional {(child_namespace, parent_namespace), ...} set (see
+        Control.get_constraint_overrides) — explicit precedence-reversal edges; omit/None
+        for no overrides (every ancestor pair falls back to parent-wins)."""
         self._chk(schema)
         nss = [ns for ns in namespaces if ns]
         if not nss or cap <= 0:
-            return []
+            return [], []
+        # headroom for BOTH the content-dedupe below AND precedence suppression, which
+        # can now remove MORE rows post-dedupe than dedupe alone ever did — capping the
+        # fetch too tight here would silently undershoot the caller's requested `cap`
+        # even when enough live, winning constraints exist just past the old cap*3 window.
+        fetch_lim = max(cap * 3, 50)
         with self.conn.cursor() as c:
             c.execute(
-                f"SELECT content, kind, ts, author, namespace FROM ("
-                f"  SELECT statement AS content, 'fact'::text AS kind,"
+                f"SELECT id, content, kind, ts, author, namespace, constraint_subject FROM ("
+                f"  SELECT id, statement AS content, 'fact'::text AS kind,"
                 f"         COALESCE(valid_from, created_at) AS ts,"
-                f"         author_principal AS author, namespace"
+                f"         author_principal AS author, namespace, constraint_subject"
                 f"  FROM {schema}.semantic WHERE namespace = ANY(%(nss)s)"
                 f"    AND memory_type='constraint' AND valid_to IS NULL AND expired_at IS NULL"
+                f"    AND constraint_retired_at IS NULL"
                 f"    AND (source_turn_ids IS NULL OR cardinality(source_turn_ids) = 0)"
                 f"  UNION ALL"
-                f"  SELECT text AS content, 'turn'::text AS kind, observed_at AS ts,"
-                f"         author_principal AS author, namespace"
+                f"  SELECT id, text AS content, 'turn'::text AS kind, observed_at AS ts,"
+                f"         author_principal AS author, namespace, constraint_subject"
                 f"  FROM {schema}.raw_turns WHERE namespace = ANY(%(nss)s) AND memory_type='constraint'"
+                f"    AND constraint_retired_at IS NULL"
                 f"  UNION ALL"
-                f"  SELECT text AS content, 'episode'::text AS kind,"
+                f"  SELECT id, text AS content, 'episode'::text AS kind,"
                 f"         COALESCE(t_start, observed_at) AS ts,"
-                f"         author_principal AS author, namespace"
+                f"         author_principal AS author, namespace, constraint_subject"
                 f"  FROM {schema}.episodic WHERE namespace = ANY(%(nss)s) AND memory_type='constraint'"
+                f"    AND constraint_retired_at IS NULL"
                 f") u ORDER BY ts, content LIMIT %(lim)s",
-                {"nss": nss, "lim": cap * 3})        # over-fetch: dedupe may drop rows
-            # dedupe on content (a turn + its identical extracted fact), keep oldest, cap
+                {"nss": nss, "lim": fetch_lim})
+            # dedupe on content (a turn + its identical extracted fact), keep oldest
             rows, seen = [], set()
             for r in c.fetchall():
                 if r["content"] in seen:
                     continue
                 seen.add(r["content"]); rows.append(r)
-                if len(rows) >= cap:
-                    break
-        return rows
+        winners, suppressed = self.resolve_constraint_precedence(rows, overrides)
+        winners.sort(key=lambda r: (r["ts"], r["content"]))   # restore ts,content order
+        return winners[:cap], suppressed
+
+    @staticmethod
+    def _is_ancestor_ns(parent: str, child: str) -> bool:
+        """True if `parent` is a ':'-prefix ancestor of `child` in the SAME root tree
+        (epic #70 Mechanism A — 'org:acme' is an ancestor of 'org:acme:widgets'). Pure
+        string comparison; no stored hierarchy needed — epic #70 explicitly notes none
+        exists yet ("`:`-segmented names are string convention with no stored
+        parent/child"), and building one is epic item #1, out of scope here. This
+        function does not WALK a namespace tree (that would be item #1's live
+        inheritance) — it only ADJUDICATES an ordering between two namespaces that a
+        caller already put in the same recall (see pinned_constraints' `namespaces`
+        param, which today reaches multiple namespaces only via grounded-recall
+        `namespace_links` or `scope=wide`)."""
+        return bool(parent) and bool(child) and child != parent and child.startswith(parent + ":")
+
+    @staticmethod
+    def resolve_constraint_precedence(rows: list, overrides=None) -> tuple:
+        """issue #83 — deterministic winner selection for PINNED CONSTRAINTS that
+        genuinely conflict: same `constraint_subject` (optional, author-supplied — see
+        core/schema.sql; never LLM-inferred, so this never risks the #29 misattribution
+        failure mode), live in two or more DIFFERENT namespaces that are ALL part of the
+        same `rows` batch — i.e. this function adjudicates rows that already co-inject
+        together; it does not fetch or walk a namespace tree (epic #70 item 1 is a
+        separate, out-of-scope, future change to WHICH namespaces co-inject).
+
+        Rule: within a subject group, if namespace A is a ':'-prefix ANCESTOR of
+        namespace B, A's constraint wins by default — UNLESS an explicit `overrides`
+        edge (B, A) declares B the winner instead (epic #70 Mechanism B: deliberate,
+        admin-created via `constraint override add`, never inferred). Sibling/unrelated
+        namespaces in the same group (no ancestor relation either way) are left alone —
+        no default rule applies to them, both stay live (still visible via
+        knowledge_health()/contradictions(), which this function does not touch,
+        replace, or route through — see issue #83 acceptance criterion 5, a
+        non-regression requirement, not a mandate to reuse that SPO mechanism here).
+
+        Untagged rows (constraint_subject falsy) and rows whose subject-group spans only
+        ONE namespace never enter adjudication — returned as winners unconditionally.
+        This is the conservative default core/schema.sql's comment promises: every
+        constraint written before this feature, or by an author who never tags one, is
+        exactly as visible as it always was.
+
+        CYCLE SAFETY: with 3+ ancestor levels sharing one subject and only a PARTIAL
+        override (e.g. only the root/leaf pair reversed, not the middle one), pairwise
+        ancestor comparison can produce a cycle (A beats B, B beats C, C beats A). This
+        function fails OPEN in that case — every row in the affected subject group is
+        returned as a winner, unresolved — rather than silently suppressing every
+        guardrail on a subject because of an admin misconfiguration, or picking an
+        arbitrary "winner" out of a genuinely inconsistent edge set.
+
+        Returns (winners, losers) — losers carry {subject, namespace, id, kind,
+        winner_namespace, winner_id, winner_kind} for the caller to audit. This function
+        does no I/O and writes no audit itself — see memnos_server.py's `/recall`
+        handling for where suppression gets logged, only once the request confirms 200."""
+        overrides = overrides or set()
+        by_subject: dict = {}
+        winners = []
+        for r in rows:
+            subj = r.get("constraint_subject")
+            if not subj:
+                winners.append(r)
+                continue
+            by_subject.setdefault(subj, []).append(r)
+
+        losers = []
+        for subj, group in by_subject.items():
+            ns_rows: dict = {}
+            for r in group:
+                ns_rows.setdefault(r["namespace"], []).append(r)
+            if len(ns_rows) <= 1:
+                winners.extend(group)
+                continue
+            beaten_by = {}   # loser_ns -> the (representative) row that beats it
+            namespaces = list(ns_rows.keys())
+            for i, a in enumerate(namespaces):
+                for b in namespaces[i + 1:]:
+                    if BrainStore._is_ancestor_ns(a, b):
+                        parent, child = a, b
+                    elif BrainStore._is_ancestor_ns(b, a):
+                        parent, child = b, a
+                    else:
+                        continue                          # siblings/unrelated — no verdict
+                    winner_ns, loser_ns = parent, child
+                    if (child, parent) in overrides:       # explicit child-wins edge
+                        winner_ns, loser_ns = child, parent
+                    beater = ns_rows[winner_ns][0]
+                    prev = beaten_by.get(loser_ns)
+                    # deterministic tie-break when a namespace is beaten more than once:
+                    # the more specific (longer, then lexicographically later) beater
+                    # wins the citation, so re-running never flips the audited reason.
+                    if prev is None or (len(beater["namespace"]), beater["namespace"]) > \
+                                       (len(prev["namespace"]), prev["namespace"]):
+                        beaten_by[loser_ns] = beater
+            if len(beaten_by) >= len(ns_rows):
+                # every namespace in the group has a beater — a cycle. Fail open (see
+                # docstring): let the whole group through unresolved.
+                winners.extend(group)
+                continue
+            for ns, rlist in ns_rows.items():
+                beater = beaten_by.get(ns)
+                if beater is None:
+                    winners.extend(rlist)
+                else:
+                    for row in rlist:
+                        losers.append({"subject": subj, "namespace": ns, "id": row["id"],
+                                       "kind": row["kind"], "winner_namespace": beater["namespace"],
+                                       "winner_id": beater["id"], "winner_kind": beater["kind"]})
+        return winners, losers
+
+    def retire_constraints(self, schema, ns, subject, *, keep_kind, keep_id) -> list:
+        """issue #84 — CONSTRAINT SUPERSESSION: mark every OTHER still-live constraint
+        row (any kind: fact/turn/episode) in this namespace sharing `subject` as
+        retired, superseded by (keep_kind, keep_id). This is option B from the epic —
+        a parallel path scoped to constraint rows, NOT a reroute through
+        supersede_predicate/dominant_live_fact (those are keyed on
+        subject_entity/predicate, which constraint rows never populate — see
+        core/schema.sql). Called from MemnosMemory.remember_turn() right after the new
+        constraint's raw_turn is inserted; the caller is responsible for auditing the
+        returned list (issue #84 acceptance criterion: a queryable supersession event).
+
+        Returns the retired rows' identity ([{kind, id}, ...]) for that audit — empty
+        list if `subject` is falsy or nothing else was live under it."""
+        self._chk(schema)
+        if not subject:
+            return []
+        by = f"{keep_kind}:{keep_id}"
+        retired = []
+        with self.conn.cursor() as c:
+            for tbl, kind in ((f"{schema}.raw_turns", "turn"),
+                              (f"{schema}.semantic", "fact"),
+                              (f"{schema}.episodic", "episode")):
+                excl = "AND id <> %(keep_id)s" if kind == keep_kind else ""
+                c.execute(
+                    f"UPDATE {tbl} SET constraint_retired_at=now(), constraint_retired_by=%(by)s "
+                    f"WHERE namespace=%(ns)s AND memory_type='constraint' "
+                    f"AND constraint_subject=%(subj)s AND constraint_retired_at IS NULL {excl} "
+                    f"RETURNING id",
+                    {"ns": ns, "subj": subject, "by": by, "keep_id": keep_id})
+                for r in c.fetchall():
+                    retired.append({"kind": kind, "id": r["id"]})
+        return retired
 
     _CONSTRAINT_RE = re.compile(
         r"\b(SHALL NOT|MUST NOT|SHOULD NOT|MAY NOT|SHALL|MUST|REQUIRED|SHOULD|PROHIBITED|FORBIDDEN)\b")

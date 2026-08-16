@@ -1508,6 +1508,18 @@ components:
             classify the memory; facts extracted from the turn inherit it. Unknown
             values are rejected (400). `constraint` memories are PINNED into every
             recall on the namespace.
+        constraint_subject:
+          type: string
+          maxLength: 200
+          description: >
+            issues #83/#84, optional, only meaningful when type=constraint. An
+            AUTHOR-supplied (never inferred) grouping key. A newer constraint with the
+            SAME constraint_subject in the SAME namespace automatically retires the
+            older one (supersession — see RememberResponse.constraints_retired);
+            across namespaces sharing constraint_subject, the ':'-prefix ANCESTOR
+            namespace's constraint wins a precedence conflict by default (the loser is
+            excluded from /recall's pinned constraints but still audit-logged as
+            `constraint.suppress`).
         async:
           type: boolean
           description: defer fact extraction to background workers (fast return)
@@ -1524,6 +1536,10 @@ components:
         type:
           type: string
           enum: [decision, incident, constraint, skill, fact]
+        constraint_subject:
+          type: string
+          maxLength: 200
+          description: see RememberRequest.constraint_subject (issues #83/#84)
         async: { type: boolean }
     RecallRequest:
       type: object
@@ -1709,6 +1725,17 @@ components:
           properties:
             namespace: { type: string }
             reason: { type: string }
+        constraints_retired:
+          type: array
+          description: >-
+            issue #84: present only when this write set a constraint_subject that
+            immediately retired one or more OTHER live constraints in the same
+            namespace (supersession). Each item is the retired row's own identity.
+          items:
+            type: object
+            properties:
+              kind: { type: string, enum: [turn, fact, episode] }
+              id: { type: integer }
     MemoryRow:
       type: object
       required: [content, kind]
