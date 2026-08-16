@@ -322,12 +322,16 @@ class MemnosMemory:
 
     # --- WRITE -------------------------------------------------------------
     def remember(self, namespace: str, text: str, *, speaker=None, session_id=None,
-                 observed_at=None, extract=True, memory_type=None) -> dict:
+                 observed_at=None, extract=True, memory_type=None,
+                 constraint_subject=None) -> dict:
         """Store a message: raw turn (always) + STRUCTURED date-aware SPO fact
         extraction (optional, offline LLM). Each fact is stored with
         subject/predicate/object so belief-change SUPERSESSION fires (close out the
         prior value for the same subject+predicate) and the entity GRAPH is populated
         — parity with the validated phaseA engine. Returns ids + supersession count.
+
+        `constraint_subject` (issues #83/#84): see remember_turn() — ignored unless
+        memory_type='constraint'.
 
         NOTE for pooled callers (the server): this convenience method holds the store's
         connection across the LLM extraction call. Use the split phases below
@@ -335,34 +339,58 @@ class MemnosMemory:
         pinned for the seconds an LLM call takes — that starves the pool under
         concurrent sessions (field: 30s queueing, BrokenPipes)."""
         observed_at = observed_at or datetime.now(timezone.utc)
-        tid, text, observed_at = self.remember_turn(namespace, text, speaker=speaker,
-                                                    session_id=session_id, observed_at=observed_at,
-                                                    memory_type=memory_type)
+        tid, text, observed_at, retired = self.remember_turn(
+            namespace, text, speaker=speaker, session_id=session_id, observed_at=observed_at,
+            memory_type=memory_type, constraint_subject=constraint_subject)
         n_facts = n_super = 0
         if extract and (self.llm is not None or self.extract_fn is not None):
             facts = self.extract_facts(text, observed_at, memory_type=memory_type)
             n_facts, n_super = self.write_facts(namespace, facts, observed_at, tid,
                                                 memory_type=memory_type)
-        return {"turn_id": tid, "facts": n_facts, "superseded": n_super}
+        out = {"turn_id": tid, "facts": n_facts, "superseded": n_super}
+        if retired:
+            out["constraints_retired"] = retired
+        return out
 
     def remember_turn(self, namespace: str, text: str, *, speaker=None, session_id=None,
-                      observed_at=None, vec=None, memory_type=None):
+                      observed_at=None, vec=None, memory_type=None, constraint_subject=None):
         """Phase 1 (fast, DB only): redact + store the verbatim raw turn. Returns
-        (turn_id, redacted_text, observed_at) for the later extraction phases.
+        (turn_id, redacted_text, observed_at, retired_constraints) for the later
+        extraction phases.
 
         `vec` lets a pooled caller pre-compute the embedding (a NETWORK call in OpenAI
         mode) BEFORE acquiring a pool connection. It must be the embedding of the
         REDACTED text (redact() is idempotent, so pre-redacting and embedding that is
-        safe). Default (vec=None) embeds here — identical to the original behavior."""
+        safe). Default (vec=None) embeds here — identical to the original behavior.
+
+        `constraint_subject` (issues #83/#84, optional, AUTHOR-supplied — never
+        inferred, see #29 and core/schema.sql): a grouping key for memory_type=
+        'constraint' writes only (silently ignored for every other type — a subject tag
+        on a non-constraint write would have no supersession/precedence meaning).
+        Normalized (stripped + lowercased) HERE, the single choke point every
+        constraint write passes through — same case-insensitive-identity convention
+        `supersede_predicate`/`dominant_live_fact`/`get_related`/`community` already use
+        for user-typed subject/predicate/entity strings, so '--subject Deploy-Policy'
+        and '--subject deploy-policy' land in the SAME group instead of silently never
+        competing. When both are set, this IS constraint supersession: any OTHER
+        still-live constraint sharing (namespace, constraint_subject) is immediately
+        retired via BrainStore.retire_constraints(), returned here as
+        `retired_constraints` so the caller can audit the event (never done here — this
+        method does no control-plane I/O)."""
         observed_at = observed_at or datetime.now(timezone.utc)
         if self.redact:
             from .redact import redact as _redact
             text, _ = _redact(text)             # strip secrets BEFORE storage + extraction
+        cs = (constraint_subject.strip().lower()
+              if (memory_type == "constraint" and constraint_subject) else None)
         tid = self.store.insert_raw_turn(self.schema, namespace, session_id, speaker,
                                          text, observed_at,
                                          vec if vec is not None else self.embed(text),
-                                         author=self.author, memory_type=memory_type)
-        return tid, text, observed_at
+                                         author=self.author, memory_type=memory_type,
+                                         constraint_subject=cs)
+        retired = self.store.retire_constraints(self.schema, namespace, cs,
+                                                keep_kind="turn", keep_id=tid) if cs else []
+        return tid, text, observed_at, retired
 
     def extract_facts(self, text, observed_at, *, memory_type=None):
         """Phase 2 (slow, NO database use): LLM fact extraction. Safe to run with no

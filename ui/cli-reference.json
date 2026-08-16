@@ -1085,6 +1085,12 @@
        "help": "bearer token for the pinned-memory write (else $MEMNOS_TOKEN / config)",
        "positional": false,
        "required": false
+      },
+      {
+       "arg": "--subject",
+       "help": "issues #83/#84: optional grouping key. A newer constraint with the SAME --subject in the SAME namespace automatically retires the older one (supersession); across namespaces sharing --subject, the ':'-prefix ANCESTOR namespace wins by default (precedence) \u2014 see `constraint override`",
+       "positional": false,
+       "required": false
       }
      ],
      "command": "constraint add",
@@ -1103,6 +1109,51 @@
      "command": "constraint ls",
      "example": null,
      "help": "list enforced (ask/block) constraints"
+    },
+    {
+     "args": [
+      {
+       "arg": "child_namespace",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "parent_namespace",
+       "help": "",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "constraint override add",
+     "example": null,
+     "help": "declare CHILD wins precedence over its ':'-prefix ancestor PARENT for same --subject constraints (default is parent wins)"
+    },
+    {
+     "args": [
+      {
+       "arg": "namespace",
+       "help": "filter to edges touching this namespace",
+       "positional": true,
+       "required": false
+      }
+     ],
+     "command": "constraint override ls",
+     "example": null,
+     "help": "list precedence override edges"
+    },
+    {
+     "args": [
+      {
+       "arg": "id",
+       "help": "",
+       "positional": true,
+       "required": true
+      }
+     ],
+     "command": "constraint override rm",
+     "example": null,
+     "help": "remove an override edge by id (see: constraint override ls)"
     },
     {
      "args": [

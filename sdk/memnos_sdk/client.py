@@ -50,14 +50,21 @@ class MemnosClient:
                                transport=transport)
 
     def remember(self, text, *, namespace=None, speaker=None, session_id=None,
-                 async_=False) -> dict:
+                 memory_type=None, constraint_subject=None, async_=False) -> dict:
         """Store a turn. With async_=True the server stores the raw turn immediately and
         extracts facts in the background, returning in ~200ms — use it for capture paths on
         slow local-LLM extraction backends (Ollama/vLLM) where a synchronous call would
-        otherwise block past the timeout and lose the write."""
-        return _raise(self._c.post("/remember", json={
-            "namespace": _ns(namespace, self.namespace), "text": text,
-            "speaker": speaker, "session_id": session_id, "async": async_}))
+        otherwise block past the timeout and lose the write.
+
+        `constraint_subject` (issues #83/#84): optional, only meaningful when
+        memory_type="constraint" — see openapi.yaml's RememberRequest for the full contract."""
+        body = {"namespace": _ns(namespace, self.namespace), "text": text,
+                "speaker": speaker, "session_id": session_id, "async": async_}
+        if memory_type is not None:
+            body["type"] = memory_type
+        if constraint_subject is not None:
+            body["constraint_subject"] = constraint_subject
+        return _raise(self._c.post("/remember", json=body))
 
     def recall(self, query, *, namespace=None, raw_quota=None, fact_quota=None, max_chars=None,
                session_id=None) -> dict:
@@ -117,12 +124,19 @@ class AsyncMemnosClient:
                                     transport=transport)
 
     async def remember(self, text, *, namespace=None, speaker=None, session_id=None,
-                       async_=False) -> dict:
+                       memory_type=None, constraint_subject=None, async_=False) -> dict:
         """Store a turn. async_=True defers fact extraction to the server's background workers
-        (returns in ~200ms) so slow local-LLM extraction can't ReadTimeout and lose the write."""
-        return _raise(await self._c.post("/remember", json={
-            "namespace": _ns(namespace, self.namespace), "text": text,
-            "speaker": speaker, "session_id": session_id, "async": async_}))
+        (returns in ~200ms) so slow local-LLM extraction can't ReadTimeout and lose the write.
+
+        `constraint_subject` (issues #83/#84): optional, only meaningful when
+        memory_type="constraint" — see openapi.yaml's RememberRequest for the full contract."""
+        body = {"namespace": _ns(namespace, self.namespace), "text": text,
+                "speaker": speaker, "session_id": session_id, "async": async_}
+        if memory_type is not None:
+            body["type"] = memory_type
+        if constraint_subject is not None:
+            body["constraint_subject"] = constraint_subject
+        return _raise(await self._c.post("/remember", json=body))
 
     async def recall(self, query, *, namespace=None, raw_quota=None, fact_quota=None, max_chars=None,
                      session_id=None) -> dict:

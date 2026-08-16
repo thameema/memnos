@@ -150,6 +150,28 @@ CREATE TABLE IF NOT EXISTS memnos_control.constraint_enforcement(
     created_at timestamptz NOT NULL DEFAULT now(),
     active boolean NOT NULL DEFAULT true);
 CREATE INDEX IF NOT EXISTS constraint_enforcement_ns ON memnos_control.constraint_enforcement(namespace) WHERE active;
+-- CONSTRAINT PRECEDENCE OVERRIDES (issue #83, epic #70 item 2): an explicit edge
+-- letting a CHILD namespace's pinned constraint deterministically WIN a precedence
+-- conflict against a same-`constraint_subject` constraint in an ANCESTOR namespace,
+-- reversing the default (ancestor wins — see BrainStore.resolve_constraint_precedence).
+-- "Ancestor" is PURE ':'-prefix string comparison between two namespaces already
+-- present in one recall's pin set (epic #70 Mechanism A) — deliberately NOT
+-- `namespace_links` above, whose meaning is "recall here also searches there" (grounded
+-- recall), an unrelated concept. Overloading it would silently turn every EXISTING
+-- grounding link into a precedence relationship the day this feature ships — an install
+-- that linked a project namespace to a shared reference corpus would find its own
+-- project constraints suppressed on next boot with no config change of its own. Epic
+-- #70 warns about exactly this ("implicit cross-root governance is opaque and
+-- dangerous") and calls for a NEW, explicit table — this is it. Never auto-created:
+-- only `constraint override add` (CLI, admin-only) inserts a row (epic #70 Mechanism B:
+-- "explicit, always visible, deliberate act").
+CREATE TABLE IF NOT EXISTS memnos_control.constraint_overrides(
+    id bigserial PRIMARY KEY,
+    child_namespace text NOT NULL,
+    parent_namespace text NOT NULL,
+    created_by bigint REFERENCES memnos_control.principals(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(child_namespace, parent_namespace));
 -- encrypted secret vault: AES-256-GCM ciphertext only (plaintext NEVER stored).
 -- Referenced as value-refs (secret://name); resolved at use-time, never logged.
 CREATE TABLE IF NOT EXISTS memnos_control.secrets(
@@ -1253,6 +1275,72 @@ class Control:
             c.execute("UPDATE memnos_control.constraint_enforcement SET active=false "
                       "WHERE id=%s AND active", (row_id,))
             return c.rowcount > 0
+
+    # --- constraint precedence overrides (issue #83) ------------------------
+    @staticmethod
+    def add_constraint_override(conn, child_namespace, parent_namespace, created_by=None):
+        """Declare that CHILD wins a precedence conflict against PARENT instead of the
+        default (parent wins — see BrainStore.resolve_constraint_precedence). Raises
+        ValueError unless child is genuinely a ':'-prefix descendant of parent — an
+        override between unrelated namespaces has no default to reverse, so it can
+        never mean anything to the precedence algorithm; reject it rather than accept
+        a row that silently never fires."""
+        if not child_namespace or not parent_namespace:
+            raise ValueError("child_namespace and parent_namespace are both required")
+        if not child_namespace.startswith(parent_namespace + ":"):
+            raise ValueError(f"{child_namespace!r} is not a ':'-prefix descendant of "
+                             f"{parent_namespace!r} — override edges only apply between "
+                             "namespaces that are already in a default parent/child "
+                             "precedence relationship")
+        with conn.cursor() as c:
+            c.execute("INSERT INTO memnos_control.constraint_overrides"
+                      "(child_namespace,parent_namespace,created_by) VALUES(%s,%s,%s) "
+                      "ON CONFLICT (child_namespace,parent_namespace) DO NOTHING RETURNING id",
+                      (child_namespace, parent_namespace, created_by))
+            row = c.fetchone()
+            if row:
+                return row["id"]
+            c.execute("SELECT id FROM memnos_control.constraint_overrides "
+                      "WHERE child_namespace=%s AND parent_namespace=%s",
+                      (child_namespace, parent_namespace))
+            return c.fetchone()["id"]
+
+    @staticmethod
+    def list_constraint_overrides(conn, namespace=None):
+        with conn.cursor() as c:
+            if namespace:
+                c.execute("SELECT id, child_namespace, parent_namespace, created_at "
+                          "FROM memnos_control.constraint_overrides "
+                          "WHERE child_namespace=%s OR parent_namespace=%s ORDER BY id",
+                          (namespace, namespace))
+            else:
+                c.execute("SELECT id, child_namespace, parent_namespace, created_at "
+                          "FROM memnos_control.constraint_overrides ORDER BY id")
+            return c.fetchall()
+
+    @staticmethod
+    def remove_constraint_override(conn, row_id) -> bool:
+        with conn.cursor() as c:
+            c.execute("DELETE FROM memnos_control.constraint_overrides WHERE id=%s", (row_id,))
+            return c.rowcount > 0
+
+    @staticmethod
+    def get_constraint_overrides(conn, namespaces) -> set:
+        """Resolve override edges touching ANY of `namespaces` into a plain
+        {(child_namespace, parent_namespace), ...} set — pure data handed to
+        BrainStore.resolve_constraint_precedence. Keeps every memnos_control SQL
+        statement inside Control; BrainStore never queries memnos_control directly for
+        this (the one pre-existing exception — the namespace-registry upsert in
+        insert_raw_turn — is a narrow, unrelated, already-established case)."""
+        nss = list(namespaces or [])
+        if not nss:
+            return set()
+        with conn.cursor() as c:
+            c.execute("SELECT child_namespace, parent_namespace "
+                      "FROM memnos_control.constraint_overrides "
+                      "WHERE child_namespace = ANY(%s) OR parent_namespace = ANY(%s)",
+                      (nss, nss))
+            return {(r["child_namespace"], r["parent_namespace"]) for r in c.fetchall()}
 
     # --- listings for the console -----------------------------------------
     @staticmethod
