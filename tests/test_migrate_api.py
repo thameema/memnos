@@ -52,6 +52,11 @@ def cleanup(conn):
             c.execute(f"DELETE FROM {SCHEMA}.mentions m USING {SCHEMA}.entities e WHERE m.entity_id=e.id AND e.namespace=%s", (ns,))
             for t in ("edges", "semantic", "entities", "raw_turns"):
                 c.execute(f"DELETE FROM {SCHEMA}.{t} WHERE namespace=%s", (ns,))
+            # issue #85: /namespace/copy now records provenance (copied_by references
+            # principals(id)) — must be cleared before a principal that copied/moved
+            # into `ns` can be deleted below.
+            c.execute("DELETE FROM memnos_control.namespace_copy_provenance "
+                      "WHERE dst_ns=%s OR src_ns=%s", (ns, ns))
 
 
 def main():

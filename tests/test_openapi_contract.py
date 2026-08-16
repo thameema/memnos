@@ -164,6 +164,10 @@ def cleanup(conn):
                       "WHERE h.principal_id=pr.id AND pr.name=%s", (p,))
             c.execute("DELETE FROM memnos_control.ns_nudges n USING memnos_control.principals pr "
                       "WHERE n.principal_id=pr.id AND pr.name=%s", (p,))
+            # issue #85: namespace_copy_provenance.copied_by references principals(id)
+            c.execute("DELETE FROM memnos_control.namespace_copy_provenance cp "
+                      "USING memnos_control.principals pr "
+                      "WHERE cp.copied_by=pr.id AND pr.name=%s", (p,))
             c.execute("DELETE FROM memnos_control.principals WHERE name=%s", (p,))
 
 
@@ -198,6 +202,14 @@ def main():
     call("POST", "/admin/api/namespaces/kind", token=TADM, body={"name": NSK, "kind": "knowledge"}, expect=200)
     call("POST", "/admin/api/namespaces/links", token=TADM, body={"src": NS, "dst": NSK}, expect=200)
     call("GET", "/admin/api/namespaces/links", token=TADM, query="ns=" + NS, expect=200)
+    # issue #85: Mechanism A opt-out endpoint
+    call("POST", "/admin/api/namespaces/inherit-ancestors", token=TADM,
+         body={"name": NS, "inherit": False}, expect=200)
+    call("POST", "/admin/api/namespaces/inherit-ancestors", token=TADM,
+         body={"name": NS, "inherit": True}, expect=200,
+         name="POST /admin/api/namespaces/inherit-ancestors (re-enable)")
+    call("POST", "/admin/api/namespaces/inherit-ancestors", token=TADM, body={"name": NS}, expect=400,
+         name="POST /admin/api/namespaces/inherit-ancestors (missing inherit)")
     call("POST", "/admin/api/principals", token=TADM, body={"name": "oapi_tmp", "kind": "agent"}, expect=200)
     st, pr = call("GET", "/admin/api/principals", token=TADM, expect=200)
     tmp_id = next(p["id"] for p in pr["principals"] if p["name"] == "oapi_tmp")

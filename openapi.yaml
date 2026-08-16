@@ -860,6 +860,25 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/Internal" }
+  /admin/api/namespaces/inherit-ancestors:
+    post:
+      tags: [admin]
+      summary: Opt a namespace in/out of automatic same-root ancestor constraint inheritance (issue #85)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminInheritAncestorsRequest" }
+      responses:
+        "200":
+          description: inherit_ancestors set
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminInheritAncestorsResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
   /admin/api/principals:
     get:
       tags: [admin]
@@ -2261,6 +2280,13 @@ components:
       properties:
         src: { type: string }
         dst: { type: string }
+        kind:
+          type: string
+          enum: [link, inherits, governed_by]
+          description: >-
+            Informational taxonomy (issue #85); defaults to 'link' (today's grounding
+            semantics — recall on src also searches dst). No runtime behavior branches
+            on this today.
     AdminLinkResponse:
       type: object
       required: [ok, src, dst]
@@ -2268,6 +2294,7 @@ components:
         ok: { type: boolean }
         src: { type: string }
         dst: { type: string }
+        kind: { type: string, enum: [link, inherits, governed_by] }
     AdminUnlinkResponse:
       type: object
       required: [ok, removed]
@@ -2286,6 +2313,7 @@ components:
             properties:
               src_ns: { type: string }
               dst_ns: { type: string }
+              kind: { type: string, enum: [link, inherits, governed_by] }
               created_at: { $ref: "#/components/schemas/DateTime" }
               created_by: { type: [string, "null"] }
     AdminKindRequest:
@@ -2301,6 +2329,23 @@ components:
         ok: { type: boolean }
         name: { type: string }
         kind: { type: string, enum: [memory, knowledge] }
+    AdminInheritAncestorsRequest:
+      type: object
+      required: [name, inherit]
+      properties:
+        name: { type: string }
+        inherit:
+          type: boolean
+          description: >-
+            issue #85 Mechanism A opt-out — false suppresses this namespace's automatic
+            same-root ancestor constraint consultation (all levels at once).
+    AdminInheritAncestorsResponse:
+      type: object
+      required: [ok, name, inherit_ancestors]
+      properties:
+        ok: { type: boolean }
+        name: { type: string }
+        inherit_ancestors: { type: boolean }
     AdminPrincipalCreateRequest:
       type: object
       required: [name]

@@ -1738,21 +1738,30 @@ def cmd_namespace(args, cfg):
         print(f"{out['mode']}d {out['facts']} facts + {out['raw_turns']} turns "
               f"from {args.name} -> {args.to}")
     elif args.action == "set":
-        if not args.name or not args.kind:
-            sys.exit("usage: memnos namespace set <ns> --kind memory|knowledge")
-        Control.set_namespace_kind(conn, args.name, args.kind)
-        print(f"namespace '{args.name}' kind set to '{args.kind}'")
+        if not args.name or not (args.kind or args.inherit_ancestors is not None):
+            sys.exit("usage: memnos namespace set <ns> --kind memory|knowledge "
+                     "and/or --inherit-ancestors true|false")
+        if args.kind:
+            Control.set_namespace_kind(conn, args.name, args.kind)
+            print(f"namespace '{args.name}' kind set to '{args.kind}'")
+        if args.inherit_ancestors is not None:
+            inherit = args.inherit_ancestors == "true"
+            Control.set_namespace_inherit_ancestors(conn, args.name, inherit)
+            print(f"namespace '{args.name}' inherit_ancestors set to {inherit} "
+                  f"({'will' if inherit else 'will NOT'} automatically consult "
+                  f"same-root ancestor constraints)")
     elif args.action == "link":
         if not args.name or not args.dst:
-            sys.exit("usage: memnos namespace link <src> <dst>")
+            sys.exit("usage: memnos namespace link <src> <dst> [--link-kind link|inherits|governed_by]")
         created_by = None
         try:
             created_by = _principal_id(conn, "admin")
         except SystemExit:
             pass
-        Control.link_namespaces(conn, args.name, args.dst, created_by=created_by)
-        print(f"linked {args.name} -> {args.dst} (recall on '{args.name}' will also "
-              f"ground in '{args.dst}' for callers with a read grant on it)")
+        Control.link_namespaces(conn, args.name, args.dst, created_by=created_by, kind=args.link_kind)
+        print(f"linked {args.name} -> {args.dst} (kind='{args.link_kind}'; recall on "
+              f"'{args.name}' will also ground in '{args.dst}' for callers with a read "
+              f"grant on it)")
     elif args.action == "unlink":
         if not args.name or not args.dst:
             sys.exit("usage: memnos namespace unlink <src> <dst>")
@@ -1788,11 +1797,13 @@ def cmd_namespace(args, cfg):
         if not rows:
             print("no links" + (f" from '{args.name}'" if args.name else ""))
         for l in rows:
-            print(f"  {l['src_ns']} -> {l['dst_ns']}  (by {l['created_by'] or '?'}, {l['created_at']:%Y-%m-%d})")
+            print(f"  {l['src_ns']} -> {l['dst_ns']}  [{l.get('kind') or 'link'}]  "
+                  f"(by {l['created_by'] or '?'}, {l['created_at']:%Y-%m-%d})")
     else:  # ls
         for n in Control.list_namespaces(conn):
             kind = " [knowledge]" if n.get("kind") == "knowledge" else ""
-            print(f"  {n['name']:<28} turns={n['turns']} facts={n['facts']}{kind}  {n['description'] or ''}")
+            noinherit = " [no-ancestor-inherit]" if n.get("inherit_ancestors") is False else ""
+            print(f"  {n['name']:<28} turns={n['turns']} facts={n['facts']}{kind}{noinherit}  {n['description'] or ''}")
 
 
 # "small" footprint for a --stale candidate (issue #30): a namespace nobody relies on, not
@@ -3443,17 +3454,25 @@ def _refresh_enforce_cache(cfg, ns):
     just leaves enforcement at its last-cached state for this session (or unenforced, if
     there was never a prior cache) — never a hard failure of the session itself.
 
+    issue #85 item 4: uses list_constraint_enforcement_fanout, not the exact-namespace-only
+    list_constraint_enforcement — an ask/block rule written on a same-root ANCESTOR or an
+    explicitly LINKED namespace now loads into this cache too, closing a real governance-
+    visibility gap (the same rule's advisory/pinned-memory form already flowed correctly
+    through /recall via pin_nss; only the enforce-hook cache was exact-namespace-only).
+
     Returns the number of active enforce rules just cached for `ns` (issue #32: `hook
-    status` surfaces this count so a zero-load state is visible, not just fail-open-silent)."""
+    status` surfaces this count so a zero-load state is visible, not just fail-open-silent —
+    now an accurate fanned-out count, not just this exact namespace's own rules)."""
     from core.control import Control
     from datetime import datetime, timezone
     conn = _conn(cfg)
     Control.init(conn)
-    rows = Control.list_constraint_enforcement(conn, namespace=ns)
+    rows = Control.list_constraint_enforcement_fanout(conn, ns)
     os.makedirs(_ENFORCE_CACHE_DIR, exist_ok=True)
     payload = {"namespace": ns, "refreshed_at": datetime.now(timezone.utc).isoformat(),
               "rules": [{"id": r["id"], "enforce_level": r["enforce_level"],
-                        "tool_matcher": r["tool_matcher"], "rule_text": r["rule_text"]}
+                        "tool_matcher": r["tool_matcher"], "rule_text": r["rule_text"],
+                        "namespace": r["namespace"]}
                        for r in rows]}
     path = _enforce_cache_path(ns)
     tmp = path + ".tmp"
@@ -3529,7 +3548,14 @@ def cmd_hook(args, cfg):
         level = "block" if any(r["enforce_level"] == "block" for r in matched) else "ask"
         fired = next(r for r in matched if r["enforce_level"] == level)
         decision = "deny" if level == "block" else "ask"
-        reason = f"memnos constraint (id={fired['id']}): {fired['rule_text']}"
+        # issue #85: cache rows now carry the rule's SOURCE namespace (fan-out through
+        # ancestors/links, see _refresh_enforce_cache) — surface it when it differs from
+        # this session's own namespace, same transparency /recall already gives pinned
+        # constraints via their `namespace` tag. .get() for backward compat with a cache
+        # file written before this change (no "namespace" key yet).
+        src_ns = fired.get("namespace")
+        source = f" [from {src_ns}]" if src_ns and src_ns != enforce_ns else ""
+        reason = f"memnos constraint (id={fired['id']}){source}: {fired['rule_text']}"
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": decision,
@@ -4090,6 +4116,13 @@ def build_parser():
     p.add_argument("--like", help="copy/move: only memories containing this substring")
     p.add_argument("--desc", help="add: description")
     p.add_argument("--kind", choices=["memory", "knowledge"], help="set: namespace kind")
+    p.add_argument("--inherit-ancestors", choices=["true", "false"],
+                   help="set: opt this namespace in/out of automatically consulting its "
+                        "same-root ancestors' pinned constraints at recall/enforce time "
+                        "(default true — see `namespace` epic #70 Mechanism A)")
+    p.add_argument("--link-kind", choices=["link", "inherits", "governed_by"], default="link",
+                   help="link: taxonomy for this explicit edge (informational; default 'link' "
+                        "= today's grounding semantics — recall on src also searches dst)")
     p.add_argument("--purge", action="store_true", help="rm: also delete the stored memories")
     p.add_argument("--dry-run", action="store_true",
                    help="reconcile/prune: report only, write nothing (prune's default even without this flag)")
