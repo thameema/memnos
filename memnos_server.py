@@ -376,7 +376,10 @@ def _mcp_asgi_app(public_port):
                 # gets a resolved namespace to recall from; a subsequent write correctly
                 # 403s downstream (REST enforces write grants exactly as for any caller),
                 # it just does so via the normal write path rather than at this fallback.
-                grants = [g["namespace"] for g in Control.authorized_namespaces(conn, pid)
+                # effective_namespaces() (issue #81), not authorized_namespaces() -- this is
+                # an access-decision path (which namespace does this token resolve to?), so
+                # a role-only read grant must count, same as authorize() already does.
+                grants = [g["namespace"] for g in Control.effective_namespaces(conn, pid)
                          if g["can_read"] and g["namespace"] != "*" and not g["namespace"].endswith(":*")]
                 if len(grants) == 1:
                     ns = grants[0]
@@ -1454,6 +1457,13 @@ class Handler(BaseHTTPRequestHandler):
         usage = _UsageAcc()
         cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
         self._audit_detail = None      # per-stage timings (recall ops set this)
+        # issue #82: per-constraint injection audit rows recall ops stash here (see
+        # _phased_op) — flushed below ONLY on the 200 path. Reset every call, same as
+        # `_audit_detail` immediately above: this server runs HTTP/1.0 (no protocol_version
+        # override), so in practice each accepted connection gets its own Handler instance
+        # and this is a fresh list either way — but explicit beats implicit, and it costs
+        # nothing to not depend on that staying true if protocol_version ever changes.
+        self._pin_audit = []
         # issue #83: per-suppression audit rows _phased_op stashes here (recall's
         # precedence adjudication) — flushed below ONLY on the confirmed 200 path, same
         # discipline `_audit_detail` above already follows: a request that fails
@@ -1490,6 +1500,14 @@ class Handler(BaseHTTPRequestHandler):
                 Control.audit(conn, principal, action, ns, True, self._audit_detail,
                               latency_ms=int((time.perf_counter() - t0) * 1000),
                               result_count=rcount, status=200)
+                # issue #82: flush the per-constraint injection audit rows stashed by
+                # _phased_op — ONLY reached once the recall genuinely returned 200, so
+                # this never records a constraint as "shown" for a request that failed
+                # downstream of the DB phase that fetched it (embed/rerank/render_context).
+                for pa in self._pin_audit:
+                    Control.audit(conn, principal, "constraint.inject", pa["namespace"],
+                                  True, {"constraint_id": pa["constraint_id"],
+                                         "session_id": pa["session_id"]}, status=200)
                 # issue #83: flush the precedence-suppression audit rows stashed by
                 # _phased_op — one row per constraint that lost a precedence conflict
                 # this recall detected, so a suppressed constraint is still auditable
@@ -1558,6 +1576,11 @@ class Handler(BaseHTTPRequestHandler):
             # issue #17: optional hard SUBJECT scope — recall returns only the named
             # entity's facts (single-namespace path only; ignored for wide recall).
             subject_scope = (str(req["subject"]).strip() if req.get("subject") else None)
+            # issue #82: optional caller-supplied session id, carried into the per-constraint
+            # injection audit event below. Not every caller has one (recorded null then) —
+            # `memnos_cli.py`'s UserPromptSubmit hook (`hook recall`) already resolves a real
+            # session_id from the Claude Code hook payload and sends it here.
+            session_id = (str(req["session_id"]).strip() if req.get("session_id") else None)
             ckw = {"max_chars": int(req["max_chars"])} if "max_chars" in req else {}
             timings = {}
             # QUERY EMBED: short-TTL cache hit skips the round-trip; a miss runs on the
@@ -1696,6 +1719,29 @@ class Handler(BaseHTTPRequestHandler):
                         # list is non-empty — keeps this failure self-sufficient even
                         # if that epilogue's control flow ever changes.
                         pre["_degraded"] = True
+                # PER-CONSTRAINT INJECTION AUDIT (issue #82 / epic #70 item 3): durable,
+                # queryable proof of which guardrails THIS session actually saw — one
+                # audit_log row per constraint actually injected, distinct from the
+                # general recall-level audit row (Control.audit(...,'recall',...) in
+                # _phased) and from the #28 constraint.enforce ask/block path
+                # (memnos_cli.py's PreToolUse hook covers enforce; this covers the
+                # pinned/advise path — everything `/memnos constraint` writes by default).
+                # Stashed here, NOT written yet: this DB phase runs before the embed
+                # future is joined and before rerank/render_context, any of which can
+                # still fail the request. Writing eagerly here would leave a false
+                # "constraint X was shown to session Y" row on a request that never
+                # actually returned. `_phased` (below) only flushes this list once the
+                # recall as a whole reaches its 200 response. constraint_id is
+                # "{kind}:{id}" — kind disambiguates, since fact/turn/episode ids are
+                # independent bigserial sequences and a bare id could collide across
+                # kinds. session_id is optional (not every caller supplies one) —
+                # recorded null rather than omitted, so `detail->>'session_id'` queries
+                # stay uniform whether or not this recall's caller had one.
+                self._pin_audit = [
+                    {"namespace": p["namespace"], "constraint_id": f"{p['kind']}:{p['id']}",
+                     "session_id": session_id}
+                    for p in pins
+                ]
                 mem.store = None
             timings["sql_ms"] = (time.perf_counter() - t_a) * 1000.0
             if fut is not None:

@@ -1576,6 +1576,14 @@ components:
             un-reranked (retrieval order) and possibly without the staleness annotation
             pass — with `degraded: true`, instead of letting the client time out.
             Absent/0 = no deadline (full pipeline, never degraded).
+        session_id:
+          type: string
+          description: >
+            optional caller-supplied session id. Has no effect on retrieval/ranking —
+            recorded on the per-constraint injection audit event emitted for every
+            pinned constraint this recall returns (queryable via
+            memnos_control.audit_log where action='constraint.inject'), so a compliance
+            query can prove which guardrails a given agent session actually saw.
     IdRequest:
       type: object
       required: [namespace, id]

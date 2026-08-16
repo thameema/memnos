@@ -1554,8 +1554,10 @@ class BrainStore:
 
         Each row carries `id` (the source table's own bigserial PK — semantic.id /
         raw_turns.id / episodic.id, each an INDEPENDENT sequence, so a caller builds an
-        unambiguous per-constraint identifier as f"{kind}:{id}") and `constraint_subject`
-        (issues #83/#84 — see core/schema.sql for why this is author-supplied, never
+        unambiguous per-constraint identifier as f"{kind}:{id}" — issue #82's
+        per-injection audit event needs exactly this to record WHICH constraint row was
+        shown to a session, not just its content) and `constraint_subject` (issues
+        #83/#84 — see core/schema.sql for why this is author-supplied, never
         LLM-derived). RETIRED rows (`constraint_retired_at IS NOT NULL` — see
         retire_constraints()) are excluded outright: retirement is a WRITE-time event,
         already durable and already auditable by its own caller, so a retired row must
