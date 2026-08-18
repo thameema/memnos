@@ -220,6 +220,31 @@ Python process schedules or enforces. Tommy has no dispatch queue of its own for
 "wave-based" here means the harness session is told to keep fan-out to a small number of
 tasks per turn and wait for them before continuing.
 
+### Reviewer dispatch — mandatory review passes
+
+Also a core.md instruction, not code: for any Task dispatched with `PURPOSE: review`
+(code, LLD, architecture, or any future review agent type), core.md tells the harness
+session to append a fixed "MANDATORY REVIEW PASSES" block to the subagent's Task prompt
+before dispatching it. The block asks the reviewer for three things standard review misses:
+
+- **Pass 4 — System Invariant Check**: a CLEAR/BLOCKER verdict against four fixed
+  invariants (no live-tenant mutation from reaper/scheduler paths, credential rotation
+  paired with pool invalidation, fail-closed on missing tenant context, error handling for
+  the gap in paired writes to two stores).
+- **Pass 5 — Call Graph Mandate**: enumerate *all* callers of any new/renamed function —
+  schedulers, reapers, lifecycle hooks, Helm hooks, internal REST — not just direct callers,
+  and state reachability explicitly. Callers Tommy can't trace (e.g. in another repo) are
+  assumed live-tenant reachable.
+- **Pass 6 — Safety Claim Verification**: trace safety claims ("idempotent", "fails closed",
+  "no side effects", "safe to retry", "does not rotate") to source instead of accepting them
+  from a comment or MR description. An unverifiable claim is a MAJOR finding that blocks
+  approval until the author adds a test.
+
+Because both entry points build the harness's system prompt from the same core.md via
+`build_prompt()` (see `tests/test_dispatch_core_prompt_parity.py`), this block reaches a
+review dispatched from the interactive `tommy` CLI and one dispatched via `tommy_dispatch`
+identically — there is no separate reviewer-prompt code path to keep in sync.
+
 ### Interrupt / control model
 
 Because a subagent dispatch from the harness's own Task-tool perspective is a blocking call,
@@ -412,6 +437,17 @@ won't reflect them.
 - **Transcript ingestion (Layer 3 memory capture) is Claude-Code-specific.** It looks for
   the most recently modified `~/.claude/projects/*/*.jsonl` file; running a different
   harness through Tommy doesn't get this step (it silently finds nothing to ingest).
+- **Upgrading the PyPI package does not update an existing install's prompts.**
+  `tommy.conf.default` sets `PROMPTS_DIR=~/.memnos/agents/tommy/prompts`, which
+  `TommyConfig.load()` picks up from the bundled defaults even if the user never wrote
+  their own `tommy.conf`. `tommy --install` (`install_prompts()` in `tommy/install.py`)
+  copies the package's bundled `core.md` etc. into that directory only the first time —
+  `dst_file.exists()` short-circuits every run after that unless `--force` is passed. So a
+  `pip install --upgrade tommy-orchestrator` (or `uv tool upgrade`) that changes bundled
+  `core.md` content — as this reviewer-dispatch change does — is invisible to anyone who
+  already has a copy on disk until they run `tommy --install --force`. Not something this
+  change fixes; flagging it because it's easy to assume a version bump alone ships new
+  prompt behavior to existing users, and it doesn't.
 - **`docs-gen` doesn't cover Tommy.** `docs/cli.md` and `ui/cli-reference.json` are
   generated from `memnos_cli.py`'s own Click tree; `agents/tommy` has a separate entry point
   and isn't part of that generator. This guide and the package README are the only

@@ -29,7 +29,9 @@ You may only end a turn when:
 ### Dispatch-first for review tasks
 For any review (MR, LLD, code, architecture): dispatch the Task BEFORE reading
 anything yourself. Give the subagent the MR number or file path. The subagent
-reads. You never see the content.
+reads. You never see the content. Before dispatching, append the mandatory
+review-passes block (see "Reviewer Dispatch — Mandatory Passes" below) to the
+Task prompt.
 
 ### Self-check before every Bash call
 Ask: "Am I reading content to analyse it, or just getting a name/ID/path to
@@ -71,6 +73,43 @@ PURPOSE: review | implement | investigate | search
 
 Name every Task: `{project}-{task-slug}-{agent}`
 Examples: `myapp-mr42-code-reviewer` · `infra-sprint12-architect` · `api-debug-python-developer`
+
+---
+
+## Reviewer Dispatch — Mandatory Passes
+
+Every Task dispatched for review — `PURPOSE: review`, and every code, LLD,
+architecture reviewer, or any future review agent type — MUST carry the
+block below, appended verbatim to the Task prompt (after `## Constraints to
+Check`, if present) before you dispatch. This applies uniformly across all
+review agents, not just code reviewers.
+
+The reviewer must return a CLEAR or BLOCKER verdict on each Pass 4 item,
+enumerate the full call graph for Pass 5 (not just direct callers), and
+trace every safety claim to source for Pass 6 rather than accepting it from
+a doc comment or MR description. An unverifiable safety claim is a MAJOR
+finding that blocks approval until the author adds a test.
+
+```
+## MANDATORY REVIEW PASSES (in addition to standard checks)
+
+### Pass 4 — System Invariant Check
+Produce a CLEAR or BLOCKER verdict for each:
+- I-1: No live-tenant mutation reachable from reaper/scheduler paths
+- I-2: Credential rotation paired with pool invalidation or service restart
+- I-3: Missing tenant context fails closed (no shared/default fallback)
+- I-4: Paired writes to two stores have gap error handling
+
+### Pass 5 — Call Graph Mandate
+For every new/renamed function: enumerate ALL callers (schedulers, reapers,
+lifecycle hooks, Helm hooks, internal REST). State reachability explicitly.
+Unknown callers = assume live-tenant reachable.
+
+### Pass 6 — Safety Claim Verification
+Trace every safety claim ("idempotent", "does not rotate", "fails closed",
+"no side effects", "safe to retry") to source. Unverifiable = MAJOR finding,
+block approval until author adds a test.
+```
 
 ---
 
