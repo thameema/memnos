@@ -443,11 +443,11 @@ won't reflect them.
   their own `tommy.conf`. `tommy --install` (`install_prompts()` in `tommy/install.py`)
   copies the package's bundled `core.md` etc. into that directory only the first time —
   `dst_file.exists()` short-circuits every run after that unless `--force` is passed. So a
-  `pip install --upgrade tommy-orchestrator` (or `uv tool upgrade`) that changes bundled
-  `core.md` content — as this reviewer-dispatch change does — is invisible to anyone who
-  already has a copy on disk until they run `tommy --install --force`. Not something this
-  change fixes; flagging it because it's easy to assume a version bump alone ships new
-  prompt behavior to existing users, and it doesn't.
+  `uv tool upgrade tommy-orchestrator` (or: `pip install --upgrade tommy-orchestrator`) that
+  changes bundled `core.md` content — as this reviewer-dispatch change does — is invisible
+  to anyone who already has a copy on disk until they run `tommy --install --force`. Not
+  something this change fixes; flagging it because it's easy to assume a version bump alone
+  ships new prompt behavior to existing users, and it doesn't.
 - **`docs-gen` doesn't cover Tommy.** `docs/cli.md` and `ui/cli-reference.json` are
   generated from `memnos_cli.py`'s own Click tree; `agents/tommy` has a separate entry point
   and isn't part of that generator. This guide and the package README are the only
