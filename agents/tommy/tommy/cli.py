@@ -9,6 +9,7 @@ Usage:
     tommy --list-harnesses          # show detected harnesses
     tommy --conf /path/to/conf      # explicit config file
     tommy --force                   # combined with --install: overwrite existing
+    tommy --version                 # print the installed version and exit
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ from typing import Optional
 
 import click
 
+from . import __version__
 from .config import TommyConfig
 from .prompt import build_prompt
 from .install import run_install
@@ -409,7 +411,7 @@ def _print_banner(cfg: TommyConfig, project_key: Optional[str] = None) -> None:
         f"{o}{line}{r}" for line in TOMMY_LOGO.splitlines()
     )
     click.echo(logo_coloured, err=True)
-    click.echo(f"  {bold}memnos-native coding orchestrator{r}  {g}v0.1.0{r}", err=True)
+    click.echo(f"  {bold}memnos-native coding orchestrator{r}  {g}v{__version__}{r}", err=True)
 
 
 
@@ -421,6 +423,7 @@ def _print_banner(cfg: TommyConfig, project_key: Optional[str] = None) -> None:
     context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
     help="Tommy — personal coding orchestrator built on memnos.",
 )
+@click.version_option(__version__, "-V", "--version", prog_name="tommy")
 @click.option("--conf", default=None, metavar="PATH", help="Path to tommy.conf override.")
 @click.option("--project", "-p", default=None, metavar="KEY", help="Activate a project context.")
 @click.option("--install", "do_install", is_flag=True, help="Run first-time setup.")
