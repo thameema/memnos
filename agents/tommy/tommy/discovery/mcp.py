@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from .. import __version__
+
 
 # Common Claude Code MCP config locations
 _CLAUDE_MCP_PATHS = [
@@ -49,7 +51,7 @@ def introspect_tools(server_name: str, server_cfg: dict, timeout: int = 5) -> li
         "params": {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "tommy", "version": "0.1.0"},
+            "clientInfo": {"name": "tommy", "version": __version__},
         },
     }) + "\n"
     list_msg = json.dumps({

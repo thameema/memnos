@@ -1,9 +1,10 @@
 name: CI
 
 # Runs on every push to master and on every pull request, so a merge can't break the
-# branch. Two jobs: the memnos-sdk unit tests, and the full server test suite against a
-# real PostgreSQL + pgvector. No OpenAI key needed — the server runs in free local-384
-# mode and every test seeds directly / asserts governance, so nothing calls an LLM.
+# branch. Jobs: the memnos-sdk unit tests, the Tommy orchestrator unit tests, the full
+# server test suite against a real PostgreSQL + pgvector, and a cross-platform CLI smoke
+# test. No OpenAI key needed — the server runs in free local-384 mode and every test
+# seeds directly / asserts governance, so nothing calls an LLM.
 # (The LoCoMo accuracy benchmark is separate and not run in CI.)
 
 on:
@@ -26,6 +27,22 @@ jobs:
       - run: pip install './sdk[all]'        # client + langchain/langgraph/llamaindex adapters
       - run: python sdk/tests/test_client.py
       - run: python sdk/tests/test_integrations.py
+
+  tommy-tests:
+    # Previously agents/tommy/tests/* ran nowhere in CI — the hardcoded-v0.1.0
+    # banner bug (and the missing --version flag) shipped across three PyPI
+    # releases (0.1.0/0.1.1/0.1.2) uncaught because nothing here ever executed
+    # this suite. No DB needed: pure unit tests (loopback TCP, real
+    # subprocess/signal handling, source-text guards).
+    name: Tommy orchestrator unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -e ./agents/tommy
+      - run: pip install pytest
+      - run: python -m pytest agents/tommy/tests -q
 
   server-tests:
     name: Server + governance suite (PG16 + pgvector)
