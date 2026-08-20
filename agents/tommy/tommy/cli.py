@@ -10,6 +10,8 @@ Usage:
     tommy --conf /path/to/conf      # explicit config file
     tommy --force                   # combined with --install: overwrite existing
     tommy --version                 # print the installed version and exit
+    tommy config show               # print fully-resolved effective config
+    tommy generate                  # write/update harness adapters from tommy.yaml
 """
 from __future__ import annotations
 
@@ -32,6 +34,7 @@ from .install import run_install
 from .mcp_server import run_stdio
 from .control import ControlServer
 from .discovery.harnesses import all_harnesses, apply_skip_permissions, apply_session_name
+from .generate_cmd import config_group, generate_command
 
 
 # ---------------------------------------------------------------------------
@@ -420,8 +423,15 @@ def _print_banner(cfg: TommyConfig, project_key: Optional[str] = None) -> None:
 
 
 @click.command(
-    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+    # help_option_names=[] disables click's automatic eager --help on THIS
+    # command. Without that, "tommy generate --help" would never reach the
+    # dispatch below — click's built-in --help option is checked (and would
+    # exit) before our function body ever runs, printing tommy's own top-level
+    # help instead of generate_command's. main() re-implements --help/-h
+    # itself below, after the generate/config dispatch has had first look.
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []},
     help="Tommy — personal coding orchestrator built on memnos.",
+    add_help_option=False,
 )
 @click.version_option(__version__, "-V", "--version", prog_name="tommy")
 @click.option("--conf", default=None, metavar="PATH", help="Path to tommy.conf override.")
@@ -435,7 +445,9 @@ def _print_banner(cfg: TommyConfig, project_key: Optional[str] = None) -> None:
 @click.option("--no-memnos-check", is_flag=True, help="Skip memnos health check at startup.")
 @click.option("--ask-permissions", is_flag=True, help="Require manual approval for every harness tool call (overrides SKIP_PERMISSIONS=on).")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
+@click.pass_context
 def main(
+    ctx: click.Context,
     conf: Optional[str],
     project: Optional[str],
     do_install: bool,
@@ -448,6 +460,22 @@ def main(
     ask_permissions: bool,
     extra_args: tuple,
 ) -> None:
+    # `generate` / `config` are their own click.Command/click.Group objects
+    # (tommy/generate_cmd.py), dispatched here rather than making `main`
+    # itself a click.Group — that would break `tommy [FLAGS] [-- harness
+    # args]`, which relies on ignore_unknown_options + a single UNPROCESSED
+    # extra_args catch-all. Recognized here as the first unprocessed
+    # positional, exactly like everything else that falls into extra_args.
+    if extra_args and extra_args[0] == "generate":
+        generate_command.main(args=list(extra_args[1:]), prog_name="tommy generate", standalone_mode=True)
+        return
+    if extra_args and extra_args[0] == "config":
+        config_group.main(args=list(extra_args[1:]), prog_name="tommy config", standalone_mode=True)
+        return
+    if "--help" in extra_args or "-h" in extra_args:
+        click.echo(ctx.get_help())
+        return
+
     cfg = TommyConfig.load(conf_path=Path(conf) if conf else None)
 
     # Logo + terminal title (only when actually launching, not for --install/--list-*)

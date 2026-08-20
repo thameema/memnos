@@ -220,6 +220,18 @@ Python process schedules or enforces. Tommy has no dispatch queue of its own for
 "wave-based" here means the harness session is told to keep fan-out to a small number of
 tasks per turn and wait for them before continuing.
 
+The "small number" was, until issue #113, only ever a number in core.md's prose ("max
+4/turn"). `tommy.yaml`'s `merge_gate` / `wave_limit` fields (see the project's own
+[README](../../agents/tommy/README.md#tommyyaml--committed-project-config)) formalize that
+into actual config — `wave_limit` defaults to 4 precisely so formalizing it doesn't silently
+change today's behavior for a project that hasn't adopted `tommy.yaml` yet. `tommy generate`
+projects the resolved values into whichever harness adapter file(s) (CLAUDE.md, Cursor
+rules, etc.) a project already uses, so the harness session sees the actual configured
+number rather than the static prompt text. Nothing consumes `merge_gate`/`wave_limit` to
+*enforce* a cap in code yet — like everything else in this section, it's still an
+instruction the harness session chooses to follow, now sourced from committed config instead
+of a hardcoded prompt literal.
+
 ### Reviewer dispatch — mandatory review passes
 
 Also a core.md instruction, not code: for any Task dispatched with `PURPOSE: review`
