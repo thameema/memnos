@@ -313,3 +313,38 @@ class TestMcpDispatchFailClosed:
 
         assert "error" not in result, f"a secret://-shaped substring in the TASK must not trigger resolution: {result}"
         assert resolve_client_calls == [], "secret_resolve_client() must not be called — no refs are configured in tommy.yaml/tommy.conf"
+
+
+# ---------------------------------------------------------------------------
+# Ordering tripwire vs. issue #109's corpus gate
+# ---------------------------------------------------------------------------
+
+def test_mcp_dispatch_resolves_secrets_before_the_corpus_gate():
+    """
+    Cheap structural tripwire alongside the runtime proof above: nothing in
+    the test suite fails if someone swaps the Secret Shield and corpus-gate
+    blocks inside tommy_dispatch() — the ordering decision (see this PR's
+    "Design decisions") otherwise lives only in comments. This pins it: the
+    real source offset of collect_secret_refs( (Secret Shield's resolution
+    step) must precede the real source offset of resolve_effective_config(
+    (the corpus gate's config read), inside tommy_dispatch()'s own body.
+    """
+    src = (Path(__file__).parent.parent / "tommy" / "mcp_server.py").read_text()
+    fn_start = src.find("def tommy_dispatch(")
+    assert fn_start != -1, "tommy_dispatch not found in mcp_server.py"
+    import re
+    next_def = re.search(r"^(?:def |class )", src[fn_start + 1:], re.MULTILINE)
+    fn_end = fn_start + 1 + next_def.start() if next_def else len(src)
+    fn_body = src[fn_start:fn_end]
+
+    secret_pos = fn_body.find("collect_secret_refs(")
+    corpus_pos = fn_body.find("resolve_effective_config(")
+    assert secret_pos != -1, "collect_secret_refs( not found in tommy_dispatch — Secret Shield resolution step missing"
+    assert corpus_pos != -1, "resolve_effective_config( not found in tommy_dispatch — issue #109's corpus gate missing"
+    assert secret_pos < corpus_pos, (
+        "collect_secret_refs() must run BEFORE resolve_effective_config() in "
+        "tommy_dispatch — secret resolution (hard fail-closed) must precede "
+        "the corpus gate (fail-open-but-visible), per this PR's Design "
+        "decisions. Found collect_secret_refs at offset "
+        f"{secret_pos}, resolve_effective_config at offset {corpus_pos}."
+    )
