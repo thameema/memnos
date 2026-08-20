@@ -7,7 +7,12 @@ tommy.yaml lives at a project's root, is meant to be committed alongside the
 code it governs, and carries only policy — never secrets or credentials.
 Nothing in this schema accepts a token, key, password, or URL with embedded
 auth; if a field ever needs one, it belongs in tommy.conf or an environment
-variable instead, never in this file.
+variable instead, never in this file. The one exception is ``env:`` below,
+and it is not really an exception: every value in that block MUST be a
+``secret://NAME`` *reference* (a symbolic name, resolved at launch time via
+memnos — see ``tommy/secrets.py``, issue #115), never a literal credential.
+A literal value there is a hard parse error, the same way an unknown
+top-level key is.
 
 Schema (all sections optional except ``tommy.version``):
 
@@ -30,6 +35,13 @@ Schema (all sections optional except ``tommy.version``):
       smart_routing: bool
       mcp_introspect: bool
       skip_permissions: bool
+    env:
+      ENV_VAR_NAME: secret://NAME   # resolved into the launched harness's
+                                     # subprocess environment at launch time,
+                                     # never into the prompt (issue #115,
+                                     # "Secret Shield"). Merged with
+                                     # tommy.conf's SECRET_ENV — this file
+                                     # wins on a shared ENV_VAR_NAME.
     merge_gate: bool        # formalizes core.md's wave-based dispatch concept
     wave_limit: int
 
@@ -46,6 +58,7 @@ Deliberately absent (see issue #113 — these are exclusions, not omissions):
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -53,6 +66,13 @@ from typing import Any, Optional
 import yaml
 
 SUPPORTED_VERSIONS = (1,)
+
+# A secret:// reference names a secret stored in memnos's Vault (core/vault.py) —
+# never the value itself. Shared with tommy/secrets.py, which does the actual
+# resolution; this module only validates the *shape* at parse time so a typo'd
+# or literal-value `env:` entry in a committed tommy.yaml fails loudly here,
+# not silently at launch time three layers away.
+SECRET_REF_RE = re.compile(r"^secret://([A-Za-z0-9_][A-Za-z0-9_.-]*)$")
 
 # Keys that are explicitly excluded from this schema by design (see issue #113).
 # Presence of any of these at the top level is a hard error, not a silent ignore —
@@ -88,6 +108,7 @@ _KNOWN_TOP_LEVEL_KEYS = {
     "design_docs",
     "corpus",
     "agents",
+    "env",
     "merge_gate",
     "wave_limit",
 }
@@ -151,6 +172,7 @@ class TommyYamlConfig:
     design_docs: list[str] = field(default_factory=list)
     corpus: CorpusBlock = field(default_factory=CorpusBlock)
     agents: AgentsBlock = field(default_factory=AgentsBlock)
+    env: dict[str, str] = field(default_factory=dict)
     merge_gate: Optional[bool] = None
     wave_limit: Optional[int] = None
 
@@ -251,6 +273,24 @@ def parse_tommy_yaml(text: str, *, source: str = "<string>") -> TommyYamlConfig:
         mcp_introspect=agents_raw.get("mcp_introspect"),
         skip_permissions=agents_raw.get("skip_permissions"),
     )
+
+    # env — secret:// references only (issue #115, "Secret Shield"). Validated
+    # here, at parse time, not deferred to launch time: tommy.yaml is meant to
+    # be committed and team-shared, so a typo'd env var name or (worse) an
+    # accidentally-literal secret value belongs in the same loud-failure
+    # category as an unknown top-level key, not a silent no-op.
+    env_raw = raw.get("env") or {}
+    _require_type(env_raw, dict, f"{source}: env")
+    for k, v in env_raw.items():
+        if not isinstance(k, str) or not k.strip():
+            raise TommyYamlError(f"{source}: env keys must be non-empty strings, got {k!r}")
+        _require_type(v, str, f"{source}: env.{k}")
+        if not SECRET_REF_RE.match(v):
+            raise TommyYamlError(
+                f"{source}: env.{k} must be a `secret://NAME` reference, got {v!r} — "
+                "tommy.yaml never accepts a literal secret value (see module docstring)"
+            )
+    cfg.env = dict(env_raw)
 
     # merge_gate / wave_limit
     if "merge_gate" in raw:

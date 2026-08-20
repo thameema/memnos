@@ -29,3 +29,13 @@ PROJECTS=
 #                    off = harness asks for approval on every tool call
 # Per-session override: tommy --ask-permissions
 SKIP_PERMISSIONS=on
+
+# Secret Shield (issue #115): ENV_VAR:secret://NAME pairs (comma-separated).
+# Resolved via memnos at launch time and injected into the launched harness's
+# subprocess environment ONLY — never into the prompt, never logged. A
+# reference that fails to resolve (unreachable server, no such secret, no
+# grant) refuses the launch entirely rather than proceeding without it.
+# Merged with tommy.yaml's `env:` block, which wins on a shared ENV_VAR_NAME.
+# Example:
+# SECRET_ENV=OPENAI_API_KEY:secret://openai_api_key,DB_PASSWORD:secret://prod_db_password
+SECRET_ENV=

@@ -39,6 +39,12 @@ from .discovery.harnesses import all_harnesses, apply_skip_permissions, apply_se
 from .effective_config import resolve_effective_config
 from .project_config import TommyYamlError
 from .prompt import build_prompt
+from .secrets import (
+    SecretResolutionError,
+    collect_secret_refs,
+    resolve_secret_env,
+    secret_resolve_client,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +330,56 @@ def tommy_dispatch(
         if proj and not workspace:
             ws_path = Path(getattr(proj, "git_root", str(Path.cwd())))
 
+    # ── Secret Shield (issue #115) ────────────────────────────────────────
+    # Resolve secret://NAME references BEFORE any other launch-prep work —
+    # before the corpus gate below, before the (optional) memnos
+    # memory-injection call, before build_prompt(), before the prompt
+    # tempfile is written, before ControlServer binds a port. Mirrors
+    # cli.py._launch_harness's ordering and reasoning exactly — see
+    # tommy/secrets.py's module docstring and cli.py's comment at the
+    # equivalent point for the full "why before env.copy() is too late"
+    # reasoning; not repeated here to avoid the two copies drifting.
+    #
+    # Ordering vs. issue #109's corpus gate, now that #109 has actually
+    # landed in this same function: secret resolution runs FIRST, before
+    # the corpus-gate block below. Secret resolution is a hard fail-closed
+    # security boundary; the corpus gate is fail-open-but-visible by its
+    # own design (see _corpus_check()'s docstring). A hard stop should not
+    # wait on an advisory network call whose result would be discarded
+    # anyway if secret resolution is about to abort the dispatch — see PR
+    # description "Design decisions" for the full reasoning. This block
+    # does NOT diverge from #109's fail-open choice for a broken tommy.yaml
+    # — collect_secret_refs() below degrades gracefully on a parse error,
+    # same contract #109 already established here; see its docstring.
+    resolved_secrets: dict[str, str] = {}
+    resolve_client = None
+    try:
+        # collect_secret_refs() degrades to "no env: entries from a broken
+        # tommy.yaml" rather than raising on a parse error — see its
+        # docstring for why (short version: a ref that never got read isn't
+        # a leak, just a missing env var; the corpus-gate block below
+        # already surfaces "tommy.yaml could not be read" for this same
+        # condition). Fail-closed here is for a ref that DID resolve to a
+        # name and then failed to RESOLVE.
+        secret_refs = collect_secret_refs(cfg, workspace=ws_path)
+        if secret_refs:
+            resolve_client = secret_resolve_client(cfg)
+            resolved_secrets = resolve_secret_env(secret_refs, resolve_client)
+    except SecretResolutionError as exc:
+        return {"error": f"secret resolution failed — refusing to launch harness: {exc}"}
+    finally:
+        # This server process is long-lived (stdio MCP server) — unlike the
+        # interactive CLI path, where the client's httpx.Client dies with
+        # the process anyway, a dedicated resolution client here must be
+        # closed explicitly on every dispatch or its connection pool leaks
+        # across the server's lifetime.
+        if resolve_client is not None:
+            try:
+                resolve_client.close()
+            except Exception:
+                pass
+    # ─────────────────────────────────────────────────────────────────────
+
     # --- Corpus gate (issue #109) ------------------------------------------
     # tommy.yaml's corpus.corpus_gate/design work moved config-reading here
     # from tommy.conf per #109's amendment comment (depends on #113's
@@ -343,7 +399,15 @@ def tommy_dispatch(
         # itself is held to, extended one layer up to config resolution.
         # We can't know here whether corpus_gate was even requested (the
         # file that would say so is what failed to parse), so we surface
-        # the parse failure itself rather than guessing either way.
+        # the parse failure itself rather than guessing either way. (The
+        # Secret Shield block above, for the same broken tommy.yaml,
+        # degrades quietly instead of erroring — see collect_secret_refs()'s
+        # docstring for why the two features reasonably differ here: this
+        # block's whole job is surfacing a corpus-gate outcome, so silence
+        # would defeat its purpose; Secret Shield's job is deciding whether
+        # to inject an env var, and "yaml didn't parse" -> "nothing to
+        # inject from it" is a complete, non-silent-about-security answer
+        # on its own.)
         corpus_gate_result = {"ok": False, "constraints": [],
                                "error": f"tommy.yaml could not be read: {exc}"}
         constraint_block = _format_constraint_block(corpus_gate_result)
@@ -405,6 +469,8 @@ def tommy_dispatch(
     env = os.environ.copy()
     env["MEMNOS_URL"] = cfg.memnos_url
     env["TOMMY_NS"] = cfg.tommy_ns
+    if resolved_secrets:
+        env.update(resolved_secrets)  # real values only — never the secret:// reference string
 
     task_id = uuid.uuid4().hex[:8]
 
@@ -441,8 +507,11 @@ def tommy_dispatch(
     _evict_tasks()
     _tasks[task_id] = t
 
+    # Names only, never values — same convention as the CLI path's log line.
+    _secrets_info = {"secrets_resolved": sorted(resolved_secrets)} if resolved_secrets else {}
+
     if async_run:
-        result = {"task_id": task_id, "status": "running", "harness": chosen}
+        result = {"task_id": task_id, "status": "running", "harness": chosen, **_secrets_info}
         if corpus_gate_result is not None:
             result["corpus_gate"] = corpus_gate_result
         return result
@@ -452,7 +521,7 @@ def tommy_dispatch(
     # Without this, tail() may return truncated output on fast-exiting processes.
     drain.join(timeout=10.0)
     ctrl.close()  # release the control channel socket (no harness will reconnect now)
-    result = {"task_id": task_id, "status": t.status(), "output": t.tail(200)}
+    result = {"task_id": task_id, "status": t.status(), "output": t.tail(200), **_secrets_info}
     if corpus_gate_result is not None:
         result["corpus_gate"] = corpus_gate_result
     return result

@@ -98,6 +98,11 @@ PROJECTS=\
   myapp:MyApp:MYAPP:~/git/myapp,\
   platform:Platform:PLAT:~/git/platform,\
   infra:Infra:PLAT:~/git/infra
+
+# Secret Shield — ENV_VAR:secret://NAME pairs (comma-separated). Resolved via
+# memnos at launch time, injected into the launched harness's subprocess env
+# ONLY (never the prompt, never a log). See "Secret Shield" below.
+SECRET_ENV=OPENAI_API_KEY:secret://openai_api_key
 ```
 
 ### Project fields
@@ -145,6 +150,8 @@ agents:
   smart_routing: true
   mcp_introspect: false
   skip_permissions: true
+env:
+  OPENAI_API_KEY: secret://openai_api_key   # secret:// references ONLY — see "Secret Shield" below
 merge_gate: true           # formalizes core.md's wave-based dispatch concept
 wave_limit: 4
 ```
@@ -208,6 +215,64 @@ tommy generate                 # update whatever adapter files are present
 tommy generate --dry-run       # preview without writing
 tommy generate --create-missing  # also create files with no prior evidence
 ```
+
+---
+
+## Secret Shield — `secret://NAME` references
+
+`SECRET_ENV` (`tommy.conf`) and `env:` (`tommy.yaml`) let you reference a
+secret stored in memnos's Vault by name, instead of ever writing its real
+value into a config file:
+
+```ini
+# tommy.conf
+SECRET_ENV=OPENAI_API_KEY:secret://openai_api_key,DB_PASSWORD:secret://prod_db_password
+```
+
+```yaml
+# tommy.yaml
+env:
+  OPENAI_API_KEY: secret://openai_api_key
+```
+
+At launch time — for both the interactive `tommy` CLI and `tommy_dispatch` —
+Tommy resolves every configured reference via memnos (`memnos secret set
+<name> <value>` + `memnos grant add <principal> secret:<name>` on the server
+side) and injects the real values into the launched harness subprocess's
+environment, under the env-var names you configured. tommy.yaml wins over
+tommy.conf on a shared env-var name — same precedence direction as every
+other field.
+
+**Fails closed.** If any reference can't be resolved — memnos unreachable,
+no such secret, the token isn't granted access — Tommy refuses to launch the
+harness at all, before the prompt file or the control-channel socket are
+ever created. A project with no `SECRET_ENV`/`env:` entries configured pays
+no cost and sees no behavior change.
+
+**Precondition.** `secret://` references are only ever read from static
+`tommy.conf`/`tommy.yaml` — never derived from a dispatched task or built
+prompt.
+
+**Scope, precisely.** This keeps a resolved secret out of the prompt Tommy
+builds and out of Tommy's own logs. It does **not** stop a harness process
+from reflecting its own environment back into its own output — and that
+carve-out applies through more than one channel:
+
+- If the harness runs something like `printenv` and that ends up in its
+  Claude Code transcript, `_post_run_capture` ingests that transcript into
+  memnos after every interactive run; `core/redact.py` (not Tommy) is what
+  stands between that and durable storage, and it has known gaps on short,
+  unusually-shaped secrets under a prefixed variable name (e.g.
+  `DB_PASSWORD=hunter2xyz`).
+- On the `tommy_dispatch` (MCP) path, the harness's raw stdout is also what
+  `tommy_dispatch(async_run=False)` returns as `output` and what
+  `tommy_status` returns as its tail — both go straight back to the calling
+  LLM as MCP tool output. If the harness reflects a secret into its own
+  stdout, that's the same leak surface as the transcript-ingest path above,
+  through a different channel, and Secret Shield does not filter it either.
+
+Keep secrets short-lived / scoped and don't rely on Secret Shield as the
+only layer of defense against either path.
 
 ---
 
