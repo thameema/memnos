@@ -111,6 +111,106 @@ PROJECTS=\
 
 ---
 
+## tommy.yaml — committed project config
+
+`tommy.conf` above is a per-user INI file installed at
+`~/.memnos/agents/tommy/tommy.conf` — it's never checked into a repo, and it's
+where personal identity (`TOMMY_USER`, `ORG`) and your own multi-repo
+`PROJECTS` list live. `tommy.yaml` is the other half: a single project's
+config, committed alongside the code it governs, so a team shares one source
+of truth instead of everyone hand-syncing their own `tommy.conf`.
+
+**Safe to commit — policy only, never secrets.** Nothing in this schema
+accepts a token, key, password, or URL with embedded credentials. If a field
+ever needs one, it belongs in `tommy.conf` or an environment variable
+instead, never in `tommy.yaml`.
+
+```yaml
+tommy:
+  version: 1
+project:
+  name: MyApp          # free-form/informational only
+  key: myapp             # free-form/informational only
+  git_root: .             # optional, defaults to the repo root tommy.yaml lives in
+memnos:
+  namespace: "org:myorg:myapp"
+design_docs:
+  - "docs/adr/*.md"       # hand-authored ADRs/design docs, NOT vendor guides
+corpus:
+  corpus_gate: true        # gate dispatch on corpus_check() before proceeding
+  auto_ingest: false        # auto-ingest design_docs matches into the corpus
+agents:
+  default_model: claude-sonnet-4-5
+  harness: claude
+  smart_routing: true
+  mcp_introspect: false
+  skip_permissions: true
+merge_gate: true           # formalizes core.md's wave-based dispatch concept
+wave_limit: 4
+```
+
+**Deliberately absent from this schema** (see issue #113 — exclusions, not
+omissions): a `platform:` field or any GitLab/GitHub/Azure-specific
+integration logic (Tommy stays platform-agnostic); scheduler ownership (set up
+your own cron/launchd if you want scheduled runs); a `peer_approver:` field
+(considered and cut — undesigned semantics, needs its own issue); and a
+top-level `harness:` field (which harness a person runs locally is
+machine-specific, not a team-wide committed decision — use `agents.harness`,
+a default *suggestion* with the same precedence rules as every other field,
+instead).
+
+### Config precedence
+
+Three layers, lowest to highest:
+
+1. **`tommy.conf`** — installed/global INI defaults (bundled default → your
+   `~/.memnos/agents/tommy/tommy.conf` → an explicit `--conf`).
+2. **`tommy.yaml`** — project config, committed. Only fields the file
+   actually sets participate; anything left out falls through to the
+   `tommy.conf` value untouched.
+3. **Environment variables** — highest precedence, for one-off local
+   overrides without editing either file: `TOMMY_CFG_DEFAULT_MODEL`,
+   `TOMMY_CFG_HARNESS`, `TOMMY_CFG_SMART_ROUTING`, `TOMMY_CFG_MCP_INTROSPECT`,
+   `TOMMY_CFG_SKIP_PERMISSIONS`, `TOMMY_CFG_NAMESPACE`,
+   `TOMMY_CFG_PROJECT_NAME`, `TOMMY_CFG_PROJECT_KEY`,
+   `TOMMY_CFG_PROJECT_GIT_ROOT`, `TOMMY_CFG_DESIGN_DOCS` (comma-separated),
+   `TOMMY_CFG_CORPUS_GATE`, `TOMMY_CFG_AUTO_INGEST`, `TOMMY_CFG_MERGE_GATE`,
+   `TOMMY_CFG_WAVE_LIMIT`.
+
+Run `tommy config show` to print the fully-resolved effective config —
+every field's final value plus which of the three layers it came from
+(`tommy.conf` / `tommy.yaml` / `env` / `default`). Add `--format json` for
+scripting.
+
+### `tommy generate` — project harness adapters
+
+Reads `tommy.yaml` and writes/updates whichever coding-harness config
+file(s) this project already shows evidence of using:
+
+| Harness | Target file | "Present" means |
+|---------|------------|------------------|
+| Claude Code | `CLAUDE.md` | the file exists |
+| Cursor | `.cursor/rules/tommy.mdc` | `.cursor/` exists |
+| Windsurf | `.windsurfrules` | the file exists |
+| Copilot | `.github/copilot-instructions.md` | `.github/` exists |
+
+If none of the above are present, the generated block is printed to stdout
+instead of silently creating four files for harnesses nobody on the project
+actually uses. Pass `--create-missing` to force every target to be written
+regardless.
+
+Every write goes through explicit idempotent markers
+(`<!-- TOMMY:BEGIN -->` / `<!-- TOMMY:END -->`) — re-running `tommy generate`
+only ever replaces the marked region, never anything else in the file:
+
+```bash
+tommy generate                 # update whatever adapter files are present
+tommy generate --dry-run       # preview without writing
+tommy generate --create-missing  # also create files with no prior evidence
+```
+
+---
+
 ## Usage
 
 ### CLI
@@ -130,6 +230,12 @@ tommy --list-harnesses
 
 # Upgrade (respects uv/pipx/pip — never mixes installers)
 tommy --upgrade
+
+# Print the fully-resolved effective config (tommy.conf -> tommy.yaml -> env)
+tommy config show
+
+# Write/update harness adapter files (CLAUDE.md, .cursor/rules/tommy.mdc, ...) from tommy.yaml
+tommy generate
 ```
 
 ### MCP stdio mode (for editors)
@@ -341,7 +447,11 @@ agents/tommy/
 └── tommy/
     ├── __init__.py
     ├── cli.py              ← click entrypoint, _launch_harness
-    ├── config.py           ← TommyConfig, ProjectEntry
+    ├── config.py           ← TommyConfig, ProjectEntry (tommy.conf)
+    ├── project_config.py   ← tommy.yaml schema + parsing + discovery
+    ├── effective_config.py ← tommy.conf -> tommy.yaml -> env precedence resolution
+    ├── adapters.py         ← tommy generate: idempotent harness adapter writers
+    ├── generate_cmd.py     ← `tommy generate` / `tommy config show` CLI commands
     ├── control.py          ← ControlServer + ControlClient (TCP IPC)
     ├── install.py          ← tommy --install
     ├── mcp_server.py       ← FastMCP stdio server, 8 tools
