@@ -8,7 +8,9 @@ silently drift.
 
 - Base URL: `http://127.0.0.1:8900` (configurable; the server binds localhost only)
 - Auth: `Authorization: Bearer mnk_...` on everything except `/healthz` and `/readyz`
-- All data-plane endpoints are `POST` with a JSON body that includes `"namespace"`
+- All data-plane endpoints are `POST` with a JSON body that includes `"namespace"`,
+  **except** `POST /secret/resolve` (issue #114), which is authorized against a
+  pseudo-namespace derived from `"name"` instead — see [Secrets](#secrets) below
 - The **capture proxy** (`memnos proxy`, :8910) is a separate relay process and is
   deliberately outside this contract
 
@@ -33,8 +35,8 @@ Every error body is `{"error": "...", "msg"?: "..."}`.
 | 400 | malformed JSON / missing or oversized field |
 | 401 | missing, invalid, revoked, or expired token |
 | 403 | namespace outside the token's grants (admin plane: non-admin token). Audited. |
-| 404 | unknown route, or object not in this namespace |
-| 409 | admin secrets only: vault locked (`MEMNOS_SECRET_KEY` unset) |
+| 404 | unknown route, or object not in this namespace (`/secret/resolve`: no such secret). Audited. |
+| 409 | `/secret/resolve` and admin secrets only: vault locked (`MEMNOS_SECRET_KEY` unset) |
 | 413 | body > 256 KB (`/ingest/file`: extracted text > 2 MB) |
 | 415 | `/ingest/file`: can't extract text from the upload |
 | 429 | **not used** — no built-in rate limiting; front with a reverse proxy if needed |
@@ -188,6 +190,46 @@ curl -s "${H[@]}" $M/entity -d '{"namespace": "proj:myapp", "name": "Ada", "dept
 curl -s "${H[@]}" $M/corpus/ingest -d '{
   "namespace": "proj:myapp:arch", "name": "ARCHITECTURE.md",
   "text": "Services MUST validate input. Tokens SHALL NOT be logged."}'
+```
+
+## Secrets
+
+| endpoint | body | returns |
+|---|---|---|
+| `POST /secret/resolve` | `{name}` — **no** `namespace` field | `{name, value}` — the DECRYPTED plaintext |
+
+Issue #114 ("Secret Shield"). Unlike every other data-plane route, `/secret/resolve` is
+not namespace-scoped — there's no memory namespace to check. Instead the server
+authorizes the request against the **pseudo-namespace** `secret:<name>` (or the broader
+`secret:*`), via the exact same grants table and CLI as a real namespace grant:
+
+```bash
+memnos grant add tommy secret:openai_api_key --read-only
+```
+
+A `'*'`-admin token retains resolve access regardless of any narrower `secret:NAME`
+grant issued to other principals — narrower grants are additive, not a revocation (same
+`authorize()` semantics as every other route). Every resolution attempt (success and
+failure) is audited.
+
+This is the ONLY HTTP route that ever returns a secret's plaintext —
+`GET/POST/DELETE /admin/api/secrets` below are metadata-only / write-only by design and
+that does not change. `/secret/resolve` is deliberately NOT restricted to loopback
+callers: memnos supports a central/remote deployment (see
+[`docs/guides/team.md`](guides/team.md)) where clients run on a different host than the
+server, so the Bearer token — not the caller's network location — is the security
+boundary here, same as everywhere else in this API.
+
+**Known limitation:** pseudo-namespaces (`secret:*` strings in `memnos_control.grants`)
+share the same string space as real memory namespaces. The admin console's namespace
+list and `memnos namespace ls`/`prune` filter them out (they're never real, data-bearing
+namespaces), but nothing stops an admin from registering an actual memory namespace
+under the `secret:` prefix, which would collide with this convention. Treat `secret:` as
+reserved.
+
+```bash
+curl -s "${H[@]}" $M/secret/resolve -d '{"name": "openai_api_key"}'
+# {"name": "openai_api_key", "value": "sk-..."}
 ```
 
 ## Pub/sub

@@ -39,6 +39,11 @@ def _handler(request):
         return httpx.Response(200, json={"ok": True})
     if request.url.path == "/healthz":
         return httpx.Response(200, json={"ok": True})
+    if request.url.path == "/secret/resolve":
+        assert body.get("name")
+        if body["name"] == "openai_api_key":
+            return httpx.Response(200, json={"name": "openai_api_key", "value": "sk-mock-12345"})
+        return httpx.Response(404, json={"error": "secret not found"})
     return httpx.Response(404, json={"error": "not found"})
 
 
@@ -53,12 +58,24 @@ def main():
     check("consolidate", mem.consolidate()["dossiers"] == 3)
     check("feedback", mem.feedback("db?", True)["ok"] is True)
     check("healthy()", mem.healthy() is True)
+    check("resolve_secret returns plaintext value", mem.resolve_secret("openai_api_key") == "sk-mock-12345")
+    try:
+        mem.resolve_secret("no_such_secret")
+        check("resolve_secret 404 -> MemnosError", False)
+    except MemnosError as e:
+        check("resolve_secret 404 -> MemnosError", e.status == 404)
     # namespace required if neither client-default nor per-call
     try:
         MemnosClient(token="x", transport=httpx.MockTransport(_handler)).remember("y")
         check("missing namespace raises", False)
     except ValueError:
         check("missing namespace raises", True)
+    # resolve_secret is deliberately NOT namespace-scoped (issue #114): a client with no
+    # namespace set at all must still be able to call it.
+    nsless = MemnosClient(token="x", transport=httpx.MockTransport(_handler))
+    check("resolve_secret works with no namespace set",
+          nsless.resolve_secret("openai_api_key") == "sk-mock-12345")
+    nsless.close()
     # error mapping
     def err_handler(req):
         return httpx.Response(403, json={"error": "forbidden for namespace"})
@@ -67,6 +84,10 @@ def main():
         em.recall("q"); check("4xx -> MemnosError", False)
     except MemnosError as e:
         check("4xx -> MemnosError", e.status == 403)
+    try:
+        em.resolve_secret("x"); check("resolve_secret 403 -> MemnosError", False)
+    except MemnosError as e:
+        check("resolve_secret 403 -> MemnosError", e.status == 403)
     mem.close(); em.close()
 
     # async
@@ -76,6 +97,11 @@ def main():
             r = await am.recall("db?")
             return r["memories"][0]["content"]
     check("async recall", asyncio.run(_a()) == "we chose postgres")
+
+    async def _a_secret():
+        async with AsyncMemnosClient(token="x", transport=httpx.MockTransport(_handler)) as am:
+            return await am.resolve_secret("openai_api_key")
+    check("async resolve_secret", asyncio.run(_a_secret()) == "sk-mock-12345")
 
     # adapters import (skip if frameworks absent)
     try:

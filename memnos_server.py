@@ -84,7 +84,7 @@ from psycopg_pool import ConnectionPool, PoolTimeout
 from core.store import (BrainStore, query_clamp, RECALL_ARM_FAILURES, classify_arm_failure,
                         record_arm_failure, health_unavailable)
 from core.service import MemnosMemory
-from core.control import Control
+from core.control import Control, SECRET_NS_PREFIX
 from core import rerank as brain_rerank
 from core import memrelief
 
@@ -657,6 +657,84 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError):
             return None
 
+    def _secret_resolve(self):
+        """POST /secret/resolve {"name": "..."} -> {"name", "value"} (issue #114,
+        "Secret Shield"). A top-level route, sibling to /corpus/check, deliberately NOT
+        nested under /admin/api/ and NOT gated by the blanket Control.is_admin('*')
+        check that guards GET/POST/DELETE /admin/api/secrets above -- those are
+        metadata-only (Vault.list) / write-only (Vault.set/delete) and never return
+        plaintext. This route is the ONLY HTTP path that does, so it is authorized
+        per-secret via Control.authorize() against the pseudo-namespace
+        f"{SECRET_NS_PREFIX}{name}" (e.g. "secret:openai_api_key"), using the exact
+        same grants table + CLI (`memnos grant add <principal> secret:NAME
+        [--read-only]`) as real memory namespaces -- see SECRET_NS_PREFIX's docstring
+        in core/control.py for the full pseudo-namespace convention and its documented
+        costs (string-space sharing, '*' composability).
+
+        Deliberately NOT loopback-restricted: memnos supports a documented central/
+        remote deployment mode (docs/guides/team.md) where clients (e.g. Tommy) run on
+        a different host than the server, so a loopback check would break that mode for
+        no real security benefit -- the Bearer token is the security boundary here,
+        exactly as for every other route.
+
+        Every resolution attempt (success, forbidden, not-found) is audited via
+        Control.audit -- this is a plaintext-producing read path, so it gets the same
+        audit trail the CLI's `secret get` already writes (memnos_cli.py cmd_secret).
+        The audited `namespace` is the pseudo-namespace actually checked by authorize()
+        (f"secret:{name}"), matching the convention used elsewhere in this file (e.g.
+        the generic 403 audit above, which audits the exact `ns` passed to authorize())
+        rather than the CLI's own audit call (which uses the bare secret name)."""
+        t0 = time.perf_counter()
+        body = self._read_body()
+        if body is None:
+            return self._send(400, {"error": "invalid json"})
+        name = str(body.get("name", "")).strip()
+        if not name:
+            return self._send(400, {"error": "name required"})
+        if "*" in name:
+            # A literal "*" in the secret name would make its pseudo-namespace
+            # ("secret:*") textually IDENTICAL to the broad wildcard grant string --
+            # indistinguishable from "grant read access to every secret" at the
+            # authorize() layer. Secret names are operator-chosen (env-var-style, e.g.
+            # "openai_api_key"); there is no legitimate use for '*' in one, so this is
+            # rejected outright rather than left as a confusing edge case.
+            return self._send(400, {"error": "name must not contain '*'"})
+        token = self._token()
+        action = self.path.lstrip("/")             # "secret/resolve" -- same convention as every other route
+        pseudo_ns = f"{SECRET_NS_PREFIX}{name}"
+        try:
+            with POOL.connection() as conn:
+                principal = Control.authenticate(conn, token)
+                if principal is None:
+                    return self._send(401, {"error": "unauthorized"})
+                if not Control.authorize(conn, principal, pseudo_ns, write=False):
+                    Control.audit(conn, principal, action, pseudo_ns, False, {"name": name, "reason": "forbidden"},
+                                  latency_ms=int((time.perf_counter() - t0) * 1000), status=403)
+                    return self._send(403, {"error": "forbidden for secret"})
+
+                from core.vault import Vault, VaultLocked
+                try:
+                    value = Vault.get(conn, name)
+                except VaultLocked as v:
+                    Control.audit(conn, principal, action, pseudo_ns, False,
+                                  {"name": name, "reason": "vault_locked"},
+                                  latency_ms=int((time.perf_counter() - t0) * 1000), status=409)
+                    return self._send(409, {"error": "vault locked", "msg": str(v)})
+                if value is None:
+                    Control.audit(conn, principal, action, pseudo_ns, False, {"name": name, "reason": "not_found"},
+                                  latency_ms=int((time.perf_counter() - t0) * 1000), status=404)
+                    return self._send(404, {"error": "secret not found"})
+
+                Control.audit(conn, principal, action, pseudo_ns, True, {"name": name},
+                              latency_ms=int((time.perf_counter() - t0) * 1000), status=200)
+                return self._send(200, {"name": name, "value": value})
+        except (PoolTimeout, OperationalError) as e:
+            print(f"[memnos] DB unreachable ({type(e).__name__}): {e}", flush=True)
+            return self._send(503, {"error": "database unreachable — is Postgres running?"})
+        except Exception:
+            traceback.print_exc()
+            return self._send(500, {"error": "internal error"})
+
     def _admin(self, method, sub, qs, body):
         """Management-console API under /admin/api/. Requires an ADMIN principal
         (holds the '*' grant). Returns (code, obj). Audited by the caller."""
@@ -1001,6 +1079,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "invalid json"})
             code, obj = self._admin("POST", u.path[len("/admin/api/"):], parse_qs(u.query), body)
             return self._send(code, obj)
+
+        # --- secret resolve (issue #114, "Secret Shield") -- top-level, NOT under
+        # /admin/api/: body carries `name`, not `namespace` (there is no memory
+        # namespace involved), so it is handled here rather than falling into the
+        # generic namespace-required dispatch below. ---
+        if u.path == "/secret/resolve":
+            return self._secret_resolve()
 
         # --- user-scoped binding/host registry (no namespace in body) ---
         if u.path == "/bindings" or u.path == "/hosts":

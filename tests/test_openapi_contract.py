@@ -246,6 +246,39 @@ def main():
         call("POST", "/admin/api/secrets", token=TADM, body={"name": "oapi_secret", "value": "v1"}, expect=409)
         call("DELETE", "/admin/api/secrets", token=TADM, query="name=oapi_secret", expect=409)
 
+    print("=== secret resolve (issue #114) ===")
+    RESOLVE_NAME = "oapi_secret_resolve"
+    if st == 200 and (sec or {}).get("unlocked"):
+        call("POST", "/admin/api/secrets", token=TADM,
+             body={"name": RESOLVE_NAME, "value": "sekret-v1"}, expect=200,
+             name="POST /admin/api/secrets (seed for resolve test)")
+        # pseudo-namespace grant — same grants table/CLI as a real namespace, zero schema change
+        Control.grant(conn, lim_id, "secret:" + RESOLVE_NAME)
+        st2, res = call("POST", "/secret/resolve", token=TLIM, body={"name": RESOLVE_NAME}, expect=200)
+        check("resolve returns the stored plaintext", res is not None and res.get("value") == "sekret-v1")
+        call("POST", "/secret/resolve", token=TADM, body={"name": RESOLVE_NAME}, expect=200,
+             name="POST /secret/resolve (admin '*' retains access w/o a narrow grant)")
+        # grant the MISSING name too, so the 404 case is isolated from the 403 (forbidden) case
+        Control.grant(conn, lim_id, "secret:no_such_" + RESOLVE_NAME)
+        call("POST", "/secret/resolve", token=TLIM, body={"name": "no_such_" + RESOLVE_NAME}, expect=404,
+             name="POST /secret/resolve (authorized, nonexistent name)")
+        Control.revoke_grant(conn, lim_id, "secret:no_such_" + RESOLVE_NAME)
+        Control.revoke_grant(conn, lim_id, "secret:" + RESOLVE_NAME)
+        call("POST", "/secret/resolve", token=TLIM, body={"name": RESOLVE_NAME}, expect=403,
+             name="POST /secret/resolve (no grant)")
+        call("POST", "/secret/resolve", body={"name": RESOLVE_NAME}, expect=401,
+             name="POST /secret/resolve (no token)")
+        call("POST", "/secret/resolve", token=TADM, body={"name": "bad*name"}, expect=400,
+             name="POST /secret/resolve (name contains '*')")
+        call("POST", "/secret/resolve", token=TADM, body={}, expect=400,
+             name="POST /secret/resolve (missing name)")
+        call("DELETE", "/admin/api/secrets", token=TADM, query="name=" + RESOLVE_NAME, expect=200,
+             name="DELETE /admin/api/secrets (resolve test cleanup)")
+    else:                                                     # vault locked: still exercise the op
+        call("POST", "/secret/resolve", token=TADM, body={"name": RESOLVE_NAME}, expect=401,
+             name="POST /secret/resolve (vault locked, no token — cheaper than a locked-vault "
+                  "false-negative on a name nobody granted)")
+
     print("=== data plane: memory ===")
     call("POST", "/remember", body={"namespace": NS, "text": "Ada moved to Lisbon in May 2026."},
          token=TADM, expect=200)

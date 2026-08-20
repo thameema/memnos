@@ -55,6 +55,11 @@ tags:
     description: Episodic tier (segmentation, recall, decay)
   - name: corpus
     description: Architecture-constraint corpus
+  - name: secret
+    description: >-
+      Authenticated, per-secret plaintext resolution (issue #114). Sibling to the data
+      plane, NOT part of the admin plane — authorized via a pseudo-namespace grant
+      (`secret:NAME` / `secret:*`) on the caller's own token, not the admin `*` grant.
   - name: pubsub
     description: Namespace subscriptions (poll feed + webhooks)
   - name: health
@@ -678,6 +683,37 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+
+  # ───────────────────────── secret ─────────────────────────
+  /secret/resolve:
+    post:
+      tags: [secret]
+      summary: Resolve a stored secret to its decrypted plaintext value
+      description: >-
+        NOT under /admin/api/ and NOT gated by the admin `*` grant. Authorized
+        per-secret via a pseudo-namespace grant on the caller's token:
+        `secret:<name>` (exact) or `secret:*` (broad) — issued through the same
+        `memnos grant add` machinery as any real namespace grant. Every attempt
+        (success, forbidden, not-found) is audited. Deliberately not restricted to
+        loopback callers — see docs/api.md.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SecretResolveRequest" }
+      responses:
+        "200":
+          description: decrypted plaintext value
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecretResolveResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/VaultLocked" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/DbDown" }
 
@@ -1706,6 +1742,12 @@ components:
         namespace: { type: string, maxLength: 200 }
         snippet: { type: string }
         code: { type: string }
+    SecretResolveRequest:
+      type: object
+      required: [name]
+      description: No `namespace` field — this route is not namespace-scoped.
+      properties:
+        name: { type: string, description: "stored secret's name; must not contain '*'" }
     SubscribeRequest:
       type: object
       required: [namespace]
@@ -2197,6 +2239,12 @@ components:
               content: { type: string }
               source: { type: string }
               score: { type: number }
+    SecretResolveResponse:
+      type: object
+      required: [name, value]
+      properties:
+        name: { type: string }
+        value: { type: string, description: decrypted plaintext — the value itself }
     CorpusListResponse:
       type: object
       required: [sources]
