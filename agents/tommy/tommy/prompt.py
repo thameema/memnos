@@ -8,7 +8,12 @@ Layer order (each layer appended):
   4. .tommy.md        — workspace-local overrides (optional, cwd/.tommy.md)
   5. Runtime config block — harness list, project info, config values
   6. MCP manifest     — available MCP servers/tools
-  7. Dispatched task  — optional; the specific work item for a headless run
+  7. Corpus gate      — optional; the constraint block produced by
+                         tommy_dispatch's pre-flight corpus check (issue #109
+                         — tommy_dispatch only, same reasoning as layer 8:
+                         the interactive CLI path has no corpus_gate check to
+                         report)
+  8. Dispatched task  — optional; the specific work item for a headless run
                          (tommy_dispatch only — the interactive CLI path never
                          passes this; a human types the task into the live
                          harness session instead)
@@ -47,13 +52,21 @@ def build_prompt(
     cfg: TommyConfig,
     project_key: Optional[str] = None,
     task: Optional[str] = None,
+    constraint_block: Optional[str] = None,
 ) -> str:
     """
     Build the full layered system prompt (see module docstring for layer order).
 
     `task`, when given, appends the specific work item for a headless dispatch
-    as a final layer (see layer 7). The interactive CLI path never passes it —
+    as a final layer (see layer 8). The interactive CLI path never passes it —
     build_prompt(cfg, project_key=...) there is exactly what it's always been.
+
+    `constraint_block`, when given, is inserted as its own layer (layer 7)
+    immediately before the dispatched-task layer — the pre-formatted result
+    of tommy_dispatch's corpus-gate check (see tommy/mcp_server.py's
+    _format_constraint_block()). Like `task`, only tommy_dispatch passes
+    this; the interactive CLI path has no corpus_gate check on this path
+    (issue #109 wires the gate into tommy_dispatch only).
     """
     layers: list[str] = []
 
@@ -135,7 +148,16 @@ def build_prompt(
     if mcp_manifest:
         layers.append(_layer("mcp-manifest", mcp_manifest))
 
-    # 7. Dispatched task (tommy_dispatch only) — core.md above assumes an
+    # 7. Corpus gate constraint block (tommy_dispatch only, issue #109) — its
+    # own layer (not spliced into layer 8) so it stays visible even when
+    # `task` is absent, and so it's clearly distinguishable in the prompt
+    # from the task itself: this is a check RESULT (matched constraints, a
+    # clean "nothing relevant" pass, or a check-failure), not part of the
+    # work item.
+    if constraint_block:
+        layers.append(_layer("corpus-gate", constraint_block))
+
+    # 8. Dispatched task (tommy_dispatch only) — core.md above assumes an
     # interactive session (it opens by printing a greeting and permits asking
     # the user a clarifying question). A headless dispatch has no human turn
     # to answer either one, so this layer overrides both before handing over

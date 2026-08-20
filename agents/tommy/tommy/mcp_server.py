@@ -34,7 +34,10 @@ from fastmcp import FastMCP
 
 from .config import TommyConfig, ProjectEntry
 from .control import ControlServer
+from .corpus import corpus_check as _http_corpus_check
 from .discovery.harnesses import all_harnesses, apply_skip_permissions, apply_session_name
+from .effective_config import resolve_effective_config
+from .project_config import TommyYamlError
 from .prompt import build_prompt
 
 
@@ -117,6 +120,62 @@ def _memnos_client(cfg: TommyConfig):
     except Exception:
         pass
     return None
+
+
+def _corpus_check(cfg: TommyConfig, namespace: str, snippet: str) -> dict:
+    """Corpus-gate pre-flight check (issue #109): calls memnos's real
+    `POST /corpus/check` (see tommy/corpus.py — not a reimplementation) with
+    the dispatched task's text as the snippet, and returns a dict that
+    distinguishes the two outcomes the issue's fail-open-but-visible
+    resolution requires:
+
+      {"ok": True,  "constraints": [...]}                — a real check ran;
+          `constraints` may legitimately be empty (corpus had nothing
+          relevant to this task) — that is NOT the same thing as outcome 2.
+      {"ok": False, "constraints": [], "error": "..."}    — the check itself
+          could not run (corpus unreachable, auth/config error, etc).
+
+    Never raises, and never blocks tommy_dispatch either way — corpus_gate
+    is fail-open by design (see issue #109's amendment comment: unlike
+    Secret Shield's fail-closed /secret/resolve, a corpus check that can't
+    run must not prevent a developer's dispatch)."""
+    return _http_corpus_check(cfg.memnos_url, cfg.memnos_token, namespace, snippet)
+
+
+def _format_constraint_block(check: dict) -> str:
+    """Render a `_corpus_check()` result into the prompt-injected constraint
+    block. Always returns non-empty text when called (corpus_gate was on),
+    so the fact that a gate check happened is itself visible in the prompt —
+    distinct from corpus_gate being off, where build_prompt() never receives
+    a constraint_block argument at all (see prompt.py)."""
+    if not check.get("ok"):
+        return (
+            "## Corpus Gate — check failed\n\n"
+            f"The pre-dispatch architecture corpus check could not run: {check.get('error', 'unknown error')}\n\n"
+            "This is a CHECK FAILURE, not a clean pass — the corpus was not "
+            "actually consulted for this task. Proceeding anyway (corpus_gate "
+            "fails open), but architecture compliance for this task has not "
+            "been verified against the corpus. If this task touches "
+            "constrained areas, verify manually."
+        )
+    constraints = check.get("constraints") or []
+    if not constraints:
+        return (
+            "## Corpus Gate — no relevant constraints\n\n"
+            "The pre-dispatch architecture corpus check ran successfully and "
+            "found no constraints relevant to this task. Proceeding — this "
+            "is a legitimate empty result, not a check failure."
+        )
+    lines = [
+        "## Constraints to Check\n",
+        "The architecture corpus has normative constraints relevant to this "
+        "task. Treat these as hard constraints:\n",
+    ]
+    for c in constraints:
+        source = c.get("source", "?")
+        content = c.get("content", "")
+        lines.append(f"- [{source}] {content}")
+    return "\n".join(lines)
 
 
 def _drain_stdout(proc: subprocess.Popen, task: Task, prompt_file: str = "") -> None:
@@ -232,6 +291,17 @@ def tommy_dispatch(
     the same tommy.prompt.build_prompt() loader, plus a non-interactive
     framing note and this task appended as the final layer.
 
+    Corpus gate (issue #109): when the target workspace's tommy.yaml sets
+    corpus.corpus_gate: true, this task's text is checked against the
+    architecture corpus (POST /corpus/check) BEFORE the harness launches,
+    and the result is injected as its own prompt layer ahead of the task
+    itself. Fail-open-but-visible: a match, an empty "nothing relevant"
+    result, and a check-that-could-not-run are three DISTINCT outcomes, all
+    rendered differently in the prompt, and none of them blocks the
+    dispatch. The returned dict also carries a "corpus_gate" key with the
+    same {"ok": ..., "constraints"/"error": ...} result whenever the gate
+    ran (absent entirely when corpus_gate is off).
+
     Args:
         task:         Task description / full prompt.
         harness:      Which harness: 'auto', 'claude', 'codex', etc.
@@ -253,6 +323,45 @@ def tommy_dispatch(
         proj = cfg.project_by_key(_active_project)
         if proj and not workspace:
             ws_path = Path(getattr(proj, "git_root", str(Path.cwd())))
+
+    # --- Corpus gate (issue #109) ------------------------------------------
+    # tommy.yaml's corpus.corpus_gate/design work moved config-reading here
+    # from tommy.conf per #109's amendment comment (depends on #113's
+    # project_config.py/effective_config.py). tommy.yaml is discovered
+    # relative to ws_path (the workspace this dispatch is about to run in),
+    # not CWD — a dispatch into a different project's workspace must gate on
+    # THAT project's tommy.yaml, not whatever directory the MCP server
+    # process happened to start in.
+    constraint_block: Optional[str] = None
+    corpus_gate_result: Optional[dict] = None
+    try:
+        effective = resolve_effective_config(project_root=ws_path)
+    except TommyYamlError as exc:
+        # A broken tommy.yaml must not block dispatch (fail-open), but it
+        # also must not silently disable a gate the user explicitly asked
+        # for — same "never silently swallow" principle the corpus check
+        # itself is held to, extended one layer up to config resolution.
+        # We can't know here whether corpus_gate was even requested (the
+        # file that would say so is what failed to parse), so we surface
+        # the parse failure itself rather than guessing either way.
+        corpus_gate_result = {"ok": False, "constraints": [],
+                               "error": f"tommy.yaml could not be read: {exc}"}
+        constraint_block = _format_constraint_block(corpus_gate_result)
+    else:
+        if effective.value("corpus_gate"):
+            # effective.value("namespace") (tommy.conf -> tommy.yaml's
+            # memnos.namespace -> env), not _effective_namespace(cfg) (the
+            # active-project helper used below for inject_memory) — the two
+            # coincide today (ProjectEntry carries no `namespace` field, so
+            # _effective_namespace(cfg) always falls through to
+            # cfg.default_ns), but the corpus gate is deliberately
+            # tommy.yaml-namespace-aware since we're already resolving that
+            # config object right here to read corpus_gate itself. See PR
+            # description "Design decisions" for the full reasoning.
+            ns = effective.value("namespace")
+            corpus_gate_result = _corpus_check(cfg, ns, task)
+            constraint_block = _format_constraint_block(corpus_gate_result)
+    # ------------------------------------------------------------------------
 
     # Optionally inject memnos context
     task_with_memory = task
@@ -276,7 +385,10 @@ def tommy_dispatch(
     # harness" line so it reflects what's actually being launched even when
     # the caller overrides the default harness via the `harness` argument.
     prompt_cfg = replace(cfg, harness=chosen)
-    full_prompt = build_prompt(prompt_cfg, project_key=_active_project, task=task_with_memory)
+    full_prompt = build_prompt(
+        prompt_cfg, project_key=_active_project, task=task_with_memory,
+        constraint_block=constraint_block,
+    )
 
     tf = tempfile.NamedTemporaryFile(
         mode="w", suffix=".md", prefix="tommy-mcp-", delete=False
@@ -330,14 +442,20 @@ def tommy_dispatch(
     _tasks[task_id] = t
 
     if async_run:
-        return {"task_id": task_id, "status": "running", "harness": chosen}
+        result = {"task_id": task_id, "status": "running", "harness": chosen}
+        if corpus_gate_result is not None:
+            result["corpus_gate"] = corpus_gate_result
+        return result
 
     proc.wait()
     # Join the drain thread so all buffered stdout is captured before tail().
     # Without this, tail() may return truncated output on fast-exiting processes.
     drain.join(timeout=10.0)
     ctrl.close()  # release the control channel socket (no harness will reconnect now)
-    return {"task_id": task_id, "status": t.status(), "output": t.tail(200)}
+    result = {"task_id": task_id, "status": t.status(), "output": t.tail(200)}
+    if corpus_gate_result is not None:
+        result["corpus_gate"] = corpus_gate_result
+    return result
 
 
 @mcp.tool()

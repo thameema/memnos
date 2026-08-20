@@ -15,6 +15,7 @@ Usage:
 """
 from __future__ import annotations
 
+import fnmatch
 import glob
 import os
 import subprocess
@@ -29,6 +30,9 @@ import click
 
 from . import __version__
 from .config import TommyConfig
+from .corpus import corpus_ingest as _http_corpus_ingest, corpus_list as _http_corpus_list
+from .effective_config import EffectiveConfig, resolve_effective_config
+from .project_config import TommyYamlError
 from .prompt import build_prompt
 from .install import run_install
 from .mcp_server import run_stdio
@@ -164,6 +168,166 @@ def _post_run_capture(client, cfg: TommyConfig, run_id: str, project_key: Option
         )
     except Exception:
         pass  # capture is best-effort — never block the user
+
+
+# ---------------------------------------------------------------------------
+# Auto-ingest design docs into the corpus (issue #109)
+# ---------------------------------------------------------------------------
+
+
+def _git(repo_root: Path, *args: str) -> Optional[str]:
+    """Run a git command in `repo_root`. Returns stripped stdout on success
+    (exit 0), None on any failure (non-zero exit, git not on PATH, or a
+    timeout) — callers treat None as "can't determine this, skip the
+    auto-ingest step" rather than raising."""
+    try:
+        out = subprocess.run(
+            ["git", *args], cwd=str(repo_root),
+            capture_output=True, text=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def _git_diff_base(repo_root: Path) -> Optional[str]:
+    """Return the commit to diff HEAD against for auto-ingest change
+    detection, or None if `repo_root` isn't inside a git repo (or git isn't
+    on PATH) — the caller must skip auto-ingest entirely in that case, not
+    crash the CLI.
+
+    Prefers HEAD~10 (the original scope's window). Falls back to the oldest
+    commit git currently has (the true root commit — or, on a shallow
+    clone, the shallow boundary commit git grafts in as if it had no
+    parents) when history has fewer than 10 commits, so a fresh checkout or
+    a CI shallow clone still gets *a* diff instead of a crash or a silent
+    no-op. Trade-off, stated plainly: on a single-commit repo the "oldest
+    commit" IS HEAD, so the diff is empty and nothing gets ingested until a
+    second commit exists — a real gap for a brand-new repo's first design
+    docs, accepted for v1 rather than special-cased against the empty tree.
+    """
+    if _git(repo_root, "rev-parse", "--is-inside-work-tree") != "true":
+        return None
+    verified = _git(repo_root, "rev-parse", "--verify", "--quiet", "HEAD~10")
+    if verified:
+        return verified
+    roots = _git(repo_root, "rev-list", "--max-parents=0", "HEAD")
+    if roots:
+        # A history with multiple unrelated roots (rare) yields multiple
+        # lines; the first is a deterministic, good-enough choice — diffing
+        # against any root still surfaces every design-doc change on this
+        # branch since project inception.
+        return roots.splitlines()[0]
+    return None
+
+
+def _changed_files_since(repo_root: Path, base_ref: str) -> list[str]:
+    """git diff --name-only <base_ref> HEAD, as repo-root-relative paths.
+    Returns [] (not an error) if the diff itself fails for any reason."""
+    diff = _git(repo_root, "diff", "--name-only", base_ref, "HEAD")
+    if diff is None:
+        return []
+    return [line.strip() for line in diff.splitlines() if line.strip()]
+
+
+def _auto_ingest_changed_docs(
+    cfg: TommyConfig, effective: EffectiveConfig, client, repo_root: Path,
+) -> None:
+    """Ingest changed design docs into the corpus (issue #109's
+    corpus.auto_ingest). Called once per `tommy` launch when auto_ingest is
+    on (see main()'s call site) — deliberately launch-time rather than
+    post-run-only, so THIS launch's corpus_gate checks (which run inside
+    tommy_dispatch, in a separate process) see doc edits made before this
+    launch rather than only the next one. See this feature's PR description
+    ("Design decisions") for the full reasoning, including the asymmetry
+    this creates: auto-ingest only runs on this (interactive CLI) path,
+    while corpus_gate only runs on the tommy_dispatch (MCP) path — per
+    issue #109's file-by-file scope, they never fire in the same process.
+
+    Best-effort / never blocks the launch: a git failure, an unreachable
+    memnos, a read-only token (403 from the WRITE_OPS-gated /corpus/ingest),
+    or no design_docs glob configured are all logged to stderr and
+    swallowed — the same fail-open-but-visible posture corpus_gate itself
+    uses, extended here because a developer's `tommy` launch must never
+    fail over corpus bookkeeping.
+    """
+    design_docs_globs = effective.value("design_docs")
+    if not design_docs_globs:
+        return  # nothing configured — quiet no-op, not a misconfiguration
+
+    if client is None:
+        click.echo("  auto_ingest: skipped (memnos unreachable)", err=True)
+        return
+
+    base_ref = _git_diff_base(repo_root)
+    if base_ref is None:
+        click.echo(
+            f"  auto_ingest: skipped ({repo_root} is not a git repository, or git is unavailable)",
+            err=True,
+        )
+        return
+
+    changed = _changed_files_since(repo_root, base_ref)
+    matched = sorted({
+        f for f in changed
+        if any(fnmatch.fnmatch(f, pattern) for pattern in design_docs_globs)
+    })
+    if not matched:
+        return  # no design-doc changes in this window — the common case, stays quiet
+
+    namespace = effective.value("namespace")
+
+    # Snapshot constraint counts BEFORE re-ingesting: ingest_constraints()
+    # deletes-then-reinserts a source's constraints on every re-ingest
+    # (core/store.py — idempotent by design), so a doc that gets truncated,
+    # emptied, or has its SHALL/MUST language reworded away would otherwise
+    # silently wipe every constraint future corpus_gate checks derive from
+    # it (issue #109's "silent constraint wipe" open question). We don't
+    # block on this (fail-open) — just make a drop loudly visible.
+    prior_counts: dict[str, int] = {}
+    listing = _http_corpus_list(cfg.memnos_url, cfg.memnos_token, namespace)
+    if listing.get("ok"):
+        prior_counts = {s["name"]: s.get("constraint_count", 0) for s in listing.get("sources", [])}
+
+    head_sha = _git(repo_root, "rev-parse", "HEAD")
+
+    click.echo(
+        f"  auto_ingest: {len(matched)} changed design doc(s) match design_docs — "
+        f"ingesting into corpus ({namespace})",
+        err=True,
+    )
+    for rel_path in matched:
+        full_path = repo_root / rel_path
+        if not full_path.is_file():
+            continue  # deleted (or renamed away) within this diff window — nothing to ingest
+
+        try:
+            text = full_path.read_text(errors="replace")
+        except OSError as exc:
+            click.echo(f"    ⚠ {rel_path}: could not read ({exc}) — skipped", err=True)
+            continue
+
+        result = _http_corpus_ingest(
+            cfg.memnos_url, cfg.memnos_token, namespace, rel_path, text,
+            kind="doc", git_sha=head_sha,
+        )
+        if not result.get("ok"):
+            click.echo(f"    ✗ {rel_path}: ingest failed — {result.get('error')}", err=True)
+            continue
+
+        new_count = result.get("constraints", 0)
+        old_count = prior_counts.get(rel_path)
+        if old_count and new_count == 0:
+            click.echo(
+                f"    ⚠ {rel_path}: re-ingest dropped constraints {old_count} -> 0 — "
+                "every corpus_gate check relying on this source just lost that coverage; "
+                "verify the doc still has real SHALL/MUST/SHOULD language",
+                err=True,
+            )
+        elif old_count is not None and new_count < old_count:
+            click.echo(f"    ⚠ {rel_path}: constraints {old_count} -> {new_count} (decreased)", err=True)
+        else:
+            click.echo(f"    ✓ {rel_path}: {new_count} constraint(s) ingested", err=True)
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +701,32 @@ def main(
                 "   (Start memnos or use --no-memnos-check to suppress this warning.)",
                 err=True,
             )
+    # ────────────────────────────────────────────────────────────────────
+
+    # ── auto-ingest design docs into the corpus (issue #109) ──────────────
+    # Workspace root for both tommy.yaml discovery and the git-diff window:
+    # the selected project's git_root if one is active, else CWD — mirrors
+    # _launch_harness()'s own ws_path resolution below (project git_root >
+    # CWD), computed separately here since effective-config resolution and
+    # the harness launch are independent steps that both need it.
+    workspace_root = Path.cwd()
+    if project:
+        proj = cfg.project_by_key(project)
+        if proj:
+            candidate = Path(proj.git_root).expanduser().resolve()
+            if candidate.is_dir():
+                workspace_root = candidate
+    try:
+        effective = resolve_effective_config(project_root=workspace_root)
+    except TommyYamlError as exc:
+        # A broken tommy.yaml must not block the launch (fail-open) — this
+        # is the interactive path; a developer needs their harness to start
+        # even with a bad tommy.yaml. Surface it rather than silently
+        # skipping auto_ingest, though: it may have been requested.
+        click.echo(f"⚠️  tommy.yaml could not be read — auto_ingest skipped: {exc}", err=True)
+        effective = None
+    if effective is not None and effective.value("auto_ingest"):
+        _auto_ingest_changed_docs(cfg, effective, client, workspace_root)
     # ────────────────────────────────────────────────────────────────────
 
     if ask_permissions:
