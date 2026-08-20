@@ -39,6 +39,12 @@ from .mcp_server import run_stdio
 from .control import ControlServer
 from .discovery.harnesses import all_harnesses, apply_skip_permissions, apply_session_name
 from .generate_cmd import config_group, generate_command
+from .secrets import (
+    SecretResolutionError,
+    collect_secret_refs,
+    resolve_secret_env,
+    secret_resolve_client,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +388,62 @@ def _launch_harness(
         )
         sys.exit(1)
 
+    # Resolve working directory: project git_root > CWD. Computed here (moved
+    # up from its original spot just above the Popen call below) because
+    # Secret Shield's tommy.yaml discovery, right below, needs to search from
+    # the harness's actual working directory, not necessarily Tommy's own
+    # CWD. Pure reordering — the computation itself is unchanged.
+    ws_path: Path = Path.cwd()
+    if project_key:
+        proj = cfg.project_by_key(project_key)
+        if proj:
+            candidate = Path(proj.git_root).expanduser().resolve()
+            if candidate.is_dir():
+                ws_path = candidate
+
+    # ── Secret Shield (issue #115) ────────────────────────────────────────
+    # Resolve secret://NAME references BEFORE any other launch-prep work —
+    # before build_prompt(), before the prompt tempfile is written, before
+    # ControlServer binds a port. This is deliberately earlier than "before
+    # env = os.environ.copy()" below: a written tempfile and a bound control
+    # socket are both live state that a later fail-closed check would have
+    # to clean up, and the original design ("resolve immediately before
+    # env.copy()") was verified too late for exactly that reason (see
+    # tommy/secrets.py's module docstring). Placed after the harness
+    # availability check above (a free, local check) so a misconfigured
+    # HARNESS fails via the cheaper path first — but before any network I/O.
+    #
+    # Ordering vs. issue #109's corpus-gate check, if/when #109 lands in this
+    # same function: secret resolution runs before the corpus gate, and
+    # after the harness-availability check above (a free, local check —
+    # #109's issue text places its own gate even before that; this doesn't
+    # conflict, it just means #109's gate would land between the harness
+    # check and this block). Secret resolution is a hard fail-closed
+    # security boundary; #109's corpus-gate is advisory/best-effort by its
+    # own design (see #109's "fail-open vs fail-closed" open question). A
+    # hard stop should not wait on an advisory network call whose result
+    # would be discarded anyway if secret resolution is about to abort the
+    # launch. See PR description "Design decisions" for the full reasoning.
+    resolved_secrets: dict[str, str] = {}
+    try:
+        # collect_secret_refs() degrades to "no env: entries from a broken
+        # tommy.yaml" rather than raising on a parse error — see its
+        # docstring for why (short version: a ref that never got read isn't
+        # a leak, just a missing env var; #109's auto-ingest block above
+        # already surfaces "tommy.yaml could not be read" for this same
+        # condition). Fail-closed here is for a ref that DID resolve to a
+        # name and then failed to RESOLVE.
+        secret_refs = collect_secret_refs(cfg, workspace=ws_path)
+        if secret_refs:
+            resolved_secrets = resolve_secret_env(secret_refs, secret_resolve_client(cfg))
+    except SecretResolutionError as exc:
+        click.echo(
+            f"✗ Secret resolution failed — refusing to launch harness.\n  {exc}",
+            err=True,
+        )
+        sys.exit(1)
+    # ─────────────────────────────────────────────────────────────────────
+
     prompt = build_prompt(cfg, project_key=project_key)
 
     # Write prompt to temp file (deleted after harness exits)
@@ -406,8 +468,16 @@ def _launch_harness(
     env["MEMNOS_URL"] = cfg.memnos_url
     env["TOMMY_NS"] = cfg.tommy_ns
     env["TOMMY_DEFAULT_NS"] = cfg.default_ns
+    if resolved_secrets:
+        # Real values only — never the secret:// reference string. Overlaid
+        # exactly like every other env var above; names only in the log line
+        # below, never the resolved plaintext.
+        env.update(resolved_secrets)
 
     click.echo(f"🟣 Tommy → {cfg.harness}  (smart_routing={'on' if cfg.smart_routing else 'off'})")
+    if resolved_secrets:
+        click.echo(f"  🔒 Resolved {len(resolved_secrets)} secret(s) into subprocess env: "
+                   f"{', '.join(sorted(resolved_secrets))}")
     if project_key:
         proj = cfg.project_by_key(project_key)
         if proj:
@@ -429,14 +499,8 @@ def _launch_harness(
     # ─────────────────────────────────────────────────────────────────────────────
 
     # ── Popen: Tommy stays alive ──────────────────────────────────────────
-    # Resolve working directory: project git_root > CWD
-    ws_path: Path = Path.cwd()
-    if project_key:
-        proj = cfg.project_by_key(project_key)
-        if proj:
-            candidate = Path(proj.git_root).expanduser().resolve()
-            if candidate.is_dir():
-                ws_path = candidate
+    # ws_path was resolved earlier (Secret Shield needs it for tommy.yaml
+    # discovery before build_prompt() — see above).
 
     # Do NOT use start_new_session=True on the interactive CLI path.
     # Tommy is the foreground process; without it the harness shares the same

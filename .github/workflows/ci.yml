@@ -95,6 +95,16 @@ jobs:
                                  # precondition (issue #44), which needs a genuine,
                                  # importable memnos_sdk.integrations.omnigent in this job
                                  # for its "happy path" (SDK present) assertions to hold.
+                                 # tommy-orchestrator (needed by issue #115's DB-backed Secret
+                                 # Shield tests below) is deliberately NOT installed here —
+                                 # see the "Install Tommy" step, placed after "Run full test
+                                 # suite": tommy pulls in fastmcp (-> mcp, pydantic v2, httpx,
+                                 # typer, rich, anyio), and installing it into THIS job's venv
+                                 # before the root suite runs risks pip re-resolving one of
+                                 # requirements.txt's own pins to satisfy it — letting the root
+                                 # suite run to completion first, untouched by tommy's
+                                 # dependency closure, removes that risk entirely rather than
+                                 # just hoping pip's resolution doesn't move anything.
       - name: Prefetch + verify models (retry; clean-redownload on a corrupt cache)
         # The reranker/embedding ONNX weights are pulled from HF Hub, which rate-limits
         # unauthenticated pulls. A bare constructor is lazy, so a partial/corrupt cache only
@@ -163,6 +173,34 @@ jobs:
             echo "::endgroup::"
           done
           exit $fail
+      - name: Install Tommy (issue #115 DB-backed acceptance tests only)
+        # Installed here, AFTER the root suite has already run to completion above —
+        # NOT in "Install deps" — so tommy's dependency closure (fastmcp -> mcp,
+        # pydantic v2, httpx, typer, rich, anyio) can never cause pip to re-resolve one
+        # of requirements.txt's own pins out from under the already-running server /
+        # already-executed root suite. AFTER `pip install ./sdk` (also in "Install
+        # deps") on purpose too: tommy-orchestrator depends on memnos-sdk>=0.1.27 — if
+        # it installed before `./sdk`, pip would satisfy that from PyPI, then the sdk
+        # install would silently overwrite it with THIS branch's local checkout;
+        # installing tommy after means the local sdk checkout is already in place and
+        # pip leaves it alone, so what's under test is unambiguous (the tests below
+        # need a real MemnosClient.resolve_secret() from THIS branch, not whatever's
+        # latest on PyPI).
+        run: pip install -e ./agents/tommy
+      - name: Run Tommy Secret Shield DB-backed acceptance tests (issue #115)
+        # test_secret_shield_e2e.py / test_secret_shield_ingest_path.py need a real
+        # memnos server + Postgres (POST /secret/resolve, POST /ingest/file, and a
+        # direct read-back of what actually got stored) — this job already has both
+        # running above, so it's the natural home for them rather than duplicating a
+        # whole new Postgres+server+model-cache job just for two files. The rest of
+        # agents/tommy/tests (pure unit tests, no DB) stays on the fast, DB-free
+        # tommy-tests job below. TOMMY_REQUIRE_SECRET_SHIELD=1 turns "server/DB
+        # unreachable" into a hard failure instead of the conftest.py's normal local
+        # skip — matching this job's own MEMNOS_REQUIRE_OMNIGENT convention above — so
+        # these acceptance criteria can't silently stop being exercised in CI.
+        env:
+          TOMMY_REQUIRE_SECRET_SHIELD: "1"
+        run: python -m pytest agents/tommy/tests/test_secret_shield_e2e.py agents/tommy/tests/test_secret_shield_ingest_path.py -v
 
   cli-smoke:
     # Cross-platform CLI smoke: the installed `memnos` entry point must render help,

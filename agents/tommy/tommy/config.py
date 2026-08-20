@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import os
 import shlex
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+from .project_config import SECRET_REF_RE
 
 _BUNDLED_DEFAULT = Path(__file__).parent / "tommy.conf.default"
 _USER_CONF = Path.home() / ".memnos" / "agents" / "tommy" / "tommy.conf"
@@ -34,6 +37,36 @@ class ProjectEntry:
     name: str         # display name, e.g. "MyApp"
     jira_project: str # JIRA key, e.g. "APP"
     git_root: Path    # absolute path
+
+
+def _parse_secret_env(raw: str) -> dict[str, str]:
+    """Parse SECRET_ENV=ENV_VAR:secret://NAME,OTHER_VAR:secret://OTHER  (comma-separated).
+
+    Unlike _parse_projects's silent-skip-on-malformed convention, a malformed
+    entry here is printed loudly to stderr and dropped rather than silently
+    ignored — a security-relevant misconfiguration (a typo'd reference that
+    silently never gets injected) is a worse failure mode than a noisy
+    startup warning. It is still dropped, not fatal: TommyConfig.load() must
+    stay usable even with a bad tommy.conf line, the same way every other
+    field here degrades gracefully.
+    """
+    result: dict[str, str] = {}
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        env_name, sep, ref = chunk.partition(":")
+        env_name, ref = env_name.strip(), ref.strip()
+        if not sep or not env_name:
+            print(f"[tommy] SECRET_ENV: malformed entry {chunk!r} (want ENV_VAR:secret://NAME) — skipped",
+                  file=sys.stderr)
+            continue
+        if not SECRET_REF_RE.match(ref):
+            print(f"[tommy] SECRET_ENV: {env_name} value {ref!r} is not a valid secret:// "
+                  "reference — skipped", file=sys.stderr)
+            continue
+        result[env_name] = ref
+    return result
 
 
 def _parse_projects(raw: str) -> list[ProjectEntry]:
@@ -71,6 +104,7 @@ class TommyConfig:
     memnos_url: str = "http://127.0.0.1:8900"
     memnos_token: Optional[str] = None
     skip_permissions: bool = True   # prepend --dangerously-skip-permissions to claude launch
+    secret_env: dict[str, str] = field(default_factory=dict)  # ENV_VAR -> secret://NAME (issue #115)
 
     # derived
     _raw: dict[str, str] = field(default_factory=dict, repr=False)
@@ -127,6 +161,8 @@ class TommyConfig:
             cfg.memnos_token = raw["MEMNOS_TOKEN"]
         if "SKIP_PERMISSIONS" in raw:
             cfg.skip_permissions = raw["SKIP_PERMISSIONS"].lower() in ("on", "true", "1", "yes")
+        if "SECRET_ENV" in raw:
+            cfg.secret_env = _parse_secret_env(raw["SECRET_ENV"])
 
         return cfg
 
