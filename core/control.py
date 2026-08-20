@@ -307,6 +307,48 @@ CREATE UNIQUE INDEX IF NOT EXISTS leases_active
     ON memnos_control.leases(namespace, key) WHERE released_at IS NULL;
 """
 
+# Pseudo-namespace convention for secret-resolve authorization (issue #114, "Secret
+# Shield"): POST /secret/resolve authorizes a request for secret NAME by calling
+# Control.authorize(conn, principal_id, f"{SECRET_NS_PREFIX}NAME") -- i.e. it reuses the
+# EXACT SAME grants table + CLI (`memnos grant add <principal> secret:NAME`) as real
+# memory namespaces. Zero schema changes: `secret:NAME` (exact) or `secret:*` (broad,
+# via authorize()'s existing ':*' prefix-wildcard matching) is just another row in
+# memnos_control.grants. NOT to be confused with core/vault.py's REF_PREFIX
+# ("secret://NAME") -- that's a VALUE reference substituted into config at resolve
+# time; this is a NAMESPACE string checked by authorize(), never touched by Vault.
+#
+# Real costs of reusing the namespace string space (documented, not fully solved --
+# would need a schema change to fully separate, which issue #114 rules out):
+#   1. Pseudo-namespaces are indistinguishable, at the string level, from a real memory
+#      namespace that happens to start with "secret:". An admin who ever registers an
+#      actual memory namespace under that prefix (nothing stops them -- create_namespace
+#      has no reserved-prefix check) would collide with this convention: a grant meant
+#      for that memory namespace would ALSO authorize secret-resolve calls whose name
+#      matches the suffix, and vice versa. Treat "secret:" as reserved by operator
+#      convention; not enforced.
+#   2. Pseudo-namespaces still show up wherever a principal's grants are listed/expanded
+#      as raw ACL rows -- authorized_namespaces() (CLI `whoami`/`grant ls`),
+#      effective_namespaces() (role-inherited grants), and the wildcard-expansion inputs
+#      to readable_namespaces()/writable_namespaces() (a '*' or 'secret:*' grant makes an
+#      exact "secret:NAME" grant enumerable there too). We do NOT filter those: they are
+#      the ENFORCEMENT path authorize() depends on, and no namespace starting with
+#      "secret:" is ever written to tenant_memnos.raw_turns/semantic (Vault storage is a
+#      completely separate table), so a pseudo-namespace surfacing in a wide-recall fan-out
+#      or a `whoami` grant listing yields zero memory rows -- never a plaintext leak, just
+#      a cosmetic namespace-shaped string. We DO filter the two admin-facing namespace
+#      CENSUS queries below (list_namespaces, namespace_prune_candidates) so a secret
+#      grant never masquerades as a real (browsable/prunable) memory namespace in the
+#      console or CLI -- see the `secret:` exclusion in both queries' grants UNION branch.
+#      Without that filter, `memnos namespace prune --empty` would treat a `secret:NAME`
+#      grant as an "empty" namespace candidate and delete_namespace() would silently
+#      revoke it (delete_namespace unconditionally deletes matching grants rows).
+#   3. '*' matches every namespace per authorize()'s existing semantics, INCLUDING every
+#      "secret:NAME" pseudo-namespace. Granting a new, narrower `secret:NAME` scope to a
+#      new token does not revoke or narrow any existing '*'-admin principal's ability to
+#      resolve that (or any other) secret -- narrower grants are strictly additive, never
+#      a retroactive reduction of an existing admin token's blast radius.
+SECRET_NS_PREFIX = "secret:"
+
 
 def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
@@ -1256,7 +1298,13 @@ class Control:
         write auto-registered it (auto_registered=true) — that distinction drives the
         "discovered" pill in ui/app.js, so a namespace that only self-registered on write
         must still read as unregistered here even though it now has a memnos_control.
-        namespaces row (issue #41 made every namespace with data get one)."""
+        namespaces row (issue #41 made every namespace with data get one).
+
+        issue #114: the grants-sourced branch below excludes `secret:`-prefixed rows --
+        those are secret-resolve pseudo-namespace grants (SECRET_NS_PREFIX, see the module
+        docstring above Control), not real memory namespaces, and must never appear here
+        as a browsable/creatable-looking namespace in the console or `memnos namespace ls`
+        (they have no data and never will -- Vault storage is a separate table)."""
         with conn.cursor() as c:
             c.execute("""
                 WITH names AS (
@@ -1265,6 +1313,7 @@ class Control:
                     UNION SELECT DISTINCT namespace FROM tenant_memnos.semantic
                     UNION SELECT DISTINCT namespace FROM memnos_control.grants
                       WHERE namespace <> '*' AND namespace NOT LIKE '%*'
+                        AND namespace NOT LIKE 'secret:%'
                 )
                 SELECT nm.name, n.description, n.created_at, p.name AS created_by,
                   COALESCE(n.kind, 'memory') AS kind,
@@ -1290,7 +1339,14 @@ class Control:
         also carries `bound`: True if a bindings row currently routes some repo/host to
         this namespace — delete_namespace() always revokes grants (even without
         purge_data), so deleting a bound namespace would 403 that binding's next write;
-        the caller should skip these unless the user explicitly forces past them."""
+        the caller should skip these unless the user explicitly forces past them.
+
+        issue #114: same `secret:`-prefix exclusion as list_namespaces() (see that
+        docstring, and SECRET_NS_PREFIX above Control) -- WITHOUT it, a `secret:NAME`
+        pseudo-namespace grant would look exactly like an empty, safe-to-delete memory
+        namespace (0 turns, 0 facts) and `memnos namespace prune --empty` would silently
+        revoke a live secret-resolve grant via delete_namespace()'s unconditional
+        `DELETE FROM grants WHERE namespace=...`."""
         with conn.cursor() as c:
             c.execute("""
                 WITH names AS (
@@ -1299,6 +1355,7 @@ class Control:
                     UNION SELECT DISTINCT namespace FROM tenant_memnos.semantic
                     UNION SELECT DISTINCT namespace FROM memnos_control.grants
                       WHERE namespace <> '*' AND namespace NOT LIKE '%%*'
+                        AND namespace NOT LIKE 'secret:%%'
                 ), stats AS (
                     SELECT nm.name,
                       COALESCE(rt.cnt,0) AS turns, COALESCE(sm.cnt,0) AS facts,

@@ -98,6 +98,21 @@ class MemnosClient:
             "namespace": _ns(namespace, self.namespace), "query": query,
             "helpful": bool(helpful), "note": note}))
 
+    def resolve_secret(self, name) -> str:
+        """Resolve a stored secret (server-side `core/vault.py` Vault) to its DECRYPTED
+        plaintext value over HTTP -- POST /secret/resolve (issue #114, "Secret Shield").
+        Not namespace-scoped: the server authorizes the request against the
+        pseudo-namespace `secret:<name>` (or a broader `secret:*`/`*` grant) on the
+        caller's own token, via the server's normal grant machinery
+        (`memnos grant add <principal> secret:<name>`).
+
+        Raises MemnosError(403) if the token isn't authorized for this secret, or
+        MemnosError(404) if no secret with that name is stored. The plaintext is
+        returned exactly once per call and never logged by the server -- callers
+        should inject it directly (e.g. into a subprocess environment) rather than
+        printing, storing, or forwarding it into LLM-visible content."""
+        return _raise(self._c.post("/secret/resolve", json={"name": name}))["value"]
+
     def healthy(self) -> bool:
         try:
             return self._c.get("/healthz").status_code == 200
@@ -158,6 +173,10 @@ class AsyncMemnosClient:
         return _raise(await self._c.post("/feedback", json={
             "namespace": _ns(namespace, self.namespace), "query": query,
             "helpful": bool(helpful), "note": note}))
+
+    async def resolve_secret(self, name) -> str:
+        """Async counterpart of MemnosClient.resolve_secret -- see its docstring."""
+        return _raise(await self._c.post("/secret/resolve", json={"name": name}))["value"]
 
     async def aclose(self):
         await self._c.aclose()

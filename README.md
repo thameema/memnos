@@ -279,7 +279,9 @@ namespace, and provenance links trace facts back to the turns they came from.
 - **Attribution:** the server stamps the authenticated principal as author — clients
   can't spoof it via the request body.
 - **Audit + usage ledger:** who/what/when + per-op LLM cost.
-- **Secret vault:** AES-256-GCM, value-refs (`secret://name`), key rotation.
+- **Secret vault:** AES-256-GCM, value-refs (`secret://name`), key rotation. Resolvable
+  over HTTP via `POST /secret/resolve`, authorized per-secret through a pseudo-namespace
+  grant (`secret:name`) — see [`docs/api.md`](docs/api.md#secrets).
 - **Redaction:** secret-shaped text is stripped from remembered messages before storage.
 - **Health heuristic:** `memnos health` turns metrics into actionable findings.
 
