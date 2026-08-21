@@ -494,11 +494,16 @@ as leads, not confirmed violations.
 
 ### `tommy_verdict` — post-dispatch diff-against-corpus verdict
 
-Diffs one already-dispatched `tommy_dispatch` task (`git diff HEAD~1 HEAD` in
-the exact workspace that task ran in) against the architecture corpus, via
+Diffs one already-dispatched `tommy_dispatch` task (`git diff
+<dispatch_head_sha> HEAD` in the exact workspace that task ran in, where
+`dispatch_head_sha` is `git rev-parse HEAD` captured right before the
+harness was launched — not `HEAD~1`, which has no relationship to when the
+task was actually dispatched) against the architecture corpus, via
 memnos#105's real `/corpus/check_diff` verdict endpoint — a real
 violated/satisfied/uncovered classification, not `tommy_drift_sweep`'s
-keyword-matched `recall_fallback`.
+keyword-matched `recall_fallback`. A still-`"running"` task is refused
+outright rather than diffed mid-flight — see `merge_blocked_reason`
+`"unverified"` below.
 
 ```
 tommy_verdict(task_id="a3f1b2c4")

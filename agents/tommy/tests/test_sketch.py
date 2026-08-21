@@ -127,6 +127,57 @@ sequenceDiagram
         assert "Server must not log the raw request body." in text
         assert warnings == []
 
+    def test_note_inside_alt_gets_the_same_conditional_prefix_as_arrows(self):
+        # Regression: a Note-derived prohibition inside a supported `alt`
+        # block used to be emitted as an absolute, unconditional statement
+        # — silently dropping the enclosing alt's condition entirely, unlike
+        # arrow-derived SHALL statements (test_alt_else_become_when_
+        # condition_prefixes above), which already got nearest_active_alt()'s
+        # "When <condition>, ..." prefix. On unfixed code this diagram
+        # produces the bare, unconditional "Server must not accept writes."
+        # with zero warning — exactly the "silently over-broadened into an
+        # absolute rule" failure this module's docstring says v1 must never
+        # do.
+        diagram = """
+sequenceDiagram
+    participant S as Server
+    alt only in maintenance mode
+        Note over S: Server must not accept writes
+    end
+"""
+        text, warnings = _mermaid_to_cfc(diagram, "maint-flow")
+        assert 'When only in maintenance mode, Server must not accept writes.' in text
+        # The old, unconditional form must be gone — not just the new form
+        # additionally present.
+        assert text.count("Server must not accept writes.") == 1
+        assert "\nServer must not accept writes." not in text
+        assert warnings == []
+        # The alt-prefixed prohibition must still be genuinely extractable
+        # by core/store.py's real RFC-2119 keyword regex — a fix that made
+        # the statement conditional but broke extractability would trade
+        # one silent failure for another.
+        lines = _constraint_lines(text)
+        assert any(_REAL_CONSTRAINT_RE.search(line.upper()) for line in lines)
+
+    def test_note_outside_alt_stays_unconditional(self):
+        # Sibling case to the alt-prefix regression above: a prohibition
+        # Note that is NOT inside any alt block must keep reading as an
+        # absolute statement — nearest_active_alt() must return None here,
+        # not a stale condition from some earlier block.
+        diagram = """
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+    alt some condition
+        C->>S: Submit request
+    end
+    Note over S: Server must not accept writes
+"""
+        text, warnings = _mermaid_to_cfc(diagram, "unconditional-flow")
+        assert "Server must not accept writes." in text
+        assert "When some condition, Server must not accept writes." not in text
+        assert warnings == []
+
     def test_note_without_negation_produces_no_constraint(self):
         diagram = """
 sequenceDiagram

@@ -22,7 +22,11 @@ applies four transformations to a flat, single-level sequence diagram:
     those tokens carry in real mermaid are not distinguished in the
     generated CFC text.
   - Flat, single-level `alt`/`else` blocks become "When <condition>, ..."
-    prefixes on every statement generated from arrows inside that branch.
+    prefixes on every statement generated from arrows OR prohibition Notes
+    inside that branch — a prohibition sitting inside an `alt` is exactly as
+    conditional as an arrow is, and gets the identical `nearest_active_alt()`
+    prefix treatment so it is never silently broadened into an absolute
+    rule.
   - `Note ...` lines (`over`/`left of`/`right of`, including `Note over`
     spanning multiple comma-separated participants) whose text contains a
     negative RFC-2119-style phrase ("must not", "shall not", "should not",
@@ -226,6 +230,14 @@ def _mermaid_to_cfc(mermaid_text: str, flow_name: str) -> tuple[str, list[str]]:
             text = m.group("text").strip()
             if _PROHIBITION_RE.search(text):
                 sentence = text if text.endswith((".", "!", "?")) else text + "."
+                # Same conditional-prefixing arrow-derived SHALL statements
+                # get below (see nearest_active_alt() call at the arrow
+                # branch) — a Note sitting inside a supported alt block is
+                # just as conditional as an arrow is, and must not be
+                # silently over-broadened into an absolute prohibition.
+                active_alt = nearest_active_alt()
+                if active_alt is not None:
+                    sentence = f"When {active_alt.condition}, {sentence}"
                 constraint_lines.append(sentence)
             continue
 
