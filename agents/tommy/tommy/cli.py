@@ -37,7 +37,13 @@ from .prompt import build_prompt
 from .install import run_install
 from .mcp_server import run_stdio
 from .control import ControlServer
-from .discovery.harnesses import all_harnesses, apply_skip_permissions, apply_session_name
+from .discovery.harnesses import (
+    all_harnesses,
+    apply_prompt_arg,
+    apply_session_name,
+    apply_skip_permissions,
+    DISPATCH_TRIGGER_PROMPT,
+)
 from .generate_cmd import config_group, generate_command
 from .secrets import (
     SecretResolutionError,
@@ -463,6 +469,41 @@ def _launch_harness(
     _session_name = f"Tommy | {project_key.upper()}" if project_key else "Tommy"
     cmd = apply_session_name(cmd, cfg.harness, _session_name)
 
+    # memnos#132: two DIFFERENT questions, deliberately not conflated into
+    # one flag — claude itself keeps them separate, and testing showed a
+    # single combined check gets the wrong answer on `tommy | tee log.txt`
+    # run from a real terminal (stdin IS a TTY, stdout is NOT):
+    #
+    #   1. Will claude auto-enter print mode and therefore require a real
+    #      prompt (positional or stdin)? This is driven by claude's own
+    #      STDOUT, not stdin (confirmed via `claude --help`: "...or when
+    #      stdout is not a TTY, e.g. piped or redirected output"). The
+    #      Popen() call below never overrides stdout, so the harness
+    #      child's stdout is simply whatever Tommy's own stdout is —
+    #      `sys.stdout.isatty()` here is the exact same check claude itself
+    #      would apply to the fd it actually inherits.
+    #   2. Should Tommy's own stdin be inherited by the harness child at
+    #      all? Only when it's a real terminal — that's the assumption the
+    #      SIGINT/process-group design below already makes (a human types
+    #      into the launched session). When it's NOT a TTY (`tommy` invoked
+    #      from a script/cron/CI with stdin piped or redirected, or a fifo)
+    #      inheriting it risks this issue's stdin-inheritance bug: a live,
+    #      never-closing pipe leaking into the child and never reaching EOF
+    #      — verified empirically (see mcp_server.py's dispatch Popen call
+    #      for the full writeup; same underlying claude CLI behavior).
+    #
+    # A trailing trigger prompt is appended when (1) is true UNLESS the user
+    # already supplied a real prompt via extra_args (e.g.
+    # `tommy "fix the bug" > log.txt`) — extra_args alone already satisfies
+    # print-mode's input requirement there, and appending a second
+    # positional would be wrong. `_stdin_interactive` (question 2) drives
+    # ONLY the Popen `stdin=` choice below — it has no bearing on whether a
+    # trigger is needed.
+    _print_mode_will_trigger = not sys.stdout.isatty()
+    _stdin_interactive = sys.stdin.isatty()
+    if _print_mode_will_trigger and not extra_args:
+        cmd = apply_prompt_arg(cmd, cfg.harness, DISPATCH_TRIGGER_PROMPT)
+
     # Inject MEMNOS_URL so the sub-agent's MCP config picks it up
     env = os.environ.copy()
     env["MEMNOS_URL"] = cfg.memnos_url
@@ -508,7 +549,17 @@ def _launch_harness(
     # the harness lands in a new session, SIGINT only kills Tommy, and the harness
     # keeps running unattended — confirmed repro by the remote reviewer.
     # (mcp_server.py keeps start_new_session=True for background MCP dispatches.)
-    proc = subprocess.Popen(cmd, env=env, cwd=str(ws_path))
+    #
+    # memnos#132: stdin is explicit here, never left to Popen's implicit
+    # "inherit" default — `None` (inherit the real terminal) when Tommy's
+    # own stdin genuinely is one (`_stdin_interactive`, computed above),
+    # DEVNULL otherwise. See the comment at cmd's construction above for why
+    # this is a different check than the one deciding whether a trigger
+    # prompt was needed.
+    proc = subprocess.Popen(
+        cmd, env=env, cwd=str(ws_path),
+        stdin=None if _stdin_interactive else subprocess.DEVNULL,
+    )
     try:
         proc.wait()
     except KeyboardInterrupt:

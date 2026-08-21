@@ -103,6 +103,49 @@ def apply_session_name(cmd: list[str], harness_name: str, name: str) -> list[str
     return cmd
 
 
+# Bug (memnos#132): claude auto-enters non-interactive "print mode" whenever
+# its own stdout is not a TTY (true for every tommy_dispatch launch, and for
+# the interactive CLI path whenever ITS stdout is piped/redirected too), and
+# print mode hard-requires an actual prompt via stdin or a positional
+# argument. `launch_template` only ever carries
+# `--append-system-prompt-file {prompt_file}` — system-level context, never
+# a "prompt" in claude's own CLI sense — so every non-interactive launch
+# failed immediately with "Error: Input must be provided either through
+# stdin or as a prompt argument when using --print", and no dispatched task
+# ever actually reached Claude Code. `--append-system-prompt-file` is kept
+# exactly as-is (the fused core.md + task content still arrives as *system*
+# context, not a literal user turn) — this only adds the minimal trailing
+# trigger claude's CLI itself requires to leave print-mode's input gate.
+#
+# Harness-scoped (like _SUPPORTS_SKIP_PERMISSIONS/_SUPPORTS_SESSION_NAME
+# above): only "claude" is known to have this exact contract; other
+# harnesses aren't installed/verified on this machine and are out of scope
+# for this fix (see memnos#132).
+_NEEDS_TRAILING_PROMPT_ARG = {"claude"}
+
+DISPATCH_TRIGGER_PROMPT = (
+    "Begin. Follow the instructions and the task described in the system "
+    "prompt above."
+)
+
+
+def apply_prompt_arg(cmd: list[str], harness_name: str, trigger: str) -> list[str]:
+    """Append `trigger` as a trailing positional prompt argument for
+    harnesses whose CLI requires one to leave non-interactive print mode
+    (see memnos#132). Appended at the END of cmd — claude's own grammar is
+    `claude [options] [prompt]`, so this must come after every flag/value
+    pair already in cmd, never spliced in the middle like
+    apply_skip_permissions/apply_session_name do at the front.
+
+    No-op for harnesses not in _NEEDS_TRAILING_PROMPT_ARG, or when `trigger`
+    is falsy (callers that already have a real prompt from elsewhere, e.g.
+    cli.py's `extra_args`, should simply not call this rather than pass an
+    empty trigger)."""
+    if trigger and harness_name in _NEEDS_TRAILING_PROMPT_ARG:
+        return cmd + [trigger]
+    return cmd
+
+
 def discover() -> dict[str, HarnessSpec]:
     """Return a copy of the registry with `available` set based on PATH."""
     result = {}

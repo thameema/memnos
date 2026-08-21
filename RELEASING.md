@@ -44,6 +44,16 @@ That's it — `uv tool upgrade memnos` (or, fallback: `pip install -U memnos`) p
 version once the workflow goes green. Keep `memnos` + `memnos-sdk` + the git tag on the same
 version line (stay in **0.x** until adoption).
 
+## tommy-orchestrator: dispatch-delivery check
+
+`agents/tommy/tests/test_dispatch_stdin_isolation.py` is a real (non-mocked-harness)
+subprocess check that `tommy_dispatch` actually delivers a prompt to the `claude` harness and
+never leaks a live host stdin pipe into it (memnos#132). It runs unconditionally as part of
+the plain `agents/tommy/tests` suite (`tommy-tests` job in `.github/workflows/ci.yml`) — no
+opt-in env var, no live Claude Code credentials needed. A tommy-orchestrator release should
+never go out if this suite isn't green — don't rely on "CI was green" from memory; check that
+job specifically before cutting a release.
+
 ## Why not publish on every push to `master`?
 
 That would require auto-incrementing versions and would spam PyPI with releases nobody asked
