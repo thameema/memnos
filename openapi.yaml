@@ -665,6 +665,26 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/DbDown" }
+  /corpus/check_diff:
+    post:
+      tags: [corpus]
+      summary: Verdict (violated/satisfied/uncovered) for a unified diff against the corpus
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CorpusCheckDiffRequest" }
+      responses:
+        "200":
+          description: diff verdict
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CorpusCheckDiffResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
   /corpus/list:
     post:
       tags: [corpus]
@@ -1748,6 +1768,13 @@ components:
       description: No `namespace` field — this route is not namespace-scoped.
       properties:
         name: { type: string, description: "stored secret's name; must not contain '*'" }
+    CorpusCheckDiffRequest:
+      type: object
+      required: [namespace, diff]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        diff: { type: string, description: unified diff text (git diff / GitHub PR patch) }
+        name: { type: string, description: "optional: restrict the check to one ingested corpus source" }
     SubscribeRequest:
       type: object
       required: [namespace]
@@ -2245,6 +2272,39 @@ components:
       properties:
         name: { type: string }
         value: { type: string, description: decrypted plaintext — the value itself }
+    CorpusCheckDiffResponse:
+      type: object
+      required: [violated, satisfied, uncovered, score, evaluated]
+      description: >
+        DiffVerdict. `score` is satisfied / (satisfied + violated), and is 1.0 when that
+        denominator is 0 — check `evaluated` (violated+satisfied count) to tell a vacuous
+        1.0 (nothing evaluated) from a real one (everything evaluated was satisfied).
+      properties:
+        violated:
+          type: array
+          items: { $ref: "#/components/schemas/DiffConstraintMatch" }
+        satisfied:
+          type: array
+          items: { $ref: "#/components/schemas/DiffConstraintMatch" }
+        uncovered:
+          type: array
+          items: { $ref: "#/components/schemas/DiffConstraintMatch" }
+        score: { type: number, description: "0.0-1.0 overall compliance ratio" }
+        evaluated: { type: integer, description: "len(violated) + len(satisfied)" }
+    DiffConstraintMatch:
+      type: object
+      required: [id, content, source, score, matched_terms, added_hits, removed_hits]
+      properties:
+        id: { type: integer }
+        content: { type: string }
+        source: { type: string }
+        score: { type: number, description: FTS relevance of this constraint to the diff }
+        matched_terms:
+          type: array
+          items: { type: string }
+          description: constraint content words (RFC-2119/stopwords stripped) found in the diff
+        added_hits: { type: integer, description: matched terms found in added (+) lines }
+        removed_hits: { type: integer, description: matched terms found in removed (-) lines }
     CorpusListResponse:
       type: object
       required: [sources]

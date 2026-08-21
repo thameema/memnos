@@ -1805,6 +1805,135 @@ class BrainStore:
                 f"ORDER BY score DESC LIMIT %s", (q, ns, q, k))
             return c.fetchall()
 
+    # issue #105: diff-mode verdict. A unified diff (git diff / GitHub PR patch) is
+    # checked against the same kind='constraint' corpus corpus_check uses, but instead
+    # of a flat ranked list it returns a verdict per matched constraint: does the diff
+    # implement it (satisfied), break it (violated), or just brush against the topic
+    # with no clear directional evidence (uncovered)? Pure regex + SQL FTS, no LLM —
+    # same "no query-time LLM" discipline as every other read-side primitive here, and
+    # what makes the <5s acceptance bound trivial to hit.
+    _NEGATIVE_RE = re.compile(r"\b(SHALL NOT|MUST NOT|SHOULD NOT|MAY NOT|PROHIBITED|FORBIDDEN)\b")
+    # RFC-2119 keywords plus a small connector-word stoplist, stripped out of a
+    # constraint's own words before overlap is scored against the diff — otherwise a
+    # diff comment that merely contains "must"/"should" (extremely common in code) buys
+    # a free hit against every requirement-shaped constraint and defeats the overlap
+    # threshold below.
+    _DIFF_STOPWORDS = {
+        "shall", "must", "should", "required", "prohibited", "forbidden",
+        "this", "that", "these", "those", "with", "from", "into", "have", "has", "had",
+        "will", "would", "could", "when", "then", "than", "were", "been", "being",
+        "there", "their", "which", "what", "where", "while", "about", "after", "before",
+        "between", "during", "under", "over", "also", "only", "each", "every", "some",
+        "more", "most", "such", "same", "other", "just", "your", "them", "here", "upon",
+        "onto", "across", "does", "doing", "done", "using", "used",
+    }
+    # a candidate needs at least this many overlapping content words (post-stopword) on
+    # ONE side (added or removed) to count as real evidence; a single incidental shared
+    # word is topical noise, not proof the diff implements or violates the rule — those
+    # land in `uncovered` instead.
+    _DIFF_MIN_OVERLAP = 2
+    # diff mode's own word budget is much higher than corpus_check's 40 — a multi-file
+    # diff's relevant vocabulary is not front-loaded (unlike a single snippet), so a low
+    # first-seen-order cap can silently drop every word from a later file's hunk and the
+    # constraints only that file matters to never even become FTS candidates.
+    _DIFF_WORD_CAP = 300
+
+    @staticmethod
+    def _split_diff(diff: str) -> tuple[str, str]:
+        """Split unified diff text into (added_text, removed_text): the content of +/-
+        lines, excluding the +++/--- file-header lines and @@/diff-metadata lines."""
+        added, removed = [], []
+        for line in (diff or "").splitlines():
+            if line.startswith("+++") or line.startswith("---"):
+                continue
+            if line.startswith("+"):
+                added.append(line[1:])
+            elif line.startswith("-"):
+                removed.append(line[1:])
+            # context lines (leading space), @@ hunk headers, `diff --git`/`index` lines:
+            # not evidence of what the diff DOES, so excluded from both sides
+        return "\n".join(added), "\n".join(removed)
+
+    @classmethod
+    def _words(cls, text: str, *, strip_stopwords: bool = False) -> set[str]:
+        words = {w.lower() for w in re.findall(r"[A-Za-z]{4,}", text or "")}
+        return (words - cls._DIFF_STOPWORDS) if strip_stopwords else words
+
+    def corpus_check_diff(self, schema, ns, diff, *, name=None, k=30) -> dict:
+        """DiffVerdict: classify each constraint the diff is topically relevant to as
+        violated / satisfied / uncovered, plus an overall compliance `score`.
+
+        Per matched constraint: strip RFC-2119/connector words from its own content,
+        then compare what's left against the diff's added-lines vocabulary and
+        removed-lines vocabulary. A constraint with a SHALL NOT/MUST NOT/PROHIBITED-style
+        clause is a *prohibition*; anything else with a SHALL/MUST/SHOULD-style clause is
+        a *requirement*. Added-side evidence on a prohibition (or removed-side evidence
+        on a requirement) => violated; the mirror case => satisfied. Below the overlap
+        threshold on both sides => uncovered.
+
+        KNOWN LIMITATION (documented, not silently swallowed — see tests/test_corpus_diff_api.py
+        for a pinned example): `ingest_constraints` sentence-splits on '.', '!', '?' only,
+        so a single sentence combining a requirement clause and a prohibition clause via
+        ';' or ',' (e.g. "X MUST use the wrapper; direct commits are PROHIBITED.") ingests
+        as ONE constraint. Its polarity is decided by whether a negative keyword appears
+        ANYWHERE in the statement, so a diff that correctly implements the positive half
+        can be classified `violated` because the same statement also carries a
+        prohibition clause. Splitting compound constraints at ingest time would fix this
+        properly; out of scope here (touches `ingest_constraints`, a separate write path).
+
+        `score`: satisfied / (satisfied + violated), 1.0 if that denominator is 0 (either
+        nothing matched, or everything that matched landed in `uncovered`) — `evaluated`
+        (= len(violated) + len(satisfied)) disambiguates a vacuous 1.0 from a real one,
+        since #112 gates a merge on this and the two must not look identical.
+        """
+        self._chk(schema)
+        added_text, removed_text = self._split_diff(diff)
+        added_words = self._words(added_text)
+        removed_words = self._words(removed_text)
+        combined_words = list(dict.fromkeys(
+            w.lower() for w in re.findall(r"[A-Za-z]{4,}", added_text + "\n" + removed_text)))
+        if not combined_words:
+            return {"violated": [], "satisfied": [], "uncovered": [], "score": 1.0, "evaluated": 0}
+        q = " or ".join(combined_words[:self._DIFF_WORD_CAP])
+        name_filter = "AND subject_entity=%s " if name else ""
+        params: list = [q, ns] + ([name] if name else []) + [q, k]
+        with self.conn.cursor() as c:
+            c.execute(
+                f"SELECT id, statement AS content, subject_entity AS source, "
+                f"ts_rank(fts, websearch_to_tsquery('english',%s)) AS score "
+                f"FROM {schema}.semantic "
+                f"WHERE namespace=%s AND kind='constraint' AND expired_at IS NULL {name_filter}"
+                f"AND fts @@ websearch_to_tsquery('english',%s) "
+                f"ORDER BY score DESC LIMIT %s", params)
+            candidates = c.fetchall()
+
+        violated, satisfied, uncovered = [], [], []
+        for row in candidates:
+            content = row["content"]
+            c_words = self._words(content, strip_stopwords=True)
+            matched = c_words & (added_words | removed_words)
+            add_hits = len(c_words & added_words)
+            rem_hits = len(c_words & removed_words)
+            entry = {
+                "id": row["id"], "content": content, "source": row["source"],
+                "score": row["score"], "matched_terms": sorted(matched),
+                "added_hits": add_hits, "removed_hits": rem_hits,
+            }
+            if max(add_hits, rem_hits) < self._DIFF_MIN_OVERLAP:
+                uncovered.append(entry)
+                continue
+            is_prohibition = bool(self._NEGATIVE_RE.search(content.upper()))
+            added_dominant = add_hits >= rem_hits
+            if is_prohibition:
+                (violated if added_dominant else satisfied).append(entry)
+            else:
+                (satisfied if added_dominant else violated).append(entry)
+
+        evaluated = len(violated) + len(satisfied)
+        score = round(len(satisfied) / evaluated, 4) if evaluated else 1.0
+        return {"violated": violated, "satisfied": satisfied, "uncovered": uncovered,
+                "score": score, "evaluated": evaluated}
+
     def migrate_namespace(self, schema, src, dst, *, mode="copy", like=None) -> dict:
         """Copy or MOVE memories from one namespace to another (same tenant schema).
         `copy` (default) duplicates raw turns + facts (optional `like` substring filter on
