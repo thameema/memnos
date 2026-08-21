@@ -1839,20 +1839,63 @@ class BrainStore:
     _DIFF_WORD_CAP = 300
 
     @staticmethod
-    def _split_diff(diff: str) -> tuple[str, str]:
-        """Split unified diff text into (added_text, removed_text): the content of +/-
-        lines, excluding the +++/--- file-header lines and @@/diff-metadata lines."""
-        added, removed = [], []
-        for line in (diff or "").splitlines():
-            if line.startswith("+++") or line.startswith("---"):
+    def _split_diff_hunks(diff: str) -> list[tuple[str, str]]:
+        """Split unified diff text into per-hunk (added_text, removed_text) pairs — a new
+        pair starts at each genuine file-header pair AND at each '@@ ... @@' hunk-header
+        line, so a multi-file / multi-hunk diff never collapses into one diff-wide bucket
+        (that collapse is what let an unrelated hunk's removed-side vocabulary cancel out
+        a real violation elsewhere — see corpus_check_diff). A diff with no '@@'/header
+        structure at all (e.g. a bare content fragment) still works: everything lands in
+        the single implicit leading pair.
+
+        Two things are deliberately NOT treated as +/- evidence: genuine unified-diff
+        file-header lines ('--- a/path' immediately followed by '+++ b/path' — the
+        literal first two lines of each per-file diff block, before any hunk) and
+        '@@ ... @@' hunk-header lines. Everything else that starts with '+' or '-' is
+        real content, INCLUDING a removed/added line whose own text happens to start
+        with '--'/'++' once the single-char diff marker is prepended — e.g. a removed
+        SQL/Lua comment '-- do not skip validation' becomes the raw diff line
+        '--- do not skip validation', which starts with '---' exactly like a real file
+        header but is NOT one (the giveaway: no '+++ ...' line immediately follows it).
+        Matching on the '---'/'+++' prefix alone, anywhere in the diff, is what the old
+        _split_diff did — it silently dropped ordinary content lines like that one; this
+        only recognizes a header when the very next line completes the pair, which no
+        ordinary content line coincidentally does.
+        """
+        lines = (diff or "").splitlines()
+        hunks: list[tuple[list[str], list[str]]] = [([], [])]
+        added, removed = hunks[0]
+        i, n = 0, len(lines)
+        while i < n:
+            line = lines[i]
+            if (line.startswith("--- ") or line == "---") and i + 1 < n and (
+                    lines[i + 1].startswith("+++ ") or lines[i + 1] == "+++"):
+                added, removed = [], []
+                hunks.append((added, removed))
+                i += 2
+                continue
+            if line.startswith("@@"):
+                added, removed = [], []
+                hunks.append((added, removed))
+                i += 1
                 continue
             if line.startswith("+"):
                 added.append(line[1:])
             elif line.startswith("-"):
                 removed.append(line[1:])
-            # context lines (leading space), @@ hunk headers, `diff --git`/`index` lines:
-            # not evidence of what the diff DOES, so excluded from both sides
-        return "\n".join(added), "\n".join(removed)
+            i += 1
+        return [("\n".join(a), "\n".join(r)) for a, r in hunks]
+
+    @staticmethod
+    def _split_diff(diff: str) -> tuple[str, str]:
+        """Split unified diff text into (added_text, removed_text): the content of +/-
+        lines across the WHOLE diff, excluding genuine file-header and hunk-header lines.
+        Diff-wide on purpose — this is used only to build the FTS candidate-search
+        vocabulary (which constraints are even topically relevant) and the diagnostic
+        global hit-counts reported on `uncovered` entries; it is never used to decide
+        violated/satisfied, which is hunk-local (see corpus_check_diff / _split_diff_hunks)."""
+        hunks = BrainStore._split_diff_hunks(diff)
+        return ("\n".join(a for a, _ in hunks if a), "\n".join(r for _, r in hunks if r))
 
     @classmethod
     def _words(cls, text: str, *, strip_stopwords: bool = False) -> set[str]:
@@ -1863,13 +1906,29 @@ class BrainStore:
         """DiffVerdict: classify each constraint the diff is topically relevant to as
         violated / satisfied / uncovered, plus an overall compliance `score`.
 
-        Per matched constraint: strip RFC-2119/connector words from its own content,
-        then compare what's left against the diff's added-lines vocabulary and
-        removed-lines vocabulary. A constraint with a SHALL NOT/MUST NOT/PROHIBITED-style
-        clause is a *prohibition*; anything else with a SHALL/MUST/SHOULD-style clause is
-        a *requirement*. Added-side evidence on a prohibition (or removed-side evidence
-        on a requirement) => violated; the mirror case => satisfied. Below the overlap
-        threshold on both sides => uncovered.
+        Per matched constraint: strip RFC-2119/connector words from its own content, then
+        compare what's left against EACH HUNK's own added-lines vocabulary and
+        removed-lines vocabulary independently (hunk = one '@@ ... @@' block, or one
+        per-file section for diffs without hunk markers — see _split_diff_hunks). A
+        constraint with a SHALL NOT/MUST NOT/PROHIBITED-style clause is a *prohibition*;
+        anything else with a SHALL/MUST/SHOULD-style clause is a *requirement*. Within a
+        single hunk: added-side evidence on a prohibition (or removed-side evidence on a
+        requirement) casts a `violated` vote for that hunk; the mirror case casts a
+        `satisfied` vote. A hunk below the overlap threshold on both sides casts no vote.
+        Overall verdict = `violated` if ANY hunk voted violated, else `satisfied` if ANY
+        hunk voted satisfied, else `uncovered`.
+
+        This is deliberately hunk-local, not diff-wide: an earlier version aggregated
+        add/remove word-overlap hit counts across the ENTIRE diff, which meant an
+        unrelated hunk elsewhere in the same diff — one that happened to REMOVE content
+        sharing the constraint's vocabulary (e.g. a deleted comment) — could outweigh a
+        real, self-contained violation in a different hunk and flip the whole constraint
+        from violated to satisfied. Scoring per-hunk and letting `violated` win closes
+        that gap: one hunk's removed-side text can never cancel a different hunk's
+        added-side violation. (Residual, out of scope: a decoy deletion placed inside the
+        SAME hunk as the violating addition — close enough that git emits one hunk for
+        both — can still outweigh it locally; that's "one sentence, two clauses"-style
+        same-hunk noise, not the cross-hunk masking this fixes.)
 
         KNOWN LIMITATION (documented, not silently swallowed — see tests/test_corpus_diff_api.py
         for a pinned example): `ingest_constraints` sentence-splits on '.', '!', '?' only,
@@ -1885,13 +1944,21 @@ class BrainStore:
         nothing matched, or everything that matched landed in `uncovered`) — `evaluated`
         (= len(violated) + len(satisfied)) disambiguates a vacuous 1.0 from a real one,
         since #112 gates a merge on this and the two must not look identical.
+
+        Each returned entry's `matched_terms`/`added_hits`/`removed_hits` reflect the
+        specific hunk that decided its verdict (so the numbers a caller sees are always
+        consistent with the classification) — global diff-wide totals for `uncovered`
+        entries, since no single hunk decided those.
         """
         self._chk(schema)
-        added_text, removed_text = self._split_diff(diff)
-        added_words = self._words(added_text)
-        removed_words = self._words(removed_text)
+        hunks = self._split_diff_hunks(diff)
+        hunk_words = [(self._words(a), self._words(r)) for a, r in hunks]
+        added_words: set = set().union(*(hw[0] for hw in hunk_words))
+        removed_words: set = set().union(*(hw[1] for hw in hunk_words))
+        added_text_all = "\n".join(a for a, _ in hunks)
+        removed_text_all = "\n".join(r for _, r in hunks)
         combined_words = list(dict.fromkeys(
-            w.lower() for w in re.findall(r"[A-Za-z]{4,}", added_text + "\n" + removed_text)))
+            w.lower() for w in re.findall(r"[A-Za-z]{4,}", added_text_all + "\n" + removed_text_all)))
         if not combined_words:
             return {"violated": [], "satisfied": [], "uncovered": [], "score": 1.0, "evaluated": 0}
         q = " or ".join(combined_words[:self._DIFF_WORD_CAP])
@@ -1911,23 +1978,42 @@ class BrainStore:
         for row in candidates:
             content = row["content"]
             c_words = self._words(content, strip_stopwords=True)
-            matched = c_words & (added_words | removed_words)
-            add_hits = len(c_words & added_words)
-            rem_hits = len(c_words & removed_words)
+            is_prohibition = bool(self._NEGATIVE_RE.search(content.upper()))
+
+            # Score this constraint against each hunk independently; 'violated' wins if
+            # any hunk votes that way, regardless of what any OTHER hunk's evidence says.
+            violated_hunk = satisfied_hunk = None
+            for h_added, h_removed in hunk_words:
+                h_add = len(c_words & h_added)
+                h_rem = len(c_words & h_removed)
+                if max(h_add, h_rem) < self._DIFF_MIN_OVERLAP:
+                    continue
+                added_dominant = h_add >= h_rem
+                is_violation = added_dominant if is_prohibition else not added_dominant
+                if is_violation:
+                    if violated_hunk is None:
+                        violated_hunk = (h_add, h_rem, c_words & (h_added | h_removed))
+                elif satisfied_hunk is None:
+                    satisfied_hunk = (h_add, h_rem, c_words & (h_added | h_removed))
+
+            decisive = violated_hunk or satisfied_hunk
+            if decisive is not None:
+                add_hits, rem_hits, matched = decisive
+            else:
+                add_hits = len(c_words & added_words)
+                rem_hits = len(c_words & removed_words)
+                matched = c_words & (added_words | removed_words)
             entry = {
                 "id": row["id"], "content": content, "source": row["source"],
                 "score": row["score"], "matched_terms": sorted(matched),
                 "added_hits": add_hits, "removed_hits": rem_hits,
             }
-            if max(add_hits, rem_hits) < self._DIFF_MIN_OVERLAP:
-                uncovered.append(entry)
-                continue
-            is_prohibition = bool(self._NEGATIVE_RE.search(content.upper()))
-            added_dominant = add_hits >= rem_hits
-            if is_prohibition:
-                (violated if added_dominant else satisfied).append(entry)
+            if violated_hunk is not None:
+                violated.append(entry)
+            elif satisfied_hunk is not None:
+                satisfied.append(entry)
             else:
-                (satisfied if added_dominant else violated).append(entry)
+                uncovered.append(entry)
 
         evaluated = len(violated) + len(satisfied)
         score = round(len(satisfied) / evaluated, 4) if evaluated else 1.0

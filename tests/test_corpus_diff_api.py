@@ -223,6 +223,67 @@ def main():
           f"distinct_words={distinct_words}")
     check("multi-file diff answered in under 5s (no query-time LLM)", elapsed < 5.0, f"{elapsed:.2f}s")
 
+    # --- regression: code-review finding on #105, bug 1 ---
+    # classification must be hunk-local, not a diff-wide add/remove aggregate. A diff
+    # with ONLY the violating hunk (adds a passwords-logged call) is correctly violated;
+    # adding a SECOND, unrelated hunk elsewhere that merely REMOVES a comment sharing
+    # more of the constraint's vocabulary (matching all 4 of its words on the removed
+    # side, vs. 2 on the violating hunk's added side) must NOT flip the verdict to
+    # satisfied — the removed-side evidence lives in a different hunk than the violation
+    # and can't offset it.
+    violating_hunk = (
+        "--- a/auth_login.py\n+++ b/auth_login.py\n@@ -1,2 +1,3 @@\n"
+        " def login(password):\n"
+        '+    security_log.info(f"passwords logged during login attempt: {password}")\n'
+        "     return True\n"
+    )
+    s, j = call("POST", "/corpus/check_diff", user_tok,
+                {"namespace": NS, "diff": violating_hunk, "name": "access-lld"})
+    check("hunk-local regression, sanity: violating hunk alone -> VIOLATED",
+          s == 200 and bool(by_content(j.get("violated", []), "Passwords SHALL NOT be logged")),
+          json.dumps(j)[:400])
+
+    decoy_diff = violating_hunk + (
+        "--- a/cleanup.py\n+++ b/cleanup.py\n@@ -1,2 +1,1 @@\n"
+        "-    # passwords should never appear in application output or logged diagnostics\n"
+        " pass\n"
+    )
+    s, j = call("POST", "/corpus/check_diff", user_tok,
+                {"namespace": NS, "diff": decoy_diff, "name": "access-lld"})
+    check("hunk-local regression: an unrelated hunk's removed-side vocabulary must NOT "
+          "mask a real, hunk-local violation in a different hunk",
+          s == 200 and bool(by_content(j.get("violated", []), "Passwords SHALL NOT be logged"))
+          and not by_content(j.get("satisfied", []), "Passwords SHALL NOT be logged"),
+          json.dumps(j)[:400])
+
+    # --- regression: code-review finding on #105, bug 2 ---
+    # _split_diff must only skip GENUINE unified-diff file-header lines ('--- a/path'
+    # immediately followed by '+++ b/path'), not any content line that happens to start
+    # with '--'/'++' once its diff marker is prepended (e.g. a removed SQL/Lua comment
+    # '-- ...' becomes the raw diff line '--- ...'). A dropped removed-side comment here
+    # would leave nothing to outweigh the unrelated addition, landing this constraint in
+    # `uncovered`; correctly included, its 4-word overlap on the removed side outweighs
+    # the addition's 0, landing it in `satisfied`.
+    s, j = call("POST", "/corpus/ingest", user_tok,
+                {"namespace": NS, "name": "ledger-lld",
+                 "text": "- Ledger writes SHALL NOT skip validation before writing.\n"})
+    check("bug2 regression setup: ledger constraint ingest 200", s == 200)
+
+    sql_comment_removed_diff = (
+        "--- a/ledger.sql\n+++ b/ledger.sql\n@@ -1,2 +1,1 @@\n"
+        "--- do not skip validation before writing to the ledger\n"
+        "-SELECT 1;\n"
+        "+INSERT INTO tbl (id) VALUES (1);\n"
+    )
+    s, j = call("POST", "/corpus/check_diff", user_tok,
+                {"namespace": NS, "diff": sql_comment_removed_diff, "name": "ledger-lld"})
+    check("split_diff regression: a removed line starting with '--' (SQL comment) is "
+          "real content, not a mis-detected file header, and counts toward removed_text",
+          s == 200 and bool(by_content(j.get("satisfied", []), "Ledger writes SHALL NOT"))
+          and not by_content(j.get("uncovered", []), "Ledger writes SHALL NOT")
+          and not by_content(j.get("violated", []), "Ledger writes SHALL NOT"),
+          json.dumps(j)[:400])
+
     cleanup(conn)
     for pid in (admin_id, user_id, ro_id):
         with conn.cursor() as c:
