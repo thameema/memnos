@@ -15,7 +15,7 @@ to finish.
 ```
 ┌─────────────┐   tommy --mcp   ┌──────────────────────────────────────────┐
 │  Editor /   │ ─────────────→  │             Tommy (stdio process)         │
-│  IDE        │ ←────────────── │  8 MCP tools  ·  memnos  ·  harness mgr  │
+│  IDE        │ ←────────────── │  9 MCP tools  ·  memnos  ·  harness mgr  │
 └─────────────┘  JSON-RPC/stdio └──────────────────────┬───────────────────┘
                                                         │ Popen
                                               TOMMY_CTRL_PORT
@@ -396,6 +396,7 @@ In `~/.config/zed/settings.json`:
 | `tommy_switch_project` | Set active project (workspace + namespace) |
 | `tommy_route` | Dry-run: which harness would Tommy pick? |
 | `tommy_list_harnesses` | Available harnesses + active routing config |
+| `tommy_sketch` | Mermaid sequence diagram -> Canonical Flow Corpus (CFC) constraints -> `/corpus/ingest` |
 
 ### `tommy_dispatch`
 
@@ -426,6 +427,37 @@ tommy_control(task_id="a3f1b2c4", action="pivot",
 # Answer a question the harness asked
 tommy_control(task_id="a3f1b2c4", action="answer", message="yes, overwrite")
 ```
+
+### `tommy_sketch` — mermaid sequence diagram -> CFC constraints
+
+```
+tommy_sketch(
+    flow_name="checkout-flow",
+    mermaid_text="""
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+    C->>S: Submit order
+    alt payment succeeds
+        S-->>C: 200 OK
+    else payment fails
+        S-->>C: 402 Payment Required
+    end
+    Note over S: Server must not log raw card data
+""",
+)
+→ {"ok": True, "constraints": 4, "ids": [...], "warnings": [], "cfc_text": "..."}
+```
+
+Mermaid TEXT in — never an image (see [Known limitations](../../docs/guides/tommy.md#known-limitations)
+in the guide for why: no harness in the registry carries an image-input path). Accepts
+`mermaid_file` instead of `mermaid_text` to read from a file. The naive line-based
+`_mermaid_to_cfc()` parser (`tommy/sketch.py`) supports flat, single-level `alt`/`else`;
+nested `alt`/`opt`/`loop`, multi-line/wrapped labels, and unrecognized syntax are skipped
+and reported in the returned `warnings` list rather than silently mis-parsed. Ingests via
+`POST /corpus/ingest` with `kind="cfc"` — a `WRITE_OPS` endpoint (a read-only memnos token
+403s, surfaced as `{"ok": False, "error": "...(403)..."}`), and re-using the same
+`flow_name` DELETE-then-replaces that source's prior constraints.
 
 The harness receives the message over a **TCP loopback control channel**
 (`TOMMY_CTRL_PORT` env var) — no polling required.
