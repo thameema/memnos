@@ -8,7 +8,7 @@ Invoked by editors (Cursor, Claude Desktop, VS Code+Continue, Zed) as:
 Tommy reads MCP JSON-RPC from stdin and writes to stdout.  The editor owns
 the process — Tommy never opens a port and never runs as a daemon.
 
-Ten tools:
+Eleven tools:
   tommy_recall          — query memnos memory
   tommy_remember        — persist a fact to memnos
   tommy_dispatch        — launch a harness task (async by default)
@@ -19,6 +19,7 @@ Ten tools:
   tommy_list_harnesses  — available harnesses + health + active routing
   tommy_sketch          — mermaid sequence diagram -> CFC constraints -> corpus ingest
   tommy_drift_sweep     — check recent commits against the architecture corpus
+  tommy_verdict         — post-dispatch diff-against-corpus verdict (violated/satisfied/uncovered)
 """
 from __future__ import annotations
 
@@ -36,7 +37,11 @@ from fastmcp import FastMCP
 
 from .config import TommyConfig, ProjectEntry
 from .control import ControlServer
-from .corpus import corpus_check as _http_corpus_check, corpus_ingest as _http_corpus_ingest
+from .corpus import (
+    corpus_check as _http_corpus_check,
+    corpus_check_diff as _http_corpus_check_diff,
+    corpus_ingest as _http_corpus_ingest,
+)
 from .discovery.harnesses import all_harnesses, apply_skip_permissions, apply_session_name
 from .effective_config import resolve_effective_config
 from .project_config import TommyYamlError
@@ -59,6 +64,12 @@ class Task:
     task_id: str
     harness: str
     proc: subprocess.Popen
+    # The exact workspace tommy_dispatch launched this task in (ws_path,
+    # captured at dispatch time — issue #112: tommy_verdict diffs FROM
+    # HERE, not from whatever tommy_switch_project has made the "active
+    # project" by the time tommy_verdict is called later). Defaulted so
+    # existing Task(...) call sites/tests that don't pass it keep working.
+    workspace: str = ""
     output_lines: list = field(default_factory=list)
     _lock: object = field(default_factory=threading.Lock, repr=False)
     _drain_thread: Optional[threading.Thread] = field(default=None, repr=False)
@@ -601,7 +612,7 @@ def tommy_dispatch(
         start_new_session=True,   # decouple from Tommy's process group / TTY
     )
 
-    t = Task(task_id=task_id, harness=chosen, proc=proc)
+    t = Task(task_id=task_id, harness=chosen, proc=proc, workspace=str(ws_path))
     _task_ref[0] = t  # publish Task before any ctrl messages can be delivered
     t._ctrl = ctrl
     drain = threading.Thread(target=_drain_stdout, args=(proc, t, _tf_path), daemon=True)
@@ -759,6 +770,173 @@ def tommy_drift_sweep(commits: int = 20, namespace: str = "", workspace: str = "
         "chunks_truncated": chunks_available > len(chunks),
         "possibly_relevant_constraints": constraints,
         "check_failures": check_failures,
+    }
+
+
+# ---------------------------------------------------------------------------
+# tommy_verdict (issue #112): post-dispatch diff-against-corpus verdict.
+#
+# Unlike tommy_drift_sweep's recall_fallback mode (issue #110 — built before
+# memnos#105 shipped a real diff-verdict endpoint, and still keyword-matched
+# FTS today), tommy_verdict calls memnos#105's actual POST /corpus/check_diff
+# and returns its real violated/satisfied/uncovered classification for ONE
+# already-dispatched task's diff — not a sweep over N commits.
+#
+# merge_blocked reuses tommy.yaml's `merge_gate` field (issue #113;
+# effective_config.py's "merge_gate" — see adapters.py's harness-adapter
+# projection of the same field) rather than adding a second flag, per the
+# issue's acceptance criteria. No code enforces `merge_gate` today beyond
+# this: tommy_verdict returns `merge_blocked` as data for a caller (a human,
+# or a future CI step) to act on — it does not itself refuse anything.
+#
+# Fail posture — deliberately NOT a copy of corpus_gate's fail-open choice
+# (see PR description "Design decisions" for the full argument): corpus_gate
+# fails open because failing closed there would cost a developer their
+# entire dispatch over an advisory check that couldn't run. tommy_verdict
+# takes no action of its own — it only returns a dict — so there is no
+# equivalent cost to being conservative. When merge_gate is on (or, for a
+# broken tommy.yaml, unknown — see below) and the check could not actually
+# run (git failure, an unreadable tommy.yaml, or /corpus/check_diff itself
+# unreachable), merge_blocked is True with merge_blocked_reason "unverified"
+# — never silently False. merge_blocked is only ever False — a real "nothing
+# is blocking this" signal — when merge_gate is off ("gate_off"), when a
+# check ran and found no violations ("clean"), or when there was legitimately
+# no diff to check at all ("no_diff", distinct from "clean" the same way
+# tommy_drift_sweep distinguishes "no diff produced" from "checked and found
+# nothing"). `merge_gate` in the returned dict is reported exactly as
+# resolved, including `None` when a broken tommy.yaml means it genuinely
+# could not be determined — never guessed True/False just to justify
+# merge_blocked's value; see _verdict_unverified()'s `blocked` parameter.
+# ---------------------------------------------------------------------------
+
+
+def _verdict_unverified(task_id: str, task_status: str, error: str,
+                         merge_gate, *, blocked: Optional[bool] = None) -> dict:
+    """Shared shape for every tommy_verdict path where the check itself
+    could not run (git diff failed, tommy.yaml unreadable, or
+    /corpus/check_diff unreachable/erroring) — never conflated with "ran and
+    found nothing," per the issue's acceptance criteria.
+
+    `merge_gate` is reported exactly as resolved — pass `None` when it is
+    genuinely unknown (a broken tommy.yaml means the field that would say so
+    never parsed) rather than guessing a value just to drive `merge_blocked`.
+    `blocked` decouples the two: default (`None`) derives `merge_blocked`
+    from `bool(merge_gate)`; pass it explicitly when `merge_gate` is `None`
+    but the fail-closed posture (see this module's tommy_verdict comment
+    block) still applies."""
+    is_blocked = bool(merge_gate) if blocked is None else blocked
+    return {
+        "task_id": task_id, "task_status": task_status, "ok": False,
+        "error": error,
+        "violated": [], "satisfied": [], "uncovered": [],
+        "score": None, "evaluated": 0,
+        "merge_gate": merge_gate,
+        "merge_blocked": is_blocked,
+        "merge_blocked_reason": "unverified" if is_blocked else "gate_off",
+    }
+
+
+@mcp.tool()
+def tommy_verdict(task_id: str, namespace: str = "", name: str = "") -> dict:
+    """
+    Post-dispatch check (issue #112): diff a completed tommy_dispatch task's
+    actual change against the architecture corpus via memnos#105's real
+    corpus_check_diff verdict endpoint (violated / satisfied / uncovered),
+    not tommy_drift_sweep's keyword-matched recall_fallback.
+
+    Diffs `git diff HEAD~1 HEAD` in the exact workspace tommy_dispatch
+    launched `task_id` in — captured on the task registry at dispatch time,
+    NOT re-resolved from whatever project is "active" now (tommy_
+    switch_project may have changed that in between).
+
+    merge_blocked mirrors tommy.yaml's `merge_gate` field — the same field
+    `tommy generate` already projects into harness adapter files (issue
+    #113) — no separate flag. See this module's "tommy_verdict" comment
+    block above for the full fail-open/fail-closed reasoning; in short:
+    merge_blocked is True whenever merge_gate is on and either real
+    violations were found, or the check could not actually run at all
+    (`merge_blocked_reason` distinguishes the two: "violations" vs
+    "unverified"). It is False when merge_gate is off ("gate_off"), when a
+    check ran clean ("clean"), or when there was no diff to check
+    ("no_diff").
+
+    Args:
+        task_id:   The task_id returned by tommy_dispatch.
+        namespace: memnos namespace to check against. Omit to use the
+                   dispatch workspace's effective tommy.yaml/tommy.conf
+                   namespace (same resolution tommy_dispatch's corpus gate
+                   uses).
+        name:      Optional corpus source filter, passed through to
+                   /corpus/check_diff's `name`.
+    """
+    t = _tasks.get(task_id)
+    if t is None:
+        return {"error": f"Unknown task_id: {task_id!r}"}
+
+    cfg = _get_cfg()
+    repo_root = Path(t.workspace) if t.workspace else Path.cwd()
+    task_status = t.status()
+
+    try:
+        effective = resolve_effective_config(project_root=repo_root)
+    except TommyYamlError as exc:
+        # merge_gate itself is unknown here (the file that would say so
+        # didn't parse) — reported as None (not guessed True/False), but
+        # still treated as "could not verify" for merge_blocked, per this
+        # module's fail-posture comment above.
+        return _verdict_unverified(task_id, task_status,
+                                    f"tommy.yaml could not be read: {exc}",
+                                    merge_gate=None, blocked=True)
+
+    merge_gate = effective.value("merge_gate")
+    ns = namespace or effective.value("namespace")
+
+    diff_text, diff_err = _drift_git(repo_root, "diff", "HEAD~1", "HEAD")
+    if diff_err is not None:
+        return _verdict_unverified(
+            task_id, task_status,
+            f"tommy_verdict could not compute the task's diff: {diff_err}", merge_gate)
+    diff_text = diff_text or ""
+
+    if not diff_text.strip():
+        return {
+            "task_id": task_id, "task_status": task_status, "ok": True,
+            "note": (
+                "HEAD~1..HEAD produced no diff in this task's workspace — "
+                "nothing was sent to the corpus check. This is NOT the same "
+                "as a check that ran and found no violations."
+            ),
+            "violated": [], "satisfied": [], "uncovered": [],
+            "score": None, "evaluated": 0,
+            "merge_gate": merge_gate,
+            "merge_blocked": False,
+            "merge_blocked_reason": "no_diff" if merge_gate else "gate_off",
+        }
+
+    check = _http_corpus_check_diff(cfg.memnos_url, cfg.memnos_token, ns, diff_text,
+                                     name=(name or None))
+    if not check.get("ok"):
+        return _verdict_unverified(task_id, task_status,
+                                    check.get("error", "unknown error"), merge_gate)
+
+    violated = check.get("violated") or []
+    if not merge_gate:
+        reason = "gate_off"
+    elif violated:
+        reason = "violations"
+    else:
+        reason = "clean"
+
+    return {
+        "task_id": task_id, "task_status": task_status, "ok": True,
+        "violated": violated,
+        "satisfied": check.get("satisfied") or [],
+        "uncovered": check.get("uncovered") or [],
+        "score": check.get("score"),
+        "evaluated": check.get("evaluated", 0),
+        "merge_gate": merge_gate,
+        "merge_blocked": bool(merge_gate and violated),
+        "merge_blocked_reason": reason,
     }
 
 

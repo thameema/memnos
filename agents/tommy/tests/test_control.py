@@ -271,7 +271,7 @@ class TestMcpServerStructure:
         assert m is not None, "Could not find 'N tools:' in module docstring"
         word_to_int = {
             "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
         }
         stated = word_to_int.get(m.group(1).lower())
         assert stated == actual, (
