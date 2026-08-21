@@ -36,9 +36,9 @@ Concretely, Tommy ships two entry points from one `tommy` binary:
   with that prompt attached, staying alive to capture output after the harness exits.
 - **`tommy --mcp`** — an MCP stdio server. An editor (Claude Desktop, Cursor, Continue,
   Zed) spawns this process and drives it over JSON-RPC/stdio instead of a human running the
-  CLI directly. It exposes 8 tools (`tommy_recall`, `tommy_remember`, `tommy_dispatch`,
+  CLI directly. It exposes 9 tools (`tommy_recall`, `tommy_remember`, `tommy_dispatch`,
   `tommy_status`, `tommy_control`, `tommy_switch_project`, `tommy_route`,
-  `tommy_list_harnesses`) — see the README for their signatures.
+  `tommy_list_harnesses`, `tommy_sketch`) — see the README for their signatures.
 
 These two paths share the harness registry and memnos config, and now also share the same
 core.md coordinator prompt-injection — both call `tommy/prompt.py`'s `build_prompt()`. See
@@ -460,6 +460,15 @@ won't reflect them.
   to anyone who already has a copy on disk until they run `tommy --install --force`. Not
   something this change fixes; flagging it because it's easy to assume a version bump alone
   ships new prompt behavior to existing users, and it doesn't.
+- **`tommy_sketch`'s mermaid parser is naive and line-based, not a mermaid grammar.**
+  `_mermaid_to_cfc()` (`agents/tommy/tommy/sketch.py`) claims support only for flat,
+  single-level `alt`/`else` sequence diagrams. Nested `alt`/`opt`/`loop` blocks, multi-line
+  or wrapped arrow labels, and any other line it can't confidently classify are skipped and
+  reported in the tool's `warnings` list rather than silently mis-parsed into
+  confident-looking but wrong CFC text — `opt`/`loop` bodies in particular are never emitted
+  as an unconditional `SHALL`, since that would misrepresent something mermaid itself marked
+  optional/repeated as a hard constraint. It also only reads mermaid TEXT — there is no
+  image->mermaid step; that's a separate, not-yet-built memnos-server capability (issue #111).
 - **`docs-gen` doesn't cover Tommy.** `docs/cli.md` and `ui/cli-reference.json` are
   generated from `memnos_cli.py`'s own Click tree; `agents/tommy` has a separate entry point
   and isn't part of that generator. This guide and the package README are the only

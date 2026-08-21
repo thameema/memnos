@@ -8,7 +8,7 @@ Invoked by editors (Cursor, Claude Desktop, VS Code+Continue, Zed) as:
 Tommy reads MCP JSON-RPC from stdin and writes to stdout.  The editor owns
 the process — Tommy never opens a port and never runs as a daemon.
 
-Eight tools:
+Nine tools:
   tommy_recall          — query memnos memory
   tommy_remember        — persist a fact to memnos
   tommy_dispatch        — launch a harness task (async by default)
@@ -17,6 +17,7 @@ Eight tools:
   tommy_switch_project  — set the active project context
   tommy_route           — dry-run: which harness would Tommy pick?
   tommy_list_harnesses  — available harnesses + health + active routing
+  tommy_sketch          — mermaid sequence diagram -> CFC constraints -> corpus ingest
 """
 from __future__ import annotations
 
@@ -34,7 +35,7 @@ from fastmcp import FastMCP
 
 from .config import TommyConfig, ProjectEntry
 from .control import ControlServer
-from .corpus import corpus_check as _http_corpus_check
+from .corpus import corpus_check as _http_corpus_check, corpus_ingest as _http_corpus_ingest
 from .discovery.harnesses import all_harnesses, apply_skip_permissions, apply_session_name
 from .effective_config import resolve_effective_config
 from .project_config import TommyYamlError
@@ -45,6 +46,7 @@ from .secrets import (
     resolve_secret_env,
     secret_resolve_client,
 )
+from .sketch import _mermaid_to_cfc
 
 
 # ---------------------------------------------------------------------------
@@ -661,6 +663,89 @@ def tommy_control(
         "harness_connected": t._ctrl.harness_connected,
     }
 
+
+@mcp.tool()
+def tommy_sketch(
+    flow_name: str,
+    mermaid_text: str = "",
+    mermaid_file: str = "",
+    namespace: str = "",
+) -> dict:
+    """
+    Convert a mermaid sequence diagram into Canonical Flow Corpus (CFC)
+    constraints and ingest them into memnos's architecture corpus
+    (issue #111 — `/sketch`).
+
+    Takes mermaid TEXT, never an image: this is the tommy-side,
+    buildable-today half of `/sketch`. An image->mermaid vision step is a
+    separate, not-yet-built memnos-server capability and is out of scope
+    here — no harness in Tommy's discovery layer (`discovery/harnesses.py`)
+    carries an image-input path today, so this tool only ever reads mermaid
+    source, either inline (`mermaid_text`) or from a file (`mermaid_file`) —
+    independently usable and testable without the vision step ever landing.
+
+    The naive line-based `_mermaid_to_cfc()` parser (tommy/sketch.py)
+    supports flat, single-level sequence diagrams: participant/actor
+    declarations become actor labels, arrows (`->`, `-->`, `->>`, `-->>`,
+    `-x`, `--x`, `-)`, `--)`) become `"<From> SHALL send \\"<label>\\" to
+    <To>."` statements, a single-level `alt`/`else` becomes a "When
+    <condition>, ..." prefix on statements inside it, and `Note` lines
+    containing "must not"/"shall not"/"should not"/"may not" become
+    prohibition statements. Nested alt/opt/loop blocks, multi-line/wrapped
+    labels, and any other unrecognized syntax are skipped and reported in
+    the returned `warnings` list rather than silently mis-parsed — see
+    tommy/sketch.py's module docstring for the full breakdown of what v1
+    does and doesn't handle.
+
+    The generated CFC text is ingested via `POST /corpus/ingest` with
+    `kind="cfc"` (the same tommy/corpus.py HTTP wrapper issue #109's corpus
+    gate and auto-ingest use — see that module, not reimplemented here).
+    `/corpus/ingest` is a WRITE_OPS endpoint (memnos_server.py's WRITE_OPS
+    set): a read-only memnos token gets a 403 from the server, which
+    surfaces here as `{"ok": False, "error": "...(403)..."}`, same as every
+    other tommy/corpus.py caller — never raised. Re-ingesting under the same
+    `flow_name` DELETE-then-replaces that source's prior constraints
+    (core/store.py's `ingest_constraints`) — the same already-acknowledged
+    "silent constraint wipe" risk issue #109's `auto_ingest` carries for
+    design docs; pick a stable `flow_name` per diagram.
+
+    Args:
+        flow_name:     Name for this flow's corpus source — used as `name`
+                        in /corpus/ingest. Re-using a name replaces its
+                        prior constraints (see above).
+        mermaid_text:   Mermaid sequence-diagram source, inline.
+        mermaid_file:   Path to a file containing mermaid source. Used only
+                         when mermaid_text is empty.
+        namespace:      memnos namespace. Omit for the current project
+                        namespace.
+    """
+    if not flow_name.strip():
+        return {"error": "flow_name required"}
+
+    if not mermaid_text:
+        if not mermaid_file:
+            return {"error": "mermaid_text or mermaid_file required"}
+        try:
+            mermaid_text = Path(mermaid_file).read_text(errors="replace")
+        except OSError as exc:
+            return {"error": f"could not read mermaid_file {mermaid_file!r}: {exc}"}
+
+    if not mermaid_text.strip():
+        return {"error": "mermaid text is empty"}
+
+    cfc_text, warnings = _mermaid_to_cfc(mermaid_text, flow_name)
+    if not cfc_text:
+        return {
+            "error": "no CFC constraints could be derived from this diagram",
+            "warnings": warnings,
+        }
+
+    cfg = _get_cfg()
+    ns = namespace or _effective_namespace(cfg)
+    result = _http_corpus_ingest(cfg.memnos_url, cfg.memnos_token, ns, flow_name, cfc_text, kind="cfc")
+    result["warnings"] = warnings
+    result["cfc_text"] = cfc_text
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -35,7 +35,8 @@ def install_config(force: bool = False) -> None:
 
 
 def install_slash_commands(force: bool = False) -> None:
-    """Copy /memnos* Claude Code slash command files to ~/.claude/commands/."""
+    """Copy every *.md Claude Code slash command file (e.g. /memnos-recall,
+    /sketch) from the bundled slash_commands/ directory to ~/.claude/commands/."""
     if not _SLASH_SRC.exists():
         print(f"  ✗ Slash commands directory not found: {_SLASH_SRC}")
         return
