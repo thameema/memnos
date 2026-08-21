@@ -209,7 +209,13 @@
           </div>
           <h3 class="text-white font-semibold text-lg"><code class="text-green-300">tommy --mcp</code> &mdash; MCP server</h3>
         </div>
-        <p class="text-sm text-gray-400 leading-relaxed">Runs as an MCP stdio server that an editor &mdash; Claude Desktop, Cursor, Continue, Zed &mdash; drives directly over JSON-RPC, instead of a human running the CLI at a terminal. Exposes 10 tools, including <code class="text-purple-300 font-mono text-xs">tommy_recall</code>, <code class="text-purple-300 font-mono text-xs">tommy_dispatch</code> and <code class="text-purple-300 font-mono text-xs">tommy_status</code>.</p>
+        <!-- Tool count below is a plain hardcoded number, unlike
+             agents/tommy/tommy/mcp_server.py's own module docstring, which
+             is self-verified against its @mcp.tool() decorator count by
+             test_control.py::test_module_docstring_tool_count. Nothing in
+             CI catches this page drifting out of sync with that count —
+             update it by hand when tools are added/removed. -->
+        <p class="text-sm text-gray-400 leading-relaxed">Runs as an MCP stdio server that an editor &mdash; Claude Desktop, Cursor, Continue, Zed &mdash; drives directly over JSON-RPC, instead of a human running the CLI at a terminal. Exposes 11 tools, including <code class="text-purple-300 font-mono text-xs">tommy_recall</code>, <code class="text-purple-300 font-mono text-xs">tommy_dispatch</code> and <code class="text-purple-300 font-mono text-xs">tommy_status</code>.</p>
       </div>
     </div>
   </div>

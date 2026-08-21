@@ -70,6 +70,19 @@ class Task:
     # project" by the time tommy_verdict is called later). Defaulted so
     # existing Task(...) call sites/tests that don't pass it keep working.
     workspace: str = ""
+    # `git rev-parse HEAD` in `workspace`, captured right before the harness
+    # subprocess is launched (tommy_dispatch, immediately before Popen()) —
+    # NOT re-derived later as "whatever HEAD~1 happens to be" (that was the
+    # bug: HEAD~1..HEAD means "the single most recent commit right now,"
+    # which has no relationship to what THIS task_id actually changed if
+    # zero commits happened during dispatch, or more than one did).
+    # tommy_verdict diffs dispatch_head_sha..HEAD, which correctly spans
+    # however many commits (0, 1, or many) happened during this dispatch.
+    # "" when the capture itself failed (workspace had no commits yet at
+    # dispatch time, wasn't a git repo, or git was unavailable) — tommy_
+    # verdict must treat that as "cannot compute a scoped diff," never
+    # silently fall back to HEAD~1..HEAD.
+    dispatch_head_sha: str = ""
     output_lines: list = field(default_factory=list)
     _lock: object = field(default_factory=threading.Lock, repr=False)
     _drain_thread: Optional[threading.Thread] = field(default=None, repr=False)
@@ -529,13 +542,22 @@ def tommy_dispatch(
         if effective.value("corpus_gate"):
             # effective.value("namespace") (tommy.conf -> tommy.yaml's
             # memnos.namespace -> env), not _effective_namespace(cfg) (the
-            # active-project helper used below for inject_memory) — the two
-            # coincide today (ProjectEntry carries no `namespace` field, so
-            # _effective_namespace(cfg) always falls through to
-            # cfg.default_ns), but the corpus gate is deliberately
-            # tommy.yaml-namespace-aware since we're already resolving that
-            # config object right here to read corpus_gate itself. See PR
-            # description "Design decisions" for the full reasoning.
+            # active-project helper used below for inject_memory). These are
+            # genuinely two different resolution paths, not two names for
+            # the same value: effective.value("namespace") reads tommy.yaml's
+            # memnos.namespace directly and has no dependency on
+            # ProjectEntry/_active_project at all, while _effective_namespace
+            # only ever reads ProjectEntry.namespace (which doesn't exist,
+            # so it always falls through to cfg.default_ns) — so the two
+            # diverge in real projects the moment a tommy.yaml sets
+            # memnos.namespace (see test_verdict.py's YAML_MERGE_GATE_ON/OFF
+            # fixtures, which set exactly that, and
+            # tommy_verdict/tommy_drift_sweep, which both intentionally use
+            # effective.value("namespace") for this reason — see this
+            # module's tommy_drift_sweep for the matching fix). The corpus
+            # gate here is deliberately tommy.yaml-namespace-aware since
+            # we're already resolving that config object right here to read
+            # corpus_gate itself.
             ns = effective.value("namespace")
             corpus_gate_result = _corpus_check(cfg, ns, task)
             constraint_block = _format_constraint_block(corpus_gate_result)
@@ -603,6 +625,18 @@ def tommy_dispatch(
     ctrl = ControlServer(on_message=_ctrl_msg, connect_timeout=30.0)
     env["TOMMY_CTRL_PORT"] = str(ctrl.port)
 
+    # Capture the workspace's HEAD right before the harness starts (issue
+    # #112 follow-up) — this is what tommy_verdict later diffs FROM, so it
+    # must reflect "the state of the repo before this task's own work,"
+    # not "whatever the most recent commit happens to be" (that's the bug
+    # HEAD~1..HEAD had: no relationship to when THIS task was dispatched).
+    # Never blocks dispatch on failure (a fresh workspace with no commits
+    # yet, or no git repo at all, is not a reason to refuse launching the
+    # harness) — an empty dispatch_head_sha simply means tommy_verdict can't
+    # compute a scoped diff for this task later and must say so explicitly.
+    _head_sha, _head_err = _drift_git(ws_path, "rev-parse", "HEAD")
+    dispatch_head_sha = (_head_sha or "").strip() if _head_err is None else ""
+
     proc = subprocess.Popen(
         cmd,
         cwd=str(ws_path),
@@ -612,7 +646,8 @@ def tommy_dispatch(
         start_new_session=True,   # decouple from Tommy's process group / TTY
     )
 
-    t = Task(task_id=task_id, harness=chosen, proc=proc, workspace=str(ws_path))
+    t = Task(task_id=task_id, harness=chosen, proc=proc, workspace=str(ws_path),
+             dispatch_head_sha=dispatch_head_sha)
     _task_ref[0] = t  # publish Task before any ctrl messages can be delivered
     t._ctrl = ctrl
     drain = threading.Thread(target=_drain_stdout, args=(proc, t, _tf_path), daemon=True)
@@ -689,6 +724,25 @@ def tommy_drift_sweep(commits: int = 20, namespace: str = "", workspace: str = "
     cfg = _get_cfg()
     repo_root = _drift_workspace(cfg, workspace)
 
+    try:
+        effective = resolve_effective_config(project_root=repo_root)
+    except TommyYamlError as exc:
+        # Namespace resolution follow-up fix: tommy_drift_sweep must resolve
+        # the swept repo's tommy.yaml-aware namespace the same way tommy_
+        # dispatch's corpus gate and tommy_verdict already do (see the
+        # corrected comment on tommy_dispatch's corpus-gate block above) —
+        # which means a broken tommy.yaml here is exactly as fatal to this
+        # sweep as an unresolvable HEAD is a few lines below: same error
+        # shape, same "abort with a visible reason" posture, not a silent
+        # fall-back to cfg.default_ns for a namespace tommy.yaml explicitly
+        # tried (and failed) to override.
+        return {
+            "ok": False, "mode": "recall_fallback",
+            "error": f"drift sweep could not run: tommy.yaml could not be read: {exc}",
+            "commits_requested": commits, "commits_used": 0,
+            "commits_available": 0, "clamped": False,
+        }
+
     effective_n, available_n, err = _clamp_commits(repo_root, commits)
     if err is not None:
         # HEAD itself couldn't be resolved — effective_n/available_n/clamped
@@ -715,7 +769,7 @@ def tommy_drift_sweep(commits: int = 20, namespace: str = "", workspace: str = "
             }
         diff_text = diff_out or ""
 
-    ns = namespace or _effective_namespace(cfg)
+    ns = namespace or effective.value("namespace")
     all_chunks = _chunk_diff(diff_text, chunk_chars=_DRIFT_CHUNK_CHARS)
     chunks_available = len(all_chunks)
     chunks = all_chunks[:_DRIFT_MAX_CHUNKS]
@@ -796,9 +850,10 @@ def tommy_drift_sweep(commits: int = 20, namespace: str = "", workspace: str = "
 # takes no action of its own — it only returns a dict — so there is no
 # equivalent cost to being conservative. When merge_gate is on (or, for a
 # broken tommy.yaml, unknown — see below) and the check could not actually
-# run (git failure, an unreadable tommy.yaml, or /corpus/check_diff itself
-# unreachable), merge_blocked is True with merge_blocked_reason "unverified"
-# — never silently False. merge_blocked is only ever False — a real "nothing
+# run (git failure, an unreadable tommy.yaml, /corpus/check_diff itself
+# unreachable, the task still being "running", or a task whose dispatch-time
+# HEAD SHA was never captured), merge_blocked is True with
+# merge_blocked_reason "unverified" — never silently False. merge_blocked is only ever False — a real "nothing
 # is blocking this" signal — when merge_gate is off ("gate_off"), when a
 # check ran and found no violations ("clean"), or when there was legitimately
 # no diff to check at all ("no_diff", distinct from "clean" the same way
@@ -844,10 +899,16 @@ def tommy_verdict(task_id: str, namespace: str = "", name: str = "") -> dict:
     corpus_check_diff verdict endpoint (violated / satisfied / uncovered),
     not tommy_drift_sweep's keyword-matched recall_fallback.
 
-    Diffs `git diff HEAD~1 HEAD` in the exact workspace tommy_dispatch
-    launched `task_id` in — captured on the task registry at dispatch time,
-    NOT re-resolved from whatever project is "active" now (tommy_
-    switch_project may have changed that in between).
+    Diffs `git diff <dispatch_head_sha> HEAD` in the exact workspace
+    tommy_dispatch launched `task_id` in — `dispatch_head_sha` is `git
+    rev-parse HEAD`, captured on the task registry right before the harness
+    was launched, NOT re-derived later as "whatever HEAD~1 happens to be"
+    (that was the bug: HEAD~1..HEAD means "the single most recent commit
+    right now," with no relationship to when THIS task was dispatched —
+    wrong for a task that made zero commits, and wrong for one that made
+    more than one). Workspace resolution itself is also NOT re-resolved
+    from whatever project is "active" now (tommy_switch_project may have
+    changed that in between).
 
     merge_blocked mirrors tommy.yaml's `merge_gate` field — the same field
     `tommy generate` already projects into harness adapter files (issue
@@ -859,6 +920,12 @@ def tommy_verdict(task_id: str, namespace: str = "", name: str = "") -> dict:
     "unverified"). It is False when merge_gate is off ("gate_off"), when a
     check ran clean ("clean"), or when there was no diff to check
     ("no_diff").
+
+    A still-`"running"` task is refused outright (`ok: false`,
+    `merge_blocked_reason: "unverified"` when merge_gate is on) rather than
+    diffed — a diff taken mid-flight only reflects partial, in-progress
+    work, not what the task will actually end up changing. Call this again
+    once `tommy_status` reports the task as no longer running.
 
     Args:
         task_id:   The task_id returned by tommy_dispatch.
@@ -891,7 +958,38 @@ def tommy_verdict(task_id: str, namespace: str = "", name: str = "") -> dict:
     merge_gate = effective.value("merge_gate")
     ns = namespace or effective.value("namespace")
 
-    diff_text, diff_err = _drift_git(repo_root, "diff", "HEAD~1", "HEAD")
+    # A running task has no finished diff yet — never evaluate a partial,
+    # mid-flight diff with the same confident shape as a finished one (see
+    # docstring above). Checked here, before any git work: a task that's
+    # still running might be actively committing, so there's no safe point
+    # to snapshot a diff from anyway.
+    if task_status == "running":
+        return _verdict_unverified(
+            task_id, task_status,
+            "task is still running — a verdict is not yet meaningful (a diff "
+            "taken now would only reflect partial, in-flight work, not the "
+            "task's finished result); call tommy_verdict again once the task "
+            "is no longer running",
+            merge_gate,
+        )
+
+    dispatch_head_sha = (t.dispatch_head_sha or "").strip()
+    if not dispatch_head_sha:
+        # dispatch_head_sha capture failed (or was never attempted — a Task
+        # from before this field existed): we genuinely don't know what this
+        # workspace looked like at dispatch time, so there is no correct
+        # diff range to compute. Falling back to HEAD~1..HEAD here would
+        # silently reintroduce the exact bug this field exists to fix.
+        return _verdict_unverified(
+            task_id, task_status,
+            "dispatch-time HEAD SHA was not captured for this task (the "
+            "workspace had no commits at dispatch time, was not a git repo, "
+            "or git was unavailable) — cannot compute a diff scoped to this "
+            "task's own changes",
+            merge_gate,
+        )
+
+    diff_text, diff_err = _drift_git(repo_root, "diff", dispatch_head_sha, "HEAD")
     if diff_err is not None:
         return _verdict_unverified(
             task_id, task_status,
@@ -902,9 +1000,10 @@ def tommy_verdict(task_id: str, namespace: str = "", name: str = "") -> dict:
         return {
             "task_id": task_id, "task_status": task_status, "ok": True,
             "note": (
-                "HEAD~1..HEAD produced no diff in this task's workspace — "
-                "nothing was sent to the corpus check. This is NOT the same "
-                "as a check that ran and found no violations."
+                "This task's dispatch-time HEAD to current HEAD produced no "
+                "diff in this task's workspace — nothing was sent to the "
+                "corpus check. This is NOT the same as a check that ran and "
+                "found no violations."
             ),
             "violated": [], "satisfied": [], "uncovered": [],
             "score": None, "evaluated": 0,

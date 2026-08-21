@@ -362,7 +362,19 @@ class TestDriftSweepTool:
 
         assert seen_ns and all(ns == "org:custom" for ns in seen_ns)
 
-    def test_default_namespace_falls_back_to_effective_namespace(self, isolated_cfg, tmp_path, monkeypatch):
+    def test_default_namespace_with_no_tommy_yaml_falls_back_to_conf_default(
+        self, isolated_cfg, tmp_path, monkeypatch,
+    ):
+        """No tommy.yaml in the swept repo: the default namespace falls
+        through effective_config.py's own layering (tommy.conf -> built-in
+        default) to the same value tommy.conf itself provides — exercising
+        the CORRECTED resolution path (`effective.value("namespace")`, same
+        as tommy_dispatch's corpus gate / tommy_verdict), not the old
+        `_effective_namespace(cfg)` active-project helper. See
+        `test_tommy_yaml_namespace_override_is_picked_up_by_default`
+        immediately below for the case that actually distinguishes the two
+        — this repo has no tommy.yaml, so both the old and new resolution
+        happen to land on the same value here."""
         repo = _make_repo_with_commits(tmp_path, 3)
         seen_ns = []
         monkeypatch.setattr(mcp_server_mod, "_http_corpus_check",
@@ -372,3 +384,77 @@ class TestDriftSweepTool:
         mcp_server_mod.tommy_drift_sweep(commits=3, workspace=str(repo))
 
         assert seen_ns and all(ns == isolated_cfg.default_ns for ns in seen_ns)
+
+    def test_tommy_yaml_namespace_override_is_picked_up_by_default(
+        self, isolated_cfg, tmp_path, monkeypatch,
+    ):
+        """Regression: tommy_drift_sweep used to resolve its default
+        namespace via `_effective_namespace(cfg)` (the active-project
+        helper, which always falls through to `cfg.default_ns` since
+        `ProjectEntry` carries no `namespace` field) — diverging from
+        tommy_dispatch's corpus gate and tommy_verdict, which both resolve
+        via effective_config.py's tommy.yaml-aware
+        `effective.value("namespace")`. A project with a tommy.yaml
+        `memnos.namespace` override had its dispatch-gate/verdict checks
+        land in one namespace while a drift-sweep with no explicit
+        `namespace` argument silently checked a completely different one.
+        This pins the corrected behavior: drift-sweep's default now picks
+        up the same tommy.yaml override the gate/verdict already used."""
+        repo = _make_repo_with_commits(tmp_path, 3)
+        (repo / "tommy.yaml").write_text(
+            'tommy:\n  version: 1\nmemnos:\n  namespace: "org:custom:from-yaml"\n'
+        )
+        seen_ns = []
+        monkeypatch.setattr(mcp_server_mod, "_http_corpus_check",
+                             lambda url, token, namespace, snippet, **k: seen_ns.append(namespace)
+                             or {"ok": True, "constraints": []})
+
+        mcp_server_mod.tommy_drift_sweep(commits=3, workspace=str(repo))
+
+        assert isolated_cfg.default_ns != "org:custom:from-yaml", (
+            "fixture bug: this test only proves anything if the tommy.yaml "
+            "override differs from what cfg.default_ns would have given"
+        )
+        assert seen_ns and all(ns == "org:custom:from-yaml" for ns in seen_ns)
+
+    def test_explicit_namespace_still_overrides_a_tommy_yaml_default(
+        self, isolated_cfg, tmp_path, monkeypatch,
+    ):
+        repo = _make_repo_with_commits(tmp_path, 3)
+        (repo / "tommy.yaml").write_text(
+            'tommy:\n  version: 1\nmemnos:\n  namespace: "org:custom:from-yaml"\n'
+        )
+        seen_ns = []
+        monkeypatch.setattr(mcp_server_mod, "_http_corpus_check",
+                             lambda url, token, namespace, snippet, **k: seen_ns.append(namespace)
+                             or {"ok": True, "constraints": []})
+
+        mcp_server_mod.tommy_drift_sweep(commits=3, namespace="org:explicit", workspace=str(repo))
+
+        assert seen_ns and all(ns == "org:explicit" for ns in seen_ns)
+
+    def test_broken_tommy_yaml_aborts_the_sweep_visibly(self, isolated_cfg, tmp_path):
+        """A tommy.yaml that fails to parse must abort the sweep with a
+        visible error — the same "never silently swallow" posture
+        tommy_verdict already applies to its own tommy.yaml read, and the
+        same error SHAPE this function already uses a few lines below for
+        an unresolvable HEAD (never a bare exception, never a silent
+        fall-back to cfg.default_ns for a namespace tommy.yaml explicitly
+        tried, and failed, to set)."""
+        repo = _make_repo_with_commits(tmp_path, 3)
+        # Same "broken tommy.yaml" fixture content as test_verdict.py's
+        # TestBrokenTommyYaml: valid YAML syntax, but `platform` is not a
+        # recognized top-level tommy.yaml field, which load_tommy_yaml()
+        # rejects with TommyYamlError (project_config.py's schema
+        # validation, not a YAML parse error).
+        (repo / "tommy.yaml").write_text("tommy:\n  version: 1\nplatform:\n  foo: bar\n")
+
+        result = mcp_server_mod.tommy_drift_sweep(commits=3, workspace=str(repo))
+
+        assert result["ok"] is False
+        assert result["mode"] == "recall_fallback"
+        assert "tommy.yaml" in result["error"]
+        assert result["commits_requested"] == 3
+        assert result["commits_used"] == 0
+        assert result["commits_available"] == 0
+        assert result["clamped"] is False

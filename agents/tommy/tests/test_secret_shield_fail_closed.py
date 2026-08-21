@@ -299,7 +299,24 @@ class TestMcpDispatchFailClosed:
                              lambda cfg: resolve_client_calls.append(cfg) or _FailingResolveClient())
         monkeypatch.setattr(mcp_server_mod, "build_prompt", lambda *a, **kw: "SHOULD-NOT-MATTER")
         monkeypatch.setattr(mcp_server_mod, "ControlServer", _CtrlSpy)
-        monkeypatch.setattr(mcp_server_mod.subprocess, "Popen", lambda *a, **kw: _FakeProc())
+
+        _real_popen = mcp_server_mod.subprocess.Popen
+
+        def _popen_spy(*a, **kw):
+            cmd = a[0] if a else kw.get("args")
+            if isinstance(cmd, list) and cmd[:1] == ["git"]:
+                # tommy_dispatch's dispatch-time HEAD capture (issue #112
+                # follow-up: Task.dispatch_head_sha) shells out to a real
+                # `git rev-parse HEAD` right before launching the harness —
+                # let that through for real rather than faking it. It's
+                # read-only, and mcp_server.py's _drift_git() already
+                # degrades an unresolvable HEAD to an empty
+                # dispatch_head_sha rather than raising, so this tmp_path
+                # doesn't need to be a real repo for this test to still pass.
+                return _real_popen(*a, **kw)
+            return _FakeProc()
+
+        monkeypatch.setattr(mcp_server_mod.subprocess, "Popen", _popen_spy)
         monkeypatch.setattr(mcp_server_mod.tempfile, "tempdir", str(tmp_path))
         (tmp_path / ".git").mkdir()
 

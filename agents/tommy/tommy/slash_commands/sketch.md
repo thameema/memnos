@@ -4,6 +4,11 @@ Convert a mermaid sequence diagram into Canonical Flow Corpus (CFC)
 constraints and ingest them into memnos's architecture corpus, via Tommy's
 `tommy_sketch` MCP tool.
 
+Unlike the `memnos-*` slash commands in this directory, which call memnos's
+own MCP tools directly, this command calls `tommy_sketch` — a
+Tommy-specific tool, only available when Tommy's own MCP server (`tommy
+--mcp`) is registered in this editor, not just memnos's.
+
 Mermaid TEXT in, not an image — there is no image->mermaid step here (see
 issue #111). If you only have a picture of a diagram, transcribe it to
 mermaid sequence-diagram syntax yourself first, then run this command

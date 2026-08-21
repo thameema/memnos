@@ -48,10 +48,14 @@ launched.
      (git failure, unreadable tommy.yaml, or the corpus endpoint was
      unreachable); merge_blocked is true here too, deliberately fail-closed
      — do NOT tell the user this is safe to merge.
-7. Check `task_status`. If it is not `"done"` (e.g. `"running"`), tell the
-   user the task hasn't finished yet and this verdict only covers whatever
-   is committed so far — it may not cover the task's full work. Never
-   present a verdict on a still-running task as final.
+7. Check `task_status`. If it is `"running"`, `tommy_verdict` refuses to
+   compute a verdict at all — no diff is taken, `ok` is `false`, and
+   `error` explains the task hasn't finished yet (step 3 applies: this is a
+   check FAILURE, not a partial pass, and never `merge_gate`-off-safe by
+   itself — see step 6's "unverified" bullet). Tell the user to call
+   `/verdict` again once `tommy_status` shows the task is no longer
+   running; never present a still-running task's result as a real verdict,
+   partial or otherwise.
 8. Never say a task "passed" or "is safe to merge" unless `task_status` is
    `"done"` AND `merge_blocked` is `false` AND `merge_blocked_reason` is
    `"clean"` or `"gate_off"`.

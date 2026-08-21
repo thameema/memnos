@@ -1,11 +1,22 @@
 """
-tommy_verdict tests — issue #112.
+tommy_verdict tests — issue #112 (+ the dispatch-scoping follow-up fix).
 
 `tommy_verdict` (tommy/mcp_server.py) diffs ONE already-dispatched
-`tommy_dispatch` task (`git diff HEAD~1 HEAD` in the exact workspace that
-task ran in, captured on the task registry at dispatch time) against the
-architecture corpus, via memnos#105's real `/corpus/check_diff` verdict
-endpoint — not `tommy_drift_sweep`'s keyword-matched `recall_fallback`.
+`tommy_dispatch` task (`git diff <dispatch_head_sha> HEAD` in the exact
+workspace that task ran in, where `dispatch_head_sha` is `git rev-parse
+HEAD` captured on the task registry right before the harness was launched)
+against the architecture corpus, via memnos#105's real `/corpus/check_diff`
+verdict endpoint — not `tommy_drift_sweep`'s keyword-matched
+`recall_fallback`.
+
+`dispatch_head_sha`, not `HEAD~1`: the original #112 implementation diffed
+`HEAD~1..HEAD` unconditionally, which has no relationship to when a task
+was actually dispatched — a task that made zero commits could inherit an
+earlier commit's diff (false merge_blocked), and a task whose work spanned
+multiple commits only had its LAST commit checked (false "clean").
+`TestZeroCommitsSinceDispatchIsNotThePriorCommit` and
+`TestMultipleCommitsSinceDispatchAreAllIncluded` below are the regression
+coverage for those two directions.
 
 Tests build `Task` objects directly and insert them into `mcp_server._tasks`
 rather than going through a real `tommy_dispatch()` subprocess launch (that
@@ -86,6 +97,54 @@ def _repo_with_empty_second_commit(tmp_path: Path, name: str = "emptydiff") -> P
     return repo
 
 
+def _repo_with_two_pre_dispatch_commits_and_no_task_commit(
+    tmp_path: Path, name: str = "no_commit_since_dispatch",
+) -> Path:
+    """The actual #112 regression repro: TWO commits exist BEFORE dispatch —
+    then the dispatched task makes ZERO commits of its own (a common case:
+    investigation-only tasks, or a harness that fails before ever
+    committing). `HEAD~1..HEAD` (the old, buggy behavior) is non-empty here
+    — it's the diff of the SECOND pre-existing commit — and would be wrongly
+    attributed to a task that changed nothing. The correct behavior diffs
+    from the workspace's HEAD *at dispatch time* (which is current HEAD,
+    since the task made no commits after it) to current HEAD — genuinely
+    empty, so it must hit the "no_diff" path, not a confident verdict."""
+    repo = tmp_path / name
+    _init_repo(repo)
+    (repo / "first.md").write_text("first pre-existing commit\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "first pre-existing commit")
+    (repo / "second.md").write_text("second pre-existing commit\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "second pre-existing commit")
+    return repo
+
+
+def _repo_with_one_pre_dispatch_commit_then_two_task_commits(
+    tmp_path: Path, name: str = "multi_commit_task",
+) -> Path:
+    """The OTHER #112 regression direction: dispatch happens after ONE
+    pre-existing commit, then the task itself makes TWO commits before
+    finishing. `HEAD~1..HEAD` (the old, buggy behavior) only ever sees the
+    LAST of those two commits — a task's earlier commit (and any violation
+    in it) would silently never reach /corpus/check_diff at all, producing
+    a false "clean" verdict. The correct behavior diffs from the workspace's
+    HEAD *at dispatch time* (the pre-existing commit) to current HEAD, which
+    spans both task commits."""
+    repo = tmp_path / name
+    _init_repo(repo)
+    (repo / "base.md").write_text("base\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "pre-existing commit")
+    (repo / "first_task_change.py").write_text("FIRST_TASK_MARKER = True\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "task commit 1 of 2")
+    (repo / "second_task_change.py").write_text("SECOND_TASK_MARKER = True\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "task commit 2 of 2")
+    return repo
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -109,12 +168,44 @@ def isolated_cfg(monkeypatch):
     return cfg
 
 
-def _register_task(workspace: Path, task_id: str = "t1", status_rc=0) -> Task:
+def _rev_parse(repo: Path, ref: str) -> str:
+    """Best-effort `git rev-parse <ref>` — returns "" (never raises) when the
+    ref doesn't resolve, mirroring how tommy_dispatch's own dispatch-time
+    capture (mcp_server.py, `_drift_git(ws_path, "rev-parse", "HEAD")`)
+    degrades to an empty dispatch_head_sha on a workspace with no matching
+    ref, rather than crashing the dispatch."""
+    result = subprocess.run(
+        ["git", "rev-parse", ref], cwd=str(repo), capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _register_task(workspace: Path, task_id: str = "t1", status_rc=0,
+                    dispatch_head_sha_ref: str = "HEAD~1") -> Task:
     """Insert a Task directly into the registry (no real subprocess needed —
-    tommy_verdict only reads .workspace and .status())."""
+    tommy_verdict only reads .workspace/.status()/.dispatch_head_sha).
+
+    `dispatch_head_sha_ref` is resolved via `git rev-parse` in `workspace`
+    at registration time and stored as the Task's `dispatch_head_sha` — the
+    same field tommy_dispatch itself populates via `git rev-parse HEAD`
+    right before launching the harness (see mcp_server.py's tommy_dispatch).
+
+    Defaults to `"HEAD~1"` purely as a fixture convention: every
+    `_repo_with_*` helper in THIS file that doesn't pass an explicit
+    `dispatch_head_sha_ref` builds exactly "N pre-existing commits, then ONE
+    commit that represents the task's own work" — i.e. dispatch genuinely
+    happened one commit before current HEAD. This is not a general truth:
+    a fixture whose task makes zero or multiple commits of its own must
+    pass `dispatch_head_sha_ref` explicitly (see
+    `_repo_with_two_pre_dispatch_commits_and_no_task_commit`'s callers,
+    which pass `"HEAD"`, and
+    `_repo_with_one_pre_dispatch_commit_then_two_task_commits`'s callers,
+    which pass the pre-existing commit's own SHA).
+    """
     proc = subprocess.Popen(["true" if status_rc == 0 else "false"])
     proc.wait()
-    t = Task(task_id=task_id, harness="claude", proc=proc, workspace=str(workspace))
+    dispatch_head_sha = _rev_parse(workspace, dispatch_head_sha_ref)
+    t = Task(task_id=task_id, harness="claude", proc=proc, workspace=str(workspace),
+             dispatch_head_sha=dispatch_head_sha)
     mcp_server_mod._tasks[task_id] = t
     return t
 
@@ -487,6 +578,176 @@ class TestNamespaceAndNameAndStatus:
 
         assert result["task_status"] == "done"
         assert result["task_id"] == "t1"
+
+
+class TestZeroCommitsSinceDispatchIsNotThePriorCommit:
+    """The actual #112 regression: on the old (unfixed) code, tommy_verdict
+    always ran `git diff HEAD~1 HEAD`, which has no idea when THIS task was
+    dispatched. For a task that made zero commits of its own, that command
+    still returned the diff of whatever commit happens to be most recent —
+    here, a commit that existed BEFORE dispatch — and confidently shipped it
+    to /corpus/check_diff as if it were this task_id's work. See the RED-run
+    saved output for this exact scenario, captured before the fix, in the PR
+    description."""
+
+    def test_task_with_no_commits_never_sends_the_prior_commits_diff(
+        self, isolated_cfg, tmp_path, monkeypatch,
+    ):
+        repo = _repo_with_two_pre_dispatch_commits_and_no_task_commit(tmp_path)
+        (repo / "tommy.yaml").write_text(YAML_MERGE_GATE_ON)
+        called = []
+        monkeypatch.setattr(mcp_server_mod, "_http_corpus_check_diff",
+                             lambda *a, **k: called.append(1) or {"ok": True})
+        # dispatch genuinely happened at current HEAD here — the task made
+        # no further commits — so "HEAD~1" (this file's usual default,
+        # meant for "one pre-existing commit then one task commit"
+        # fixtures) would be the WRONG dispatch point for this fixture.
+        _register_task(repo, task_id="t1", dispatch_head_sha_ref="HEAD")
+
+        result = mcp_server_mod.tommy_verdict(task_id="t1")
+
+        assert called == [], (
+            "a task that made zero commits since dispatch must never send "
+            "a PRE-DISPATCH commit's diff to /corpus/check_diff — that diff "
+            "belongs to a change this task_id never made"
+        )
+        assert result["ok"] is True
+        assert result["evaluated"] == 0
+        assert result["score"] is None
+        assert result["violated"] == [] and result["satisfied"] == [] and result["uncovered"] == []
+        assert "no diff" in result["note"].lower()
+        assert "not the same as a check that ran" in result["note"].lower()
+        assert result["merge_gate"] is True
+        assert result["merge_blocked"] is False
+        assert result["merge_blocked_reason"] == "no_diff"
+
+
+class TestMultipleCommitsSinceDispatchAreAllIncluded:
+    """The OTHER #112 regression direction: on the old (unfixed) code,
+    `git diff HEAD~1 HEAD` only ever sees the LAST commit made during a
+    dispatch. A task whose real work spanned multiple commits would have
+    everything before its final commit silently excluded from the corpus
+    check — a false "clean" verdict that hides real violations."""
+
+    def test_both_task_commits_diff_text_reaches_the_corpus_check(
+        self, isolated_cfg, tmp_path, monkeypatch,
+    ):
+        repo = _repo_with_one_pre_dispatch_commit_then_two_task_commits(tmp_path)
+        (repo / "tommy.yaml").write_text(YAML_MERGE_GATE_ON)
+        seen_diffs = []
+        monkeypatch.setattr(
+            mcp_server_mod, "_http_corpus_check_diff",
+            lambda url, token, ns, diff, **kw: seen_diffs.append(diff) or {
+                "ok": True, "violated": [], "satisfied": [], "uncovered": [], "score": 1.0, "evaluated": 0,
+            },
+        )
+        # Dispatch happened right after the ONE pre-existing commit — the
+        # default "HEAD~1" would land on the task's OWN first commit
+        # instead, which is exactly the bug this fixture exists to catch.
+        _register_task(repo, task_id="t1", dispatch_head_sha_ref="HEAD~2")
+
+        result = mcp_server_mod.tommy_verdict(task_id="t1")
+
+        assert result["ok"] is True
+        assert len(seen_diffs) == 1
+        assert "FIRST_TASK_MARKER" in seen_diffs[0], (
+            "the task's FIRST commit is missing from the diff sent to "
+            "/corpus/check_diff — only checking the last commit made during "
+            "a multi-commit dispatch can hide real violations"
+        )
+        assert "SECOND_TASK_MARKER" in seen_diffs[0]
+
+
+class TestDispatchHeadShaNotCaptured:
+    """A Task whose dispatch_head_sha capture failed (empty repo at dispatch
+    time, not a git repo, or a Task predating this field) must be reported
+    as genuinely unverified — never silently fall back to HEAD~1..HEAD,
+    which is the exact bug this field exists to prevent."""
+
+    def test_empty_dispatch_head_sha_is_unverified_not_a_head_tilde_one_fallback(
+        self, isolated_cfg, tmp_path, monkeypatch,
+    ):
+        repo = _repo_with_a_real_diff(tmp_path)
+        (repo / "tommy.yaml").write_text(YAML_MERGE_GATE_ON)
+        called = []
+        monkeypatch.setattr(mcp_server_mod, "_http_corpus_check_diff",
+                             lambda *a, **k: called.append(1) or {"ok": True})
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        t = Task(task_id="t1", harness="claude", proc=proc, workspace=str(repo),
+                 dispatch_head_sha="")
+        mcp_server_mod._tasks["t1"] = t
+
+        result = mcp_server_mod.tommy_verdict(task_id="t1")
+
+        assert called == [], (
+            "an uncaptured dispatch_head_sha must never fall back to "
+            "diffing HEAD~1..HEAD"
+        )
+        assert result["ok"] is False
+        assert "error" in result
+        assert result["violated"] == [] and result["satisfied"] == [] and result["uncovered"] == []
+        assert result["merge_gate"] is True
+        assert result["merge_blocked"] is True
+        assert result["merge_blocked_reason"] == "unverified"
+
+
+class TestRunningTaskIsRefusedNotPartiallyEvaluated:
+    """A still-running task must never be diffed — a diff taken mid-flight
+    only reflects partial, in-progress work."""
+
+    def test_running_task_returns_unverified_without_diffing_or_calling_corpus_check(
+        self, isolated_cfg, tmp_path, monkeypatch,
+    ):
+        repo = _repo_with_a_real_diff(tmp_path)
+        (repo / "tommy.yaml").write_text(YAML_MERGE_GATE_ON)
+        called = []
+        monkeypatch.setattr(mcp_server_mod, "_http_corpus_check_diff",
+                             lambda *a, **k: called.append(1) or {"ok": True})
+        proc = subprocess.Popen(["sleep", "30"])
+        try:
+            t = Task(task_id="t1", harness="claude", proc=proc, workspace=str(repo),
+                     dispatch_head_sha=_rev_parse(repo, "HEAD~1"))
+            mcp_server_mod._tasks["t1"] = t
+
+            result = mcp_server_mod.tommy_verdict(task_id="t1")
+
+            assert called == [], "a still-running task's diff must never reach /corpus/check_diff"
+            assert result["task_id"] == "t1"
+            assert result["task_status"] == "running"
+            assert result["ok"] is False
+            assert "running" in result["error"].lower()
+            assert result["violated"] == [] and result["satisfied"] == [] and result["uncovered"] == []
+            assert result["merge_gate"] is True
+            assert result["merge_blocked"] is True
+            assert result["merge_blocked_reason"] == "unverified"
+        finally:
+            proc.terminate()
+            proc.wait()
+
+    def test_running_task_with_gate_off_does_not_block(self, isolated_cfg, tmp_path, monkeypatch):
+        repo = _repo_with_a_real_diff(tmp_path)
+        (repo / "tommy.yaml").write_text(YAML_MERGE_GATE_OFF)
+        called = []
+        monkeypatch.setattr(mcp_server_mod, "_http_corpus_check_diff",
+                             lambda *a, **k: called.append(1) or {"ok": True})
+        proc = subprocess.Popen(["sleep", "30"])
+        try:
+            t = Task(task_id="t1", harness="claude", proc=proc, workspace=str(repo),
+                     dispatch_head_sha=_rev_parse(repo, "HEAD~1"))
+            mcp_server_mod._tasks["t1"] = t
+
+            result = mcp_server_mod.tommy_verdict(task_id="t1")
+
+            assert called == []
+            assert result["task_status"] == "running"
+            assert result["ok"] is False
+            assert result["merge_gate"] is False
+            assert result["merge_blocked"] is False
+            assert result["merge_blocked_reason"] == "gate_off"
+        finally:
+            proc.terminate()
+            proc.wait()
 
 
 class TestVerdictHelpersExist:
