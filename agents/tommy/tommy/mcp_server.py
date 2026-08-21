@@ -8,7 +8,7 @@ Invoked by editors (Cursor, Claude Desktop, VS Code+Continue, Zed) as:
 Tommy reads MCP JSON-RPC from stdin and writes to stdout.  The editor owns
 the process — Tommy never opens a port and never runs as a daemon.
 
-Nine tools:
+Ten tools:
   tommy_recall          — query memnos memory
   tommy_remember        — persist a fact to memnos
   tommy_dispatch        — launch a harness task (async by default)
@@ -18,6 +18,7 @@ Nine tools:
   tommy_route           — dry-run: which harness would Tommy pick?
   tommy_list_harnesses  — available harnesses + health + active routing
   tommy_sketch          — mermaid sequence diagram -> CFC constraints -> corpus ingest
+  tommy_drift_sweep     — check recent commits against the architecture corpus
 """
 from __future__ import annotations
 
@@ -184,6 +185,106 @@ def _format_constraint_block(check: dict) -> str:
         content = c.get("content", "")
         lines.append(f"- [{source}] {content}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Drift sweep (issue #110): check recent commits against the architecture
+# corpus outside tommy_dispatch's per-dispatch corpus gate — e.g. commits
+# made directly, or dispatched with a harness that ran with CORPUS_GATE=off.
+# ---------------------------------------------------------------------------
+
+_DRIFT_CHUNK_CHARS = 4000   # see _chunk_diff()'s docstring for why chunking matters
+_DRIFT_MAX_CHUNKS = 25      # bounds worst-case latency on a huge diff window; the
+                            # excess is reported (chunks_available > chunks_checked),
+                            # never silently dropped
+
+
+def _drift_workspace(cfg: TommyConfig, workspace: str) -> Path:
+    """Resolve the git repo to sweep: explicit `workspace` arg, else the active
+    project's git_root, else CWD. This mirrors tommy_dispatch's own
+    workspace-resolution (see its `ws_path` lines above) but is kept as its
+    own small copy rather than factored into a shared helper — a
+    cross-cutting refactor of tommy_dispatch isn't worth the merge-conflict
+    risk while other issues are landing in this same file in parallel; see
+    PR description "Design decisions"."""
+    if workspace:
+        return Path(workspace)
+    if _active_project:
+        proj = cfg.project_by_key(_active_project)
+        if proj:
+            return Path(getattr(proj, "git_root", str(Path.cwd())))
+    return Path.cwd()
+
+
+def _drift_git(repo_root: Path, *args: str, timeout: float = 15.0) -> tuple:
+    """Run a git command in `repo_root`. Returns (stdout, None) on exit 0, or
+    (None, error_message) on any failure (non-zero exit, git missing, or a
+    timeout) — never raises. The same "never raise, degrade to a visible
+    error" contract cli.py's own `_git()` helper uses for auto-ingest
+    (issue #109), kept as a small local copy here rather than imported:
+    cli.py already imports `run_stdio` from this module, so importing back
+    from cli.py would be circular."""
+    try:
+        out = subprocess.run(
+            ["git", *args], cwd=str(repo_root),
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except FileNotFoundError:
+        return None, "git not found on PATH"
+    except subprocess.TimeoutExpired:
+        return None, f"git {' '.join(args)} timed out after {timeout}s"
+    if out.returncode != 0:
+        detail = (out.stderr or out.stdout or "").strip()
+        return None, f"git {' '.join(args)} failed: {detail or f'exit {out.returncode}'}"
+    return out.stdout, None
+
+
+def _clamp_commits(repo_root: Path, requested: int) -> tuple:
+    """Return (effective_n, available_n, error).
+
+    `available_n` is the number of ancestor commits reachable from HEAD,
+    excluding HEAD itself — the most `git diff HEAD~N HEAD` can meaningfully
+    use. Computed from `git rev-list --count HEAD`, which (unlike a plain
+    walk) already reports only the commits actually present locally on a
+    shallow clone (the shallow boundary commit is grafted with no parents),
+    so this clamp is correct for shallow clones with no special-casing.
+
+    `effective_n` is `requested` clamped into [0, available_n] — never
+    negative, never more history than the repo actually has, so
+    `git diff HEAD~{effective_n} HEAD` below can never fail for "not enough
+    history" reasons (shallow clone or a young repo included).
+
+    `error` is set (with the other two 0) only when HEAD itself can't be
+    resolved at all — not a git repo, no commits yet, or git missing from
+    PATH — the one case an effective_n truly cannot be computed."""
+    total, err = _drift_git(repo_root, "rev-list", "--count", "HEAD")
+    if err is not None:
+        return 0, 0, err
+    try:
+        total_n = int((total or "0").strip())
+    except ValueError:
+        return 0, 0, f"unexpected `git rev-list --count HEAD` output: {total!r}"
+    available_n = max(0, total_n - 1)
+    effective_n = max(0, min(requested, available_n))
+    return effective_n, available_n, None
+
+
+def _chunk_diff(diff_text: str, chunk_chars: int = _DRIFT_CHUNK_CHARS) -> list:
+    """Split a diff into fixed-size windows before each is passed to
+    corpus_check() as its own `snippet`.
+
+    core/store.py's corpus_check() only ever looks at a snippet's first 40
+    unique 4+-letter words (core/store.py's `words[:40]`, pure SQL FTS, no
+    LLM) — a single multi-commit diff passed whole would only ever be
+    keyword-matched on whatever appears first (diff headers, repeated file
+    paths), starving the FTS query of everything after that. Chunking
+    spreads the 40-word budget across the whole diff instead, at the cost
+    of one corpus_check() network round trip per chunk — see
+    tommy_drift_sweep()'s docstring for the latency tradeoff this creates
+    as `commits` (and therefore diff size) grows."""
+    if not diff_text:
+        return []
+    return [diff_text[i:i + chunk_chars] for i in range(0, len(diff_text), chunk_chars)]
 
 
 def _drain_stdout(proc: subprocess.Popen, task: Task, prompt_file: str = "") -> None:
@@ -527,6 +628,138 @@ def tommy_dispatch(
     if corpus_gate_result is not None:
         result["corpus_gate"] = corpus_gate_result
     return result
+
+
+@mcp.tool()
+def tommy_drift_sweep(commits: int = 20, namespace: str = "", workspace: str = "") -> dict:
+    """
+    Sweep the last `commits` commits' combined diff against the architecture
+    corpus. This is a standalone check, not gated on a dispatch — it catches
+    drift that tommy_dispatch's per-dispatch corpus gate (issue #109) can't
+    see: commits made directly (outside Tommy entirely), or dispatched
+    through a harness that ran with corpus_gate off.
+
+    Mode (today): RECALL-FALLBACK. `git diff HEAD~N HEAD` is split into
+    fixed-size windows and each window is checked with the same plain
+    `POST /corpus/check` FTS-over-constraints endpoint the corpus gate uses
+    (tommy/corpus.py's corpus_check — not reimplemented here). This is
+    keyword-matched recall, NOT a violated/satisfied/uncovered verdict —
+    the result's "mode" field is always "recall_fallback" and the matches
+    are returned under "possibly_relevant_constraints", never presented
+    with the confidence of a real pass/fail check. When memnos#105 ships a
+    corpus_check_diff-style verdict endpoint, that becomes a second,
+    additive branch here (keyed on server capability / a config flag) — this
+    fallback keeps working unchanged for servers that don't have it yet.
+
+    History handling: `commits` is clamped to the repo's actual ancestor
+    count so a fresh checkout, a shallow clone, or a repo with fewer than
+    `commits` commits never crashes. The clamp is always reported back
+    (`commits_used`, `commits_available`, `clamped`) — never silent.
+
+    Cost: pure SQL FTS per chunk (core/store.py's corpus_check(), no LLM
+    call either way). Latency scales with the number of chunks, which scales
+    with the diff's size, which scales with `commits`: each chunk is its own
+    network round trip to /corpus/check. A larger `commits` costs more
+    wall-clock time (more chunks => more round trips), not more $ (no LLM
+    tokens spent either way). Capped at 25 chunks to bound worst-case
+    latency on a huge window; if the diff has more than that, the excess is
+    skipped and reported (`chunks_available` > `chunks_checked`), never
+    silently dropped.
+
+    Args:
+        commits:   How many recent commits to diff (default 20). Clamped to
+                   available history — see `commits_used`/`clamped` in the
+                   result.
+        namespace: memnos namespace to check against. Omit for the current
+                   project namespace.
+        workspace: Absolute path to the git repo to sweep. Omit for the
+                   active project's git_root, or CWD.
+    """
+    cfg = _get_cfg()
+    repo_root = _drift_workspace(cfg, workspace)
+
+    effective_n, available_n, err = _clamp_commits(repo_root, commits)
+    if err is not None:
+        # HEAD itself couldn't be resolved — effective_n/available_n/clamped
+        # are meaningless (not "0 by clamping", genuinely unknown), but the
+        # keys are still present (0/False) so every tommy_drift_sweep result,
+        # ok or not, has the same shape for a caller to inspect uniformly.
+        return {
+            "ok": False, "mode": "recall_fallback",
+            "error": f"drift sweep could not run: {err}",
+            "commits_requested": commits, "commits_used": 0,
+            "commits_available": 0, "clamped": False,
+        }
+
+    clamped = effective_n != commits
+    diff_text = ""
+    if effective_n > 0:
+        diff_out, diff_err = _drift_git(repo_root, "diff", f"HEAD~{effective_n}", "HEAD")
+        if diff_err is not None:
+            return {
+                "ok": False, "mode": "recall_fallback",
+                "error": f"drift sweep could not run: {diff_err}",
+                "commits_requested": commits, "commits_used": effective_n,
+                "commits_available": available_n, "clamped": clamped,
+            }
+        diff_text = diff_out or ""
+
+    ns = namespace or _effective_namespace(cfg)
+    all_chunks = _chunk_diff(diff_text, chunk_chars=_DRIFT_CHUNK_CHARS)
+    chunks_available = len(all_chunks)
+    chunks = all_chunks[:_DRIFT_MAX_CHUNKS]
+
+    seen: set = set()
+    constraints: list = []
+    check_failures: list = []
+    for chunk in chunks:
+        result = _corpus_check(cfg, ns, chunk)
+        if not result.get("ok"):
+            check_failures.append(result.get("error", "unknown error"))
+            continue
+        for c in (result.get("constraints") or []):
+            key = (c.get("source"), c.get("content"))
+            if key in seen:
+                continue
+            seen.add(key)
+            constraints.append(c)
+
+    if diff_text:
+        note = (
+            "recall_fallback mode: possibly_relevant_constraints are keyword-matched "
+            "via corpus FTS recall over the diff, NOT a violated/satisfied/uncovered "
+            "verdict. Treat them as leads to review, not confirmed violations."
+        )
+    else:
+        # diff_chars == 0 means the window produced no diff to check at all —
+        # distinct from "checked the diff and found nothing relevant" (which
+        # requires possibly_relevant_constraints to be empty AFTER a real
+        # check ran). Without this, an empty possibly_relevant_constraints
+        # list reads identically for both cases, which is exactly the
+        # confidence-blurring the recall-fallback/verdict distinction (issue
+        # #110's acceptance criteria) exists to avoid.
+        note = (
+            "recall_fallback mode: the requested commit window produced no diff "
+            "(commits_used="
+            f"{effective_n}) — nothing was sent to the corpus check. This is NOT "
+            "the same as a check that ran and found no relevant constraints."
+        )
+
+    return {
+        "ok": True,
+        "mode": "recall_fallback",
+        "note": note,
+        "commits_requested": commits,
+        "commits_used": effective_n,
+        "commits_available": available_n,
+        "clamped": clamped,
+        "diff_chars": len(diff_text),
+        "chunks_checked": len(chunks),
+        "chunks_available": chunks_available,
+        "chunks_truncated": chunks_available > len(chunks),
+        "possibly_relevant_constraints": constraints,
+        "check_failures": check_failures,
+    }
 
 
 @mcp.tool()

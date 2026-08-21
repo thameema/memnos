@@ -397,6 +397,7 @@ In `~/.config/zed/settings.json`:
 | `tommy_route` | Dry-run: which harness would Tommy pick? |
 | `tommy_list_harnesses` | Available harnesses + active routing config |
 | `tommy_sketch` | Mermaid sequence diagram -> Canonical Flow Corpus (CFC) constraints -> `/corpus/ingest` |
+| `tommy_drift_sweep` | Check recent commits against the architecture corpus |
 
 ### `tommy_dispatch`
 
@@ -461,6 +462,33 @@ and reported in the returned `warnings` list rather than silently mis-parsed. In
 
 The harness receives the message over a **TCP loopback control channel**
 (`TOMMY_CTRL_PORT` env var) — no polling required.
+
+### `tommy_drift_sweep` — check recent commits against the architecture corpus
+
+Catches drift `tommy_dispatch`'s per-dispatch corpus gate (issue #109)
+can't see — commits made directly outside Tommy, or dispatched with the
+corpus gate off. Diffs the last `commits` commits and checks the result
+against the architecture corpus, also reachable as the `/drift` slash
+command.
+
+```
+tommy_drift_sweep(commits=20)
+→ {
+    "ok": true,
+    "mode": "recall_fallback",
+    "commits_requested": 20, "commits_used": 20, "commits_available": 143,
+    "clamped": false,
+    "possibly_relevant_constraints": [...],
+    "check_failures": [],
+  }
+```
+
+`commits` is clamped to the repo's actual history (shallow clones and young
+repos included) — `commits_used`/`clamped` always report the effective
+value used, never silently. `mode` is `"recall_fallback"` today: results
+are keyword-matched via corpus FTS recall over the diff, not a
+violated/satisfied/uncovered verdict — treat `possibly_relevant_constraints`
+as leads, not confirmed violations.
 
 ---
 
@@ -551,7 +579,7 @@ agents/tommy/
     ├── generate_cmd.py     ← `tommy generate` / `tommy config show` CLI commands
     ├── control.py          ← ControlServer + ControlClient (TCP IPC)
     ├── install.py          ← tommy --install
-    ├── mcp_server.py       ← FastMCP stdio server, 8 tools
+    ├── mcp_server.py       ← FastMCP stdio server, 10 tools
     ├── prompt.py           ← memnos-enriched system prompt builder
     └── discovery/
         └── harnesses.py    ← auto-detect installed harnesses
