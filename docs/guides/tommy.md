@@ -36,10 +36,10 @@ Concretely, Tommy ships two entry points from one `tommy` binary:
   with that prompt attached, staying alive to capture output after the harness exits.
 - **`tommy --mcp`** — an MCP stdio server. An editor (Claude Desktop, Cursor, Continue,
   Zed) spawns this process and drives it over JSON-RPC/stdio instead of a human running the
-  CLI directly. It exposes 10 tools (`tommy_recall`, `tommy_remember`, `tommy_dispatch`,
+  CLI directly. It exposes 11 tools (`tommy_recall`, `tommy_remember`, `tommy_dispatch`,
   `tommy_status`, `tommy_control`, `tommy_switch_project`, `tommy_route`,
-  `tommy_list_harnesses`, `tommy_sketch`, `tommy_drift_sweep`) — see the README for their
-  signatures.
+  `tommy_list_harnesses`, `tommy_sketch`, `tommy_drift_sweep`, `tommy_verdict`) — see the
+  README for their signatures.
 
 These two paths share the harness registry and memnos config, and now also share the same
 core.md coordinator prompt-injection — both call `tommy/prompt.py`'s `build_prompt()`. See
@@ -228,10 +228,12 @@ into actual config — `wave_limit` defaults to 4 precisely so formalizing it do
 change today's behavior for a project that hasn't adopted `tommy.yaml` yet. `tommy generate`
 projects the resolved values into whichever harness adapter file(s) (CLAUDE.md, Cursor
 rules, etc.) a project already uses, so the harness session sees the actual configured
-number rather than the static prompt text. Nothing consumes `merge_gate`/`wave_limit` to
-*enforce* a cap in code yet — like everything else in this section, it's still an
+number rather than the static prompt text. `wave_limit` still isn't enforced anywhere in
+code — like everything else in this section, the wave-fan-out cap itself is still an
 instruction the harness session chooses to follow, now sourced from committed config instead
-of a hardcoded prompt literal.
+of a hardcoded prompt literal. `merge_gate` is the exception: `tommy_verdict` (issue #112)
+reads it to decide whether a violation-carrying diff verdict sets `merge_blocked: true` — see
+the README's `tommy_verdict` section.
 
 ### Reviewer dispatch — mandatory review passes
 

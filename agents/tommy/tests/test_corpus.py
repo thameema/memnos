@@ -17,7 +17,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from tommy.corpus import corpus_check, corpus_ingest, corpus_list
+from tommy.corpus import corpus_check, corpus_check_diff, corpus_ingest, corpus_list
 
 
 def _handler_factory(routes: dict):
@@ -123,6 +123,112 @@ class TestCorpusIngest:
         result = corpus_ingest("http://fake", "tok", "ns:test", "adr-1", "text", transport=transport)
         assert result["ok"] is False
         assert "error" in result
+
+
+class TestCorpusCheckDiff:
+    """corpus_check_diff() — issue #112's wrapper for memnos#105's real
+    POST /corpus/check_diff DiffVerdict endpoint. Mirrors TestCorpusCheck's
+    coverage (ok-with-matches, ok-empty, 4xx, unreachable) plus the
+    vacuous-vs-real-1.0 score/evaluated distinction that #105 split
+    specifically because #112 gates a merge decision on it."""
+
+    def test_ok_with_violated_satisfied_uncovered(self):
+        def route(request):
+            return httpx.Response(200, json={
+                "violated": [{"id": 1, "content": "X MUST NOT log raw PANs.",
+                               "source": "adr-1", "score": 0.8,
+                               "matched_terms": ["log"], "added_hits": 2, "removed_hits": 0}],
+                "satisfied": [{"id": 2, "content": "Y SHALL validate input.",
+                                "source": "adr-2", "score": 0.5,
+                                "matched_terms": ["validate"], "added_hits": 2, "removed_hits": 0}],
+                "uncovered": [],
+                "score": 0.5, "evaluated": 2,
+            })
+        transport = httpx.MockTransport(_handler_factory({"/corpus/check_diff": route}))
+        result = corpus_check_diff("http://fake", "tok", "ns:test", "diff text", transport=transport)
+        assert result["ok"] is True
+        assert result["violated"][0]["source"] == "adr-1"
+        assert result["satisfied"][0]["source"] == "adr-2"
+        assert result["uncovered"] == []
+        assert result["score"] == 0.5
+        assert result["evaluated"] == 2
+
+    def test_vacuous_and_real_one_point_zero_are_distinguishable_via_evaluated(self):
+        transport_vacuous = httpx.MockTransport(_handler_factory({
+            "/corpus/check_diff": lambda r: httpx.Response(200, json={
+                "violated": [], "satisfied": [], "uncovered": [], "score": 1.0, "evaluated": 0,
+            }),
+        }))
+        vacuous = corpus_check_diff("http://fake", "tok", "ns:test", "diff", transport=transport_vacuous)
+
+        transport_real = httpx.MockTransport(_handler_factory({
+            "/corpus/check_diff": lambda r: httpx.Response(200, json={
+                "violated": [], "satisfied": [{"id": 1, "content": "X SHALL do Y.", "source": "a",
+                                                 "score": 0.9, "matched_terms": [], "added_hits": 2,
+                                                 "removed_hits": 0}],
+                "uncovered": [], "score": 1.0, "evaluated": 1,
+            }),
+        }))
+        real = corpus_check_diff("http://fake", "tok", "ns:test", "diff", transport=transport_real)
+
+        assert vacuous["score"] == real["score"] == 1.0
+        assert vacuous["evaluated"] == 0
+        assert real["evaluated"] == 1
+        assert vacuous["evaluated"] != real["evaluated"]
+
+    def test_server_error_is_not_ok_score_is_none_not_one_point_zero(self):
+        transport = httpx.MockTransport(_handler_factory({
+            "/corpus/check_diff": lambda r: httpx.Response(400, json={"error": "diff required"}),
+        }))
+        result = corpus_check_diff("http://fake", "bad-tok", "ns:test", "", transport=transport)
+        assert result["ok"] is False
+        assert result["violated"] == [] and result["satisfied"] == [] and result["uncovered"] == []
+        # score must be None on failure, never memnos's own legitimate
+        # vacuous-pass 1.0 value — that would make "check didn't run" look
+        # identical to "check ran and found nothing to check."
+        assert result["score"] is None
+        assert result["evaluated"] == 0
+        assert "diff required" in result["error"]
+
+    def test_unreachable_transport_is_not_ok_and_never_raises(self):
+        def _boom(request):
+            raise httpx.ConnectError("connection refused", request=request)
+        transport = httpx.MockTransport(_boom)
+        result = corpus_check_diff("http://fake", "tok", "ns:test", "diff", transport=transport)
+        assert result["ok"] is False
+        assert result["score"] is None
+        assert "error" in result
+
+    def test_sends_namespace_diff_and_optional_name_and_bearer_token(self):
+        captured = {}
+
+        def route(request):
+            import json
+            captured["body"] = json.loads(request.content)
+            captured["auth"] = request.headers.get("authorization")
+            return httpx.Response(200, json={
+                "violated": [], "satisfied": [], "uncovered": [], "score": 1.0, "evaluated": 0,
+            })
+
+        transport = httpx.MockTransport(_handler_factory({"/corpus/check_diff": route}))
+        corpus_check_diff("http://fake", "mnk_abc", "org:acme", "diff text",
+                           name="adr-1", transport=transport)
+        assert captured["body"] == {"namespace": "org:acme", "diff": "diff text", "name": "adr-1"}
+        assert captured["auth"] == "Bearer mnk_abc"
+
+    def test_name_omitted_when_not_given(self):
+        captured = {}
+
+        def route(request):
+            import json
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(200, json={
+                "violated": [], "satisfied": [], "uncovered": [], "score": 1.0, "evaluated": 0,
+            })
+
+        transport = httpx.MockTransport(_handler_factory({"/corpus/check_diff": route}))
+        corpus_check_diff("http://fake", "tok", "org:acme", "diff text", transport=transport)
+        assert "name" not in captured["body"]
 
 
 class TestCorpusList:

@@ -152,7 +152,8 @@ agents:
   skip_permissions: true
 env:
   OPENAI_API_KEY: secret://openai_api_key   # secret:// references ONLY — see "Secret Shield" below
-merge_gate: true           # formalizes core.md's wave-based dispatch concept
+merge_gate: true           # formalizes core.md's wave-based dispatch concept; also
+                            # drives tommy_verdict's merge_blocked (issue #112)
 wave_limit: 4
 ```
 
@@ -398,6 +399,7 @@ In `~/.config/zed/settings.json`:
 | `tommy_list_harnesses` | Available harnesses + active routing config |
 | `tommy_sketch` | Mermaid sequence diagram -> Canonical Flow Corpus (CFC) constraints -> `/corpus/ingest` |
 | `tommy_drift_sweep` | Check recent commits against the architecture corpus |
+| `tommy_verdict` | Diff a completed task against the architecture corpus (violated/satisfied/uncovered), post-dispatch |
 
 ### `tommy_dispatch`
 
@@ -490,6 +492,36 @@ are keyword-matched via corpus FTS recall over the diff, not a
 violated/satisfied/uncovered verdict — treat `possibly_relevant_constraints`
 as leads, not confirmed violations.
 
+### `tommy_verdict` — post-dispatch diff-against-corpus verdict
+
+Diffs one already-dispatched `tommy_dispatch` task (`git diff HEAD~1 HEAD` in
+the exact workspace that task ran in) against the architecture corpus, via
+memnos#105's real `/corpus/check_diff` verdict endpoint — a real
+violated/satisfied/uncovered classification, not `tommy_drift_sweep`'s
+keyword-matched `recall_fallback`.
+
+```
+tommy_verdict(task_id="a3f1b2c4")
+→ {
+    "task_id": "a3f1b2c4", "task_status": "done", "ok": true,
+    "violated": [], "satisfied": [...], "uncovered": [...],
+    "score": 1.0, "evaluated": 3,
+    "merge_gate": true, "merge_blocked": false, "merge_blocked_reason": "clean",
+  }
+```
+
+`merge_blocked` reuses tommy.yaml's `merge_gate` field — no separate flag.
+`merge_blocked_reason` is always one of `"gate_off"`, `"clean"`, `"no_diff"`,
+`"violations"`, or `"unverified"` (the check could not actually run — git
+failure, unreadable tommy.yaml, or `/corpus/check_diff` unreachable).
+Deliberately NOT fail-open like the corpus gate: `tommy_verdict` returns
+data, it doesn't launch anything, so when `merge_gate` is on and the check
+couldn't run, `merge_blocked` is `true` with reason `"unverified"` — never
+silently `false`. `score`/`evaluated` are kept separate for the same reason
+memnos#105 keeps them separate: a vacuous `1.0` (`evaluated == 0`, nothing
+matched) must stay distinguishable from a real `1.0` (`evaluated > 0`,
+everything matched was satisfied).
+
 ---
 
 ## Control channel (for harness authors)
@@ -579,7 +611,7 @@ agents/tommy/
     ├── generate_cmd.py     ← `tommy generate` / `tommy config show` CLI commands
     ├── control.py          ← ControlServer + ControlClient (TCP IPC)
     ├── install.py          ← tommy --install
-    ├── mcp_server.py       ← FastMCP stdio server, 10 tools
+    ├── mcp_server.py       ← FastMCP stdio server, 11 tools
     ├── prompt.py           ← memnos-enriched system prompt builder
     └── discovery/
         └── harnesses.py    ← auto-detect installed harnesses

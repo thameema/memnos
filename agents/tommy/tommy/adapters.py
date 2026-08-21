@@ -70,7 +70,7 @@ def render_policy_block(effective: EffectiveConfig) -> str:
         "(dispatch must call corpus_check() before proceeding when on)",
         f"- Auto-ingest design docs into corpus: {'on' if v('auto_ingest') else 'off'}",
         f"- Merge gate: {'on' if v('merge_gate') else 'off'} "
-        "(wave-based dispatch required when on)",
+        "(wave-based dispatch required; tommy_verdict blocks merge on violations when on)",
         f"- Wave limit: {v('wave_limit')} (max subagent dispatches per turn)",
         "- Agents:"
         f" harness={v('harness')},"

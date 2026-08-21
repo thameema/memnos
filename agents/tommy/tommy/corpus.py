@@ -1,12 +1,14 @@
 """
-Direct HTTP client for memnos's `/corpus/check`, `/corpus/ingest`, and
-`/corpus/list` endpoints (issue #109 — Tommy's corpus gate + auto-ingest).
+Direct HTTP client for memnos's `/corpus/check`, `/corpus/ingest`,
+`/corpus/list`, and `/corpus/check_diff` endpoints (issue #109 — Tommy's
+corpus gate + auto-ingest; issue #112's `corpus_check_diff` added on top of
+memnos#105's diff-verdict endpoint).
 
 Not part of memnos-sdk's ``MemnosClient`` (sdk/memnos_sdk/client.py): that
 client only wraps ``/remember``, ``/recall``, ``/consolidate``,
 ``/ingest/file``, ``/feedback``, and ``/secret/resolve`` — no corpus
 endpoints yet. Rather than block this issue on an SDK release, Tommy talks
-to these three endpoints directly here, using the exact same
+to these endpoints directly here, using the exact same
 ``httpx.Client(transport=...)`` shape ``MemnosClient`` uses, so tests can
 substitute an ``httpx.MockTransport`` instead of a live server (see
 sdk/tests/test_client.py for the pattern this mirrors).
@@ -135,6 +137,62 @@ def corpus_ingest(
     except Exception as exc:
         return {"ok": False, "error": f"corpus ingest returned unparseable response: {exc}"}
     return {"ok": True, "constraints": data.get("constraints", 0), "ids": data.get("ids", [])}
+
+
+def corpus_check_diff(
+    memnos_url: str,
+    token: Optional[str],
+    namespace: str,
+    diff: str,
+    *,
+    name: Optional[str] = None,
+    timeout: float = 15.0,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """POST /corpus/check_diff — memnos#105's DiffVerdict for a unified diff,
+    consumed here by issue #112's ``tommy_verdict``. Unlike ``corpus_check``'s
+    flat ranked list, this classifies each corpus constraint the diff is
+    topically relevant to as violated / satisfied / uncovered, plus a
+    ``score`` and its ``evaluated`` denominator (``len(violated) +
+    len(satisfied)``) — the two are kept separate so a caller can tell a
+    vacuous 1.0 (``evaluated == 0``, nothing matched) apart from a real 1.0
+    (``evaluated > 0``, everything matched was satisfied); see
+    core/store.py's ``corpus_check_diff`` docstring for the full reasoning,
+    and ``mcp_server.py``'s ``tommy_verdict`` for why that distinction
+    matters for a merge-gate decision.
+
+    Returns exactly one of:
+      {"ok": True,  "violated": [...], "satisfied": [...], "uncovered": [...],
+       "score": <float>, "evaluated": <int>}
+      {"ok": False, "violated": [], "satisfied": [], "uncovered": [],
+       "score": None, "evaluated": 0, "error": "..."}
+    Never raises. ``score`` is ``None`` (never ``1.0``) on failure — ``1.0``
+    is corpus_check_diff's own legitimate vacuous-pass value on the server
+    side, and must never be produced here to stand in for "the check didn't
+    run."
+    """
+    body: dict[str, Any] = {"namespace": namespace, "diff": diff}
+    if name:
+        body["name"] = name
+    resp, err = _post(memnos_url, token, "/corpus/check_diff", body, timeout=timeout, transport=transport)
+    empty = {"violated": [], "satisfied": [], "uncovered": [], "score": None, "evaluated": 0}
+    if resp is None:
+        return {"ok": False, **empty, "error": f"corpus check_diff unreachable: {err}"}
+    if resp.status_code >= 400:
+        return {"ok": False, **empty,
+                "error": f"corpus check_diff failed ({resp.status_code}): {_error_detail(resp)}"}
+    try:
+        data = resp.json()
+    except Exception as exc:
+        return {"ok": False, **empty, "error": f"corpus check_diff returned unparseable response: {exc}"}
+    return {
+        "ok": True,
+        "violated": data.get("violated", []),
+        "satisfied": data.get("satisfied", []),
+        "uncovered": data.get("uncovered", []),
+        "score": data.get("score"),
+        "evaluated": data.get("evaluated", 0),
+    }
 
 
 def corpus_list(
