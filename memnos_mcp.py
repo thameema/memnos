@@ -522,6 +522,22 @@ def corpus_check(snippet: str) -> str:
 
 
 @mcp.tool()
+def corpus_check_diff(diff: str, name: str = "") -> str:
+    """Check a unified diff (git diff / GitHub PR patch text) against the architecture
+    corpus. Returns a verdict per relevant constraint — violated, satisfied, or
+    uncovered (topically relevant, no clear evidence either way) — plus an overall
+    compliance score. Optional `name` restricts the check to one ingested source.
+    Read-only, deterministic, no LLM."""
+    try:
+        body = {"diff": diff}
+        if name:
+            body["name"] = name
+        return str(_post("/corpus/check_diff", body))
+    except Exception as e:
+        return _err(e, "corpus_check_diff")
+
+
+@mcp.tool()
 def corpus_list() -> str:
     """List the architecture documents ingested into this namespace and their constraint counts."""
     try:

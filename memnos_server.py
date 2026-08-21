@@ -1346,6 +1346,12 @@ class Handler(BaseHTTPRequestHandler):
                         if not snippet.strip():
                             return self._send(400, {"error": "snippet/code required"})
                         out = {"constraints": store.corpus_check(mem.schema, ns, snippet)}
+                    elif self.path == "/corpus/check_diff":  # issue #105: verdict against a diff
+                        diff = str(req.get("diff", ""))
+                        if not diff.strip():
+                            return self._send(400, {"error": "diff required"})
+                        src_name = str(req.get("name", "")).strip() or None
+                        out = store.corpus_check_diff(mem.schema, ns, diff, name=src_name)
                     elif self.path == "/entity/dossier":   # get stored dossier for an entity
                         entity_name = str(req.get("entity", "")).strip()
                         if not entity_name:

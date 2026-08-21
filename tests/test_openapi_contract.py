@@ -407,6 +407,11 @@ def main():
     print("=== data plane: corpus / files / copy / delete ===")
     call("POST", "/corpus/check", token=TADM,
          body={"namespace": NSK, "snippet": "def log_token(token): print(token)"}, expect=200)
+    call("POST", "/corpus/check_diff", token=TADM,
+         body={"namespace": NSK, "diff": "--- a/auth.py\n+++ b/auth.py\n@@ -1,2 +1,3 @@\n"
+               " def foo():\n+    print(\"tokens logged: \" + token)\n     return\n"}, expect=200)
+    call("POST", "/corpus/check_diff", token=TADM, body={"namespace": NSK}, expect=400,
+         name="POST /corpus/check_diff (missing diff)")
     call("POST", "/corpus/list", token=TADM, body={"namespace": NSK}, expect=200)
     call("POST", "/ingest/file", token=TADM,
          body={"namespace": NS, "filename": "notes.md",
