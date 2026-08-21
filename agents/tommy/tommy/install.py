@@ -3,7 +3,9 @@ Tommy first-time installer.
 
 tommy --install
   - Writes ~/.memnos/agents/tommy/tommy.conf (if not present)
-  - Writes ~/.claude/commands/memnos*.md (always, idempotent)
+  - Writes ~/.claude/commands/*.md (always, idempotent) — every slash command
+    bundled in tommy/slash_commands/, not just the memnos* ones (e.g. sketch.md,
+    drift.md)
 """
 from __future__ import annotations
 
@@ -36,7 +38,8 @@ def install_config(force: bool = False) -> None:
 
 def install_slash_commands(force: bool = False) -> None:
     """Copy every *.md Claude Code slash command file (e.g. /memnos-recall,
-    /sketch) from the bundled slash_commands/ directory to ~/.claude/commands/."""
+    /sketch, /drift) from the bundled slash_commands/ directory to
+    ~/.claude/commands/."""
     if not _SLASH_SRC.exists():
         print(f"  ✗ Slash commands directory not found: {_SLASH_SRC}")
         return
