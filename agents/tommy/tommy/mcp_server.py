@@ -42,7 +42,13 @@ from .corpus import (
     corpus_check_diff as _http_corpus_check_diff,
     corpus_ingest as _http_corpus_ingest,
 )
-from .discovery.harnesses import all_harnesses, apply_skip_permissions, apply_session_name
+from .discovery.harnesses import (
+    all_harnesses,
+    apply_prompt_arg,
+    apply_session_name,
+    apply_skip_permissions,
+    DISPATCH_TRIGGER_PROMPT,
+)
 from .effective_config import resolve_effective_config
 from .project_config import TommyYamlError
 from .prompt import build_prompt
@@ -602,6 +608,13 @@ def tommy_dispatch(
     cmd = apply_skip_permissions(cmd, chosen, cfg.skip_permissions)
     _mcp_session_name = f"Tommy | {_active_project.upper()}" if _active_project else "Tommy"
     cmd = apply_session_name(cmd, chosen, _mcp_session_name)
+    # memnos#132: this dispatch is ALWAYS headless (stdout=PIPE below makes
+    # claude auto-enter print mode, which hard-requires a real prompt — see
+    # apply_prompt_arg()'s docstring). The full task already lives in the
+    # system-prompt file via --append-system-prompt-file; this is only the
+    # minimal trigger claude's CLI needs to leave print-mode's input gate,
+    # not a duplicate of the task content.
+    cmd = apply_prompt_arg(cmd, chosen, DISPATCH_TRIGGER_PROMPT)
     env = os.environ.copy()
     env["MEMNOS_URL"] = cfg.memnos_url
     env["TOMMY_NS"] = cfg.tommy_ns
@@ -641,6 +654,20 @@ def tommy_dispatch(
         cmd,
         cwd=str(ws_path),
         env=env,
+        stdin=subprocess.DEVNULL,  # memnos#132: NEVER inherit Tommy's own stdin here.
+        # When Tommy runs as `tommy --mcp`, its stdin is the MCP host's live
+        # JSON-RPC pipe (e.g. an editor talking to Tommy over stdio) — that
+        # pipe is held open indefinitely and does not hit EOF the way a
+        # closed/redirected stdin does. Leaving stdin unset (the pre-fix
+        # behavior) meant the harness child inherited that same live pipe as
+        # its own stdin; verified empirically (a fifo held open by a
+        # never-closing background writer, same shape as a live MCP host)
+        # that claude then hangs forever reading it rather than erroring —
+        # a silently stuck dispatch, worse than the immediate-failure case
+        # this bug was originally reported for. The task's actual prompt no
+        # longer depends on stdin at all (see apply_prompt_arg() above), so
+        # DEVNULL — not PIPE — is correct: nothing is ever meant to be
+        # written to this child's stdin.
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         start_new_session=True,   # decouple from Tommy's process group / TTY
