@@ -4,9 +4,25 @@ launch call sites: mcp_server.py's tommy_dispatch() and cli.py's
 _launch_harness(). Pure subprocess/filesystem tests — no DB, no live memnos
 server, no real `claude` binary (see fixtures/scope_capture_harness.py) —
 these are the automated acceptance-criteria tests 1-3 from the issue #136
-PR description; test_memnos_scope_e2e.py separately covers the same three
-scenarios against the REAL `claude` binary + a live memnos server
-(skip-by-default, no `claude`/live-server dependency in CI).
+PR description.
+
+There is deliberately NO automated test file that shells out to a REAL
+`claude` binary + a live memnos server for this issue: the two empirical
+claims the design depends on (implicit print-mode dispatch actually loads
+and can call a project-scoped .mcp.json server, and `--setting-sources
+project,local` actually excludes user-scope ~/.claude/settings.json hooks
+while still loading project/local-scope ones) were verified by hand against
+a real `claude` 2.1.240 binary + a live memnos server — see the issue #136
+PR description for the exact commands, marker-file results, and
+`claude mcp get memnos` output. That verification is intentionally NOT
+wired into pytest: it depends on a real, authenticated `claude` install
+(unavailable in CI and on most other dev machines) and, for the
+--setting-sources check, on temporarily editing this MACHINE's own
+~/.claude/settings.json (backed up and restored byte-identical) — not a
+shape that belongs in an automated suite. If Claude Code's own CLI
+contract around print-mode MCP approval or --setting-sources ever changes,
+these two claims would need re-verifying by hand again the same way, not by
+a stale green test that never touched the real binary.
 
 Mirrors test_dispatch_stdin_isolation.py's proof strategy deliberately: a
 real subprocess (or real in-process call for the MCP path, which never
