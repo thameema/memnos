@@ -68,6 +68,21 @@ def u(text):
     return {"type": "user", "message": {"content": text}}
 
 
+def u_blocks(*blocks):
+    """A list-shaped user turn — real Claude Code transcripts use this (not a bare str)
+    for any turn that carries an image/document, and ALSO for the synthetic tool_result
+    echo Claude Code injects as a "user" message after every tool call. See issue #97."""
+    return {"type": "user", "message": {"content": list(blocks)}}
+
+
+def u_meta_blocks(*blocks):
+    """isMeta:true companion event — the system-injected bookkeeping twin real transcripts
+    pair with a genuine list-shaped turn (same promptId, immediately after it), carrying a
+    placeholder like "[Image: source: /var/folders/.../paste-....png]" — never text a
+    human typed."""
+    return {"type": "user", "message": {"content": list(blocks)}, "isMeta": True}
+
+
 def a(*texts):
     return {"type": "assistant",
             "message": {"content": [{"type": "text", "text": t} for t in texts]}}
@@ -162,6 +177,122 @@ def main():
                       "transcript_path": tp})
     check("remember: trivial assistant reply skipped, user kept",
           [b["speaker"] for _, b in captured] == ["user"])
+
+    # --- remember: list-shaped user content (issue #97) ---
+    # Real Claude Code transcripts store a user turn's `message.content` as a LIST of
+    # content blocks — not a bare str — whenever the turn carries an image/document, and
+    # ALSO for the synthetic tool_result "echo" Claude Code injects as a "user" message
+    # after every tool call. The bug: the old code only recognized `isinstance(c, str)`
+    # for a "user" event, so any list-shaped turn was silently skipped — `last` stayed
+    # unset, the noise filter then discarded the empty fallback prompt, and the hook
+    # exited 0 with zero output and zero /remember calls. Confirmed against real
+    # transcripts on this machine (~/.claude/projects/*/*.jsonl): text+image turns like
+    # this are common (hundreds of real occurrences), not a rare edge case.
+
+    # text + image blocks — the common real shape (a pasted screenshot with a caption)
+    captured.clear()
+    tp = transcript([
+        u_blocks({"type": "text", "text": "why is the reconciliation showing zero "
+                                           "for the construction account [Image #1]"},
+                 {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                               "data": "aGVsbG8="}}),
+        a("Cleared in a prior period, see ticket REF-321 for the writeoff."),
+    ])
+    hook("remember", {"prompt": "", "transcript_path": tp})
+    check("list-shaped text+image: user turn captured (not silently dropped)",
+          [b["speaker"] for _, b in captured] == ["user", "assistant"])
+    if captured:
+        check("list-shaped text+image: user text extracted, image block ignored",
+              "reconciliation showing zero" in captured[0][1]["text"]
+              and "aGVsbG8=" not in captured[0][1]["text"])
+        check("list-shaped text+image: assistant reply captured with identifier",
+              "REF-321" in captured[1][1]["text"])
+
+    # tool_result-echo shaped "user" event must NOT clobber the real last user message —
+    # this is the far more common list-shaped "user" event in a real transcript (Claude
+    # Code re-injects the result of every tool call as a synthetic "user" turn). A naive
+    # "any list content is a real turn" fix would treat this as blank and wipe out both
+    # the real question and any assistant commentary alongside it.
+    captured.clear()
+    tp = transcript([
+        u_blocks({"type": "text", "text": "please check the Ramp bill for the AC "
+                                           "repair and confirm the amount"}),
+        a("Checking the bill now, one moment before I confirm the total."),
+        u_blocks({"type": "tool_result", "tool_use_id": "toolu_1",
+                  "content": [{"type": "tool_reference", "tool_name": "ramp_lookup"}]}),
+        a("Confirmed — the bill total is $1,240.00, matching PROJ-900."),
+    ])
+    hook("remember", {"prompt": "", "transcript_path": tp})
+    check("tool_result echo: does not clobber the real user turn",
+          [b["speaker"] for _, b in captured] == ["user", "assistant"])
+    if captured:
+        check("tool_result echo: real user question preserved verbatim",
+              "check the Ramp bill" in captured[0][1]["text"])
+        check("tool_result echo: assistant text on BOTH sides of the echo concatenated",
+              "Checking the bill now" in captured[1][1]["text"]
+              and "PROJ-900" in captured[1][1]["text"])
+
+    # mixed shape: a text block alongside a tool_result block in the SAME content list
+    # (seen in real transcripts, e.g. subagent sidechains) — only the text is extracted.
+    captured.clear()
+    tp = transcript([
+        u_blocks({"type": "text", "text": "also double check the vendor name spelling please"},
+                 {"type": "tool_result", "tool_use_id": "toolu_2", "content": "ok"}),
+        a("Vendor name confirmed correct, no changes needed here."),
+    ])
+    hook("remember", {"prompt": "", "transcript_path": tp})
+    check("mixed text+tool_result block: text extracted from the same content list",
+          [b["speaker"] for _, b in captured] == ["user", "assistant"]
+          and "vendor name spelling" in captured[0][1]["text"])
+
+    # image-only user turn (no text block at all): nothing to extract, so nothing is
+    # saved — a deliberate decision (no OCR/description of image bytes attempted), not a
+    # silent-failure regression: this transcript has zero real text anywhere to lose.
+    captured.clear()
+    tp = transcript([
+        u_blocks({"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                               "data": "aGVsbG8="}}),
+        a("This reply must not be saved either — nothing textual was ever asked."),
+    ])
+    r = hook("remember", {"prompt": "", "transcript_path": tp})
+    check("image-only user turn: no extractable text -> zero writes",
+          len(captured) == 0)
+    check("image-only user turn: visible stderr diagnostic, not a silent no-op",
+          "no capturable user text" in r.stderr)
+
+    # isMeta companion event, in REAL file order (confirmed against an actual Claude Code
+    # transcript on this machine: the real content event comes first, the isMeta
+    # placeholder companion — same promptId — immediately after it, before any
+    # tool_result echoes). A naive fix that didn't skip isMeta events would let this
+    # companion overwrite the real question with its placeholder text.
+    captured.clear()
+    tp = transcript([
+        u_blocks({"type": "text", "text": "why does the reconciliation show zero for "
+                                           "the construction account [Image #1]"},
+                 {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                               "data": "aGVsbG8="}}),
+        u_meta_blocks({"type": "text", "text": "[Image: source: /var/folders/7k/tmp/"
+                                                "orca-paste-1787421604124.png]"}),
+        u_blocks({"type": "tool_result", "tool_use_id": "toolu_3",
+                  "content": [{"type": "tool_reference", "tool_name": "qb_lookup"}]}),
+        a("Cleared in a prior period, see ticket REF-321 for the writeoff."),
+    ])
+    hook("remember", {"prompt": "", "transcript_path": tp})
+    check("isMeta companion (real ordering): real question survives, not the placeholder",
+          [b["speaker"] for _, b in captured] == ["user", "assistant"]
+          and "reconciliation show zero" in captured[0][1]["text"]
+          and "orca-paste" not in captured[0][1]["text"])
+
+    # plain string content (the pre-existing, already-working case) must be unaffected —
+    # no regression to the common path.
+    captured.clear()
+    tp = transcript([u("plain string content should still work exactly as before"),
+                     a("Yes, still works, confirming with marker STR-OK-1.")])
+    hook("remember", {"prompt": "plain string content should still work exactly as before",
+                      "transcript_path": tp})
+    check("plain string content: unaffected by the list-content fix",
+          [b["speaker"] for _, b in captured] == ["user", "assistant"]
+          and "STR-OK-1" in captured[1][1]["text"])
 
     # --- status (SessionStart): visible memory-ON line; warns when server down ---
     r = hook("status", {"source": "startup"})

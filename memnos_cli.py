@@ -4071,17 +4071,71 @@ def cmd_hook(args, cfg):
     if tp and os.path.exists(tp):
         try:
             last = ""
+            saw_user_event = False
             with open(tp) as f:
                 for line in f:
                     ev = json.loads(line); c = ev.get("message", {}).get("content")
-                    if ev.get("type") == "user" and isinstance(c, str):
-                        last = c; a_text = ""          # keep only the reply AFTER the last user msg
+                    if ev.get("type") == "user" and ev.get("isMeta"):
+                        # Real transcripts pair a genuine list-shaped turn (e.g. an image
+                        # paste) with a companion "user" event carrying `isMeta: true` and a
+                        # placeholder string, e.g. "[Image: source: /var/folders/.../
+                        # paste-....png]" — same promptId, immediately AFTER the real event
+                        # in file order. isMeta marks Claude Code's own system-injected
+                        # bookkeeping turns (this placeholder, `<system-reminder>`,
+                        # `<local-command-caveat>`, etc.), never something the human typed —
+                        # skip them entirely so a companion placeholder can never overwrite
+                        # the real question that came right before it.
+                        continue
+                    if ev.get("type") == "user":
+                        saw_user_event = True
+                        # issue #97: a real Claude Code transcript's user-turn `content` is
+                        # NOT always a plain str — it's list-shaped (content blocks) whenever
+                        # the turn carries an image/document, or for certain synthetic events.
+                        # Extract text the same way the assistant branch below already does:
+                        # join only `type == "text"` blocks, ignoring everything else. That
+                        # "everything else" is a deliberate choice, not an oversight — the
+                        # overwhelmingly common list-shaped "user" event in a real transcript
+                        # is Claude Code's own `tool_result` echo (the mechanical result of a
+                        # tool call, re-injected as a "user" message), not anything the human
+                        # typed; joining only text blocks makes that yield "" naturally. An
+                        # image/document block contributes nothing either — no OCR/description
+                        # is attempted, only the literal text the user typed (which, for an
+                        # image paste, is usually just Claude Code's own "[Image #N]" caption).
+                        if isinstance(c, str):
+                            u_text = c
+                        elif isinstance(c, list):
+                            u_text = "".join(b.get("text", "") for b in c
+                                        if isinstance(b, dict) and b.get("type") == "text")
+                        else:
+                            u_text = ""
+                        # Only a NON-empty extraction counts as a real user-turn boundary.
+                        # This guard is load-bearing, not cosmetic: tool_result echoes (see
+                        # above) are by far the most common "user"-type event in a real
+                        # transcript, and extract to "". If they were allowed to reset
+                        # `last`/`a_text` like a genuine turn, every tool call would wipe out
+                        # the real last human message and any assistant commentary alongside
+                        # it — turning this fix into a worse, opposite-direction bug.
+                        if u_text.strip():
+                            last = u_text; a_text = ""     # keep only the reply AFTER the last user msg
                     elif ev.get("type") == "assistant" and isinstance(c, list):
                         t = "".join(b.get("text", "") for b in c
                                     if isinstance(b, dict) and b.get("type") == "text")
                         if t.strip():
                             a_text = (a_text + "\n" + t.strip()) if a_text else t.strip()
             text = last or text
+            if saw_user_event and not text.strip():
+                # Visibility (issue #97): the whole point of this bug was that the hook
+                # could fail to capture anything with NO signal at all — exit 0, no stdout,
+                # no stderr, nothing in the server's audit_log. This does not fire on the
+                # (extremely common) normal case of a transcript full of tool_result echoes
+                # with a real human turn somewhere in it — `last` finds that turn regardless
+                # of how many tool_result echoes surround it. It fires only when the
+                # transcript had at least one "user"-type event and STILL nothing usable was
+                # extracted from any of them — e.g. every one was a tool_result echo with no
+                # real human turn at all (a fully autonomous/headless run), or a future
+                # content-block shape this code doesn't recognize yet.
+                print(f"memnos: hook remember found no capturable user text in transcript "
+                      f"{tp} — nothing will be saved for this turn", file=sys.stderr)
         except Exception:
             pass
 
