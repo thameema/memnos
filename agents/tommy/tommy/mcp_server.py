@@ -595,12 +595,13 @@ def tommy_dispatch(
             # diverge in real projects the moment a tommy.yaml sets
             # memnos.namespace (see test_verdict.py's YAML_MERGE_GATE_ON/OFF
             # fixtures, which set exactly that, and
-            # tommy_verdict/tommy_drift_sweep, which both intentionally use
-            # effective.value("namespace") for this reason — see this
-            # module's tommy_drift_sweep for the matching fix). The corpus
-            # gate here is deliberately tommy.yaml-namespace-aware since
-            # we're already resolving that config object right here to read
-            # corpus_gate itself.
+            # tommy_verdict/tommy_drift_sweep/tommy_sketch, which all
+            # intentionally use effective.value("namespace") for this reason
+            # — see this module's tommy_drift_sweep (#128) and tommy_sketch
+            # (#124) for the matching fixes. The corpus gate here is
+            # deliberately tommy.yaml-namespace-aware since we're already
+            # resolving that config object right here to read corpus_gate
+            # itself.
             ns = effective.value("namespace")
             corpus_gate_result = _corpus_check(cfg, ns, task)
             constraint_block = _format_constraint_block(corpus_gate_result)
@@ -1285,6 +1286,7 @@ def tommy_sketch(
     mermaid_text: str = "",
     mermaid_file: str = "",
     namespace: str = "",
+    workspace: str = "",
 ) -> dict:
     """
     Convert a mermaid sequence diagram into Canonical Flow Corpus (CFC)
@@ -1331,8 +1333,14 @@ def tommy_sketch(
         mermaid_text:   Mermaid sequence-diagram source, inline.
         mermaid_file:   Path to a file containing mermaid source. Used only
                          when mermaid_text is empty.
-        namespace:      memnos namespace. Omit for the current project
-                        namespace.
+        namespace:      memnos namespace. Omit to use `workspace`'s
+                        tommy.yaml-aware namespace (its `memnos.namespace`
+                        override, else cfg.default_ns) — the same resolution
+                        tommy_dispatch's corpus gate and tommy_verdict/
+                        tommy_drift_sweep already use (issue #124).
+        workspace:      Absolute path to the project whose tommy.yaml should
+                        be consulted for the namespace override. Omit for
+                        the active project's git_root, or CWD.
     """
     if not flow_name.strip():
         return {"error": "flow_name required"}
@@ -1356,7 +1364,31 @@ def tommy_sketch(
         }
 
     cfg = _get_cfg()
-    ns = namespace or _effective_namespace(cfg)
+    repo_root = _drift_workspace(cfg, workspace)
+    try:
+        effective = resolve_effective_config(project_root=repo_root)
+    except TommyYamlError as exc:
+        # Namespace resolution follow-up fix (issue #124 — the still-open
+        # /sketch-side instance of the divergence #128 already fixed for
+        # tommy_drift_sweep): tommy_sketch must resolve its target project's
+        # namespace via effective_config.py's tommy.yaml-aware
+        # effective.value("namespace"), the same path tommy_dispatch's
+        # corpus gate, tommy_verdict, and tommy_drift_sweep all use — NOT
+        # _effective_namespace(cfg) (the active-project helper, which only
+        # ever reads ProjectEntry.namespace — a field that doesn't exist, so
+        # it always falls through to cfg.default_ns regardless of what a
+        # project's tommy.yaml sets). A broken tommy.yaml here is exactly as
+        # fatal to the ingest as it is to a drift sweep or a verdict check:
+        # same "abort with a visible reason" posture, never a silent
+        # fall-back to cfg.default_ns for a namespace tommy.yaml explicitly
+        # tried (and failed) to override.
+        return {
+            "ok": False,
+            "error": f"sketch could not run: tommy.yaml could not be read: {exc}",
+            "warnings": warnings,
+        }
+
+    ns = namespace or effective.value("namespace")
     result = _http_corpus_ingest(cfg.memnos_url, cfg.memnos_token, ns, flow_name, cfc_text, kind="cfc")
     result["warnings"] = warnings
     result["cfc_text"] = cfc_text

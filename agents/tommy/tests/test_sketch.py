@@ -419,7 +419,7 @@ def isolated_cfg(monkeypatch):
 
 
 class TestTommySketchIngestCallShape:
-    def test_calls_corpus_ingest_with_real_endpoint_shape(self, isolated_cfg, monkeypatch):
+    def test_calls_corpus_ingest_with_real_endpoint_shape(self, isolated_cfg, monkeypatch, tmp_path):
         captured = {}
 
         def fake_ingest(memnos_url, token, namespace, name, text, *, kind="doc", git_sha=None,
@@ -430,7 +430,15 @@ class TestTommySketchIngestCallShape:
 
         monkeypatch.setattr(mcp_server_mod, "_http_corpus_ingest", fake_ingest)
 
-        result = mcp_server_mod.tommy_sketch(flow_name="checkout-flow", mermaid_text=FLAT_DIAGRAM)
+        # No tommy.yaml in `workspace` — exercises the CORRECTED resolution
+        # path's fallback (effective.value("namespace"), same as
+        # tommy_dispatch's corpus gate / tommy_verdict / tommy_drift_sweep),
+        # which lands on cfg.default_ns here for the same reason the old
+        # _effective_namespace(cfg) helper did: nothing overrides it. See
+        # test_tommy_yaml_namespace_override_is_picked_up_by_default below
+        # for the case that actually distinguishes the two paths.
+        result = mcp_server_mod.tommy_sketch(
+            flow_name="checkout-flow", mermaid_text=FLAT_DIAGRAM, workspace=str(tmp_path))
 
         assert captured["memnos_url"] == "http://fake-memnos.invalid"
         assert captured["token"] == "test-token"
@@ -442,7 +450,7 @@ class TestTommySketchIngestCallShape:
         assert result["constraints"] == 2
         assert result["warnings"] == []
 
-    def test_namespace_argument_overrides_default(self, isolated_cfg, monkeypatch):
+    def test_namespace_argument_overrides_default(self, isolated_cfg, monkeypatch, tmp_path):
         captured = {}
 
         def fake_ingest(memnos_url, token, namespace, name, text, **kw):
@@ -450,15 +458,101 @@ class TestTommySketchIngestCallShape:
             return {"ok": True, "constraints": 1, "ids": [1]}
 
         monkeypatch.setattr(mcp_server_mod, "_http_corpus_ingest", fake_ingest)
-        mcp_server_mod.tommy_sketch(flow_name="f", mermaid_text=FLAT_DIAGRAM, namespace="org:custom")
+        mcp_server_mod.tommy_sketch(
+            flow_name="f", mermaid_text=FLAT_DIAGRAM, namespace="org:custom", workspace=str(tmp_path))
         assert captured["namespace"] == "org:custom"
 
-    def test_read_only_token_403_surfaces_as_not_ok_never_raised(self, isolated_cfg, monkeypatch):
+    def test_tommy_yaml_namespace_override_is_picked_up_by_default(
+        self, isolated_cfg, monkeypatch, tmp_path,
+    ):
+        """Regression for issue #124: tommy_sketch used to resolve its
+        default namespace via `_effective_namespace(cfg)` (the
+        active-project helper, which always falls through to
+        `cfg.default_ns` since `ProjectEntry` carries no `namespace` field)
+        — diverging from tommy_dispatch's corpus gate, tommy_verdict, and
+        tommy_drift_sweep (fixed for the same divergence in #128), all of
+        which resolve via effective_config.py's tommy.yaml-aware
+        `effective.value("namespace")`. A project whose tommy.yaml set a
+        `memnos.namespace` override had its dispatch-gate/verdict/drift
+        checks land in one namespace while `/sketch`-ingested constraints
+        silently landed in a completely different one — invisible to the
+        very enforcement path they exist to feed. This pins the corrected
+        behavior: `/sketch`'s default namespace now honors the same
+        tommy.yaml override the gate/verdict/drift-sweep already do."""
+        (tmp_path / "tommy.yaml").write_text(
+            'tommy:\n  version: 1\nmemnos:\n  namespace: "org:custom:from-yaml"\n'
+        )
+        captured = {}
+
+        def fake_ingest(memnos_url, token, namespace, name, text, **kw):
+            captured["namespace"] = namespace
+            return {"ok": True, "constraints": 1, "ids": [1]}
+
+        monkeypatch.setattr(mcp_server_mod, "_http_corpus_ingest", fake_ingest)
+
+        assert isolated_cfg.default_ns != "org:custom:from-yaml", (
+            "fixture bug: this test only proves anything if the tommy.yaml "
+            "override differs from what cfg.default_ns would have given"
+        )
+
+        result = mcp_server_mod.tommy_sketch(
+            flow_name="checkout-flow", mermaid_text=FLAT_DIAGRAM, workspace=str(tmp_path))
+
+        assert captured["namespace"] == "org:custom:from-yaml"
+        assert captured["namespace"] != isolated_cfg.default_ns
+        assert result["ok"] is True
+
+    def test_explicit_namespace_still_overrides_a_tommy_yaml_default(
+        self, isolated_cfg, monkeypatch, tmp_path,
+    ):
+        (tmp_path / "tommy.yaml").write_text(
+            'tommy:\n  version: 1\nmemnos:\n  namespace: "org:custom:from-yaml"\n'
+        )
+        captured = {}
+
+        def fake_ingest(memnos_url, token, namespace, name, text, **kw):
+            captured["namespace"] = namespace
+            return {"ok": True, "constraints": 1, "ids": [1]}
+
+        monkeypatch.setattr(mcp_server_mod, "_http_corpus_ingest", fake_ingest)
+        mcp_server_mod.tommy_sketch(
+            flow_name="f", mermaid_text=FLAT_DIAGRAM, namespace="org:explicit", workspace=str(tmp_path))
+        assert captured["namespace"] == "org:explicit"
+
+    def test_broken_tommy_yaml_aborts_the_sketch_visibly(self, isolated_cfg, monkeypatch, tmp_path):
+        """A tommy.yaml that fails to parse must abort the ingest with a
+        visible error — the same "never silently swallow" posture
+        tommy_verdict/tommy_drift_sweep already apply to their own
+        tommy.yaml read, and never a silent fall-back to cfg.default_ns for
+        a namespace tommy.yaml explicitly tried, and failed, to set."""
+        # Same "broken tommy.yaml" fixture content as test_drift_sweep.py's
+        # test_broken_tommy_yaml_aborts_the_sweep_visibly / test_verdict.py's
+        # TestBrokenTommyYaml: valid YAML syntax, but `platform` is not a
+        # recognized top-level tommy.yaml field, which load_tommy_yaml()
+        # rejects with TommyYamlError (schema validation, not a YAML parse
+        # error).
+        (tmp_path / "tommy.yaml").write_text("tommy:\n  version: 1\nplatform:\n  foo: bar\n")
+        called = {"n": 0}
+
+        def fake_ingest(*a, **kw):
+            called["n"] += 1
+            return {"ok": True, "constraints": 1, "ids": [1]}
+
+        monkeypatch.setattr(mcp_server_mod, "_http_corpus_ingest", fake_ingest)
+        result = mcp_server_mod.tommy_sketch(
+            flow_name="checkout-flow", mermaid_text=FLAT_DIAGRAM, workspace=str(tmp_path))
+
+        assert result["ok"] is False
+        assert "tommy.yaml" in result["error"]
+        assert called["n"] == 0
+
+    def test_read_only_token_403_surfaces_as_not_ok_never_raised(self, isolated_cfg, monkeypatch, tmp_path):
         def fake_ingest(*a, **kw):
             return {"ok": False, "error": "corpus ingest failed (403): forbidden"}
 
         monkeypatch.setattr(mcp_server_mod, "_http_corpus_ingest", fake_ingest)
-        result = mcp_server_mod.tommy_sketch(flow_name="checkout-flow", mermaid_text=FLAT_DIAGRAM)
+        result = mcp_server_mod.tommy_sketch(
+            flow_name="checkout-flow", mermaid_text=FLAT_DIAGRAM, workspace=str(tmp_path))
         assert result["ok"] is False
         assert "403" in result["error"]
 
@@ -472,7 +566,7 @@ class TestTommySketchIngestCallShape:
             return {"ok": True, "constraints": 1, "ids": [1]}
 
         monkeypatch.setattr(mcp_server_mod, "_http_corpus_ingest", fake_ingest)
-        result = mcp_server_mod.tommy_sketch(flow_name="f", mermaid_file=str(f))
+        result = mcp_server_mod.tommy_sketch(flow_name="f", mermaid_file=str(f), workspace=str(tmp_path))
         assert "SHALL" in captured["text"]
         assert result["ok"] is True
 
