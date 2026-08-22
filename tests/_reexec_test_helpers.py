@@ -26,6 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 MEMNOS_MCP_SRC = os.path.join(ROOT, "memnos_mcp.py")
 OFFLINE_QUEUE_SRC = os.path.join(ROOT, "offline_queue.py")
+MEMNOS_CLI_SRC = os.path.join(ROOT, "memnos_cli.py")
 
 # Appended into a COPY of memnos_mcp.py to simulate `memnos upgrade` shipping new code:
 # a tool that exists ONLY in the "new" build. Its presence (not just a stray log line or
@@ -42,16 +43,23 @@ def _reexec_marker() -> str:
 '''
 
 
-def make_fake_install(tmp_root: str) -> str:
-    """Copy just the two source files memnos_mcp.py actually needs at import time
-    (memnos_mcp.py, offline_queue.py — nsresolve.py is optional/best-effort, see its
-    try/except at the top of memnos_mcp.py) into an isolated directory, so "simulating
-    an upgrade" (mutating memnos_mcp.py) never touches this checkout's real working
-    tree."""
+def make_fake_install(tmp_root: str, with_cli: bool = False) -> str:
+    """Copy just the source files needed at import time into an isolated directory, so
+    "simulating an upgrade" (mutating memnos_mcp.py) never touches this checkout's
+    real working tree. memnos_mcp.py + offline_queue.py always (nsresolve.py is
+    optional/best-effort, see its try/except at the top of memnos_mcp.py).
+    `with_cli=True` also copies memnos_cli.py, to launch via `python memnos_cli.py
+    mcp` -> cmd_mcp() -> memnos_mcp.run_stdio() — the OTHER real entry point (see
+    memnos_cli._mcp_launcher's fallback) besides running memnos_mcp.py directly.
+    memnos_cli.py's own top-level imports are stdlib-only (argparse/json/os/re/sys/
+    urllib.request) plus offline_queue, so this doesn't need the rest of the package
+    (core/, psycopg, ...) to run `mcp`."""
     install_dir = os.path.join(tmp_root, "install")
     os.makedirs(install_dir, exist_ok=True)
     shutil.copy(MEMNOS_MCP_SRC, os.path.join(install_dir, "memnos_mcp.py"))
     shutil.copy(OFFLINE_QUEUE_SRC, os.path.join(install_dir, "offline_queue.py"))
+    if with_cli:
+        shutil.copy(MEMNOS_CLI_SRC, os.path.join(install_dir, "memnos_cli.py"))
     return install_dir
 
 
@@ -135,9 +143,16 @@ class StdioRPC:
     """Minimal MCP JSON-RPC-over-stdio client wrapping a real subprocess.Popen, so the
     test always has direct access to the real OS pid and can poll() it directly."""
 
-    def __init__(self, script_path: str, env: dict, cwd: str | None = None):
+    def __init__(self, script_path: str, env: dict, cwd: str | None = None,
+                 extra_args: list | None = None):
+        # `script_path` relative + `cwd` set (rather than an absolute path) is exactly
+        # how test_mcp_adapter_reexec_cli_launch.py exercises the OTHER real entry
+        # point: python resolves a relative argv against its OWN cwd at start, which is
+        # this Popen's `cwd` — same as a human typing `cd install && python
+        # memnos_cli.py mcp` — so sys.argv[0] inside that child is the RELATIVE string
+        # "memnos_cli.py", not an absolute path (see _resolve_reexec_argv0).
         self.proc = subprocess.Popen(
-            [sys.executable, script_path],
+            [sys.executable, script_path, *(extra_args or [])],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=env, cwd=cwd, text=True, bufsize=1,
         )

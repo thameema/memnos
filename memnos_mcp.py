@@ -104,33 +104,25 @@ class _ReexecAwareFastMCP(FastMCP):
     `FastMCP.__init__` -> `_setup_handlers()` captures `self.call_tool` as a bound
     method INTO the lowlevel Server's `request_handlers` dict at construction time;
     a later instance-attribute assignment would be invisible to that already-captured
-    reference. Subclassing participates in normal method resolution instead, so
-    `self.call_tool` inside `_setup_handlers()` already resolves to the override below
-    — for both transports (harmless on the HTTP mount; the watcher that acts on the
-    counter is only ever started by run_stdio(), below, for the stdio transport).
+    reference. Subclassing participates in normal method resolution instead. (In-flight
+    tool-call tracking for the re-exec watcher lives one layer further OUT than
+    call_tool — see _install_inflight_wrapper, further down — so this override exists
+    for run_stdio_async() alone.)
 
-    call_tool(): wraps every tool dispatch with the in-flight counter above, so the
-    re-exec watcher can tell whether it's safe to swap the process image right now.
-
-    run_stdio_async(): identical to FastMCP's, except the ServerSession is started in
-    the SAME 'stateless' initialization mode already used for the HTTP mount
-    (issue #37 Layer 1) instead of FastMCP's stdio default (stateless=False). This is
-    what makes a re-exec (issue #68) transparent to the client: the MCP host (Claude
-    Code, Claude Desktop, ...) sent `initialize` exactly once, at the start of a
-    connection it still believes is unbroken, and will never send it again after this
-    process image gets swapped. A freshly-constructed, non-stateless ServerSession
-    starts NotInitialized and rejects the very next tool call with "Received request
-    before initialization was complete" (mcp.server.session.ServerSession) — silently
-    breaking the exact session execv is supposed to keep alive. `stateless=True` only
-    relaxes what's tolerated BEFORE an explicit `initialize`; a real client that does
-    send one first is handled identically either way."""
-
-    async def call_tool(self, name, arguments):
-        _enter_call()
-        try:
-            return await super().call_tool(name, arguments)
-        finally:
-            _exit_call()
+    run_stdio_async(): identical to FastMCP's, except the ServerSession's
+    initialization gate is relaxed to the SAME 'stateless' mode already used for the
+    HTTP mount (issue #37 Layer 1) — but ONLY for a process that IS a re-exec'd
+    resumption (MEMNOS_ADAPTER_REEXEC_RESUMED=1, set on this process's own environment
+    right before the execv() that produced it — see _do_reexec), never for a fresh
+    launch. This is what makes a re-exec (issue #68) transparent to the client without
+    weakening protocol enforcement for the normal case: the MCP host (Claude Code,
+    Claude Desktop, ...) sent `initialize` exactly once, at the start of a connection
+    it still believes is unbroken, and will never send it again after this process
+    image gets swapped. A freshly-constructed, non-stateless ServerSession starts
+    NotInitialized and rejects the very next tool call with "Received request before
+    initialization was complete" (mcp.server.session.ServerSession) — silently breaking
+    the exact session execv is supposed to keep alive. A first, non-resumed launch
+    keeps FastMCP's normal strict stdio behavior unchanged."""
 
     async def run_stdio_async(self) -> None:
         from mcp.server.stdio import stdio_server
@@ -138,7 +130,7 @@ class _ReexecAwareFastMCP(FastMCP):
             await self._mcp_server.run(
                 read_stream, write_stream,
                 self._mcp_server.create_initialization_options(),
-                stateless=True,
+                stateless=_is_resumed_session(),
             )
 
 
@@ -862,6 +854,23 @@ def _reexec_enabled() -> bool:
         "0", "false", "no", "off", "")
 
 
+_RESUMED_ENV = "MEMNOS_ADAPTER_REEXEC_RESUMED"
+
+
+def _is_resumed_session() -> bool:
+    """True iff THIS process is the result of a re-exec (issue #68) — see
+    _ReexecAwareFastMCP.run_stdio_async, which uses this to relax stdio's
+    initialization gate only for a resumed session, never for a fresh launch. Set on
+    this process's own environment right before the execv() call that replaced it (see
+    _do_reexec) — os.execv() doesn't take an explicit environment, it inherits the
+    calling process's current one, and os.environ mutations write straight through to
+    that (os.putenv underneath), so this is visible to the re-exec'd program from its
+    very first line. Sticky across any FURTHER re-exec too, since it stays set in the
+    inherited environment — correct: once resumed, a session is a resumed session for
+    the rest of its life, however many more upgrades it lives through."""
+    return os.environ.get(_RESUMED_ENV, "") == "1"
+
+
 def _reexec_interval_s() -> float:
     try:
         return max(1.0, float(os.environ.get("MEMNOS_ADAPTER_REEXEC_INTERVAL_S", "20")))
@@ -956,6 +965,10 @@ def _do_reexec():
     except Exception:
         pass
     new_argv = [sys.executable, argv0] + sys.argv[1:]
+    # Marks the NEXT process image as a resumed session (see _is_resumed_session) —
+    # set before execv, which inherits whatever this process's environment holds at
+    # the moment of the call (there's no explicit env argument to pass).
+    os.environ[_RESUMED_ENV] = "1"
     print(f"memnos: re-exec'ing adapter (pid {os.getpid()}) to pick up the updated "
           f"build — same MCP connection, no session restart needed", file=sys.stderr)
     try:
@@ -1065,20 +1078,40 @@ def _start_reexec_watcher():
 
 
 def _reexec_watch_loop():
+    """Poll _version_signature() every MEMNOS_ADAPTER_REEXEC_INTERVAL_S seconds;
+    once it differs from what this process started with AND has been read back
+    UNCHANGED on two consecutive ticks, hand off to _wait_idle_and_reexec().
+
+    The "unchanged twice in a row" requirement (not "changed once") is a debounce
+    against a torn upgrade: `pip install -U` / `uv tool install` rewrites several
+    files over some (usually sub-second, but not guaranteed) span of real time, not
+    atomically. Acting on the very first observed change risks re-exec'ing into a
+    half-written tree — memnos_mcp.py's own new mtime landing while memnos_cli.py /
+    core/ are still mid-write, or simply missing — which would crash the freshly
+    exec'd process on import and produce exactly the kind of visible exit/restart this
+    issue exists to eliminate, just relocated to a new moment. Requiring the signature
+    to hold steady across a full extra interval before acting costs one more
+    MEMNOS_ADAPTER_REEXEC_INTERVAL_S of latency in the worst case, in exchange for
+    never swapping into a state that was still being written when first observed."""
     interval = _reexec_interval_s()
     start_sig = _version_signature()
+    prev_sig = start_sig
     while True:
         time.sleep(interval)
         try:
             cur_sig = _version_signature()
         except Exception:
             continue
-        if cur_sig != start_sig:
-            print(f"memnos: detected an updated memnos build on disk — will re-exec "
-                  f"this adapter once idle (checked every {interval:.0f}s)",
-                  file=sys.stderr)
-            _wait_idle_and_reexec()
-            return
+        if cur_sig == start_sig or cur_sig != prev_sig:
+            # unchanged since this process started, or changed again since the LAST
+            # check (still being written) — keep watching, don't act yet.
+            prev_sig = cur_sig
+            continue
+        print(f"memnos: detected an updated memnos build on disk (stable across two "
+              f"checks) — will re-exec this adapter once idle (checked every "
+              f"{interval:.0f}s)", file=sys.stderr)
+        _wait_idle_and_reexec()
+        return
 
 
 def run_stdio():
