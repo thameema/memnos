@@ -133,6 +133,14 @@ run the server in the FOREGROUND (process managers / Docker / debug)
 memnos serve --port 8900
 ```
 
+### `memnos gateway`
+
+run the zero-downtime upgrade front door in the FOREGROUND (issue #37 Layer 2 — `start`/`autostart` use this by default instead of `serve`; spawns + blue-green-swaps real backends on internal ports behind a public port that never goes down)
+
+| argument | description |
+|---|---|
+| `--port` | HTTP port (default: config / 8900) |
+
 ### `memnos autostart`
 
 install a login service (launchd/systemd) so the server always runs
@@ -148,11 +156,12 @@ memnos autostart
 
 ### `memnos upgrade`
 
-check PyPI for a newer version and install it
+check PyPI for a newer version, install it, and (zero-downtime gateway mode) apply it with no restart-downtime window
 
 | argument | description |
 |---|---|
 | `--check` | only check; don't install |
+| `--no-restart` | install the new version but don't restart the running server (default: restart automatically — zero-downtime in gateway mode) |
 
 ```bash
 memnos upgrade --check
