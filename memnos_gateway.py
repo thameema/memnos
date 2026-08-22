@@ -165,18 +165,41 @@ def _wait_ready(port, timeout, proc=None):
     return False
 
 
+_DRAIN_SETTLE_S = 0.25    # see _wait_drain docstring
+_DRAIN_POLL_S = 0.2
+_DRAIN_CONFIRM_POLLS = 2
+
+
 def _wait_drain(port, timeout):
-    """Block until the in-flight counter for `port` reaches zero or `timeout` elapses.
-    Returns True if it fully drained, False if the timeout fired first (the caller still
-    proceeds to signal the backend after a timeout — an indefinite hang on one stuck
-    request must not wedge every future upgrade forever; see `_run_rolling_upgrade`)."""
+    """Block until the in-flight counter for `port` reads zero on
+    `_DRAIN_CONFIRM_POLLS` CONSECUTIVE polls, `_DRAIN_POLL_S` apart, or `timeout`
+    elapses. Returns True if it fully drained, False if the timeout fired first (the
+    caller still proceeds to signal the backend after a timeout — an indefinite hang on
+    one stuck request must not wedge every future upgrade forever; see
+    `_run_rolling_upgrade`).
+
+    A single zero reading is NOT enough: `_inflight_incr` only fires once a request has
+    reached `_forward` (past accept + thread dispatch + header/body read) — a connection
+    the OS has already accepted, or one still mid-read, is invisible to the counter for
+    that brief window. A fixed settle pause right after the flip, followed by requiring
+    TWO consecutive zero polls, closes that accept-to-increment gap in practice (it
+    narrows, rather than mathematically eliminates, the race — the same trade-off any
+    request-counting drain makes) without adding any new signal or slowing down the
+    common case, where in-flight is already zero and this returns in ~`_DRAIN_SETTLE_S +
+    _DRAIN_POLL_S` seconds."""
+    time.sleep(_DRAIN_SETTLE_S)
     deadline = time.monotonic() + timeout
+    consecutive_zero = 0
     while time.monotonic() < deadline:
         with _inflight_lock:
             n = _inflight.get(port, 0)
         if n <= 0:
-            return True
-        time.sleep(0.1)
+            consecutive_zero += 1
+            if consecutive_zero >= _DRAIN_CONFIRM_POLLS:
+                return True
+        else:
+            consecutive_zero = 0
+        time.sleep(_DRAIN_POLL_S)
     with _inflight_lock:
         return _inflight.get(port, 0) <= 0
 
@@ -363,12 +386,17 @@ class GatewayHandler(BaseHTTPRequestHandler):
         buffer-then-relay shape as memnos_server.py's Handler._forward_mcp, generalized
         from one path to all of them (see module docstring for why buffering is safe
         here: nothing this proxies is a long-lived stream)."""
+        # Read (and always fully consume) any request body FIRST, before any early
+        # return — this connection is keep-alive (HTTP/1.1); leaving unread body bytes
+        # on the wire corrupts the NEXT request on the same connection (observed: a
+        # ConnectionResetError on the following request when this branch used to return
+        # before reading). _control's 401 path already does this for the same reason.
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        body = self.rfile.read(n) if n else b""
         port = _current_port
         if port is None:
             return self._send_json(503, {"error": "memnos gateway: no backend ready yet "
                                          "(starting up)"})
-        n = int(self.headers.get("Content-Length", 0) or 0)
-        body = self.rfile.read(n) if n else b""
         fwd_headers = {k: v for k, v in self.headers.items()
                       if k.lower() not in ("host", "content-length", "connection")}
         url = f"http://127.0.0.1:{port}{self.path}"
