@@ -1748,7 +1748,7 @@ def cmd_mcp(args, cfg):
     if args.namespace:
         os.environ["MEMNOS_NS"] = args.namespace
     import memnos_mcp
-    memnos_mcp.mcp.run()
+    memnos_mcp.run_stdio()   # starts the self-re-exec watcher (issue #68), then mcp.run()
 
 
 # ---- admin / control --------------------------------------------------------
