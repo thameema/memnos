@@ -30,6 +30,12 @@ CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".memnos")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 LOG_PATH = os.path.join(CONFIG_DIR, "server.log")
 PID_PATH = os.path.join(CONFIG_DIR, "server.pid")
+# issue #37 Layer 2 — PID_PATH above now identifies the GATEWAY process (the stable,
+# rarely-restarted one `memnos start`/`stop` manage); GATEWAY_STATE_PATH is written by
+# memnos_gateway.py itself and is how a later, separate `memnos restart`/`upgrade`
+# invocation finds the running gateway's control port + bearer token. See
+# `_rolling_upgrade_or_convert` below.
+GATEWAY_STATE_PATH = os.path.join(CONFIG_DIR, "gateway_state.json")
 DEFAULT_DSN = "postgresql://memnos:memnos@localhost:5432/memnos"
 
 
@@ -164,6 +170,20 @@ def _apply_env(cfg):
         os.environ.setdefault("MEMNOS_SECRET_KEY", cfg["secret_key"])
     if cfg.get("port"):
         os.environ.setdefault("MEMNOS_PORT", str(cfg["port"]))
+
+
+def _legacy_direct_mode(cfg):
+    """issue #37 Layer 2 escape hatch: True disables the zero-downtime gateway entirely
+    and restores the pre-Layer-2 behavior byte-for-byte (`memnos start`/`restart` run
+    `memnos serve` directly, bound straight to the public port; `memnos upgrade` only
+    prints the manual-restart reminder). MEMNOS_LEGACY_DIRECT_SERVE (env, checked first)
+    or `legacy_direct_serve` in config.json. Default is gateway mode ON — this is the
+    knob to reach for if the gateway itself is ever suspected of misbehaving on a real
+    deployment, without needing a code change or rollback."""
+    v = os.environ.get("MEMNOS_LEGACY_DIRECT_SERVE")
+    if v is not None:
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return bool(cfg.get("legacy_direct_serve"))
 
 
 def _dsn(cfg):
@@ -815,15 +835,39 @@ def cmd_start(args, cfg):
         sys.exit(f"server still not up — check:  tail {LOG_PATH}")
     if args.port:                             # unmanaged start: persist the chosen port (#19)
         _persist_port(cfg, args.port)
-    _serve_background(port)
+    if _legacy_direct_mode(cfg):
+        _serve_background(port)
+    else:
+        _start_gateway_background(port)          # issue #37 Layer 2 (default)
 
 
 def cmd_restart(args, cfg):
-    import subprocess
-    import time
     _apply_env(cfg)
     port = args.port or int(os.environ.get("MEMNOS_PORT", cfg.get("port", 8900)))
     _preflight_pg(cfg)
+    if _legacy_direct_mode(cfg):
+        _cmd_restart_legacy(args, cfg, port)
+        return
+    # issue #37 Layer 2 (default): zero-downtime. `_rolling_upgrade_or_convert` handles
+    # BOTH the already-gateway case (real blue-green swap, no downtime) and the
+    # not-yet-gateway case (autostart-managed or unmanaged) including the one-time
+    # conversion — see that function's docstring.
+    svc = _autostart_installed()
+    if svc and args.port and args.port != cfg.get("port", 8900):
+        print(f"[memnos] note: an autostart service manages this server on port "
+              f"{cfg.get('port', 8900)} — `--port {args.port}` is ignored. To change it: "
+              f"`memnos setup --port {args.port}` (or edit config) then `memnos autostart` "
+              f"to regenerate the service.")
+        port = cfg.get("port", 8900)
+    _rolling_upgrade_or_convert(cfg, port, trigger="restart")
+
+
+def _cmd_restart_legacy(args, cfg, port):
+    """Pre-Layer-2 behavior, unchanged: a hard stop-then-start against the SAME public
+    port. Used only when MEMNOS_LEGACY_DIRECT_SERVE / config `legacy_direct_serve` opts
+    out of the zero-downtime gateway (see `_legacy_direct_mode`)."""
+    import subprocess
+    import time
     svc = _autostart_installed()
     if svc:
         kind, path = svc
@@ -880,30 +924,16 @@ def cmd_serve(args, cfg):
     memnos_server.serve(port=args.port)
 
 
-def _serve_background(port):
-    import subprocess
-    import shutil
+def _wait_for_boot_or_die(proc, url, on_fail=None):
+    """Shared polling loop: wait for `url`'s /healthz to answer, printing progress from
+    LOG_PATH so a slow first boot (embedding/reranker model download) never looks hung;
+    sys.exit with the log tail if `proc` exits first. Used by both `_serve_background`
+    (classic direct-bind) and `_start_gateway_background` (issue #37 Layer 2) — the two
+    share the exact same "background process; wait for it to actually answer" shape."""
     import time
-    import urllib.request
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    url = f"http://127.0.0.1:{port}"
-    if _server_up(url):
-        sys.exit(f"a memnos server is already running at {url} (stop it with `memnos stop`).")
-    exe = shutil.which("memnos")
-    cmd = ([exe, "serve"] if exe else [sys.executable, os.path.abspath(__file__), "serve"]) + ["--port", str(port)]
-    _rotate_log()
-    log = open(LOG_PATH, "a")
-    proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                            start_new_session=True, env=dict(os.environ))
-    with open(PID_PATH, "w") as f:
-        f.write(str(proc.pid))
-    print(f"[memnos] starting server in the background (pid {proc.pid}) ...")
     last_line = ""
     for i in range(240):                      # up to ~6 min — first start downloads models
         if _server_up(url):
-            print(f"[memnos] ✓ server running at {url}   ·   console: {url}/admin")
-            print(f"         logs:  {LOG_PATH}")
-            print(f"         stop:  memnos stop")
             return
         if proc.poll() is not None:
             tail = ""
@@ -911,6 +941,8 @@ def _serve_background(port):
                 tail = "".join(open(LOG_PATH).readlines()[-12:])
             except Exception:
                 pass
+            if on_fail:
+                on_fail()
             sys.exit(f"server exited on startup — last log lines:\n{tail}\n(full log: {LOG_PATH})")
         if i == 4:
             print("  · still starting — a FIRST start downloads the local embedding/reranker")
@@ -924,7 +956,60 @@ def _serve_background(port):
             except Exception:
                 pass
         time.sleep(1.5)
+    if on_fail:
+        on_fail()
     sys.exit(f"[memnos] server still not up after ~6 min — check `memnos status` and:  tail {LOG_PATH}")
+
+
+def _serve_background(port):
+    import subprocess
+    import shutil
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    url = f"http://127.0.0.1:{port}"
+    if _server_up(url):
+        sys.exit(f"a memnos server is already running at {url} (stop it with `memnos stop`).")
+    exe = shutil.which("memnos")
+    cmd = ([exe, "serve"] if exe else [sys.executable, os.path.abspath(__file__), "serve"]) + ["--port", str(port)]
+    _rotate_log()
+    log = open(LOG_PATH, "a")
+    proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                            start_new_session=True, env=dict(os.environ))
+    with open(PID_PATH, "w") as f:
+        f.write(str(proc.pid))
+    print(f"[memnos] starting server in the background (pid {proc.pid}) ...")
+    _wait_for_boot_or_die(proc, url)
+    print(f"[memnos] ✓ server running at {url}   ·   console: {url}/admin")
+    print(f"         logs:  {LOG_PATH}")
+    print(f"         stop:  memnos stop")
+
+
+def _start_gateway_background(port):
+    """issue #37 Layer 2: the default background-start path — `memnos gateway` instead of
+    `memnos serve` directly. The gateway binds `port` immediately and stays bound to it
+    for its whole life; it spawns and manages the real memnos_server.py backend(s) behind
+    it (see memnos_gateway.py). PID_PATH tracks the GATEWAY's pid (the stable, rarely-
+    restarted process `memnos stop` should signal) — same file, same meaning as before
+    ("the thing `memnos start` launched"), just a different process behind it now."""
+    import subprocess
+    import shutil
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    url = f"http://127.0.0.1:{port}"
+    if _server_up(url):
+        sys.exit(f"a memnos server is already running at {url} (stop it with `memnos stop`).")
+    exe = shutil.which("memnos")
+    cmd = ([exe, "gateway"] if exe else [sys.executable, os.path.abspath(__file__), "gateway"]) + ["--port", str(port)]
+    _rotate_log()
+    log = open(LOG_PATH, "a")
+    proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                            start_new_session=True, env=dict(os.environ))
+    with open(PID_PATH, "w") as f:
+        f.write(str(proc.pid))
+    print(f"[memnos] starting server (zero-downtime gateway mode) in the background (pid {proc.pid}) ...")
+    _wait_for_boot_or_die(proc, url, on_fail=_clear_gateway_state)
+    print(f"[memnos] ✓ server running at {url}   ·   console: {url}/admin")
+    print(f"         logs:  {LOG_PATH}")
+    print(f"         stop:  memnos stop")
+    print(f"         zero-downtime `restart`/`upgrade` are now active for this server.")
 
 
 def _rotate_log(max_bytes=10 * 1024 * 1024):
@@ -943,6 +1028,181 @@ def _server_up(url, timeout=2):
         return True
     except Exception:
         return False
+
+
+# ---- issue #37 Layer 2: zero-downtime gateway orchestration -------------------------
+# The gateway process (memnos_gateway.py) owns its own backend-process lifecycle end to
+# end — this CLI never spawns or signals a backend directly. Its job is: find the running
+# gateway (via GATEWAY_STATE_PATH, written by the gateway itself), tell it to run a
+# rolling upgrade, and poll for the result. See memnos_gateway.py's module docstring for
+# the full design.
+def _gateway_state():
+    """Read GATEWAY_STATE_PATH. Returns the dict, or None if absent/unreadable — the
+    normal, expected shape for a classic (pre-Layer-2 or legacy-mode) install."""
+    try:
+        with open(GATEWAY_STATE_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _clear_gateway_state():
+    try:
+        os.remove(GATEWAY_STATE_PATH)
+    except OSError:
+        pass
+
+
+def _gateway_status(state, timeout=3):
+    """GET the gateway's own /__gateway__/status. None means "no live, reachable gateway
+    here" — covers both "never ran in gateway mode" and "gateway state file is stale
+    (crashed without cleaning up)"; either way the caller falls back to the conversion
+    path, which is correct for both cases."""
+    import urllib.request
+    if not state or not state.get("port") or not state.get("control_token"):
+        return None
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{state['port']}/__gateway__/status",
+        headers={"Authorization": f"Bearer {state['control_token']}"})
+    try:
+        return json.loads(urllib.request.urlopen(req, timeout=timeout).read())
+    except Exception:
+        return None
+
+
+def _do_rolling_upgrade(state, port):
+    """Trigger + watch a real blue-green rolling upgrade against an ALREADY-RUNNING
+    gateway. POST /__gateway__/upgrade returns immediately (202) — the actual
+    spawn/prewarm/flip/drain/stop sequence runs on the gateway's own background thread;
+    this polls /__gateway__/status until it reports done or failed. Exits non-zero with a
+    clear message on failure — per the acceptance bar, the OLD backend is guaranteed
+    still serving in that case (the gateway never touches it until AFTER a successful
+    flip), so a failed upgrade here is a clean, non-destructive no-op from the client's
+    point of view."""
+    import time
+    import urllib.error
+    import urllib.request
+    print(f"[memnos] triggering a zero-downtime rolling upgrade on port {port} ...")
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{state['port']}/__gateway__/upgrade", method="POST",
+        data=b"{}", headers={"Authorization": f"Bearer {state['control_token']}",
+                             "Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=10)
+    except urllib.error.HTTPError as e:
+        if e.code != 202:
+            sys.exit(f"gateway rejected the upgrade request: HTTP {e.code}")
+    except Exception as e:
+        sys.exit(f"could not reach the gateway control endpoint at 127.0.0.1:{state['port']}: "
+                 f"{type(e).__name__}: {e}")
+
+    deadline = time.monotonic() + 600      # generous outer bound; the gateway's own
+                                            # READY_TIMEOUT_S/DRAIN_TIMEOUT_S are what
+                                            # actually govern each phase
+    last_phase = None
+    while time.monotonic() < deadline:
+        st = _gateway_status(state)
+        if st is None:
+            sys.exit("lost contact with the gateway mid-upgrade — check the server log "
+                     f"({LOG_PATH}) and `memnos status`.")
+        up = st.get("upgrade") or {}
+        phase = up.get("phase")
+        if phase != last_phase:
+            print(f"  · {phase or up.get('status', '?')}")
+            last_phase = phase
+        if up.get("status") == "done":
+            print(f"[memnos] ✓ zero-downtime upgrade complete — live backend is now pid "
+                  f"{st.get('current_backend_pid')} on internal port "
+                  f"{st.get('current_backend_port')} (old backend drained: {up.get('drained')}).")
+            return
+        if up.get("status") == "failed":
+            sys.exit(f"upgrade FAILED: {up.get('error', 'unknown error')}\n"
+                     "The previous backend was never touched and is still serving all "
+                     "traffic — nothing was swapped. See the server log for detail: "
+                     f"{LOG_PATH}")
+        time.sleep(1.0)
+    sys.exit("upgrade timed out waiting for the gateway to report completion — check "
+             f"`memnos status` and the server log ({LOG_PATH}).")
+
+
+def _rolling_upgrade_or_convert(cfg, port, trigger="restart"):
+    """The shared body of `memnos restart`/`memnos upgrade` in (default) gateway mode.
+
+    If a gateway is already live on `port`: trigger a real zero-downtime rolling upgrade
+    against it (`_do_rolling_upgrade`) — no stop, no downtime window.
+
+    If not (first-ever start, a still-classic direct-bind install, or a gateway that died
+    without cleaning up its state file): convert, ONCE. This is unavoidably a normal
+    stop-then-start (or, for an autostart-managed install, a service reload) — but it
+    boots the NEW instance as the gateway, so every subsequent `restart`/`upgrade` call
+    takes the zero-downtime branch above instead. Without this conversion step reachable
+    from the commands a user already runs, the whole mechanism would be permanently
+    unreachable on every existing install (nothing else would ever turn gateway mode on)."""
+    import subprocess
+    import time
+    state = _gateway_state()
+    status = _gateway_status(state) if state and state.get("port") == port else None
+    if status is not None:
+        _do_rolling_upgrade(state, port)
+        return
+
+    print(f"[memnos] no zero-downtime gateway detected on port {port} yet — this {trigger} "
+          f"will convert to gateway mode now (one brief downtime window; future "
+          f"`restart`/`upgrade` calls on this server will be zero-downtime).")
+    svc = _autostart_installed()
+    if svc:
+        kind, _ = svc
+        print(f"[memnos] regenerating the autostart service ({kind}) for zero-downtime mode ...")
+        cmd_autostart(argparse.Namespace(remove=False, proxy=False), cfg)
+        if kind == "systemd":
+            # launchd's unload+load (inside cmd_autostart's _plist helper) already
+            # restarts the service on the new ProgramArguments; systemd's enable --now on
+            # an already-active unit does NOT pick up a changed ExecStart on its own —
+            # force it explicitly.
+            subprocess.run(["systemctl", "--user", "restart", "memnos"], capture_output=True)
+        url = f"http://127.0.0.1:{port}"
+        for _ in range(240):
+            if _server_up(url):
+                print(f"[memnos] ✓ server running at {url} — zero-downtime gateway mode is "
+                     "now active.")
+                return
+            time.sleep(1.5)
+        sys.exit(f"server still not up after converting to gateway mode — check: tail {LOG_PATH}")
+        return
+
+    _stop_quiet()
+    _clear_gateway_state()
+    url = f"http://127.0.0.1:{port}"
+    went_down = False
+    for _ in range(20):
+        if not _server_up(url):
+            went_down = True
+            break
+        time.sleep(0.5)
+    if not went_down:
+        sys.exit(f"restart FAILED: a memnos server is still running at {url} that this CLI "
+                 "does not manage (no/stale pid file). It may be an old launchd/systemd "
+                 "service or a foreground `memnos serve`.\n"
+                 "  find it:   launchctl list | grep -i memnos     (macOS)\n"
+                 "             systemctl --user list-units | grep -i memnos   (Linux)\n"
+                 "  or:        lsof -i :%d   then kill that pid, and use `memnos autostart` "
+                 "going forward." % port)
+    _start_gateway_background(port)
+
+
+def cmd_gateway(args, cfg):
+    """Run the zero-downtime upgrade gateway in the FOREGROUND (issue #37 Layer 2). Not
+    normally invoked directly — `memnos start`/`memnos autostart` run this instead of
+    `memnos serve` by default (see `_legacy_direct_mode`); a process manager (systemd/
+    launchd) can also exec it directly, exactly like `memnos serve`. It binds `port`
+    immediately and never re-binds it; the real memnos_server.py backend(s) it spawns and
+    blue-green-swaps behind that port are on internal, ephemeral ports only."""
+    _apply_env(cfg)
+    port = args.port or int(os.environ.get("MEMNOS_PORT", cfg.get("port", 8900)))
+    print(f"[memnos] zero-downtime gateway (foreground) on http://127.0.0.1:{port}  —  "
+          f"Ctrl-C to stop (or use `memnos start` to run it in the background)")
+    import memnos_gateway
+    memnos_gateway.run(port)
 
 
 def _fetch_nudges(url, hdr, timeout=2):
@@ -1067,6 +1327,23 @@ def cmd_status(args, cfg):
         print(f"  server:    RUNNING at {url}   ·   console: {url}/admin")
     else:
         print(f"  server:    not running   (run: memnos start)")
+    if running:
+        # issue #37 Layer 2 — additive: report gateway (zero-downtime) mode when active.
+        gstate = _gateway_state()
+        gstatus = _gateway_status(gstate) if gstate and gstate.get("port") == port else None
+        if gstatus is not None:
+            up = gstatus.get("upgrade") or {}
+            print(f"  mode:      zero-downtime gateway (backend pid "
+                 f"{gstatus.get('current_backend_pid')}, internal port "
+                 f"{gstatus.get('current_backend_port')})")
+            if up.get("status") == "running":
+                print(f"             upgrade in progress: {up.get('phase')}")
+        elif _legacy_direct_mode(cfg):
+            print("  mode:      classic direct-bind (MEMNOS_LEGACY_DIRECT_SERVE) — "
+                 "`restart`/`upgrade` have a brief downtime window")
+        else:
+            print("  mode:      classic direct-bind — the NEXT `restart`/`upgrade` will "
+                 "convert this server to zero-downtime gateway mode")
     svc = _autostart_installed()
     verdict = _background_status(running, svc, _pidfile_pid())
     for line in verdict["lines"]:
@@ -1106,10 +1383,18 @@ def _autostart_installed():
 def cmd_autostart(args, cfg):
     """Install (or --remove) a login service so the memnos server starts automatically and
     keeps retrying until Postgres is up — no more 'Claude has no memory because I forgot
-    to start the server'."""
+    to start the server'.
+
+    issue #37 Layer 2: the service's ExecStart/ProgramArguments target `memnos gateway`
+    (not `memnos serve` directly) unless legacy mode is on (`_legacy_direct_mode`) — so a
+    login-service-managed install gets zero-downtime `restart`/`upgrade` too. Re-running
+    this command (which `_rolling_upgrade_or_convert` does automatically, once, the first
+    time `restart`/`upgrade` is invoked against a still-classic autostart install) is what
+    flips an EXISTING service from `serve` to `gateway`."""
     import shutil
     import subprocess
     exe = shutil.which("memnos") or os.path.abspath(__file__)
+    target = "serve" if _legacy_direct_mode(cfg) else "gateway"
 
     def _plist(label, prog_args, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1143,9 +1428,12 @@ def cmd_autostart(args, cfg):
             print("[memnos] autostart removed (launchd services unloaded + plists deleted).")
             return
         _rotate_log()
-        _plist("com.memnos.server", [exe, "serve"], _LAUNCHD_PLIST)
+        _plist("com.memnos.server", [exe, target], _LAUNCHD_PLIST)
         print(f"[memnos] ✓ autostart installed (launchd) — the server now starts at login,")
         print(f"  restarts if it dies, and waits for Postgres if it isn't up yet.")
+        if target == "gateway":
+            print(f"  zero-downtime mode: `memnos restart`/`memnos upgrade` will blue-green "
+                  f"swap without a downtime window.")
         if getattr(args, "proxy", False):
             _plist("com.memnos.proxy", [exe, "proxy"], _LAUNCHD_PROXY)
             print("  ✓ capture proxy autostart installed too (com.memnos.proxy) — clients")
@@ -1175,9 +1463,12 @@ def cmd_autostart(args, cfg):
             print("[memnos] autostart removed (systemd user units disabled + deleted).")
             return
         _rotate_log()
-        _unit("memnos", "memnos memory server", f"{exe} serve", _SYSTEMD_UNIT)
+        _unit("memnos", "memnos memory server", f"{exe} {target}", _SYSTEMD_UNIT)
         print("[memnos] ✓ autostart installed (systemd --user) — starts at login, restarts on failure,")
         print(f"  waits for Postgres.\n  unit: {_SYSTEMD_UNIT}\n  logs: {LOG_PATH}\n  remove: memnos autostart --remove")
+        if target == "gateway":
+            print(f"  zero-downtime mode: `memnos restart`/`memnos upgrade` will blue-green "
+                  f"swap without a downtime window.")
         if getattr(args, "proxy", False):
             _unit("memnos-proxy", "memnos LLM capture proxy", f"{exe} proxy", _SYSTEMD_PROXY)
             print("  ✓ capture proxy autostart installed too (memnos-proxy.service).")
@@ -1217,12 +1508,14 @@ def cmd_stop(args, cfg):
         else:
             subprocess.run(["systemctl", "--user", "stop", "memnos"], capture_output=True)
         _stop_quiet()                         # clean up any stray manually-started copy too
+        _clear_gateway_state()                # best-effort — gateway itself also cleans this
         print(f"[memnos] stopped ({kind} service unloaded — it returns at next login; "
               "remove permanently with `memnos autostart --remove`)")
         return
     if not os.path.exists(PID_PATH):
         sys.exit("no background memnos server recorded (no pid file). If it's in the foreground, Ctrl-C it.")
     pid = _stop_quiet()
+    _clear_gateway_state()                     # best-effort — gateway itself also cleans this
     print(f"[memnos] stopped background server (pid {pid})" if pid else
           "[memnos] server wasn't running (cleaned up stale pid file)")
 
@@ -1252,7 +1545,25 @@ def cmd_upgrade(args, cfg):
                  "(or: pip install -U memnos)")
     print(f"[memnos] ✓ upgraded to v{latest}.")
     _refresh_integrations()
-    print("  restart the server to run the new code:  memnos restart")
+    # issue #37 Layer 2: the package on disk is new, but nothing runs it until the server
+    # restarts. In (default) gateway mode that restart is zero-downtime, so apply it now
+    # instead of leaving a stale-code server running until the user remembers to do it
+    # manually — `--no-restart` (or legacy mode) preserves the old "just print a
+    # reminder" behavior for scripted/CI callers that want to control the restart timing
+    # themselves.
+    if getattr(args, "no_restart", False):
+        print("  restart the server to run the new code:  memnos restart")
+        return
+    if _legacy_direct_mode(cfg):
+        print("  restart the server to run the new code:  memnos restart")
+        return
+    _apply_env(cfg)
+    port = int(os.environ.get("MEMNOS_PORT", cfg.get("port", 8900)))
+    if not _server_up(f"http://127.0.0.1:{port}"):
+        print("  server isn't running — nothing to restart. Start it with:  memnos start")
+        return
+    _preflight_pg(cfg)
+    _rolling_upgrade_or_convert(cfg, port, trigger="upgrade")
 
 
 def _refresh_integrations():
@@ -3941,6 +4252,12 @@ def build_parser():
     p = sub.add_parser("serve", help="run the server in the FOREGROUND (process managers / Docker / debug)")
     p.add_argument("--port", type=int, help="HTTP port (default: config / 8900)")
     p.set_defaults(fn=cmd_serve)
+    p = sub.add_parser("gateway", help="run the zero-downtime upgrade front door in the FOREGROUND "
+                                       "(issue #37 Layer 2 — `start`/`autostart` use this by default "
+                                       "instead of `serve`; spawns + blue-green-swaps real backends "
+                                       "on internal ports behind a public port that never goes down)")
+    p.add_argument("--port", type=int, help="HTTP port (default: config / 8900)")
+    p.set_defaults(fn=cmd_gateway)
     p = sub.add_parser("mcp", help="run the stdio MCP adapter (Claude Code / Cursor / Windsurf config)")
     p.add_argument("--namespace", help="default namespace for the MCP tools")
     p.set_defaults(fn=cmd_mcp)
@@ -3950,8 +4267,12 @@ def build_parser():
     p.add_argument("--namespace", help="namespace captured turns go to (default user:<you>)")
     p.add_argument("--no-capture", action="store_true", help="relay only, capture off")
     p.set_defaults(fn=cmd_proxy)
-    p = sub.add_parser("upgrade", help="check PyPI for a newer version and install it")
+    p = sub.add_parser("upgrade", help="check PyPI for a newer version, install it, and (zero-downtime "
+                                       "gateway mode) apply it with no restart-downtime window")
     p.add_argument("--check", action="store_true", help="only check; don't install")
+    p.add_argument("--no-restart", action="store_true",
+                   help="install the new version but don't restart the running server "
+                        "(default: restart automatically — zero-downtime in gateway mode)")
     p.set_defaults(fn=cmd_upgrade)
 
     # ---- agent coordination ----
@@ -4267,7 +4588,7 @@ def _normalize_argv(argv):
 # ---- docs generation (docs/cli.md + ui/cli-reference.json) -------------------
 _DOC_GROUPS = [
     ("Memory (heroes)", ["remember", "recall"]),
-    ("Server lifecycle", ["setup", "start", "stop", "restart", "status", "serve",
+    ("Server lifecycle", ["setup", "start", "stop", "restart", "status", "serve", "gateway",
                           "autostart", "upgrade", "proxy", "mcp"]),
     ("Identity & access", ["principal create", "principal ls", "token mint", "token ls",
                            "token revoke", "grant add", "grant ls", "grant rm", "whoami"]),

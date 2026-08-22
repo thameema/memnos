@@ -187,6 +187,19 @@
     {
      "args": [
       {
+       "arg": "--port",
+       "help": "HTTP port (default: config / 8900)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "gateway",
+     "example": null,
+     "help": "run the zero-downtime upgrade front door in the FOREGROUND (issue #37 Layer 2 \u2014 `start`/`autostart` use this by default instead of `serve`; spawns + blue-green-swaps real backends on internal ports behind a public port that never goes down)"
+    },
+    {
+     "args": [
+      {
        "arg": "--remove",
        "help": "uninstall the login service(s)",
        "positional": false,
@@ -210,11 +223,17 @@
        "help": "only check; don't install",
        "positional": false,
        "required": false
+      },
+      {
+       "arg": "--no-restart",
+       "help": "install the new version but don't restart the running server (default: restart automatically \u2014 zero-downtime in gateway mode)",
+       "positional": false,
+       "required": false
       }
      ],
      "command": "upgrade",
      "example": "memnos upgrade --check",
-     "help": "check PyPI for a newer version and install it"
+     "help": "check PyPI for a newer version, install it, and (zero-downtime gateway mode) apply it with no restart-downtime window"
     },
     {
      "args": [
