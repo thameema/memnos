@@ -129,6 +129,26 @@ DISPATCH_TRIGGER_PROMPT = (
 )
 
 
+_SUPPORTS_SETTING_SOURCES = {"claude"}
+
+
+def apply_setting_sources(cmd: list[str], harness_name: str, sources: str) -> list[str]:
+    """Insert `--setting-sources <sources>` right after the binary name for
+    supported harnesses (memnos#136): used ONLY when Tommy has generated
+    project-scoped memnos config for this dispatch (see
+    tommy/memnos_scope.py) — excludes the harness's ambient USER-scope
+    settings.json (which carries the host's own memnos hooks, unscoped by
+    tommy.yaml) while still loading the project-scoped files this dispatch
+    just wrote. Verified empirically against a real `claude` 2.1.x binary
+    that `--setting-sources project,local` excludes user-scope
+    ~/.claude/settings.json while still loading project-scope
+    (.claude/settings.json) and local-scope (.claude/settings.local.json)
+    — see memnos_scope.py's module docstring point 2."""
+    if sources and harness_name in _SUPPORTS_SETTING_SOURCES:
+        return [cmd[0], "--setting-sources", sources] + cmd[1:]
+    return cmd
+
+
 def apply_prompt_arg(cmd: list[str], harness_name: str, trigger: str) -> list[str]:
     """Append `trigger` as a trailing positional prompt argument for
     harnesses whose CLI requires one to leave non-interactive print mode
