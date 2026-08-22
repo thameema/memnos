@@ -41,10 +41,17 @@ from .discovery.harnesses import (
     all_harnesses,
     apply_prompt_arg,
     apply_session_name,
+    apply_setting_sources,
     apply_skip_permissions,
     DISPATCH_TRIGGER_PROMPT,
 )
 from .generate_cmd import config_group, generate_command
+from .memnos_scope import (
+    DISPATCH_SCOPE_SETTING_SOURCES,
+    generate_scoping_files,
+    memnos_binary,
+    should_scope_dispatch,
+)
 from .secrets import (
     SecretResolutionError,
     collect_secret_refs,
@@ -407,6 +414,17 @@ def _launch_harness(
             if candidate.is_dir():
                 ws_path = candidate
 
+    # ── Dispatch-scoped memnos config (issue #136) ──────────────────────────
+    # Same fix as mcp_server.py's tommy_dispatch — the interactive `tommy`
+    # launch path spawns the exact same kind of `claude` subprocess, with
+    # the exact same ambient-config problem (see tommy/memnos_scope.py's
+    # module docstring). Decided here, before Secret Shield below, since
+    # ws_path is already settled and neither block depends on the other.
+    _scope_active, _scope_ns = should_scope_dispatch(ws_path)
+    if _scope_active and memnos_binary() is None:
+        _scope_active = False  # nothing to point the generated files at
+    # ─────────────────────────────────────────────────────────────────────
+
     # ── Secret Shield (issue #115) ────────────────────────────────────────
     # Resolve secret://NAME references BEFORE any other launch-prep work —
     # before build_prompt(), before the prompt tempfile is written, before
@@ -503,12 +521,20 @@ def _launch_harness(
     _stdin_interactive = sys.stdin.isatty()
     if _print_mode_will_trigger and not extra_args:
         cmd = apply_prompt_arg(cmd, cfg.harness, DISPATCH_TRIGGER_PROMPT)
+    if _scope_active:
+        cmd = apply_setting_sources(cmd, cfg.harness, DISPATCH_SCOPE_SETTING_SOURCES)
 
     # Inject MEMNOS_URL so the sub-agent's MCP config picks it up
     env = os.environ.copy()
     env["MEMNOS_URL"] = cfg.memnos_url
     env["TOMMY_NS"] = cfg.tommy_ns
     env["TOMMY_DEFAULT_NS"] = cfg.default_ns
+    if _scope_active:
+        # See mcp_server.py's tommy_dispatch for the identical block/reasoning
+        # — real values only, into the subprocess's own env, never into the
+        # generated files (those carry only ${VAR} placeholders).
+        env["MEMNOS_TOKEN"] = cfg.memnos_token or ""
+        env["MEMNOS_NS"] = _scope_ns
     if resolved_secrets:
         # Real values only — never the secret:// reference string. Overlaid
         # exactly like every other env var above; names only in the log line
@@ -516,6 +542,9 @@ def _launch_harness(
         env.update(resolved_secrets)
 
     click.echo(f"🟣 Tommy → {cfg.harness}  (smart_routing={'on' if cfg.smart_routing else 'off'})")
+    if _scope_active:
+        click.echo(f"  🔒 memnos scope: dispatched session's own hooks/MCP scoped to {_scope_ns!r} "
+                   "(no existing binding for this workspace — see memnos_scope.py)")
     if resolved_secrets:
         click.echo(f"  🔒 Resolved {len(resolved_secrets)} secret(s) into subprocess env: "
                    f"{', '.join(sorted(resolved_secrets))}")
@@ -556,10 +585,24 @@ def _launch_harness(
     # DEVNULL otherwise. See the comment at cmd's construction above for why
     # this is a different check than the one deciding whether a trigger
     # prompt was needed.
-    proc = subprocess.Popen(
-        cmd, env=env, cwd=str(ws_path),
-        stdin=None if _stdin_interactive else subprocess.DEVNULL,
-    )
+    # Generated immediately before Popen, mirroring mcp_server.py's
+    # tommy_dispatch — minimizes the window between writing these files and
+    # the harness actually reading them.
+    _scoping_files = generate_scoping_files(ws_path) if _scope_active else None
+
+    try:
+        proc = subprocess.Popen(
+            cmd, env=env, cwd=str(ws_path),
+            stdin=None if _stdin_interactive else subprocess.DEVNULL,
+        )
+    except Exception:
+        # Popen itself failed — the finally block below (attached to
+        # proc.wait(), never reached) can't clean these up, so this is the
+        # only place left to.
+        if _scoping_files is not None:
+            _scoping_files.cleanup()
+        raise
+
     try:
         proc.wait()
     except KeyboardInterrupt:
@@ -577,6 +620,8 @@ def _launch_harness(
             os.unlink(prompt_file)
         except OSError:
             pass
+        if _scoping_files is not None:
+            _scoping_files.cleanup()
 
     # Post-run capture (Layer 3: ingest transcript, Layer 4: consolidate)
     if memnos_client:

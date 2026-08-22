@@ -46,10 +46,17 @@ from .discovery.harnesses import (
     all_harnesses,
     apply_prompt_arg,
     apply_session_name,
+    apply_setting_sources,
     apply_skip_permissions,
     DISPATCH_TRIGGER_PROMPT,
 )
 from .effective_config import resolve_effective_config
+from .memnos_scope import (
+    DISPATCH_SCOPE_SETTING_SOURCES,
+    generate_scoping_files,
+    memnos_binary,
+    should_scope_dispatch,
+)
 from .project_config import TommyYamlError
 from .prompt import build_prompt
 from .secrets import (
@@ -317,9 +324,20 @@ def _chunk_diff(diff_text: str, chunk_chars: int = _DRIFT_CHUNK_CHARS) -> list:
     return [diff_text[i:i + chunk_chars] for i in range(0, len(diff_text), chunk_chars)]
 
 
-def _drain_stdout(proc: subprocess.Popen, task: Task, prompt_file: str = "") -> None:
+def _drain_stdout(proc: subprocess.Popen, task: Task, prompt_file: str = "", scoping=None) -> None:
     """Background thread: drain proc stdout into task.output_lines.
     Cleans up the temp prompt file once the process exits.
+
+    `scoping` (memnos_scope.ScopingFiles | None, issue #136): when this
+    dispatch generated project-scoped memnos config, its cleanup() runs
+    here too — the SAME finally block as the prompt-file cleanup already
+    uses, and the only place that correctly fires for BOTH tommy_dispatch's
+    async and sync paths: the drain thread is started unconditionally by
+    tommy_dispatch either way, and only actually completes (hits this
+    finally) once the harness process's stdout reaches EOF — i.e. once the
+    process has actually exited and can no longer read these files.
+    Deleting them any earlier (e.g. immediately after Popen() returns) would
+    race the harness's own startup read of them.
     """
     try:
         for line in proc.stdout:
@@ -336,6 +354,8 @@ def _drain_stdout(proc: subprocess.Popen, task: Task, prompt_file: str = "") -> 
                 _os.unlink(prompt_file)
             except OSError:
                 pass
+        if scoping is not None:
+            scoping.cleanup()
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +482,23 @@ def tommy_dispatch(
         proj = cfg.project_by_key(_active_project)
         if proj and not workspace:
             ws_path = Path(getattr(proj, "git_root", str(Path.cwd())))
+
+    # ── Dispatch-scoped memnos config (issue #136) ──────────────────────────
+    # Decided here (before Secret Shield/corpus-gate below, which don't need
+    # it) so `chosen`/ws_path are both settled first. See
+    # tommy/memnos_scope.py's module docstring for the full "why" — short
+    # version: this dispatched harness subprocess's OWN memnos hooks/MCP
+    # tool calls otherwise resolve via the AMBIENT host config, unscoped by
+    # tommy.yaml, UNLESS ws_path already has an existing repo/host binding
+    # (in which case the ambient config already resolves correctly and
+    # nothing here should touch it — should_scope_dispatch() checks that).
+    _scope_active, _scope_ns = should_scope_dispatch(ws_path)
+    if _scope_active and memnos_binary() is None:
+        # Nothing for the generated files to invoke — degrade to the
+        # pre-#136 unscoped behavior rather than write files that could
+        # only ever fail.
+        _scope_active = False
+    # ─────────────────────────────────────────────────────────────────────
 
     # ── Secret Shield (issue #115) ────────────────────────────────────────
     # Resolve secret://NAME references BEFORE any other launch-prep work —
@@ -615,9 +652,27 @@ def tommy_dispatch(
     # minimal trigger claude's CLI needs to leave print-mode's input gate,
     # not a duplicate of the task content.
     cmd = apply_prompt_arg(cmd, chosen, DISPATCH_TRIGGER_PROMPT)
+    if _scope_active:
+        # Excludes the ambient USER-scope ~/.claude/settings.json (which
+        # carries the host's own memnos hooks) so the harness only sees the
+        # project-scoped files generate_scoping_files() is about to write —
+        # see memnos_scope.py's module docstring point 2 for the empirical
+        # verification behind this flag/value.
+        cmd = apply_setting_sources(cmd, chosen, DISPATCH_SCOPE_SETTING_SOURCES)
     env = os.environ.copy()
     env["MEMNOS_URL"] = cfg.memnos_url
     env["TOMMY_NS"] = cfg.tommy_ns
+    if _scope_active:
+        # Real values only, injected into the subprocess's OWN env — never
+        # written into the generated files as literals (those carry only
+        # ${VAR} placeholders; see memnos_scope.py). MEMNOS_NS here is this
+        # dispatch's explicit tommy.yaml namespace (_scope_ns), deliberately
+        # NOT cfg.tommy_ns/cfg.default_ns — those govern Tommy's OWN direct
+        # tool calls (tommy_recall/tommy_remember), a different namespace
+        # concern from what the harness subprocess's own hooks/MCP calls
+        # should resolve to.
+        env["MEMNOS_TOKEN"] = cfg.memnos_token or ""
+        env["MEMNOS_NS"] = _scope_ns
     if resolved_secrets:
         env.update(resolved_secrets)  # real values only — never the secret:// reference string
 
@@ -650,34 +705,53 @@ def tommy_dispatch(
     _head_sha, _head_err = _drift_git(ws_path, "rev-parse", "HEAD")
     dispatch_head_sha = (_head_sha or "").strip() if _head_err is None else ""
 
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(ws_path),
-        env=env,
-        stdin=subprocess.DEVNULL,  # memnos#132: NEVER inherit Tommy's own stdin here.
-        # When Tommy runs as `tommy --mcp`, its stdin is the MCP host's live
-        # JSON-RPC pipe (e.g. an editor talking to Tommy over stdio) — that
-        # pipe is held open indefinitely and does not hit EOF the way a
-        # closed/redirected stdin does. Leaving stdin unset (the pre-fix
-        # behavior) meant the harness child inherited that same live pipe as
-        # its own stdin; verified empirically (a fifo held open by a
-        # never-closing background writer, same shape as a live MCP host)
-        # that claude then hangs forever reading it rather than erroring —
-        # a silently stuck dispatch, worse than the immediate-failure case
-        # this bug was originally reported for. The task's actual prompt no
-        # longer depends on stdin at all (see apply_prompt_arg() above), so
-        # DEVNULL — not PIPE — is correct: nothing is ever meant to be
-        # written to this child's stdin.
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,   # decouple from Tommy's process group / TTY
-    )
+    # Generated immediately before Popen (not earlier) to minimize the
+    # window between writing these files and the harness actually starting
+    # to read them — see memnos_scope.py's ScopingFiles docstring for why
+    # cleanup is deferred to _drain_stdout's finally block instead.
+    _scoping_files = generate_scoping_files(ws_path) if _scope_active else None
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(ws_path),
+            env=env,
+            stdin=subprocess.DEVNULL,  # memnos#132: NEVER inherit Tommy's own stdin here.
+            # When Tommy runs as `tommy --mcp`, its stdin is the MCP host's live
+            # JSON-RPC pipe (e.g. an editor talking to Tommy over stdio) — that
+            # pipe is held open indefinitely and does not hit EOF the way a
+            # closed/redirected stdin does. Leaving stdin unset (the pre-fix
+            # behavior) meant the harness child inherited that same live pipe as
+            # its own stdin; verified empirically (a fifo held open by a
+            # never-closing background writer, same shape as a live MCP host)
+            # that claude then hangs forever reading it rather than erroring —
+            # a silently stuck dispatch, worse than the immediate-failure case
+            # this bug was originally reported for. The task's actual prompt no
+            # longer depends on stdin at all (see apply_prompt_arg() above), so
+            # DEVNULL — not PIPE — is correct: nothing is ever meant to be
+            # written to this child's stdin.
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,   # decouple from Tommy's process group / TTY
+        )
+    except Exception:
+        # Popen itself failed (harness binary vanished between the
+        # availability check and here, etc.) — the drain thread that would
+        # normally clean up _scoping_files never gets a chance to start, so
+        # this is the only place left to do it. Re-raise: this exception's
+        # shape/handling is unchanged from before this issue's fix, only the
+        # cleanup is new.
+        if _scoping_files is not None:
+            _scoping_files.cleanup()
+        raise
 
     t = Task(task_id=task_id, harness=chosen, proc=proc, workspace=str(ws_path),
              dispatch_head_sha=dispatch_head_sha)
     _task_ref[0] = t  # publish Task before any ctrl messages can be delivered
     t._ctrl = ctrl
-    drain = threading.Thread(target=_drain_stdout, args=(proc, t, _tf_path), daemon=True)
+    drain = threading.Thread(
+        target=_drain_stdout, args=(proc, t, _tf_path), kwargs={"scoping": _scoping_files}, daemon=True
+    )
     drain.start()
     t._drain_thread = drain
     _evict_tasks()
@@ -685,9 +759,13 @@ def tommy_dispatch(
 
     # Names only, never values — same convention as the CLI path's log line.
     _secrets_info = {"secrets_resolved": sorted(resolved_secrets)} if resolved_secrets else {}
+    # Visible, not silent (issue #136's own framing: the pre-fix behavior's
+    # worst part was that it happened with no indication to the user) —
+    # present only when scoping actually activated for this dispatch.
+    _scope_info = {"memnos_scope": {"active": True, "namespace": _scope_ns}} if _scope_active else {}
 
     if async_run:
-        result = {"task_id": task_id, "status": "running", "harness": chosen, **_secrets_info}
+        result = {"task_id": task_id, "status": "running", "harness": chosen, **_secrets_info, **_scope_info}
         if corpus_gate_result is not None:
             result["corpus_gate"] = corpus_gate_result
         return result
@@ -697,7 +775,7 @@ def tommy_dispatch(
     # Without this, tail() may return truncated output on fast-exiting processes.
     drain.join(timeout=10.0)
     ctrl.close()  # release the control channel socket (no harness will reconnect now)
-    result = {"task_id": task_id, "status": t.status(), "output": t.tail(200), **_secrets_info}
+    result = {"task_id": task_id, "status": t.status(), "output": t.tail(200), **_secrets_info, **_scope_info}
     if corpus_gate_result is not None:
         result["corpus_gate"] = corpus_gate_result
     return result
