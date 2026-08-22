@@ -6,8 +6,10 @@ ACL, audit, usage ledger, pooling). No memory logic here — one core, thin
 adapters (the integration principle).
 
 The SAME tool definitions below back TWO transports:
-  - stdio (this file run directly, `mcp.run()`): one token/namespace for the
-    life of the process, from env vars (below).
+  - stdio (this file run directly, via run_stdio()): one token/namespace for the
+    life of the process, from env vars (below). Self-re-execs in place when
+    `memnos upgrade` swaps installed files out from under it — see the
+    "self-re-exec on version change" section near the bottom (issue #68).
   - streamable-HTTP (mounted at :8900/mcp by memnos_server.py, via
     mcp.streamable_http_app()): a DIFFERENT caller can hit every request, so
     token/namespace come from _REQUEST_CTX instead — a ContextVar the HTTP
@@ -24,10 +26,14 @@ Wire into Claude Code (~/.claude/settings.json mcpServers), Claude Desktop, etc.
                 "env": { "MEMNOS_TOKEN": "mnk_...", "MEMNOS_NS": "user:alice" } } }
 """
 import contextvars
+import importlib.metadata
 import json
 import os
+import shutil
 import subprocess
 import sys
+import threading
+import time
 import httpx
 from mcp.server.fastmcp import FastMCP
 try:
@@ -35,6 +41,17 @@ try:
 except Exception:                                   # very old SDKs — fall back to RuntimeError
     ToolError = RuntimeError
 import offline_queue
+try:
+    # Eager (not lazy) on purpose — issue #68's immediate-safety half: a runtime
+    # `import nsresolve` deep inside a request (the old shape, see _ns_source/remember
+    # below) is exactly the kind of file open that can throw FileNotFoundError if
+    # `memnos upgrade` swaps package files out from under this running process in the
+    # window before the re-exec watcher (further down this file) fires. Importing here,
+    # at module load, means that race can only ever affect process START, which already
+    # fails loudly and obviously — never a request mid-flight.
+    import nsresolve
+except Exception:                                   # very old installs without nsresolve.py
+    nsresolve = None
 
 URL = os.environ.get("MEMNOS_URL", "http://127.0.0.1:8900").rstrip("/")
 TOKEN = os.environ.get("MEMNOS_TOKEN", "")
@@ -44,13 +61,95 @@ _OVR = os.path.join(os.path.expanduser("~"), ".memnos", "ns_overrides.json")
 # where the module-level TOKEN/env resolution below applies instead.
 _REQUEST_CTX = contextvars.ContextVar("_memnos_mcp_request_ctx", default=None)
 
-mcp = FastMCP("memnos",
-              # HTTP mount only (memnos_server.py) — irrelevant to mcp.run() stdio below.
-              # stateless_http: a fresh transport per request, no server-side session to
-              # lose — so a memnos restart never forces a client-side session restart
-              # (issue #37 Layer 1's acceptance bar). json_response: plain JSON per POST,
-              # no SSE streaming needed for request/response tool calls.
-              stateless_http=True, json_response=True)
+# ---- in-flight tool-call tracking (issue #68) -----------------------------------------
+# Incremented/decremented around every tool dispatch (both transports — see
+# _ReexecAwareFastMCP.call_tool below); only ever READ by the stdio re-exec watcher
+# further down, which is why a plain Lock/Condition (not asyncio-flavored) is fine: the
+# watcher lives on its own real OS thread, deliberately outside the asyncio event loop
+# (see _wait_idle_and_reexec's docstring for why re-exec must never run ON that loop).
+#
+# _last_activity is updated (under the SAME lock) on every enter AND every exit, not
+# just when the count reaches zero — the watcher's idle wait is timed off of it rather
+# than off two widely-spaced samples of the counter. A call that both starts and
+# finishes well inside the watcher's grace-period sleep (e.g. an immediate ToolError
+# for an unknown tool name — no I/O, sub-millisecond) can toggle the counter 0->1->0
+# entirely between two polls of a fixed-interval polling loop; timing off
+# _last_activity instead means ANY activity — however brief — is observed via the
+# Condition's notify() (which always fires before the lock is released) and restarts
+# the grace period, so a fleeting blip can never be missed by unlucky sampling.
+_inflight_lock = threading.Lock()
+_inflight_cond = threading.Condition(_inflight_lock)
+_inflight_count = 0
+_last_activity = time.monotonic()
+
+
+def _enter_call():
+    global _inflight_count, _last_activity
+    with _inflight_cond:
+        _inflight_count += 1
+        _last_activity = time.monotonic()
+        _inflight_cond.notify_all()
+
+
+def _exit_call():
+    global _inflight_count, _last_activity
+    with _inflight_cond:
+        _inflight_count -= 1
+        _last_activity = time.monotonic()
+        _inflight_cond.notify_all()
+
+
+class _ReexecAwareFastMCP(FastMCP):
+    """FastMCP subclass — NOT a `mcp.call_tool = ...` monkeypatch — because
+    `FastMCP.__init__` -> `_setup_handlers()` captures `self.call_tool` as a bound
+    method INTO the lowlevel Server's `request_handlers` dict at construction time;
+    a later instance-attribute assignment would be invisible to that already-captured
+    reference. Subclassing participates in normal method resolution instead, so
+    `self.call_tool` inside `_setup_handlers()` already resolves to the override below
+    — for both transports (harmless on the HTTP mount; the watcher that acts on the
+    counter is only ever started by run_stdio(), below, for the stdio transport).
+
+    call_tool(): wraps every tool dispatch with the in-flight counter above, so the
+    re-exec watcher can tell whether it's safe to swap the process image right now.
+
+    run_stdio_async(): identical to FastMCP's, except the ServerSession is started in
+    the SAME 'stateless' initialization mode already used for the HTTP mount
+    (issue #37 Layer 1) instead of FastMCP's stdio default (stateless=False). This is
+    what makes a re-exec (issue #68) transparent to the client: the MCP host (Claude
+    Code, Claude Desktop, ...) sent `initialize` exactly once, at the start of a
+    connection it still believes is unbroken, and will never send it again after this
+    process image gets swapped. A freshly-constructed, non-stateless ServerSession
+    starts NotInitialized and rejects the very next tool call with "Received request
+    before initialization was complete" (mcp.server.session.ServerSession) — silently
+    breaking the exact session execv is supposed to keep alive. `stateless=True` only
+    relaxes what's tolerated BEFORE an explicit `initialize`; a real client that does
+    send one first is handled identically either way."""
+
+    async def call_tool(self, name, arguments):
+        _enter_call()
+        try:
+            return await super().call_tool(name, arguments)
+        finally:
+            _exit_call()
+
+    async def run_stdio_async(self) -> None:
+        from mcp.server.stdio import stdio_server
+        async with stdio_server() as (read_stream, write_stream):
+            await self._mcp_server.run(
+                read_stream, write_stream,
+                self._mcp_server.create_initialization_options(),
+                stateless=True,
+            )
+
+
+mcp = _ReexecAwareFastMCP(
+    "memnos",
+    # HTTP mount only (memnos_server.py) — irrelevant to mcp.run() stdio below.
+    # stateless_http: a fresh transport per request, no server-side session to
+    # lose — so a memnos restart never forces a client-side session restart
+    # (issue #37 Layer 1's acceptance bar). json_response: plain JSON per POST,
+    # no SSE streaming needed for request/response tool calls.
+    stateless_http=True, json_response=True)
 
 
 def _config_dir():
@@ -123,24 +222,25 @@ def _ns_source():
     ctx = _REQUEST_CTX.get()
     if ctx is not None:
         return ctx[1], "http-header"
-    try:
-        import nsresolve
-        return nsresolve.resolve_with_source()
-    except Exception:
-        cwd = os.getcwd()
-        root = _git_root()
+    if nsresolve is not None:
         try:
-            m = json.load(open(_OVR))
-            for k in (cwd, os.path.realpath(cwd), root):
-                if k and m.get(k):
-                    return m[k], "legacy"
+            return nsresolve.resolve_with_source()
         except Exception:
             pass
-        env = os.environ.get("MEMNOS_NS", "").strip()
-        if env and env.lower() != "auto":
-            return env, "env"
-        return ("proj:" + (os.path.basename(root) if root
-                           else (os.path.basename(cwd.rstrip("/")) or "default")), "default")
+    cwd = os.getcwd()
+    root = _git_root()
+    try:
+        m = json.load(open(_OVR))
+        for k in (cwd, os.path.realpath(cwd), root):
+            if k and m.get(k):
+                return m[k], "legacy"
+    except Exception:
+        pass
+    env = os.environ.get("MEMNOS_NS", "").strip()
+    if env and env.lower() != "auto":
+        return env, "env"
+    return ("proj:" + (os.path.basename(root) if root
+                       else (os.path.basename(cwd.rstrip("/")) or "default")), "default")
 
 
 def _ns():
@@ -299,9 +399,8 @@ def remember(text: str, memory_type: str = "") -> str:
     else:
         msg = f"remembered in '{dest}' (turn {out.get('turn_id')}, {out.get('facts', 0)} facts extracted)"
     # default-fallback: no binding for this repo — surface the one-step bind offer.
-    if source == "default":
+    if source == "default" and nsresolve is not None:
         try:
-            import nsresolve
             msg += "\n" + nsresolve.default_fallback_hint(dest)
         except Exception:
             pass
@@ -733,5 +832,263 @@ def lease_list() -> str:
         return _err(e, "lease_list")
 
 
+# ---- self-re-exec on version change (issue #68) ---------------------------------------
+#
+# Problem: `memnos mcp` is a long-lived stdio process. `memnos upgrade` (uv tool
+# install / pip install -U) swaps memnos's installed files out from under it while it
+# keeps running the OLD in-memory code — every load-bearing import already happened at
+# module-load time, and CPython never re-reads an already-imported source file off
+# disk — with no way to pick up the new version short of the user manually restarting
+# their entire coding session.
+#
+# Fix: notice a new build on disk (background watcher thread) and swap this process's
+# own image in place once no tool call is in flight. os.execv() replaces the process
+# image but keeps the SAME PID and the SAME stdin/stdout file descriptors already
+# connected to the MCP host — they are not CLOEXEC (PEP 446 only makes NEWLY-opened
+# files close-on-exec by default; the standard streams stay inheritable) — so the host
+# never sees an exit/restart: no dropped connection, no FileNotFoundError, no manual
+# session restart. Escape hatch: MEMNOS_ADAPTER_REEXEC=0 disables the watcher entirely
+# (today's manual-restart behavior).
+#
+# Scope: only run_stdio() (below — the real entry point for `memnos mcp` / `python
+# memnos_mcp.py`, see memnos_cli.cmd_mcp) starts the watcher. The HTTP-mounted
+# transport (memnos_server.py's streamable_http_app(), used for the REST API /
+# omnigent-direct) never calls run_stdio() and is unaffected — that process serves many
+# tenants at once from one long-running server with its own restart story, well outside
+# the "single long-lived desktop session" problem this issue is about.
+
+def _reexec_enabled() -> bool:
+    return os.environ.get("MEMNOS_ADAPTER_REEXEC", "1").strip().lower() not in (
+        "0", "false", "no", "off", "")
+
+
+def _reexec_interval_s() -> float:
+    try:
+        return max(1.0, float(os.environ.get("MEMNOS_ADAPTER_REEXEC_INTERVAL_S", "20")))
+    except (TypeError, ValueError):
+        return 20.0
+
+
+def _reexec_drain_grace_s() -> float:
+    """Extra delay the in-flight counter (see _enter_call/_exit_call above) must stay
+    at zero, continuously, before actually re-exec'ing (see _wait_idle_and_reexec).
+    The outermost layer that decrements it (_install_inflight_wrapper's wrapper around
+    the lowlevel CallToolRequest handler) still returns BEFORE the lowlevel MCP
+    dispatcher has serialized that result and written it to stdout (which
+    mcp.server.stdio flushes on every message) — that write happens in code the
+    counter doesn't span. This leaves a real, if brief, window between 'the call
+    finished running' and 'the response actually reached the host' that the counter
+    alone doesn't cover — this grace period closes it. Configurable (default kept
+    small) so tests don't need to wait a full production cycle to prove the drain
+    logic."""
+    try:
+        return max(0.0, float(os.environ.get("MEMNOS_ADAPTER_REEXEC_DRAIN_GRACE_S", "0.3")))
+    except (TypeError, ValueError):
+        return 0.3
+
+
+def _version_signature() -> str:
+    """Cheap signature of 'the installed memnos package on disk right now'. Combines
+    the installed distribution version (bumps on a real `memnos upgrade` via uv/pip —
+    same call memnos_cli._installed_version() already uses) with this module's own file
+    mtime+size (also catches a same-version reinstall or an editable/source-checkout
+    edit, where the version string alone wouldn't move — e.g. this ticket's own local
+    dev loop). Either changing means a new build is on disk. Deliberately no import of
+    memnos_cli / core / anything heavy: this runs on a background thread every
+    MEMNOS_ADAPTER_REEXEC_INTERVAL_S seconds and must stay cheap enough that polling it
+    is never visible on the request path."""
+    dist_version = "?"
+    try:
+        dist_version = importlib.metadata.version("memnos")
+    except Exception:
+        pass
+    file_sig = "?"
+    try:
+        st = os.stat(os.path.abspath(__file__))
+        file_sig = f"{st.st_mtime_ns}:{st.st_size}"
+    except OSError:
+        pass
+    return f"{dist_version}|{file_sig}"
+
+
+def _resolve_reexec_argv0(argv0: str):
+    """Resolve sys.argv[0] to an absolute, existing path to re-launch. A human typing
+    `memnos mcp` at a shell can leave argv[0] as the bare command name ("memnos"), not
+    an absolute path — unlike the MCP-host-launched case, where agent-setup/hermes
+    always write the shutil.which()-resolved absolute path into the host's own config,
+    specifically because "GUI apps launch MCP servers with a minimal PATH" (see
+    memnos_cli._mcp_launcher()). Returns None if it can't be resolved to a real file, so
+    the caller can decline to re-exec into a broken command instead of crashing."""
+    if os.path.isabs(argv0) and os.path.exists(argv0):
+        return argv0
+    resolved = shutil.which(argv0)
+    if resolved:
+        return os.path.abspath(resolved)
+    candidate = os.path.abspath(argv0)
+    return candidate if os.path.exists(candidate) else None
+
+
+def _do_reexec():
+    """Replace this process image in place: same PID, same stdio fds already connected
+    to the MCP host, so the host never sees an exit/restart. Called only from the
+    watcher thread (never from inside a tool call / the asyncio loop — see
+    _wait_idle_and_reexec), once the in-flight counter has been at zero for a full
+    grace period.
+
+    Deliberately NOT `os.execv(sys.argv[0], sys.argv)` — the form suggested in the
+    original ticket. Verified empirically that it raises PermissionError for the
+    `python memnos_cli.py mcp` fallback launch path: memnos_cli.py has no shebang line
+    and is not marked executable (only the INSTALLED `memnos` console-script — which
+    does have a shebang + the exec bit — works with that form). Re-invoking
+    sys.executable directly against the resolved, absolute script path works for both
+    launch shapes instead — the console-script file is also perfectly valid to run as
+    `python <path>` — and doesn't depend on exec bits or shebangs at all. Env vars
+    (MEMNOS_URL/TOKEN/NS) are inherited automatically; execv never touches the
+    environment."""
+    argv0 = _resolve_reexec_argv0(sys.argv[0])
+    if argv0 is None:
+        print(f"memnos: adapter update detected but could not resolve '{sys.argv[0]}' "
+              f"to re-exec — leaving the old code running; restart this session "
+              f"manually to pick up the update", file=sys.stderr)
+        return
+    try:
+        _drain_offline_queue()          # belt-and-suspenders — see module docstring
+    except Exception:
+        pass
+    new_argv = [sys.executable, argv0] + sys.argv[1:]
+    print(f"memnos: re-exec'ing adapter (pid {os.getpid()}) to pick up the updated "
+          f"build — same MCP connection, no session restart needed", file=sys.stderr)
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+    try:
+        os.execv(sys.executable, new_argv)
+    except Exception as e:
+        # os.execv only ever returns on failure — a successful call never reaches here.
+        print(f"memnos: re-exec failed ({type(e).__name__}: {e}) — leaving the old "
+              f"code running", file=sys.stderr)
+
+
+def _wait_idle_and_reexec():
+    """Block — on the watcher thread, never the asyncio loop, never inside a tool call
+    — until no MCP tool call is in flight AND nothing has entered/exited a call for a
+    full, uninterrupted grace period (see _reexec_drain_grace_s), then re-exec.
+
+    Timed off _last_activity (updated — and notify()'d — on every enter AND exit, see
+    _enter_call/_exit_call above) rather than off two widely-spaced samples of the
+    counter, for two reasons:
+      1. The gap between a call finishing (which is when the counter decrements) and
+         that call's response actually being serialized and flushed to stdout by the
+         lowlevel MCP dispatcher, downstream of it — the counter alone only proves the
+         WORK finished, not that the client has seen the result yet.
+      2. A call that both starts AND finishes well inside a single fixed-length sleep
+         (e.g. an unknown-tool ToolError — no I/O, sub-millisecond) can toggle the
+         counter 0->1->0 entirely between two samples of a plain polling loop, which
+         would silently miss it. Using Condition.wait(timeout=...) instead means any
+         enter/exit — however brief — wakes this loop immediately via notify() (which
+         always fires before the mutating call releases the lock), so the grace timer
+         restarts off REAL activity instead of off luck.
+
+    Deliberately releases _inflight_lock (the `with` block ends) before calling
+    _do_reexec() — NOT held through the swap. Holding it there was tried and rejected:
+    it doesn't protect anything (a request that reaches _install_inflight_wrapper's
+    _enter_call() would just block waiting for the SAME lock the watcher holds, so
+    execv() would wipe it out having *never* incremented the counter — silently worse,
+    not better, than the current design, where at least the counter reflects every
+    request that has actually been handed to a task by the time we make our final
+    check)."""
+    grace = _reexec_drain_grace_s()
+    with _inflight_cond:
+        while True:
+            if _inflight_count != 0:
+                _inflight_cond.wait()
+                continue
+            remaining = grace - (time.monotonic() - _last_activity)
+            if remaining <= 0:
+                break
+            _inflight_cond.wait(timeout=remaining)
+    _do_reexec()
+
+
+def _install_inflight_wrapper():
+    """Wrap the LOWLEVEL CallToolRequest handler directly (mcp._mcp_server —
+    FastMCP.__init__ -> _setup_handlers() already registered one there for
+    `self.call_tool`, see _ReexecAwareFastMCP's docstring) — one layer further out
+    than _ReexecAwareFastMCP.call_tool. Between a request being parsed off the wire
+    and _ReexecAwareFastMCP.call_tool actually starting, the lowlevel dispatcher does
+    its own tool lookup, input-schema validation (or the "not listed" log line when
+    validation is skipped), all before it ever calls into our code — time our counter
+    doesn't cover if it only wraps call_tool(). Counting from here instead — the
+    earliest point any of our own code runs for a given request — leaves only genuine
+    OS/asyncio scheduling latency (the request has been read + parsed, a task spawned
+    for it, but that task hasn't been given a turn to run yet) as the residual gap, not
+    several extra lines of SDK-internal logging/validation work on top of it.
+
+    Only installed for the stdio watcher (called from _start_reexec_watcher, never
+    unconditionally at import time) — the HTTP-mounted transport's dispatch chain is
+    left byte-for-byte untouched when re-exec isn't in play."""
+    import mcp.types as _mcp_types
+    handlers = mcp._mcp_server.request_handlers
+    orig = handlers[_mcp_types.CallToolRequest]
+
+    async def _tracked(req):
+        _enter_call()
+        try:
+            return await orig(req)
+        finally:
+            _exit_call()
+
+    handlers[_mcp_types.CallToolRequest] = _tracked
+
+
+_reexec_watcher_started = False
+
+
+def _start_reexec_watcher():
+    """Idempotent — safe to call more than once (e.g. a test re-invoking run_stdio())."""
+    global _reexec_watcher_started
+    if _reexec_watcher_started:
+        return
+    _reexec_watcher_started = True
+    if not _reexec_enabled():
+        print("memnos: MEMNOS_ADAPTER_REEXEC=0 — self-re-exec on upgrade disabled for "
+              "this adapter process", file=sys.stderr)
+        return
+    _install_inflight_wrapper()
+    t = threading.Thread(target=_reexec_watch_loop, name="memnos-adapter-reexec", daemon=True)
+    t.start()
+
+
+def _reexec_watch_loop():
+    interval = _reexec_interval_s()
+    start_sig = _version_signature()
+    while True:
+        time.sleep(interval)
+        try:
+            cur_sig = _version_signature()
+        except Exception:
+            continue
+        if cur_sig != start_sig:
+            print(f"memnos: detected an updated memnos build on disk — will re-exec "
+                  f"this adapter once idle (checked every {interval:.0f}s)",
+                  file=sys.stderr)
+            _wait_idle_and_reexec()
+            return
+
+
+def run_stdio():
+    """Entry point for the stdio transport (`memnos mcp` / `python memnos_mcp.py`).
+    Starts the self-re-exec watcher (issue #68) before handing off to mcp.run() —
+    scoped to stdio only; the HTTP-mounted transport (memnos_server.py) never calls
+    this."""
+    _start_reexec_watcher()
+    mcp.run()
+
+
 if __name__ == "__main__":
-    mcp.run()        # stdio transport (JSON-RPC over stdin/stdout)
+    run_stdio()        # stdio transport (JSON-RPC over stdin/stdout)
