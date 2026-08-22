@@ -111,10 +111,19 @@ class TestMcpDispatchScope:
     def test_no_binding_explicit_namespace_scopes(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MEMNOS_NS", "")
         monkeypatch.delenv("MEMNOS_NS", raising=False)
+        import tommy.mcp_server as mcp_server_mod
         import tommy.memnos_scope as ms
         monkeypatch.setattr(ms, "_BINDINGS_CACHE", tmp_path / "no_such_cache.json")
         monkeypatch.setattr(ms, "_NS_OVERRIDES", tmp_path / "no_such_overrides.json")
-        monkeypatch.setattr(ms, "memnos_binary", lambda: "/usr/bin/true")
+        # mcp_server.py does `from .memnos_scope import ... memnos_binary` — that
+        # binds the name into mcp_server's OWN module namespace, so the call site
+        # must be patched there, not on tommy.memnos_scope itself (see
+        # test_memnos_binary_missing_degrades_to_unscoped's comment below for the
+        # same point). Patching `ms.memnos_binary` here was a bug that happened to
+        # pass on any machine with a real `memnos` on PATH (shutil.which() then
+        # succeeds anyway) but fails on a clean CI runner with no `memnos`
+        # installed — caught by CI on this exact test, issue #136.
+        monkeypatch.setattr(mcp_server_mod, "memnos_binary", lambda: "/usr/bin/true")
         _write_yaml_with_namespace(tmp_path, "test:issue-136-scoped")
 
         result, captured = self._dispatch(monkeypatch, tmp_path)
@@ -148,11 +157,14 @@ class TestMcpDispatchScope:
         )
 
     def test_existing_binding_does_not_scope(self, tmp_path, monkeypatch):
+        import tommy.mcp_server as mcp_server_mod
         import tommy.memnos_scope as ms
         cache = tmp_path / "bindings_cache.json"
         monkeypatch.setattr(ms, "_BINDINGS_CACHE", cache)
         monkeypatch.setattr(ms, "_NS_OVERRIDES", tmp_path / "no_such_overrides.json")
-        monkeypatch.setattr(ms, "memnos_binary", lambda: "/usr/bin/true")
+        # See test_no_binding_explicit_namespace_scopes above: must patch the
+        # name as bound into mcp_server_mod's own namespace, not ms's.
+        monkeypatch.setattr(mcp_server_mod, "memnos_binary", lambda: "/usr/bin/true")
         _write_yaml_with_namespace(tmp_path, "test:issue-136-scoped")
         _write_binding(tmp_path, cache)
 
@@ -169,10 +181,13 @@ class TestMcpDispatchScope:
         assert "MEMNOS_NS" not in captured["env"] or captured["env"].get("MEMNOS_NS") != "test:issue-136-scoped"
 
     def test_no_explicit_namespace_does_not_scope(self, tmp_path, monkeypatch):
+        import tommy.mcp_server as mcp_server_mod
         import tommy.memnos_scope as ms
         monkeypatch.setattr(ms, "_BINDINGS_CACHE", tmp_path / "no_such_cache.json")
         monkeypatch.setattr(ms, "_NS_OVERRIDES", tmp_path / "no_such_overrides.json")
-        monkeypatch.setattr(ms, "memnos_binary", lambda: "/usr/bin/true")
+        # See test_no_binding_explicit_namespace_scopes above: must patch the
+        # name as bound into mcp_server_mod's own namespace, not ms's.
+        monkeypatch.setattr(mcp_server_mod, "memnos_binary", lambda: "/usr/bin/true")
         _write_yaml_no_namespace(tmp_path)
 
         result, captured = self._dispatch(monkeypatch, tmp_path)
@@ -206,8 +221,27 @@ class TestMcpDispatchScope:
 # ---------------------------------------------------------------------------
 
 
+def _fake_memnos_bin_dir(tmp_path: Path) -> Path:
+    """A scratch dir on PATH with a stub `memnos` executable — cli.py's
+    _launch_harness() checks memnos_binary() (shutil.which("memnos")) as an
+    independent environment fact before scoping a dispatch (see
+    memnos_scope.py's memnos_binary() docstring); it must resolve to
+    SOMETHING for a positive "scopes" test to be a real test of the
+    scoping logic rather than of whatever happens to be on the test
+    runner's own PATH (memnos IS on PATH on a dev laptop that has it
+    installed, but is NOT on a clean CI runner — this exact gap is what
+    made test_no_binding_explicit_namespace_scopes pass locally and fail
+    in CI, issue #136)."""
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir(exist_ok=True)
+    stub = bin_dir / "memnos"
+    stub.write_text("#!/bin/sh\nexit 0\n")
+    stub.chmod(0o755)
+    return bin_dir
+
+
 class TestCliLaunchScope:
-    def _run(self, tmp_path, capture_file, *, memnos_token="mnk_test_token_XYZ789"):
+    def _run(self, tmp_path, capture_file, *, memnos_token="mnk_test_token_XYZ789", fake_memnos_on_path=False):
         env = {
             **os.environ,
             "TOMMY_TEST_HARNESS_SCRIPT": str(SCOPE_HARNESS),
@@ -215,6 +249,9 @@ class TestCliLaunchScope:
             "TOMMY_TEST_MEMNOS_TOKEN": memnos_token,
         }
         env.pop("MEMNOS_NS", None)
+        if fake_memnos_on_path:
+            bin_dir = _fake_memnos_bin_dir(tmp_path)
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
         proc = subprocess.run(
             [sys.executable, str(SCOPE_CLI_DRIVER)],
             cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=_DRIVER_TIMEOUT,
@@ -227,7 +264,7 @@ class TestCliLaunchScope:
         capture_file = tmp_path / "capture.json"
         _write_yaml_with_namespace(tmp_path, "test:issue-136-cli-scoped")
 
-        captured = self._run(tmp_path, capture_file)
+        captured = self._run(tmp_path, capture_file, fake_memnos_on_path=True)
 
         assert "--setting-sources" in captured["argv"]
         idx = captured["argv"].index("--setting-sources")
