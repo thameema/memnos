@@ -531,6 +531,28 @@ class Control:
                       (namespace, constraint_id, rationale, approved_by, until, created_by))
             return c.fetchone()
 
+    @staticmethod
+    def corpus_descendants(conn, namespace):
+        """issue #107 — DESCENDANT namespaces (':'-prefix children/grandchildren/...,
+        SAME direction Control.namespace_ancestors walks in reverse) that already have
+        their OWN ingested corpus docs. Drives the propagation-alert event fired from
+        /corpus/ingest: when an org-level namespace's constraints are added/updated,
+        every project namespace underneath it that has its own corpus (and therefore
+        presumably relies on `corpus_check`/`corpus_check_diff` gating its own code) is a
+        plausible audience for "a rule above you just changed — go re-check."
+
+        Pure prefix match (`namespace LIKE namespace || ':%'`), same semantics as
+        BrainStore._is_ancestor_ns — no recursive CTE needed since ':' segments are
+        already a flat, closed-form hierarchy. One row per descendant namespace with at
+        least one corpus_sources row, carrying how many docs it holds."""
+        with conn.cursor() as c:
+            c.execute("SELECT namespace, count(*) AS docs "
+                      "FROM memnos_control.corpus_sources "
+                      "WHERE namespace LIKE %s ESCAPE '\\' "
+                      "GROUP BY namespace ORDER BY namespace",
+                      (namespace.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ":%",))
+            return c.fetchall()
+
     # --- namespace binding registry (issue #20, Part A) --------------------
     @staticmethod
     def upsert_binding(conn, principal_id, key_type, key, namespace, host_id=None):

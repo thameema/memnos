@@ -1786,6 +1786,12 @@ components:
         snippet: { type: string }
         code: { type: string }
         version: { type: string, description: "issue #106: optional dotted-numeric version (e.g. '2.0.0') to scope results to. Omit to return every FTS match unfiltered (pre-#106 behaviour). When set: a constraint not yet introduced at this version is dropped; one whose window has lapsed is kept with status 'expired'; one covered by a standing corpus_deviation is kept with status 'approved_deviation'." }
+        inherit:
+          type: boolean
+          description: >-
+            issue #107: default true — also search same-root ancestor namespaces
+            (org:acme:eng inherits org:acme's constraints) that the calling token can
+            read. Pass false for the pre-#107, single-namespace-only behaviour.
     CorpusDeviationRequest:
       type: object
       required: [namespace, constraint_id, rationale, approved_by]
@@ -1809,6 +1815,12 @@ components:
         namespace: { type: string, maxLength: 200 }
         diff: { type: string, description: unified diff text (git diff / GitHub PR patch) }
         name: { type: string, description: "optional: restrict the check to one ingested corpus source" }
+        inherit:
+          type: boolean
+          description: >-
+            issue #107: default true — also search same-root ancestor namespaces
+            that the calling token can read. Pass false for the pre-#107,
+            single-namespace-only behaviour.
     SubscribeRequest:
       type: object
       required: [namespace]
@@ -2286,6 +2298,20 @@ components:
         ids:
           type: array
           items: { type: integer }
+        propagation:
+          type: array
+          description: >-
+            issue #107: present only when this ingest (or re-ingest) had descendant
+            namespaces with their own corpus docs to notify — one entry per notified
+            namespace. The alert itself is delivered as a "memnos:corpus_propagation"
+            system event in each affected descendant's own memory stream (visible via
+            namespace_feed / a webhook subscription there), not in this response body.
+          items:
+            type: object
+            required: [namespace, docs]
+            properties:
+              namespace: { type: string }
+              docs: { type: integer, description: corpus docs already ingested there }
     CorpusCheckResponse:
       type: object
       required: [constraints]
@@ -2294,15 +2320,30 @@ components:
           type: array
           items:
             type: object
-            required: [id, content, source, status]
+            required: [id, content, source, namespace, status]
             properties:
               id: { type: integer }
               content: { type: string }
               source: { type: string }
+              namespace:
+                type: string
+                description: >-
+                  issue #107: the namespace this constraint actually lives in — the
+                  queried namespace itself, or an ancestor it inherited from.
               score: { type: number }
               status: { type: string, enum: [active, approved_deviation, expired], description: "issue #106: always present. 'active' by default; 'approved_deviation' when a standing corpus_deviation covers this constraint; 'expired' only reachable when the request's `version` is past this constraint's `until` (never set when `version` is omitted)." }
               since: { type: [string, "null"], description: "issue #106: this constraint's constraint_since, if set at ingest" }
               until: { type: [string, "null"], description: "issue #106: this constraint's constraint_until, if set at ingest" }
+        inherited_in:
+          type: array
+          items: { type: string }
+          description: >-
+            issue #107: ancestor namespaces actually consulted (present only when
+            inherit was true and at least one ancestor was readable or skipped).
+        inheritance_skipped:
+          type: array
+          items: { type: string }
+          description: ancestor namespaces skipped because the caller lacks a read grant.
     CorpusDeviationResponse:
       type: object
       required: [id, constraint_id, rationale, approved_by]
@@ -2338,13 +2379,26 @@ components:
           items: { $ref: "#/components/schemas/DiffConstraintMatch" }
         score: { type: number, description: "0.0-1.0 overall compliance ratio" }
         evaluated: { type: integer, description: "len(violated) + len(satisfied)" }
+        inherited_in:
+          type: array
+          items: { type: string }
+          description: "issue #107: ancestor namespaces actually consulted (see CorpusCheckResponse)."
+        inheritance_skipped:
+          type: array
+          items: { type: string }
+          description: ancestor namespaces skipped because the caller lacks a read grant.
     DiffConstraintMatch:
       type: object
-      required: [id, content, source, score, matched_terms, added_hits, removed_hits]
+      required: [id, content, source, namespace, score, matched_terms, added_hits, removed_hits]
       properties:
         id: { type: integer }
         content: { type: string }
         source: { type: string }
+        namespace:
+          type: string
+          description: >-
+            issue #107: the namespace this constraint actually lives in — the queried
+            namespace itself, or an ancestor it inherited from.
         score: { type: number, description: FTS relevance of this constraint to the diff }
         matched_terms:
           type: array
