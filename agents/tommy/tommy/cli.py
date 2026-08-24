@@ -12,6 +12,49 @@ Usage:
     tommy --version                 # print the installed version and exit
     tommy config show               # print fully-resolved effective config
     tommy generate                  # write/update harness adapters from tommy.yaml
+
+Resuming a previous session (memnos#144):
+    Tommy's `main()` command is deliberately permissive about its own
+    argv — `context_settings={"ignore_unknown_options": True,
+    "allow_extra_args": True}` plus a trailing
+    `@click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)` means
+    any flag Tommy itself doesn't recognize is passed straight through,
+    verbatim, to the end of the launched harness's own command line
+    (`_launch_harness`). For the "claude" harness this means every one of
+    claude's own resume flags already works today, with no Tommy-specific
+    resume command needed:
+
+        tommy --resume <session-id>     # resume that exact claude session
+        tommy --resume                  # claude's own interactive picker
+        tommy -c                        # / tommy --continue — resume the
+                                         #   most recent session IN THIS
+                                         #   PROJECT'S DIRECTORY (Tommy
+                                         #   launches the harness with
+                                         #   cwd=<project git_root>, so
+                                         #   claude's own "most recent
+                                         #   conversation in the current
+                                         #   directory" semantics scope
+                                         #   correctly per-project already)
+        tommy --resume "<session title>"  # resume by title — Tommy gives
+                                         #   every launch a unique title
+                                         #   ("Tommy | PROJECT | <run-id>"),
+                                         #   so this disambiguates correctly
+                                         #   even across multiple prior
+                                         #   sessions for the same project
+
+    This is pure passthrough: run `claude --help` for the authoritative,
+    up-to-date list of resume-related flags (-r/--resume, -c/--continue,
+    --session-id, --fork-session, -n/--name, ...) — Tommy does not
+    reimplement, wrap, or validate any of them.
+
+    Separately, tommy_dispatch (the MCP tool, headless/non-interactive) has
+    no resume capability of its own: every dispatch is a brand-new claude
+    session. A completed dispatch's own session ID is captured as
+    Task.claude_session_id and surfaced via tommy_status, so it CAN be
+    resumed manually afterward with a real `claude --resume
+    <claude_session_id>` — but tommy_dispatch itself has no `resume=`
+    parameter in this pass; see issue #144's explicitly-out-of-scope note
+    on a future Tommy-native, disk-persisted task history.
 """
 from __future__ import annotations
 
@@ -484,7 +527,20 @@ def _launch_harness(
         for part in spec.launch_template
     ] + list(extra_args)
     cmd = apply_skip_permissions(cmd, cfg.harness, cfg.skip_permissions)
-    _session_name = f"Tommy | {project_key.upper()}" if project_key else "Tommy"
+
+    # memnos#144: run_id is generated here (moved up from its original spot
+    # further down, just before the Control channel block) specifically so
+    # the session title below can embed it. Before this, the title was
+    # IDENTICAL on every launch for a given project ("Tommy | PROJECT" every
+    # time) — reproduced live as a real "--resume 'Tommy | TEST' matches 2
+    # sessions" hard error the moment a second prior session with that exact
+    # title existed. Appending run_id makes every launch's title unique, so
+    # both claude's own title-based `--resume "<title>"` and its interactive
+    # `--resume` picker can actually disambiguate between a project's prior
+    # sessions. Nothing else in between here and the old call site read
+    # run_id before this point, so the move is a pure reorder.
+    run_id = str(uuid.uuid4())[:8]
+    _session_name = f"Tommy | {project_key.upper()} | {run_id}" if project_key else f"Tommy | {run_id}"
     cmd = apply_session_name(cmd, cfg.harness, _session_name)
 
     # memnos#132: two DIFFERENT questions, deliberately not conflated into
@@ -558,7 +614,9 @@ def _launch_harness(
     # Post-run capture uses ingest_file + consolidate instead.
     sub_id: Optional[int] = None
 
-    run_id = str(uuid.uuid4())[:8]
+    # run_id generated earlier now (see the cmd/session-name construction
+    # above, memnos#144) — reused here unchanged for _post_run_capture's
+    # transcript-ingest journaling.
 
     # ── Control channel (bidirectional IPC) ──────────────────────────────────
     ctrl = ControlServer(
@@ -756,6 +814,22 @@ def _print_banner(cfg: TommyConfig, project_key: Optional[str] = None) -> None:
     context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []},
     help="Tommy — personal coding orchestrator built on memnos.",
     add_help_option=False,
+    epilog=(
+        "Resuming a session (memnos#144): any flag Tommy doesn't recognize "
+        "is passed straight through, verbatim, to the launched harness "
+        "('claude' today), so claude's own resume flags already work — see "
+        "`claude --help` for the authoritative list.\n\n"
+        "\b\n"
+        "  tommy --resume <session-id>       resume that exact session\n"
+        "  tommy --resume                    claude's interactive picker\n"
+        "  tommy -c / tommy --continue       resume the most recent session\n"
+        "                                    in this project's directory\n"
+        "  tommy --resume \"<session title>\"  resume by title (every launch\n"
+        "                                    gets a unique title, so this\n"
+        "                                    disambiguates correctly)\n\n"
+        "This is pure passthrough — Tommy does not reimplement or "
+        "validate any of these flags."
+    ),
 )
 @click.version_option(__version__, "-V", "--version", prog_name="tommy")
 @click.option("--conf", default=None, metavar="PATH", help="Path to tommy.conf override.")

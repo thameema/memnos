@@ -74,7 +74,13 @@ def _has_positional_prompt(args: list[str]) -> bool:
     prompt, exactly what claude's `[options] [prompt]` grammar needs to
     leave print-mode's input gate."""
     skip_next = False
-    known_value_flags = {"--append-system-prompt-file", "--name"}
+    # memnos#144: --session-id added here too — a value-taking flag exactly
+    # like --append-system-prompt-file/--name. Without this, its UUID value
+    # would be misdetected as the positional prompt by this same allowlist
+    # gap issue #134 (item 3) already flags as fragile; not fixing that
+    # detection strategy here (out of scope, see #134), just keeping this
+    # stub's allowlist in sync with the one new real flag this issue adds.
+    known_value_flags = {"--append-system-prompt-file", "--name", "--session-id"}
     known_bare_flags = {"--dangerously-skip-permissions"}
     for arg in args:
         if skip_next:
@@ -99,6 +105,13 @@ def main() -> int:
     if prompt_file and os.path.exists(prompt_file):
         with open(prompt_file, "r") as f:
             system_prompt_content = f.read()
+
+    # memnos#144: capture whatever --session-id value (if any) this
+    # invocation received, so a test can assert the exact UUID Tommy
+    # generated actually reached the harness's argv — not just "a flag was
+    # passed somewhere".
+    session_id = _find_flag_value(args, "--session-id")
+    session_name = _find_flag_value(args, "--name")
 
     had_positional = _has_positional_prompt(args)
 
@@ -137,6 +150,8 @@ def main() -> int:
         "system_prompt_content": system_prompt_content,
         "stdin_isatty": stdin_isatty,
         "stdin_eof_immediately": eof_immediately,
+        "session_id": session_id,
+        "session_name": session_name,
         "exit_code": None,
     }
 

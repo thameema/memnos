@@ -149,6 +149,46 @@ def apply_setting_sources(cmd: list[str], harness_name: str, sources: str) -> li
     return cmd
 
 
+_SUPPORTS_SESSION_ID = {"claude"}
+
+
+def supports_session_id(harness_name: str) -> bool:
+    """Whether `harness_name` accepts a pre-assigned --session-id (memnos#144)
+    — callers that need to decide BEFORE building `cmd` whether a
+    claude_session_id is even meaningful to generate/store (e.g.
+    mcp_server.py's Task.claude_session_id) should check this rather than
+    duplicating the _SUPPORTS_SESSION_ID set."""
+    return harness_name in _SUPPORTS_SESSION_ID
+
+
+def apply_session_id(cmd: list[str], harness_name: str, session_id: str) -> list[str]:
+    """Insert `--session-id <uuid>` right after the binary for supported
+    harnesses (memnos#144): pre-assigns claude's own session ID rather than
+    discovering it after the fact by parsing output. Verified empirically
+    against a real `claude` 2.1.x binary that a pre-assigned `--session-id`
+    is (a) accepted together with `--print`/`--append-system-prompt-file`/
+    `--name`, and (b) genuinely resumable afterward via `claude --resume
+    <that-same-uuid>` with real conversation context intact — a stronger,
+    simpler guarantee than parsing `--output-format stream-json` for the
+    session_id claude assigns on its own, and available immediately at
+    dispatch time (no need to wait for the harness to produce any output).
+
+    Deliberately NOT used on the interactive CLI launch path
+    (cli.py's _launch_harness): also verified empirically that
+    `claude --resume <id> --session-id <other-id>` (i.e. this flag combined
+    with a resume/continue flag arriving via extra_args passthrough) is a
+    hard error unless `--fork-session` is also given ("--session-id can
+    only be used with --continue or --resume if --fork-session is also
+    specified") — unconditionally injecting --session-id on that path would
+    break the exact `-r`/`-c`/`--resume` passthrough this same issue
+    documents. tommy_dispatch never receives a user-supplied --resume, so
+    no such collision exists there.
+    """
+    if session_id and harness_name in _SUPPORTS_SESSION_ID:
+        return [cmd[0], "--session-id", session_id] + cmd[1:]
+    return cmd
+
+
 def apply_prompt_arg(cmd: list[str], harness_name: str, trigger: str) -> list[str]:
     """Append `trigger` as a trailing positional prompt argument for
     harnesses whose CLI requires one to leave non-interactive print mode
