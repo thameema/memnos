@@ -1760,11 +1760,52 @@ class BrainStore:
     _CONSTRAINT_RE = re.compile(
         r"\b(SHALL NOT|MUST NOT|SHOULD NOT|MAY NOT|SHALL|MUST|REQUIRED|SHOULD|PROHIBITED|FORBIDDEN)\b")
 
-    def ingest_constraints(self, schema, ns, source, text, author=None) -> list[int]:
+    # VERSION SCOPING (issue #106): a dotted-numeric release tag, e.g. "2.1.0" or "1.3".
+    # Deliberately NOT full SemVer (no -prerelease/+build metadata) — corpus_ingest's
+    # since/until describe a release line ("applies from 1.3.0 onward"), not an npm-style
+    # prerelease channel, and the extra grammar would only invite ambiguous comparisons
+    # (is "2.1.0-rc1" before or after "2.1.0"?) for a feature that doesn't need it.
+    _SEMVER_RE = re.compile(r"^\d+(\.\d+)*$")
+    _SEMVER_WIDTH = 6  # generous headroom past major.minor.patch; comparisons zero-pad to this
+
+    @classmethod
+    def parse_semver(cls, v: str) -> tuple[int, ...]:
+        """Parse a dotted-numeric version string into a fixed-width, zero-padded tuple so
+        "2.1" and "2.1.0" compare equal (bare tuple comparison would instead treat the
+        shorter one as strictly less, since (2,1) < (2,1,0) in Python) and so comparisons
+        are always numeric, never lexical (lexical "10.0.0" < "9.0.0" is a silent wrong
+        answer). Raises ValueError with a message safe to surface as a 400 — callers at
+        the HTTP layer catch this and never let a bad version string fall through to a
+        generic 500."""
+        s = (v or "").strip()
+        if not s or not cls._SEMVER_RE.match(s):
+            raise ValueError(f"invalid version string: {v!r} (expected dotted numeric, e.g. '2.1.0')")
+        parts = tuple(int(p) for p in s.split("."))
+        if len(parts) > cls._SEMVER_WIDTH:
+            raise ValueError(f"version string has too many components: {v!r}")
+        return parts + (0,) * (cls._SEMVER_WIDTH - len(parts))
+
+    def ingest_constraints(self, schema, ns, source, text, author=None,
+                            since=None, until=None) -> list[int]:
         """Parse normative constraints (RFC-2119 keywords) out of an architecture doc and
         store each as a kind='constraint' semantic fact tagged with the source. FTS-searchable
-        immediately (embedding optional). Returns the inserted fact ids."""
+        immediately (embedding optional). Returns the inserted fact ids.
+
+        `since`/`until` (issue #106, both optional dotted-numeric version strings) set the
+        VERSION WINDOW every constraint extracted from THIS ingest is in force for:
+        since <= version < until (either bound may be open/NULL). Applied uniformly to
+        every constraint from this call — the window is a property of the ingested doc's
+        applicability, not of individual sentences. Validated eagerly (ValueError -> the
+        HTTP layer's 400) so a malformed version string never reaches storage."""
         self._chk(schema)
+        since = (since or "").strip() or None
+        until = (until or "").strip() or None
+        if since is not None:
+            self.parse_semver(since)
+        if until is not None:
+            self.parse_semver(until)
+        if since is not None and until is not None and self.parse_semver(since) >= self.parse_semver(until):
+            raise ValueError(f"since ({since!r}) must be earlier than until ({until!r})")
         cands = []
         for raw in re.split(r"\n+", text or ""):
             line = raw.strip().lstrip("#-*>| ").strip()
@@ -1776,34 +1817,119 @@ class BrainStore:
                     cands.append(sent[:1000])
         ids = []
         with self.conn.cursor() as c:
-            # idempotent re-ingest: drop this source's prior constraints first
+            # idempotent re-ingest: drop this source's prior constraints first. NOTE
+            # (issue #106): this means a re-ingest's constraint ids are NOT stable —
+            # see memnos_control.corpus_deviations' DDL comment (core/control.py) for
+            # why corpus_deviations has no FK on constraint_id as a result.
             c.execute(f"DELETE FROM {schema}.semantic WHERE namespace=%s AND kind='constraint' "
                       f"AND subject_entity=%s", (ns, source))
             for sent in cands:
                 c.execute(
-                    f"INSERT INTO {schema}.semantic(namespace,kind,statement,subject_entity,predicate,object,author_principal) "
-                    f"VALUES(%s,'constraint',%s,%s,'constraint_of',%s,%s) RETURNING id",
-                    (ns, sent, source, source, author))
+                    f"INSERT INTO {schema}.semantic(namespace,kind,statement,subject_entity,predicate,object,"
+                    f"author_principal,constraint_since,constraint_until) "
+                    f"VALUES(%s,'constraint',%s,%s,'constraint_of',%s,%s,%s,%s) RETURNING id",
+                    (ns, sent, source, source, author, since, until))
                 ids.append(c.fetchone()["id"])
         return ids
 
-    def corpus_check(self, schema, ns, snippet, *, k=10) -> list[dict]:
+    def corpus_check(self, schema, ns, snippet, *, k=10, version=None) -> list[dict]:
         """Return the architecture constraints most relevant to a code snippet — FTS over
-        the kind='constraint' facts (shared keywords, ranked). Pure SQL, no LLM."""
+        the kind='constraint' facts (shared keywords, ranked). Pure SQL for the search
+        itself; `version` filtering/status (issue #106) is a small Python pass over the
+        already-ranked candidates.
+
+        `version` (optional dotted-numeric string) scopes results to one release:
+          - version is None (default): unchanged, pre-#106 behaviour — every FTS match is
+            returned, no filtering. Each item still carries a `status` field (additive; a
+            plain "active", or "approved_deviation" if a standing deviation exists for it
+            — a deviation is a recorded decision independent of any version check).
+          - version given: for each candidate, compare against its OWN constraint_since/
+            constraint_until window (NULL bound = open on that side):
+              * version < since            -> not yet introduced: DROPPED from the result
+                                               entirely (nothing to report — from this
+                                               version's vantage the rule doesn't exist yet).
+              * an approved deviation is on file for this constraint AND that deviation's
+                own `until` has not passed at `version` (or has no `until`) -> KEPT,
+                status="approved_deviation" (an explicit override wins regardless of
+                whether the constraint's own window has lapsed — see corpus_deviation).
+              * version >= until (until set, no live deviation) -> KEPT, status="expired"
+                — deliberately NOT dropped: a retired rule's retirement is exactly the
+                audit fact this feature exists to preserve (do NOT conflate this with the
+                existing `expired_at IS NULL` filter below, which is unrelated system-time
+                row-correction, not a version-window state).
+              * otherwise (in window, no deviation) -> KEPT, status="active".
+        """
         self._chk(schema)
+        # validate `version` BEFORE the no-words early return below — a malformed version
+        # must always 400, even when the snippet is too short/wordless to search on (e.g.
+        # snippet="x"); parsing it after that return would let a bad version string slip
+        # through with a 200 + empty result instead of surfacing the input error.
+        version = (version or "").strip() or None
+        version_key = self.parse_semver(version) if version is not None else None
         words = list(dict.fromkeys(w.lower() for w in re.findall(r"[A-Za-z]{4,}", snippet or "")))
         if not words:
             return []
         q = " or ".join(words[:40])
         with self.conn.cursor() as c:
             c.execute(
-                f"SELECT id, statement AS content, subject_entity AS source, "
-                f"ts_rank(fts, websearch_to_tsquery('english',%s)) AS score "
-                f"FROM {schema}.semantic "
-                f"WHERE namespace=%s AND kind='constraint' AND expired_at IS NULL "
-                f"AND fts @@ websearch_to_tsquery('english',%s) "
-                f"ORDER BY score DESC LIMIT %s", (q, ns, q, k))
-            return c.fetchall()
+                f"SELECT s.id, s.statement AS content, s.subject_entity AS source, "
+                f"s.constraint_since AS since, s.constraint_until AS until, "
+                f"d.until AS deviation_until, (d.id IS NOT NULL) AS has_deviation, "
+                f"ts_rank(s.fts, websearch_to_tsquery('english',%s)) AS score "
+                f"FROM {schema}.semantic s "
+                f"LEFT JOIN LATERAL ("
+                f"    SELECT id, until FROM memnos_control.corpus_deviations"
+                f"    WHERE namespace=%s AND constraint_id=s.id ORDER BY created_at DESC LIMIT 1"
+                f") d ON true "
+                f"WHERE s.namespace=%s AND s.kind='constraint' AND s.expired_at IS NULL "
+                f"AND s.fts @@ websearch_to_tsquery('english',%s) "
+                f"ORDER BY score DESC LIMIT %s", (q, ns, ns, q, k))
+            rows = c.fetchall()
+
+        if version_key is None:
+            out = []
+            for row in rows:
+                status = "approved_deviation" if row.pop("has_deviation") else "active"
+                row.pop("deviation_until", None)
+                row["status"] = status
+                out.append(row)
+            return out
+
+        out = []
+        for row in rows:
+            has_deviation = row.pop("has_deviation")
+            deviation_until = row.pop("deviation_until")
+            since_raw, until_raw = row.get("since"), row.get("until")
+            # not-yet-introduced: drop outright, regardless of any deviation
+            if since_raw:
+                try:
+                    if version_key < self.parse_semver(since_raw):
+                        continue
+                except ValueError:
+                    pass  # malformed stored value: don't let bad legacy data block a read
+            expired = False
+            if until_raw:
+                try:
+                    expired = version_key >= self.parse_semver(until_raw)
+                except ValueError:
+                    expired = False
+            deviation_active = False
+            if has_deviation:
+                if not deviation_until:
+                    deviation_active = True
+                else:
+                    try:
+                        deviation_active = version_key < self.parse_semver(deviation_until)
+                    except ValueError:
+                        deviation_active = True  # malformed stored value: don't silently drop the override
+            if deviation_active:
+                row["status"] = "approved_deviation"
+            elif expired:
+                row["status"] = "expired"
+            else:
+                row["status"] = "active"
+            out.append(row)
+        return out
 
     # issue #105: diff-mode verdict. A unified diff (git diff / GitHub PR patch) is
     # checked against the same kind='constraint' corpus corpus_check uses, but instead

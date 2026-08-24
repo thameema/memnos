@@ -115,8 +115,8 @@ def _parse_budget_env(name):
 BUDGET_DAILY_USD = _parse_budget_env("MEMNOS_BUDGET_DAILY_USD")
 BUDGET_MONTHLY_USD = _parse_budget_env("MEMNOS_BUDGET_MONTHLY_USD")
 WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/corpus/ingest",
-             "/ingest/file", "/episode/segment", "/episode/decay", "/namespace/copy",
-             "/lease/acquire", "/lease/heartbeat", "/lease/release"}
+             "/corpus/deviation", "/ingest/file", "/episode/segment", "/episode/decay",
+             "/namespace/copy", "/lease/acquire", "/lease/heartbeat", "/lease/release"}
 
 
 def _suggest_enabled():
@@ -1335,8 +1335,14 @@ class Handler(BaseHTTPRequestHandler):
                         text = str(req.get("text", ""))
                         if not name or not text.strip():
                             return self._send(400, {"error": "name and text required"})
+                        since = str(req.get("since", "")).strip() or None
+                        until = str(req.get("until", "")).strip() or None
                         pname = (Control.principal_info(conn, principal) or {}).get("name")
-                        ids = store.ingest_constraints(mem.schema, ns, name, text, author=pname)
+                        try:
+                            ids = store.ingest_constraints(mem.schema, ns, name, text, author=pname,
+                                                           since=since, until=until)
+                        except ValueError as ve:
+                            return self._send(400, {"error": str(ve)})
                         Control.corpus_record(conn, ns, name, str(req.get("kind", "doc")),
                                               (str(req.get("git_sha")) or None) if req.get("git_sha") else None,
                                               len(ids))
@@ -1345,7 +1351,40 @@ class Handler(BaseHTTPRequestHandler):
                         snippet = str(req.get("snippet", "") or req.get("code", ""))
                         if not snippet.strip():
                             return self._send(400, {"error": "snippet/code required"})
-                        out = {"constraints": store.corpus_check(mem.schema, ns, snippet)}
+                        version = str(req.get("version", "")).strip() or None
+                        try:
+                            out = {"constraints": store.corpus_check(mem.schema, ns, snippet, version=version)}
+                        except ValueError as ve:
+                            return self._send(400, {"error": str(ve)})
+                    elif self.path == "/corpus/deviation":   # issue #106: approved-deviation log
+                        try:
+                            constraint_id = int(req.get("constraint_id"))
+                        except (TypeError, ValueError):
+                            return self._send(400, {"error": "constraint_id (int) required"})
+                        rationale = str(req.get("rationale", "")).strip()
+                        approved_by = str(req.get("approved_by", "")).strip()
+                        until = str(req.get("until", "")).strip() or None
+                        if not rationale or not approved_by:
+                            return self._send(400, {"error": "rationale and approved_by required"})
+                        if until is not None:
+                            try:
+                                store.parse_semver(until)
+                            except ValueError as ve:
+                                return self._send(400, {"error": str(ve)})
+                        with conn.cursor() as c:
+                            c.execute(f"SELECT id FROM {mem.schema}.semantic "
+                                      f"WHERE id=%s AND namespace=%s AND kind='constraint'",
+                                      (constraint_id, ns))
+                            if c.fetchone() is None:
+                                return self._send(404, {"error": "constraint not found in this namespace"})
+                        row = Control.corpus_deviation_record(conn, ns, constraint_id, rationale, approved_by,
+                                                              until=until, created_by=principal)
+                        out = {
+                            "id": row["id"], "constraint_id": row["constraint_id"],
+                            "rationale": row["rationale"], "approved_by": row["approved_by"],
+                            "until": row["until"],
+                            "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+                        }
                     elif self.path == "/corpus/check_diff":  # issue #105: verdict against a diff
                         diff = str(req.get("diff", ""))
                         if not diff.strip():
