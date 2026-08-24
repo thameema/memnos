@@ -612,7 +612,7 @@ def corpus_ingest(name: str, text: str, kind: str = "doc", since: str = "", unti
 
 
 @mcp.tool()
-def corpus_check(snippet: str, version: str = "") -> str:
+def corpus_check(snippet: str, version: str = "", inherit: bool = True) -> str:
     """Return the architecture constraints relevant to a code snippet (does this code
     violate a documented SHALL/MUST rule?). Read-only; ranked by relevance.
 
@@ -620,9 +620,14 @@ def corpus_check(snippet: str, version: str = "") -> str:
     one release: a constraint not yet introduced at `version` is dropped; one retired by
     `version` is still returned but marked `status: "expired"`; one covered by a standing
     corpus_deviation is marked `status: "approved_deviation"` instead of "active". Leave
-    empty to get every match regardless of version (pre-#106 behaviour, unfiltered)."""
+    empty to get every match regardless of version (pre-#106 behaviour, unfiltered).
+
+    issue #107: by default also searches this namespace's same-root ancestors (e.g. an
+    org-wide PHI/security rule in `org:acme` applies to `org:acme:eng:projectA` too),
+    so a rule ingested once at the org level is enforced everywhere beneath it without
+    each project re-ingesting it. Pass inherit=False to check only this namespace."""
     try:
-        body = {"snippet": snippet}
+        body = {"snippet": snippet, "inherit": inherit}
         if version:
             body["version"] = version
         c = _post("/corpus/check", body).get("constraints", [])
@@ -649,14 +654,17 @@ def corpus_deviation(constraint_id: int, rationale: str, approved_by: str, until
 
 
 @mcp.tool()
-def corpus_check_diff(diff: str, name: str = "") -> str:
+def corpus_check_diff(diff: str, name: str = "", inherit: bool = True) -> str:
     """Check a unified diff (git diff / GitHub PR patch text) against the architecture
     corpus. Returns a verdict per relevant constraint — violated, satisfied, or
     uncovered (topically relevant, no clear evidence either way) — plus an overall
     compliance score. Optional `name` restricts the check to one ingested source.
-    Read-only, deterministic, no LLM."""
+    Read-only, deterministic, no LLM.
+
+    issue #107: by default also searches this namespace's same-root ancestors (see
+    corpus_check). Pass inherit=False to check only this namespace."""
     try:
-        body = {"diff": diff}
+        body = {"diff": diff, "inherit": inherit}
         if name:
             body["name"] = name
         return str(_post("/corpus/check_diff", body))

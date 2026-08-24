@@ -1832,13 +1832,68 @@ class BrainStore:
                 ids.append(c.fetchone()["id"])
         return ids
 
-    def corpus_check(self, schema, ns, snippet, *, k=10, version=None) -> list[dict]:
+    @staticmethod
+    def _rank_by_specificity(rows: list, nss: list, k: int) -> list:
+        """issue #107 — merge FTS-matched constraint rows drawn from MULTIPLE namespaces
+        (a leaf namespace plus its ancestors, most-specific first in `nss`) into a single
+        top-`k` list, ranked by specificity first (own namespace beats a parent, a parent
+        beats a grandparent) then FTS score. Rows are assumed already grouped in
+        `nss`-relevance order (the caller's SQL sorts by score DESC, so filtering by
+        namespace below preserves each namespace's own internal score order).
+
+        A naive "sort by (specificity, -score) then slice [:k]" ordering — which is what
+        a single combined ORDER BY + LIMIT would give — starves the whole point of
+        inheritance: a leaf namespace with >= k of its OWN matches fills every output slot
+        before an ancestor's single relevant rule (e.g. an org-wide PHI constraint) is ever
+        reached. This is the exact failure mode already called out for pinned constraints
+        (see memnos_server.py's /recall handler, pin_nss comment: "a namespace's own old
+        constraints can fill the cap before a newer ancestor/linked rule is reached").
+
+        Fix: fair-share the `k` output slots across every namespace LEVEL that has at
+        least one match (own namespace, then each ancestor with a hit) before falling back
+        to score-only backfill for any slots left over — so an ancestor-only match is
+        guaranteed to surface whenever k >= the number of distinct levels with matches."""
+        if k <= 0 or not rows:
+            return []
+        order_index = {n: i for i, n in enumerate(nss)}
+        by_ns: dict = {}
+        for r in rows:
+            by_ns.setdefault(r["namespace"], []).append(r)
+        levels = sorted(by_ns.keys(), key=lambda n: order_index.get(n, len(nss)))
+        share = max(1, k // len(levels))
+        out, leftover = [], []
+        for n in levels:
+            group = by_ns[n]
+            out.extend(group[:share])
+            leftover.extend(group[share:])
+        if len(out) < k:
+            leftover.sort(key=lambda r: (order_index.get(r["namespace"], len(nss)), -r["score"]))
+            out.extend(leftover[:k - len(out)])
+        out.sort(key=lambda r: (order_index.get(r["namespace"], len(nss)), -r["score"]))
+        return out[:k]
+
+    def corpus_check(self, schema, namespaces, snippet, *, k=10, version=None) -> list[dict]:
         """Return the architecture constraints most relevant to a code snippet — FTS over
         the kind='constraint' facts (shared keywords, ranked). Pure SQL for the search
         itself; `version` filtering/status (issue #106) is a small Python pass over the
-        already-ranked candidates.
+        candidates, applied BEFORE specificity ranking (issue #107) — see below.
 
-        `version` (optional dotted-numeric string) scopes results to one release:
+        issue #107 — cross-namespace constraint inheritance: `namespaces` is either a
+        single namespace (str, back-compat) or an ORDERED list, most-specific first (the
+        calling namespace, then its ancestors nearest-first — see
+        Control.effective_ancestors) — the caller (memnos_server.py) resolves and
+        grant-filters that list; this method has no namespace/grant policy of its own.
+        Each returned row carries `namespace` so a caller can see whether a constraint
+        came from the queried namespace itself or was inherited from an ancestor.
+        Ranking is specificity-first via _rank_by_specificity() — see that method's
+        docstring for why a plain combined ORDER BY + LIMIT would silently starve
+        ancestor-only matches. The version filter below runs on the FULL per-namespace
+        candidate pool BEFORE that ranking step, so a row dropped for being
+        not-yet-introduced at `version` never consumes one of a namespace's fair-share
+        slots.
+
+        `version` (optional dotted-numeric string, issue #106) scopes results to one
+        release:
           - version is None (default): unchanged, pre-#106 behaviour — every FTS match is
             returned, no filtering. Each item still carries a `status` field (additive; a
             plain "active", or "approved_deviation" if a standing deviation exists for it
@@ -1858,6 +1913,12 @@ class BrainStore:
                 existing `expired_at IS NULL` filter below, which is unrelated system-time
                 row-correction, not a version-window state).
               * otherwise (in window, no deviation) -> KEPT, status="active".
+
+        A constraint's approved-deviation lookup (corpus_deviations) is correlated on
+        BOTH constraint_id AND that row's OWN namespace (not the leaf `ns`), since a
+        deviation is scoped to the namespace it was recorded against — the same
+        constraint id ingested independently in two namespaces (rare but possible)
+        must not share one namespace's deviation.
         """
         self._chk(schema)
         # validate `version` BEFORE the no-words early return below — a malformed version
@@ -1870,66 +1931,91 @@ class BrainStore:
         if not words:
             return []
         q = " or ".join(words[:40])
+        nss = [namespaces] if isinstance(namespaces, str) else list(namespaces)
+        if not nss:
+            return []
         with self.conn.cursor() as c:
             c.execute(
-                f"SELECT s.id, s.statement AS content, s.subject_entity AS source, "
-                f"s.constraint_since AS since, s.constraint_until AS until, "
-                f"d.until AS deviation_until, (d.id IS NOT NULL) AS has_deviation, "
-                f"ts_rank(s.fts, websearch_to_tsquery('english',%s)) AS score "
-                f"FROM {schema}.semantic s "
-                f"LEFT JOIN LATERAL ("
-                f"    SELECT id, until FROM memnos_control.corpus_deviations"
-                f"    WHERE namespace=%s AND constraint_id=s.id ORDER BY created_at DESC LIMIT 1"
-                f") d ON true "
-                f"WHERE s.namespace=%s AND s.kind='constraint' AND s.expired_at IS NULL "
-                f"AND s.fts @@ websearch_to_tsquery('english',%s) "
-                f"ORDER BY score DESC LIMIT %s", (q, ns, ns, q, k))
+                f"WITH scored AS ("
+                f"  SELECT s.id, s.statement AS content, s.subject_entity AS source, s.namespace, "
+                f"    s.constraint_since AS since, s.constraint_until AS until, "
+                f"    d.until AS deviation_until, (d.id IS NOT NULL) AS has_deviation, "
+                f"    ts_rank(s.fts, websearch_to_tsquery('english',%(q)s)) AS score "
+                f"  FROM {schema}.semantic s "
+                f"  LEFT JOIN LATERAL ("
+                f"      SELECT id, until FROM memnos_control.corpus_deviations "
+                f"      WHERE namespace = s.namespace AND constraint_id = s.id "
+                f"      ORDER BY created_at DESC LIMIT 1"
+                f"  ) d ON true "
+                f"  WHERE s.namespace = ANY(%(nss)s) AND s.kind='constraint' AND s.expired_at IS NULL "
+                f"    AND s.fts @@ websearch_to_tsquery('english',%(q)s)"
+                f"), ranked AS ("
+                f"  SELECT *, row_number() OVER (PARTITION BY namespace ORDER BY score DESC) AS rn "
+                f"  FROM scored"
+                f") "
+                # PER-NAMESPACE safety cap on the candidate pool (not the final k): a
+                # global "ORDER BY score DESC LIMIT N" would let one namespace's sheer
+                # match VOLUME (e.g. a leaf with 600+ hits) crowd an ancestor's few — or
+                # even single — relevant rows out of the window before
+                # _rank_by_specificity ever runs, silently reintroducing the exact
+                # starvation bug that method's fair-share logic exists to prevent, just
+                # at a larger scale than any one test can practically seed. Partitioning
+                # BY namespace guarantees every searched namespace contributes up to
+                # per_ns_cap of its own best-scoring rows regardless of how many total
+                # matches the OTHER searched namespaces have.
+                f"SELECT id, content, source, namespace, since, until, deviation_until, "
+                f"  has_deviation, score FROM ranked "
+                f"WHERE rn <= %(per_ns_cap)s ORDER BY score DESC",
+                {"q": q, "nss": nss, "per_ns_cap": max(k, 50)})
             rows = c.fetchall()
 
+        # issue #106's version-window filter/status pass, over the FULL per-namespace
+        # candidate pool — see this method's own docstring for why this runs BEFORE
+        # issue #107's _rank_by_specificity() below.
         if version_key is None:
-            out = []
+            filtered = []
             for row in rows:
                 status = "approved_deviation" if row.pop("has_deviation") else "active"
                 row.pop("deviation_until", None)
                 row["status"] = status
-                out.append(row)
-            return out
-
-        out = []
-        for row in rows:
-            has_deviation = row.pop("has_deviation")
-            deviation_until = row.pop("deviation_until")
-            since_raw, until_raw = row.get("since"), row.get("until")
-            # not-yet-introduced: drop outright, regardless of any deviation
-            if since_raw:
-                try:
-                    if version_key < self.parse_semver(since_raw):
-                        continue
-                except ValueError:
-                    pass  # malformed stored value: don't let bad legacy data block a read
-            expired = False
-            if until_raw:
-                try:
-                    expired = version_key >= self.parse_semver(until_raw)
-                except ValueError:
-                    expired = False
-            deviation_active = False
-            if has_deviation:
-                if not deviation_until:
-                    deviation_active = True
-                else:
+                filtered.append(row)
+        else:
+            filtered = []
+            for row in rows:
+                has_deviation = row.pop("has_deviation")
+                deviation_until = row.pop("deviation_until")
+                since_raw, until_raw = row.get("since"), row.get("until")
+                # not-yet-introduced: drop outright, regardless of any deviation
+                if since_raw:
                     try:
-                        deviation_active = version_key < self.parse_semver(deviation_until)
+                        if version_key < self.parse_semver(since_raw):
+                            continue
                     except ValueError:
-                        deviation_active = True  # malformed stored value: don't silently drop the override
-            if deviation_active:
-                row["status"] = "approved_deviation"
-            elif expired:
-                row["status"] = "expired"
-            else:
-                row["status"] = "active"
-            out.append(row)
-        return out
+                        pass  # malformed stored value: don't let bad legacy data block a read
+                expired = False
+                if until_raw:
+                    try:
+                        expired = version_key >= self.parse_semver(until_raw)
+                    except ValueError:
+                        expired = False
+                deviation_active = False
+                if has_deviation:
+                    if not deviation_until:
+                        deviation_active = True
+                    else:
+                        try:
+                            deviation_active = version_key < self.parse_semver(deviation_until)
+                        except ValueError:
+                            deviation_active = True  # malformed stored value: don't silently drop the override
+                if deviation_active:
+                    row["status"] = "approved_deviation"
+                elif expired:
+                    row["status"] = "expired"
+                else:
+                    row["status"] = "active"
+                filtered.append(row)
+
+        return self._rank_by_specificity(filtered, nss, k)
 
     # issue #105: diff-mode verdict. A unified diff (git diff / GitHub PR patch) is
     # checked against the same kind='constraint' corpus corpus_check uses, but instead
@@ -2028,9 +2114,22 @@ class BrainStore:
         words = {w.lower() for w in re.findall(r"[A-Za-z]{4,}", text or "")}
         return (words - cls._DIFF_STOPWORDS) if strip_stopwords else words
 
-    def corpus_check_diff(self, schema, ns, diff, *, name=None, k=30) -> dict:
+    def corpus_check_diff(self, schema, namespaces, diff, *, name=None, k=30) -> dict:
         """DiffVerdict: classify each constraint the diff is topically relevant to as
         violated / satisfied / uncovered, plus an overall compliance `score`.
+
+        issue #107: `namespaces` is either a single namespace (str, back-compat) or an
+        ORDERED list, most-specific first — same contract as corpus_check(). Each
+        returned entry (violated/satisfied/uncovered) carries `namespace`. The candidate
+        pool drawn from multiple namespaces is ranked specificity-first via
+        _rank_by_specificity() BEFORE hunk-scoring, so an ancestor's single relevant rule
+        isn't crowded out of the `k`-sized candidate window by a leaf's own matches.
+
+        `name` (optional source filter) is matched via `subject_entity=name` across EVERY
+        searched namespace, not just the leaf: corpus_sources rows are unique per
+        (namespace, name), so a source name that happens to be reused in both a parent and
+        a child namespace will match both there — a deliberate, documented tradeoff rather
+        than a silent one.
 
         Per matched constraint: strip RFC-2119/connector words from its own content, then
         compare what's left against EACH HUNK's own added-lines vocabulary and
@@ -2088,17 +2187,33 @@ class BrainStore:
         if not combined_words:
             return {"violated": [], "satisfied": [], "uncovered": [], "score": 1.0, "evaluated": 0}
         q = " or ".join(combined_words[:self._DIFF_WORD_CAP])
-        name_filter = "AND subject_entity=%s " if name else ""
-        params: list = [q, ns] + ([name] if name else []) + [q, k]
+        nss = [namespaces] if isinstance(namespaces, str) else list(namespaces)
+        if not nss:
+            return {"violated": [], "satisfied": [], "uncovered": [], "score": 1.0, "evaluated": 0}
+        name_filter = "AND subject_entity=%(name)s " if name else ""
+        params = {"q": q, "nss": nss, "per_ns_cap": max(k, 50)}
+        if name:
+            params["name"] = name
         with self.conn.cursor() as c:
+            # Per-namespace partitioned cap — see corpus_check()'s identical comment for
+            # why a single global "ORDER BY score DESC LIMIT" would let one namespace's
+            # match volume starve an ancestor's few relevant rows out of the candidate
+            # pool before _rank_by_specificity's fair-share logic ever runs.
             c.execute(
-                f"SELECT id, statement AS content, subject_entity AS source, "
-                f"ts_rank(fts, websearch_to_tsquery('english',%s)) AS score "
-                f"FROM {schema}.semantic "
-                f"WHERE namespace=%s AND kind='constraint' AND expired_at IS NULL {name_filter}"
-                f"AND fts @@ websearch_to_tsquery('english',%s) "
-                f"ORDER BY score DESC LIMIT %s", params)
-            candidates = c.fetchall()
+                f"WITH scored AS ("
+                f"  SELECT id, statement AS content, subject_entity AS source, namespace, "
+                f"    ts_rank(fts, websearch_to_tsquery('english',%(q)s)) AS score "
+                f"  FROM {schema}.semantic "
+                f"  WHERE namespace = ANY(%(nss)s) AND kind='constraint' AND expired_at IS NULL {name_filter}"
+                f"    AND fts @@ websearch_to_tsquery('english',%(q)s)"
+                f"), ranked AS ("
+                f"  SELECT *, row_number() OVER (PARTITION BY namespace ORDER BY score DESC) AS rn "
+                f"  FROM scored"
+                f") "
+                f"SELECT id, content, source, namespace, score FROM ranked "
+                f"WHERE rn <= %(per_ns_cap)s ORDER BY score DESC", params)
+            rows = c.fetchall()
+        candidates = self._rank_by_specificity(rows, nss, k)
 
         violated, satisfied, uncovered = [], [], []
         for row in candidates:
@@ -2131,6 +2246,7 @@ class BrainStore:
                 matched = c_words & (added_words | removed_words)
             entry = {
                 "id": row["id"], "content": content, "source": row["source"],
+                "namespace": row["namespace"],
                 "score": row["score"], "matched_terms": sorted(matched),
                 "added_hits": add_hits, "removed_hits": rem_hits,
             }

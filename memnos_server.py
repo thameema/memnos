@@ -194,6 +194,41 @@ def _constraint_subject(req):
     return True, v
 
 
+def _corpus_inherit_namespaces(conn, principal, ns, req):
+    """issue #107 — resolve the namespace search list for /corpus/check and
+    /corpus/check_diff: `ns` itself, plus (unless the request passes
+    `inherit: false`) its same-root ancestors (Control.effective_ancestors — issue
+    #85 Mechanism A) that THIS CALLING PRINCIPAL can also read. Same grant gate the
+    /recall handler already applies to pinned-constraint inheritance elsewhere in
+    this file: an ancestor without a read grant is skipped, not silently pulled in
+    — "the org admin who created the whole subtree can read everything under it" is
+    not the same guarantee as "every caller with a narrower grant on just the leaf
+    namespace can."
+
+    `inherit` is read as `req.get("inherit", True) is not False` — only a literal
+    JSON `false` opts out (acceptance criterion 3: "backwards-compatible" default is
+    True); a plain `str(...)` truthiness check would treat the JSON string `"false"`
+    as truthy and silently ignore an explicit opt-out.
+
+    Returns (namespaces, inherited_in, inheritance_skipped): `namespaces` is what
+    BrainStore.corpus_check/corpus_check_diff should search, most-specific first
+    (own namespace, then readable ancestors nearest-first); `inherited_in` /
+    `inheritance_skipped` mirror /recall's own transparency-contract keys so a
+    caller can see exactly which ancestors were consulted vs. skipped for lack of a
+    grant, rather than silently getting fewer results than expected."""
+    if req.get("inherit", True) is not False:
+        try:
+            ancestors = Control.effective_ancestors(conn, ns)
+        except RECALL_ARM_FAILURES:
+            ancestors = []
+    else:
+        ancestors = []
+    inherited_in, inheritance_skipped = [], []
+    for a in ancestors:
+        (inherited_in if Control.authorize(conn, principal, a, write=False) else inheritance_skipped).append(a)
+    return [ns] + inherited_in, inherited_in, inheritance_skipped
+
+
 def _chunk_text(text, size=1200, overlap=150):
     """Paragraph-aware chunking: pack paragraphs up to ~size chars; hard-split any
     paragraph longer than size (with overlap). Keeps semantically-coherent chunks."""
@@ -1347,15 +1382,66 @@ class Handler(BaseHTTPRequestHandler):
                                               (str(req.get("git_sha")) or None) if req.get("git_sha") else None,
                                               len(ids))
                         out = {"source": name, "constraints": len(ids), "ids": ids}
+                        # issue #107 acceptance criterion 4 — PROPAGATION ALERT: fires on
+                        # both a brand-new ingest and a re-ingest of an existing source
+                        # (Control.corpus_record above is an upsert, so "added or updated"
+                        # both reach here). Only descendant namespaces that already have
+                        # their OWN corpus docs are notified (Control.corpus_descendants)
+                        # — an org rule change is only actionable noise to a project that
+                        # has never ingested anything of its own to gate. Delivered as a
+                        # system event using the SAME "memnos:<event>" raw_turn convention
+                        # /lease/acquire|release already use (see WRITE_OPS handling
+                        # above), written into EACH affected descendant individually
+                        # (never just the parent) — Control.feed/deliver_pending only ever
+                        # read a namespace's OWN raw_turns, so a subscriber watching
+                        # org:acme:eng:projectA would never see an event left only in
+                        # org:acme.
+                        #
+                        # Deliberately no extra write-grant check against the descendant
+                        # namespaces here: the principal is already authorized to WRITE
+                        # `ns` (WRITE_OPS gate above), and an org-level namespace being
+                        # able to notify the project namespaces beneath it — without each
+                        # project needing to grant the org admin anything extra — is
+                        # exactly the "no action from project teams" behavior issue #107
+                        # asks for. The event payload is a small, server-generated status
+                        # blob (source name + doc counts), not arbitrary user content.
+                        try:
+                            affected = Control.corpus_descendants(conn, ns)
+                        except RECALL_ARM_FAILURES:
+                            affected = []
+                        if affected:
+                            affected = affected[:200]   # sane upper bound on a single ingest's fan-out
+                            targets = [{"namespace": a["namespace"], "docs": a["docs"]} for a in affected]
+                            now_evt = datetime.now(timezone.utc)
+                            evt_text = json.dumps({
+                                "event": "corpus_propagation", "source": name, "namespace": ns,
+                                "affected": targets,
+                                "message": f"constraint source '{name}' in namespace '{ns}' was "
+                                           f"added/updated — run corpus_check to find potential violations",
+                            })
+                            for a in affected:
+                                store.insert_raw_turn(mem.schema, a["namespace"], "",
+                                                      "memnos:corpus_propagation", evt_text, now_evt, None)
+                            _DELIVER_EVENT.set()
+                            out["propagation"] = targets
                     elif self.path == "/corpus/check":      # constraints relevant to a snippet
                         snippet = str(req.get("snippet", "") or req.get("code", ""))
                         if not snippet.strip():
                             return self._send(400, {"error": "snippet/code required"})
+                        # issue #107: resolve the namespace search list (self + readable
+                        # ancestors) FIRST, then issue #106's version filter runs inside
+                        # store.corpus_check() over that whole multi-namespace candidate
+                        # pool — the two features compose independently (which namespaces
+                        # to search vs. which release window to filter to).
+                        nss, inherited_in, inheritance_skipped = _corpus_inherit_namespaces(conn, principal, ns, req)
                         version = str(req.get("version", "")).strip() or None
                         try:
-                            out = {"constraints": store.corpus_check(mem.schema, ns, snippet, version=version)}
+                            out = {"constraints": store.corpus_check(mem.schema, nss, snippet, version=version)}
                         except ValueError as ve:
                             return self._send(400, {"error": str(ve)})
+                        if inherited_in or inheritance_skipped:
+                            out["inherited_in"] = inherited_in
+                            out["inheritance_skipped"] = inheritance_skipped
                     elif self.path == "/corpus/deviation":   # issue #106: approved-deviation log
                         try:
                             constraint_id = int(req.get("constraint_id"))
@@ -1390,7 +1476,11 @@ class Handler(BaseHTTPRequestHandler):
                         if not diff.strip():
                             return self._send(400, {"error": "diff required"})
                         src_name = str(req.get("name", "")).strip() or None
-                        out = store.corpus_check_diff(mem.schema, ns, diff, name=src_name)
+                        nss, inherited_in, inheritance_skipped = _corpus_inherit_namespaces(conn, principal, ns, req)
+                        out = store.corpus_check_diff(mem.schema, nss, diff, name=src_name)
+                        if inherited_in or inheritance_skipped:
+                            out["inherited_in"] = inherited_in
+                            out["inheritance_skipped"] = inheritance_skipped
                     elif self.path == "/entity/dossier":   # get stored dossier for an entity
                         entity_name = str(req.get("entity", "")).strip()
                         if not entity_name:
