@@ -151,6 +151,7 @@ def cleanup(conn):
             c.execute("DELETE FROM memnos_control.namespace_links WHERE src_ns=%s OR dst_ns=%s", (ns, ns))
             c.execute("DELETE FROM memnos_control.subscriptions WHERE namespace=%s", (ns,))
             c.execute("DELETE FROM memnos_control.corpus_sources WHERE namespace=%s", (ns,))
+            c.execute("DELETE FROM memnos_control.corpus_deviations WHERE namespace=%s", (ns,))
         for p in ("oapi_admin", "oapi_limited", "oapi_tmp"):
             c.execute("DELETE FROM memnos_control.api_tokens t USING memnos_control.principals pr "
                       "WHERE t.principal_id=pr.id AND pr.name=%s", (p,))
@@ -299,9 +300,17 @@ def main():
     call("POST", "/memory/write", body={"namespace": NS, "content": "Bob prefers tea over coffee.",
          "type": "decision"}, token=TADM, expect=200)
     # knowledge namespace content for grounded recall
-    st, _ = call("POST", "/corpus/ingest", token=TADM, expect=200,
+    st, ing = call("POST", "/corpus/ingest", token=TADM, expect=200,
                  body={"namespace": NSK, "name": "arch.md", "kind": "doc",
                        "text": "Services MUST validate input. Tokens SHALL NOT be logged."})
+    # issue #106: version-scoped ingest
+    call("POST", "/corpus/ingest", token=TADM, expect=200,
+         body={"namespace": NSK, "name": "arch-v2.md", "kind": "doc", "since": "1.0.0", "until": "2.1.0",
+               "text": "Legacy caches MUST be invalidated on write."},
+         name="POST /corpus/ingest (since/until)")
+    call("POST", "/corpus/ingest", token=TADM, expect=400,
+         body={"namespace": NSK, "name": "arch-bad.md", "text": "x MUST y.", "until": "not-a-version"},
+         name="POST /corpus/ingest (invalid until)")
 
     st, rec = call("POST", "/recall", token=TADM, body={"namespace": NS, "query": "where does Ada live?"},
                    expect=200)
@@ -407,6 +416,26 @@ def main():
     print("=== data plane: corpus / files / copy / delete ===")
     call("POST", "/corpus/check", token=TADM,
          body={"namespace": NSK, "snippet": "def log_token(token): print(token)"}, expect=200)
+    # issue #106: version-scoped check + approved-deviation log
+    call("POST", "/corpus/check", token=TADM, expect=200,
+         body={"namespace": NSK, "snippet": "invalidate the legacy cache on write", "version": "1.5.0"},
+         name="POST /corpus/check (version)")
+    call("POST", "/corpus/check", token=TADM, expect=400,
+         body={"namespace": NSK, "snippet": "x", "version": "not-a-version"},
+         name="POST /corpus/check (invalid version)")
+    cid = (ing or {}).get("ids", [None])[0]
+    st, dev = call("POST", "/corpus/deviation", token=TADM, expect=200,
+                   body={"namespace": NSK, "constraint_id": cid, "rationale": "phase-2 deferral",
+                         "approved_by": "architect", "until": "2.1.0"})
+    call("POST", "/corpus/deviation", token=TADM, expect=404,
+         body={"namespace": NSK, "constraint_id": 999999999, "rationale": "x", "approved_by": "y"},
+         name="POST /corpus/deviation (unknown constraint)")
+    call("POST", "/corpus/deviation", token=TADM, expect=400,
+         body={"namespace": NSK, "constraint_id": cid, "approved_by": "y"},
+         name="POST /corpus/deviation (missing rationale)")
+    call("POST", "/corpus/deviation", token=TLIM, expect=403,
+         body={"namespace": NSK, "constraint_id": cid, "rationale": "x", "approved_by": "y"},
+         name="POST /corpus/deviation (forbidden ns)")
     call("POST", "/corpus/check_diff", token=TADM,
          body={"namespace": NSK, "diff": "--- a/auth.py\n+++ b/auth.py\n@@ -1,2 +1,3 @@\n"
                " def foo():\n+    print(\"tokens logged: \" + token)\n     return\n"}, expect=200)

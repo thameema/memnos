@@ -591,25 +591,61 @@ def namespace_feed(subscription_id: int) -> str:
 
 
 @mcp.tool()
-def corpus_ingest(name: str, text: str, kind: str = "doc") -> str:
+def corpus_ingest(name: str, text: str, kind: str = "doc", since: str = "", until: str = "") -> str:
     """Ingest an architecture document (LLD/HLD/ADR): extract its normative constraints
-    (SHALL/MUST/REQUIRED/...) and store them as searchable constraint memories under `name`."""
+    (SHALL/MUST/REQUIRED/...) and store them as searchable constraint memories under `name`.
+
+    `since`/`until` (issue #106, optional dotted-numeric version strings like "2.1.0")
+    scope every constraint extracted from this doc to a release window: in force from
+    `since` onward (inclusive) until `until` (exclusive). Leave both empty for a
+    constraint that never expires (the default, matches pre-#106 behaviour)."""
     try:
-        out = _post("/corpus/ingest", {"name": name, "text": text, "kind": kind})
+        body = {"name": name, "text": text, "kind": kind}
+        if since:
+            body["since"] = since
+        if until:
+            body["until"] = until
+        out = _post("/corpus/ingest", body)
     except Exception as e:
         raise ToolError(_write_error(e, "corpus_ingest")) from None
     return f"ingested {out.get('constraints', 0)} constraints from '{name}'"
 
 
 @mcp.tool()
-def corpus_check(snippet: str) -> str:
+def corpus_check(snippet: str, version: str = "") -> str:
     """Return the architecture constraints relevant to a code snippet (does this code
-    violate a documented SHALL/MUST rule?). Read-only; ranked by relevance."""
+    violate a documented SHALL/MUST rule?). Read-only; ranked by relevance.
+
+    `version` (issue #106, optional dotted-numeric string like "2.1.0") scopes results to
+    one release: a constraint not yet introduced at `version` is dropped; one retired by
+    `version` is still returned but marked `status: "expired"`; one covered by a standing
+    corpus_deviation is marked `status: "approved_deviation"` instead of "active". Leave
+    empty to get every match regardless of version (pre-#106 behaviour, unfiltered)."""
     try:
-        c = _post("/corpus/check", {"snippet": snippet}).get("constraints", [])
+        body = {"snippet": snippet}
+        if version:
+            body["version"] = version
+        c = _post("/corpus/check", body).get("constraints", [])
         return str(c) if c else "(no relevant constraints found)"
     except Exception as e:
         return _err(e, "corpus_check")
+
+
+@mcp.tool()
+def corpus_deviation(constraint_id: int, rationale: str, approved_by: str, until: str = "") -> str:
+    """Record an approved, audited exception to one corpus constraint (issue #106) —
+    an explicit decision, not a version expiry. `constraint_id` is a corpus_check result's
+    `id`. `until` (optional dotted-numeric version) bounds how long the deviation holds;
+    leave empty for one that never expires on its own. corpus_check then marks that
+    constraint `status: "approved_deviation"` instead of enforcing it."""
+    try:
+        body = {"constraint_id": constraint_id, "rationale": rationale, "approved_by": approved_by}
+        if until:
+            body["until"] = until
+        out = _post("/corpus/deviation", body)
+    except Exception as e:
+        raise ToolError(_write_error(e, "corpus_deviation")) from None
+    return f"deviation {out.get('id')} recorded for constraint {out.get('constraint_id')}"
 
 
 @mcp.tool()

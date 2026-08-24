@@ -244,6 +244,33 @@ CREATE TABLE IF NOT EXISTS memnos_control.corpus_sources(
     kind text, git_sha text, constraint_count int NOT NULL DEFAULT 0,
     ingested_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE(namespace, name));
+-- APPROVED DEVIATION LOG (issue #106): an explicit, audited exception to a corpus
+-- constraint — "the architect signed off on breaking this rule, here's why, here's how
+-- long it's good for" — recorded instead of silently ignoring a corpus_check hit.
+-- constraint_id references a {tenant}.semantic row (kind='constraint') by id, but
+-- DELIBERATELY carries no FK: ingest_constraints() (core/store.py) DELETEs and
+-- re-inserts every constraint row for a source on re-ingest, so a constraint's id is
+-- NOT stable across re-ingests of the same doc. An FK would make every re-ingest of a
+-- source with a live deviation fail outright; instead a deviation whose constraint_id
+-- no longer exists simply stops matching anything in corpus_check's per-candidate
+-- lookup (silently inert, not an error) — see BrainStore.corpus_check(). `until` is the
+-- same optional dotted-numeric version string ingest_constraints()'s `since`/`until`
+-- use (NULL = the deviation never expires on its own); it is INDEPENDENT of the
+-- constraint's own constraint_since/constraint_until window (core/schema.sql) — a
+-- deviation can outlive the constraint's own nominal expiry (grace period) or expire
+-- before it (approval revoked early by a later, shorter-lived deviation not modeled
+-- here — corpus_check always uses the most recently created row for a constraint_id).
+CREATE TABLE IF NOT EXISTS memnos_control.corpus_deviations(
+    id bigserial PRIMARY KEY,
+    namespace text NOT NULL,
+    constraint_id bigint NOT NULL,
+    rationale text NOT NULL,
+    approved_by text NOT NULL,
+    until text,
+    created_by bigint REFERENCES memnos_control.principals(id),
+    created_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS corpus_deviations_lookup
+    ON memnos_control.corpus_deviations(namespace, constraint_id, created_at DESC);
 -- namespace BINDING registry (issue #20, Part A): the dir/repo -> namespace map lives
 -- HERE (scoped to the principal), not in a per-machine local file the server never sees.
 -- key_type: 'repo' = host-agnostic, key = normalized git remote origin URL (resolves the
@@ -488,6 +515,21 @@ class Control:
             c.execute("SELECT id, name, kind, git_sha, constraint_count, ingested_at "
                       "FROM memnos_control.corpus_sources WHERE namespace=%s ORDER BY name", (namespace,))
             return c.fetchall()
+
+    # --- approved-deviation log (issue #106) --------------------------------
+    @staticmethod
+    def corpus_deviation_record(conn, namespace, constraint_id, rationale, approved_by,
+                                 until=None, created_by=None):
+        """Insert an approved-deviation row. Caller (memnos_server.py) must already have
+        verified `constraint_id` exists, is kind='constraint', and belongs to `namespace`
+        — this just records the decision, no FK (see corpus_deviations' DDL comment)."""
+        with conn.cursor() as c:
+            c.execute("""INSERT INTO memnos_control.corpus_deviations
+                         (namespace, constraint_id, rationale, approved_by, until, created_by)
+                         VALUES(%s,%s,%s,%s,%s,%s)
+                         RETURNING id, namespace, constraint_id, rationale, approved_by, until, created_at""",
+                      (namespace, constraint_id, rationale, approved_by, until, created_by))
+            return c.fetchone()
 
     # --- namespace binding registry (issue #20, Part A) --------------------
     @staticmethod

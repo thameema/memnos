@@ -154,6 +154,24 @@ BEGIN
   EXECUTE format('ALTER TABLE %I.semantic  ADD COLUMN IF NOT EXISTS constraint_retired_by text', s);
   EXECUTE format('ALTER TABLE %I.episodic  ADD COLUMN IF NOT EXISTS constraint_retired_by text', s);
 
+  -- VERSION SCOPING (issue #106): an OPTIONAL dotted-numeric version WINDOW
+  -- (constraint_since <= version < constraint_until) a corpus_ingest()-extracted
+  -- constraint is in force for. NULL constraint_since = always applied from the
+  -- beginning; NULL constraint_until = never expires. Set uniformly on every
+  -- constraint extracted from one corpus_ingest() call (the `since`/`until` args are
+  -- doc-level, not per-sentence). Deliberately a THIRD, independent expiry axis on
+  -- this table, distinct from both `expired_at` (system-time correction/removal,
+  -- above) and `constraint_retired_at` (issue #84 same-namespace supersession,
+  -- above) — a constraint can be system-live and un-retired yet still be
+  -- version-expired (`status: "expired"` in corpus_check's output), which is the
+  -- whole point of this feature: stale architecture rules stop being enforced on a
+  -- newer release branch without being deleted or supersession-retired. Read/parsed
+  -- by BrainStore.corpus_check() (core/store.py); NEVER written outside
+  -- ingest_constraints() (author-supplied, like constraint_subject — see the
+  -- CONSTRAINT SUBJECT comment above for why LLM-inferred values are avoided here).
+  EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS constraint_since text', s);
+  EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS constraint_until text', s);
+
   -- INFERENTIAL MEMORY (issue #24): LLM-derived conclusions from patterns across stated
   -- facts, written with kind='inferred' + memory_type='inferred' (a distinct kind, so
   -- they never get swept into the kind='fact' reversal/negation-close-out queries that

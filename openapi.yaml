@@ -665,6 +665,27 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/DbDown" }
+  /corpus/deviation:
+    post:
+      tags: [corpus]
+      summary: Record an approved, audited exception to a corpus constraint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CorpusDeviationRequest" }
+      responses:
+        "200":
+          description: deviation recorded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CorpusDeviationResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
   /corpus/check_diff:
     post:
       tags: [corpus]
@@ -1754,6 +1775,8 @@ components:
         text: { type: string }
         kind: { type: string, description: "default 'doc'" }
         git_sha: { type: string }
+        since: { type: string, description: "issue #106: optional dotted-numeric version (e.g. '1.3.0') — every constraint extracted from this ingest is in force FROM this version onward (inclusive); omit for no lower bound" }
+        until: { type: string, description: "issue #106: optional dotted-numeric version (e.g. '2.1.0') — every constraint extracted from this ingest is in force UNTIL this version (exclusive); omit for a constraint that never expires" }
     CorpusCheckRequest:
       type: object
       required: [namespace]
@@ -1762,6 +1785,17 @@ components:
         namespace: { type: string, maxLength: 200 }
         snippet: { type: string }
         code: { type: string }
+        version: { type: string, description: "issue #106: optional dotted-numeric version (e.g. '2.0.0') to scope results to. Omit to return every FTS match unfiltered (pre-#106 behaviour). When set: a constraint not yet introduced at this version is dropped; one whose window has lapsed is kept with status 'expired'; one covered by a standing corpus_deviation is kept with status 'approved_deviation'." }
+    CorpusDeviationRequest:
+      type: object
+      required: [namespace, constraint_id, rationale, approved_by]
+      description: "issue #106: record an approved, audited exception to one corpus constraint"
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        constraint_id: { type: integer, description: "id of a corpus_check result — the semantic-fact row this deviation applies to" }
+        rationale: { type: string, description: why this deviation was approved }
+        approved_by: { type: string, description: "who approved it (a name/role, e.g. 'architect') — not necessarily the calling principal" }
+        until: { type: string, description: "optional dotted-numeric version the deviation holds through (exclusive); omit for one that never expires on its own" }
     SecretResolveRequest:
       type: object
       required: [name]
@@ -2260,12 +2294,25 @@ components:
           type: array
           items:
             type: object
-            required: [id, content, source]
+            required: [id, content, source, status]
             properties:
               id: { type: integer }
               content: { type: string }
               source: { type: string }
               score: { type: number }
+              status: { type: string, enum: [active, approved_deviation, expired], description: "issue #106: always present. 'active' by default; 'approved_deviation' when a standing corpus_deviation covers this constraint; 'expired' only reachable when the request's `version` is past this constraint's `until` (never set when `version` is omitted)." }
+              since: { type: [string, "null"], description: "issue #106: this constraint's constraint_since, if set at ingest" }
+              until: { type: [string, "null"], description: "issue #106: this constraint's constraint_until, if set at ingest" }
+    CorpusDeviationResponse:
+      type: object
+      required: [id, constraint_id, rationale, approved_by]
+      properties:
+        id: { type: integer }
+        constraint_id: { type: integer }
+        rationale: { type: string }
+        approved_by: { type: string }
+        until: { type: [string, "null"] }
+        created_at: { $ref: "#/components/schemas/DateTime" }
     SecretResolveResponse:
       type: object
       required: [name, value]
