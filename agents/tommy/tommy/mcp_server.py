@@ -45,10 +45,12 @@ from .corpus import (
 from .discovery.harnesses import (
     all_harnesses,
     apply_prompt_arg,
+    apply_session_id,
     apply_session_name,
     apply_setting_sources,
     apply_skip_permissions,
     DISPATCH_TRIGGER_PROMPT,
+    supports_session_id,
 )
 from .effective_config import resolve_effective_config
 from .memnos_scope import (
@@ -96,6 +98,16 @@ class Task:
     # verdict must treat that as "cannot compute a scoped diff," never
     # silently fall back to HEAD~1..HEAD.
     dispatch_head_sha: str = ""
+    # The claude session ID this dispatch's harness subprocess was launched
+    # with (memnos#144) — pre-assigned via `--session-id <uuid>` BEFORE
+    # Popen() (see apply_session_id() / claude_session_id below in
+    # tommy_dispatch), not discovered afterward by parsing output. "" when
+    # the chosen harness doesn't support --session-id (only "claude" does
+    # today — see discovery/harnesses.py's _SUPPORTS_SESSION_ID) or dispatch
+    # never got far enough to launch. A completed dispatch's underlying
+    # claude session can be manually resumed with `claude --resume
+    # <claude_session_id>` once this task is done.
+    claude_session_id: str = ""
     output_lines: list = field(default_factory=list)
     _lock: object = field(default_factory=threading.Lock, repr=False)
     _drain_thread: Optional[threading.Thread] = field(default=None, repr=False)
@@ -644,7 +656,35 @@ def tommy_dispatch(
 
     cmd = [part.replace("{prompt_file}", _tf_path) for part in spec.launch_template]
     cmd = apply_skip_permissions(cmd, chosen, cfg.skip_permissions)
-    _mcp_session_name = f"Tommy | {_active_project.upper()}" if _active_project else "Tommy"
+
+    # memnos#144: claude_session_id is generated here — BEFORE the session
+    # title below, so the title can embed it too — and passed to claude as
+    # `--session-id <uuid>` (see apply_session_id() below), pre-assigning
+    # the session ID rather than discovering it after the fact by parsing
+    # output. Verified empirically against a real `claude` 2.1.x binary:
+    # (a) a pre-assigned --session-id is accepted together with
+    # --print/--append-system-prompt-file/--name, and (b) it is genuinely
+    # resumable afterward via `claude --resume <that-same-uuid>` with real
+    # conversation context intact. Stored on the Task below so a completed
+    # dispatch's underlying session can be manually resumed later (this
+    # issue's scope: no automatic tommy_dispatch resume yet, see the issue's
+    # explicitly-out-of-scope note on a Tommy-native task history).
+    #
+    # Also fixes the identical-per-project session title on THIS (MCP
+    # dispatch) path — mirrors cli.py's _launch_harness fix for the
+    # interactive CLI path, same underlying bug: "Tommy | PROJECT" was
+    # identical on every dispatch, making claude's own title-based
+    # `--resume "<title>"` and its interactive picker unable to
+    # disambiguate once 2+ dispatches into the same project existed.
+    # Unconditional: the title-uniqueness fix applies to any harness (not
+    # just claude), whereas --session-id itself is claude-specific (see
+    # apply_session_id() below and supports_session_id()).
+    _dispatch_uuid = str(uuid.uuid4())
+    claude_session_id = _dispatch_uuid if supports_session_id(chosen) else ""
+    _mcp_session_name = (
+        f"Tommy | {_active_project.upper()} | {_dispatch_uuid[:8]}"
+        if _active_project else f"Tommy | {_dispatch_uuid[:8]}"
+    )
     cmd = apply_session_name(cmd, chosen, _mcp_session_name)
     # memnos#132: this dispatch is ALWAYS headless (stdout=PIPE below makes
     # claude auto-enter print mode, which hard-requires a real prompt — see
@@ -653,6 +693,13 @@ def tommy_dispatch(
     # minimal trigger claude's CLI needs to leave print-mode's input gate,
     # not a duplicate of the task content.
     cmd = apply_prompt_arg(cmd, chosen, DISPATCH_TRIGGER_PROMPT)
+    # memnos#144: unlike the interactive CLI path (cli.py's _launch_harness,
+    # deliberately NOT given --session-id — see apply_session_id()'s
+    # docstring), tommy_dispatch never receives a user-supplied --resume via
+    # extra_args, so there is no `--session-id can only be used with
+    # --continue or --resume if --fork-session is also specified` collision
+    # here — every dispatch is a brand-new session.
+    cmd = apply_session_id(cmd, chosen, claude_session_id)
     if _scope_active:
         # Excludes the ambient USER-scope ~/.claude/settings.json (which
         # carries the host's own memnos hooks) so the harness only sees the
@@ -747,7 +794,7 @@ def tommy_dispatch(
         raise
 
     t = Task(task_id=task_id, harness=chosen, proc=proc, workspace=str(ws_path),
-             dispatch_head_sha=dispatch_head_sha)
+             dispatch_head_sha=dispatch_head_sha, claude_session_id=claude_session_id)
     _task_ref[0] = t  # publish Task before any ctrl messages can be delivered
     t._ctrl = ctrl
     drain = threading.Thread(
@@ -1153,11 +1200,20 @@ def tommy_status(task_id: str, tail: int = 50) -> dict:
     Args:
         task_id: The task_id returned by tommy_dispatch.
         tail:    Return the last N lines of stdout (default 50).
+
+    The returned dict carries a "claude_session_id" key (memnos#144) whenever
+    this task's harness supports it (claude, today) — the underlying claude
+    session ID this dispatch was launched with, pre-assigned via
+    --session-id. Once the task is done, that session can be manually
+    resumed with `claude --resume <claude_session_id>`. Absent for harnesses
+    that don't support --session-id.
     """
     t = _tasks.get(task_id)
     if t is None:
         return {"error": f"Unknown task_id: {task_id!r}"}
-    return {"task_id": task_id, "harness": t.harness, "status": t.status(), "output": t.tail(tail)}
+    _session_id_info = {"claude_session_id": t.claude_session_id} if t.claude_session_id else {}
+    return {"task_id": task_id, "harness": t.harness, "status": t.status(), "output": t.tail(tail),
+            **_session_id_info}
 
 
 @mcp.tool()
