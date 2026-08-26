@@ -87,15 +87,97 @@ never at runtime) and assert this module's has_existing_binding() and
 nsresolve.resolve_with_source()'s BOUND_SOURCES agree on synthetic cache
 fixtures, specifically so drift becomes a red test instead of a silent
 behavior change.
+
+Concurrency safety (fix for a blocking finding from an adversarial review of
+this module, post-#136 landing): the original generate/cleanup design had
+each ScopingFiles instance snapshot the file's prior bytes independently, in
+its own process memory, at its own generate_scoping_files() call, and write
+those bytes back verbatim at its own cleanup() call, with no coordination
+between concurrent dispatches into the SAME workspace. Tommy's own default
+operating mode dispatches a wave of several concurrent subagents into one
+workspace (core.md's wave-based fan-out, DEFAULT_WAVE_LIMIT), so two
+overlapping generate+cleanup cycles are not an edge case here — they are the
+common case. The old design's race: dispatch A generates first (snapshot =
+true original O), dispatch B generates second (snapshot = A's already-merged
+output O+memnos, since B reads the live file at ITS OWN generate time); if A
+cleans up first (restores O, correctly but prematurely — B is still relying
+on the scoped config) and B cleans up last (restores ITS OWN stale snapshot,
+O+memnos), the memnos block is PERMANENTLY spliced into the workspace's real,
+often git-tracked .mcp.json — not a stale leftover file, a corrupted
+already-committed one. Reproduced exactly this way by the review.
+
+Fix: reference-counted, lock-serialized, hash-verified shared state per
+workspace, persisted under ~/.memnos/tommy_scope/ (same directory family as
+_BINDINGS_CACHE/_NS_OVERRIDES above — local host state, never shipped with
+the repo). See _acquire_holder()/_release_holder() below for the exact
+mechanics; short version:
+  - One shared snapshot per workspace, taken ONCE by whichever dispatch is
+    first to start scoping it (an fcntl.flock'd critical section spanning
+    both the "is anyone already scoping this workspace" check and the
+    snapshot itself makes "first" well-defined even across two genuinely
+    concurrent processes, not just concurrent threads in one).
+  - The snapshot is only ever restored once the LAST live holder releases it
+    (refcounting), not by whichever holder happens to call cleanup() last in
+    wall-clock time.
+  - Every restore — whether the ordinary last-holder-releases path, or the
+    self-healing path below — first verifies the file's current on-disk
+    bytes still hash-match exactly what THIS module last wrote to it. If
+    they don't (a human hand-edited the file while a dispatch was scoping
+    it, or between an abandoned scope and a later one that inherited its
+    snapshot), the restore is skipped and the recorded snapshot is discarded
+    rather than clobbering content this module didn't write. This closes a
+    second, more subtle version of the same corruption class that a naive
+    "just add a refcount" fix would otherwise reintroduce: without the hash
+    check, a snapshot surviving across process crashes (see below) could
+    overwrite a legitimate concurrent hand-edit made after the crash.
+  - Self-healing for abnormal exits: a holder's liveness is tracked by the
+    PID of the process that acquired it (NOT the harness subprocess — the
+    tommy/tommy-mcp-server process that called generate_scoping_files()
+    itself). If that PID is no longer alive, the holder is reaped. If
+    reaping empties the holder set, the still-pending snapshot from the
+    abandoned scope is verified and restored (or discarded, per the hash
+    check above) right there, before the new caller takes its own fresh
+    snapshot to become the new first holder. This means a crash that skips
+    cleanup() entirely (SIGKILL, host crash, or — the daemon-thread case
+    unique to mcp_server.py's tommy_dispatch — the interpreter exiting
+    before a daemon thread's `finally` ever runs, which happens on ANY
+    process exit, not just a crash) does not require its own code path to
+    recover: the very next dispatch into that workspace heals it. Until that
+    next dispatch happens, the workspace is left in the scoped
+    (original-plus-memnos-block) state, never a torn/partial write (all
+    writes to the workspace's own files go through the flock'd critical
+    section) — the sanctioned fallback for exit paths nothing can reliably
+    hook (a true SIGKILL cannot run any Python code, ours included).
+  - The one abnormal-exit path that CAN be hooked reliably — SIGTERM to the
+    interactive CLI process itself (cli.py's _launch_harness): Python's
+    default SIGTERM disposition terminates the process without running
+    `finally` blocks at all, so pre-fix, only KeyboardInterrupt (Ctrl-C) was
+    ever caught there. cli.py now installs a scoped SIGTERM handler around
+    proc.wait() that converts SIGTERM into a catchable exception so the
+    SAME finally block (ctrl.close, prompt-file unlink, ScopingFiles.cleanup)
+    that already handles KeyboardInterrupt runs for SIGTERM too — see
+    _launch_harness() for the exact handler. mcp_server.py's tommy_dispatch
+    deliberately does NOT get an equivalent SIGTERM handler around its own
+    process: its cleanup runs on a daemon thread whose `finally` is already
+    unreliable on ordinary interpreter exit for the reason above, so a
+    signal handler racing arbitrary FastMCP/anyio internals would add a new,
+    untestable failure surface for no reliability gain over the self-healing
+    path already described.
 """
 from __future__ import annotations
 
+import base64
+import contextlib
+import fcntl
+import hashlib
 import json
 import os
 import re
 import shutil
 import socket
 import subprocess
+import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -302,14 +384,17 @@ def _mcp_server_block() -> dict:
     }
 
 
-def _write_mcp_json(path: Path) -> tuple[bool, Optional[bytes]]:
+def _write_mcp_json(path: Path) -> bytes:
     """Merge the memnos server entry into `path`'s mcpServers, preserving
     any OTHER servers/keys already there (a repo may already commit a
     .mcp.json for unrelated MCP servers — clobbering it would be a worse
-    bug than the one this module fixes). Returns (existed, prior_bytes) for
-    ScopingFiles to restore verbatim on cleanup."""
-    existed = path.exists()
-    prior = path.read_bytes() if existed else None
+    bug than the one this module fixes). Returns the exact bytes written —
+    the caller (_acquire_holder) hashes them for later verify-before-restore
+    (see module docstring's "Concurrency safety" section); snapshotting the
+    PRIOR content is a separate, shared-state concern handled there, not
+    here (this function has no opinion on whether it's being called by the
+    first concurrent holder or the fifth)."""
+    prior = path.read_bytes() if path.exists() else None
     data: dict = {}
     if prior is not None:
         try:
@@ -324,19 +409,21 @@ def _write_mcp_json(path: Path) -> tuple[bool, Optional[bytes]]:
     servers[_MCP_SERVER_NAME] = _mcp_server_block()
     data["mcpServers"] = servers
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
-    return existed, prior
+    out = (json.dumps(data, indent=2) + "\n").encode()
+    path.write_bytes(out)
+    return out
 
 
-def _write_settings_local(path: Path) -> tuple[bool, Optional[bytes]]:
+def _write_settings_local(path: Path) -> bytes:
     """Merge memnos's UserPromptSubmit/Stop hooks + an mcp__memnos
     permissions.allow entry into `path`, preserving any OTHER hooks/
     settings already there. Idempotent: re-running replaces only groups
     that already look like a memnos hook (same "memnos hook" substring
     dedupe cmd_claude_setup's own wire() uses for ~/.claude/settings.json),
-    same pattern, different file. Returns (existed, prior_bytes)."""
-    existed = path.exists()
-    prior = path.read_bytes() if existed else None
+    same pattern, different file. Returns the exact bytes written — see
+    _write_mcp_json's docstring for why prior-content snapshotting is
+    deliberately NOT this function's job."""
+    prior = path.read_bytes() if path.exists() else None
     data: dict = {}
     if prior is not None:
         try:
@@ -375,73 +462,252 @@ def _write_settings_local(path: Path) -> tuple[bool, Optional[bytes]]:
     data["permissions"] = perms
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
-    return existed, prior
+    out = (json.dumps(data, indent=2) + "\n").encode()
+    path.write_bytes(out)
+    return out
+
+
+_SLOT_WRITERS = {"mcp": _write_mcp_json, "settings": _write_settings_local}
+
+
+# ---------------------------------------------------------------------------
+# Shared, cross-process scope state (concurrency fix — see module docstring's
+# "Concurrency safety" section for the full design rationale).
+#
+# One JSON file + one lockfile per workspace, keyed by a hash of the
+# workspace's resolved absolute path, living under ~/.memnos/tommy_scope/ —
+# the same local-host-state directory family as _BINDINGS_CACHE/
+# _NS_OVERRIDES above, deliberately NOT inside the workspace itself (a
+# permanent, always-present bookkeeping file colocated with .mcp.json/
+# settings.local.json would reintroduce a milder version of the exact
+# "leaves an unwanted permanent artifact in the workspace" complaint this
+# fix exists to close — and .claude/, unlike settings.local.json alone, is
+# not reliably gitignored).
+# ---------------------------------------------------------------------------
+
+_SCOPE_STATE_DIR = _MEMNOS_DIR / "tommy_scope"
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _current_sha(path: Path) -> Optional[str]:
+    if not path.exists():
+        return None
+    return _sha256(path.read_bytes())
+
+
+def _workspace_state_paths(ws_path: Path) -> tuple[Path, Path]:
+    """(lock_path, state_path) for `ws_path`."""
+    _SCOPE_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    key = _sha256(os.path.realpath(str(ws_path)).encode())[:24]
+    return _SCOPE_STATE_DIR / f"{key}.lock", _SCOPE_STATE_DIR / f"{key}.json"
+
+
+@contextlib.contextmanager
+def _locked_state(ws_path: Path):
+    """Exclusive-locks `ws_path`'s scope state for the duration of the
+    `with` block, yielding its state_path. fcntl.flock() locks are held per
+    OPEN FILE DESCRIPTION, not per process — concurrent generate()/
+    cleanup() calls from two different THREADS of the same process (exactly
+    what mcp_server.py's tommy_dispatch does: each concurrent dispatch runs
+    its own drain/cleanup on its own daemon thread) each open their own fd
+    here and still serialize against each other correctly, the same as two
+    entirely separate OS processes would. The lockfile itself is never
+    deleted (a stable, empty, harmless artifact — see module docstring for
+    why an occasional small residual file is an accepted, sanctioned
+    trade-off here, unlike the corrupted-content bug this replaces)."""
+    lock_path, state_path = _workspace_state_paths(ws_path)
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield state_path
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _read_state(state_path: Path) -> dict:
+    try:
+        loaded = json.loads(state_path.read_text())
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}   # missing, corrupt, or partially-written — treat as "no state"
+
+
+def _write_state(state_path: Path, state: dict) -> None:
+    """Atomic write (temp file + os.replace) — a state file torn by a crash
+    mid-write would otherwise be indistinguishable from genuine corruption
+    and force a hash-mismatch abandon on the NEXT caller for a workspace
+    that's actually fine; os.replace() is atomic on the same filesystem, so
+    a reader only ever sees the fully-old or fully-new content, never a
+    partial write."""
+    tmp = state_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state))
+    os.replace(str(tmp), str(state_path))
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except Exception:
+        return True   # PermissionError (exists, not ours) or anything ambiguous -> assume alive
+    return True   # os.kill(pid, 0) raised nothing -> the pid exists and is ours or signalable
+
+
+def _read_existing(path: Path) -> tuple[bool, Optional[bytes]]:
+    existed = path.exists()
+    return existed, (path.read_bytes() if existed else None)
+
+
+def _resolve_abandoned_snapshot(state: dict, mcp_path: Path, settings_path: Path) -> None:
+    """With no live holders remaining for `state`, either restore its
+    recorded pre-scope snapshot for each managed file — but ONLY if that
+    file's current on-disk bytes still hash-match exactly what this module
+    last wrote to it — or leave the file untouched and let the snapshot be
+    discarded. The hash check is load-bearing, not defensive-programming
+    boilerplate: without it, a snapshot that survives a crash (this
+    function's other caller, _acquire_holder(), is exactly that "healing"
+    path) could silently overwrite a legitimate edit a human made to the
+    file AFTER the crash and before the next dispatch — the same class of
+    bug this whole fix exists to close, just relocated. See module
+    docstring's "Concurrency safety" section, point on verify-before-
+    restore. Pure filesystem side effect; never mutates `state` or raises."""
+    for slot, path in (("mcp", mcp_path), ("settings", settings_path)):
+        expected_sha = state.get(f"{slot}_written_sha256")
+        if expected_sha is None or _current_sha(path) != expected_sha:
+            continue   # nothing recorded, or something else modified it since — leave it alone
+        try:
+            if state.get(f"{slot}_existed", False):
+                prior_b64 = state.get(f"{slot}_prior_b64")
+                path.write_bytes(base64.b64decode(prior_b64) if prior_b64 is not None else b"")
+            else:
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _fresh_snapshot(mcp_path: Path, settings_path: Path) -> dict:
+    """A brand-new state dict recording each managed file's CURRENT
+    (pre-scope) content as the snapshot to restore to later. Called only
+    once per "scope session" — by whichever holder is first to acquire (see
+    _acquire_holder()) — never by a holder that finds the workspace already
+    scoped by a still-live concurrent dispatch."""
+    state: dict = {"holders": {}}
+    for slot, path in (("mcp", mcp_path), ("settings", settings_path)):
+        existed, prior = _read_existing(path)
+        state[f"{slot}_existed"] = existed
+        state[f"{slot}_prior_b64"] = base64.b64encode(prior).decode() if prior is not None else None
+        state[f"{slot}_written_sha256"] = None   # filled in by the caller right after writing
+    return state
+
+
+def _acquire_holder(ws_path: Path, holder_id: str, mcp_path: Path, settings_path: Path) -> None:
+    with _locked_state(ws_path) as state_path:
+        state = _read_state(state_path)
+        holders = {
+            hid: h for hid, h in (state.get("holders") or {}).items()
+            if _pid_alive(h.get("pid", -1))
+        }
+
+        if not holders:
+            # No live holder: either the true first-ever dispatch to scope
+            # this workspace, or every previous holder crashed/exited
+            # without releasing (self-healing case — see module docstring).
+            # Resolve any leftover snapshot from an abandoned scope BEFORE
+            # taking the fresh one below, so the fresh snapshot reflects
+            # genuine pre-dispatch content rather than a leftover merge.
+            _resolve_abandoned_snapshot(state, mcp_path, settings_path)
+            state = _fresh_snapshot(mcp_path, settings_path)
+
+        for slot, path in (("mcp", mcp_path), ("settings", settings_path)):
+            written = _SLOT_WRITERS[slot](path)
+            state[f"{slot}_written_sha256"] = _sha256(written)
+
+        holders[holder_id] = {"pid": os.getpid(), "started": time.time()}
+        state["holders"] = holders
+        _write_state(state_path, state)
+
+
+def _release_holder(ws_path: Path, holder_id: str, mcp_path: Path, settings_path: Path) -> None:
+    with _locked_state(ws_path) as state_path:
+        state = _read_state(state_path)
+        holders = state.get("holders") or {}
+        holders.pop(holder_id, None)
+        holders = {hid: h for hid, h in holders.items() if _pid_alive(h.get("pid", -1))}
+
+        if holders:
+            # Other dispatches are still (live-)using this workspace's
+            # scoped config — do NOT restore yet. The snapshot taken by
+            # whichever holder was first stays exactly as recorded.
+            state["holders"] = holders
+            _write_state(state_path, state)
+            return
+
+        # We are the last live holder (or every remaining one had already
+        # crashed) — restore now, verifying first (see
+        # _resolve_abandoned_snapshot's docstring), then clear the state
+        # entirely so the NEXT dispatch starts a fresh scope session.
+        _resolve_abandoned_snapshot(state, mcp_path, settings_path)
+        try:
+            state_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 @dataclass
 class ScopingFiles:
-    """Handle for the two files generate_scoping_files() wrote, so the
-    caller can restore the workspace to its pre-dispatch state once the
-    harness process exits. Cleanup is the default (not "leave them
-    behind") specifically BECAUSE these files may be MERGES into
-    pre-existing committed files, not always fresh ones — leaving a merged
-    file behind would silently rewrite the user's own .mcp.json/
-    settings.local.json content order/formatting even though only the
-    memnos entry was ever meant to be temporary. Restoring exact prior
-    bytes (not just "delete our additions") avoids drifting either file's
-    formatting on every dispatch."""
+    """Handle for one dispatch's hold on the project-scoped `.mcp.json` /
+    `.claude/settings.local.json` generate_scoping_files() wrote into
+    `ws_path`. Restoring the workspace to its pre-dispatch state is a
+    SHARED responsibility across every concurrent ScopingFiles instance for
+    the same workspace, not something any single instance can decide on its
+    own — see _acquire_holder()/_release_holder() and the module docstring's
+    "Concurrency safety" section for the full mechanics (reference-counted,
+    lock-serialized, hash-verified-before-restore, self-healing across
+    abnormal exits)."""
     mcp_json_path: Path
     settings_local_path: Path
-    mcp_json_existed: bool
-    settings_local_existed: bool
-    mcp_json_prior: Optional[bytes] = None
-    settings_local_prior: Optional[bytes] = None
+    ws_path: Path
+    holder_id: str
     _cleaned: bool = field(default=False, repr=False)
 
     def cleanup(self) -> None:
-        """Best-effort, idempotent, never raises. If the harness process is
-        killed abnormally (SIGKILL, host crash) before this runs, the
-        generated files may be left behind — that is inert, not a leak:
-        every value they carry is a `${VAR}` placeholder, never a real
-        secret (see module docstring point 1), so a stale copy left in a
-        workspace cannot expose anything by itself. A subsequent dispatch
-        into the same workspace re-merges over it the same way either
-        way."""
+        """Best-effort, idempotent, never raises. Releases this dispatch's
+        hold on the workspace's shared scope state; the workspace is only
+        actually restored once every OTHER concurrent hold on it has also
+        been released (or self-healed away — see module docstring)."""
         if self._cleaned:
             return
         self._cleaned = True
-        for path, existed, prior in (
-            (self.mcp_json_path, self.mcp_json_existed, self.mcp_json_prior),
-            (self.settings_local_path, self.settings_local_existed, self.settings_local_prior),
-        ):
-            try:
-                if existed:
-                    path.write_bytes(prior or b"")
-                else:
-                    path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        try:
+            _release_holder(self.ws_path, self.holder_id, self.mcp_json_path, self.settings_local_path)
+        except Exception:
+            pass
 
 
 def generate_scoping_files(ws_path: Path) -> ScopingFiles:
     """Write the project-scoped `.mcp.json` and `.claude/settings.local.json`
     into `ws_path` (merging into anything already there — see
-    _write_mcp_json/_write_settings_local docstrings). Only ever called
-    after should_scope_dispatch() has returned True; callers are
-    responsible for injecting real MEMNOS_URL/MEMNOS_TOKEN/MEMNOS_NS into
-    the harness subprocess's Popen env (never into these files) and for
-    calling the returned ScopingFiles.cleanup() once the harness process
-    exits."""
+    _write_mcp_json/_write_settings_local docstrings), registering this call
+    as a new holder of `ws_path`'s shared scope state (see
+    _acquire_holder()). Only ever called after should_scope_dispatch() has
+    returned True; callers are responsible for injecting real
+    MEMNOS_URL/MEMNOS_TOKEN/MEMNOS_NS into the harness subprocess's Popen
+    env (never into these files) and for calling the returned
+    ScopingFiles.cleanup() once the harness process exits."""
     mcp_path = ws_path / ".mcp.json"
     settings_path = ws_path / ".claude" / "settings.local.json"
-    mcp_existed, mcp_prior = _write_mcp_json(mcp_path)
-    settings_existed, settings_prior = _write_settings_local(settings_path)
+    holder_id = f"{os.getpid()}:{uuid.uuid4().hex}"
+    _acquire_holder(ws_path, holder_id, mcp_path, settings_path)
     return ScopingFiles(
         mcp_json_path=mcp_path,
         settings_local_path=settings_path,
-        mcp_json_existed=mcp_existed,
-        settings_local_existed=settings_existed,
-        mcp_json_prior=mcp_prior,
-        settings_local_prior=settings_prior,
+        ws_path=ws_path,
+        holder_id=holder_id,
     )

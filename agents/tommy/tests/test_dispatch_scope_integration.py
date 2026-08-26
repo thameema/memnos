@@ -115,6 +115,14 @@ class TestMcpDispatchScope:
         import tommy.memnos_scope as ms
         monkeypatch.setattr(ms, "_BINDINGS_CACHE", tmp_path / "no_such_cache.json")
         monkeypatch.setattr(ms, "_NS_OVERRIDES", tmp_path / "no_such_overrides.json")
+        # generate_scoping_files() persists a small reference-count/lock/
+        # snapshot state file per workspace under ~/.memnos/tommy_scope/
+        # (see memnos_scope.py's "Concurrency safety" docstring section) —
+        # this test is the one MCP-path case that actually activates
+        # scoping (in-process, so this runs against the REAL $HOME unless
+        # isolated here, same reasoning as _BINDINGS_CACHE/_NS_OVERRIDES
+        # above).
+        monkeypatch.setattr(ms, "_SCOPE_STATE_DIR", tmp_path / "_scope_state")
         # mcp_server.py does `from .memnos_scope import ... memnos_binary` — that
         # binds the name into mcp_server's OWN module namespace, so the call site
         # must be patched there, not on tommy.memnos_scope itself (see
@@ -241,7 +249,8 @@ def _fake_memnos_bin_dir(tmp_path: Path) -> Path:
 
 
 class TestCliLaunchScope:
-    def _run(self, tmp_path, capture_file, *, memnos_token="mnk_test_token_XYZ789", fake_memnos_on_path=False):
+    def _run(self, tmp_path, capture_file, *, memnos_token="mnk_test_token_XYZ789",
+             fake_memnos_on_path=False, isolate_home=False):
         env = {
             **os.environ,
             "TOMMY_TEST_HARNESS_SCRIPT": str(SCOPE_HARNESS),
@@ -252,6 +261,19 @@ class TestCliLaunchScope:
         if fake_memnos_on_path:
             bin_dir = _fake_memnos_bin_dir(tmp_path)
             env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+        if isolate_home:
+            # generate_scoping_files() now persists a small reference-count/
+            # lock/snapshot state file per workspace under
+            # ~/.memnos/tommy_scope/ (see memnos_scope.py's "Concurrency
+            # safety" docstring section) — same directory family as
+            # bindings_cache.json, which test_existing_binding_does_not_scope
+            # below already isolates via a fake $HOME for exactly this
+            # reason. A scoping-POSITIVE test (this one) actually exercises
+            # that write path, unlike the "does not scope" tests, so it must
+            # not touch whoever's real $HOME runs this suite either.
+            fake_home = tmp_path / "fakehome"
+            (fake_home / ".memnos").mkdir(parents=True, exist_ok=True)
+            env["HOME"] = str(fake_home)
         proc = subprocess.run(
             [sys.executable, str(SCOPE_CLI_DRIVER)],
             cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=_DRIVER_TIMEOUT,
@@ -264,7 +286,7 @@ class TestCliLaunchScope:
         capture_file = tmp_path / "capture.json"
         _write_yaml_with_namespace(tmp_path, "test:issue-136-cli-scoped")
 
-        captured = self._run(tmp_path, capture_file, fake_memnos_on_path=True)
+        captured = self._run(tmp_path, capture_file, fake_memnos_on_path=True, isolate_home=True)
 
         assert "--setting-sources" in captured["argv"]
         idx = captured["argv"].index("--setting-sources")
