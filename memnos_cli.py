@@ -1116,10 +1116,22 @@ def _do_rolling_upgrade(state, port):
                   f"{st.get('current_backend_port')} (old backend drained: {up.get('drained')}).")
             return
         if up.get("status") == "failed":
-            sys.exit(f"upgrade FAILED: {up.get('error', 'unknown error')}\n"
-                     "The previous backend was never touched and is still serving all "
-                     "traffic — nothing was swapped. See the server log for detail: "
-                     f"{LOG_PATH}")
+            # Two distinct failure shapes need two distinct tails here — saying "nothing
+            # was swapped" on a post-flip rollback would directly contradict the `error`
+            # string printed one line above it, which already says a swap happened and
+            # was reverted.
+            if up.get("phase") == "new_backend_died_post_flip":
+                tail = ("The new backend died AFTER the traffic swap had already "
+                        "happened; the gateway rolled the swap back. See the error above "
+                        "for whether the previous backend was found still alive (rolled "
+                        "back to it) or not (no backend is currently live — this needs "
+                        "manual attention). See the server log for detail: "
+                        f"{LOG_PATH}")
+            else:
+                tail = ("The previous backend was never touched and is still serving "
+                        "all traffic — nothing was swapped. See the server log for "
+                        f"detail: {LOG_PATH}")
+            sys.exit(f"upgrade FAILED: {up.get('error', 'unknown error')}\n{tail}")
         time.sleep(1.0)
     sys.exit("upgrade timed out waiting for the gateway to report completion — check "
              f"`memnos status` and the server log ({LOG_PATH}).")
