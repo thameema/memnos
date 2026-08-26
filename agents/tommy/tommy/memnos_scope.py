@@ -147,7 +147,18 @@ mechanics; short version:
     (original-plus-memnos-block) state, never a torn/partial write (all
     writes to the workspace's own files go through the flock'd critical
     section) — the sanctioned fallback for exit paths nothing can reliably
-    hook (a true SIGKILL cannot run any Python code, ours included).
+    hook (a true SIGKILL cannot run any Python code, ours included). Two
+    known, accepted residual gaps in this liveness check, both still
+    strictly safe (never torn/corrupted, at worst indefinitely merged):
+    if the OS recycles a dead holder's PID for an unrelated process before
+    the next dispatch runs, _pid_alive() reports that PID alive and the
+    scope is never reaped until the (unrelated) process using that PID
+    exits; and a workspace whose .mcp.json was ALREADY merged by the
+    pre-this-fix bug, with no state file ever recorded for it, has no true
+    original to recover — the first post-fix dispatch's fresh snapshot
+    records the already-merged content as canonical (strictly no worse
+    than the state it was already in, but not a retroactive cure — a
+    pre-existing corrupted file still needs a manual fix once).
   - The one abnormal-exit path that CAN be hooked reliably — SIGTERM to the
     interactive CLI process itself (cli.py's _launch_harness): Python's
     default SIGTERM disposition terminates the process without running

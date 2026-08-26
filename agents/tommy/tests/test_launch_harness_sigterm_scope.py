@@ -192,6 +192,20 @@ def test_sigterm_to_driver_pid_restores_exact_original_workspace(scoped_rig):
     settings_local_path = r.iso_home / ".claude" / "settings.local.json"
     assert settings_local_path.exists(), f"settings.local.json was not generated\n{r.diag()}"
 
+    # Known, accepted timing assumption (not a bug in the fix, but worth
+    # writing down so a future flake here reads as "harness race," not "the
+    # SIGTERM fix regressed"): the driver installs its SIGTERM handler two
+    # statements after Popen() returns, with no synchronization point this
+    # test can wait on for "handler is installed" the way sigint_harness_
+    # stub.py's ready_file proves "child's OWN handler is installed." We
+    # instead wait on artifacts the CHILD (harness stub) writes after
+    # booting a full CPython interpreter — many orders of magnitude slower
+    # than the parent's next two bytecode instructions — so in practice the
+    # handler is always installed well before we get here. On a severely
+    # loaded runner that ever deschedules the parent in that exact window,
+    # SIGTERM would hit the default disposition instead and this test would
+    # fail with the pre-fix "left scoped instead of restored" message.
+    #
     # The named gap, reproduced: SIGTERM to just this process's pid.
     os.kill(r.proc.pid, signal.SIGTERM)
 
