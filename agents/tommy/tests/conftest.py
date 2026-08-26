@@ -82,6 +82,47 @@ except ImportError as exc:
     Control = None  # type: ignore
     _DB_IMPORT_ERROR = exc
 
+
+@pytest.fixture(autouse=True)
+def _isolate_tommy_scope_state(tmp_path, monkeypatch):
+    """Belt-and-suspenders isolation for EVERY test in this directory, not
+    just the ones that explicitly exercise dispatch-scoping.
+
+    memnos_scope.py's concurrency-safety fix (a blocking finding from an
+    adversarial review, post-issue-#136 landing — see its module docstring's
+    "Concurrency safety" section) persists a small per-workspace lock/
+    refcount/snapshot state file under ~/.memnos/tommy_scope/ whenever
+    should_scope_dispatch() activates during a real tommy_dispatch()/
+    _launch_harness() call. Several PRE-EXISTING dispatch tests in this
+    suite (e.g. test_corpus_gate.py's Layer 2, test_verdict.py,
+    test_dispatch_core_prompt_parity.py, test_reviewer_dispatch_passes.py)
+    write a tommy.yaml with an explicit memnos.namespace and call
+    tommy_dispatch()/_launch_harness() IN-PROCESS as part of testing
+    something else entirely (corpus gating, verdict diffing, prompt parity)
+    — on any dev machine where a real `memnos` binary happens to be on
+    PATH and the workspace has no existing binding (true for a fresh
+    tmp_path almost by construction), should_scope_dispatch() activates
+    for them too, incidentally. Before this fixture, every one of those
+    tests silently wrote a stray lockfile into whoever's REAL $HOME ran the
+    suite. Autouse here means no test — present or future — has to
+    remember to opt in just to avoid that.
+
+    Subprocess-based driver tests (spawning a real separate Python process)
+    are unaffected by this monkeypatch — it only patches the PARENT pytest
+    process's own `tommy.memnos_scope` import, never a child process's
+    fresh one — those isolate via their own $HOME env var instead (see
+    test_cli_dispatch.py's fake_home / fixtures/sigint_driver.py's _Rig-
+    style setup, both pre-existing conventions this fixture doesn't
+    change)."""
+    try:
+        import tommy.memnos_scope as ms
+    except Exception:
+        return
+    # Deliberately NOT raising=False: if a future refactor renames
+    # _SCOPE_STATE_DIR, this should fail collection loudly rather than
+    # silently stop isolating and resume writing into the real $HOME.
+    monkeypatch.setattr(ms, "_SCOPE_STATE_DIR", tmp_path / "_tommy_scope_state_isolated")
+
 # Deliberately NOT defaulting to "conventional" localhost:5432 / 127.0.0.1:8900
 # the way tests/test_secret_resolve.py does — this repo's own dev workflow
 # routinely leaves a REAL native Postgres on 5432 and a REAL long-running

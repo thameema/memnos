@@ -61,6 +61,7 @@ from __future__ import annotations
 import fnmatch
 import glob
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -420,6 +421,33 @@ def _on_ctrl_message(msg: dict) -> None:
     # Unknown message types are silently ignored (forward compat)
 
 
+class _SigTermReceived(BaseException):
+    """Raised (via _raise_sigterm, installed only around the proc.wait()
+    below in _launch_harness) so a SIGTERM sent directly to this process's
+    PID — e.g. `kill <pid>`, or a process supervisor's stop signal, as
+    distinct from Ctrl-C in a terminal, which the tty driver delivers to the
+    whole foreground process group and which KeyboardInterrupt already
+    handles — reaches the SAME try/except/finally block that already runs
+    ScopingFiles.cleanup() (memnos_scope.py, issue #136's dispatch-scoped
+    memnos config) on KeyboardInterrupt. Python's default SIGTERM
+    disposition terminates the process WITHOUT running any `finally` block
+    at all, which is exactly the gap an adversarial review of memnos_scope.py
+    flagged: pre-this-fix, a SIGTERM to the interactive `tommy` CLI process
+    mid-dispatch could skip cleanup entirely, leaving the scoped
+    .mcp.json/.claude/settings.local.json unrestored (memnos_scope.py's own
+    reference-counted/self-healing design makes that state SAFE either way —
+    see its module docstring — but restoring immediately here is strictly
+    better than waiting for a later dispatch to self-heal it).
+
+    BaseException (not Exception): a stray `except Exception:` elsewhere
+    between where this is raised and where _launch_harness catches it must
+    not be able to swallow it, the same reasoning CPython itself applies to
+    KeyboardInterrupt/SystemExit."""
+
+
+def _raise_sigterm(signum, frame) -> None:
+    raise _SigTermReceived()
+
 
 def _launch_harness(
     cfg: TommyConfig,
@@ -661,6 +689,11 @@ def _launch_harness(
             _scoping_files.cleanup()
         raise
 
+    # Scoped to just this proc.wait() call — installed here, restored in the
+    # finally block below, first thing, before any cleanup runs. See
+    # _SigTermReceived's docstring for why this exists at all.
+    _prev_sigterm_handler = signal.signal(signal.SIGTERM, _raise_sigterm)
+    _abnormal_exit_code = 130   # 128+SIGINT, the pre-existing sentinel for "no returncode yet"
     try:
         proc.wait()
     except KeyboardInterrupt:
@@ -670,9 +703,37 @@ def _launch_harness(
             proc.wait()
         except KeyboardInterrupt:
             pass  # second Ctrl-C: don't block further
+    except _SigTermReceived:
+        _abnormal_exit_code = 143   # 128+SIGTERM
+        # Unlike Ctrl-C (delivered to the whole foreground process group by
+        # the terminal itself), a SIGTERM sent to just this process's PID
+        # does NOT reach the harness child on its own — forward it
+        # explicitly so the child gets a chance to exit cleanly too, but
+        # bounded short: a process supervisor's own SIGTERM->SIGKILL grace
+        # period is commonly 5-10s, and blocking too long here risks THIS
+        # process being SIGKILLed before its own cleanup below ever runs
+        # (in which case memnos_scope.py's self-healing, not this handler,
+        # is what eventually restores the workspace — see its docstring).
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            pass
     finally:
-        # Cleanup always runs — even on KeyboardInterrupt or unexpected exceptions.
-        exit_code = proc.returncode if proc.returncode is not None else 130
+        # Restored FIRST, before any cleanup below: a second SIGTERM
+        # arriving mid-cleanup must not re-enter this handler and abort
+        # ctrl.close()/unlink/ScopingFiles.cleanup() partway through. Once
+        # restored, a second SIGTERM falls back to Python's default
+        # disposition (immediate termination) — same exposure as today for
+        # a signal arriving before this function's try even starts, not a
+        # new gap this change introduces.
+        signal.signal(signal.SIGTERM, _prev_sigterm_handler)
+        # Cleanup always runs — even on KeyboardInterrupt, SIGTERM, or
+        # unexpected exceptions.
+        exit_code = proc.returncode if proc.returncode is not None else _abnormal_exit_code
         ctrl.close()
         try:
             os.unlink(prompt_file)

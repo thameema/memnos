@@ -20,6 +20,8 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -268,6 +270,19 @@ class TestShouldScopeDispatch:
 
 
 class TestGenerateScopingFiles:
+    @pytest.fixture(autouse=True)
+    def _isolate_scope_state(self, tmp_path, monkeypatch):
+        """generate_scoping_files()/ScopingFiles.cleanup() now persist a
+        small reference-count/lock/snapshot state file per workspace under
+        ~/.memnos/tommy_scope/ (see memnos_scope.py's "Concurrency safety"
+        module docstring section) — same local-host-state directory family
+        as _BINDINGS_CACHE/_NS_OVERRIDES, which existing tests in this file
+        already isolate per-test. Autouse here so every test in this class
+        gets a throwaway state dir without having to remember to opt in —
+        forgetting would silently write real bookkeeping files into
+        whoever's actual $HOME runs this suite."""
+        monkeypatch.setattr(ms, "_SCOPE_STATE_DIR", tmp_path / "_scope_state")
+
     def test_fresh_workspace_writes_placeholders_only(self, tmp_path):
         scoping = ms.generate_scoping_files(tmp_path)
         mcp_text = (tmp_path / ".mcp.json").read_text()
@@ -365,3 +380,233 @@ class TestGenerateScopingFiles:
         scoping.cleanup()
         scoping.cleanup()  # must not raise
         assert not (tmp_path / ".mcp.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Concurrency safety — fix for a blocking finding from an adversarial review
+# of this module (see memnos_scope.py's module docstring "Concurrency
+# safety" section for the full design). Tommy's own default operating mode
+# dispatches a wave of several concurrent subagents into ONE workspace
+# (core.md's wave-based fan-out), so two overlapping generate_scoping_files()
+# / cleanup() lifetimes for the same workspace are the common case, not an
+# edge case.
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentScoping:
+    @pytest.fixture(autouse=True)
+    def _isolate_scope_state(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ms, "_SCOPE_STATE_DIR", tmp_path / "_scope_state")
+
+    def test_two_overlapping_dispatches_restore_exact_original(self, tmp_path):
+        """The exact bug reproduced by the adversarial review: two dispatches
+        into the SAME workspace with overlapping lifetimes — generate A,
+        generate B while A is still active, cleanup A, THEN cleanup B — must
+        leave the workspace's pre-existing .mcp.json restored to its EXACT
+        original bytes once both are done, not with the memnos block
+        permanently spliced into it.
+
+        On the pre-fix code this ordering is RED: A's cleanup restores A's
+        own snapshot (the true original O, taken at A's generate() call).
+        B's generate() call happened AFTER A's, so B's own independent
+        snapshot is O+memnos (whatever was on disk at B's own generate()
+        time — already merged by A). B's cleanup runs last and "wins,"
+        writing its stale O+memnos snapshot back — the memnos block is left
+        permanently merged into the real file. This is byte-for-byte the
+        corruption the review reported: `{"mcpServers": {"github": {...},
+        "memnos": {...}}}` surviving both dispatches completing.
+
+        On the fix, both dispatches share ONE snapshot (taken once, by A,
+        the true first holder) via a reference count — cleanup only
+        actually restores once the LAST live holder releases, regardless of
+        which one that happens to be.
+        """
+        original = {"mcpServers": {"github": {"command": "gh-mcp", "args": []}}}
+        original_text = json.dumps(original, indent=2) + "\n"
+        (tmp_path / ".mcp.json").write_text(original_text)
+
+        scoping_a = ms.generate_scoping_files(tmp_path)
+        scoping_b = ms.generate_scoping_files(tmp_path)  # overlapping: A still active
+
+        merged = json.loads((tmp_path / ".mcp.json").read_text())
+        assert "github" in merged["mcpServers"], "pre-existing server must survive the merge"
+        assert "memnos" in merged["mcpServers"]
+
+        # A (first to START) cleans up FIRST; B (second to start) cleans up
+        # LAST — the exact interleaving the review's repro used.
+        scoping_a.cleanup()
+        still_scoped = json.loads((tmp_path / ".mcp.json").read_text())
+        assert "memnos" in still_scoped["mcpServers"], (
+            "workspace must remain scoped while dispatch B is still active — "
+            "restoring on A's cleanup alone would pull the scoped config out "
+            "from under B mid-flight"
+        )
+        assert "github" in still_scoped["mcpServers"]
+
+        scoping_b.cleanup()
+        assert (tmp_path / ".mcp.json").read_text() == original_text, (
+            "cleanup must restore byte-identical original content once the LAST "
+            "concurrent dispatch releases it, not permanently merge the memnos block"
+        )
+
+    def test_three_way_overlap_any_release_order_restores_original(self, tmp_path):
+        """Same property, generalized to three concurrent holders released in
+        a non-FIFO order (the two started later release first; the one
+        started first releases last) — the shared snapshot/refcount must not
+        depend on any particular release order, only on the count reaching
+        zero."""
+        original = {"mcpServers": {"other": {"command": "x", "args": []}}}
+        original_text = json.dumps(original, indent=2) + "\n"
+        (tmp_path / ".mcp.json").write_text(original_text)
+
+        a = ms.generate_scoping_files(tmp_path)
+        b = ms.generate_scoping_files(tmp_path)
+        c = ms.generate_scoping_files(tmp_path)
+
+        b.cleanup()
+        assert "memnos" in json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]
+        c.cleanup()
+        assert "memnos" in json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]
+        a.cleanup()  # first-started, last to release
+        assert (tmp_path / ".mcp.json").read_text() == original_text
+
+    def test_concurrent_threads_stress_no_corruption(self, tmp_path):
+        """Real OS-thread concurrency, not just a deterministic call
+        ordering: several threads race through generate_scoping_files() with
+        a Barrier forcing genuinely simultaneous entry into the critical
+        section, repeated across multiple rounds reusing the same workspace.
+        Proves the fcntl.flock'd critical section actually serializes
+        concurrent access rather than merely being present in the source —
+        a lock that's never really contended would pass the deterministic
+        test above vacuously (it doesn't require true concurrency, by
+        design, to stay a reliable non-flaky test)."""
+        original = {"mcpServers": {"other": {"command": "x", "args": []}}}
+        original_text = json.dumps(original, indent=2) + "\n"
+        (tmp_path / ".mcp.json").write_text(original_text)
+
+        n_threads = 8
+        n_rounds = 5
+
+        for round_num in range(n_rounds):
+            barrier = threading.Barrier(n_threads)
+            results: list = [None] * n_threads
+            errors: list[BaseException] = []
+
+            def worker(i):
+                try:
+                    barrier.wait(timeout=5)  # force genuinely overlapping starts
+                    scoping = ms.generate_scoping_files(tmp_path)
+                    time.sleep(0.01)  # widen the overlap window further
+                    results[i] = scoping
+                except BaseException as exc:
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(n_threads)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+            assert not errors, f"round {round_num}: worker thread(s) raised: {errors}"
+            assert all(results), f"round {round_num}: not every thread got a ScopingFiles handle"
+
+            mid = json.loads((tmp_path / ".mcp.json").read_text())
+            assert "memnos" in mid["mcpServers"], f"round {round_num}: file not valid/scoped mid-round"
+            assert "other" in mid["mcpServers"]
+
+            release_errors: list[BaseException] = []
+
+            def releaser(scoping):
+                try:
+                    scoping.cleanup()
+                except BaseException as exc:
+                    release_errors.append(exc)
+
+            release_threads = [threading.Thread(target=releaser, args=(r,)) for r in results]
+            for t in release_threads:
+                t.start()
+            for t in release_threads:
+                t.join(timeout=10)
+
+            assert not release_errors, f"round {round_num}: cleanup() raised: {release_errors}"
+            assert (tmp_path / ".mcp.json").read_text() == original_text, (
+                f"round {round_num}: workspace not restored to exact original bytes "
+                f"after all {n_threads} concurrent holders released"
+            )
+
+    def test_crash_then_new_dispatch_self_heals_and_restores_exactly(self, tmp_path):
+        """Simulates the abnormal-exit case WITHOUT a real process crash
+        (see test_launch_harness_sigterm_scope.py for a real-subprocess/
+        real-SIGTERM proof): a holder whose owning PID is no longer alive is
+        left in the state with its scope never released. The next
+        generate_scoping_files() call into the same workspace must detect
+        that, restore the true original (verifying its hash first), and
+        THEN start a fresh scope session — so its own eventual cleanup()
+        restores exactly, not on top of a stale merge."""
+        original = {"mcpServers": {"other": {"command": "x", "args": []}}}
+        original_text = json.dumps(original, indent=2) + "\n"
+        (tmp_path / ".mcp.json").write_text(original_text)
+
+        scoping = ms.generate_scoping_files(tmp_path)
+        merged = json.loads((tmp_path / ".mcp.json").read_text())
+        assert "memnos" in merged["mcpServers"]
+
+        # Simulate the owning process crashing: reach into the persisted
+        # state and rewrite its holder's pid to one that cannot possibly be
+        # alive, without calling cleanup(). This is the on-disk shape a real
+        # SIGKILL would leave behind (see the SIGTERM test for a genuine
+        # subprocess proof of the same recovery path).
+        lock_path, state_path = ms._workspace_state_paths(tmp_path)
+        state = json.loads(state_path.read_text())
+        assert len(state["holders"]) == 1
+        dead_pid = 2**30  # astronomically unlikely to be a real live pid
+        for holder in state["holders"].values():
+            holder["pid"] = dead_pid
+        state_path.write_text(json.dumps(state))
+
+        # A brand-new dispatch into the same (still-scoped, "crashed")
+        # workspace must self-heal: restore the true original, THEN scope
+        # fresh for itself.
+        healed = ms.generate_scoping_files(tmp_path)
+        healed_text = json.loads((tmp_path / ".mcp.json").read_text())
+        assert "other" in healed_text["mcpServers"], "self-heal lost the pre-existing server entry"
+        assert "memnos" in healed_text["mcpServers"]
+
+        healed.cleanup()
+        assert (tmp_path / ".mcp.json").read_text() == original_text, (
+            "self-healed scope session must still restore to the true original on its own cleanup"
+        )
+
+    def test_external_edit_during_abandoned_scope_is_not_clobbered(self, tmp_path):
+        """The verify-before-restore safety net: if a workspace is left in
+        the abandoned-scope state (crashed holder) AND a human/other tool
+        edits the file in the meantime (not just leaves it as our merge
+        left it), self-healing must NOT blindly overwrite that edit with
+        the old snapshot — that would silently destroy real, intentional
+        content. It should recognize its recorded snapshot no longer
+        applies and leave the file alone instead."""
+        original = {"mcpServers": {"other": {"command": "x", "args": []}}}
+        original_text = json.dumps(original, indent=2) + "\n"
+        (tmp_path / ".mcp.json").write_text(original_text)
+
+        scoping = ms.generate_scoping_files(tmp_path)
+        lock_path, state_path = ms._workspace_state_paths(tmp_path)
+        state = json.loads(state_path.read_text())
+        for holder in state["holders"].values():
+            holder["pid"] = 2**30
+        state_path.write_text(json.dumps(state))
+
+        # Someone/something edits the file AFTER the crash, unaware of the
+        # abandoned scope — a legitimate, independent change.
+        hand_edited = {"mcpServers": {"other": {"command": "x", "args": []}, "brand_new": {"command": "y"}}}
+        hand_edited_text = json.dumps(hand_edited, indent=2) + "\n"
+        (tmp_path / ".mcp.json").write_text(hand_edited_text)
+
+        # A new dispatch arrives — must NOT clobber the hand edit with the
+        # stale pre-crash snapshot.
+        healed = ms.generate_scoping_files(tmp_path)
+        after_heal = (tmp_path / ".mcp.json").read_text()
+        assert "brand_new" in after_heal, (
+            "self-healing overwrote a legitimate concurrent edit with a stale snapshot"
+        )
+        healed.cleanup()
