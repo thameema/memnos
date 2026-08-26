@@ -1815,6 +1815,7 @@ components:
         namespace: { type: string, maxLength: 200 }
         diff: { type: string, description: unified diff text (git diff / GitHub PR patch) }
         name: { type: string, description: "optional: restrict the check to one ingested corpus source" }
+        version: { type: string, description: "issue #106 parity: optional dotted-numeric version (e.g. '2.0.0') to scope the verdict to. Omit to evaluate every FTS match unfiltered (pre-parity behaviour). When set: a constraint not yet introduced at this version is dropped from consideration entirely; one covered by a standing corpus_deviation, or whose window has lapsed by this version, is kept but a would-be 'violated' verdict is routed to the `deviated` bucket instead — see CorpusCheckDiffResponse." }
         inherit:
           type: boolean
           description: >-
@@ -2377,6 +2378,15 @@ components:
         uncovered:
           type: array
           items: { $ref: "#/components/schemas/DiffConstraintMatch" }
+        deviated:
+          type: array
+          items: { $ref: "#/components/schemas/DiffConstraintMatch" }
+          description: >-
+            issue #106 parity: constraints whose hunk-scoring would otherwise have cast a
+            `violated` vote, but whose `status` is `approved_deviation` or `expired` — an
+            audited exception or a retired rule, so it does not gate a merge and is not
+            counted in `evaluated`/`score`. Each entry's `status` distinguishes the two
+            cases.
         score: { type: number, description: "0.0-1.0 overall compliance ratio" }
         evaluated: { type: integer, description: "len(violated) + len(satisfied)" }
         inherited_in:
@@ -2389,7 +2399,7 @@ components:
           description: ancestor namespaces skipped because the caller lacks a read grant.
     DiffConstraintMatch:
       type: object
-      required: [id, content, source, namespace, score, matched_terms, added_hits, removed_hits]
+      required: [id, content, source, namespace, score, matched_terms, added_hits, removed_hits, status]
       properties:
         id: { type: integer }
         content: { type: string }
@@ -2406,6 +2416,9 @@ components:
           description: constraint content words (RFC-2119/stopwords stripped) found in the diff
         added_hits: { type: integer, description: matched terms found in added (+) lines }
         removed_hits: { type: integer, description: matched terms found in removed (-) lines }
+        status: { type: string, enum: [active, approved_deviation, expired], description: "issue #106 parity: always present, same meaning as CorpusCheckResponse's per-constraint status. 'active' by default; 'approved_deviation' when a standing corpus_deviation covers this constraint; 'expired' only reachable when the request's `version` is past this constraint's `until`." }
+        since: { type: [string, "null"], description: "issue #106 parity: this constraint's constraint_since, if set at ingest" }
+        until: { type: [string, "null"], description: "issue #106 parity: this constraint's constraint_until, if set at ingest" }
     CorpusListResponse:
       type: object
       required: [sources]

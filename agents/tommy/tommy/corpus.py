@@ -163,19 +163,32 @@ def corpus_check_diff(
 
     Returns exactly one of:
       {"ok": True,  "violated": [...], "satisfied": [...], "uncovered": [...],
-       "score": <float>, "evaluated": <int>}
-      {"ok": False, "violated": [], "satisfied": [], "uncovered": [],
+       "deviated": [...], "score": <float>, "evaluated": <int>}
+      {"ok": False, "violated": [], "satisfied": [], "uncovered": [], "deviated": [],
        "score": None, "evaluated": 0, "error": "..."}
     Never raises. ``score`` is ``None`` (never ``1.0``) on failure — ``1.0``
     is corpus_check_diff's own legitimate vacuous-pass value on the server
     side, and must never be produced here to stand in for "the check didn't
     run."
+
+    ``deviated`` (memnos adversarial-review fix, paired with #106's expiry/deviation
+    handling for corpus_check_diff) carries constraints that would otherwise have voted
+    ``violated`` but are excused by an audited corpus_deviation or by version-retirement
+    — never included in ``violated``, so ``tommy_verdict``'s ``merge_blocked`` (which
+    only reads ``violated``) is unaffected either way. Passed through at THIS layer so
+    the dict this function returns is a faithful mirror of the server response; note
+    ``tommy_verdict`` (mcp_server.py) does not yet forward its own ``deviated`` key into
+    the dict it returns to a caller — a follow-up, not done here to keep this fix scoped
+    to the server-side bug. No version is sent from this wrapper — Tommy has no notion
+    of a target version to check against yet, so this endpoint is called exactly as
+    before and the server's own version-omitted deviation handling applies (see
+    core/store.py's corpus_check_diff).
     """
     body: dict[str, Any] = {"namespace": namespace, "diff": diff}
     if name:
         body["name"] = name
     resp, err = _post(memnos_url, token, "/corpus/check_diff", body, timeout=timeout, transport=transport)
-    empty = {"violated": [], "satisfied": [], "uncovered": [], "score": None, "evaluated": 0}
+    empty = {"violated": [], "satisfied": [], "uncovered": [], "deviated": [], "score": None, "evaluated": 0}
     if resp is None:
         return {"ok": False, **empty, "error": f"corpus check_diff unreachable: {err}"}
     if resp.status_code >= 400:
@@ -190,6 +203,7 @@ def corpus_check_diff(
         "violated": data.get("violated", []),
         "satisfied": data.get("satisfied", []),
         "uncovered": data.get("uncovered", []),
+        "deviated": data.get("deviated", []),
         "score": data.get("score"),
         "evaluated": data.get("evaluated", 0),
     }
