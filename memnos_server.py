@@ -1477,7 +1477,11 @@ class Handler(BaseHTTPRequestHandler):
                             return self._send(400, {"error": "diff required"})
                         src_name = str(req.get("name", "")).strip() or None
                         nss, inherited_in, inheritance_skipped = _corpus_inherit_namespaces(conn, principal, ns, req)
-                        out = store.corpus_check_diff(mem.schema, nss, diff, name=src_name)
+                        version = str(req.get("version", "")).strip() or None
+                        try:
+                            out = store.corpus_check_diff(mem.schema, nss, diff, name=src_name, version=version)
+                        except ValueError as ve:
+                            return self._send(400, {"error": str(ve)})
                         if inherited_in or inheritance_skipped:
                             out["inherited_in"] = inherited_in
                             out["inheritance_skipped"] = inheritance_skipped

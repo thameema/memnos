@@ -2114,16 +2114,43 @@ class BrainStore:
         words = {w.lower() for w in re.findall(r"[A-Za-z]{4,}", text or "")}
         return (words - cls._DIFF_STOPWORDS) if strip_stopwords else words
 
-    def corpus_check_diff(self, schema, namespaces, diff, *, name=None, k=30) -> dict:
+    def corpus_check_diff(self, schema, namespaces, diff, *, name=None, k=30, version=None) -> dict:
         """DiffVerdict: classify each constraint the diff is topically relevant to as
         violated / satisfied / uncovered, plus an overall compliance `score`.
 
         issue #107: `namespaces` is either a single namespace (str, back-compat) or an
         ORDERED list, most-specific first — same contract as corpus_check(). Each
-        returned entry (violated/satisfied/uncovered) carries `namespace`. The candidate
-        pool drawn from multiple namespaces is ranked specificity-first via
+        returned entry (violated/satisfied/uncovered/deviated) carries `namespace`. The
+        candidate pool drawn from multiple namespaces is ranked specificity-first via
         _rank_by_specificity() BEFORE hunk-scoring, so an ancestor's single relevant rule
         isn't crowded out of the `k`-sized candidate window by a leaf's own matches.
+
+        `version` (optional dotted-numeric string, issue #106 parity — this endpoint had
+        NO version/deviation handling at all before this fix, unlike corpus_check() which
+        got both in #106): same semantics as corpus_check()'s `version`, applied to the
+        SAME candidate pool, in the SAME order (BEFORE _rank_by_specificity, for the same
+        fair-share reason documented on corpus_check). A constraint not yet introduced at
+        `version` is dropped from the candidate pool entirely, exactly like corpus_check.
+        Every surviving candidate carries a `status` field (active / expired /
+        approved_deviation) computed with the identical rules corpus_check uses —
+        including the version-omitted case, where a standing corpus_deviation still wins
+        regardless of its own `until` (see corpus_check's docstring for the full
+        version-window + deviation-precedence rules; not repeated here).
+
+        Unlike corpus_check (a flat ranked list where `status` is just a label — every
+        candidate is returned regardless), this endpoint's whole POINT is the
+        violated/satisfied/uncovered verdict, so a non-"active" status changes routing,
+        not just labeling: a constraint whose hunk-scoring would otherwise cast a
+        `violated` vote is instead routed to a new `deviated` bucket when its status is
+        "expired" or "approved_deviation" — that vote is real evidence (kept on the
+        entry, same matched_terms/added_hits/removed_hits shape as any other bucket), but
+        an audited exception or a retired rule must not gate a merge. This is
+        deliberately narrow: a non-"active" status does NOT change a `satisfied` or
+        `uncovered` verdict — corpus_check_diff's `evaluated`/`score` are diff-compliance
+        signals, and there is no bug being fixed in a diff that happens to satisfy a
+        retired or deviated rule, so nothing about that case moves. Only the
+        would-be-`violated` case is affected, because that is the one #112's
+        `tommy_verdict` gates a merge on.
 
         `name` (optional source filter) is matched via `subject_entity=name` across EVERY
         searched namespace, not just the leaf: corpus_sources rows are unique per
@@ -2166,16 +2193,26 @@ class BrainStore:
         properly; out of scope here (touches `ingest_constraints`, a separate write path).
 
         `score`: satisfied / (satisfied + violated), 1.0 if that denominator is 0 (either
-        nothing matched, or everything that matched landed in `uncovered`) — `evaluated`
-        (= len(violated) + len(satisfied)) disambiguates a vacuous 1.0 from a real one,
-        since #112 gates a merge on this and the two must not look identical.
+        nothing matched, or everything that matched landed in `uncovered` or `deviated`)
+        — `evaluated` (= len(violated) + len(satisfied)) disambiguates a vacuous 1.0 from
+        a real one, since #112 gates a merge on this and the two must not look identical.
+        `deviated` entries are excluded from both `evaluated` and `score` — same
+        treatment as `uncovered` — since an audited exception or a retired rule is not a
+        live compliance signal either way.
 
         Each returned entry's `matched_terms`/`added_hits`/`removed_hits` reflect the
         specific hunk that decided its verdict (so the numbers a caller sees are always
         consistent with the classification) — global diff-wide totals for `uncovered`
-        entries, since no single hunk decided those.
+        entries, since no single hunk decided those. Every entry (all four buckets) also
+        carries `status` (active / expired / approved_deviation) and the constraint's own
+        `since`/`until`, mirroring corpus_check()'s per-constraint fields.
         """
         self._chk(schema)
+        # validate `version` BEFORE the no-words/no-namespaces early returns below — same
+        # reasoning as corpus_check(): a malformed version must always 400, even when the
+        # diff has no matchable vocabulary or no readable namespace.
+        version = (version or "").strip() or None
+        version_key = self.parse_semver(version) if version is not None else None
         hunks = self._split_diff_hunks(diff)
         hunk_words = [(self._words(a), self._words(r)) for a, r in hunks]
         added_words: set = set().union(*(hw[0] for hw in hunk_words))
@@ -2184,13 +2221,14 @@ class BrainStore:
         removed_text_all = "\n".join(r for _, r in hunks)
         combined_words = list(dict.fromkeys(
             w.lower() for w in re.findall(r"[A-Za-z]{4,}", added_text_all + "\n" + removed_text_all)))
+        empty = {"violated": [], "satisfied": [], "uncovered": [], "deviated": [], "score": 1.0, "evaluated": 0}
         if not combined_words:
-            return {"violated": [], "satisfied": [], "uncovered": [], "score": 1.0, "evaluated": 0}
+            return empty
         q = " or ".join(combined_words[:self._DIFF_WORD_CAP])
         nss = [namespaces] if isinstance(namespaces, str) else list(namespaces)
         if not nss:
-            return {"violated": [], "satisfied": [], "uncovered": [], "score": 1.0, "evaluated": 0}
-        name_filter = "AND subject_entity=%(name)s " if name else ""
+            return empty
+        name_filter = "AND s.subject_entity=%(name)s " if name else ""
         params = {"q": q, "nss": nss, "per_ns_cap": max(k, 50)}
         if name:
             params["name"] = name
@@ -2199,23 +2237,86 @@ class BrainStore:
             # why a single global "ORDER BY score DESC LIMIT" would let one namespace's
             # match volume starve an ancestor's few relevant rows out of the candidate
             # pool before _rank_by_specificity's fair-share logic ever runs.
+            #
+            # LEFT JOIN LATERAL corpus_deviations — identical shape to corpus_check()'s
+            # own deviation lookup: correlated on BOTH constraint_id AND the row's OWN
+            # namespace (not the leaf `ns`), most-recent deviation wins if more than one
+            # was ever recorded. constraint_since/until come along too, so the
+            # version-window pass below has everything it needs without a second query.
             c.execute(
                 f"WITH scored AS ("
-                f"  SELECT id, statement AS content, subject_entity AS source, namespace, "
-                f"    ts_rank(fts, websearch_to_tsquery('english',%(q)s)) AS score "
-                f"  FROM {schema}.semantic "
-                f"  WHERE namespace = ANY(%(nss)s) AND kind='constraint' AND expired_at IS NULL {name_filter}"
-                f"    AND fts @@ websearch_to_tsquery('english',%(q)s)"
+                f"  SELECT s.id, s.statement AS content, s.subject_entity AS source, s.namespace, "
+                f"    s.constraint_since AS since, s.constraint_until AS until, "
+                f"    d.until AS deviation_until, (d.id IS NOT NULL) AS has_deviation, "
+                f"    ts_rank(s.fts, websearch_to_tsquery('english',%(q)s)) AS score "
+                f"  FROM {schema}.semantic s "
+                f"  LEFT JOIN LATERAL ("
+                f"      SELECT id, until FROM memnos_control.corpus_deviations "
+                f"      WHERE namespace = s.namespace AND constraint_id = s.id "
+                f"      ORDER BY created_at DESC LIMIT 1"
+                f"  ) d ON true "
+                f"  WHERE s.namespace = ANY(%(nss)s) AND s.kind='constraint' AND s.expired_at IS NULL {name_filter}"
+                f"    AND s.fts @@ websearch_to_tsquery('english',%(q)s)"
                 f"), ranked AS ("
                 f"  SELECT *, row_number() OVER (PARTITION BY namespace ORDER BY score DESC) AS rn "
                 f"  FROM scored"
                 f") "
-                f"SELECT id, content, source, namespace, score FROM ranked "
+                f"SELECT id, content, source, namespace, since, until, deviation_until, "
+                f"  has_deviation, score FROM ranked "
                 f"WHERE rn <= %(per_ns_cap)s ORDER BY score DESC", params)
             rows = c.fetchall()
-        candidates = self._rank_by_specificity(rows, nss, k)
 
-        violated, satisfied, uncovered = [], [], []
+        # issue #106 parity — same version-window filter/status pass corpus_check() runs,
+        # over the FULL per-namespace candidate pool, BEFORE _rank_by_specificity (see
+        # corpus_check's docstring for why: a row dropped here must never consume one of a
+        # namespace's fair-share slots). Not-yet-introduced candidates are dropped
+        # entirely; every survivor carries a `status` field consumed by the bucket-routing
+        # loop below.
+        if version_key is None:
+            filtered = []
+            for row in rows:
+                status = "approved_deviation" if row.pop("has_deviation") else "active"
+                row.pop("deviation_until", None)
+                row["status"] = status
+                filtered.append(row)
+        else:
+            filtered = []
+            for row in rows:
+                has_deviation = row.pop("has_deviation")
+                deviation_until = row.pop("deviation_until")
+                since_raw, until_raw = row.get("since"), row.get("until")
+                if since_raw:
+                    try:
+                        if version_key < self.parse_semver(since_raw):
+                            continue  # not yet introduced: drop outright, regardless of any deviation
+                    except ValueError:
+                        pass  # malformed stored value: don't let bad legacy data block a read
+                expired = False
+                if until_raw:
+                    try:
+                        expired = version_key >= self.parse_semver(until_raw)
+                    except ValueError:
+                        expired = False
+                deviation_active = False
+                if has_deviation:
+                    if not deviation_until:
+                        deviation_active = True
+                    else:
+                        try:
+                            deviation_active = version_key < self.parse_semver(deviation_until)
+                        except ValueError:
+                            deviation_active = True  # malformed stored value: don't silently drop the override
+                if deviation_active:
+                    row["status"] = "approved_deviation"
+                elif expired:
+                    row["status"] = "expired"
+                else:
+                    row["status"] = "active"
+                filtered.append(row)
+
+        candidates = self._rank_by_specificity(filtered, nss, k)
+
+        violated, satisfied, uncovered, deviated = [], [], [], []
         for row in candidates:
             content = row["content"]
             c_words = self._words(content, strip_stopwords=True)
@@ -2249,8 +2350,16 @@ class BrainStore:
                 "namespace": row["namespace"],
                 "score": row["score"], "matched_terms": sorted(matched),
                 "added_hits": add_hits, "removed_hits": rem_hits,
+                "status": row["status"], "since": row.get("since"), "until": row.get("until"),
             }
-            if violated_hunk is not None:
+            # issue #106 parity, narrow on purpose (see docstring): an approved deviation
+            # or a version-retired constraint must not gate a merge, so a would-be
+            # `violated` vote is redirected to `deviated` instead. A would-be `satisfied`
+            # or `uncovered` vote is left exactly where it already lands — status only
+            # ever changes routing for the violated case, never labels a pass as a fail.
+            if violated_hunk is not None and row["status"] != "active":
+                deviated.append(entry)
+            elif violated_hunk is not None:
                 violated.append(entry)
             elif satisfied_hunk is not None:
                 satisfied.append(entry)
@@ -2260,7 +2369,7 @@ class BrainStore:
         evaluated = len(violated) + len(satisfied)
         score = round(len(satisfied) / evaluated, 4) if evaluated else 1.0
         return {"violated": violated, "satisfied": satisfied, "uncovered": uncovered,
-                "score": score, "evaluated": evaluated}
+                "deviated": deviated, "score": score, "evaluated": evaluated}
 
     def migrate_namespace(self, schema, src, dst, *, mode="copy", like=None) -> dict:
         """Copy or MOVE memories from one namespace to another (same tenant schema).
