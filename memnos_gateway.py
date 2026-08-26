@@ -37,10 +37,22 @@ Design (see memnos_cli.py's `_rolling_upgrade_or_convert` for the CLI side):
          instant every NEW inbound request goes to the new backend; requests already
          in flight to the old one keep running against it (see in-flight accounting)
       5. drains: waits (bounded by MEMNOS_GATEWAY_DRAIN_TIMEOUT_S) for the in-flight
-         counter on the OLD port to hit zero
-      6. only THEN signals the old backend (SIGTERM, grace period, SIGKILL if it doesn't
-         exit) — it is never touched while it might still be serving a request that
-         started before the flip
+         counter on the OLD port to hit zero — continuously rechecking the NEW backend's
+         own liveness on every poll of that wait, not just once
+      6. immediately before signaling the old backend, one final authoritative liveness
+         recheck of the NEW backend: if it died anywhere after step 2's readiness proof
+         (post-flip, mid-drain — an OOM under first real traffic, a config issue that
+         only trips on a real query, connection-pool exhaustion), the OLD backend is
+         NEVER killed; `_current_port` is rolled back to it instead (or cleared, if the
+         old backend happens to be dead too) and `status: failed` is reported — this is
+         what closes the confirmed bug where a NEW backend dying in this window used to
+         still get the OLD backend killed out from under it and reported `status: done`,
+         a false success with nothing actually serving traffic
+      7. only once the NEW backend is confirmed to have survived the whole drain does
+         this signal the OLD backend (SIGTERM, grace period, SIGKILL if it doesn't exit)
+         — it is never touched while it might still be serving a request that started
+         before the flip, AND never touched if the backend meant to replace it didn't
+         survive to take over
 
 No streaming/SSE concern: every memnos response this proxies is a normal bounded
 request/response (verified — the /mcp mount itself requires Content-Length, not chunked,
@@ -170,38 +182,61 @@ _DRAIN_POLL_S = 0.2
 _DRAIN_CONFIRM_POLLS = 2
 
 
-def _wait_drain(port, timeout):
+def _wait_drain(port, timeout, watch_proc=None):
     """Block until the in-flight counter for `port` reads zero on
-    `_DRAIN_CONFIRM_POLLS` CONSECUTIVE polls, `_DRAIN_POLL_S` apart, or `timeout`
-    elapses. Returns True if it fully drained, False if the timeout fired first (the
-    caller still proceeds to signal the backend after a timeout — an indefinite hang on
-    one stuck request must not wedge every future upgrade forever; see
+    `_DRAIN_CONFIRM_POLLS` CONSECUTIVE polls, `_DRAIN_POLL_S` apart, `timeout` elapses, or
+    (if given) `watch_proc` exits — whichever happens first. Returns "drained" if it fully
+    drained, "timeout" if the timeout fired first (the caller still proceeds to signal the
+    OLD backend after a timeout — an indefinite hang on one stuck request must not wedge
+    every future upgrade forever), or "watch_died" if `watch_proc` exited before either of
+    those (only reachable when `watch_proc` is given).
+
+    `watch_proc` is the confirmed-blocking-bug fix (adversarial review finding): the NEW
+    backend's readiness was, before this, proven exactly once, right before the atomic
+    flip, and never re-checked again for the whole drain window that follows — a NEW
+    backend that dies anywhere in that window (OOM under first real traffic, a config
+    issue that only trips on a real query, connection-pool exhaustion) would previously
+    still result in the OLD (healthy) backend being killed and the upgrade reported
+    `done`. Polling `watch_proc` on every tick here, alongside the in-flight count, means
+    a mid-drain death is caught within one `_DRAIN_POLL_S` tick — not only once, right at
+    the very end, by the final recheck `_run_rolling_upgrade` also does immediately before
+    the decision to kill the OLD backend. Both checks exist deliberately: this one so a
+    death that happens EARLY in a long drain window (a real drain can run for the full
+    `DRAIN_TIMEOUT_S`) is caught fast rather than only discovered once the drain
+    coincidentally finishes; the other because it is the one that actually gates the
+    irreversible `_kill(old_proc)` call and must never be skipped, so it does not
+    implicitly trust that this loop always got a chance to run (e.g. `old_port is None`,
+    the very first upgrade case, skips calling this function entirely — see
     `_run_rolling_upgrade`).
 
-    A single zero reading is NOT enough: `_inflight_incr` only fires once a request has
-    reached `_forward` (past accept + thread dispatch + header/body read) — a connection
-    the OS has already accepted, or one still mid-read, is invisible to the counter for
-    that brief window. A fixed settle pause right after the flip, followed by requiring
-    TWO consecutive zero polls, closes that accept-to-increment gap in practice (it
-    narrows, rather than mathematically eliminates, the race — the same trade-off any
-    request-counting drain makes) without adding any new signal or slowing down the
-    common case, where in-flight is already zero and this returns in ~`_DRAIN_SETTLE_S +
-    _DRAIN_POLL_S` seconds."""
+    A single zero in-flight reading is NOT enough on its own: `_inflight_incr` only fires
+    once a request has reached `_forward` (past accept + thread dispatch + header/body
+    read) — a connection the OS has already accepted, or one still mid-read, is invisible
+    to the counter for that brief window. A fixed settle pause right after the flip,
+    followed by requiring TWO consecutive zero polls, closes that accept-to-increment gap
+    in practice (it narrows, rather than mathematically eliminates, the race — the same
+    trade-off any request-counting drain makes) without adding any new signal or slowing
+    down the common case, where in-flight is already zero and this returns in
+    ~`_DRAIN_SETTLE_S + _DRAIN_POLL_S` seconds."""
     time.sleep(_DRAIN_SETTLE_S)
+    if watch_proc is not None and watch_proc.poll() is not None:
+        return "watch_died"
     deadline = time.monotonic() + timeout
     consecutive_zero = 0
     while time.monotonic() < deadline:
+        if watch_proc is not None and watch_proc.poll() is not None:
+            return "watch_died"
         with _inflight_lock:
             n = _inflight.get(port, 0)
         if n <= 0:
             consecutive_zero += 1
             if consecutive_zero >= _DRAIN_CONFIRM_POLLS:
-                return True
+                return "drained"
         else:
             consecutive_zero = 0
         time.sleep(_DRAIN_POLL_S)
     with _inflight_lock:
-        return _inflight.get(port, 0) <= 0
+        return "drained" if _inflight.get(port, 0) <= 0 else "timeout"
 
 
 def _inflight_incr(port):
@@ -325,14 +360,63 @@ def _run_rolling_upgrade():
           f"draining old backend (pid {old_proc.pid if old_proc else '?'}, port {old_port}) ...",
           flush=True)
 
-    drained = _wait_drain(old_port, DRAIN_TIMEOUT_S) if old_port is not None else True
-    if not drained:
+    drain_result = _wait_drain(old_port, DRAIN_TIMEOUT_S, watch_proc=new_proc) \
+        if old_port is not None else "drained"
+
+    # ---- post-flip liveness recheck (the fix for the confirmed blocking bug) ----------
+    # `_wait_drain` above already rechecked `new_proc` on EVERY poll throughout the whole
+    # drain window (so a death anywhere in that window — not just right at the end — is
+    # caught within one `_DRAIN_POLL_S` tick). This is one more, final, authoritative
+    # check, right here, at the very last moment before the decision below (killing
+    # old_proc) becomes irreversible — it does not rely on `_wait_drain` having had a
+    # chance to run its loop at all (e.g. old_port was already fully drained the instant
+    # `_wait_drain` was entered).
+    new_rc = new_proc.poll()
+    if drain_result == "watch_died" or new_rc is not None:
+        if new_rc is None:
+            # `_wait_drain` observed the death via its own poll() (which already reaps),
+            # so this is a no-op in practice — kept as a defensive backstop against ever
+            # leaving a zombie behind.
+            try:
+                new_proc.wait(timeout=5)
+            except Exception:
+                pass
+            new_rc = new_proc.poll()
+        # The backend meant to replace old_port never survived to take over. Roll back —
+        # but only to old_proc if IT is actually still alive; if it died too (the same
+        # OOM event took both, say), repointing _current_port at a second corpse would
+        # just reproduce this identical false-recovery bug one level down.
+        old_rc = old_proc.poll() if old_proc is not None else None
+        old_alive = old_proc is not None and old_rc is None
+        if old_alive:
+            _current_port, _current_proc = old_port, old_proc
+            error = (f"new backend (pid {new_proc.pid}, port {new_port}) died "
+                     f"(exit code {new_rc}) after passing readiness but before the "
+                     "upgrade finished draining the old backend — rolled back to the "
+                     f"old backend (pid {old_proc.pid}, port {old_port}), which was "
+                     "never stopped and is still serving all traffic. Nothing was left "
+                     "half-swapped.")
+        else:
+            _current_port, _current_proc = None, None
+            error = (f"new backend (pid {new_proc.pid}, port {new_port}) died "
+                     f"(exit code {new_rc}) after passing readiness, AND the old "
+                     f"backend (pid {old_proc.pid if old_proc else '?'}, port {old_port}) "
+                     "is ALSO no longer running — no backend is currently serving "
+                     "traffic on this gateway. Manual intervention required "
+                     "(`memnos restart`).")
+        _set_upgrade(status="failed", phase="new_backend_died_post_flip",
+                     error=error, finished_at=time.time())
+        print(f"[memnos-gateway] upgrade FAILED: {error}", flush=True)
+        return
+
+    if drain_result == "timeout":
         print(f"[memnos-gateway] WARNING: old backend (port {old_port}) did not fully drain "
               f"within {DRAIN_TIMEOUT_S:.0f}s — stopping it anyway (a single stuck request must "
               f"not wedge every future upgrade).", flush=True)
     if old_proc is not None:
         _kill(old_proc)
 
+    drained = drain_result == "drained"
     _set_upgrade(status="done", phase="complete", drained=drained,
                 finished_at=time.time())
     print(f"[memnos-gateway] upgrade COMPLETE — live backend is now pid {new_proc.pid} "
