@@ -684,7 +684,33 @@
       },
       {
        "arg": "--limit",
-       "help": "reconcile: cap the number of facts walked this run (newest first)",
+       "help": "reconcile: cap the number of facts walked this run (newest first); a real run stopped by --limit resumes from there next time",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--chunk-size",
+       "default": "200",
+       "help": "reconcile: facts read per page (default 200). Every fact that changes something is committed on its own, so no row lock is held across facts; unchanged facts are committed at most every N / ~1s",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--restart",
+       "help": "reconcile: discard an unfinished run's saved position and start again from the newest fact (default: resume where it stopped)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--pause-ms",
+       "help": "reconcile: sleep this long between pages to yield to live traffic",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--lock-timeout-ms",
+       "default": "2000",
+       "help": "reconcile: give up waiting for a row/lock after this long, roll back the in-flight fact and retry with backoff (default 2000)",
        "positional": false,
        "required": false
       },
