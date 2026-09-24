@@ -219,6 +219,34 @@ def part_a():
                                      "contains") for f in new))
     check("A4 identifiers preserved verbatim (#146, a1b2c3d, v0.4.12, host3)",
           all(any(i in f["statement"] for f in new) for i in ("#146", "a1b2c3d", "v0.4.12", "host3")))
+    # A4b — the FILTER (not the cap) removes the noise: with the cap out of the way, only
+    # the 6 high-value facts + the one state-change ('fixed') outcome survive.
+    os.environ["MEMNOS_ASSISTANT_FACT_CAP"] = "100"
+    uncapped = mem.extract_facts(ASSISTANT_REPLY, "2026-09-24", speaker="assistant")
+    check("A4b uncapped: 17 -> 7 (6 high-value + 1 explicit 'fixed' outcome), all noise dropped",
+          [f["statement"] for f in uncapped] == EXPECTED_ASSISTANT_KEPT + [
+              "The assistant fixed the flaky recall test by recreating the index in the fixture."])
+    # rows shaped like REAL llama3.1:8b output for such replies: file-path narration under
+    # invented predicates must not be rescued by the file name
+    real_shaped = [
+        F("compare.html", "updated", "brief card",
+          "The brief card in the vs-others section of compare.html was updated."),
+        F("tests/test_hooks.py", "updated", "", "tests/test_hooks.py was updated."),
+        F("memnos_cli.py", "added", "_flatten_content", "I added a helper _flatten_content in memnos_cli.py."),
+        F("README section on hooks", "identified", "outdated", "The README section on hooks is a bit outdated."),
+        F("", "can_look_at", "dossier page", "Next I can look at the dossier page if you want."),
+        F("tests/test_hooks.py", "covers", "list-shaped content",
+          "tests/test_hooks.py covers list-shaped transcript content."),
+        F("hook tests", "pass", "38", "All 38 hook tests pass."),
+        F("", "ran_test_suite", "", "I also ran the full test suite locally: 212 passed, 0 failed."),
+        F("PR #140", "opened", "", "PR #140 was opened to fix #139."),
+        F("PR #140", "merged", "100b2a2", "PR #140 was merged as 100b2a2."),
+    ]
+    got = [f["statement"] for f in filter_assistant_facts(real_shaped)]
+    check("A4b file-path narration / invented predicates dropped even uncapped",
+          got == ["All 38 hook tests pass.",
+                  "I also ran the full test suite locally: 212 passed, 0 failed.",
+                  "PR #140 was opened to fix #139.", "PR #140 was merged as 100b2a2."])
     os.environ["MEMNOS_ASSISTANT_FACT_CAP"] = "3"
     check("A4 cap is configurable (MEMNOS_ASSISTANT_FACT_CAP=3)",
           len(mem.extract_facts(ASSISTANT_REPLY, "2026-09-24", speaker="assistant")) == 3)

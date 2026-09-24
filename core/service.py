@@ -458,40 +458,36 @@ def _extract_prompt(profile: str, date, user_name: str | None = None) -> str:
 
 # Deterministic post-filter for ASSISTANT-turn facts (issue #154). The prompt asks for
 # narrow extraction, but a small/cheap model (or a pluggable extract_fn) may still emit an
-# activity log — this guarantees the bound no matter which backend ran.
+# activity log — this guarantees the bound no matter which backend ran. ALLOWLIST, not a
+# narration denylist (a model invents new narration predicates faster than any list —
+# 'ran_test_suite', 'covers', 'identified', 'can_look_at' all seen from llama3.1:8b):
 #   - ALWAYS drop personal-life / activity predicates (the benchmark vocabulary that
 #     produced `user | did_activity | …` ×275 and `agent | did_activity | …` ×116);
-#   - drop generic narration predicates ('', is/has/includes/added/updated/…) and
-#     self-referential ('assistant'/'agent'/…) subjects UNLESS the statement carries an
-#     identifier or an explicit state-change/decision/outcome cue;
-#   - cap the survivors (MEMNOS_ASSISTANT_FACT_CAP, default 6), ranked: the narrow
-#     prompt's own high-value predicates first, then identifier/state-bearing facts, then
-#     the rest (original order within a tier).
+#   - otherwise KEEP a fact only if it has one of the narrow prompt's high-value
+#     predicates (decided/status/result/root_cause/…, subject not the assistant itself),
+#     OR its statement carries a HARD identifier (#N, ticket key, version, commit SHA,
+#     URL, hostN, :port), OR an explicit state-change / decision / outcome cue.
+#     A bare file path is deliberately NOT an identifier here: nearly every coding-agent
+#     sentence names a file, so "compare.html was updated" (the ×275 activity log in a
+#     different predicate) must not be rescued by it;
+#   - cap the survivors (MEMNOS_ASSISTANT_FACT_CAP, default 6), high-value predicates
+#     first, then identifier/state-bearing facts (original order within a tier).
 _ASSISTANT_DROP_PREDICATES = {
     "did_activity", "did", "performed", "performed_activity", "activity", "worked_on",
     "met_person", "met", "visited", "likes", "enjoys", "hobby", "experienced", "feels"}
-_ASSISTANT_NARRATION_PREDICATES = {
-    "", "is", "are", "was", "has", "have", "had", "includes", "include", "contains",
-    "has_feature", "added", "adds", "updated", "updates", "created", "creates", "checked",
-    "ran", "runs", "reviewed", "looked_at", "read", "wrote", "edited", "modified",
-    "changed", "implemented", "mentioned", "discussed", "explained", "described", "said",
-    "noted", "asked", "suggested", "offered", "recommended", "plans_to", "will",
-    "next_step", "is_about", "involves", "relates_to", "related_to", "describes"}
 _ASSISTANT_HIGH_VALUE_PREDICATES = {
     "decided", "status", "result", "root_cause", "version", "deployed_version", "merged_as",
     "fixed_in", "is_blocked_by", "identifier"}
 _SELF_SUBJECTS = {"assistant", "the assistant", "agent", "the agent", "ai", "claude",
                   "i", "me", "we", "bot", "model", "claude code"}
-_IDENT_RE = re.compile(
+_HARD_IDENT_RE = re.compile(
     r"(#\d+|\b[A-Z][A-Z0-9]+-\d+\b|\bv?\d+\.\d+(?:\.\d+)*\b|"
     r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b|https?://|"
-    r"\b[\w-]+\.(?:com|org|net|io|dev|ai|app|sh|py|ts|js|tsx|jsx|html|css|sql|md|yml|yaml|json|toml)\b|"
-    r"\bhost\d+\b|:\d{2,5}\b|\b(?:PR|MR|issue|ticket)\s*#?\d+\b|"
-    r"[\w.-]+/[\w./-]+)", re.I)
+    r"\bhost\d+\b|:\d{2,5}\b|\b(?:PR|MR|issue|ticket)\s*#?\d+\b)", re.I)
 _STATE_RE = re.compile(
     r"\b(deployed|merged|released|shipped|fixed|reverted|rolled back|broken|blocked|"
     r"unblocked|is now|are now|now (?:uses|runs|points|lives|returns)|switched to|no longer|"
-    r"decided|chose|chosen|root cause|passed|passing|failed|failing|green|resolved|"
+    r"decided|chose|chosen|root cause|pass(?:es|ed|ing)?|fail(?:s|ed|ing)?|green|resolved|"
     r"migrated|upgraded|downgraded|deprecated)\b", re.I)
 
 
@@ -509,11 +505,11 @@ def filter_assistant_facts(facts) -> list[dict]:
         subj = str(f.get("subject") or "").strip().lower()
         if pred in _ASSISTANT_DROP_PREDICATES:
             continue
-        signal = bool(_IDENT_RE.search(stmt) or _STATE_RE.search(stmt))
-        if (pred in _ASSISTANT_NARRATION_PREDICATES or subj in _SELF_SUBJECTS) and not signal:
+        high = pred in _ASSISTANT_HIGH_VALUE_PREDICATES and subj not in _SELF_SUBJECTS
+        signal = bool(_HARD_IDENT_RE.search(stmt) or _STATE_RE.search(stmt))
+        if not (high or signal):
             continue
-        tier = 0 if pred in _ASSISTANT_HIGH_VALUE_PREDICATES else (1 if signal else 2)
-        kept.append((tier, len(kept), f))
+        kept.append((0 if high else 1, len(kept), f))
     kept.sort(key=lambda t: (t[0], t[1]))
     return [f for _, _, f in kept[:_assistant_fact_cap()]]
 
@@ -969,7 +965,9 @@ class MemnosMemory:
         The `statement` is the retrieval unit (embedded + searched), so coverage matters
         most: capture EVERY fact, not just clean triples. subject/predicate are best-effort
         metadata that enable belief-change supersession when applicable — a fact that
-        doesn't fit a triple is still captured (empty predicate). Measured: rigid
+        doesn't fit a triple is still captured (empty predicate) — EXCEPT on the
+        assistant path, where extract_facts() post-filters to decisions / outcomes /
+        identifiers / state changes (issue #154). Measured: rigid
         SPO-only + 700-token cap under-extracted (~12 facts / 33-turn session); answers
         existed in raw turns but never became facts."""
         import json
