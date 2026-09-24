@@ -2161,7 +2161,7 @@ components:
             properties:
               name: { type: string }
               hop: { type: integer }
-              weight: { type: number }
+              weight: { type: number, description: "edge weight on the last hop (seed edge for hop 1, frontier edge for hop 2)" }
         size: { type: integer, description: members returned + the seed entity }
         max_hops: { type: integer }
         limit: { type: integer }
