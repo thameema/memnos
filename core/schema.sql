@@ -97,6 +97,11 @@ BEGIN
   -- and collapsed into it instead of inserted (write-path dedupe; density signal).
   EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS superseded_by bigint', s);
   EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS restatements int NOT NULL DEFAULT 0', s);
+  -- SOURCE SPEAKER (issue #154): which speaker ('user' / 'assistant' / a named speaker)
+  -- the turn a fact was extracted from — queryable provenance for speaker-aware
+  -- extraction and corroboration. NULL = legacy / consolidated / unattributed.
+  -- (additive, rolling-safe)
+  EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS source_speaker text', s);
 
   -- TYPED MEMORIES (0.1.6): optional classification of a memory —
   -- decision | incident | constraint | skill | fact. NULL = untyped (legacy/plain).
