@@ -1127,10 +1127,12 @@ class BrainStore:
     # measured in production). The per-fact dedupe lookup is now a real nearest-neighbour
     # query (`ORDER BY embedding <=> %(v)s LIMIT k` — subject index or sem_hnsw); the
     # rare negation lookup stays exact on purpose (see nearest_live_facts_to).
-    # Walk order: newest-first on the observation axis. The sort key is
-    # coalesce(observed_at, '-infinity') — the same order as `observed_at DESC NULLS LAST`
-    # — so the SAME expression can be used for both ORDER BY and the keyset cursor.
-    RECONCILE_NULL_OBS = "-infinity"
+    # Walk order: newest-first on the observation axis. semantic.observed_at is NOT NULL
+    # (schema.sql), but the sort key still coalesces to 'epoch' — the same stand-in the
+    # older-than filter uses — so the SAME expression serves ORDER BY and the keyset
+    # cursor even on a hand-edited table. (Not '-infinity': psycopg3 cannot load an
+    # infinite timestamp into Python, and the cursor value round-trips through Python.)
+    RECONCILE_NULL_OBS = "epoch"
 
     def live_facts_page(self, schema, ns, *, before=None, limit=200) -> list[dict]:
         """One page of the namespace's LIVE extracted facts, newest-first, strictly

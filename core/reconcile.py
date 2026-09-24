@@ -22,8 +22,10 @@ live /recall and /remember traffic:
   concurrent remember() calls failed with DeadlockDetected in the test. Holding locks
   for one fact at a time shrinks that window to a single fact's statements, and a live
   write that needs a row reconcile is touching waits milliseconds, not up to a second.
-  The cost is one extra commit (+ watermark UPDATE) per fact that actually changed
-  something — negligible next to the lookups. 200 / 1s bound only the read-only
+  The cost is one extra commit (+ watermark UPDATE, + WAL flush) per fact that actually
+  changed something. synchronous_commit is deliberately left ON: an async commit is
+  visible to live sessions before it is durable, so a crash could lose a reconcile write
+  that a live write already acted on. 200 / 1s bound only the read-only
   stretches: long enough to amortise commits across the facts that change nothing,
   short enough that no snapshot is held open long enough to matter to VACUUM.
 
@@ -152,13 +154,6 @@ def connect(dsn: str, *, lock_timeout_ms: int = DEFAULT_LOCK_TIMEOUT_MS,
         c.execute("SET application_name = 'memnos-reconcile'")
         c.execute(f"SET lock_timeout = {int(lock_timeout_ms)}")
         c.execute(f"SET statement_timeout = {int(statement_timeout_ms)}")
-        # Per-fact commits (see module docstring) would otherwise each wait for a WAL
-        # flush — measured to nearly double a 20000-fact run. Safe for THIS session:
-        # every commit carries its own watermark UPDATE, so a crash that loses the last
-        # few hundred ms of reconcile commits recovers to a consistent (mutations +
-        # watermark together) earlier point, and the resumed run simply redoes those
-        # facts. Never set on, and never affects, live-traffic connections.
-        c.execute("SET synchronous_commit = off")
     apply_lookup_settings(conn, ef_search)
     conn.commit()
     return conn
