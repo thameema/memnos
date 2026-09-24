@@ -149,7 +149,6 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { $ref: "#/components/responses/ConstraintBudget" }
         "413": { $ref: "#/components/responses/TooLarge" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/DbDown" }
@@ -171,7 +170,6 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { $ref: "#/components/responses/ConstraintBudget" }
         "413": { $ref: "#/components/responses/TooLarge" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/DbDown" }
@@ -190,7 +188,8 @@ paths:
         type. **Pinned constraints**: memories typed `constraint` in the target namespace
         (and its grant-readable linked namespaces) are ALWAYS included — first in the
         output and rendered as leading `CONSTRAINT: ...` context lines — regardless of
-        query similarity; cap with `constraint_cap` (default 10, 0 disables).
+        query similarity, and are never budgeted by size or count; optionally cap the
+        count returned with `constraint_cap` (unset = unbounded, 0 disables).
       requestBody:
         required: true
         content:
@@ -1456,17 +1455,6 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
-    ConstraintBudget:
-      description: >-
-        issue #153: a type=constraint write REJECTED (nothing saved) because the
-        namespace's live pinned constraints (net of rows this write supersedes, plus
-        the new one) would exceed MEMNOS_PINNED_BUDGET_CHARS (default 5000 rendered
-        chars) or MEMNOS_PINNED_MAX_COUNT (default 10). A write that does not
-        increase pinned usage, such as superseding a rule with a shorter one, is
-        always accepted.
-      content:
-        application/json:
-          schema: { $ref: "#/components/schemas/ConstraintBudgetError" }
     VaultLocked:
       description: secret vault locked — MEMNOS_SECRET_KEY not set
       content:
@@ -1635,36 +1623,6 @@ components:
         async:
           type: boolean
           description: defer fact extraction to background workers (fast return)
-    ConstraintBudgetError:
-      type: object
-      required: [error, constraint_budget]
-      properties:
-        error: { type: string }
-        constraint_budget:
-          type: object
-          required: [namespace, budget_chars, max_count, projected_chars, projected_count, candidates]
-          properties:
-            namespace: { type: string }
-            budget_chars: { type: integer }
-            max_count: { type: integer }
-            current_chars: { type: integer }
-            current_count: { type: integer }
-            projected_chars: { type: integer }
-            projected_count: { type: integer }
-            new_constraint_chars: { type: integer }
-            constraint_subject: { type: string }
-            candidates:
-              type: array
-              description: live constraints to supersede, largest first
-              items:
-                type: object
-                properties:
-                  id: { type: string, description: "'<kind>:<id>'" }
-                  subject: { type: [string, "null"] }
-                  chars: { type: integer }
-                  age_days: { type: [integer, "null"] }
-                  created: { type: [string, "null"] }
-                  preview: { type: string }
     MemoryWriteRequest:
       type: object
       required: [namespace]
@@ -1705,8 +1663,10 @@ components:
         constraint_cap:
           type: integer
           description: >
-            max pinned constraints injected (default 10, clamped 0..50; 0 disables
-            pinning). Pinned rows are ADDED ahead of ranked results, never replace them.
+            optionally caps how many pinned constraints inject (unset = unbounded,
+            every live constraint injects; 0 disables pinning entirely). Pinned
+            constraints are never budgeted by size — they always render in full.
+            Pinned rows are ADDED ahead of ranked results, never replace them.
         raw_quota: { type: integer, description: max verbatim turns returned }
         fact_quota: { type: integer, description: max facts returned }
         max_chars: { type: integer, description: context block size cap (default 9000) }

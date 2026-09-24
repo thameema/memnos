@@ -28,7 +28,7 @@ under test, not an earlier, unrelated phase of the same request.
 
 Review-round-2 additions cover two gaps the first pass left untested:
   - pinned_constraints() itself was left UNGUARDED at its memnos_server.py call site --
-    constraint_cap defaults to 10, not 0, so every scenario above (which always sends
+    constraint_cap defaults to unbounded, not 0, so every scenario above (which always sends
     constraint_cap:0 to isolate the arm under test) accidentally also skipped the one
     query that ran unguarded on the real default. That scenario below deliberately
     omits constraint_cap from the request body -- the actual default a real client
@@ -256,8 +256,8 @@ def main():
               NS in (j.get("namespaces_searched") or []), str(j.get("namespaces_searched")))
 
         # issue #41 fix C follow-up (review round 2): pinned_constraints() was left
-        # UNGUARDED at the memnos_server.py call site -- constraint_cap defaults to 10,
-        # not 0, so a real client that doesn't know to send constraint_cap:0 hits this
+        # UNGUARDED at the memnos_server.py call site -- constraint_cap defaults to
+        # unbounded, not 0, so a real client that doesn't know to send constraint_cap:0 hits this
         # live {schema}.semantic/raw_turns/episodic query on EVERY /recall, before
         # recall_fetch's own guarded arms even run. Every scenario above deliberately
         # sent constraint_cap:0, the one flag that skips this exact query -- so none of

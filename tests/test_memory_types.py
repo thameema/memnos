@@ -6,7 +6,8 @@
 - type='constraint' memories are ALWAYS injected into /recall on their namespace (and
   grant-readable linked knowledge namespaces) regardless of query similarity — first in
   `memories` (pinned: true) and rendered as leading "CONSTRAINT: ..." context lines.
-  `constraint_cap` bounds them (default 10, 0 disables); they ADD to ranked results.
+  `constraint_cap` optionally bounds them (unset = unbounded, 0 disables); they ADD to
+  ranked results.
 - `type` on /recall filters ranked results (pins are exempt); recall rows carry `type`
   and render_context labels typed lines '- (decision, ...)'.
 - EPISODIC tier: an episode INHERITS a memory_type only when ALL its source turns share
@@ -155,24 +156,26 @@ def main():
     for i in range(14):
         store.insert_raw_turn(SCHEMA, NSX, None, "user", f"Rule {i}: services MUST retry idempotently ({i}).",
                               now + timedelta(minutes=i + 1), None, memory_type="constraint")
+    # issue #153: with constraints now unbounded, ALL 15 constraint turns get pinned —
+    # none overflow into the ranked bucket as they used to under the old cap=10. Seed a
+    # genuinely-unrelated-to-constraints ordinary turn that matches the query, so "pins
+    # ADD to ranked results" below tests real ranked content, not cap-overflow leakage.
+    s, _ = call("/remember", TADM, {"namespace": NSX, "text": "The weather on the moon is a vacuum with no atmosphere."})
+    check("seeding an ordinary matching turn is 200", s == 200)
     s, j = call("/recall", TADM, {"namespace": NSX, "query": "weather on the moon"})
     pins = [m for m in j.get("memories", []) if m.get("pinned")]
-    check("default cap = 10 pinned constraints", len(pins) == 10)
+    # issue #153: an omitted constraint_cap is UNBOUNDED, not defaulted to 10 — pinned
+    # constraints are never artificially capped. All 15 live constraints (the original
+    # rule + 14 bulk-seeded below) inject.
+    check("no cap: all 15 pinned constraints inject", len(pins) == 15)
     check("pins ADD to ranked results (ranked rows still present)",
           any(not m.get("pinned") for m in j.get("memories", [])))
     s, j = call("/recall", TADM, {"namespace": NSX, "query": "weather on the moon",
                                   "constraint_cap": 3})
     pins = [m for m in j.get("memories", []) if m.get("pinned")]
-    check("constraint_cap=3 respected", len(pins) == 3)
+    check("explicit constraint_cap=3 respected", len(pins) == 3)
     check("oldest constraints first (the original rule leads)",
           pins and "MUST be validated" in pins[0]["content"])
-    # issue #153: the 14 bulk-seeded rows put NSX over the pinned-constraint count
-    # budget (MEMNOS_PINNED_MAX_COUNT=10), so later /remember type=constraint writes would
-    # now be (correctly) rejected with 409. They were only needed for the cap checks
-    # above, so drop them here.
-    with conn.cursor() as c:
-        c.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s AND memory_type='constraint' "
-                  f"AND text LIKE 'Rule %%: services MUST retry idempotently%%'", (NSX,))
 
     print("=== type filter + typed rows / context labels ===")
     s, j = call("/recall", TADM, {"namespace": NSX, "query": "flombuzzle engine",

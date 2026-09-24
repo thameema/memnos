@@ -212,15 +212,7 @@ def _post(cfg, path, payload, token, timeout=120):
         return json.loads(urllib.request.urlopen(req, timeout=timeout).read() or b"{}")
     except urllib.error.HTTPError as e:
         try:                                   # error body may be truncated / non-JSON
-            ebody = json.loads(e.read() or b"{}")
-            msg = ebody.get("error", "?")
-            cb = ebody.get("constraint_budget")    # issue #153: name retirement candidates
-            if isinstance(cb, dict) and cb.get("candidates"):
-                msg += "\n  retirement candidates (largest first):"
-                for c in cb["candidates"]:
-                    msg += (f"\n    {c.get('id')}  subject={c.get('subject')}  "
-                            f"{c.get('chars')} chars  {c.get('age_days')}d old  "
-                            f"{(c.get('preview') or '')[:60]!r}")
+            msg = json.loads(e.read() or b"{}").get("error", "?")
         except Exception:
             msg = "?"
         hint = "  (no/invalid token — pass --token, or re-run `memnos setup`)" if e.code == 401 else ""

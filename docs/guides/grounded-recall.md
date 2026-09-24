@@ -85,10 +85,10 @@ memnos remember "Schema identifiers MUST be validated." --type constraint
 regardless of query similarity. They lead the response (`"pinned": true` rows first) and
 the context block renders them ahead of every ranked result as `CONSTRAINT: ...` lines —
 so an agent can never "forget" its ground rules just because the query didn't resemble
-them. They are additive (ranked results are never displaced) and capped by
-`constraint_cap` (default 10, oldest first; `0` disables). Combined with links, a
-knowledge namespace becomes a constraint corpus that pins into every project grounded
-in it.
+them. They are additive (ranked results are never displaced), unbounded by size, and
+optionally cappable by count via `constraint_cap` (unset = unbounded, oldest first;
+`0` disables). Combined with links, a knowledge namespace becomes a constraint corpus
+that pins into every project grounded in it.
 
 ## Author attribution (related, 0.1.6)
 

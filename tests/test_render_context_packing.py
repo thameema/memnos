@@ -2,10 +2,19 @@
 
 Before the fix, the render loop did `if used + len(line) > max_chars: break`, so the
 FIRST row that didn't fit stopped rendering entirely, even when shorter rows after it
-would have fit in the remaining budget. The fix skips (`continue`s past) a row that
-doesn't fit and keeps trying later rows, while preserving precedence order: rows are
-still considered in the given order (pins, then facts, then turns), so an earlier row
-always claims space before a later one.
+would have fit in the remaining budget. The fix skips (`continue`s past) a NON-PINNED
+row that doesn't fit and keeps trying later rows, while preserving precedence order:
+rows are still considered in the given order (pins, then facts, then turns), so an
+earlier row always claims space before a later one.
+
+PINNED constraint rows are ADDITIVE: they always render in full, never skipped, never
+truncated, regardless of size or count, and they NEVER count against max_chars. That
+budget is spent by ranked content (facts/turns) only. The production incident was 6
+pins alone (10,040 chars) exceeding the whole 9,000-char budget and starving every
+fact to zero — pins consuming their own render space but still counting toward the
+SAME budget facts draw from would reproduce that exact failure with a bigger pinned
+set. Constraints are curated governance rules, not ranked content: they are never
+traded off against facts, in either direction.
 
     python tests/test_render_context_packing.py
 """
@@ -44,10 +53,23 @@ def main():
         check(f"short row {i} after the oversized one still renders",
               f"short fact number {i}" in ctx, ctx[:200])
 
-    print("=== oversized PIN does not starve the ranked facts behind it ===")
+    print("=== pins are ADDITIVE: unbounded, and never eat into the facts' own budget ===")
     ctx = render([pin("P" * 20000), pin("keep the small pin")] + shorts, max_chars=2000)
-    check("small pin after the oversized pin renders", "CONSTRAINT: keep the small pin" in ctx, ctx)
-    check("facts after the oversized pin render", "short fact number 4" in ctx, ctx)
+    check("oversized pin still renders in full, over budget", "P" * 20000 in ctx, ctx[:80])
+    check("small pin after the oversized pin also renders", "CONSTRAINT: keep the small pin" in ctx, ctx)
+    # THE incident scenario: no matter how large or numerous the pins, ranked content
+    # still gets its own FULL max_chars — pins never count against that budget.
+    for i in range(5):
+        check(f"short fact number {i} still renders despite the 20000-char pin ahead of it",
+              f"short fact number {i}" in ctx, ctx[:200])
+    non_pin_used = sum(len(l) for l in ctx.split("\n") if not l.startswith("CONSTRAINT:"))
+    check("non-pin content alone stays within max_chars (pins truly don't count against it)",
+          non_pin_used <= 2000, str(non_pin_used))
+
+    print("=== a normal-sized pin still leaves room for facts behind it ===")
+    ctx = render([pin("small rule")] + shorts, max_chars=2000)
+    check("normal pin renders", "CONSTRAINT: small rule" in ctx, ctx)
+    check("facts after a normal-sized pin render", "short fact number 4" in ctx, ctx)
 
     print("=== precedence preserved when there genuinely isn't room for everything ===")
     a = fact("A" * 600)
