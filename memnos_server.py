@@ -83,8 +83,7 @@ from psycopg_pool import ConnectionPool, PoolTimeout
 
 from core.store import (BrainStore, query_clamp, RECALL_ARM_FAILURES, classify_arm_failure,
                         record_arm_failure, health_unavailable)
-from core.service import (MemnosMemory, ConstraintBudgetExceeded,
-                          effective_constraint_subject)
+from core.service import MemnosMemory, effective_constraint_subject
 from core.control import Control, SECRET_NS_PREFIX
 from core import rerank as brain_rerank
 from core import memrelief
@@ -103,6 +102,10 @@ MAX_BODY = 256 * 1024          # 256 KB request cap
 # query returns 200 — the embedder truncates and the FTS arm is token-clamped, so it is
 # safe. Generous default; only a genuinely abusive payload exceeds it.
 _QUERY_MAX_CHARS = int(os.environ.get("MEMNOS_QUERY_MAX_CHARS", "20000"))
+# issue #153: a caller that omits constraint_cap gets EVERY live pinned constraint, not a
+# truncated default — pinned constraints are curated governance rules, never budgeted.
+# pinned_constraints() truncates to this cap; effectively unbounded for any real namespace.
+_PIN_CAP_UNBOUNDED = 10_000_000
 # issue #41 fix C: degraded_reasons has no natural bound (a pathological wide recall
 # could fan out to many namespaces, each contributing its own entry) — cap what reaches
 # the client/audit ledger so one bad recall can't inflate the response/ledger row size.
@@ -1632,21 +1635,9 @@ class Handler(BaseHTTPRequestHandler):
                 mem = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
                                    extract_model=EXTRACT_MODEL, on_usage=usage, author=pname,
                                    extract_fn=EXTRACT_FN, user_name=USER_NAME)
-                try:
-                    tid, rtext, obs, retired = mem.remember_turn(
-                        ns, rtext0, speaker=speaker, session_id=req.get("session_id"),
-                        vec=vec, memory_type=mtype, constraint_subject=cs)
-                except ConstraintBudgetExceeded as be:
-                    # issue #153: write-time pinned-budget guard. Nothing was written.
-                    # 409 is a permanent 4xx (offline_queue.is_transient), so it surfaces
-                    # to the caller instead of queuing forever. Audited like any other
-                    # failed write.
-                    Control.audit(conn, principal, action, ns, False,
-                                  {"reason": "constraint_budget",
-                                   "projected_chars": be.detail.get("projected_chars"),
-                                   "projected_count": be.detail.get("projected_count")},
-                                  latency_ms=int((time.perf_counter() - t0) * 1000), status=409)
-                    return self._send(409, {"error": str(be), "constraint_budget": be.detail})
+                tid, rtext, obs, retired = mem.remember_turn(
+                    ns, rtext0, speaker=speaker, session_id=req.get("session_id"),
+                    vec=vec, memory_type=mtype, constraint_subject=cs)
                 if retired:
                     # issue #84: supersession/expiry event — recorded + queryable
                     # (`memnos_admin.py errors`-style audit_log query on action=
@@ -1848,8 +1839,12 @@ class Handler(BaseHTTPRequestHandler):
             ok, mtype = _memory_type(req)          # optional `type` result filter
             if not ok:
                 return 400, mtype
-            try:                                   # pinned-constraint cap (0 disables)
-                pin_cap = max(0, min(int(req.get("constraint_cap", 10)), 50))
+            try:                                   # pinned-constraint cap (0 disables;
+                                                    # unset = unbounded, issue #153: pinned
+                                                    # constraints are never artificially
+                                                    # capped by default)
+                pin_cap = (_PIN_CAP_UNBOUNDED if "constraint_cap" not in req
+                           else max(0, int(req["constraint_cap"])))
             except (TypeError, ValueError):
                 return 400, {"error": "constraint_cap must be an integer"}
             # DEADLINE-AWARE RECALL (issue #12): optional client budget. At expiry the
@@ -2005,7 +2000,7 @@ class Handler(BaseHTTPRequestHandler):
                     pin_nss = [ns] + grounded + inherited
                 # PINNED CONSTRAINT INJECTION: type='constraint' memories are ALWAYS in
                 # the output, regardless of query similarity (cap via constraint_cap).
-                # issue #41 fix C: pin_cap defaults to 10 (see above), not 0, so this is a
+                # issue #41 fix C: pin_cap defaults to unbounded (see above), not 0, so this is a
                 # LIVE query against {schema}.semantic/raw_turns/episodic — same tables,
                 # same connection, same statement_timeout as every other recall arm — on
                 # the DEFAULT request path, before recall_fetch's own (correctly-guarded)

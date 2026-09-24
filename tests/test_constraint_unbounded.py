@@ -1,24 +1,29 @@
-"""No-AI tests for PINNED-CONSTRAINT WRITE HYGIENE (issue #153).
+"""No-AI tests for PINNED-CONSTRAINT subjects and unboundedness (issue #153).
 
 Production incident: 6 pinned constraints in one namespace totaled 10,040 chars against
 render_context's 9,000-char default budget. Pins render first, so recall injected ZERO
-ranked facts for every prompt. Contributing gaps: untagged constraints were immortal
-(retire_constraints() only matches on subject), and nothing bounded pinned constraints at
-write time.
+ranked facts for every prompt. One real contributing gap: untagged constraints were
+immortal (retire_constraints() only matches on subject), so a bad constraint could never
+be superseded/cleaned up. That gap is fixed here.
+
+Pinned constraints themselves are deliberately left UNBOUNDED — no write-time size/count
+guard was added, and none should be. Constraints are curated governance rules, not ranked
+content: render_context renders every live pinned constraint in full, always, regardless
+of size or count. A large or numerous pinned set can leave little or no room for facts
+behind it; that is accepted as the intended tradeoff, not a bug to guard against.
 
 Covered here, against a real server and real Postgres:
   1. SUBJECT: a constraint written WITHOUT constraint_subject is not left untagged. The
      server derives a collision-safe 'auto:<slug>-<hash>' subject, stores it, and returns
      it. The derived subject then works as a real retirement handle. Legacy untagged rows
      are backfilled on the next constraint write in their namespace.
-  2. BUDGET GUARD (hard reject, 409, nothing saved): the exact production scenario, plus
-     the count cap. The rejection names retirement candidates (id, subject, size, age).
-     Supersession is netted, and a write that shrinks usage is always accepted (the
-     ratchet), so an already-over-budget namespace can be brought back under.
+  2. UNBOUNDED: the exact production scenario (6 constraints, 10,040 chars) plus far more
+     than the old default count cap (10) — every write is ACCEPTED, every live constraint
+     persists, and every one of them renders. Nothing is ever rejected for size or count.
   3. NO REGRESSION: a namespace with a few small pins plus many ranked memories renders
      BOTH in /recall's context.
 
-    MEMNOS_DSN=... MEMNOS_URL=... python tests/test_constraint_budget_guard.py
+    MEMNOS_DSN=... MEMNOS_URL=... python tests/test_constraint_unbounded.py
 """
 import json
 import os
@@ -31,8 +36,7 @@ import psycopg
 from psycopg.rows import dict_row
 from core.control import Control
 from core.store import BrainStore
-from core.service import derive_constraint_subject, PINNED_BUDGET_CHARS_DEFAULT, \
-    PINNED_MAX_COUNT_DEFAULT
+from core.service import derive_constraint_subject
 
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
 URL = os.environ.get("MEMNOS_URL", "http://127.0.0.1:8900")
@@ -170,107 +174,46 @@ def main():
     check("legacy (formerly immortal) row is now retirable via its backfilled subject",
           s == 200 and {"kind": "turn", "id": lid} in (jl.get("constraints_retired") or []), str(jl))
 
-    # ---------------------------------------------------------------- 2. budget guard
-    print("=== 2. production scenario: 6 constraints totaling 10,040 chars ===")
-    budget = PINNED_BUDGET_CHARS_DEFAULT
-    # 6 rules whose content totals exactly 10,040 chars (4 x 1673 + 2 x 1674)
+    # ---------------------------------------------------------------- 2. unbounded
+    print("=== 2. production scenario: 6 constraints totaling 10,040 chars — ALL accepted ===")
     sizes = [1673, 1673, 1673, 1673, 1674, 1674]
     check("fixture really totals 10,040 chars", sum(sizes) == 10040)
-    accepted, rejected = [], None
+    accepted = []
     for i, n in enumerate(sizes):
         s, j = constraint(TOK, NS_PROD, rule(i, n))
+        check(f"constraint {i} ({n} chars) accepted, no budget rejection", s == 200, f"{s} {j}")
         if s == 200:
             accepted.append(j)
-        else:
-            rejected = (i, s, j)
-            break
-    check("guard fires before the pinned set can exceed the budget",
-          rejected is not None and rejected[1] == 409, str(rejected)[:300])
-    total_live = sum(len("CONSTRAINT: ") + len(r["text"]) for r in live_constraints(conn, NS_PROD)
-                     if r["constraint_retired_at"] is None)
-    check(f"live pinned total stays within the {budget}-char budget", total_live <= budget,
-          str(total_live))
-    if rejected:
-        i, s, j = rejected
-        cb = j.get("constraint_budget") or {}
-        check("rejected write saved NOTHING",
-              not any(r["text"] == rule(i, sizes[i]) for r in live_constraints(conn, NS_PROD)))
-        check("error message is clear and actionable",
-              "constraint rejected (nothing saved)" in j.get("error", "")
-              and "--subject" in j.get("error", ""), j.get("error", ""))
-        cands = cb.get("candidates") or []
-        check("error names retirement candidates by id / subject / size / age",
-              len(cands) == len(accepted) and all(
-                  c["id"].startswith("turn:") and c["subject"] and c["chars"] > 0
-                  and c["age_days"] is not None for c in cands), json.dumps(cands)[:300])
-        check("projected usage reported over budget",
-              cb.get("projected_chars", 0) > budget and cb.get("budget_chars") == budget, str(cb)[:200])
-        with conn.cursor() as c:
-            c.execute("SELECT count(*) AS n FROM memnos_control.audit_log WHERE namespace=%s "
-                      "AND action='remember' AND ok=false AND detail->>'reason'='constraint_budget'",
-                      (NS_PROD,))
-            check("rejection is audited", c.fetchone()["n"] >= 1)
-
-    print("=== 2b. an ALREADY over-budget namespace (pre-guard state) can be repaired ===")
-    # Recreate the exact incident state directly (bypassing the guard, as pre-#153 writes
-    # did): 6 UNTAGGED constraints = 10,040 chars, plus ranked memories.
-    with conn.cursor() as c:
-        c.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s", (NS_PROD,))
-    import datetime as _dt
-    for i, n in enumerate(sizes):
-        store.insert_raw_turn(SCHEMA, NS_PROD, None, None, rule(i, n),
-                              _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=30 - i),
-                              None, memory_type="constraint", constraint_subject=None)
-    for k in range(8):
-        s, _ = call("/remember", TOK, {"namespace": NS_PROD,
-                                       "text": f"Staging database runs Postgres 16 on host{k}."})
-    s, rc = call("/recall", TOK, {"namespace": NS_PROD, "query": "staging database postgres"})
+    live = [r for r in live_constraints(conn, NS_PROD) if r["constraint_retired_at"] is None]
+    check("all 6 constraints persisted, well past the old 5000-char/10-count guard defaults",
+          len(live) == 6, str(len(live)))
+    total_live = sum(len("CONSTRAINT: ") + len(r["text"]) for r in live)
+    check("live pinned total legitimately EXCEEDS the old 9000-char render budget",
+          total_live > 9000, str(total_live))
+    # THE actual production symptom: 6 pins alone exceeding the whole render budget used
+    # to starve recall to ZERO ranked facts. Seed one and prove it still renders — pins
+    # are additive and never eat into the facts' own max_chars budget.
+    s, _ = call("/remember", TOK, {"namespace": NS_PROD,
+                                   "text": "The deployment policy owner is the platform team."})
+    check("seeding a ranked fact is 200", s == 200)
+    s, rc = call("/recall", TOK, {"namespace": NS_PROD, "query": "deployment policy"})
     ctx = rc.get("context", "")
-    ranked = [l for l in ctx.split("\n") if l.startswith("- (")]
-    print(f"    (incident state: {ctx.count('CONSTRAINT:')} pins + {len(ranked)} ranked lines "
-          f"rendered from 10,040 chars of pins)")
-    s, j = constraint(TOK, NS_PROD, "One more short rule.")
-    check("new constraint on the over-budget namespace is rejected (409)", s == 409, f"{s} {str(j)[:200]}")
-    cands = (j.get("constraint_budget") or {}).get("candidates") or []
-    check("candidates carry backfilled (retirable) subjects",
-          len(cands) == 6 and all((c["subject"] or "").startswith("auto:rule-") for c in cands),
-          json.dumps(cands)[:300])
-    check("candidates are ordered largest first",
-          [c["chars"] for c in cands] == sorted([c["chars"] for c in cands], reverse=True))
-    # RATCHET: supersede each oversized rule with a short one. Every step shrinks usage,
-    # so every step is accepted even while the namespace is still over budget.
-    ok_all = True
-    for c in cands:
-        s, jj = constraint(TOK, NS_PROD, f"Short form of {c['id']}: follow deploy policy.",
-                           subject=c["subject"])
-        ok_all = ok_all and s == 200 and len(jj.get("constraints_retired") or []) == 1
-    check("each shrinking supersession accepted while still over budget (ratchet)", ok_all)
-    s, rc = call("/recall", TOK, {"namespace": NS_PROD, "query": "staging database postgres"})
-    ctx = rc.get("context", "")
-    ranked = [l for l in ctx.split("\n") if l.startswith("- (")]
-    check("after repair: all 6 (short) constraints render", ctx.count("CONSTRAINT:") == 6, ctx[:300])
-    check("after repair: ranked memories render too", len(ranked) >= 5, ctx[-400:])
-    s, j = constraint(TOK, NS_PROD, "One more short rule.")
-    check("after repair: a small new constraint is accepted again", s == 200, f"{s} {j}")
+    check("every one of the 6 large constraints renders in full",
+          all(rule(i, n) in ctx for i, n in enumerate(sizes)), ctx[:200])
+    check("THE INCIDENT FIX: a ranked fact still renders despite 10,040 chars of pins ahead of it",
+          "platform team" in ctx, ctx[-300:])
 
-    print("=== 2c. count cap ===")
-    for i in range(PINNED_MAX_COUNT_DEFAULT):
+    print("=== 2b. well past the old count cap (10): still all accepted, all render ===")
+    N = 25
+    for i in range(N):
         s, j = constraint(TOK, NS_COUNT, f"Small rule number {i}.")
-        if s != 200:
-            break
-    check(f"{PINNED_MAX_COUNT_DEFAULT} small constraints accepted", s == 200, f"{s} {j}")
-    s, j = constraint(TOK, NS_COUNT, "Small rule number eleven.")
-    cb = j.get("constraint_budget") or {}
-    check(f"constraint #{PINNED_MAX_COUNT_DEFAULT + 1} rejected (409): would never be injected",
-          s == 409 and cb.get("projected_count") == PINNED_MAX_COUNT_DEFAULT + 1
-          and "never injected" in j.get("error", ""), f"{s} {str(j)[:300]}")
-    check("count rejection saved nothing",
-          len([r for r in live_constraints(conn, NS_COUNT) if r["constraint_retired_at"] is None])
-          == PINNED_MAX_COUNT_DEFAULT)
-    first_subj = cb["candidates"][0]["subject"] if cb.get("candidates") else None
-    s, j = constraint(TOK, NS_COUNT, "Merged: small rules 0 and eleven.", subject=first_subj)
-    check("at the cap, superseding an existing constraint is still accepted (netted)",
-          s == 200 and len(j.get("constraints_retired") or []) == 1, f"{s} {j}")
+        check(f"constraint #{i + 1} (> old cap of 10) accepted", s == 200, f"{s} {j}")
+    live = [r for r in live_constraints(conn, NS_COUNT) if r["constraint_retired_at"] is None]
+    check(f"all {N} constraints persisted, none dropped or rejected", len(live) == N, str(len(live)))
+    s, rc = call("/recall", TOK, {"namespace": NS_COUNT, "query": "small rule"})
+    ctx = rc.get("context", "")
+    check(f"all {N} constraints inject into recall (no constraint_cap truncation by default)",
+          ctx.count("CONSTRAINT:") == N, f"got {ctx.count('CONSTRAINT:')}")
 
     # ---------------------------------------------------------------- 3. normal case
     print("=== 3. no regression: small pins + many ranked memories render together ===")
