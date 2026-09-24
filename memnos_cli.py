@@ -212,7 +212,15 @@ def _post(cfg, path, payload, token, timeout=120):
         return json.loads(urllib.request.urlopen(req, timeout=timeout).read() or b"{}")
     except urllib.error.HTTPError as e:
         try:                                   # error body may be truncated / non-JSON
-            msg = json.loads(e.read() or b"{}").get("error", "?")
+            ebody = json.loads(e.read() or b"{}")
+            msg = ebody.get("error", "?")
+            cb = ebody.get("constraint_budget")    # issue #153: name retirement candidates
+            if isinstance(cb, dict) and cb.get("candidates"):
+                msg += "\n  retirement candidates (largest first):"
+                for c in cb["candidates"]:
+                    msg += (f"\n    {c.get('id')}  subject={c.get('subject')}  "
+                            f"{c.get('chars')} chars  {c.get('age_days')}d old  "
+                            f"{(c.get('preview') or '')[:60]!r}")
         except Exception:
             msg = "?"
         hint = "  (no/invalid token — pass --token, or re-run `memnos setup`)" if e.code == 401 else ""
@@ -1918,6 +1926,16 @@ def cmd_role_members(args, cfg):
         print(f"  {p['id']:<5} {p['name']:<24} {p['kind']}")
 
 
+def _print_constraint_subject(out):
+    """issue #153: every constraint now lands with a subject (derived when omitted).
+    Show it, since it's the handle for later retiring/superseding this constraint."""
+    if not isinstance(out, dict) or not out.get("constraint_subject"):
+        return
+    how = " (derived)" if out.get("constraint_subject_derived") else ""
+    print(f"  subject{how}: {out['constraint_subject']}  (re-save with --subject "
+          f"{out['constraint_subject']} to supersede)")
+
+
 def cmd_constraint_add(args, cfg):
     """issue #28: `advise` (default) writes ONLY the pinned memory, same as `/memnos
     constraint <rule>` (#27). `ask`/`block` ALSO registers a control-plane enforcement row
@@ -1934,11 +1952,12 @@ def cmd_constraint_add(args, cfg):
         body["constraint_subject"] = args.subject
     resp = _post(cfg, "/remember", body, tok)
     print(f"→ constraint pinned in {args.namespace}")
-    if args.subject:
-        retired = (resp or {}).get("constraints_retired") or []
-        if retired:
-            ids = ", ".join(f"{r['kind']}:{r['id']}" for r in retired)
-            print(f"  superseded (subject={args.subject!r}): {ids}")
+    _print_constraint_subject(resp)
+    retired = (resp or {}).get("constraints_retired") or []
+    if retired:
+        ids = ", ".join(f"{r['kind']}:{r['id']}" for r in retired)
+        subj = args.subject or (resp or {}).get("constraint_subject")
+        print(f"  superseded (subject={subj!r}): {ids}")
     if args.enforce != "advise":
         conn = _conn(cfg)
         Control.init(conn)
@@ -2548,10 +2567,15 @@ def cmd_remember(args, cfg):
     body = {"namespace": ns, "text": args.text}
     if getattr(args, "type", None):
         body["type"] = args.type
+    if getattr(args, "subject", None):
+        if getattr(args, "type", None) != "constraint":
+            sys.exit("--subject only applies to --type constraint")
+        body["constraint_subject"] = args.subject
     out = _post(cfg, "/remember", body,
                 args.token or os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token"))
     # write-time attribution (issue #20, Part B): always say WHERE it landed.
     print(f"→ remembered in {ns}")
+    _print_constraint_subject(out)
     if source == "default":                         # no binding for this repo — offer to persist
         print("  " + nsresolve.default_fallback_hint(ns))
     sugg = out.get("suggestion") if isinstance(out, dict) else None
@@ -4279,6 +4303,9 @@ def build_parser():
     p.add_argument("--namespace", default="auto", help="target namespace (default: auto-resolve for this folder)")
     p.add_argument("--type", choices=["decision", "incident", "constraint", "skill", "fact"],
                    help="classify the memory (constraints are pinned into every recall)")
+    p.add_argument("--subject", help="constraint grouping key (--type constraint only). A newer "
+                        "constraint with the SAME subject supersedes the older one; omitted, "
+                        "the server derives one from the text")
     p.add_argument("--token", help="bearer token (default: MEMNOS_TOKEN or the config admin token)")
     p.add_argument("--json", action="store_true", help="also print the raw server response JSON")
     p.set_defaults(fn=cmd_remember)
@@ -4467,10 +4494,11 @@ def build_parser():
                         "ask/block: ALSO enforced by the PreToolUse hook (requires --tool)")
     v.add_argument("--tool", help="glob matched against the pending tool name — required for --enforce ask|block")
     v.add_argument("--token", help="bearer token for the pinned-memory write (else $MEMNOS_TOKEN / config)")
-    v.add_argument("--subject", help="issues #83/#84: optional grouping key. A newer constraint with the "
+    v.add_argument("--subject", help="issues #83/#84: grouping key. A newer constraint with the "
                         "SAME --subject in the SAME namespace automatically retires the older one "
                         "(supersession); across namespaces sharing --subject, the ':'-prefix ANCESTOR "
-                        "namespace wins by default (precedence) — see `constraint override`")
+                        "namespace wins by default (precedence) — see `constraint override`. "
+                        "Omitted, the server derives one from the text (issue #153)")
     v.set_defaults(fn=cmd_constraint_add)
     v = ps.add_parser("ls", help="list enforced (ask/block) constraints")
     v.add_argument("namespace", nargs="?", help="namespace (omit to list across all)")

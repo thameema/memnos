@@ -93,6 +93,6 @@ def context_block(rows, max_chars: int = 6000) -> str:
         tag = "fact" if r["kind"] == "semantic" else "event"
         line = f"- ({tag}) {r['content']}"
         if used + len(line) > max_chars:
-            break
+            continue            # issue #153: skip, don't stop — later short rows may fit
         out.append(line); used += len(line)
     return "\n".join(out)

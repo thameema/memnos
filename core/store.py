@@ -1724,6 +1724,28 @@ class BrainStore:
                                        "winner_id": beater["id"], "winner_kind": beater["kind"]})
         return winners, losers
 
+    def backfill_constraint_subjects(self, schema, ns, derive) -> int:
+        """issue #153: give every LIVE, UNTAGGED constraint row in `ns` (all three
+        stores) a derived subject, `derive(content)` (see
+        core.service.derive_constraint_subject). Before this, such rows were immortal:
+        retire_constraints() matches on subject only. Retires nothing itself. Idempotent,
+        and a no-op (one cheap indexed-namespace scan per store) once a namespace has no
+        untagged rows left. Returns how many rows were tagged."""
+        self._chk(schema)
+        n = 0
+        with self.conn.cursor() as c:
+            for tbl, col in ((f"{schema}.raw_turns", "text"),
+                             (f"{schema}.semantic", "statement"),
+                             (f"{schema}.episodic", "text")):
+                c.execute(f"SELECT id, {col} AS content FROM {tbl} WHERE namespace=%s "
+                          f"AND memory_type='constraint' AND constraint_retired_at IS NULL "
+                          f"AND (constraint_subject IS NULL OR constraint_subject='')", (ns,))
+                for r in c.fetchall():
+                    c.execute(f"UPDATE {tbl} SET constraint_subject=%s WHERE id=%s",
+                              (derive(r["content"]), r["id"]))
+                    n += 1
+        return n
+
     def retire_constraints(self, schema, ns, subject, *, keep_kind, keep_id) -> list:
         """issue #84 — CONSTRAINT SUPERSESSION: mark every OTHER still-live constraint
         row (any kind: fact/turn/episode) in this namespace sharing `subject` as

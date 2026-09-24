@@ -32,6 +32,12 @@
        "required": false
       },
       {
+       "arg": "--subject",
+       "help": "constraint grouping key (--type constraint only). A newer constraint with the SAME subject supersedes the older one; omitted, the server derives one from the text",
+       "positional": false,
+       "required": false
+      },
+      {
        "arg": "--token",
        "help": "bearer token (default: MEMNOS_TOKEN or the config admin token)",
        "positional": false,
@@ -1129,7 +1135,7 @@
       },
       {
        "arg": "--subject",
-       "help": "issues #83/#84: optional grouping key. A newer constraint with the SAME --subject in the SAME namespace automatically retires the older one (supersession); across namespaces sharing --subject, the ':'-prefix ANCESTOR namespace wins by default (precedence) \u2014 see `constraint override`",
+       "help": "issues #83/#84: grouping key. A newer constraint with the SAME --subject in the SAME namespace automatically retires the older one (supersession); across namespaces sharing --subject, the ':'-prefix ANCESTOR namespace wins by default (precedence) \u2014 see `constraint override`. Omitted, the server derives one from the text (issue #153)",
        "positional": false,
        "required": false
       }

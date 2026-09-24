@@ -104,7 +104,7 @@ def is_transient(exc: BaseException) -> bool:
 # ---- write-behind queue: enqueue / drain ---------------------------------------------
 
 def enqueue(config_dir: str, namespace: str, text: str, speaker: str, memory_type: str = "",
-            token: str = "") -> str:
+            token: str = "", constraint_subject: str = "") -> str:
     """Durably park one turn for replay into the SAME memnos store, so the caller can
     still return success to whatever is upstream of it (a hook, an MCP tool call) —
     the write is never lost and never diverges into a separate store. Returns the queued
@@ -139,6 +139,8 @@ def enqueue(config_dir: str, namespace: str, text: str, speaker: str, memory_typ
             "queued_at": now}
     if memory_type:
         item["type"] = memory_type
+    if constraint_subject:                            # issue #153: replay keeps the subject
+        item["constraint_subject"] = constraint_subject
     if token:
         item["token"] = token
     fname = f"{int(now * 1000)}_{speaker}_{uuid.uuid4().hex[:8]}.json"
@@ -173,6 +175,8 @@ def _post_remember(url: str, token: str, item: dict, timeout: float = 8) -> None
             "speaker": item.get("speaker"), "async": True}
     if item.get("type"):
         body["type"] = item["type"]
+    if item.get("constraint_subject"):
+        body["constraint_subject"] = item["constraint_subject"]
     if item.get("queued_at") is not None:
         body["queued_at"] = item["queued_at"]
     hdr = {"Content-Type": "application/json",

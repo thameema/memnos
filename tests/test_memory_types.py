@@ -166,6 +166,13 @@ def main():
     check("constraint_cap=3 respected", len(pins) == 3)
     check("oldest constraints first (the original rule leads)",
           pins and "MUST be validated" in pins[0]["content"])
+    # issue #153: the 14 bulk-seeded rows put NSX over the pinned-constraint count
+    # budget (MEMNOS_PINNED_MAX_COUNT=10), so later /remember type=constraint writes would
+    # now be (correctly) rejected with 409. They were only needed for the cap checks
+    # above, so drop them here.
+    with conn.cursor() as c:
+        c.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s AND memory_type='constraint' "
+                  f"AND text LIKE 'Rule %%: services MUST retry idempotently%%'", (NSX,))
 
     print("=== type filter + typed rows / context labels ===")
     s, j = call("/recall", TADM, {"namespace": NSX, "query": "flombuzzle engine",
