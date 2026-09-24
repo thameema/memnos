@@ -19,7 +19,7 @@ from datetime import datetime, timezone, timedelta
 from .store import (BrainStore, query_clamp, RECALL_ARM_FAILURES, classify_arm_failure,
                     record_arm_failure as _record_arm_failure)
 from . import rerank as brain_rerank
-from .temporal import _DATE_RE, _YEAR
+from .temporal import _DATE_RE
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +51,16 @@ _HISTORICAL_RE = re.compile(
     r"back in|at the time|grew up)\b", re.I)
 _PAST_COPULA_RE = re.compile(r"\b(was|were)\b", re.I)
 # Past-time signals that turn a 'was'/'were' statement historical, in addition to an
-# explicit date (temporal._DATE_RE) or a bare year (temporal._YEAR — "in 2019"). NEAR-past
+# explicit date (temporal._DATE_RE) or a PREPOSITION-LED year (_PAST_YEAR_RE — "in 2019",
+# "until 2021"). A bare 4-digit number is NOT enough: "PR #2024 was merged" / "Build 2026
+# was deployed" are present-state reports, and ticket/build numbers in 1900-2099 are
+# ordinary in developer memory. NEAR-past
 # relatives ('yesterday', 'last week', 'recently', 'just') are deliberately NOT here:
 # "Host2 was compromised yesterday" reports the current state, it does not describe a
 # state that has since ended.
+_PAST_YEAR_RE = re.compile(
+    r"\b(?:in|since|during|until|till|before|after|from|by|circa|around|throughout)\s+"
+    r"(?:(?:early|late|mid)[- ])?(?:19|20)\d\d\b", re.I)
 _PAST_TIME_RE = re.compile(
     r"\b(ago|back then|in the past|at one point|at that time|in those days|"
     r"last (?:year|decade|century)|as an? (?:child|kid|teen|teenager|student|youngster)|"
@@ -85,7 +91,7 @@ def _is_historical(stmt: str) -> bool:
     if _HISTORICAL_RE.search(s):
         return True
     return bool(_PAST_COPULA_RE.search(s)
-                and (_PAST_TIME_RE.search(s) or _DATE_RE.search(s) or _YEAR.search(s)))
+                and (_PAST_TIME_RE.search(s) or _DATE_RE.search(s) or _PAST_YEAR_RE.search(s)))
 
 # Reversal/negation cues: the NEW statement explicitly closes out a prior state. Kept
 # high-precision (each must clearly assert that something stopped being true).

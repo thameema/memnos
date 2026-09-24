@@ -231,12 +231,14 @@ def main():
     if ih is not None:
         for stmt in ("The branch was merged.", "Host2 was root-compromised.",
                      "The changes were pushed to main.", "The deploy pipeline was paused.",
-                     "Host2 was compromised yesterday.", "The rate limit was changed to 200 in 2019."):
+                     "Host2 was compromised yesterday.", "The rate limit was changed to 200 in 2019.",
+                     "PR #2024 was merged.", "Build 2026 was deployed."):
             check(f"not historical: '{stmt}'", not ih(stmt))
         for stmt in ("Alice was based in Denver in 2019.", "Host3 was offline two years ago.",
                      "Bob was employed at Initech back then.", "The branch was merged on 2026-06-10.",
                      "She was a swimmer as a child.", "Carol lived in Boston.",
-                     "Dan used to work at Acme.", "They were neighbours in the past."):
+                     "Dan used to work at Acme.", "They were neighbours in the past.",
+                     "The office was in Austin until 2021."):
             check(f"historical: '{stmt}'", ih(stmt))
 
     print("=== Bug 2 (reconcile path): the backfill walk uses the same historical gate ===")

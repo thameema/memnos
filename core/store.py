@@ -1570,12 +1570,12 @@ class BrainStore:
         # for the "call never ran" fallback; a reader that only checks `score` (not
         # `degraded`) can't be misled by either path — the original issue #69 complaint
         # was exactly a knowledge_health output misleading a session.
-        if contra is None or orphans is None or ent_total is None or facts_current is None:
+        contra_ratio = (None if contested is None or facts_current is None
+                        else (contested / facts_current) if facts_current else 0.0)
+        if contra_ratio is None or orphans is None or ent_total is None:
             score = None
-            contra_ratio = None
         else:
             orphan_ratio = (orphans / ent_total) if ent_total else 0.0
-            contra_ratio = (contested / facts_current) if facts_current else 0.0
             score = max(0, 100 - contradiction_penalty(contra_ratio)
                         - int(min(30, orphan_ratio * 30)))
         out = {"score": score, "facts_current": facts_current, "facts_superseded": facts_super,
