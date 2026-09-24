@@ -1118,19 +1118,56 @@ class BrainStore:
             return bool(row and row["ok"])
 
     # --- namespace reconcile (issue #10 residual C: pre-fix contradiction debt) ------
-    def live_facts_newest_first(self, schema, ns, limit=None) -> list[dict]:
-        """The namespace's LIVE extracted facts, newest-first on the observation axis —
-        the walk order for `memnos namespace reconcile` (newer knowledge closes older)."""
+    # issue #155: the reconcile walk is keyset-paginated (so it can commit in bounded
+    # chunks and resume from a persisted cursor), and its similarity lookups take the
+    # anchor fact's embedding as a BOUND PARAMETER. The previous form joined the anchor in
+    # from a CTE (`ORDER BY s.embedding <=> a.embedding`): the right operand was a join
+    # column, not a constant, so no index path existed and every lookup computed a
+    # distance for EVERY live fact in the namespace (~355ms/fact, ~600k buffers/fact
+    # measured in production). The per-fact dedupe lookup is now a real nearest-neighbour
+    # query (`ORDER BY embedding <=> %(v)s LIMIT k` — subject index or sem_hnsw); the
+    # rare negation lookup stays exact on purpose (see nearest_live_facts_to).
+    # Walk order: newest-first on the observation axis. The sort key is
+    # coalesce(observed_at, '-infinity') — the same order as `observed_at DESC NULLS LAST`
+    # — so the SAME expression can be used for both ORDER BY and the keyset cursor.
+    RECONCILE_NULL_OBS = "-infinity"
+
+    def live_facts_page(self, schema, ns, *, before=None, limit=200) -> list[dict]:
+        """One page of the namespace's LIVE extracted facts, newest-first, strictly
+        after keyset cursor `before` = (observed_at_key, id) (None = from the top).
+        Each row carries `obs_key` (the cursor value to resume after it). Embeddings
+        are NOT selected here (see fact_embeddings) so the per-page sort never has to
+        materialise a vector for every candidate row."""
         self._chk(schema)
+        ob, oid = before if before is not None else (None, None)
         with self.conn.cursor() as c:
             c.execute(
                 f"SELECT id, statement, subject_entity, predicate, object, valid_from, "
-                f"observed_at, source_turn_ids FROM {schema}.semantic "
+                f"observed_at, source_turn_ids, "
+                f"coalesce(observed_at, '{self.RECONCILE_NULL_OBS}'::timestamptz) AS obs_key "
+                f"FROM {schema}.semantic "
                 f"WHERE namespace=%(ns)s AND kind='fact' AND valid_to IS NULL "
                 f"AND expired_at IS NULL "
-                f"ORDER BY observed_at DESC NULLS LAST, id DESC "
-                f"LIMIT %(lim)s", {"ns": ns, "lim": limit})
+                f"AND (%(oid)s::bigint IS NULL OR "
+                f"     (coalesce(observed_at, '{self.RECONCILE_NULL_OBS}'::timestamptz), id)"
+                f"       < (%(ob)s::timestamptz, %(oid)s::bigint)) "
+                f"ORDER BY coalesce(observed_at, '{self.RECONCILE_NULL_OBS}'::timestamptz) DESC, "
+                f"id DESC LIMIT %(lim)s",
+                {"ns": ns, "ob": ob, "oid": oid, "lim": limit})
             return c.fetchall()
+
+    def fact_embeddings(self, schema, ids) -> dict:
+        """{id: embedding-as-text} for the given fact ids (one PK lookup batch). The text
+        form round-trips exactly through `%s::<vtype>`, so distances computed from it are
+        identical to distances computed column-to-column."""
+        self._chk(schema)
+        ids = [int(i) for i in ids]
+        if not ids:
+            return {}
+        with self.conn.cursor() as c:
+            c.execute(f"SELECT id, embedding::text AS e FROM {schema}.semantic "
+                      f"WHERE id = ANY(%s)", (ids,))
+            return {r["id"]: r["e"] for r in c.fetchall()}
 
     def is_live(self, schema, ns, fact_id) -> bool:
         self._chk(schema)
@@ -1139,46 +1176,75 @@ class BrainStore:
                       f"AND valid_to IS NULL AND expired_at IS NULL", (fact_id, ns))
             return c.fetchone() is not None
 
-    def older_near_duplicate(self, schema, ns, fact_id, thresh) -> dict | None:
+    def older_near_duplicate(self, schema, ns, anchor, thresh, *, k=8) -> dict | None:
         """Reconcile twin of find_near_duplicate, against STORED embeddings: the nearest
-        OLDER live fact within `thresh` cosine distance of fact `fact_id` (same subject
-        agreement rule: required only when both sides carry one). No new embeddings."""
+        OLDER live fact within `thresh` cosine distance of `anchor` (a live_facts_page
+        row + its `embedding` text). Same subject-agreement rule (required only when both
+        sides carry one). No new embeddings.
+
+        This is the per-fact hot path (it runs for EVERY fact walked), so it is written
+        as a real nearest-neighbour query: top-k by `embedding <=> <bound anchor vector>`
+        with only cheap equality/range filters in SQL, and the `dist < thresh` cut applied
+        here in Python over the top-k (a WHERE on the distance expression is what the
+        index cannot serve). The planner then serves it EXACTLY from the subject indexes
+        when the anchor has a subject (sem_supersede_subj — a handful of rows), and from
+        sem_hnsw when it has none (with reconcile's raised hnsw.ef_search; finding the
+        single nearest neighbour inside a 0.03 radius is the case HNSW is most reliable
+        at). k>1 guards against the approximate index ordering the true nearest second."""
         self._chk(schema)
-        if thresh <= 0:
+        vec = anchor.get("embedding")
+        if thresh <= 0 or vec is None:
             return None
         with self.conn.cursor() as c:
             c.execute(
-                f"WITH a AS (SELECT id, embedding, subject_entity, observed_at "
-                f"           FROM {schema}.semantic WHERE id=%(id)s AND namespace=%(ns)s) "
-                f"SELECT s.id, s.statement, (s.embedding <=> a.embedding) AS dist "
-                f"FROM {schema}.semantic s, a "
-                f"WHERE s.namespace=%(ns)s AND s.kind='fact' AND s.valid_to IS NULL "
-                f"AND s.expired_at IS NULL AND s.embedding IS NOT NULL "
-                f"AND (coalesce(s.observed_at,'epoch'), s.id) < (coalesce(a.observed_at,'epoch'), a.id) "
-                f"AND (a.subject_entity IS NULL OR s.subject_entity IS NULL "
-                f"     OR lower(s.subject_entity)=lower(a.subject_entity)) "
-                f"AND (s.embedding <=> a.embedding) < %(t)s "
-                f"ORDER BY s.embedding <=> a.embedding LIMIT 1",
-                {"id": fact_id, "ns": ns, "t": thresh})
-            return c.fetchone()
+                f"SELECT id, statement, (embedding <=> %(v)s::{self.vtype}) AS dist "
+                f"FROM {schema}.semantic "
+                f"WHERE namespace=%(ns)s AND kind='fact' AND valid_to IS NULL "
+                f"AND expired_at IS NULL AND embedding IS NOT NULL AND id <> %(id)s "
+                f"AND (coalesce(observed_at,'epoch'), id) "
+                f"    < (coalesce(%(obs)s::timestamptz,'epoch'), %(id)s::bigint) "
+                f"AND (%(sub)s::text IS NULL OR subject_entity IS NULL "
+                f"     OR lower(subject_entity)=lower(%(sub)s)) "
+                f"ORDER BY embedding <=> %(v)s::{self.vtype} LIMIT %(k)s",
+                {"v": vec, "ns": ns, "id": anchor["id"], "obs": anchor.get("observed_at"),
+                 "sub": anchor.get("subject_entity"), "k": k})
+            hits = [r for r in c.fetchall()
+                    if r["dist"] is not None and float(r["dist"]) < thresh]
+            # nearest wins; an exact-distance tie (the same text stored 3+ times) goes to
+            # the OLDEST row, deterministically (the old SQL's LIMIT 1 left ties arbitrary)
+            return min(hits, key=lambda r: (float(r["dist"]), r["id"])) if hits else None
 
-    def nearest_live_facts_to(self, schema, ns, fact_id, *, k=8) -> list[dict]:
+    def nearest_live_facts_to(self, schema, ns, anchor, *, k=8) -> list[dict]:
         """Reconcile twin of nearest_live_facts, against STORED embeddings: top-k live
-        facts nearest to fact `fact_id`, restricted to the SAME observation cutoff the
-        write path uses (observed no later than the anchor), excluding the anchor."""
+        facts nearest to `anchor` (a live_facts_page row + its `embedding` text),
+        restricted to the SAME observation cutoff the write path uses (observed no later
+        than the anchor), excluding the anchor.
+
+        Deliberately EXACT, not HNSW (issue #155): the negation close-out takes the
+        top-8 and then filters by distance/subject/token overlap, so an approximate
+        top-8 changes WHICH facts get closed. Measured on the #155 benchmark (20000
+        real-embedding facts), sem_hnsw recall@8 for these anchors was 0.70 at the
+        default ef_search=40 and still 0.985 at 200 — dozens of reversals the old exact
+        scan closed were silently left live. The `+ 0` makes the ORDER BY ineligible
+        for the vector index so this is always an exact scan of the namespace's live
+        facts; that is affordable because only facts carrying a reversal cue (a small
+        fraction) ever reach this lookup, and the anchor vector is now a bound parameter
+        (no per-row CTE join). The per-fact hot path is older_near_duplicate."""
         self._chk(schema)
+        vec = anchor.get("embedding")
+        if vec is None:
+            return []
         with self.conn.cursor() as c:
             c.execute(
-                f"WITH a AS (SELECT id, embedding, observed_at "
-                f"           FROM {schema}.semantic WHERE id=%(id)s AND namespace=%(ns)s) "
-                f"SELECT s.id, s.statement, s.subject_entity, "
-                f"       (s.embedding <=> a.embedding) AS dist "
-                f"FROM {schema}.semantic s, a "
-                f"WHERE s.namespace=%(ns)s AND s.kind='fact' AND s.valid_to IS NULL "
-                f"AND s.expired_at IS NULL AND s.embedding IS NOT NULL AND s.id <> a.id "
-                f"AND (a.observed_at IS NULL OR s.observed_at <= a.observed_at) "
-                f"ORDER BY s.embedding <=> a.embedding LIMIT %(k)s",
-                {"id": fact_id, "ns": ns, "k": k})
+                f"SELECT id, statement, subject_entity, "
+                f"       (embedding <=> %(v)s::{self.vtype}) AS dist "
+                f"FROM {schema}.semantic "
+                f"WHERE namespace=%(ns)s AND kind='fact' AND valid_to IS NULL "
+                f"AND expired_at IS NULL AND embedding IS NOT NULL AND id <> %(id)s "
+                f"AND (%(obs)s::timestamptz IS NULL OR observed_at <= %(obs)s) "
+                f"ORDER BY (embedding <=> %(v)s::{self.vtype}) + 0, id LIMIT %(k)s",
+                {"v": vec, "ns": ns, "id": anchor["id"], "obs": anchor.get("observed_at"),
+                 "k": k})
             return c.fetchall()
 
     def turn_supersession(self, schema, turn_ids) -> dict:

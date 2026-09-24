@@ -1974,61 +1974,88 @@ def infer_conclusions(entity_name: str, facts: list[tuple[int, str]], llm, model
         return []
 
 # --- namespace reconcile (issue #10 residual C) ------------------------------------
+def reconcile_thresholds() -> tuple[float, float]:
+    """(dedupe, negation) thresholds — the SAME env knobs the write path reads."""
+    return (_env_float("MEMNOS_DEDUPE_THRESHOLD", 0.03),
+            _env_float("MEMNOS_NEGATION_THRESHOLD", 0.40))
+
+
+def reconcile_fact(store, schema: str, namespace: str, f: dict, *,
+                   dedupe_thresh: float, neg_thresh: float) -> tuple[int, int]:
+    """Apply the deterministic write-time logic to ONE live fact `f` (a
+    store.live_facts_page row carrying its `embedding` text) against OLDER live facts:
+    dedupe -> SPO supersession (cue list + quantified-object rule) -> reversal/negation
+    close-out via nearest stored embeddings. Returns (deduped, closed). Pure logic — no
+    transaction control; the caller decides what a unit of commit is (issue #155)."""
+    from .temporal import parse_event_date
+    stmt, subj, pred, obj = (f["statement"], f.get("subject_entity"),
+                             f.get("predicate"), f.get("object"))
+    ev = f.get("valid_from") or f.get("observed_at")
+    # (a) DEDUPE: f restates an older live fact -> reinforce the older, expire f
+    if dedupe_thresh > 0:
+        dup = store.older_near_duplicate(schema, namespace, f, dedupe_thresh)
+        if dup is not None:
+            store.bump_restatement(schema, dup["id"], f.get("source_turn_ids") or [])
+            store.expire(schema, namespace, f["id"])
+            return 1, 0
+    # (b) SPO supersession — identical gate to _write_fact
+    hist = _is_historical(stmt)
+    explicit_ev = parse_event_date(stmt, None) if hist else None
+    n = 0
+    if (subj and pred and _supersedable(pred, obj) and ev is not None
+            and not (hist and explicit_ev is None)):
+        ids = store.supersede_predicate(schema, namespace, subj, pred, obj, ev,
+                                        observed_at=f.get("observed_at"),
+                                        historical=hist, event_date=explicit_ev)
+        store.mark_superseded_by(schema, ids, f["id"])
+        n += len(ids)
+    # (c) REVERSAL/NEGATION close-out — same guards as _write_fact
+    if n == 0 and neg_thresh > 0 and _REVERSAL_RE.search(stmt):
+        cands = store.nearest_live_facts_to(schema, namespace, f, k=8)
+        for cand in _negation_targets(stmt, subj, cands, neg_thresh):
+            n += store.close_out(schema, namespace, cand["id"],
+                                 valid_to=ev or datetime.now(timezone.utc),
+                                 superseded_by=f["id"])
+    return 0, n
+
+
 def reconcile_namespace(store, namespace: str, *, schema: str = f"tenant_{_TENANT}",
-                        limit: int | None = None) -> dict:
+                        limit: int | None = None, page_size: int = 200) -> dict:
     """BACKFILL for pre-fix contradiction debt: namespaces ingested before the bf78b2e
     write-path fix hold contradicting LIVE facts that the fixed write path would have
     closed at write time. Walk the namespace's live facts NEWEST-FIRST (observation
     axis) and apply the SAME deterministic write-time logic pairwise against older live
-    facts: dedupe -> SPO supersession (cue list + quantified-object rule) -> reversal/
-    negation close-out via nearest stored embeddings. Embedding-only — stored vectors,
-    NO LLM, no new embedding calls.
+    facts (reconcile_fact). Embedding-only — stored vectors, NO LLM, no new embedding
+    calls.
 
-    The CALLER owns the transaction: run on a non-autocommit connection, then COMMIT
-    for a real run or ROLLBACK for --dry-run — the mutations (and therefore the
-    reported counts) are identical by construction. `limit` caps the number of facts
-    WALKED per run (newest first), bounding the work for huge namespaces.
+    SINGLE-TRANSACTION form: the CALLER owns the transaction (this function never
+    commits). It is what `--dry-run` uses — run everything, then ROLLBACK, so the
+    reported counts are exact. A real run against a live database should go through
+    core.reconcile.run_reconcile instead, which drives the same reconcile_fact over the
+    same keyset-paginated walk but COMMITS IN BOUNDED CHUNKS with a persisted cursor,
+    an advisory lock and short lock/statement timeouts (issue #155). `limit` caps the
+    number of facts WALKED (newest first).
 
     Dedupe direction (backfill twin of the write-path rule "a restatement reinforces,
     never inserts"): the OLDER fact is kept (restatements + salience bump + provenance
     union of the newer fact's source turns) and the NEWER duplicate row is expired —
     converging on the exact end-state the fixed write path would have produced."""
-    from .temporal import parse_event_date
-    dedupe_thresh = _env_float("MEMNOS_DEDUPE_THRESHOLD", 0.03)
-    neg_thresh = _env_float("MEMNOS_NEGATION_THRESHOLD", 0.40)
-    facts = store.live_facts_newest_first(schema, namespace, limit=limit)
-    out = {"facts_scanned": len(facts), "deduped": 0, "closed": 0}
-    for f in facts:
-        if not store.is_live(schema, namespace, f["id"]):   # closed earlier in this walk
-            continue
-        stmt, subj, pred, obj = (f["statement"], f.get("subject_entity"),
-                                 f.get("predicate"), f.get("object"))
-        ev = f.get("valid_from") or f.get("observed_at")
-        # (a) DEDUPE: f restates an older live fact -> reinforce the older, expire f
-        if dedupe_thresh > 0:
-            dup = store.older_near_duplicate(schema, namespace, f["id"], dedupe_thresh)
-            if dup is not None:
-                store.bump_restatement(schema, dup["id"], f.get("source_turn_ids") or [])
-                store.expire(schema, namespace, f["id"])
-                out["deduped"] += 1
+    dedupe_thresh, neg_thresh = reconcile_thresholds()
+    out = {"facts_scanned": 0, "deduped": 0, "closed": 0}
+    cursor = None
+    while limit is None or out["facts_scanned"] < limit:
+        want = page_size if limit is None else min(page_size, limit - out["facts_scanned"])
+        page = store.live_facts_page(schema, namespace, before=cursor, limit=want)
+        if not page:
+            break
+        embs = store.fact_embeddings(schema, [f["id"] for f in page])
+        for f in page:
+            out["facts_scanned"] += 1
+            cursor = (f["obs_key"], f["id"])
+            if not store.is_live(schema, namespace, f["id"]):   # closed earlier in this walk
                 continue
-        # (b) SPO supersession — identical gate to _write_fact
-        hist = _is_historical(stmt)
-        explicit_ev = parse_event_date(stmt, None) if hist else None
-        n = 0
-        if (subj and pred and _supersedable(pred, obj) and ev is not None
-                and not (hist and explicit_ev is None)):
-            ids = store.supersede_predicate(schema, namespace, subj, pred, obj, ev,
-                                            observed_at=f.get("observed_at"),
-                                            historical=hist, event_date=explicit_ev)
-            store.mark_superseded_by(schema, ids, f["id"])
-            n += len(ids)
-        # (c) REVERSAL/NEGATION close-out — same guards as _write_fact
-        if n == 0 and neg_thresh > 0 and _REVERSAL_RE.search(stmt):
-            cands = store.nearest_live_facts_to(schema, namespace, f["id"], k=8)
-            for cand in _negation_targets(stmt, subj, cands, neg_thresh):
-                n += store.close_out(schema, namespace, cand["id"],
-                                     valid_to=ev or datetime.now(timezone.utc),
-                                     superseded_by=f["id"])
-        out["closed"] += n
+            d, c = reconcile_fact(store, schema, namespace, {**f, "embedding": embs.get(f["id"])},
+                                  dedupe_thresh=dedupe_thresh, neg_thresh=neg_thresh)
+            out["deduped"] += d
+            out["closed"] += c
     return out

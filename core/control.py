@@ -332,6 +332,24 @@ CREATE TABLE IF NOT EXISTS memnos_control.leases(
 );
 CREATE UNIQUE INDEX IF NOT EXISTS leases_active
     ON memnos_control.leases(namespace, key) WHERE released_at IS NULL;
+-- `memnos namespace reconcile` resume watermark (issue #155): the keyset cursor of the
+-- last COMMITTED chunk, written in the same transaction as that chunk's mutations.
+-- core/reconcile.py also issues this same CREATE (RUNS_DDL) itself, because the CLI can
+-- run against a database no upgraded server has booted on yet. Keep the two identical.
+CREATE TABLE IF NOT EXISTS memnos_control.namespace_reconcile_runs(
+    tenant_schema      text NOT NULL,
+    namespace          text NOT NULL,
+    cursor_observed_at timestamptz,
+    cursor_id          bigint,
+    facts_scanned      bigint NOT NULL DEFAULT 0,
+    deduped            bigint NOT NULL DEFAULT 0,
+    closed             bigint NOT NULL DEFAULT 0,
+    chunks             bigint NOT NULL DEFAULT 0,
+    started_at         timestamptz NOT NULL DEFAULT now(),
+    updated_at         timestamptz NOT NULL DEFAULT now(),
+    finished_at        timestamptz,
+    PRIMARY KEY (tenant_schema, namespace)
+);
 """
 
 # Pseudo-namespace convention for secret-resolve authorization (issue #114, "Secret

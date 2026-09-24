@@ -2106,26 +2106,45 @@ def cmd_namespace(args, cfg):
         # deterministic write-time supersession logic (dedupe + SPO + negation
         # close-out) pairwise over the namespace's LIVE facts, newest-first.
         # Embedding-only (stored vectors), NO LLM. Direct-DB admin path (same _conn
-        # DSN trust as every other `memnos namespace` verb). Dry-run rolls back the
-        # SAME mutations, so its counts are exact, not estimates.
+        # DSN trust as every other `memnos namespace` verb).
+        # issue #155: runs on its OWN connection (short lock/statement timeouts) under a
+        # per-namespace advisory lock, commits every changing fact on its own (read-only
+        # stretches in pages) with a persisted resume watermark, backs off on lock
+        # contention, and stops at a fact boundary on SIGTERM/SIGINT (core/reconcile.py).
+        # Dry-run is one rolled-back transaction, so its counts are exact.
         if not args.name:
-            sys.exit("usage: memnos namespace reconcile <ns> [--dry-run] [--limit N]")
-        import psycopg
-        from psycopg.rows import dict_row
-        from core.store import BrainStore
-        from core.service import reconcile_namespace
-        conn.close()                       # reconcile owns its own (non-autocommit) txn
-        rconn = psycopg.connect(_dsn(cfg), autocommit=False, row_factory=dict_row)
-        try:
-            res = reconcile_namespace(BrainStore(conn=rconn), args.name, limit=args.limit)
-            rconn.rollback() if args.dry_run else rconn.commit()
-        finally:
-            rconn.close()
-        mode = "dry-run — no changes written" if args.dry_run else "applied"
+            sys.exit("usage: memnos namespace reconcile <ns> [--dry-run] [--limit N] "
+                     "[--chunk-size N] [--restart]")
+        from core.reconcile import run_reconcile
+        from core.service import _TENANT
+        conn.close()                       # reconcile owns its own dedicated connection
+        schema = f"tenant_{_TENANT}"
+        res = run_reconcile(_dsn(cfg), args.name, schema=schema, dry_run=args.dry_run,
+                            limit=args.limit, chunk_size=args.chunk_size,
+                            restart=args.restart, pause_ms=args.pause_ms,
+                            lock_timeout_ms=args.lock_timeout_ms,
+                            log=lambda m: print(f"  … {m}", file=sys.stderr, flush=True))
+        st = res["status"]
+        if st == "locked":
+            print(f"namespace reconcile '{args.name}': another reconcile of this namespace "
+                  f"is already running (advisory lock held) — nothing done")
+            sys.exit(3)
+        mode = {"dry-run": "dry-run — no changes written", "complete": "applied",
+                "limit": "applied — stopped at --limit; rerun to continue",
+                "interrupted": "interrupted — committed work kept; rerun to resume",
+                "contention": "backed off — live traffic held locks; rerun to resume",
+                }.get(st, st)
         print(f"namespace reconcile '{args.name}' ({mode})")
+        if res.get("resumed_from") is not None:
+            print(f"  {'resumed after':<14} observed_at={res['resumed_from'][0]} "
+                  f"id={res['resumed_from'][1]}")
         print(f"  {'facts walked':<14} {res['facts_scanned']}")
         print(f"  {'would-close' if args.dry_run else 'closed':<14} {res['closed']}")
         print(f"  {'would-dedupe' if args.dry_run else 'deduped':<14} {res['deduped']}")
+        if not args.dry_run:
+            print(f"  {'commits':<14} {res['chunks']}  (lock-timeout retries: {res['retries']})")
+        if st == "contention":
+            sys.exit(75)                   # EX_TEMPFAIL: safe to retry later
     elif args.action == "links":
         rows = Control.list_links(conn, args.name)
         if not rows:
@@ -4534,7 +4553,20 @@ def build_parser():
     p.add_argument("--dry-run", action="store_true",
                    help="reconcile/prune: report only, write nothing (prune's default even without this flag)")
     p.add_argument("--limit", type=int,
-                   help="reconcile: cap the number of facts walked this run (newest first)")
+                   help="reconcile: cap the number of facts walked this run (newest first); "
+                        "a real run stopped by --limit resumes from there next time")
+    p.add_argument("--chunk-size", type=int, default=200,
+                   help="reconcile: facts read per page (default 200). Every fact that "
+                        "changes something is committed on its own, so no row lock is held "
+                        "across facts; unchanged facts are committed at most every N / ~1s")
+    p.add_argument("--restart", action="store_true",
+                   help="reconcile: discard an unfinished run's saved position and start "
+                        "again from the newest fact (default: resume where it stopped)")
+    p.add_argument("--pause-ms", type=int, default=0,
+                   help="reconcile: sleep this long between pages to yield to live traffic")
+    p.add_argument("--lock-timeout-ms", type=int, default=2000,
+                   help="reconcile: give up waiting for a row/lock after this long, roll "
+                        "back the in-flight fact and retry with backoff (default 2000)")
     p.add_argument("--empty", action="store_true",
                    help="prune: target namespaces with 0 facts and 0 turns (default filter if --stale not given)")
     p.add_argument("--stale", type=int, metavar="DAYS",

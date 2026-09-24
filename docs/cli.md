@@ -440,7 +440,11 @@ manage namespaces: add | ls | rm | prune | set | link | unlink | links | copy | 
 | `--link-kind` | link: taxonomy for this explicit edge (informational; default 'link' = today's grounding semantics — recall on src also searches dst) (one of: `link`, `inherits`, `governed_by`; default `link`) |
 | `--purge` | rm: also delete the stored memories |
 | `--dry-run` | reconcile/prune: report only, write nothing (prune's default even without this flag) |
-| `--limit` | reconcile: cap the number of facts walked this run (newest first) |
+| `--limit` | reconcile: cap the number of facts walked this run (newest first); a real run stopped by --limit resumes from there next time |
+| `--chunk-size` | reconcile: facts read per page (default 200). Every fact that changes something is committed on its own, so no row lock is held across facts; unchanged facts are committed at most every N / ~1s (default `200`) |
+| `--restart` | reconcile: discard an unfinished run's saved position and start again from the newest fact (default: resume where it stopped) |
+| `--pause-ms` | reconcile: sleep this long between pages to yield to live traffic |
+| `--lock-timeout-ms` | reconcile: give up waiting for a row/lock after this long, roll back the in-flight fact and retry with backoff (default 2000) (default `2000`) |
 | `--empty` | prune: target namespaces with 0 facts and 0 turns (default filter if --stale not given) |
 | `--stale` | prune: also target namespaces with a small fact count whose last write is older than DAYS (still requires --force to actually delete) |
 | `--force` | prune: actually delete the matched candidates (default is report-only) |
