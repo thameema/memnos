@@ -803,21 +803,24 @@ class BrainStore:
                         salience=0.0, vec=None, source_turn_ids: Iterable[int] = (),
                         author=None, memory_type=None, observed_at=None,
                         inference_confidence=None, inference_basis=None,
-                        source_fact_ids: Iterable[int] = ()) -> int:
+                        source_fact_ids: Iterable[int] = (), source_speaker=None) -> int:
         # observed_at = the OBSERVATION (knowledge) axis used by bi-temporal supersession:
         # when this fact was learned (server: now; session ingest: session date). None →
         # column default now() (legacy callers unchanged).
+        # source_speaker (issue #154): speaker of the turn the fact was extracted from
+        # ('user' / 'assistant' / …); None for legacy/consolidated/unattributed writes.
         self._chk(schema)
         src = list(source_turn_ids) if source_turn_ids else None
         fact_src = list(source_fact_ids) if source_fact_ids else None
         with self.conn.cursor() as c:
             c.execute(
                 f"INSERT INTO {schema}.semantic"
-                f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding,source_turn_ids,author_principal,memory_type,observed_at,inference_confidence,inference_basis,source_fact_ids) "
-                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::{self.vtype},%s,%s,%s,COALESCE(%s,now()),%s,%s,%s) RETURNING id",
+                f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding,source_turn_ids,author_principal,memory_type,observed_at,inference_confidence,inference_basis,source_fact_ids,source_speaker) "
+                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::{self.vtype},%s,%s,%s,COALESCE(%s,now()),%s,%s,%s,%s) RETURNING id",
                 (ns, kind, statement, subject, predicate, obj, valid_from, valid_to,
                  confidence, salience, vlit(vec) if vec is not None else None, src, author,
-                 memory_type, observed_at, inference_confidence, inference_basis, fact_src))
+                 memory_type, observed_at, inference_confidence, inference_basis, fact_src,
+                 source_speaker))
             return c.fetchone()["id"]
 
     def provenance_of(self, schema, ns, semantic_id) -> dict | None:
@@ -1083,17 +1086,36 @@ class BrainStore:
                 {"ids": ids, "t": thresh})
             return [(r["a"], r["b"]) for r in c.fetchall()]
 
-    def bump_restatement(self, schema, fact_id, source_turn_ids=()) -> None:
+    def bump_restatement(self, schema, fact_id, source_turn_ids=()) -> bool:
         """Reinforce an existing live fact instead of inserting a near-duplicate:
-        restatements counter + salience bump + provenance union (additive columns)."""
+        provenance union ALWAYS; restatements counter + salience bump only when the
+        restatement CORROBORATES (issue #154).
+
+        Corroboration rule: an assistant re-stating a fact (usually echoing its own or the
+        user's earlier words) is not independent evidence — counting it made confidence
+        circular. The restatement counts iff AT LEAST ONE restating source turn has
+        raw_turns.speaker distinct from 'assistant' (user, a named speaker, or NULL for
+        files/legacy/unattributed writes — i.e. today's behavior for everything except the
+        assistant echo), or no source turn ids were supplied at all (legacy callers).
+        The restating turn ids are still unioned into source_turn_ids either way, so the
+        two-way conversation evidence chain is never lost. Returns whether it counted."""
         self._chk(schema)
+        ids = list(source_turn_ids or ())
         with self.conn.cursor() as c:
             c.execute(
-                f"UPDATE {schema}.semantic SET restatements = restatements + 1, "
-                f"salience = LEAST(1.0, salience + 0.1), "
+                f"WITH corr AS (SELECT (cardinality(%(ids)s::bigint[]) = 0 OR EXISTS ("
+                f"  SELECT 1 FROM {schema}.raw_turns rt WHERE rt.id = ANY(%(ids)s::bigint[]) "
+                f"  AND coalesce(lower(rt.speaker), '') <> 'assistant')) AS ok) "
+                f"UPDATE {schema}.semantic SET "
+                f"restatements = restatements + CASE WHEN (SELECT ok FROM corr) THEN 1 ELSE 0 END, "
+                f"salience = CASE WHEN (SELECT ok FROM corr) THEN LEAST(1.0, salience + 0.1) "
+                f"ELSE salience END, "
                 f"source_turn_ids = (SELECT ARRAY(SELECT DISTINCT t FROM "
-                f"unnest(coalesce(source_turn_ids,'{{}}'::bigint[]) || %s::bigint[]) AS t ORDER BY t)) "
-                f"WHERE id=%s", (list(source_turn_ids or ()), fact_id))
+                f"unnest(coalesce(source_turn_ids,'{{}}'::bigint[]) || %(ids)s::bigint[]) AS t ORDER BY t)) "
+                f"WHERE id=%(fid)s RETURNING (SELECT ok FROM corr) AS ok",
+                {"ids": ids, "fid": fact_id})
+            row = c.fetchone()
+            return bool(row and row["ok"])
 
     # --- namespace reconcile (issue #10 residual C: pre-fix contradiction debt) ------
     def live_facts_newest_first(self, schema, ns, limit=None) -> list[dict]:
@@ -2480,8 +2502,8 @@ class BrainStore:
                 sem_filter = " AND statement ILIKE %s" if like else ""
                 # copied facts lose source_turn_ids (raw-turn ids differ in the copy)
                 c.execute(f"INSERT INTO {schema}.semantic"
-                          f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding) "
-                          f"SELECT %s,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding "
+                          f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding,source_speaker) "
+                          f"SELECT %s,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding,source_speaker "
                           f"FROM {schema}.semantic WHERE namespace=%s{sem_filter} "
                           f"RETURNING id, subject_entity, object",
                           ([dst, src] + ([likeval] if like else [])))

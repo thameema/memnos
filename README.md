@@ -98,6 +98,14 @@ endpoint (Ollama / vLLM / LM Studio) — embeddings stay local-384 and free, onl
 extraction calls that local LLM. `memnos migrate-embeddings` converts between embedding
 modes losslessly if you change your mind.
 
+Extraction depends on who is speaking. Every turn is stored verbatim and stays searchable.
+From your own messages, memnos extracts decisions, preferences, rules, plans and personal
+facts. From the assistant's replies, it keeps only decisions, concrete outcomes,
+identifiers (PR/issue numbers, versions, SHAs, hosts) and explicit state changes, capped
+per reply by `MEMNOS_ASSISTANT_FACT_CAP` (default 6). A fact the assistant repeats is not
+counted as corroboration. To store facts about you under your name rather than a generic
+"user", set `MEMNOS_USER_NAME`, for example `MEMNOS_USER_NAME="Ada Lovelace"`.
+
 Full walkthrough: [`QUICKSTART.md`](QUICKSTART.md) · Windows:
 [`docs/guides/windows.md`](docs/guides/windows.md) · everything else: `memnos --help`.
 

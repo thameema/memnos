@@ -95,6 +95,9 @@ POOL_MAX = int(os.environ.get("MEMNOS_POOL_MAX", "16"))
 # Extraction model: gpt-4o-mini on the OpenAI path; override for OpenAI-compatible
 # local servers (e.g. MEMNOS_EXTRACT_MODEL=llama3.2:3b with MEMNOS_EXTRACT_BASE_URL).
 EXTRACT_MODEL = os.environ.get("MEMNOS_EXTRACT_MODEL", "gpt-4o-mini")
+# issue #154: display name of the HUMAN principal behind this server's hook traffic, so
+# live extraction resolves "I"/"the user" to ONE consistent subject. Unset → "user".
+USER_NAME = (os.environ.get("MEMNOS_USER_NAME") or "").strip() or None
 MAX_BODY = 256 * 1024          # 256 KB request cap
 # issue #15: recall queries are CLAMPED to this many chars (not 400-rejected) so a long
 # query returns 200 — the embedder truncates and the FTS arm is token-clamped, so it is
@@ -1195,7 +1198,8 @@ class Handler(BaseHTTPRequestHandler):
 
                 store = BrainStore(conn=conn)
                 usage = _UsageAcc()        # captures extraction/consolidation LLM tokens+cost
-                mem = MemnosMemory(store, EMBED, dim=DIM, llm=LLM, extract_model=EXTRACT_MODEL, on_usage=usage)
+                mem = MemnosMemory(store, EMBED, dim=DIM, llm=LLM, extract_model=EXTRACT_MODEL, on_usage=usage,
+                                   user_name=USER_NAME)
                 cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 action = self.path.lstrip("/")
                 try:
@@ -1601,6 +1605,11 @@ class Handler(BaseHTTPRequestHandler):
         req.pop("observed_at", None)
         req.pop("known_at", None)
         valid_anchor = _replay_valid_anchor(req)
+        # issue #154: the source turn's speaker drives speaker-aware extraction (P2) and
+        # is stamped on each fact (P3) — threaded through BOTH the sync path and the
+        # async _INGEST_Q tuple (incl. its retry re-enqueue).
+        speaker = req.get("speaker")
+        speaker = (str(speaker)[:40] if speaker is not None else None)
         run_async = bool(req.get("async"))
         usage = _UsageAcc()
         cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
@@ -1622,10 +1631,10 @@ class Handler(BaseHTTPRequestHandler):
                 # author = AUTHENTICATED principal's name (token-derived; body ignored)
                 mem = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
                                    extract_model=EXTRACT_MODEL, on_usage=usage, author=pname,
-                                   extract_fn=EXTRACT_FN)
+                                   extract_fn=EXTRACT_FN, user_name=USER_NAME)
                 try:
                     tid, rtext, obs, retired = mem.remember_turn(
-                        ns, rtext0, speaker=req.get("speaker"), session_id=req.get("session_id"),
+                        ns, rtext0, speaker=speaker, session_id=req.get("session_id"),
                         vec=vec, memory_type=mtype, constraint_subject=cs)
                 except ConstraintBudgetExceeded as be:
                     # issue #153: write-time pinned-budget guard. Nothing was written.
@@ -1671,7 +1680,8 @@ class Handler(BaseHTTPRequestHandler):
             if run_async:
                 try:
                     _INGEST_Q.put_nowait((ns, rtext, obs, tid, principal, mem, cost0, t0, mtype,
-                                          valid_anchor, 0))     # 0 = first attempt (issue #31 retry count)
+                                          valid_anchor, speaker,
+                                          0))     # 0 = first attempt (issue #31 retry count)
                     out = {"turn_id": tid, "facts": None, "extraction": "queued", "namespace": ns}
                     if cs:                                   # issue #153: effective subject
                         out["constraint_subject"] = cs
@@ -1684,13 +1694,14 @@ class Handler(BaseHTTPRequestHandler):
             # date_anchor: event-time (valid_from) fallback only — see _replay_valid_anchor.
             # `obs` (observation axis / known_at) is untouched and passed to write_facts below.
             date_anchor = valid_anchor if valid_anchor is not None else obs
-            facts = mem.extract_facts(rtext, date_anchor, memory_type=mtype)  # P2 — NO conn held
+            facts = mem.extract_facts(rtext, date_anchor, memory_type=mtype,
+                                      speaker=speaker)                     # P2 — NO conn held
             if hasattr(EMBED, "prime") and facts:                 # batch-embed fact statements, NO conn
                 EMBED.prime([f["statement"] for f in facts])
             with POOL.connection() as conn:                       # P3
                 mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
                                     extract_model=EXTRACT_MODEL, on_usage=usage, author=pname,
-                                    extract_fn=EXTRACT_FN)
+                                    extract_fn=EXTRACT_FN, user_name=USER_NAME)
                 # suggest-on-mismatch (issue #20, Part B): advisory only — NEVER reroutes.
                 # MUST run BEFORE write_facts persists this turn's entities into `ns`,
                 # else `ns` self-pollutes with its own just-extracted entities and the
@@ -1699,7 +1710,7 @@ class Handler(BaseHTTPRequestHandler):
                 # the PRE-write entity state of every namespace.
                 suggestion = _write_suggestion(conn, principal, ns, facts, rtext)
                 nf, nsup = mem3.write_facts(ns, facts, obs, tid, memory_type=mtype,
-                                            valid_anchor=valid_anchor)
+                                            valid_anchor=valid_anchor, speaker=speaker)
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 Control.record_usage(conn, principal, ns, action, mem3.extract_model,
                                      usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))
@@ -1760,7 +1771,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(*err)
             # store=None: DB phases attach a short-lived BrainStore per pool conn.
             # author = authenticated principal's name (stamped on every write).
-            mem = MemnosMemory(None, EMBED, dim=DIM, llm=LLM, extract_model=EXTRACT_MODEL, on_usage=usage, author=pname)
+            mem = MemnosMemory(None, EMBED, dim=DIM, llm=LLM, extract_model=EXTRACT_MODEL, on_usage=usage, author=pname,
+                               user_name=USER_NAME)
             try:
                 code, out = self._phased_op(mem, req, ns, principal, t0)
             except Exception as op_err:
@@ -2359,7 +2371,8 @@ def _ingest_worker():
     so a burst of async remembers doesn't serialize behind one extraction at a time —
     each worker's P2 is pure model I/O, so they overlap cleanly."""
     while True:
-        ns, rtext, obs, tid, principal, mem, cost0, t0, mtype, valid_anchor, attempt = _INGEST_Q.get()
+        (ns, rtext, obs, tid, principal, mem, cost0, t0, mtype, valid_anchor, speaker,
+         attempt) = _INGEST_Q.get()
         try:
             usage = _UsageAcc()
             mem.on_usage = usage
@@ -2368,7 +2381,8 @@ def _ingest_worker():
             # This is the branch that actually matters for a replayed write: offline_queue.py
             # always sends async=True, so replays land here, not in the sync path above.
             date_anchor = valid_anchor if valid_anchor is not None else obs
-            facts = mem.extract_facts(rtext, date_anchor, memory_type=mtype)  # NO conn held
+            facts = mem.extract_facts(rtext, date_anchor, memory_type=mtype,
+                                      speaker=speaker)                     # NO conn held
             with POOL.connection() as conn:
                 # mem.author carries the AUTHENTICATED principal's name from the request
                 mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
@@ -2386,7 +2400,7 @@ def _ingest_worker():
                     except Exception:
                         pass                                       # a write never fails on the nudge
                 nf, nsup = mem3.write_facts(ns, facts, obs, tid, memory_type=mtype,
-                                            valid_anchor=valid_anchor)
+                                            valid_anchor=valid_anchor, speaker=speaker)
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 Control.record_usage(conn, principal, ns, "remember", mem3.extract_model,
                                      usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))
@@ -2402,7 +2416,7 @@ def _ingest_worker():
                       f"(attempt {attempt + 1}/{MEMNOS_INGEST_MAX_RETRIES}; raw turn IS stored)",
                       flush=True)
                 item = (ns, rtext, obs, tid, principal, mem, cost0, t0, mtype, valid_anchor,
-                        attempt + 1)
+                        speaker, attempt + 1)
 
                 def _requeue(item=item, exc=e):
                     try:

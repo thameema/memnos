@@ -340,10 +340,197 @@ def _dossier_text(x) -> str:
     return ""
 
 
+# --- extraction PROFILES (issue #154) -------------------------------------------------
+# Field finding: ~78% of all stored facts were mined from the ASSISTANT's own replies by a
+# prompt tuned for a personal-life benchmark ("be EXHAUSTIVE… one fact per martial art"),
+# turning every coding-agent status report into ~17 activity-log "facts". Extraction is
+# now speaker-aware, with three profiles:
+#   benchmark           — the ORIGINAL prompt, VERBATIM (pinned by a byte-level test). Only
+#                         ingest_session() uses it. (The LoCoMo harness itself ingests via
+#                         Encoder + Consolidator, which never reach _extract at all.)
+#   developer           — the live-path base prompt (user turns, files, speaker=None).
+#   developer_assistant — speaker='assistant': decisions / outcomes / identifiers / state
+#                         changes ONLY, plus a deterministic post-filter + cap.
+# The raw turn is ALWAYS stored verbatim by remember_turn() before any of this runs — the
+# profiles only decide which clauses get promoted into standalone fact rows.
+EXTRACT_PROFILES = ("benchmark", "developer", "developer_assistant")
+
+# PINNED — do not edit (tests/test_speaker_aware_extraction.py fingerprints the exact bytes).
+# Prefixed at call time with f"DATE: {date}. ".
+_EXTRACT_PROMPT_BENCHMARK = (
+    "Extract EVERY atomic, self-contained FACT about any person, "
+    "project, or work item in this conversation — be EXHAUSTIVE, do not skip minor "
+    "details. Cover: hobbies & activities, experiences & events, preferences & "
+    "opinions, possessions, relationships & who they met, places been/lived, jobs & "
+    "education, plans, feelings/values, and decisions/outcomes/identifiers from work "
+    "discussions. PRESERVE identifiers VERBATIM in statements — ticket keys (ABC-123), "
+    "PR/MR numbers, version numbers, URLs, file/host names — never paraphrase them "
+    "away. List EACH distinct item separately (e.g. one fact per martial "
+    "art, per dessert, per country). RESOLVE relative dates ('yesterday','last "
+    "Saturday') to ABSOLUTE using DATE, and pronouns to named people. For each fact: "
+    "statement = a full self-contained sentence (with the date if known); subject = "
+    "the named person OR work item/system it's about; predicate = a short normalized "
+    "relation ('lives_in','works_at','did_activity','met_person','visited','likes'; "
+    "for work items: 'uses','status','is_blocked_by','can_handle','runs_on') or '' if "
+    "it doesn't fit; object = the value or ''. When a fact CHANGES or REVERSES a "
+    "previous state ('switched to','no longer','now handles'), fill subject and the "
+    "SAME predicate the prior fact would use, with the NEW value as object — e.g. 'we "
+    'switched the pipeline to MySQL\' -> {"subject":"pipeline","predicate":"uses",'
+    '"object":"MySQL","statement":"The pipeline uses MySQL."}. EVERY fact object MUST '
+    "have all four keys. ALWAYS include a statement even when "
+    'subject/predicate/object are empty. JSON {"facts":[{"subject":"","predicate":"",'
+    '"object":"","statement":"..."}]}.')
+
+# Shared tail for the developer profiles (change/reversal rule + output schema).
+_EXTRACT_TAIL = (
+    "PRESERVE identifiers VERBATIM in statements — ticket keys (ABC-123), PR/issue numbers "
+    "(#123), version numbers, commit SHAs, URLs, file paths, host names, ports — never "
+    "paraphrase them away. RESOLVE relative dates ('yesterday','last Saturday') to ABSOLUTE "
+    "using DATE, and pronouns to the named person or system. For each fact: statement = a "
+    "full self-contained sentence (with the date if known); subject = the named person OR "
+    "work item/system it's about; predicate = a short normalized relation or '' if none "
+    "fits; object = the value or ''. When a fact CHANGES or REVERSES a previous state "
+    "('switched to','no longer','now handles','is now'), fill subject and the SAME predicate "
+    "the prior fact would use, with the NEW value as object — e.g. 'we switched the pipeline "
+    'to MySQL\' -> {"subject":"pipeline","predicate":"uses","object":"MySQL","statement":'
+    '"The pipeline uses MySQL."}. EVERY fact object MUST have all four keys. ALWAYS include '
+    'a statement even when subject/predicate/object are empty. JSON {"facts":[{"subject":"",'
+    '"predicate":"","object":"","statement":"..."}]}.')
+
+
+def _who_clause(user_name: str | None) -> str:
+    """How the extractor must name the human principal — one consistent subject instead of
+    'user' / 'I' / 'the developer' / guessed-name drift (field: one identity split across 6
+    subject spellings)."""
+    if user_name:
+        return (f'The human in this conversation is "{user_name}": resolve "I", "me", "my", '
+                f'"the user" and "the developer" to "{user_name}" and use exactly '
+                f'"{user_name}" as the subject of facts about them. ')
+    return ('Refer to the human in this conversation consistently with the subject "user" '
+            '(never "I", "me", "the developer", or a guessed name). ')
+
+
+def _extract_prompt(profile: str, date, user_name: str | None = None) -> str:
+    if profile == "benchmark":
+        return f"DATE: {date}. " + _EXTRACT_PROMPT_BENCHMARK
+    who = _who_clause(user_name)
+    if profile == "developer_assistant":
+        human = f'"{user_name}"' if user_name else '"user"'
+        return (
+            f"DATE: {date}. The text below was written by an AI coding ASSISTANT (a reply or "
+            "status report to the human it works for). Its full text is already stored "
+            "verbatim, so do NOT log or summarize what the assistant did. Extract ONLY durable "
+            "facts a future work session would need, and ONLY of these four kinds: "
+            "(1) DECISIONS made — what was chosen, and why if stated; "
+            "(2) concrete OUTCOMES/RESULTS — tests passed/failed with counts, root cause "
+            "found, measured values, verdicts; "
+            "(3) IDENTIFIERS tied to what they identify — PR/issue/ticket numbers, versions, "
+            "commit SHAs, hostnames, ports, file paths, URLs; "
+            "(4) explicit STATE CHANGES of a system or work item — deployed, merged, "
+            "released, fixed, broken, blocked, reverted, 'X is now Y'. "
+            "Do NOT extract: activity narration ('added', 'updated', 'ran', 'checked', "
+            "'looked at', 'reviewed'), next-step plans or offers, explanations of how code "
+            "works, restatements of the human's request, hedges or questions, or anything "
+            "about the assistant itself. Most replies yield 0-5 facts; return "
+            '{"facts": []} when nothing qualifies — never pad. '
+            "subject = the work item / system / project the fact is about — NEVER "
+            f"'assistant', 'agent', 'Claude' or 'I'; use {human} only for a fact about the "
+            "human. " + who +
+            "predicate = one of 'decided', 'status', 'result', 'root_cause', 'version', "
+            "'deployed_version', 'merged_as', 'fixed_in', 'is_blocked_by', 'uses', "
+            "'runs_on', 'identifier', or ''. " + _EXTRACT_TAIL)
+    # developer (base live-path prompt: user turns, files, unattributed writes)
+    return (
+        f"DATE: {date}. You maintain long-term memory for a software developer who works "
+        "with an AI coding assistant. Extract the atomic, self-contained FACTS in this text "
+        "that would still be worth knowing in a future session. " + who +
+        "Cover: decisions and their rationale; preferences, conventions, rules and "
+        "constraints the person states; plans and commitments; people, roles and "
+        "relationships; projects, systems and tools and how they are configured or used; "
+        "concrete outcomes, results and identifiers; and personal facts the person shares "
+        "about themselves (home, work, family, schedule). List each distinct item "
+        "separately, but do NOT extract small talk, greetings, the request itself restated "
+        "as a fact ('the user asked to fix X'), or transient step-by-step narration. "
+        "Suggested predicates: 'decided', 'prefers', 'rule', 'plans_to', 'works_at', "
+        "'lives_in', 'role', 'uses', 'status', 'is_blocked_by', 'runs_on', 'version', "
+        "'result'. " + _EXTRACT_TAIL)
+
+
+# Deterministic post-filter for ASSISTANT-turn facts (issue #154). The prompt asks for
+# narrow extraction, but a small/cheap model (or a pluggable extract_fn) may still emit an
+# activity log — this guarantees the bound no matter which backend ran. ALLOWLIST, not a
+# narration denylist (a model invents new narration predicates faster than any list —
+# 'ran_test_suite', 'covers', 'identified', 'can_look_at' all seen from llama3.1:8b):
+#   - ALWAYS drop personal-life / activity predicates (the benchmark vocabulary that
+#     produced `user | did_activity | …` ×275 and `agent | did_activity | …` ×116);
+#   - otherwise KEEP a fact only if it has one of the narrow prompt's high-value
+#     predicates (decided/status/result/root_cause/…, subject not the assistant itself),
+#     OR its statement carries a HARD identifier (#N, ticket key, version, commit SHA,
+#     URL, hostN, :port), OR an explicit state-change / decision / outcome cue.
+#     A bare file path is deliberately NOT an identifier here: nearly every coding-agent
+#     sentence names a file, so "compare.html was updated" (the ×275 activity log in a
+#     different predicate) must not be rescued by it;
+#   - cap the survivors (MEMNOS_ASSISTANT_FACT_CAP, default 6), high-value predicates
+#     first, then identifier/state-bearing facts (original order within a tier).
+_ASSISTANT_DROP_PREDICATES = {
+    "did_activity", "did", "performed", "performed_activity", "activity", "worked_on",
+    "met_person", "met", "visited", "likes", "enjoys", "hobby", "experienced", "feels"}
+_ASSISTANT_HIGH_VALUE_PREDICATES = {
+    "decided", "status", "result", "root_cause", "version", "deployed_version", "merged_as",
+    "fixed_in", "is_blocked_by", "identifier"}
+_SELF_SUBJECTS = {"assistant", "the assistant", "agent", "the agent", "ai", "claude",
+                  "i", "me", "we", "bot", "model", "claude code"}
+_HARD_IDENT_RE = re.compile(
+    r"(#\d+|\b[A-Z][A-Z0-9]+-\d+\b|\bv?\d+\.\d+(?:\.\d+)*\b|"
+    r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b|https?://|"
+    r"\bhost\d+\b|:\d{2,5}\b|\b(?:PR|MR|issue|ticket)\s*#?\d+\b)", re.I)
+_STATE_RE = re.compile(
+    r"\b(deployed|merged|released|shipped|fixed|reverted|rolled back|broken|blocked|"
+    r"unblocked|is now|are now|now (?:uses|runs|points|lives|returns)|switched to|no longer|"
+    r"decided|chose|chosen|root cause|pass(?:es|ed|ing)?|fail(?:s|ed|ing)?|green|resolved|"
+    r"migrated|upgraded|downgraded|deprecated)\b", re.I)
+
+
+def _assistant_fact_cap() -> int:
+    return max(0, _env_int("MEMNOS_ASSISTANT_FACT_CAP", 6))
+
+
+def filter_assistant_facts(facts) -> list[dict]:
+    """Deterministic narrowing of facts extracted from an ASSISTANT turn (issue #154).
+    Pure function — see the rule comment above."""
+    kept = []
+    for f in facts or []:
+        stmt = str(f.get("statement") or "")
+        pred = str(f.get("predicate") or "").strip().lower()
+        subj = str(f.get("subject") or "").strip().lower()
+        if pred in _ASSISTANT_DROP_PREDICATES:
+            continue
+        high = pred in _ASSISTANT_HIGH_VALUE_PREDICATES and subj not in _SELF_SUBJECTS
+        signal = bool(_HARD_IDENT_RE.search(stmt) or _STATE_RE.search(stmt))
+        if not (high or signal):
+            continue
+        kept.append((0 if high else 1, len(kept), f))
+    kept.sort(key=lambda t: (t[0], t[1]))
+    return [f for _, _, f in kept[:_assistant_fact_cap()]]
+
+
+def _is_assistant(speaker) -> bool:
+    return str(speaker or "").strip().lower() == "assistant"
+
+
+def _accepts_profile(fn) -> bool:
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.kind == p.VAR_KEYWORD or p.name == "profile" for p in params)
+
+
 class MemnosMemory:
     def __init__(self, store_or_dsn, embed_fn, *, reranker_model=brain_rerank.DEFAULT_RERANKER,
                  dim=1536, llm=None, extract_model="gpt-4o-mini", ensure_schema=False,
-                 on_usage=None, extract_fn=None, redact=True, author=None):
+                 on_usage=None, extract_fn=None, redact=True, author=None, user_name=None):
         # store_or_dsn may be a pooled BrainStore (production), a DSN string (scripts), or
         # None — for phased callers (the server) that only use the no-DB methods
         # (extract_facts, recall_rank, ...) or pass conn_factory to the phased methods,
@@ -371,6 +558,11 @@ class MemnosMemory:
         # jobs. Stamped as author_principal on every raw_turn/fact/episode this instance
         # writes. None (scripts/benchmarks) leaves the column NULL.
         self.author = author
+        # Display name of the HUMAN principal (issue #154) so the live extraction prompts
+        # resolve "I"/"the user" to one consistent subject. Explicit only (server env
+        # MEMNOS_USER_NAME) — never inferred from `author`, which is a token/principal
+        # name ('omnigent', 'claude-code', ...) on non-hook paths. None → subject "user".
+        self.user_name = (str(user_name).strip() or None) if user_name else None
         self.schema = self.store.create_schema(_TENANT, dim=dim) if ensure_schema else f"tenant_{_TENANT}"
 
     def _track(self, model, resp):
@@ -405,9 +597,10 @@ class MemnosMemory:
             memory_type=memory_type, constraint_subject=constraint_subject)
         n_facts = n_super = 0
         if extract and (self.llm is not None or self.extract_fn is not None):
-            facts = self.extract_facts(text, observed_at, memory_type=memory_type)
+            facts = self.extract_facts(text, observed_at, memory_type=memory_type,
+                                       speaker=speaker)
             n_facts, n_super = self.write_facts(namespace, facts, observed_at, tid,
-                                                memory_type=memory_type)
+                                                memory_type=memory_type, speaker=speaker)
         out = {"turn_id": tid, "facts": n_facts, "superseded": n_super}
         if retired:
             out["constraints_retired"] = retired
@@ -540,7 +733,7 @@ class MemnosMemory:
             "candidates": cands,
         })
 
-    def extract_facts(self, text, observed_at, *, memory_type=None):
+    def extract_facts(self, text, observed_at, *, memory_type=None, speaker=None):
         """Phase 2 (slow, NO database use): LLM fact extraction. Safe to run with no
         connection held — pure model I/O.
 
@@ -551,37 +744,55 @@ class MemnosMemory:
         'constraint' skips the LLM entirely — no facts are extracted, so nothing
         paraphrased ever gets stored. The verbatim text is already durable via
         remember_turn()'s raw_turn write (memory_type stamped there too), which
-        pinned_constraints() reads directly — the raw turn IS the constraint."""
+        pinned_constraints() reads directly — the raw turn IS the constraint.
+
+        SPEAKER-AWARE (issue #154): `speaker='assistant'` uses the narrow
+        `developer_assistant` profile (decisions / outcomes / identifiers / state changes)
+        AND a deterministic post-filter + cap (filter_assistant_facts) that bounds the
+        result whichever backend ran (LLM or a pluggable extract_fn). Every other speaker
+        (user, None, files) uses the `developer` profile. The raw turn is unaffected —
+        it was already stored verbatim by remember_turn()."""
         if memory_type == "constraint":
             return []
-        return self._extract(text, observed_at)
+        if _is_assistant(speaker):
+            return filter_assistant_facts(
+                self._extract(text, observed_at, profile="developer_assistant"))
+        return self._extract(text, observed_at, profile="developer")
 
     def write_facts(self, namespace, facts, observed_at, turn_id, *, memory_type=None,
-                    valid_anchor=None) -> tuple:
+                    valid_anchor=None, speaker=None) -> tuple:
         """Phase 3 (fast, DB only): supersession + store + graph for extracted facts.
         `memory_type` = the source TURN's type — derived facts INHERIT it.
 
         `valid_anchor` (issue #42, default None): optional override for the EVENT-time
         (`valid_from`) fallback anchor ONLY — see `_write_fact` for why this is safe to
         decouple from `observed_at`. None (every caller except the server's write-behind
-        replay path) preserves the original single-anchor behavior exactly."""
+        replay path) preserves the original single-anchor behavior exactly.
+
+        `speaker` (issue #154): the source turn's speaker, stamped on each fact as
+        semantic.source_speaker (queryable provenance). Corroboration is decided from the
+        restating turn's raw_turns.speaker inside BrainStore.bump_restatement."""
         n_facts = n_super = 0
         for f in facts:
             df, ds = self._write_fact(namespace, f, observed_at, source_turn_ids=[turn_id],
-                                      memory_type=memory_type, valid_anchor=valid_anchor)
+                                      memory_type=memory_type, valid_anchor=valid_anchor,
+                                      speaker=speaker)
             n_facts += df; n_super += ds
         return n_facts, n_super
 
     def ingest_session(self, namespace: str, turns, *, session_date, session_id=None,
                        extract=True) -> dict:
-        """BENCHMARKED ingest path (per-SESSION batch). Store each raw turn, then extract
-        SPO facts from the WHOLE session at once (better pronoun / relative-date
-        resolution than per-message), then supersede + graph-populate via the same
-        `_write_fact` used by remember(). `turns` = [(speaker, text), ...].
+        """Per-SESSION batch ingest path. Store each raw turn, then extract SPO facts from
+        the WHOLE session at once (better pronoun / relative-date resolution than
+        per-message), then supersede + graph-populate via the same `_write_fact` used by
+        remember(). `turns` = [(speaker, text), ...].
 
-        This is the SAME code the LoCoMo benchmark runs — there is one engine, not two.
-        Feed sessions in chronological order so belief-change supersession closes the
-        OLDER value first."""
+        Extraction here is PINNED to the original exhaustive `benchmark` profile (issue
+        #154) — byte-identical to before the live path became speaker-aware. (Note: the
+        LoCoMo harness, benchmarks/locomo_eval.py, ingests via core.encode.Encoder +
+        core.consolidate.Consolidator — its own prompts and writes — not through this
+        method.) Feed sessions in chronological order so belief-change supersession
+        closes the OLDER value first."""
         if self.redact:
             from .redact import redact as _redact
             turns = [(spk, _redact(txt)[0] if txt else txt) for spk, txt in turns]
@@ -596,13 +807,13 @@ class MemnosMemory:
         if extract and self.llm is not None:
             content = f"SESSION DATE: {session_date}\n\n" + "\n".join(
                 f"{s}: {t}" for s, t in turns if t)
-            for f in self._extract(content, session_date):
+            for f in self._extract(content, session_date, profile="benchmark"):
                 df, ds = self._write_fact(namespace, f, session_date, source_turn_ids=tids)
                 n_facts += df; n_super += ds
         return {"turns": len(turns), "facts": n_facts, "superseded": n_super}
 
     def _write_fact(self, namespace, f, fallback_date, *, source_turn_ids=(),
-                    memory_type=None, valid_anchor=None):
+                    memory_type=None, valid_anchor=None, speaker=None):
         """Write ONE SPO fact: near-duplicate collapse → absolute event date →
         belief-change supersession (SPO + reversal/negation close-out) → store with
         subject/predicate/object (+ provenance to its source turn) → populate the
@@ -648,6 +859,9 @@ class MemnosMemory:
         # WRITE-PATH DEDUPE (issue #10 density half): a verbatim/near restatement of a
         # LIVE fact does not insert a new row — it reinforces the existing one (salience
         # bump + restatements counter + provenance union). MEMNOS_DEDUPE_THRESHOLD=0 disables.
+        # Issue #154: the dedupe ALWAYS fires (an assistant echo never inserts a row, and
+        # its turn joins the provenance), but bump_restatement only counts it as
+        # CORROBORATION when a restating source turn is not speaker='assistant'.
         dedupe_thresh = _env_float("MEMNOS_DEDUPE_THRESHOLD", 0.03)
         if dedupe_thresh > 0:
             dup = self.store.find_near_duplicate(self.schema, namespace, vec, subj,
@@ -666,7 +880,8 @@ class MemnosMemory:
         superseded_ids = []
         insert_kwargs = dict(subject=subj, predicate=pred, obj=obj, valid_from=ev,
                              salience=0.5, vec=vec, source_turn_ids=source_turn_ids,
-                             author=self.author, memory_type=memory_type, observed_at=obs)
+                             author=self.author, memory_type=memory_type, observed_at=obs,
+                             source_speaker=(str(speaker)[:40] if speaker else None))
         if (subj and pred and _supersedable(pred, obj)       # belief-change ONLY for single-valued attrs
                 and not (hist and explicit_ev is None)):     # (cue list OR quantified-object rule)
             # issue #60 — CONCURRENT/OUT-OF-ORDER WRITER GUARD. Two facts for the same
@@ -738,18 +953,31 @@ class MemnosMemory:
                 self.store.bump_edge(self.schema, namespace, se, oe)
         return 1, n_super
 
-    def _extract(self, text, date):
-        """EXHAUSTIVE statement-first extraction with optional SPO metadata.
+    def _extract(self, text, date, *, profile="benchmark"):
+        """Statement-first extraction with optional SPO metadata.
+
+        `profile` (issue #154) picks the system prompt — see EXTRACT_PROFILES. The
+        default is `benchmark` (the original, pinned prompt) so any direct caller keeps
+        today's exact behavior; the live path (extract_facts) always passes a developer
+        profile explicitly. A pluggable `extract_fn` receives `profile=`/`user_name=`
+        only if its signature accepts them (legacy two-arg extractors are unchanged).
 
         The `statement` is the retrieval unit (embedded + searched), so coverage matters
         most: capture EVERY fact, not just clean triples. subject/predicate are best-effort
         metadata that enable belief-change supersession when applicable — a fact that
-        doesn't fit a triple is still captured (empty predicate). Measured: rigid
+        doesn't fit a triple is still captured (empty predicate) — EXCEPT on the
+        assistant path, where extract_facts() post-filters to decisions / outcomes /
+        identifiers / state changes (issue #154). Measured: rigid
         SPO-only + 700-token cap under-extracted (~12 facts / 33-turn session); answers
         existed in raw turns but never became facts."""
         import json
+        if profile not in EXTRACT_PROFILES:
+            raise ValueError(f"unknown extraction profile {profile!r}; one of {EXTRACT_PROFILES}")
         if self.extract_fn is not None:          # pluggable backend (e.g. Claude CLI, free via sub)
             try:
+                if _accepts_profile(self.extract_fn):
+                    return self.extract_fn(text, date, profile=profile,
+                                           user_name=self.user_name)
                 return self.extract_fn(text, date)
             except Exception:
                 return []
@@ -758,28 +986,7 @@ class MemnosMemory:
                 model=self.extract_model, temperature=0, max_tokens=2000,
                 response_format={"type": "json_object"},
                 messages=[{"role": "system", "content":
-                           f"DATE: {date}. Extract EVERY atomic, self-contained FACT about any person, "
-                           "project, or work item in this conversation — be EXHAUSTIVE, do not skip minor "
-                           "details. Cover: hobbies & activities, experiences & events, preferences & "
-                           "opinions, possessions, relationships & who they met, places been/lived, jobs & "
-                           "education, plans, feelings/values, and decisions/outcomes/identifiers from work "
-                           "discussions. PRESERVE identifiers VERBATIM in statements — ticket keys (ABC-123), "
-                           "PR/MR numbers, version numbers, URLs, file/host names — never paraphrase them "
-                           "away. List EACH distinct item separately (e.g. one fact per martial "
-                           "art, per dessert, per country). RESOLVE relative dates ('yesterday','last "
-                           "Saturday') to ABSOLUTE using DATE, and pronouns to named people. For each fact: "
-                           "statement = a full self-contained sentence (with the date if known); subject = "
-                           "the named person OR work item/system it's about; predicate = a short normalized "
-                           "relation ('lives_in','works_at','did_activity','met_person','visited','likes'; "
-                           "for work items: 'uses','status','is_blocked_by','can_handle','runs_on') or '' if "
-                           "it doesn't fit; object = the value or ''. When a fact CHANGES or REVERSES a "
-                           "previous state ('switched to','no longer','now handles'), fill subject and the "
-                           "SAME predicate the prior fact would use, with the NEW value as object — e.g. 'we "
-                           'switched the pipeline to MySQL\' -> {"subject":"pipeline","predicate":"uses",'
-                           '"object":"MySQL","statement":"The pipeline uses MySQL."}. EVERY fact object MUST '
-                           "have all four keys. ALWAYS include a statement even when "
-                           'subject/predicate/object are empty. JSON {"facts":[{"subject":"","predicate":"",'
-                           '"object":"","statement":"..."}]}.'},
+                           _extract_prompt(profile, date, self.user_name)},
                           {"role": "user", "content": text}])
             self._track(self.extract_model, r)
             out = []
