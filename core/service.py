@@ -213,6 +213,80 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+# --- PINNED-CONSTRAINT WRITE HYGIENE (issue #153) -----------------------------------
+# Production incident: 6 pinned constraints totaling 10,040 chars against render_context's
+# 9,000-char default budget. Pins render first, so recall injected ZERO ranked facts for
+# every prompt. The fix is a WRITE-time guard (prevent the state) rather than read-time
+# budget splitting (which would only relocate the problem).
+#
+# Budget defaults, both env-tunable, both measured against the DEFAULT recall render
+# budget (render_context max_chars=9000; a /recall caller can pass its own max_chars per
+# request, which this write-time guard cannot know):
+#   MEMNOS_PINNED_BUDGET_CHARS=5000  ~55% of 9000. Leaves real headroom for ranked facts.
+#   MEMNOS_PINNED_MAX_COUNT=10       = /recall's default constraint_cap. pinned_constraints()
+#                                    is oldest-first then truncated to the cap, so an 11th
+#                                    live constraint is silently NEVER injected at default
+#                                    settings. Accepting it would mislead the caller.
+PINNED_BUDGET_CHARS_DEFAULT = 5000
+PINNED_MAX_COUNT_DEFAULT = 10
+_PIN_PREFIX = "CONSTRAINT: "        # render_context's own-namespace pin line prefix
+
+
+def pinned_line_chars(content: str) -> int:
+    """Chars one pinned constraint spends in render_context's budget (its rendered
+    line, not bare content), so the write-time guard measures what recall really
+    spends."""
+    return len(_PIN_PREFIX) + len(content or "")
+
+
+def derive_constraint_subject(text: str) -> str:
+    """Default `constraint_subject` for a constraint written WITHOUT one (issue #153).
+
+    Why derive instead of reject: the main constraint write paths have no way to pass a
+    subject today: the MCP `remember(text, memory_type)` tool, the `/memnos constraint
+    <rule>` slash one-liner (`memnos remember --type constraint`), and offline-queue
+    replays of writes queued by older clients. A hard reject would break all of them,
+    and a rejected replay would be silently lost. An untagged constraint, though, is
+    IMMORTAL: retire_constraints() only matches on subject.
+
+    Shape: 'auto:<slug of the first words>-<sha1(normalized full text)[:10]>'. The
+    hash covers the WHOLE normalized text, so it is collision-safe. Identical text gives
+    the same subject, so re-saving a rule supersedes its older duplicate (auditable, via
+    retire_constraints). Different text never shares a subject, so a distinct guardrail
+    is never retired by accident. A leading-words-only slug would break this: "never
+    deploy without X" and "never deploy on Fridays" would retire each other. The slug is
+    only there for humans reading the subject. The caller gets the effective subject
+    back and can later supersede the constraint by writing with that subject.
+    Deterministic, with no LLM involved (issue #29)."""
+    import hashlib
+    norm = " ".join((text or "").lower().split())
+    words = re.findall(r"[a-z0-9]+", norm)[:6]
+    slug = "-".join(words)[:60].strip("-") or "constraint"
+    digest = hashlib.sha1(norm.encode("utf-8")).hexdigest()[:10]
+    return f"auto:{slug}-{digest}"
+
+
+def effective_constraint_subject(memory_type, constraint_subject, text):
+    """The subject a write ACTUALLY lands with: the caller's (stripped and
+    lowercased), else a derived default for constraints. None for non-constraint
+    types."""
+    if memory_type != "constraint":
+        return None
+    cs = (constraint_subject or "").strip().lower()
+    return cs or derive_constraint_subject(text)
+
+
+class ConstraintBudgetExceeded(ValueError):
+    """Raised by remember_turn() BEFORE anything is written, when accepting a new pinned
+    constraint would push the namespace's live pinned set past the char or count budget.
+    `detail` is a JSON-safe dict (budget, current and projected usage, retirement
+    candidates) for the server to return as-is."""
+
+    def __init__(self, message: str, detail: dict):
+        super().__init__(message)
+        self.detail = detail
+
+
 # issue #12 phase 2: bound on how many of a hybrid recall's independent SQL arms
 # (primary raw-turn + semantic, plus one raw+semantic pair per grounded/wide
 # namespace) run AT ONCE via their own short-lived pooled connection. Default 2 —
@@ -363,13 +437,20 @@ class MemnosMemory:
         still-live constraint sharing (namespace, constraint_subject) is immediately
         retired via BrainStore.retire_constraints(), returned here as
         `retired_constraints` so the caller can audit the event (never done here — this
-        method does no control-plane I/O)."""
+        method does no control-plane I/O).
+
+        issue #153: every constraint write now LANDS with a subject. An omitted one is
+        derived (see derive_constraint_subject), so no new constraint is unretirable.
+        Before inserting, the namespace's pinned budget is checked (see
+        _check_pinned_budget). An over-budget write raises ConstraintBudgetExceeded and
+        writes nothing."""
         observed_at = observed_at or datetime.now(timezone.utc)
         if self.redact:
             from .redact import redact as _redact
             text, _ = _redact(text)             # strip secrets BEFORE storage + extraction
-        cs = (constraint_subject.strip().lower()
-              if (memory_type == "constraint" and constraint_subject) else None)
+        cs = effective_constraint_subject(memory_type, constraint_subject, text)
+        if cs:
+            self._check_pinned_budget(namespace, text, cs)
         tid = self.store.insert_raw_turn(self.schema, namespace, session_id, speaker,
                                          text, observed_at,
                                          vec if vec is not None else self.embed(text),
@@ -378,6 +459,86 @@ class MemnosMemory:
         retired = self.store.retire_constraints(self.schema, namespace, cs,
                                                 keep_kind="turn", keep_id=tid) if cs else []
         return tid, text, observed_at, retired
+
+    def _check_pinned_budget(self, namespace, text, cs):
+        """issue #153 write-time guard. HARD REJECT (not warn-and-accept): the callers
+        that caused the incident never read a warning. MCP `remember` hands its result
+        to an LLM as a string, the slash one-liner prints one line, and offline-queue
+        replays read nothing at all. A warning would be dropped on exactly those paths.
+
+        Counted: this namespace's own LIVE pinned constraints (the pinned_constraints()
+        view, all three stores, deduped on content), NET of the rows this write will
+        supersede (same subject), plus the new row. Netting keeps supersession, the
+        one supported retirement path, usable even when the namespace is at budget.
+
+        RATCHET: a write that doesn't INCREASE usage (e.g. replacing a long rule with a
+        shorter one under the same subject) is always accepted, even while the namespace
+        is still over budget. Otherwise an already-over-budget namespace (like the
+        incident's) could never be brought back under one supersession at a time.
+
+        Legacy untagged live constraints in this namespace are backfilled with a derived
+        subject first. That makes them retirable, and lets the rejection name a subject
+        the caller can actually supersede. Scope: own namespace only. Constraints from
+        ancestor or grounded namespaces co-inject at recall, but that depends on the
+        reader, so a write-time check can't account for them."""
+        budget = _env_int("MEMNOS_PINNED_BUDGET_CHARS", PINNED_BUDGET_CHARS_DEFAULT)
+        max_count = _env_int("MEMNOS_PINNED_MAX_COUNT", PINNED_MAX_COUNT_DEFAULT)
+        if budget <= 0 and max_count <= 0:
+            return                                           # guard disabled
+        self.store.backfill_constraint_subjects(self.schema, namespace,
+                                                derive_constraint_subject)
+        live, _ = self.store.pinned_constraints(self.schema, [namespace], cap=500)
+        kept = [r for r in live if (r.get("constraint_subject") or "") != cs]
+        cur_chars = sum(pinned_line_chars(r["content"]) for r in live)
+        cur_count = len(live)
+        dup = any(r["content"] == text for r in kept)        # renders once (content dedupe)
+        new_chars = pinned_line_chars(text)
+        proj_chars = sum(pinned_line_chars(r["content"]) for r in kept) + (0 if dup else new_chars)
+        proj_count = len(kept) + (0 if dup else 1)
+        over_chars = budget > 0 and proj_chars > budget and proj_chars > cur_chars
+        over_count = max_count > 0 and proj_count > max_count and proj_count > cur_count
+        if not (over_chars or over_count):
+            return
+        now = datetime.now(timezone.utc)
+        cands = []
+        for r in sorted(kept, key=lambda r: (-pinned_line_chars(r["content"]), r["ts"])):
+            ts = r["ts"]
+            age = None
+            if ts is not None:
+                ts = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+                age = max(0, (now - ts).days)
+            cands.append({"id": f"{r['kind']}:{r['id']}",
+                          "subject": r.get("constraint_subject"),
+                          "chars": pinned_line_chars(r["content"]),
+                          "age_days": age,
+                          "created": ts.isoformat() if ts is not None else None,
+                          "preview": r["content"][:100]})
+        reasons = []
+        if over_chars:
+            reasons.append(f"pinned constraints would total {proj_chars} chars "
+                           f"(budget {budget}, ~55% of the default 9000-char recall budget)")
+        if over_count:
+            reasons.append(f"{proj_count} live pinned constraints (max {max_count}, the "
+                           f"default recall constraint_cap; extras are never injected)")
+        if new_chars > budget > 0:
+            hint = (f"this constraint alone is {new_chars} chars, over the whole pinned "
+                    f"budget of {budget}. Shorten it.")
+        else:
+            hint = ("retire or shorten an existing constraint first: re-save it with "
+                    "`--subject <its subject>` (MCP: constraint_subject=...) and shorter, "
+                    "merged text. That supersedes the old row. Candidates are listed "
+                    "largest first.")
+        msg = ("constraint rejected (nothing saved) in namespace '%s': %s. Pinned "
+               "constraints render before every ranked fact, so an oversized pinned set "
+               "starves recall. %s" % (namespace, "; ".join(reasons), hint))
+        raise ConstraintBudgetExceeded(msg, {
+            "namespace": namespace,
+            "budget_chars": budget, "max_count": max_count,
+            "current_chars": cur_chars, "current_count": cur_count,
+            "projected_chars": proj_chars, "projected_count": proj_count,
+            "new_constraint_chars": new_chars, "constraint_subject": cs,
+            "candidates": cands,
+        })
 
     def extract_facts(self, text, observed_at, *, memory_type=None):
         """Phase 2 (slow, NO database use): LLM fact extraction. Safe to run with no
@@ -1393,8 +1554,13 @@ class MemnosMemory:
                     label += f", x{r['dup_count']}"
                 d = f", {r['date']}" if (r["kind"] == "fact" and r.get("date")) else ""
                 line = f"- ({label}{d}{by}){tag} {r['content']}"
+            # issue #153: SKIP a row that doesn't fit rather than stopping. `break` let ONE
+            # oversized row (e.g. a huge pinned constraint) block every shorter row after
+            # it, even with most of the budget still free. Precedence is unchanged: rows
+            # are still considered in order (pins, then facts, then turns), so an earlier
+            # row always claims space before a later one; later rows only fill the gaps.
             if used + len(line) > max_chars:
-                break
+                continue
             out.append(line); used += len(line)
         return "\n".join(out)
 

@@ -40,6 +40,7 @@ save a memory (data client — talks to the server)
 | `text` | the text to remember |
 | `--namespace` | target namespace (default: auto-resolve for this folder) |
 | `--type` | classify the memory (constraints are pinned into every recall) (one of: `decision`, `incident`, `constraint`, `skill`, `fact`) |
+| `--subject` | constraint grouping key (--type constraint only). A newer constraint with the SAME subject supersedes the older one; omitted, the server derives one from the text |
 | `--token` | bearer token (default: MEMNOS_TOKEN or the config admin token) |
 | `--json` | also print the raw server response JSON |
 
@@ -650,7 +651,7 @@ add a constraint; --enforce ask|block also registers a PreToolUse enforcement ru
 | `--enforce` | advise (default): pinned into recall only, like /memnos constraint. ask/block: ALSO enforced by the PreToolUse hook (requires --tool) (one of: `advise`, `ask`, `block`; default `advise`) |
 | `--tool` | glob matched against the pending tool name — required for --enforce ask|block |
 | `--token` | bearer token for the pinned-memory write (else $MEMNOS_TOKEN / config) |
-| `--subject` | issues #83/#84: optional grouping key. A newer constraint with the SAME --subject in the SAME namespace automatically retires the older one (supersession); across namespaces sharing --subject, the ':'-prefix ANCESTOR namespace wins by default (precedence) — see `constraint override` |
+| `--subject` | issues #83/#84: grouping key. A newer constraint with the SAME --subject in the SAME namespace automatically retires the older one (supersession); across namespaces sharing --subject, the ':'-prefix ANCESTOR namespace wins by default (precedence) — see `constraint override`. Omitted, the server derives one from the text (issue #153) |
 
 ### `memnos constraint ls`
 

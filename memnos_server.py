@@ -83,7 +83,8 @@ from psycopg_pool import ConnectionPool, PoolTimeout
 
 from core.store import (BrainStore, query_clamp, RECALL_ARM_FAILURES, classify_arm_failure,
                         record_arm_failure, health_unavailable)
-from core.service import MemnosMemory
+from core.service import (MemnosMemory, ConstraintBudgetExceeded,
+                          effective_constraint_subject)
 from core.control import Control, SECRET_NS_PREFIX
 from core import rerank as brain_rerank
 from core import memrelief
@@ -1610,15 +1611,33 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(*err)
             from core.redact import redact as _redact
             rtext0, _n = _redact(text)                            # P1a — CPU
+            # issue #153: every constraint lands WITH a subject. An omitted one is derived
+            # here from the redacted text (the same derivation remember_turn() would apply),
+            # so the retire audit below and the response carry the EFFECTIVE subject, and
+            # the caller can supersede the constraint later.
+            cs_given = cs
+            cs = effective_constraint_subject(mtype, cs, rtext0)
             vec = EMBED(rtext0)                                   # P1a — network, NO conn
             with POOL.connection() as conn:                       # P1b — short DB write
                 # author = AUTHENTICATED principal's name (token-derived; body ignored)
                 mem = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
                                    extract_model=EXTRACT_MODEL, on_usage=usage, author=pname,
                                    extract_fn=EXTRACT_FN)
-                tid, rtext, obs, retired = mem.remember_turn(
-                    ns, rtext0, speaker=req.get("speaker"), session_id=req.get("session_id"),
-                    vec=vec, memory_type=mtype, constraint_subject=cs)
+                try:
+                    tid, rtext, obs, retired = mem.remember_turn(
+                        ns, rtext0, speaker=req.get("speaker"), session_id=req.get("session_id"),
+                        vec=vec, memory_type=mtype, constraint_subject=cs)
+                except ConstraintBudgetExceeded as be:
+                    # issue #153: write-time pinned-budget guard. Nothing was written.
+                    # 409 is a permanent 4xx (offline_queue.is_transient), so it surfaces
+                    # to the caller instead of queuing forever. Audited like any other
+                    # failed write.
+                    Control.audit(conn, principal, action, ns, False,
+                                  {"reason": "constraint_budget",
+                                   "projected_chars": be.detail.get("projected_chars"),
+                                   "projected_count": be.detail.get("projected_count")},
+                                  latency_ms=int((time.perf_counter() - t0) * 1000), status=409)
+                    return self._send(409, {"error": str(be), "constraint_budget": be.detail})
                 if retired:
                     # issue #84: supersession/expiry event — recorded + queryable
                     # (`memnos_admin.py errors`-style audit_log query on action=
@@ -1641,6 +1660,9 @@ class Handler(BaseHTTPRequestHandler):
                     suggestion = _write_suggestion(conn, principal, ns, [], rtext)
                 _DELIVER_EVENT.set()
                 out = {"turn_id": tid, "facts": 0, "superseded": 0, "namespace": ns}
+                if cs:                                   # issue #153: effective subject
+                    out["constraint_subject"] = cs
+                    out["constraint_subject_derived"] = not cs_given
                 if suggestion:
                     out["suggestion"] = suggestion
                 if retired:
@@ -1651,6 +1673,9 @@ class Handler(BaseHTTPRequestHandler):
                     _INGEST_Q.put_nowait((ns, rtext, obs, tid, principal, mem, cost0, t0, mtype,
                                           valid_anchor, 0))     # 0 = first attempt (issue #31 retry count)
                     out = {"turn_id": tid, "facts": None, "extraction": "queued", "namespace": ns}
+                    if cs:                                   # issue #153: effective subject
+                        out["constraint_subject"] = cs
+                        out["constraint_subject_derived"] = not cs_given
                     if retired:      # retirement already happened synchronously in P1b above
                         out["constraints_retired"] = retired
                     return self._send(200, out)
@@ -1682,6 +1707,9 @@ class Handler(BaseHTTPRequestHandler):
                               latency_ms=int((time.perf_counter() - t0) * 1000), status=200)
             _DELIVER_EVENT.set()
             out = {"turn_id": tid, "facts": nf, "superseded": nsup, "namespace": ns}
+            if cs:                                   # issue #153: effective subject
+                out["constraint_subject"] = cs
+                out["constraint_subject_derived"] = not cs_given
             if suggestion:
                 out["suggestion"] = suggestion
             if retired:

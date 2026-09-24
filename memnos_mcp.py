@@ -291,13 +291,19 @@ def _write_error(e, what):
             return (f"memnos {what} FAILED — NOT saved (403 forbidden: this principal is not "
                     f"granted write access to namespace '{_ns()}'). Tell the user the memory "
                     f"was NOT stored and that the agent's token needs a grant on this namespace.")
-        if c == 400:
+        if c in (400, 409):                   # 409 = issue #153 pinned-constraint budget
             detail = ""
             try:
-                detail = f" — {e.response.json().get('error', '')}"
+                rb = e.response.json()
+                detail = f" — {rb.get('error', '')}"
+                cands = (rb.get("constraint_budget") or {}).get("candidates") or []
+                if cands:                     # name what to supersede, largest first
+                    detail += " Candidates: " + "; ".join(
+                        f"{c.get('id')} subject={c.get('subject')} {c.get('chars')} chars "
+                        f"{c.get('age_days')}d old" for c in cands[:10])
             except Exception:
                 pass
-            return f"memnos {what} FAILED — NOT saved (400 bad request{detail})."
+            return f"memnos {what} FAILED — NOT saved ({c} {'conflict' if c == 409 else 'bad request'}{detail})."
         return f"memnos {what} FAILED — NOT saved (HTTP {c}). The memory was NOT stored."
     return f"memnos {what} FAILED — NOT saved ({type(e).__name__}: {e}). The memory was NOT stored."
 
@@ -344,7 +350,7 @@ def recall(query: str) -> str:
 
 
 @mcp.tool()
-def remember(text: str, memory_type: str = "") -> str:
+def remember(text: str, memory_type: str = "", constraint_subject: str = "") -> str:
     """Save a durable fact, preference, decision, or piece of context to the user's
     long-term memory for future sessions. Use for things worth keeping (preferences,
     project facts, commitments, identity) — not transient chatter. If this updates a
@@ -354,11 +360,19 @@ def remember(text: str, memory_type: str = "") -> str:
     to always/never follow) rather than merely describe the world — constraint memories
     are PINNED into every future recall for this namespace instead of competing for
     relevance like an ordinary fact. Other allowed types: decision, incident, skill,
-    fact. Leave empty for an ordinary untyped memory."""
+    fact. Leave empty for an ordinary untyped memory.
+
+    constraint_subject (constraints only): a short grouping key such as "deploy-policy".
+    A later constraint with the SAME subject supersedes (retires) this one, which is how
+    a constraint gets updated or shortened. Omitted, memnos derives one from the text and
+    returns it. Pinned constraints share a fixed size/count budget per namespace. A write
+    that would exceed it is REJECTED and lists existing constraints to supersede."""
     ns, source = _ns_source()
     body = {"text": text, "speaker": "user", "async": True}
     if memory_type:
         body["type"] = memory_type
+    if constraint_subject and memory_type == "constraint":
+        body["constraint_subject"] = constraint_subject
     try:
         # async:true — server stores the raw turn immediately and extracts facts in the
         # background, so a slow local-LLM extraction backend (Ollama 30-80s) can't ReadTimeout
@@ -378,7 +392,8 @@ def remember(text: str, memory_type: str = "") -> str:
             # TOKEN happens to be (empty under the HTTP mount, since the mount has no
             # token of its own).
             offline_queue.enqueue(_config_dir(), ns, text, "user", memory_type=memory_type,
-                                   token=_token())
+                                   token=_token(),
+                                   constraint_subject=body.get("constraint_subject", ""))
             return (f"remembered in '{ns}' (queued — memnos is temporarily unreachable; "
                     f"will sync automatically once it recovers, nothing lost)")
         raise ToolError(_write_error(e, "remember")) from None
@@ -390,6 +405,12 @@ def remember(text: str, memory_type: str = "") -> str:
         msg = f"remembered in '{dest}' (turn {out.get('turn_id')}; facts extracting in background)"
     else:
         msg = f"remembered in '{dest}' (turn {out.get('turn_id')}, {out.get('facts', 0)} facts extracted)"
+    if out.get("constraint_subject"):         # issue #153: the handle to supersede it later
+        msg += (f"\nconstraint_subject: {out['constraint_subject']}"
+                + (" (derived)" if out.get("constraint_subject_derived") else ""))
+    if out.get("constraints_retired"):
+        msg += "\nsuperseded: " + ", ".join(f"{r['kind']}:{r['id']}"
+                                             for r in out["constraints_retired"])
     # default-fallback: no binding for this repo — surface the one-step bind offer.
     if source == "default" and nsresolve is not None:
         try:
