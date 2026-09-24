@@ -1444,31 +1444,114 @@ class BrainStore:
             """, (ns, name, limit))
             return [{"name": r["name"], "weight": float(r["weight"] or 0)} for r in c.fetchall()]
 
-    def community(self, schema, ns, name, *, max_nodes=200) -> dict | None:
-        """COMMUNITY (connected component) for an entity — the cluster it belongs to,
-        found by expanding the co-mention `edges` graph to convergence (recursive CTE,
-        UNION dedups → terminates). A dependency-free stand-in for Louvain: members of
-        the same densely-connected neighbourhood surface together."""
+    # issue #158: bounds for the community_search neighbourhood lookup. Every SQL
+    # statement below is itself LIMITed, so total DB work is bounded by these numbers
+    # regardless of how large the connected component is.
+    COMMUNITY_MAX_HOPS = 2
+    COMMUNITY_HUB_DEGREE = 100     # never expand THROUGH a node with more edges than this
+    COMMUNITY_MAX_FRONTIER = 50    # hop-1 nodes expanded at hop 2 (strongest first)
+
+    @staticmethod
+    def _community_name_ok(name: str) -> bool:
+        """Light junk guard (issue #158; real entity-quality cleanup is #159): keep a
+        name only if it has >= 2 Unicode word characters. Drops symbol/emoji/single-
+        digit filler like '—', '⚠️', '✅', '0', '1' that the extractor created as
+        entities; keeps '≥ $300K', 'AI', 'ICF'. Done in Python because PG's
+        [[:alnum:]] depends on the database ctype."""
+        return len(re.findall(r"\w", name or "")) >= 2
+
+    def _community_neighbours(self, c, schema, ns, ids, exclude, limit):
+        """Weight-ranked neighbours of `ids` (either edge direction), excluding
+        `exclude`. Ties on weight break by recency (newest edge id first), never by
+        name. Two-arm UNION ALL (not `src=X OR dst=X`) so the src arm can use the
+        (namespace, src_entity, dst_entity) index — see orphan_entities_sql. LIMITed."""
+        c.execute(f"""
+            SELECT n.nid AS id, e.name, max(n.w) AS weight, max(n.gid) AS recency
+            FROM (
+                SELECT dst_entity AS nid, weight AS w, id AS gid FROM {schema}.edges
+                WHERE namespace=%(ns)s AND src_entity = ANY(%(ids)s)
+                UNION ALL
+                SELECT src_entity AS nid, weight AS w, id AS gid FROM {schema}.edges
+                WHERE namespace=%(ns)s AND dst_entity = ANY(%(ids)s)
+            ) n
+            JOIN {schema}.entities e ON e.id = n.nid
+            WHERE NOT (n.nid = ANY(%(ex)s))
+            GROUP BY n.nid, e.name
+            ORDER BY max(n.w) DESC, max(n.gid) DESC
+            LIMIT %(lim)s""", {"ns": ns, "ids": list(ids), "ex": list(exclude), "lim": limit})
+        return c.fetchall()
+
+    def community(self, schema, ns, name, *, max_nodes=50) -> dict | None:
+        """Bounded, weight-ranked NEIGHBOURHOOD of an entity (issue #158) — the
+        entities it is most directly associated with in the subject->object fact graph
+        (`edges` are SPO edges bumped by service._write_fact, not co-mentions).
+
+        NOT a community-detection result (no Louvain/Leiden) and NOT the connected
+        component: the old implementation expanded the full component with an
+        unbounded recursive CTE and then took the alphabetically-first 200 names —
+        55.6 s on a 38K-node live component, returning '—', '⚠️', '✅' as "members".
+
+        Iterative BFS, max COMMUNITY_MAX_HOPS=2 hops, every statement LIMITed:
+          hop 1: strongest neighbours of the seed (by edge weight);
+          hop 2: neighbours of the top COMMUNITY_MAX_FRONTIER hop-1 nodes, skipping
+                 hub nodes (degree > COMMUNITY_HUB_DEGREE) — hubs such as 'user' or
+                 'true' are kept as direct members but never expanded THROUGH, since
+                 on this sparse graph they're what glue everything into one component.
+        Ranked by (hop, -weight, most-recent edge) — never alphabetically.
+        Symbol/emoji/single-char names are filtered."""
         self._chk(schema)
+        max_nodes = max(1, int(max_nodes))
+        overfetch = max_nodes * 2 + 10          # headroom for junk-filtered rows
         with self.conn.cursor() as c:
             c.execute(f"SELECT id, name FROM {schema}.entities WHERE namespace=%s AND lower(name)=lower(%s)",
                       (ns, name))
             seed = c.fetchone()
             if not seed:
                 return None
-            c.execute(f"""
-                WITH RECURSIVE comp(id) AS (
-                    SELECT %(eid)s::bigint
-                    UNION
-                    SELECT CASE WHEN g.src_entity=comp.id THEN g.dst_entity ELSE g.src_entity END
-                    FROM comp JOIN {schema}.edges g ON (g.src_entity=comp.id OR g.dst_entity=comp.id)
-                    WHERE g.namespace=%(ns)s
-                )
-                SELECT e.name FROM comp JOIN {schema}.entities e ON e.id=comp.id
-                WHERE e.id <> %(eid)s ORDER BY e.name LIMIT %(lim)s
-            """, {"eid": seed["id"], "ns": ns, "lim": max_nodes})
-            members = [r["name"] for r in c.fetchall()]
-        return {"entity": seed["name"], "community": members, "size": len(members) + 1}
+            seen = {seed["id"]}
+            members: list[dict] = []
+            hop1 = []
+            for r in self._community_neighbours(c, schema, ns, [seed["id"]], seen, overfetch):
+                seen.add(r["id"])
+                if self._community_name_ok(r["name"]):
+                    hop1.append(r)
+                    members.append({"name": r["name"], "hop": 1, "weight": float(r["weight"] or 0),
+                                    "_rec": r["recency"]})
+            members = members[:max_nodes]
+            room = max_nodes - len(members)
+            if room > 0 and hop1 and self.COMMUNITY_MAX_HOPS >= 2:
+                cand = [r["id"] for r in hop1[: self.COMMUNITY_MAX_FRONTIER * 2]]
+                # degree of each candidate in ONE set-based statement. (A per-candidate
+                # correlated count re-scans the namespace's edges for the dst side on
+                # every candidate — there's no dst-leading index — measured ~300 ms
+                # for 100 candidates on the live 63K-edge namespace vs ~10 ms here.)
+                c.execute(f"""
+                    SELECT nid AS id, count(*) AS deg FROM (
+                        SELECT src_entity AS nid FROM {schema}.edges
+                        WHERE namespace=%(ns)s AND src_entity = ANY(%(ids)s)
+                        UNION ALL
+                        SELECT dst_entity AS nid FROM {schema}.edges
+                        WHERE namespace=%(ns)s AND dst_entity = ANY(%(ids)s)
+                    ) d GROUP BY nid""", {"ns": ns, "ids": cand})
+                deg = {r["id"]: r["deg"] for r in c.fetchall()}
+                frontier = [i for i in cand if deg.get(i, 0) <= self.COMMUNITY_HUB_DEGREE]
+                frontier = frontier[: self.COMMUNITY_MAX_FRONTIER]
+                if frontier:
+                    for r in self._community_neighbours(c, schema, ns, frontier, seen,
+                                                        room * 2 + 10):
+                        if len(members) >= max_nodes:
+                            break
+                        seen.add(r["id"])
+                        if self._community_name_ok(r["name"]):
+                            members.append({"name": r["name"], "hop": 2,
+                                            "weight": float(r["weight"] or 0),
+                                            "_rec": r["recency"]})
+        members.sort(key=lambda m: (m["hop"], -m["weight"], -m["_rec"]))
+        for m in members:
+            del m["_rec"]
+        return {"entity": seed["name"], "community": [m["name"] for m in members],
+                "members": members, "size": len(members) + 1,
+                "max_hops": self.COMMUNITY_MAX_HOPS, "limit": max_nodes}
 
     def contradiction_summary(self, schema, ns, *, limit=50) -> dict:
         """CONTRADICTIONS — currently-valid facts where the SAME subject + a SINGLE-VALUED

@@ -483,15 +483,21 @@ paths:
   /community:
     post:
       tags: [graph]
-      summary: Connected component (community) an entity belongs to
+      summary: Bounded, weight-ranked 2-hop neighbourhood of an entity
+      description: >-
+        Returns the entities most strongly linked to `name` in the subject->object
+        fact graph, within 2 hops, ranked by (hop, -edge weight). At most `limit`
+        members (default 50, max 200). Hub nodes (degree > 100) are returned but not
+        expanded through; symbol-only names are filtered. Not a community-detection
+        (Louvain/Leiden) result and not the full connected component (issue #158).
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/NameRequest" }
+            schema: { $ref: "#/components/schemas/CommunityRequest" }
       responses:
         "200":
-          description: community members
+          description: ranked neighbourhood members
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CommunityResponse" }
@@ -1698,6 +1704,13 @@ components:
       properties:
         namespace: { type: string, maxLength: 200 }
         name: { type: string }
+    CommunityRequest:
+      type: object
+      required: [namespace, name]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        name: { type: string }
+        limit: { type: integer, minimum: 1, maximum: 200, default: 50 }
     EntityRequest:
       type: object
       required: [namespace, name]
@@ -2138,8 +2151,20 @@ components:
         entity: { type: string }
         community:
           type: array
+          description: member names, ranked by (hop, -weight)
           items: { type: string }
-        size: { type: integer }
+        members:
+          type: array
+          items:
+            type: object
+            required: [name, hop, weight]
+            properties:
+              name: { type: string }
+              hop: { type: integer }
+              weight: { type: number, description: "edge weight on the last hop (seed edge for hop 1, frontier edge for hop 2)" }
+        size: { type: integer, description: members returned + the seed entity }
+        max_hops: { type: integer }
+        limit: { type: integer }
     ContradictionsResponse:
       type: object
       required: [contradictions]

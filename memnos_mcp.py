@@ -530,11 +530,14 @@ def graph_query(entities: list[str], hops: int = 2) -> str:
 
 
 @mcp.tool()
-def community_search(name: str) -> str:
-    """Find the community (densely-connected cluster of entities) that a given entity
-    belongs to — the people/projects/things it's most associated with."""
+def community_search(name: str, limit: int = 50) -> str:
+    """Bounded neighbourhood of an entity: the entities most strongly linked to it in
+    the fact graph, within 2 hops, ranked by hop then edge weight (at most `limit`,
+    max 200). Hub nodes are not expanded through and symbol-only names are filtered.
+    Not a community-detection / clustering result. For direct neighbours only use
+    get_related; for the facts themselves use get_entity or graph_query."""
     try:
-        return str(_post("/community", {"name": name}))
+        return str(_post("/community", {"name": name, "limit": limit}))
     except Exception as e:
         return _err(e, "community_search")
 
