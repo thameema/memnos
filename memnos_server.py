@@ -1268,7 +1268,11 @@ class Handler(BaseHTTPRequestHandler):
                         name = str(req.get("name", "")).strip()
                         if not name:
                             return self._send(400, {"error": "name required"})
-                        res = store.community(mem.schema, ns, name)
+                        try:
+                            lim = max(1, min(int(req.get("limit", 50)), 200))
+                        except (TypeError, ValueError):
+                            return self._send(400, {"error": "limit must be an integer"})
+                        res = store.community(mem.schema, ns, name, max_nodes=lim)
                         if res is None:
                             return self._send(404, {"error": "entity not found"})
                         out = res

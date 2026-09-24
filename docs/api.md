@@ -161,7 +161,7 @@ the destination + read on the source. → counts `{mode, src, dst, raw_turns, fa
 | `POST /provenance` | `{namespace, id}` | fact + verbatim source turns |
 | `POST /related` | `{namespace, name}` | weight-ranked adjacency |
 | `POST /graph` | `{namespace, entities[]\|name, hops?, limit?}` | facts over the N-hop reachable set |
-| `POST /community` | `{namespace, name}` | the entity's connected component |
+| `POST /community` | `{namespace, name, limit?}` | bounded 2-hop neighbourhood, ranked by hop then edge weight (≤ limit, default 50) |
 | `POST /contradictions` | `{namespace}` | same subject+predicate, >1 current object |
 | `POST /knowledge/health` | `{namespace}` | 0-100 structural score + counts |
 
