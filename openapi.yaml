@@ -503,7 +503,7 @@ paths:
   /contradictions:
     post:
       tags: [graph]
-      summary: Same subject+predicate with multiple current objects
+      summary: Same subject + single-valued predicate with multiple current objects
       requestBody:
         required: true
         content:
@@ -2144,6 +2144,16 @@ components:
               ids:
                 type: array
                 items: { type: integer }
+        total_groups:
+          type: integer
+          description: >
+            Uncapped number of contradiction groups in the namespace (`contradictions` is
+            a capped sample). Only single-valued predicates count — the same classifier
+            the write path uses for supersession; additive predicates (did_activity,
+            includes, has, visited, ...) are never contradictions (issue #156).
+        contested_facts:
+          type: integer
+          description: Uncapped number of live facts that sit in a contradiction group.
     KnowledgeHealthResponse:
       type: object
       required: [score, facts_current, facts_superseded, facts_expired, entities,
@@ -2154,17 +2164,29 @@ components:
           minimum: 0
           maximum: 100
           description: >
-            null (not a best-effort number) if contradiction_groups, orphan_entities, or
-            entities failed to compute (issue #69) — those three feed the score
+            100 minus a contradiction penalty (0-40, graded on contradiction_ratio =
+            contested_facts / facts_current, square-root curve saturating at 10% — issue
+            #156) minus an orphan penalty (0-30, orphan_entities / entities). null (not a
+            best-effort number) if contradiction_groups, orphan_entities, entities, or
+            facts_current failed to compute (issue #69) — those feed the score
             calculation, so a partial value would silently understate a namespace's real
-            contradiction/orphan count. Non-null whenever all three succeeded, even if a
-            different signal (e.g. facts_current) failed.
+            contradiction/orphan count. Non-null whenever all four succeeded, even if a
+            different signal (e.g. facts_superseded) failed.
         facts_current: { type: [integer, "null"] }
         facts_superseded: { type: [integer, "null"] }
         facts_expired: { type: [integer, "null"] }
         entities: { type: [integer, "null"] }
         orphan_entities: { type: [integer, "null"] }
-        contradiction_groups: { type: [integer, "null"] }
+        contradiction_groups:
+          type: [integer, "null"]
+          description: >
+            Uncapped count of (subject, single-valued predicate) groups with more than one
+            live object (issue #156 — additive predicates are excluded, and the count is
+            no longer capped at 1000).
+        contested_facts: { type: [integer, "null"] }
+        contradiction_ratio:
+          type: [number, "null"]
+          description: contested_facts / facts_current (null when either is unavailable).
         degraded:
           type: boolean
           description: >

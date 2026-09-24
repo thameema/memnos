@@ -1265,7 +1265,12 @@ class Handler(BaseHTTPRequestHandler):
                             return self._send(404, {"error": "entity not found"})
                         out = res
                     elif self.path == "/contradictions":   # check_contradictions
-                        out = {"contradictions": store.contradictions(mem.schema, ns)}
+                        # issue #156: the sample list is capped; total_groups /
+                        # contested_facts are the uncapped namespace-wide counts.
+                        cs = store.contradiction_summary(mem.schema, ns)
+                        out = {"contradictions": cs["groups"],
+                               "total_groups": cs["total_groups"],
+                               "contested_facts": cs["contested_facts"]}
                     elif self.path == "/knowledge/health":  # knowledge_health (namespace)
                         # issue #69: store.health() already degrades each of its own
                         # structural signals individually (a canceled orphan-entities
