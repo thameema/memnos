@@ -19,67 +19,79 @@ from datetime import datetime, timezone, timedelta
 from .store import (BrainStore, query_clamp, RECALL_ARM_FAILURES, classify_arm_failure,
                     record_arm_failure as _record_arm_failure)
 from . import rerank as brain_rerank
+from .temporal import _DATE_RE
 
 logger = logging.getLogger(__name__)
 
 _TENANT = "memnos"
 _PROPER = re.compile(r"\b[A-Z][a-zA-Z]{2,}\b")
 
-# Belief-change supersession applies ONLY to SINGLE-VALUED attributes (a person has one
-# current home/job/age — a new value replaces the old). MULTI-VALUED relations
-# ('did_activity','met_person','visited','likes','owns') are ADDITIVE — a new martial art
-# does NOT replace a previous one. Over-superseding list items corrupts aggregation +
-# temporal recall, so default is ADDITIVE unless the predicate matches a single-valued cue.
-_SINGLE_VALUED_CUES = ("live", "reside", "home", "based", "located", "current_",
-                       "work_at", "works_at", "employ", "employer", "job_title", "occupation",
-                       "role_at", "age", "marital", "married", "spouse", "status",
-                       # work/ops functional attributes (field issue: ops facts were never
-                       # superseded — the cue list was LoCoMo-personal-tuned). Each reviewed
-                       # against multi-valued corruption: all describe ONE current state of a
-                       # system/work item. did/visited/likes/met/owns stay additive.
-                       "blocked",            # is_blocked_by / blocked_on — one current blocker state
-                       "runs_on", "can_handle", "capacity", "deployed_", "version",
-                       "recommended_action",
-                       # value-attribute cues (field issue #10 retest: 'rate_limit' never
-                       # superseded). Each reviewed against multi-valued corruption: all
-                       # name ONE current scalar setting of a system. visited/did/met and
-                       # the other additive relations stay out of this list.
-                       "quota", "threshold", "timeout", "max_", "min_", "count_of")
-# Exact-match-only cues: substring matching would be unsafe ('uses' is inside 'causes' /
-# 'houses'; bare 'recommended' is inside plausibly multi-valued 'recommended_books').
-_SINGLE_VALUED_EXACT = {"uses", "recommended", "recommendation"}
-# Token-match-only cues: substring matching would be unsafe ('rate' is inside 'operates' /
-# 'celebrates'; 'limit' is inside 'unlimited'), so these must match a whole _-separated
-# predicate token ('rate_limit' → {'rate','limit'} → single-valued; 'operates_in' stays out).
-_SINGLE_VALUED_TOKENS = {"rate", "limit"}
-
-# QUANTIFIED-OBJECT default (issue #10 residual A, the safer general rule): same subject +
-# IDENTICAL predicate + DIFFERENT object where the NEW object is a quantity ("200 rps",
-# "100 requests per second", "$5,000", "30%") is a value UPDATE — single-valued by
-# default regardless of the cue list. Guarded by _MULTI_VALUED_TOKENS: additive relations
-# (visited/did/met/likes/owns...) must NEVER supersede, even with a quantified object
-# ("ran 10 km" does not replace "ran 5 km" — separate events).
-_QUANTIFIED_OBJ_RE = re.compile(
-    r"^\s*(?:~|≈|<=|>=|<|>)?\s*[$€£]?\d[\d,.]*\s*(?:[a-zA-Z%/][\w\s/%.-]*)?$")
-_MULTI_VALUED_TOKENS = {"visited", "visit", "did", "met", "meets", "likes", "liked",
-                        "like", "owns", "own", "attended", "attends", "watched", "read",
-                        "tried", "went", "ate", "played", "bought", "experienced",
-                        "activity", "hobby", "enjoys"}
+# Predicate classification (single-valued cues, multi-valued guard, quantified-object
+# rule) lives in core/predicates.py so BrainStore.contradiction_summary() can share it
+# without a circular import (issue #156). Re-exported here: callers/tests import these
+# names from core.service.
+from .predicates import (_SINGLE_VALUED_CUES, _SINGLE_VALUED_EXACT,  # noqa: F401
+                         _SINGLE_VALUED_TOKENS, _QUANTIFIED_OBJ_RE, _MULTI_VALUED_TOKENS,
+                         _pred_tokens, _is_single_valued, _supersedable)
 
 # Past-state markers: a statement asserting where things STOOD in the past ("Alice lived in
 # Boston in 2019"), as opposed to a change-of-state assertion that implies a new CURRENT
 # state ("Alice moved to Seattle last week" — 'moved' is deliberately NOT in this list).
-# Used to gate backdated supersession — see _write_fact's bi-temporal note.
+# Used to gate backdated supersession — see _write_fact's bi-temporal note. Always go
+# through _is_historical(), never this regex alone.
+#
+# issue #156: a bare 'was'/'were' is NOT in this list any more. Passive voice is how
+# developer memory reports a CURRENT state ("The branch was merged", "Host2 was
+# root-compromised", "The changes were pushed to main"), and the bare match classed all of
+# those as past-state, so without an explicit date they could never supersede (8.5% of
+# the live namespace's supersedable facts). A 'was'/'were' statement is historical only
+# when it also carries a real past-time signal — see _PAST_COPULA_RE / _PAST_TIME_RE.
 _HISTORICAL_RE = re.compile(
-    r"\b(lived|resided|worked|was|were|used to|had been|formerly|previously|originally|"
+    r"\b(lived|resided|worked|used to|had been|formerly|previously|originally|"
     r"back in|at the time|grew up)\b", re.I)
+_PAST_COPULA_RE = re.compile(r"\b(was|were)\b", re.I)
+# Past-time signals that turn a 'was'/'were' statement historical, in addition to an
+# explicit date (temporal._DATE_RE) or a PREPOSITION-LED year (_PAST_YEAR_RE — "in 2019",
+# "until 2021"). A bare 4-digit number is NOT enough: "PR #2024 was merged" / "Build 2026
+# was deployed" are present-state reports, and ticket/build numbers in 1900-2099 are
+# ordinary in developer memory. NEAR-past
+# relatives ('yesterday', 'last week', 'recently', 'just') are deliberately NOT here:
+# "Host2 was compromised yesterday" reports the current state, it does not describe a
+# state that has since ended.
+_PAST_YEAR_RE = re.compile(
+    r"\b(?:in|since|during|until|till|before|after|from|by|circa|around|throughout)\s+"
+    r"(?:(?:early|late|mid)[- ])?(?:19|20)\d\d\b", re.I)
+_PAST_TIME_RE = re.compile(
+    r"\b(ago|back then|in the past|at one point|at that time|in those days|"
+    r"last (?:year|decade|century)|as an? (?:child|kid|teen|teenager|student|youngster)|"
+    r"when (?:i|he|she|we|they|you) (?:was|were) (?:young|little|a kid|a child|younger|growing up)|"
+    r"in (?:my|his|her|their|our) (?:youth|childhood|twenties|teens))\b", re.I)
 # Change-of-state override for the historical gate: "the rate limit WAS CHANGED to 200"
-# trips _HISTORICAL_RE on the bare 'was', but it asserts a new CURRENT value, not a past
-# state (issue #10 retest case 4 verbatim). A passive change verb means belief change.
+# asserts a new CURRENT value, not a past state (issue #10 retest case 4 verbatim) — even
+# when it also carries a past-time signal. A passive change verb means belief change.
 _CHANGE_OF_STATE_RE = re.compile(
     r"\b(?:was|were|has been|have been|is now|are now|got)\s+"
     r"(?:changed|updated|raised|increased|lowered|reduced|set|switched|moved|renamed|"
     r"bumped|upgraded|downgraded|adjusted|revised)\b", re.I)
+
+
+def _is_historical(stmt: str) -> bool:
+    """Does `stmt` describe a PAST state (so it must not override the current value
+    unless it carries an explicit, newer event date)? The single gate shared by
+    _write_fact and reconcile_namespace — they must never drift apart.
+
+    Historical when: a standalone past-state cue (lived/worked/used to/formerly/...), OR
+    a 'was'/'were' copula TOGETHER WITH a past-time signal (explicit date, a year, 'ago',
+    'back then', 'last year', 'as a child', ...). A bare 'was'/'were' alone is present-
+    state passive prose (issue #156). A change-of-state phrase ('was changed to') always
+    overrides to non-historical."""
+    s = stmt or ""
+    if _CHANGE_OF_STATE_RE.search(s):
+        return False
+    if _HISTORICAL_RE.search(s):
+        return True
+    return bool(_PAST_COPULA_RE.search(s)
+                and (_PAST_TIME_RE.search(s) or _DATE_RE.search(s) or _PAST_YEAR_RE.search(s)))
 
 # Reversal/negation cues: the NEW statement explicitly closes out a prior state. Kept
 # high-precision (each must clearly assert that something stopped being true).
@@ -215,31 +227,6 @@ def _env_int(name: str, default: int) -> int:
 # concurrent-request volume) can raise it.
 def _sql_concurrency_cap() -> int:
     return max(1, _env_int("MEMNOS_RECALL_SQL_CONCURRENCY", 2))
-
-
-def _pred_tokens(pred: str) -> set[str]:
-    return {t for t in re.split(r"[^a-z0-9]+", (pred or "").lower()) if t}
-
-
-def _is_single_valued(pred: str) -> bool:
-    if not pred:
-        return False
-    p = pred.lower()
-    return (p in _SINGLE_VALUED_EXACT or any(cue in p for cue in _SINGLE_VALUED_CUES)
-            or bool(_SINGLE_VALUED_TOKENS & _pred_tokens(p)))
-
-
-def _supersedable(pred: str, obj: str | None) -> bool:
-    """Should a new (subject, pred, obj) fact close out the prior value for the same
-    subject+predicate? True when the predicate matches a single-valued cue, OR — the
-    general value-update rule — when the NEW object is quantified (number/unit pattern)
-    and the predicate is not a known additive/multi-valued relation."""
-    if not pred:
-        return False
-    if _is_single_valued(pred):
-        return True
-    return bool(obj and _QUANTIFIED_OBJ_RE.match(obj)
-                and not (_pred_tokens(pred) & _MULTI_VALUED_TOKENS))
 
 
 def _negation_targets(stmt: str, subj: str | None, cands, neg_thresh: float):
@@ -468,7 +455,7 @@ class MemnosMemory:
         moved to Seattle last week" arriving after "Alice lives in Austin": the knowledge
         is newer even though the move predates the Austin fact's valid_from stamp).
         The one exception is a backdated HISTORICAL statement — past-state wording
-        ("Alice lived in Boston in 2019", _HISTORICAL_RE) with an event date older than
+        ("Alice lived in Boston in 2019", _is_historical) with an event date older than
         the current value's valid_from: that describes the past, it does not change the
         current belief, so it must NOT supersede. valid_to on the closed fact is the new
         fact's event date (or observed date when no event date), clamped to never precede
@@ -513,7 +500,7 @@ class MemnosMemory:
         # guard then requires that date to be >= the old fact's valid_from. A historical
         # statement with NO parseable event date never supersedes (most conservative:
         # "Alice lived in Boston in 2019" — bare years don't parse — describes the past).
-        hist = bool(_HISTORICAL_RE.search(stmt)) and not _CHANGE_OF_STATE_RE.search(stmt)
+        hist = _is_historical(stmt)
         explicit_ev = parse_event_date(stmt, None) if hist else None
         superseded_ids = []
         insert_kwargs = dict(subject=subj, predicate=pred, obj=obj, valid_from=ev,
@@ -1752,7 +1739,7 @@ def reconcile_namespace(store, namespace: str, *, schema: str = f"tenant_{_TENAN
                 out["deduped"] += 1
                 continue
         # (b) SPO supersession — identical gate to _write_fact
-        hist = bool(_HISTORICAL_RE.search(stmt)) and not _CHANGE_OF_STATE_RE.search(stmt)
+        hist = _is_historical(stmt)
         explicit_ev = parse_event_date(stmt, None) if hist else None
         n = 0
         if (subj and pred and _supersedable(pred, obj) and ev is not None

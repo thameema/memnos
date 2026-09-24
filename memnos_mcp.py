@@ -527,12 +527,18 @@ def community_search(name: str) -> str:
 
 @mcp.tool()
 def check_contradictions() -> str:
-    """List potential contradictions in this namespace: currently-valid facts where the
-    same subject+predicate has more than one distinct value (e.g. lives in two places).
-    A non-blocking review signal."""
+    """List contradictions in this namespace: currently-valid facts where the same
+    subject + a SINGLE-VALUED predicate (lives_in, status, version, ...) has more than one
+    distinct value (e.g. lives in two places). Additive predicates (did_activity,
+    includes, has, visited, ...) are not contradictions and are not listed. Returns a
+    sample of the largest groups plus the namespace-wide total. A non-blocking review signal."""
     try:
-        c = _post("/contradictions", {}).get("contradictions", [])
-        return str(c) if c else "(no contradictions detected)"
+        out = _post("/contradictions", {})
+        c = out.get("contradictions", [])
+        if not c:
+            return "(no contradictions detected)"
+        total = out.get("total_groups", len(c))
+        return f"{total} contradiction group(s) total; showing {len(c)}: {c}"
     except Exception as e:
         return _err(e, "check_contradictions")
 
@@ -562,7 +568,8 @@ def reconcile_claim(statement: str, subject: str = "", predicate: str = "") -> s
 @mcp.tool()
 def knowledge_health() -> str:
     """Return a knowledge-health report for this namespace: a 0-100 score plus signals
-    (current/superseded/expired facts, entities, orphan entities, contradiction groups)."""
+    (current/superseded/expired facts, entities, orphan entities, contradiction groups,
+    contested facts and their share of live facts)."""
     try:
         return str(_post("/knowledge/health", {}))
     except Exception as e:

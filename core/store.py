@@ -14,6 +14,8 @@ from typing import Iterable, Sequence
 import psycopg
 from psycopg.rows import dict_row
 
+from .predicates import _supersedable
+
 logger = logging.getLogger(__name__)
 
 _IDENT = re.compile(r"^[a-z0-9_]+$")
@@ -229,7 +231,28 @@ def record_arm_failure(reasons, namespace, arm, exc, hint=None):
 # handler, via health_unavailable() below) can't silently drift out of sync with
 # health()'s own key set as signals are added there.
 _HEALTH_SIGNAL_KEYS = ("facts_current", "facts_superseded", "facts_expired",
-                       "entities", "orphan_entities", "contradiction_groups")
+                       "entities", "orphan_entities", "contradiction_groups",
+                       "contested_facts", "contradiction_ratio")
+
+# knowledge_health contradiction penalty (issue #156). The old `min(40, groups * 5)` was
+# an ABSOLUTE group count that saturated at 8 groups — every real namespace sat on the
+# 40-point floor, so the score could not show improvement or regression. The penalty is
+# now a function of the SHARE of live facts that sit in a contested group
+# (ratio = contested_facts / facts_current), square-root graded so it stays sensitive at
+# the low end where real namespaces live, and saturating only at CONTRA_RATIO_SATURATION:
+#     ratio  0.1% -> 4    0.5% -> 9    1% -> 13    2% -> 18
+#     ratio  5%   -> 28   10%  -> 40 (cap)
+# Scale-independent: 10 contested groups mean something very different in a 20-fact
+# namespace than in a 75K-fact one.
+CONTRA_PENALTY_MAX = 40
+CONTRA_RATIO_SATURATION = 0.10
+
+
+def contradiction_penalty(ratio: float) -> int:
+    """0..CONTRA_PENALTY_MAX points for a contested-facts / live-facts ratio."""
+    if not ratio or ratio <= 0:
+        return 0
+    return int(round(CONTRA_PENALTY_MAX * min(1.0, (ratio / CONTRA_RATIO_SATURATION) ** 0.5)))
 
 
 def health_unavailable(reasons) -> dict:
@@ -1425,27 +1448,49 @@ class BrainStore:
             members = [r["name"] for r in c.fetchall()]
         return {"entity": seed["name"], "community": members, "size": len(members) + 1}
 
-    def contradictions(self, schema, ns, *, limit=50) -> list[dict]:
-        """POTENTIAL CONTRADICTIONS — currently-valid facts where the SAME subject+predicate
-        carries MORE THAN ONE distinct object (e.g. lives_in Austin AND lives_in Seattle,
-        both un-superseded). Deterministic SQL, no LLM. Non-blocking signal: multi-valued
-        predicates (visited, did) legitimately appear here too — surfaces for review."""
+    def contradiction_summary(self, schema, ns, *, limit=50) -> dict:
+        """CONTRADICTIONS — currently-valid facts where the SAME subject + a SINGLE-VALUED
+        predicate carries MORE THAN ONE distinct object (e.g. lives_in Austin AND
+        lives_in Seattle, both un-superseded). Deterministic SQL + the write path's own
+        predicate classifier, no LLM.
+
+        issue #156: a group only counts when the write path would itself have treated
+        the predicate as single-valued — `_supersedable(predicate, object)` for ANY of
+        the group's objects (the quantified-object rule depends on the object, so it is
+        evaluated per object). Additive relations (did_activity, includes, has, visited,
+        ...) legitimately carry many live values and are NOT contradictions; counting
+        them was ~92% of the old signal on a real namespace. Same classifier as
+        core/service.py's supersession gate, imported from core/predicates.py, so the
+        two can never disagree about which predicates can conflict.
+
+        Returns {"total_groups", "contested_facts", "groups"}: the TRUE totals over the
+        whole namespace, plus at most `limit` sample groups (largest first). The filter
+        is Python-side, so the SQL itself is not LIMITed — totals are never capped."""
         self._chk(schema)
         with self.conn.cursor() as c:
             c.execute(f"""
                 SELECT subject_entity, predicate,
                        array_agg(DISTINCT object) AS objects,
-                       array_agg(id ORDER BY id) AS ids,
-                       count(DISTINCT object) AS n
+                       array_agg(id ORDER BY id) AS ids
                 FROM {schema}.semantic
                 WHERE namespace=%s AND expired_at IS NULL AND valid_to IS NULL
                   AND subject_entity IS NOT NULL AND predicate IS NOT NULL AND object IS NOT NULL
                 GROUP BY subject_entity, predicate
                 HAVING count(DISTINCT object) > 1
-                ORDER BY count(DISTINCT object) DESC LIMIT %s
-            """, (ns, limit))
-            return [{"subject": r["subject_entity"], "predicate": r["predicate"],
-                     "objects": r["objects"], "ids": r["ids"]} for r in c.fetchall()]
+                ORDER BY count(DISTINCT object) DESC, subject_entity, predicate
+            """, (ns,))
+            groups = [{"subject": r["subject_entity"], "predicate": r["predicate"],
+                       "objects": r["objects"], "ids": r["ids"]}
+                      for r in c.fetchall()
+                      if any(_supersedable(r["predicate"], o) for o in r["objects"])]
+        return {"total_groups": len(groups),
+                "contested_facts": sum(len(g["ids"]) for g in groups),
+                "groups": groups[:max(0, int(limit))]}
+
+    def contradictions(self, schema, ns, *, limit=50) -> list[dict]:
+        """The sample list of contradiction groups (at most `limit`) — see
+        contradiction_summary() for the definition and the uncapped totals."""
+        return self.contradiction_summary(schema, ns, limit=limit)["groups"]
 
     def orphan_entities_sql(self, schema) -> str:
         """SQL for the orphan-entities count (issue #69): entities that appear as
@@ -1478,7 +1523,8 @@ class BrainStore:
 
     def health(self, schema, ns) -> dict:
         """KNOWLEDGE HEALTH — a 0-100 score from structural signals over one namespace:
-        contradictions, orphan entities (no edges), and the superseded ratio. Pure SQL.
+        contradictions (as a share of live facts — see contradiction_penalty) and orphan
+        entities (no edges). Pure SQL plus the write path's predicate classifier.
 
         issue #69: each signal below is queried independently and, on a
         RECALL_ARM_FAILURES-class error (e.g. a canceled/timed-out statement), degrades
@@ -1512,8 +1558,11 @@ class BrainStore:
                 f"SELECT count(*) n FROM {schema}.entities WHERE namespace=%s", ns))
             orphans = signal("orphan_entities", lambda: one(
                 self.orphan_entities_sql(schema), ns, ns, ns))
-            contra_rows = signal("contradictions", lambda: self.contradictions(schema, ns, limit=1000))
-        contra = None if contra_rows is None else len(contra_rows)
+            contra_sum = signal("contradictions",
+                                lambda: self.contradiction_summary(schema, ns, limit=0))
+        # issue #156: the TRUE totals (was len() of a LIMIT-1000 list — silently capped).
+        contra = None if contra_sum is None else contra_sum["total_groups"]
+        contested = None if contra_sum is None else contra_sum["contested_facts"]
         # issue #69: score is None (not a best-effort number that silently ignores a
         # failed input) if any signal IT DEPENDS ON failed -- a namespace with real
         # contradictions/orphans that happened to fail THIS call must not score as if
@@ -1521,14 +1570,18 @@ class BrainStore:
         # for the "call never ran" fallback; a reader that only checks `score` (not
         # `degraded`) can't be misled by either path — the original issue #69 complaint
         # was exactly a knowledge_health output misleading a session.
-        if contra is None or orphans is None or ent_total is None:
+        contra_ratio = (None if contested is None or facts_current is None
+                        else (contested / facts_current) if facts_current else 0.0)
+        if contra_ratio is None or orphans is None or ent_total is None:
             score = None
         else:
             orphan_ratio = (orphans / ent_total) if ent_total else 0.0
-            score = max(0, 100 - min(40, contra * 5) - int(min(30, orphan_ratio * 30)))
+            score = max(0, 100 - contradiction_penalty(contra_ratio)
+                        - int(min(30, orphan_ratio * 30)))
         out = {"score": score, "facts_current": facts_current, "facts_superseded": facts_super,
                "facts_expired": facts_expired, "entities": ent_total, "orphan_entities": orphans,
-               "contradiction_groups": contra}
+               "contradiction_groups": contra, "contested_facts": contested,
+               "contradiction_ratio": (None if contra_ratio is None else round(contra_ratio, 6))}
         if reasons:
             out["degraded"] = True
             out["degraded_reasons"] = reasons
