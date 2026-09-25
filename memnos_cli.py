@@ -36,6 +36,10 @@ PID_PATH = os.path.join(CONFIG_DIR, "server.pid")
 # invocation finds the running gateway's control port + bearer token. See
 # `_rolling_upgrade_or_convert` below.
 GATEWAY_STATE_PATH = os.path.join(CONFIG_DIR, "gateway_state.json")
+# issue #171: cumulative local counters for the Stop hook's save/skip decisions — the
+# only record that this class of "a real reply silently never got captured" bug exists
+# at all. See _record_capture() / cmd_hook_stats().
+CAPTURE_STATS_PATH = os.path.join(CONFIG_DIR, "hook_capture_stats.json")
 DEFAULT_DSN = "postgresql://memnos:memnos@localhost:5432/memnos"
 
 
@@ -3870,9 +3874,81 @@ def _tool_match_subject(tool_name, tool_input):
     return f"{tool_name}({inner})" if inner else tool_name
 
 
+def _record_capture(event, reason=None):
+    """issue #171: cumulative local counters for the Stop hook's save/skip decisions —
+    the only durable record that a capture is (or isn't) happening at all. `event` is
+    one of 'saved_user' / 'saved_assistant' / 'skipped_user' / 'skipped_assistant';
+    `reason` (skip events only) a short category key. Same atomic temp-file + os.replace
+    pattern as _refresh_enforce_cache above. Best-effort: a corrupt or unwritable stats
+    file must never block or fail the hook itself, so every failure here is swallowed —
+    this is observability, not a critical path."""
+    try:
+        from datetime import datetime, timezone
+        try:
+            with open(CAPTURE_STATS_PATH) as f:
+                stats = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            stats = {}
+        now = datetime.now(timezone.utc).isoformat()
+        stats.setdefault("since", now)
+        stats[event] = stats.get(event, 0) + 1
+        if reason:
+            reasons = stats.setdefault("skip_reasons", {})
+            reasons[reason] = reasons.get(reason, 0) + 1
+        stats["last_event_at"] = now
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        tmp = CAPTURE_STATS_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(stats, f)
+        os.replace(tmp, CAPTURE_STATS_PATH)
+    except Exception:
+        pass
+
+
+def cmd_hook_stats(args, cfg):
+    """issue #171: on-demand summary of _record_capture's counters — how much the Stop
+    hook has actually saved vs. silently skipped, and why, since the counters were last
+    reset. `--reset` starts a fresh count (e.g. right after confirming today's numbers
+    look sane), without needing to hand-edit or delete the file."""
+    if getattr(args, "reset", False):
+        try:
+            os.remove(CAPTURE_STATS_PATH)
+        except FileNotFoundError:
+            pass
+        print("hook capture stats reset")
+        return
+    try:
+        with open(CAPTURE_STATS_PATH) as f:
+            stats = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        print("no hook capture stats recorded yet (the Stop hook hasn't fired, or "
+              f"{CAPTURE_STATS_PATH} doesn't exist)")
+        return
+    saved_u, saved_a = stats.get("saved_user", 0), stats.get("saved_assistant", 0)
+    skip_u, skip_a = stats.get("skipped_user", 0), stats.get("skipped_assistant", 0)
+    print(f"=== memnos hook capture stats (since {stats.get('since', '?')}) ===")
+    print(f"  user turns:      {saved_u} saved, {skip_u} skipped as noise")
+    print(f"  assistant turns: {saved_a} saved, {skip_a} skipped as noise")
+    reasons = stats.get("skip_reasons") or {}
+    if reasons:
+        print("  skip reasons:")
+        for reason, n in sorted(reasons.items(), key=lambda kv: -kv[1]):
+            print(f"    {reason:<20} {n}")
+    if skip_a > 0:
+        print(f"\n  {skip_a} assistant repl{'y was' if skip_a == 1 else 'ies were'} skipped — "
+              "this should be rare after issue #171 (only a truly empty trigger or an "
+              "eval-harness prompt). Worth a look if this number keeps growing.")
+
+
 def cmd_hook(args, cfg):
     """Stdin-driven Claude Code hooks, packaged so they work after a pipx install with no
     repo paths. recall -> inject memory before the prompt; remember -> save the turn after."""
+    if args.which == "stats":
+        # issue #171: unlike every other `hook` subcommand, this one is meant for direct
+        # interactive/CLI use (checking capture health on demand), not stdin-JSON-driven
+        # Claude Code wiring — dispatch before the stdin read below, which would
+        # otherwise block waiting for a JSON payload that's never coming.
+        return cmd_hook_stats(args, cfg)
     import nsresolve
     url = os.environ.get("MEMNOS_URL") or f"http://127.0.0.1:{cfg.get('port', 8900)}"
     token = os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token", "")
@@ -4016,6 +4092,21 @@ def cmd_hook(args, cfg):
             pport = (cfg.get("proxy") or {}).get("port", 8910)
             parts.append("capture proxy ACTIVE" if _server_up(f"http://127.0.0.1:{pport}", timeout=1)
                          else f"⚠ capture proxy DOWN (:{pport}) — run `memnos proxy`")
+        # issue #171: proactive capture-health visibility, every session, without anyone
+        # needing to think to ask — the whole point being fixed here is that a real
+        # capture gap went unnoticed until a user happened to question it directly.
+        try:
+            with open(CAPTURE_STATS_PATH) as f:
+                _cs = json.load(f)
+            _su, _sa = _cs.get("saved_user", 0), _cs.get("saved_assistant", 0)
+            _ku, _ka = _cs.get("skipped_user", 0), _cs.get("skipped_assistant", 0)
+            if _su + _sa + _ku + _ka > 0:
+                _capline = f"{_su + _sa} captured, {_ku + _ka} skipped as noise"
+                if _ka > 0:
+                    _capline += f" (⚠ {_ka} assistant repl{'y' if _ka == 1 else 'ies'} — `memnos hook stats`)"
+                parts.append(_capline)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
         msg = "memnos: " + "  ·  ".join(parts)
         # deferred suggest-on-mismatch (issue #20, Part B3): async writes (the Stop hook)
         # can't carry the advisory in their immediate response, so the ingest worker parks a
@@ -4243,18 +4334,49 @@ def cmd_hook(args, cfg):
 
     text = (text or "").strip()
     low = text.lower()
-    user_noise = (not text or low.startswith("<") or text.startswith("# ") or "<<autonomous-loop" in low
-                  or low.startswith("# autonomous loop") or "</task-notification" in low
-                  or "this is an automated background-task event" in low
-                  or "reference answer:" in low or "reply with only" in low or low.startswith("question:")
-                  or len(text) < 15 or len(text.split()) < 3)
-    if not user_noise:
+    # issue #171: reasons the TRIGGER carries no real human signal — the user-side text
+    # is never saved as if a human said it, for any of these. Each maps to a skip-reason
+    # key for _record_capture, so a growing category is visible in `memnos hook stats`.
+    noise_reasons = []
+    if not text: noise_reasons.append("empty")
+    if low.startswith("<") or "</task-notification" in low or "this is an automated background-task event" in low:
+        noise_reasons.append("task_notification_or_tag")
+    if text.startswith("# ") or "<<autonomous-loop" in low or low.startswith("# autonomous loop"):
+        noise_reasons.append("autonomous_loop")
+    if "reference answer:" in low or "reply with only" in low or low.startswith("question:"):
+        noise_reasons.append("eval_harness")
+    if len(text) < 15 or len(text.split()) < 3:
+        noise_reasons.append("short_prompt")
+    user_is_noise = bool(noise_reasons)
+    # issue #171 (the actual bug): only a subset of the reasons above ALSO mean the
+    # REPLY is presumed noise — a genuinely empty trigger (nothing to respond to) and
+    # eval-harness artifacts (LoCoMo-style synthetic Q&A, never real usage — both sides
+    # are test fixtures). Every OTHER noise reason describes the TRIGGER being
+    # non-human-typed or terse, not the REPLY being worthless: a task-notification, an
+    # autonomous-loop wakeup, or a short "ok"/"yes go ahead" confirmation can all be
+    # followed by exactly the substantive content (a decision, a diagnosis, a finding)
+    # this hook exists to capture. Gating the reply behind the trigger's own noise
+    # status reintroduced the same bug class this hook's docstring already describes
+    # fixing once ("everything the agent said was invisible across sessions") — found
+    # live when a separate session's real production decisions never showed up as
+    # structured facts, traced back to exactly this line.
+    reply_is_noise_too = "empty" in noise_reasons or "eval_harness" in noise_reasons
+    if user_is_noise:
+        _record_capture("skipped_user", reason=noise_reasons[0])
+    else:
         _save(text, "user")
-        a_text = a_text.strip()
-        if len(a_text) >= 30:                          # the answer to a noise prompt is noise too
-            if len(a_text) > 8000:                     # cap extraction cost on huge agent replies
-                a_text = a_text[:8000] + " …[truncated]"
-            _save(a_text, "assistant")
+        _record_capture("saved_user")
+    a_text = a_text.strip()
+    if len(a_text) < 30:
+        pass                                             # too short to be worth extraction cost
+    elif reply_is_noise_too:
+        _record_capture("skipped_assistant", reason=("empty_trigger" if "empty" in noise_reasons
+                                                      else "eval_harness"))
+    else:
+        if len(a_text) > 8000:                            # cap extraction cost on huge agent replies
+            a_text = a_text[:8000] + " …[truncated]"
+        _save(a_text, "assistant")
+        _record_capture("saved_assistant")
 
 
 # ---- CLI grammar -------------------------------------------------------------
@@ -4687,7 +4809,9 @@ def build_parser():
                    help="MCP transport to wire — see `memnos agent-setup --help`")
     p.set_defaults(fn=cmd_claude_setup)
     p = sub.add_parser("hook", help="Claude Code hook entry (stdin JSON; wired by agent-setup)")
-    p.add_argument("which", choices=["recall", "remember", "status", "enforce"], help="which hook")
+    p.add_argument("which", choices=["recall", "remember", "status", "enforce", "stats"],
+                   help="which hook ('stats': interactive, not stdin-JSON-driven — issue #171)")
+    p.add_argument("--reset", action="store_true", help="stats only: clear the counters and start over")
     p.set_defaults(fn=cmd_hook)
 
     # ---- maintenance ----
