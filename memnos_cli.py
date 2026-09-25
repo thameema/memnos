@@ -2211,9 +2211,20 @@ def _cmd_namespace_prune(conn, args):
         print(f"\n{len(rows) - skipped} namespace(s) would be pruned{tail}{note}")
 
 
+def _mask_secret_preview(val: str) -> str:
+    """issue #168: a short, safe-to-print preview of a captured secret value — never the
+    full value, but enough (length + first/last few chars) that a wrong, truncated, or
+    corrupted capture is visible immediately instead of only surfacing as a downstream
+    401 minutes or days later."""
+    n = len(val)
+    if n <= 8:
+        return f"{n} chars (too short to preview safely)"
+    return f"{n} chars: {val[:4]}...{val[-4:]}"
+
+
 def cmd_secret(args, cfg):
     _apply_env(cfg)
-    from core.vault import Vault, VaultLocked
+    from core.vault import Vault, VaultLocked, VaultBadValue
     from core.control import Control
     if args.action == "keygen":
         print("MEMNOS_SECRET_KEY=" + Vault.keygen()); return
@@ -2236,7 +2247,11 @@ def cmd_secret(args, cfg):
             print(plaintext)
         elif args.action == "set":
             val = args.value or getpass.getpass(f"value for '{args.name}': ")
-            Vault.set(conn, args.name, val, args.desc); print(f"secret '{args.name}' stored (encrypted)")
+            val = val.strip()          # issue #168: drop a trailing paste/newline artifact
+            if not val:
+                sys.exit("secret set: empty value — nothing captured, nothing stored")
+            Vault.set(conn, args.name, val, args.desc)
+            print(f"secret '{args.name}' stored (encrypted) — captured {_mask_secret_preview(val)}")
         elif args.action == "ls":
             for s in Vault.list(conn):
                 print(f"  {s['name']:<24} {s['description'] or ''}")
@@ -2255,6 +2270,8 @@ def cmd_secret(args, cfg):
             print(msg)
     except VaultLocked as e:
         sys.exit(f"vault locked: {e}")
+    except VaultBadValue as e:
+        sys.exit(f"secret set: {e}")
 
 
 # ---- observability ----------------------------------------------------------
