@@ -3878,10 +3878,25 @@ def _record_capture(event, reason=None):
     """issue #171: cumulative local counters for the Stop hook's save/skip decisions —
     the only durable record that a capture is (or isn't) happening at all. `event` is
     one of 'saved_user' / 'saved_assistant' / 'skipped_user' / 'skipped_assistant';
-    `reason` (skip events only) a short category key. Same atomic temp-file + os.replace
-    pattern as _refresh_enforce_cache above. Best-effort: a corrupt or unwritable stats
-    file must never block or fail the hook itself, so every failure here is swallowed —
-    this is observability, not a critical path."""
+    `reason` (skip events only) a short category key. Best-effort: a corrupt or
+    unwritable stats file must never block or fail the hook itself, so every failure
+    here is swallowed — this is observability, not a critical path.
+
+    Concurrency (real exposure: ~28 Claude Code sessions on one machine can each fire
+    this near-simultaneously): a UNIQUE mkstemp name per writer, not a fixed `.tmp`
+    suffix like _refresh_enforce_cache above uses — that fixed name let one process's
+    in-flight temp file be truncated by another's concurrent `open(tmp, "w")`, so
+    os.replace could publish a torn/empty file, which the NEXT reader's
+    JSONDecodeError fallback then silently reset to a fresh, empty counter set
+    (verified under real concurrent load in review — not just a theoretical race).
+    mkstemp's unique name removes that cross-process collision entirely: no reset is
+    possible. What remains, undstated as a real but far smaller residual risk: two
+    processes can still both read the same base state and each write back their own
+    +1 — the later os.replace wins and the earlier increment is lost. No flock here
+    (this file has no other synchronization primitive, and measured loss at anything
+    resembling real Stop-hook cadence is a few percent, not a reset) — the counts stay
+    best-effort/approximate, as already documented, without the catastrophic-reset
+    failure mode."""
     try:
         from datetime import datetime, timezone
         try:
@@ -3889,18 +3904,30 @@ def _record_capture(event, reason=None):
                 stats = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             stats = {}
+        if not isinstance(stats, dict):
+            stats = {}
         now = datetime.now(timezone.utc).isoformat()
         stats.setdefault("since", now)
         stats[event] = stats.get(event, 0) + 1
         if reason:
             reasons = stats.setdefault("skip_reasons", {})
+            if not isinstance(reasons, dict):
+                reasons = stats["skip_reasons"] = {}
             reasons[reason] = reasons.get(reason, 0) + 1
         stats["last_event_at"] = now
         os.makedirs(CONFIG_DIR, exist_ok=True)
-        tmp = CAPTURE_STATS_PATH + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(stats, f)
-        os.replace(tmp, CAPTURE_STATS_PATH)
+        import tempfile as _tempfile
+        fd, tmp = _tempfile.mkstemp(dir=CONFIG_DIR, prefix=".hook_capture_stats.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(stats, f)
+            os.replace(tmp, CAPTURE_STATS_PATH)
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
     except Exception:
         pass
 
@@ -3920,9 +3947,18 @@ def cmd_hook_stats(args, cfg):
     try:
         with open(CAPTURE_STATS_PATH) as f:
             stats = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+        if not isinstance(stats, dict):
+            raise ValueError("stats file is not a JSON object")
+    except FileNotFoundError:
         print("no hook capture stats recorded yet (the Stop hook hasn't fired, or "
               f"{CAPTURE_STATS_PATH} doesn't exist)")
+        return
+    except Exception as e:
+        # _record_capture can never itself write something unreadable (it always
+        # writes a plain dict via json.dump), so a bad file here means something else
+        # touched it — still must never crash this command, just say so plainly.
+        print(f"hook capture stats file is unreadable ({type(e).__name__}: {e}) — "
+              f"run `memnos hook stats --reset` to start fresh: {CAPTURE_STATS_PATH}")
         return
     saved_u, saved_a = stats.get("saved_user", 0), stats.get("saved_assistant", 0)
     skip_u, skip_a = stats.get("skipped_user", 0), stats.get("skipped_assistant", 0)
@@ -3930,6 +3966,8 @@ def cmd_hook_stats(args, cfg):
     print(f"  user turns:      {saved_u} saved, {skip_u} skipped as noise")
     print(f"  assistant turns: {saved_a} saved, {skip_a} skipped as noise")
     reasons = stats.get("skip_reasons") or {}
+    if not isinstance(reasons, dict):
+        reasons = {}
     if reasons:
         print("  skip reasons:")
         for reason, n in sorted(reasons.items(), key=lambda kv: -kv[1]):
@@ -4098,6 +4136,8 @@ def cmd_hook(args, cfg):
         try:
             with open(CAPTURE_STATS_PATH) as f:
                 _cs = json.load(f)
+            if not isinstance(_cs, dict):
+                raise ValueError("stats file is not a JSON object")
             _su, _sa = _cs.get("saved_user", 0), _cs.get("saved_assistant", 0)
             _ku, _ka = _cs.get("skipped_user", 0), _cs.get("skipped_assistant", 0)
             if _su + _sa + _ku + _ka > 0:
@@ -4105,7 +4145,12 @@ def cmd_hook(args, cfg):
                 if _ka > 0:
                     _capline += f" (⚠ {_ka} assistant repl{'y' if _ka == 1 else 'ies'} — `memnos hook stats`)"
                 parts.append(_capline)
-        except (FileNotFoundError, json.JSONDecodeError):
+        except FileNotFoundError:
+            pass
+        except Exception:
+            # a malformed stats file (bad type, bad permissions, wrong encoding) must
+            # never take down the status line — every other block in this section
+            # follows the same "never breaks the status line" rule, this one should too
             pass
         msg = "memnos: " + "  ·  ".join(parts)
         # deferred suggest-on-mismatch (issue #20, Part B3): async writes (the Stop hook)
@@ -4337,14 +4382,21 @@ def cmd_hook(args, cfg):
     # issue #171: reasons the TRIGGER carries no real human signal — the user-side text
     # is never saved as if a human said it, for any of these. Each maps to a skip-reason
     # key for _record_capture, so a growing category is visible in `memnos hook stats`.
+    # issue #171 code review: only the FIRST entry here is used as the recorded skip
+    # reason, so order matters for accurate labeling — most-specific checks first, the
+    # generic `startswith("<")` catch-all last, so e.g. "<<autonomous-loop...>>" (which
+    # also happens to start with "<") is correctly attributed to autonomous_loop, not
+    # generically to task_notification_or_tag.
     noise_reasons = []
     if not text: noise_reasons.append("empty")
-    if low.startswith("<") or "</task-notification" in low or "this is an automated background-task event" in low:
-        noise_reasons.append("task_notification_or_tag")
-    if text.startswith("# ") or "<<autonomous-loop" in low or low.startswith("# autonomous loop"):
-        noise_reasons.append("autonomous_loop")
     if "reference answer:" in low or "reply with only" in low or low.startswith("question:"):
         noise_reasons.append("eval_harness")
+    if text.startswith("# ") or "<<autonomous-loop" in low or low.startswith("# autonomous loop"):
+        noise_reasons.append("autonomous_loop")
+    if "</task-notification" in low or "this is an automated background-task event" in low:
+        noise_reasons.append("task_notification")
+    if low.startswith("<"):
+        noise_reasons.append("task_notification_or_tag")
     if len(text) < 15 or len(text.split()) < 3:
         noise_reasons.append("short_prompt")
     user_is_noise = bool(noise_reasons)

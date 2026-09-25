@@ -228,6 +228,31 @@ def main():
     hook("remember", {"prompt": "", "transcript_path": tp})
     check("empty trigger, empty transcript: zero writes", len(captured) == 0)
 
+    # --- issue #171 code review: the "empty" reply-suppression branch specifically,
+    # with an ACTUAL substantive reply present (the case above never reaches it, since
+    # there's no reply to suppress) — headless-style: no `prompt`, no real user event in
+    # the transcript, but a real last_assistant_message. Still zero writes: an empty
+    # trigger's reply is presumed noise too, unlike every other noise reason. ---
+    captured.clear()
+    tp = transcript([])
+    r = hook("remember", {"prompt": "", "transcript_path": tp,
+                          "last_assistant_message": "A substantive reply to nothing in "
+                                                    "particular, well past thirty characters."})
+    check("empty trigger WITH a real reply present: still zero writes (reply IS noise too)",
+          len(captured) == 0)
+    # and the stats file actually recorded it as an assistant-side skip, not silently
+    # dropped with no trace at all — this is specifically what _record_capture exists for
+    empty_home = tempfile.mkdtemp(prefix="memnos_hooks_empty_")
+    tp = transcript([])
+    hook("remember", {"prompt": "", "transcript_path": tp,
+                      "last_assistant_message": "A substantive reply to nothing in "
+                                                "particular, well past thirty characters."},
+         home=empty_home)
+    rs = hook("stats", {}, home=empty_home)
+    check("empty-trigger reply skip is recorded in stats (not silently untracked)",
+          "assistant turns:" in rs.stdout and "1 skipped" in rs.stdout
+          and "empty_trigger" in rs.stdout)
+
     # --- remember: trivial assistant reply skipped regardless (too short to be worth
     # extraction cost), user still saved when the trigger itself is real ---
     captured.clear()
