@@ -1559,7 +1559,26 @@ def cmd_upgrade(args, cfg):
     if rc != 0:
         sys.exit(f"upgrade failed (exit {rc}). Try manually:  uv tool upgrade memnos  "
                  "(or: pip install -U memnos)")
-    print(f"[memnos] ✓ upgraded to v{latest}.")
+    # A zero exit code from the upgrade command is NOT proof the package actually
+    # changed — `uv tool upgrade` exits 0 and prints "Nothing to upgrade" on a genuine
+    # no-op too (a stale uv package-index cache, a pinned/locked resolution, or any
+    # other reason uv silently didn't fetch the new version), and this code used to
+    # print "✓ upgraded to vX" regardless, purely from that exit code — found live: a
+    # real install stayed on a much older version after "upgrading" reported success,
+    # confirmed stale by a following `memnos --version` AND a `memnos restart`, neither
+    # of which can fix an upgrade that never happened. Re-check the actual installed
+    # version now instead of trusting the subprocess's exit code alone.
+    now_installed = _installed_version()
+    if not now_installed or _vparts(now_installed) < _vparts(latest):
+        sys.exit(
+            f"upgrade command exited 0 but the installed version is still v{now_installed or '?'}, "
+            f"not v{latest} — it silently did nothing. This is usually a stale package-index "
+            "cache. Try:\n"
+            "  uv cache clean memnos && uv tool upgrade memnos\n"
+            "or force a clean reinstall:\n"
+            "  uv tool install memnos --force\n"
+            "then re-run `memnos upgrade` to confirm and restart the server.")
+    print(f"[memnos] ✓ upgraded to v{now_installed}.")
     _refresh_integrations()
     # issue #37 Layer 2: the package on disk is new, but nothing runs it until the server
     # restarts. In (default) gateway mode that restart is zero-downtime, so apply it now
