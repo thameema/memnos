@@ -1,10 +1,20 @@
-"""Capture-semantics tests for the Claude Code hooks (`memnos hook recall|remember`) —
-run against a stub HTTP server, no real memnos/DB needed.
+"""Capture-semantics tests for the Claude Code hooks (`memnos hook recall|remember|stats`)
+— run against a stub HTTP server, no real memnos/DB needed.
 
 Exists because of a field-found CRITICAL: the Stop hook only persisted user turns, so
 everything the agent said (decisions, ticket IDs) was invisible across sessions. These
-tests pin the contract: BOTH speakers are saved, identifiers survive, only the reply
-after the LAST user message is captured, and noise prompts suppress the pair.
+tests pin the contract: BOTH speakers are saved, identifiers survive, and only the reply
+after the LAST user message is captured.
+
+issue #171: a SECOND field-found instance of the same bug class — the reply was ALSO
+suppressed whenever the trigger looked automated (a task-notification, an
+autonomous-loop wakeup, a short "ok"/"yes" confirmation), even though the reply itself
+was real, substantive content. Only a truly empty trigger or an eval-harness artifact
+(LoCoMo-style "reference answer:"/"reply with only"/"question:" prompts) should suppress
+the reply too — every other "the trigger looks automated" reason must not. These tests
+now pin THAT corrected contract, plus the local capture-stats counters
+(`hook_capture_stats.json`, `memnos hook stats`) issue #171 added so this class of
+silent gap is visible going forward instead of requiring someone to notice and ask.
 Run: python tests/test_hooks.py
 """
 import json
@@ -49,10 +59,14 @@ def check(name, cond):
     PASS += cond; FAIL += (not cond)
 
 
-def hook(which, payload):
+def hook(which, payload, home=None, extra_args=None):
+    """`home`: reuse the SAME temp $HOME across several calls (default: a fresh one per
+    call, preserving prior test isolation) — needed for issue #171's capture-stats tests,
+    where the counters file under $HOME/.memnos/ must accumulate across calls to be
+    checked."""
     env = dict(os.environ, MEMNOS_URL=f"http://127.0.0.1:{PORT}", MEMNOS_NS="test:hooks",
-               MEMNOS_TOKEN="mnk_test", HOME=tempfile.mkdtemp(prefix="memnos_hooks_"))
-    return subprocess.run([PY, os.path.join(ROOT, "memnos_cli.py"), "hook", which],
+               MEMNOS_TOKEN="mnk_test", HOME=home or tempfile.mkdtemp(prefix="memnos_hooks_"))
+    return subprocess.run([PY, os.path.join(ROOT, "memnos_cli.py"), "hook", which, *(extra_args or [])],
                           input=json.dumps(payload), capture_output=True, text=True,
                           env=env, timeout=30)
 
@@ -163,20 +177,110 @@ def main():
           len(captured) == 2 and "TRUE-001" in captured[1][1]["text"]
           and "WRONG-999" not in captured[1][1]["text"])
 
-    # --- remember: noise prompt suppresses BOTH writes ---
+    # --- issue #171: a task-notification trigger is real noise (never saved as if a
+    # human said it) but its REPLY is exactly the substantive content this hook exists
+    # to capture — must NOT be suppressed just because the trigger looks automated. ---
     captured.clear()
     tp = transcript([u("<task-notification>automated</task-notification>"),
-                     a("a long automated-event reply that must not be stored either way")])
+                     a("Found the real production decision: rate changes only take "
+                       "effect on day 1, the day<=5 heuristic was rejected.")])
     hook("remember", {"prompt": "", "transcript_path": tp})
-    check("remember: noise prompt → zero writes (assistant suppressed too)", len(captured) == 0)
+    check("issue #171: task-notification trigger not saved as a user turn",
+          [b["speaker"] for _, b in captured] == ["assistant"])
+    check("issue #171: substantive reply to a task-notification IS saved",
+          captured and "day<=5 heuristic was rejected" in captured[0][1]["text"])
 
-    # --- remember: trivial assistant reply skipped, user still saved ---
+    # --- issue #171: same for an autonomous-loop wakeup trigger ---
+    captured.clear()
+    tp = transcript([u("<<autonomous-loop-dynamic>>"),
+                     a("Completed the scheduled reconcile pass and closed 12 stale facts.")])
+    hook("remember", {"prompt": "", "transcript_path": tp})
+    check("issue #171: autonomous-loop trigger not saved as a user turn",
+          [b["speaker"] for _, b in captured] == ["assistant"])
+    check("issue #171: substantive reply to an autonomous-loop wakeup IS saved",
+          captured and "closed 12 stale facts" in captured[0][1]["text"])
+
+    # --- issue #171: same for a short human confirmation ("ok", "yes go ahead") ---
+    captured.clear()
+    tp = transcript([u("yes go ahead"),
+                     a("Done — merged PR-812 and deployed to production successfully.")])
+    hook("remember", {"prompt": "yes go ahead", "transcript_path": tp})
+    check("issue #171: short confirmation not saved as a user turn (still too short)",
+          [b["speaker"] for _, b in captured] == ["assistant"])
+    check("issue #171: substantive reply to a short confirmation IS saved",
+          captured and "PR-812" in captured[0][1]["text"])
+
+    # --- an eval-harness (LoCoMo-style) prompt: BOTH sides are synthetic test fixtures,
+    # never real usage — this is the one noise category that correctly still suppresses
+    # the reply too. ---
+    captured.clear()
+    tp = transcript([u("question: what did the user decide about the trip?"),
+                     a("reference answer: they decided to go in March")])
+    hook("remember", {"prompt": "question: what did the user decide about the trip?",
+                      "transcript_path": tp})
+    check("eval-harness prompt: zero writes (both sides are synthetic, correctly suppressed)",
+          len(captured) == 0)
+
+    # --- a genuinely empty trigger with nothing extractable anywhere: zero writes,
+    # unchanged (nothing to sensibly reply to). ---
+    captured.clear()
+    tp = transcript([])
+    hook("remember", {"prompt": "", "transcript_path": tp})
+    check("empty trigger, empty transcript: zero writes", len(captured) == 0)
+
+    # --- issue #171 code review: the "empty" reply-suppression branch specifically,
+    # with an ACTUAL substantive reply present (the case above never reaches it, since
+    # there's no reply to suppress) — headless-style: no `prompt`, no real user event in
+    # the transcript, but a real last_assistant_message. Still zero writes: an empty
+    # trigger's reply is presumed noise too, unlike every other noise reason. ---
+    captured.clear()
+    tp = transcript([])
+    r = hook("remember", {"prompt": "", "transcript_path": tp,
+                          "last_assistant_message": "A substantive reply to nothing in "
+                                                    "particular, well past thirty characters."})
+    check("empty trigger WITH a real reply present: still zero writes (reply IS noise too)",
+          len(captured) == 0)
+    # and the stats file actually recorded it as an assistant-side skip, not silently
+    # dropped with no trace at all — this is specifically what _record_capture exists for
+    empty_home = tempfile.mkdtemp(prefix="memnos_hooks_empty_")
+    tp = transcript([])
+    hook("remember", {"prompt": "", "transcript_path": tp,
+                      "last_assistant_message": "A substantive reply to nothing in "
+                                                "particular, well past thirty characters."},
+         home=empty_home)
+    rs = hook("stats", {}, home=empty_home)
+    check("empty-trigger reply skip is recorded in stats (not silently untracked)",
+          "assistant turns:" in rs.stdout and "1 skipped" in rs.stdout
+          and "empty_trigger" in rs.stdout)
+
+    # --- remember: trivial assistant reply skipped regardless (too short to be worth
+    # extraction cost), user still saved when the trigger itself is real ---
     captured.clear()
     tp = transcript([u("a perfectly reasonable question with enough words"), a("ok")])
     hook("remember", {"prompt": "a perfectly reasonable question with enough words",
                       "transcript_path": tp})
     check("remember: trivial assistant reply skipped, user kept",
           [b["speaker"] for _, b in captured] == ["user"])
+
+    # --- issue #171: capture-stats counters accumulate across calls, and `hook stats`
+    # reports them without needing a live server. ---
+    stats_home = tempfile.mkdtemp(prefix="memnos_hooks_stats_")
+    captured.clear()
+    # a real save, a user-side skip, and an assistant-side skip, in one shared $HOME
+    tp1 = transcript([u("a perfectly normal real question about the deploy process"),
+                      a("The deploy process now uses a blue-green swap, confirmed working.")])
+    hook("remember", {"prompt": "a perfectly normal real question about the deploy process",
+                      "transcript_path": tp1}, home=stats_home)
+    tp2 = transcript([u("question: benchmark filler"), a("reference answer: this filler text is padded past thirty characters")])
+    hook("remember", {"prompt": "question: benchmark filler", "transcript_path": tp2}, home=stats_home)
+    r = hook("stats", {}, home=stats_home)
+    check("hook stats: user saved count visible", "user turns:" in r.stdout and "1 saved" in r.stdout)
+    check("hook stats: assistant saved count visible", "assistant turns:" in r.stdout)
+    check("hook stats: eval_harness skip reason recorded", "eval_harness" in r.stdout)
+    r2 = hook("stats", {}, home=stats_home, extra_args=["--reset"])
+    check("hook stats --reset: confirms reset", "reset" in r2.stdout)
+    r3 = hook("stats", {}, home=stats_home)
+    check("hook stats after reset: counters file gone / empty", "no hook capture stats" in r3.stdout)
 
     # --- remember: list-shaped user content (issue #97) ---
     # Real Claude Code transcripts store a user turn's `message.content` as a LIST of
@@ -305,6 +409,32 @@ def main():
                        env=env, timeout=30)
     check("status: server down → visible OFF warning",
           "memory OFF" in r.stdout and "memnos start" in r.stdout)
+
+    # --- issue #171: status (SessionStart) proactively surfaces capture stats when any
+    # exist — the actual fix for "wasn't surfaced until I asked": visible every session
+    # start, no command needed. ---
+    status_home = tempfile.mkdtemp(prefix="memnos_hooks_status_")
+    tp = transcript([u("question: benchmark filler for status surfacing"),
+                     a("reference answer: this filler text is padded past thirty characters")])
+    hook("remember", {"prompt": "question: benchmark filler for status surfacing",
+                      "transcript_path": tp}, home=status_home)
+    r = hook("status", {"source": "startup"}, home=status_home)
+    check("status: surfaces capture stats once any exist",
+          "captured" in r.stdout and "skipped as noise" in r.stdout)
+
+    # --- issue #171: an assistant-side skip specifically gets a visible ⚠ callout
+    # pointing at `memnos hook stats` — this should stay rare after the fix, so if it
+    # ever fires it's meant to be noticed. ---
+    warn_home = tempfile.mkdtemp(prefix="memnos_hooks_warn_")
+    tp = transcript([u("question: another benchmark filler"), a("reference answer: also padded well past thirty characters")])
+    hook("remember", {"prompt": "question: another benchmark filler",
+                      "transcript_path": tp}, home=warn_home)
+    r = hook("status", {"source": "startup"}, home=warn_home)
+    # decode the JSON rather than substring-match raw stdout: json.dumps ASCII-escapes
+    # ⚠ to ⚠ by default, so it never appears as the literal character in r.stdout.
+    warn_msg = json.loads(r.stdout).get("systemMessage", "") if r.stdout.strip() else ""
+    check("status: assistant-side skip gets a visible warning callout",
+          "⚠" in warn_msg and "memnos hook stats" in warn_msg)
 
     # --- recall: posts the prompt, emits context ---
     captured.clear()

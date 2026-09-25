@@ -541,7 +541,8 @@ Claude Code hook entry (stdin JSON; wired by agent-setup)
 
 | argument | description |
 |---|---|
-| `which` | which hook (one of: `recall`, `remember`, `status`, `enforce`) |
+| `which` | which hook ('stats': interactive, not stdin-JSON-driven — issue #171) (one of: `recall`, `remember`, `status`, `enforce`, `stats`) |
+| `--reset` | stats only: clear the counters and start over |
 
 ```bash
 echo '{}' | memnos hook status

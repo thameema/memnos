@@ -907,11 +907,18 @@
         "recall",
         "remember",
         "status",
-        "enforce"
+        "enforce",
+        "stats"
        ],
-       "help": "which hook",
+       "help": "which hook ('stats': interactive, not stdin-JSON-driven \u2014 issue #171)",
        "positional": true,
        "required": true
+      },
+      {
+       "arg": "--reset",
+       "help": "stats only: clear the counters and start over",
+       "positional": false,
+       "required": false
       }
      ],
      "command": "hook",
