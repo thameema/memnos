@@ -23,6 +23,17 @@ class VaultLocked(RuntimeError):
     """MEMNOS_SECRET_KEY is not set — the vault cannot encrypt/decrypt."""
 
 
+class VaultBadValue(ValueError):
+    """The plaintext handed to Vault.set() is itself a `secret://` reference. Nobody
+    legitimately wants to store the reference string as a secret's own value — this can
+    only be a capture bug (e.g. an interactive prompt that silently fell back to the
+    existing config value) or a copy-paste mistake. Left unguarded, this used to succeed
+    silently: encryption/storage don't care what the plaintext looks like, so the
+    mistake was invisible until whatever consumed the resolved value failed downstream
+    (issue #168 — surfaced as an OpenAI 401 that took real debugging time to trace back
+    here)."""
+
+
 def _key() -> bytes:
     raw = os.environ.get("MEMNOS_SECRET_KEY", "").strip()
     if not raw:
@@ -52,6 +63,11 @@ class Vault:
 
     @staticmethod
     def set(conn, name, plaintext, description=None):
+        if isinstance(plaintext, str) and plaintext.startswith(REF_PREFIX):
+            raise VaultBadValue(
+                f"refusing to store {plaintext!r} as the plaintext for secret '{name}' — "
+                f"that's a {REF_PREFIX} reference, not a real value. This is almost "
+                f"always a capture mistake (see issue #168), not an intentional value.")
         aes = AESGCM(_key())
         nonce = os.urandom(12)
         ct = aes.encrypt(nonce, plaintext.encode(), name.encode())   # name as AAD

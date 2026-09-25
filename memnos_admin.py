@@ -134,15 +134,23 @@ def main():
         for level, msg in Control.health(c, args.hours):
             print(f"  [{level}] {msg}")
     elif args.cmd == "secret-set":
-        from core.vault import Vault, VaultLocked
+        from core.vault import Vault, VaultLocked, VaultBadValue
         val = args.value
         if val is None:
             import getpass
             val = getpass.getpass(f"value for secret '{args.name}': ")   # not echoed / not in shell history
+        val = val.strip()          # issue #168: drop a trailing paste/newline artifact
+        if not val:
+            sys.exit("secret-set: empty value — nothing captured, nothing stored")
         try:
-            Vault.set(c, args.name, val, args.desc); print(f"secret '{args.name}' stored (encrypted)")
+            Vault.set(c, args.name, val, args.desc)
+            n = len(val)
+            preview = f"{n} chars: {val[:4]}...{val[-4:]}" if n > 8 else f"{n} chars (too short to preview safely)"
+            print(f"secret '{args.name}' stored (encrypted) — captured {preview}")
         except VaultLocked as e:
             sys.exit(f"vault locked: {e}")
+        except VaultBadValue as e:
+            sys.exit(f"secret-set: {e}")
     elif args.cmd == "secret-list":
         from core.vault import Vault
         print("secrets (metadata only — plaintext never shown):")

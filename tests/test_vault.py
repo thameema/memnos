@@ -27,7 +27,7 @@ _load_env()
 import psycopg
 from psycopg.rows import dict_row
 from core.control import Control
-from core.vault import Vault, VaultLocked
+from core.vault import Vault, VaultLocked, VaultBadValue
 from core import redact
 
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
@@ -86,6 +86,22 @@ def main():
     except Exception:
         check("wrong key fails to decrypt", True)
     os.environ["MEMNOS_SECRET_KEY"] = saved
+
+    print("=== issue #168: reject a secret://... reference as a plaintext value ===")
+    try:
+        Vault.set(conn, "test_bad_ref", "secret://openai")
+        check("secret://-prefixed value rejected", False)
+    except VaultBadValue:
+        check("secret://-prefixed value rejected", True)
+    with conn.cursor() as c:
+        c.execute("SELECT 1 FROM memnos_control.secrets WHERE name='test_bad_ref'")
+        check("rejected value was never stored", c.fetchone() is None)
+    # a value that merely CONTAINS the ref prefix (not as a leading prefix) is fine —
+    # the guard is prefix-only, matching Vault.resolve()'s own startswith() check.
+    Vault.set(conn, "test_bad_ref", "my token references secret://foo internally")
+    check("a value merely containing the ref string (not as prefix) is accepted",
+          Vault.get(conn, "test_bad_ref") == "my token references secret://foo internally")
+    Vault.delete(conn, "test_bad_ref")
 
     print("=== key rotation ===")
     Vault.set(conn, "rot_secret", "rotate-me-please")

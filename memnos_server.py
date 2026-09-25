@@ -927,13 +927,13 @@ class Handler(BaseHTTPRequestHandler):
                                  "extract_model": EXTRACT_MODEL if LLM is not None else None,
                                  "vault_unlocked": Vault.available()}
                 if sub == "secrets":
-                    from core.vault import Vault, VaultLocked
+                    from core.vault import Vault, VaultLocked, VaultBadValue
                     try:
                         if method == "GET":
                             return 200, {"secrets": Vault.list(conn), "unlocked": Vault.available()}
                         if method == "POST":
                             name = str(body.get("name", "")).strip()
-                            val = str(body.get("value", ""))
+                            val = str(body.get("value", "")).strip()   # issue #168
                             if not name or not val:
                                 return 400, {"error": "name and value required"}
                             Vault.set(conn, name, val, body.get("description"))   # plaintext never stored
@@ -943,6 +943,8 @@ class Handler(BaseHTTPRequestHandler):
                             return 200, {"ok": True}
                     except VaultLocked as v:
                         return 409, {"error": "vault locked", "msg": str(v)}
+                    except VaultBadValue as v:
+                        return 400, {"error": "bad secret value", "msg": str(v)}
             except Exception as e:
                 traceback.print_exc()
                 return 500, {"error": type(e).__name__, "msg": str(e)[:200]}
