@@ -33,7 +33,7 @@ def main():
 
     print("[smoke] initdb", flush=True)
     run(os.path.join(pg_dir, "bin", f"initdb{exe}"), "-D", data_dir, "-U", "memnos",
-        "--auth", "trust", "--no-instructions")
+        "--auth", "trust", "--no-instructions", "--encoding", "UTF8", "--locale", "C")
 
     conf = os.path.join(data_dir, "postgresql.conf")
     with open(conf, "a") as fh:

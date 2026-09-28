@@ -409,11 +409,18 @@ def _ensure_embedded_pg():
 
     port = _free_port(EMBEDDED_PG_PREFERRED_PORTS)
 
-    # initdb — creates the data directory; 'trust' auth is safe on localhost-only port
+    # initdb — creates the data directory; 'trust' auth is safe on localhost-only port.
+    # --encoding/--locale are explicit (not left to the OS default): initdb otherwise
+    # derives them from the system locale, which on Windows is commonly a codepage like
+    # cp1252 rather than UTF-8 — psycopg then negotiates that as the wire encoding and
+    # chokes the moment any DDL/query text has a non-ASCII character (confirmed live:
+    # UnicodeEncodeError on the schema DDL's '→' in core/store.py). macOS/Linux never hit
+    # this because their default locale is already UTF-8.
     initdb = os.path.join(pg_dir, "bin", _exe("initdb"))
     print("[memnos] initializing database cluster ...")
     r = subprocess.run([initdb, "-D", data_dir, "-U", "memnos",
-                        "--auth", "trust", "--no-instructions"],
+                        "--auth", "trust", "--no-instructions",
+                        "--encoding", "UTF8", "--locale", "C"],
                        capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit(f"initdb failed:\n{r.stderr}")
