@@ -1,0 +1,122 @@
+name: Build embedded PG (Windows)
+
+# One-off / occasional build job — NOT run on every push. Produces the Windows
+# counterpart to the macOS-arm64 / Linux-amd64 assets already on the `embedded-pg-v1`
+# release: zonky's stripped PG16 windows-amd64 binaries (no headers, no pg_config, no
+# pgvector) merged with a pgvector 0.8.0 build compiled here via MSVC/nmake against a
+# full local PostgreSQL 16 install (used only as a compile-time headers/pg_config
+# source — the shipped asset runs on zonky's binaries, not this install).
+#
+# Re-run manually (workflow_dispatch) whenever EMBEDDED_PG_PGVECTOR_VERSION in
+# memnos_cli.py changes, or to pick up a newer zonky PG16 patch release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pgvector_version:
+        description: "pgvector version to build (must match EMBEDDED_PG_PGVECTOR_VERSION in memnos_cli.py)"
+        default: "0.8.0"
+      zonky_pg_version:
+        description: "zonky embedded-postgres-binaries-windows-amd64 version (PG16.x)"
+        default: "16.14.0"
+      upload:
+        description: "Upload the built archive to the embedded-pg-v1 GitHub release"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Build + smoke-test Windows embedded PG asset
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+
+      - name: Install full PostgreSQL 16 (compile-time only — headers/pg_config/import libs)
+        shell: pwsh
+        run: choco install postgresql16 -y --no-progress --params '/Password:postgres'
+
+      - name: Locate the PG16 install dir
+        shell: pwsh
+        run: |
+          $pg = Get-ChildItem "C:\Program Files\PostgreSQL" -Directory |
+                Where-Object { $_.Name -like "16*" } | Select-Object -First 1
+          if (-not $pg) { throw "PostgreSQL 16 install not found under C:\Program Files\PostgreSQL" }
+          echo "PGROOT=$($pg.FullName)" >> $env:GITHUB_ENV
+          echo "found PGROOT=$($pg.FullName)"
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with: { arch: x64 }
+
+      - name: Build + install pgvector against local PG16
+        shell: cmd
+        run: |
+          git clone --branch v${{ inputs.pgvector_version }} --depth 1 https://github.com/pgvector/pgvector.git "%RUNNER_TEMP%\pgvector"
+          cd /d "%RUNNER_TEMP%\pgvector"
+          nmake /NOLOGO /F Makefile.win
+          nmake /NOLOGO /F Makefile.win install
+        env:
+          PGROOT: ${{ env.PGROOT }}
+
+      - name: Package the embedded PG + pgvector archive
+        shell: pwsh
+        run: |
+          python .github\scripts\build_embedded_pg_windows.py `
+            "$env:PGROOT" `
+            "${{ inputs.zonky_pg_version }}" `
+            "memnos-pg16-pgvector-${{ inputs.pgvector_version }}-windows-amd64.tar.xz"
+
+      - name: Smoke-test the packaged archive (real initdb + start + CREATE EXTENSION + stop)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $asset = "memnos-pg16-pgvector-${{ inputs.pgvector_version }}-windows-amd64.tar.xz"
+          $test = Join-Path $env:RUNNER_TEMP "embedded_pg_smoke"
+          New-Item -ItemType Directory -Path $test | Out-Null
+          tar -xJf $asset -C $test
+          $pg = Join-Path $test "memnos-pg16"
+          $data = Join-Path $test "data"
+
+          & "$pg\bin\initdb.exe" -D $data -U memnos --auth trust --no-instructions
+          if ($LASTEXITCODE -ne 0) { throw "initdb failed" }
+
+          & "$pg\bin\pg_ctl.exe" start -D $data -l (Join-Path $test "pg.log") -w -o "-p 5477"
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content (Join-Path $test "pg.log") -ErrorAction SilentlyContinue
+            throw "pg_ctl start failed"
+          }
+
+          python -m pip install --quiet psycopg[binary]
+          python -c "
+          import psycopg
+          conn = psycopg.connect('postgresql://memnos@localhost:5477/postgres', autocommit=True)
+          with conn.cursor() as c:
+              c.execute(\"CREATE DATABASE memnos\")
+          conn.close()
+          conn = psycopg.connect('postgresql://memnos@localhost:5477/memnos', autocommit=True)
+          with conn.cursor() as c:
+              c.execute('CREATE EXTENSION vector')
+              c.execute(\"SELECT extversion FROM pg_extension WHERE extname = 'vector'\")
+              print('pgvector version:', c.fetchone()[0])
+              c.execute(\"SELECT '[1,2,3]'::vector <-> '[1,2,4]'::vector\")
+              print('distance op works:', c.fetchone()[0])
+          conn.close()
+          "
+          if ($LASTEXITCODE -ne 0) { throw "pgvector smoke test failed" }
+
+          & "$pg\bin\pg_ctl.exe" stop -D $data -w
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memnos-pg16-pgvector-windows-amd64
+          path: memnos-pg16-pgvector-*-windows-amd64.tar.xz
+          retention-days: 14
+
+      - name: Upload to the embedded-pg-v1 GitHub release
+        if: ${{ inputs.upload }}
+        shell: pwsh
+        run: gh release upload embedded-pg-v1 (Get-Item "memnos-pg16-pgvector-*-windows-amd64.tar.xz") --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
