@@ -1,25 +1,20 @@
 # memnos on Windows — full installation guide
 
 memnos runs natively on Windows 10/11 — the `memnos` CLI, the server, and the agent
-integrations all work in PowerShell. The only genuinely fiddly part on Windows is
+integrations all work in PowerShell. The historically fiddly part on Windows was
 **pgvector**: PostgreSQL's Windows installer doesn't ship it, and the official install
-path is a source build. This guide ranks the options honestly and gives you a
-copy-paste path that avoids the pain entirely.
+path is a source build. `--embedded` sidesteps that entirely now — no Postgres install,
+no compiler, no Docker. This guide ranks the options honestly.
 
-**Requirements recap:** PostgreSQL **13+** with **pgvector ≥ 0.6**, and Python **3.10+**.
+**Requirements recap:** PostgreSQL **13+** with **pgvector ≥ 0.6**, and Python **3.10+**
+(not needed at all for the `--embedded` path below).
 
 ---
 
-## Fastest path (recommended): Docker Desktop
+## Fastest path (recommended): `--embedded` (zero dependencies)
 
-Let memnos run a pre-configured pgvector Postgres for you — no Postgres install, no
-pgvector compile, no version-matching. This is the path we recommend for every Windows
-user who doesn't already operate their own Postgres.
-
-1. Install **[Docker Desktop](https://www.docker.com/products/docker-desktop/)** and start
-   it (whale icon in the system tray).
-
-2. Open **PowerShell** and run:
+No Postgres install, no Docker, no compiler — `memnos` downloads a self-contained
+PostgreSQL 16 + pgvector binary and runs it as your user, listening on localhost only.
 
 ```powershell
 # 1. install uv (Python package runner — installs to %USERPROFILE%\.local\bin)
@@ -29,18 +24,17 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 uv tool install memnos
 memnos --help                  # verify the command resolves
 
-# 3. provision a pgvector Postgres in Docker + create the schema + admin token
-memnos setup --docker
+# 3. download + start embedded PostgreSQL 16 + pgvector, create the schema + admin token
+memnos setup --embedded
 
 # 4. start the server (background) — first start downloads local models (~1 GB)
 memnos start
 memnos status
 ```
 
-`memnos setup --docker` starts (or reuses) a container named `memnos-pg` from the
-`pgvector/pgvector:pg16` image — Postgres with pgvector pre-baked, version-matched —
-and writes the connection to `%USERPROFILE%\.memnos\config.json`. Re-running it is safe;
-it reuses the existing container and never wipes data.
+`memnos setup --embedded` downloads a ~20-30 MB archive into `%USERPROFILE%\.memnos\embedded_pg\`
+on first run and never touches any Postgres you already have installed. `memnos start`
+auto-starts the embedded database on every boot.
 
 Then open the console at **http://127.0.0.1:8900/admin** and paste the admin token that
 setup printed. Continue with the normal flow in [`QUICKSTART.md`](../../QUICKSTART.md)
@@ -50,6 +44,30 @@ setup printed. Continue with the normal flow in [`QUICKSTART.md`](../../QUICKSTA
 > `%USERPROFILE%\.local\bin` and update your user PATH — but only **new** terminals see
 > it. If `memnos` (or `uv`) isn't found, open a fresh PowerShell window first. Prefer
 > `pipx`? `pipx install memnos` works too, as does `.\install.ps1` from a source checkout.
+
+> **First start can be slow** — Windows Defender (or your AV) scans the freshly downloaded,
+> unsigned `postgres.exe`/`pg_ctl.exe`/`initdb.exe` and their DLLs the first time each one
+> runs, which on a cold cache can add real minutes (our own Windows CI saw this too). It's
+> a one-time cost per binary — subsequent `memnos start`s are fast. If it seems stuck for
+> more than ~5 minutes, check `%USERPROFILE%\.memnos\embedded_pg\pg.log`.
+
+---
+
+## Alternative: Docker Desktop (any platform)
+
+Let memnos run a pre-configured pgvector Postgres in a container instead — useful if you
+already run Docker or prefer isolating Postgres from your host entirely.
+
+```powershell
+memnos setup --docker   # needs Docker Desktop running; provisions pgvector/pgvector:pg16
+memnos start
+memnos status
+```
+
+`memnos setup --docker` starts (or reuses) a container named `memnos-pg` from the
+`pgvector/pgvector:pg16` image — Postgres with pgvector pre-baked, version-matched —
+and writes the connection to `%USERPROFILE%\.memnos\config.json`. Re-running it is safe;
+it reuses the existing container and never wipes data.
 
 ---
 
@@ -181,7 +199,7 @@ memnos start --port 8901
 **`pgvector ... is NOT available to THIS Postgres server`** — the extension isn't
 installed for the server you connected to (or was built for a different PG major
 version). See the [native path](#native-postgresql-path-advanced) above — or skip it all
-with `memnos setup --docker`.
+with `memnos setup --embedded` (or `--docker`).
 
 **Windows Firewall prompt on first start** — the server binds `127.0.0.1` only, so
 localhost traffic works regardless; you can safely allow or dismiss the prompt. For
@@ -200,10 +218,19 @@ for the whale icon to settle, then re-run `memnos setup --docker`.
 ## What's tested on Windows (honesty section)
 
 Our CI runs a **3-OS matrix** (Linux, macOS, **Windows**) on every push. The Windows job
-installs the real package and verifies the CLI end to end at the *parse* level: `memnos
---help`, version output, the docs-staleness gate, and `--help` for every public
-subcommand — under `PYTHONUTF8=1`. The **full PostgreSQL-backed server test suite runs on
-Linux CI only**. The server code is cross-platform Python with no POSIX-only calls in the
-serve path, and the Docker path uses the same `pgvector/pgvector` image on every OS — but
-we have not run the complete server suite on Windows in CI, so treat long-running
-server-on-Windows operation as community-tested rather than CI-proven. Issues welcome.
+installs the real package, verifies the CLI at the *parse* level (`memnos --help`,
+version output, the docs-staleness gate, `--help` for every public subcommand under
+`PYTHONUTF8=1`) — **and now also runs `memnos setup --embedded` → `start` → a real
+`/healthz` check → `stop` end to end**, downloading the actual released windows-amd64
+PG16 + pgvector archive and starting a real Postgres server, not a mock. The pgvector
+build itself is compiled on `windows-latest` via MSVC/nmake as part of publishing that
+archive, with its own initdb/start/`CREATE EXTENSION`/stop smoke test before anything is
+uploaded.
+
+The **full application-level server test suite (governance, extraction, recall behavior)
+still runs on Linux CI only** — the server code is cross-platform Python with no
+POSIX-only calls in the serve path, but we haven't run that full suite on Windows in CI.
+And a clean `windows-latest` Server runner isn't the same as your actual Windows 11 Home
+laptop: CI proves the code path works, it doesn't prove your specific AV/SmartScreen
+configuration won't add delay or friction on first run (see the callout above). Issues
+welcome.
