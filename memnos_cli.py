@@ -1271,6 +1271,29 @@ def _fetch_nudges(url, hdr, timeout=2):
         return []
 
 
+def _pid_alive(pid):
+    """Cross-platform PID liveness check. POSIX's os.kill(pid, 0) idiom doesn't translate to
+    Windows: signal 0 isn't a recognized value there (CTRL_C_EVENT is 0, and it only applies
+    to process groups anyway), so it raises WinError 87 — which CPython 3.11 on Windows
+    surfaces as a bare SystemError rather than a catchable OSError subtype (confirmed live
+    in CI). Windows gets its own native check via OpenProcess instead."""
+    if sys.platform == "win32":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:        # exists but owned by another user → treat as alive
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
 def _pidfile_pid():
     """Read PID_PATH and return ('alive', pid) / ('dead', pid) / ('none', None).
     Only `memnos start` writes this file; an autostart-managed server writes none."""
@@ -1280,13 +1303,7 @@ def _pidfile_pid():
         pid = int(open(PID_PATH).read().strip())
     except (ValueError, OSError):
         return ("dead", None)
-    try:
-        os.kill(pid, 0)
-        return ("alive", pid)
-    except PermissionError:        # exists but owned by another user → treat as alive
-        return ("alive", pid)
-    except (ProcessLookupError, OSError):
-        return ("dead", pid)
+    return ("alive", pid) if _pid_alive(pid) else ("dead", pid)
 
 
 def _background_status(running: bool, svc, pidstate) -> dict:
