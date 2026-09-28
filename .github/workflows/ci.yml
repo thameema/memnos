@@ -235,8 +235,12 @@ jobs:
         # pgvector archive; the PG-backed server-tests job above uses a pre-provisioned
         # container instead. MEMNOS_CI skips the interactive OpenAI-key / autostart /
         # Claude-Code-wiring prompts (see cmd_setup) so this runs unattended.
+        # 20 min, not the usual few: on windows-latest specifically, Defender scanning the
+        # freshly-downloaded/extracted postgres.exe et al. on first execution can alone
+        # take several minutes (observed live: ~7 min) — on top of `memnos start`'s own
+        # first-boot embedding/reranker model download (~1 GB).
         shell: bash
-        timeout-minutes: 8
+        timeout-minutes: 20
         env:
           MEMNOS_CI: "1"
         run: |
