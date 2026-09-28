@@ -24,10 +24,18 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build + smoke-test Windows embedded PG asset
     runs-on: windows-latest
+    # job-level permissions REPLACE the workflow-level block above rather than adding to
+    # it (see release.yml) — contents: write is needed only for the final release-asset
+    # upload step, gated behind the `upload` input anyway.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
