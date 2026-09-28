@@ -6,9 +6,12 @@ Schema identifiers are validated; values are parameterized.
 """
 from __future__ import annotations
 
+import collections
 import logging
 import os
 import re
+import threading
+import time
 from typing import Iterable, Sequence
 
 import psycopg
@@ -194,6 +197,62 @@ def classify_arm_failure(conn, exc: Exception) -> str | None:
         return None
 
 
+# DB circuit breaker: recall already degrades-not-retries by design (issue #41/#59
+# above rejected inline retry outright) -- but a CALLER that retries recall itself
+# against a Postgres already failing every query (e.g. OS-level memory pressure / swap
+# thrashing on the host) still pays for it every time: core/service.py's recall_fetch
+# calls self.embed() -- a real, billed OpenAI call in non-local mode -- BEFORE the DB is
+# even touched, so each retry burns real money and adds load on top of an already-
+# struggling server, purely to rediscover a failure that just happened. This sliding-
+# window breaker tracks RECALL_ARM_FAILURES-class failures process-wide, fed by every
+# existing record_arm_failure() call site below with no changes needed at any of them.
+# Once >= MEMNOS_DB_BREAKER_THRESHOLD failures land within the last
+# MEMNOS_DB_BREAKER_WINDOW_S seconds, db_breaker_is_open() lets recall_fetch/
+# recall_wide_fetch skip the embedding call AND every DB arm entirely for new requests,
+# returning an already-degraded bundle instead of re-attempting work already known to
+# fail. No explicit close/reset: a skipped check records no failure, so the window
+# empties on its own once real failures stop recurring, and the very next request is
+# let through as a live trial -- if the DB is still down it fails for real and
+# immediately re-opens the window; if it recovered, that request just succeeds.
+_DB_BREAKER_THRESHOLD = int(os.environ.get("MEMNOS_DB_BREAKER_THRESHOLD", "5"))
+_DB_BREAKER_WINDOW_S = float(os.environ.get("MEMNOS_DB_BREAKER_WINDOW_S", "20"))
+_db_breaker_lock = threading.Lock()
+_db_breaker_failures: collections.deque = collections.deque()
+
+
+def _db_breaker_prune(now):
+    cutoff = now - _DB_BREAKER_WINDOW_S
+    while _db_breaker_failures and _db_breaker_failures[0] < cutoff:
+        _db_breaker_failures.popleft()
+
+
+def db_breaker_is_open() -> bool:
+    """True when >= threshold RECALL_ARM_FAILURES have landed in the last window_s
+    seconds — the DB is in a known-bad streak right now, not just one transient blip
+    (threshold > 1 so a single unlucky arm never trips it)."""
+    with _db_breaker_lock:
+        _db_breaker_prune(time.monotonic())
+        return len(_db_breaker_failures) >= _DB_BREAKER_THRESHOLD
+
+
+def record_breaker_open(reasons, namespace):
+    """Same _degraded_reasons entry shape as record_arm_failure, for the one case where
+    nothing was actually attempted (db_breaker_is_open() short-circuited before the
+    embedding call/DB query ran) — so a client parsing _degraded_reasons doesn't need a
+    special case for 'no real exception happened here'."""
+    with _db_breaker_lock:
+        n = len(_db_breaker_failures)
+    logger.warning("recall short-circuited: namespace=%s db circuit breaker open "
+                   "(%d failures in last %.0fs)", namespace, n, _DB_BREAKER_WINDOW_S)
+    if reasons is not None:
+        reasons.append({"namespace": namespace, "arm": "circuit_breaker",
+                        "error": "DatabaseCircuitBreakerOpen", "sqlstate": None,
+                        "hint": (f"database failed {_DB_BREAKER_THRESHOLD}+ times in the "
+                                 f"last {_DB_BREAKER_WINDOW_S:.0f}s — skipped the query "
+                                 "embedding call and DB attempt to avoid piling on; "
+                                 "retry shortly")})
+
+
 def record_arm_failure(reasons, namespace, arm, exc, hint=None):
     """issue #41 fix C: a recall/diagnostic arm (raw/semantic search, the timeline/
     entity-guarantee arm, a wide-recall per-namespace fetch, one of knowledge_health's
@@ -218,6 +277,10 @@ def record_arm_failure(reasons, namespace, arm, exc, hint=None):
     today's behavior."""
     logger.warning("arm degraded: namespace=%s arm=%s %s: %s",
                    namespace, arm, type(exc).__name__, exc)
+    with _db_breaker_lock:
+        now = time.monotonic()
+        _db_breaker_failures.append(now)
+        _db_breaker_prune(now)
     if reasons is not None:
         entry = {"namespace": namespace, "arm": arm,
                  "error": type(exc).__name__,
