@@ -17,7 +17,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 
 from .store import (BrainStore, query_clamp, RECALL_ARM_FAILURES, classify_arm_failure,
-                    record_arm_failure as _record_arm_failure)
+                    record_arm_failure as _record_arm_failure,
+                    db_breaker_is_open, record_breaker_open as _record_breaker_open)
 from . import rerank as brain_rerank
 from .temporal import _DATE_RE
 
@@ -1100,6 +1101,13 @@ class MemnosMemory:
         b = pre if pre is not None else self.recall_prefetch(namespace, query)
         intent = b["intent"]
         reasons = b.get("_degraded_reasons", [])
+        if db_breaker_is_open():   # skip the embedding call + every DB arm — see core/store.py
+            b["raw"] = []
+            b["sem"] = []
+            b["_degraded"] = True
+            _record_breaker_open(reasons, namespace)
+            b["_degraded_reasons"] = reasons
+            return b
         if qv is None:
             qv = self.embed(query_clamp(query))   # #15 follow-up: bound a pathological query
         t_sql = time.perf_counter()
@@ -1500,6 +1508,10 @@ class MemnosMemory:
         with one {namespace, arm, error, sqlstate} entry per failure; the caller decides
         whether a non-empty list means the response is degraded=true."""
         if not namespaces:
+            return [], []
+        if db_breaker_is_open():   # skip the embedding call + every DB arm — see core/store.py
+            for ns in namespaces:
+                _record_breaker_open(degraded_reasons, ns)
             return [], []
         if qv is None:
             qv = self.embed(query_clamp(query))   # #15 follow-up: bound a pathological query

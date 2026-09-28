@@ -48,6 +48,7 @@ Run: MEMNOS_DSN=... python tests/test_recall_arm_degrade.py
 import math
 import os
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -56,6 +57,7 @@ from datetime import datetime, timezone
 
 import psycopg
 
+import core.store as _store_mod
 from core.store import BrainStore
 from core.service import MemnosMemory
 
@@ -140,6 +142,11 @@ def main():
                 c.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s", (n,))
                 c.execute(f"DELETE FROM {SCHEMA}.semantic WHERE namespace=%s", (n,))
                 c.execute(f"DELETE FROM {SCHEMA}.episodic WHERE namespace=%s", (n,))
+        # this file deliberately injects MANY failures across separate scenarios in quick
+        # succession -- clear the process-wide DB breaker's window between them so one
+        # scenario's intentional fault injection can't false-trip the NEXT, unrelated
+        # scenario (which is testing something else entirely, on a clean slate).
+        _store_mod._db_breaker_failures.clear()
 
     reset()
     mem = MemnosMemory(store, crafted_embed, dim=dim, llm=None)
@@ -442,6 +449,75 @@ def main():
           str(reasons))
     check("semantic arm degraded to empty (real cancellation), raw arm's REAL content survives",
           b.get("sem") == [] and any(row.get("content") == lock_raw for row in b.get("raw", [])))
+
+    # ================================================================================
+    # DB circuit breaker: a client retrying recall against a Postgres already failing
+    # every query shouldn't keep paying for it -- N consecutive real arm failures trips
+    # a process-wide breaker that makes the NEXT request (any namespace, even one with
+    # no fault injected at all) skip the embedding call and every DB arm entirely,
+    # instead of rediscovering the same failure. Self-heals once real failures stop
+    # recurring for the window -- no explicit close/reset needed.
+    # ================================================================================
+    print("=== DB circuit breaker: trips after threshold, skips embed+DB, self-heals ===")
+    reset()
+    seed_turn(NS, raw_text)
+    seed_fact(NS, sem_text)
+    seed_turn(NS_A, raw_text)
+    seed_fact(NS_A, sem_text)
+
+    orig_threshold = _store_mod._DB_BREAKER_THRESHOLD
+    orig_window = _store_mod._DB_BREAKER_WINDOW_S
+    _store_mod._DB_BREAKER_THRESHOLD = 3
+    _store_mod._DB_BREAKER_WINDOW_S = 1.0   # short so the self-heal check doesn't slow the suite
+    _store_mod._db_breaker_failures.clear()
+
+    embed_calls = []
+
+    def counting_embed(text):
+        embed_calls.append(text)
+        return crafted_embed(text)
+
+    breaker_mem = MemnosMemory(store, counting_embed, dim=dim, llm=None)
+    try:
+        psycopg.Cursor.execute = _patched_execute(
+            orig_execute, _ns_predicate(_SEM_SEARCH_FINGERPRINT, NS),
+            lambda: psycopg.errors.QueryCanceled("simulated repeated failure"))
+        for _ in range(_store_mod._DB_BREAKER_THRESHOLD):
+            breaker_mem.recall_fetch(NS, "greenhouse thermostat")
+        psycopg.Cursor.execute = orig_execute
+
+        check("breaker is open after threshold consecutive failures",
+              _store_mod.db_breaker_is_open())
+
+        # NS_A has no fault injected at all -- proves this is a process-wide breaker,
+        # not scoped to the namespace/arm that actually failed
+        before = len(embed_calls)
+        b = breaker_mem.recall_fetch(NS_A, "greenhouse thermostat")
+        check("breaker-open request never called embed (no OpenAI cost paid)",
+              len(embed_calls) == before, f"embed_calls grew: {embed_calls[before:]}")
+        check("breaker-open bundle is flagged degraded", b.get("_degraded") is True)
+        reasons = b.get("_degraded_reasons") or []
+        check("breaker-open reason names the circuit_breaker arm for NS_A",
+              any(r.get("arm") == "circuit_breaker" and r.get("namespace") == NS_A
+                  for r in reasons), str(reasons))
+        check("breaker-open bundle still has raw/sem as empty lists, not missing keys",
+              b.get("raw") == [] and b.get("sem") == [])
+
+        time.sleep(_store_mod._DB_BREAKER_WINDOW_S + 0.3)
+        check("breaker closes on its own once the window elapses with no new failures",
+              not _store_mod.db_breaker_is_open())
+
+        before = len(embed_calls)
+        b = breaker_mem.recall_fetch(NS, "greenhouse thermostat")
+        check("post-heal request calls embed again (a real trial, not still short-circuited)",
+              len(embed_calls) == before + 1)
+        check("post-heal request succeeds normally (fault injection was already removed)",
+              b.get("_degraded") is not True, str(b.get("_degraded_reasons")))
+    finally:
+        psycopg.Cursor.execute = orig_execute
+        _store_mod._DB_BREAKER_THRESHOLD = orig_threshold
+        _store_mod._DB_BREAKER_WINDOW_S = orig_window
+        _store_mod._db_breaker_failures.clear()
 
     reset()
     print(f"\n{PASS} passed, {FAIL} failed")
