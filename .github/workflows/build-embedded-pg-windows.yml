@@ -70,9 +70,10 @@ jobs:
 
       - name: Smoke-test the packaged archive (real initdb + start + CREATE EXTENSION + stop)
         shell: pwsh
+        timeout-minutes: 5
         run: |
           python -m pip install --quiet "psycopg[binary]"
-          python .github\scripts\smoke_test_embedded_pg.py `
+          python -u .github\scripts\smoke_test_embedded_pg.py `
             "memnos-pg16-pgvector-${{ inputs.pgvector_version }}-windows-amd64.tar.xz" `
             "$env:RUNNER_TEMP\embedded_pg_smoke" `
             5477

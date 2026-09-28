@@ -297,21 +297,34 @@ def _save_embedded_state(state):
 
 
 def _embedded_pg_ctl(state, *args):
+    # NOT capture_output=True: pg_ctl start's grandchild (postgres itself, which stays
+    # running) inherits the pipe's write handle on Windows, so communicate() never sees
+    # EOF and hangs forever — unlike Unix, where postgres's own daemonization closes
+    # inherited fds. Real output already goes to the -l logfile; nothing here reads
+    # pg_ctl's own stdout/stderr text.
     import subprocess
     pg_ctl = os.path.join(state["pg_dir"], "bin", _exe("pg_ctl"))
     return subprocess.run([pg_ctl, *args, "-D", state["data_dir"]],
-                          capture_output=True, text=True)
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def _embedded_pg_is_running(state):
     return _embedded_pg_ctl(state, "status").returncode == 0
 
 
+def _tail_log(path, n=20):
+    try:
+        with open(path) as f:
+            return "".join(f.readlines()[-n:])
+    except OSError:
+        return ""
+
+
 def _start_embedded_pg(state):
     log = os.path.join(EMBEDDED_PG_HOME, "pg.log")
     result = _embedded_pg_ctl(state, "start", "-l", log, "-w")
     if result.returncode != 0:
-        raise RuntimeError(result.stderr or result.stdout)
+        raise RuntimeError(_tail_log(log) or f"pg_ctl exited with code {result.returncode}")
 
 
 def _ensure_embedded_pg():
@@ -410,12 +423,13 @@ def _ensure_embedded_pg():
     with open(conf, "a") as fh:
         fh.write(f"\n# memnos embedded instance\nport = {port}\nlisten_addresses = '127.0.0.1'\n")
 
-    # start
+    # start — not capture_output=True: see the comment on _embedded_pg_ctl (Windows
+    # grandchild pipe-inheritance hang)
     pg_ctl = os.path.join(pg_dir, "bin", _exe("pg_ctl"))
     r = subprocess.run([pg_ctl, "start", "-D", data_dir, "-l", log_path, "-w"],
-                       capture_output=True, text=True)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if r.returncode != 0:
-        sys.exit(f"pg_ctl start failed:\n{r.stderr}\n{r.stdout}")
+        sys.exit(f"pg_ctl start failed:\n{_tail_log(log_path)}")
 
     # create database
     import psycopg

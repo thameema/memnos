@@ -23,7 +23,7 @@ def main():
     exe = ".exe" if sys.platform == "win32" else ""
 
     os.makedirs(workdir, exist_ok=True)
-    print(f"[smoke] extracting {archive}")
+    print(f"[smoke] extracting {archive}", flush=True)
     with tarfile.open(archive, mode="r:xz") as tf:
         tf.extractall(workdir, filter="data") if sys.version_info >= (3, 12) else tf.extractall(workdir)
 
@@ -31,7 +31,7 @@ def main():
     data_dir = os.path.join(workdir, "data")
     log_path = os.path.join(workdir, "pg.log")
 
-    print("[smoke] initdb")
+    print("[smoke] initdb", flush=True)
     run(os.path.join(pg_dir, "bin", f"initdb{exe}"), "-D", data_dir, "-U", "memnos",
         "--auth", "trust", "--no-instructions")
 
@@ -39,13 +39,17 @@ def main():
     with open(conf, "a") as fh:
         fh.write(f"\nport = {port}\nlisten_addresses = '127.0.0.1'\n")
 
-    print(f"[smoke] pg_ctl start (port {port})")
+    print(f"[smoke] pg_ctl start (port {port})", flush=True)
+    # NOT capture_output=True: on Windows, postgres.exe (the grandchild, which stays
+    # running) inherits the pipe's write handle, so communicate() never sees EOF and
+    # hangs forever. Real output already goes to -l log_path.
     r = subprocess.run([os.path.join(pg_dir, "bin", f"pg_ctl{exe}"), "start",
-                        "-D", data_dir, "-l", log_path, "-w"], capture_output=True, text=True)
+                        "-D", data_dir, "-l", log_path, "-w"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
     if r.returncode != 0:
         if os.path.isfile(log_path):
             print(open(log_path).read())
-        sys.exit(f"[smoke] pg_ctl start failed:\n{r.stderr}\n{r.stdout}")
+        sys.exit(f"[smoke] pg_ctl start failed (exit {r.returncode})")
 
     try:
         import psycopg
