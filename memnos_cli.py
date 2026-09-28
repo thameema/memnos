@@ -247,13 +247,25 @@ _EMBEDDED_SUPPORTED = {
     ("darwin", "arm64"):   "darwin-arm64",
     ("darwin", "aarch64"): "darwin-arm64",
     ("linux", "x86_64"):   "linux-amd64",
+    ("win32", "amd64"):    "windows-amd64",
 }
 
 
 def _embedded_pg_platform():
     import platform
-    sys_key = "darwin" if sys.platform == "darwin" else "linux"
+    if sys.platform == "darwin":
+        sys_key = "darwin"
+    elif sys.platform == "win32":
+        sys_key = "win32"
+    else:
+        sys_key = "linux"
     return _EMBEDDED_SUPPORTED.get((sys_key, platform.machine().lower()))
+
+
+def _exe(name):
+    """Append the platform executable suffix — PostgreSQL's Windows binaries are .exe,
+    and an explicit subprocess path (unlike a bare PATH lookup) isn't PATHEXT-resolved."""
+    return name + ".exe" if sys.platform == "win32" else name
 
 
 def _embedded_pg_asset_url(plat):
@@ -286,7 +298,7 @@ def _save_embedded_state(state):
 
 def _embedded_pg_ctl(state, *args):
     import subprocess
-    pg_ctl = os.path.join(state["pg_dir"], "bin", "pg_ctl")
+    pg_ctl = os.path.join(state["pg_dir"], "bin", _exe("pg_ctl"))
     return subprocess.run([pg_ctl, *args, "-D", state["data_dir"]],
                           capture_output=True, text=True)
 
@@ -328,7 +340,7 @@ def _ensure_embedded_pg():
         sys.exit(
             f"Embedded PostgreSQL is not yet supported on "
             f"{sys.platform}/{platform.machine()}.\n"
-            f"  Supported: macOS arm64 (Apple Silicon), Linux x86_64.\n"
+            f"  Supported: macOS arm64 (Apple Silicon), Linux x86_64, Windows x86_64.\n"
             f"  Alternative:  memnos setup --docker   (needs Docker)"
         )
 
@@ -385,7 +397,7 @@ def _ensure_embedded_pg():
     port = _free_port(EMBEDDED_PG_PREFERRED_PORTS)
 
     # initdb — creates the data directory; 'trust' auth is safe on localhost-only port
-    initdb = os.path.join(pg_dir, "bin", "initdb")
+    initdb = os.path.join(pg_dir, "bin", _exe("initdb"))
     print("[memnos] initializing database cluster ...")
     r = subprocess.run([initdb, "-D", data_dir, "-U", "memnos",
                         "--auth", "trust", "--no-instructions"],
@@ -399,7 +411,7 @@ def _ensure_embedded_pg():
         fh.write(f"\n# memnos embedded instance\nport = {port}\nlisten_addresses = '127.0.0.1'\n")
 
     # start
-    pg_ctl = os.path.join(pg_dir, "bin", "pg_ctl")
+    pg_ctl = os.path.join(pg_dir, "bin", _exe("pg_ctl"))
     r = subprocess.run([pg_ctl, "start", "-D", data_dir, "-l", log_path, "-w"],
                        capture_output=True, text=True)
     if r.returncode != 0:
@@ -556,6 +568,10 @@ def _pg_not_reachable_hint(host, port):
         return base + ("  Is it running?   sudo systemctl start postgresql\n"
                        "  Not installed?   sudo apt install postgresql postgresql-16-pgvector\n"
                        "  Zero-dep option: memnos setup --embedded  (downloads embedded PG, no Docker)")
+    if sys.platform == "win32":
+        return base + ("  Zero-dep option: memnos setup --embedded  (downloads embedded PG, no Docker)\n"
+                       "  Docker option:   memnos setup --docker\n"
+                       "  See docs/guides/windows.md for the native-Postgres path.")
     return base + ("  Start your PostgreSQL server (needs the pgvector >= 0.6 extension) and re-run.\n"
                    "  Or: memnos setup --embedded  (downloads embedded PG, no Docker needed)")
 
@@ -4544,7 +4560,7 @@ def build_parser():
     p.add_argument("--dsn", help="Postgres DSN (skips the interactive wizard)")
     p.add_argument("--embedded", action="store_true",
                    help="download + use embedded PostgreSQL + pgvector — zero external dependencies "
-                        "(macOS arm64, Linux x86_64; ~20-30 MB one-time download)")
+                        "(macOS arm64, Linux x86_64, Windows x86_64; ~20-30 MB one-time download)")
     p.add_argument("--docker", action="store_true",
                    help="provision a pgvector Postgres in Docker (no Postgres setup needed)")
     p.add_argument("--port", type=int,
