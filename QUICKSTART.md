@@ -15,7 +15,7 @@ five minutes — one package, one command.
 
 ```bash
 memnos setup --embedded   # downloads PostgreSQL 16 + pgvector into ~/.memnos/embedded_pg/
-                          # ~20-30 MB one-time download; macOS arm64 + Linux x86_64
+                          # ~20-30 MB one-time download; macOS arm64, Linux x86_64, Windows x86_64
 ```
 
 If you prefer to connect to your own PostgreSQL:
@@ -80,7 +80,7 @@ Downloads a pre-built **PostgreSQL 16 + pgvector** binary (~20-30 MB) into
 `~/.memnos/embedded_pg/` on first run. No Docker, no `brew install`, no `apt install` —
 just this command. `memnos start` auto-starts the embedded database on every boot.
 
-*Supported: macOS arm64 (Apple Silicon), Linux x86_64.*
+*Supported: macOS arm64 (Apple Silicon), Linux x86_64, Windows x86_64.*
 For other platforms, use Option B or C below.
 
 ### Option B — Docker (any platform)

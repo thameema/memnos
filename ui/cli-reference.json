@@ -118,7 +118,7 @@
       },
       {
        "arg": "--embedded",
-       "help": "download + use embedded PostgreSQL + pgvector \u2014 zero external dependencies (macOS arm64, Linux x86_64; ~20-30 MB one-time download)",
+       "help": "download + use embedded PostgreSQL + pgvector \u2014 zero external dependencies (macOS arm64, Linux x86_64, Windows x86_64; ~20-30 MB one-time download)",
        "positional": false,
        "required": false
       },

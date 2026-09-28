@@ -24,10 +24,18 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build + smoke-test Windows embedded PG asset
     runs-on: windows-latest
+    # job-level permissions REPLACE the workflow-level block above rather than adding to
+    # it (see release.yml) — contents: write is needed only for the final release-asset
+    # upload step, gated behind the `upload` input anyway.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -70,43 +78,14 @@ jobs:
 
       - name: Smoke-test the packaged archive (real initdb + start + CREATE EXTENSION + stop)
         shell: pwsh
+        timeout-minutes: 5
         run: |
-          $ErrorActionPreference = "Stop"
-          $asset = "memnos-pg16-pgvector-${{ inputs.pgvector_version }}-windows-amd64.tar.xz"
-          $test = Join-Path $env:RUNNER_TEMP "embedded_pg_smoke"
-          New-Item -ItemType Directory -Path $test | Out-Null
-          tar -xJf $asset -C $test
-          $pg = Join-Path $test "memnos-pg16"
-          $data = Join-Path $test "data"
-
-          & "$pg\bin\initdb.exe" -D $data -U memnos --auth trust --no-instructions
-          if ($LASTEXITCODE -ne 0) { throw "initdb failed" }
-
-          & "$pg\bin\pg_ctl.exe" start -D $data -l (Join-Path $test "pg.log") -w -o "-p 5477"
-          if ($LASTEXITCODE -ne 0) {
-            Get-Content (Join-Path $test "pg.log") -ErrorAction SilentlyContinue
-            throw "pg_ctl start failed"
-          }
-
-          python -m pip install --quiet psycopg[binary]
-          python -c "
-          import psycopg
-          conn = psycopg.connect('postgresql://memnos@localhost:5477/postgres', autocommit=True)
-          with conn.cursor() as c:
-              c.execute(\"CREATE DATABASE memnos\")
-          conn.close()
-          conn = psycopg.connect('postgresql://memnos@localhost:5477/memnos', autocommit=True)
-          with conn.cursor() as c:
-              c.execute('CREATE EXTENSION vector')
-              c.execute(\"SELECT extversion FROM pg_extension WHERE extname = 'vector'\")
-              print('pgvector version:', c.fetchone()[0])
-              c.execute(\"SELECT '[1,2,3]'::vector <-> '[1,2,4]'::vector\")
-              print('distance op works:', c.fetchone()[0])
-          conn.close()
-          "
-          if ($LASTEXITCODE -ne 0) { throw "pgvector smoke test failed" }
-
-          & "$pg\bin\pg_ctl.exe" stop -D $data -w
+          python -m pip install --quiet "psycopg[binary]"
+          python -u .github\scripts\smoke_test_embedded_pg.py `
+            "memnos-pg16-pgvector-${{ inputs.pgvector_version }}-windows-amd64.tar.xz" `
+            "$env:RUNNER_TEMP\embedded_pg_smoke" `
+            5477
+          if ($LASTEXITCODE -ne 0) { throw "smoke test failed" }
 
       - uses: actions/upload-artifact@v4
         with:

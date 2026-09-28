@@ -247,13 +247,25 @@ _EMBEDDED_SUPPORTED = {
     ("darwin", "arm64"):   "darwin-arm64",
     ("darwin", "aarch64"): "darwin-arm64",
     ("linux", "x86_64"):   "linux-amd64",
+    ("win32", "amd64"):    "windows-amd64",
 }
 
 
 def _embedded_pg_platform():
     import platform
-    sys_key = "darwin" if sys.platform == "darwin" else "linux"
+    if sys.platform == "darwin":
+        sys_key = "darwin"
+    elif sys.platform == "win32":
+        sys_key = "win32"
+    else:
+        sys_key = "linux"
     return _EMBEDDED_SUPPORTED.get((sys_key, platform.machine().lower()))
+
+
+def _exe(name):
+    """Append the platform executable suffix — PostgreSQL's Windows binaries are .exe,
+    and an explicit subprocess path (unlike a bare PATH lookup) isn't PATHEXT-resolved."""
+    return name + ".exe" if sys.platform == "win32" else name
 
 
 def _embedded_pg_asset_url(plat):
@@ -285,21 +297,34 @@ def _save_embedded_state(state):
 
 
 def _embedded_pg_ctl(state, *args):
+    # NOT capture_output=True: pg_ctl start's grandchild (postgres itself, which stays
+    # running) inherits the pipe's write handle on Windows, so communicate() never sees
+    # EOF and hangs forever — unlike Unix, where postgres's own daemonization closes
+    # inherited fds. Real output already goes to the -l logfile; nothing here reads
+    # pg_ctl's own stdout/stderr text.
     import subprocess
-    pg_ctl = os.path.join(state["pg_dir"], "bin", "pg_ctl")
+    pg_ctl = os.path.join(state["pg_dir"], "bin", _exe("pg_ctl"))
     return subprocess.run([pg_ctl, *args, "-D", state["data_dir"]],
-                          capture_output=True, text=True)
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def _embedded_pg_is_running(state):
     return _embedded_pg_ctl(state, "status").returncode == 0
 
 
+def _tail_log(path, n=20):
+    try:
+        with open(path) as f:
+            return "".join(f.readlines()[-n:])
+    except OSError:
+        return ""
+
+
 def _start_embedded_pg(state):
     log = os.path.join(EMBEDDED_PG_HOME, "pg.log")
     result = _embedded_pg_ctl(state, "start", "-l", log, "-w")
     if result.returncode != 0:
-        raise RuntimeError(result.stderr or result.stdout)
+        raise RuntimeError(_tail_log(log) or f"pg_ctl exited with code {result.returncode}")
 
 
 def _ensure_embedded_pg():
@@ -328,7 +353,7 @@ def _ensure_embedded_pg():
         sys.exit(
             f"Embedded PostgreSQL is not yet supported on "
             f"{sys.platform}/{platform.machine()}.\n"
-            f"  Supported: macOS arm64 (Apple Silicon), Linux x86_64.\n"
+            f"  Supported: macOS arm64 (Apple Silicon), Linux x86_64, Windows x86_64.\n"
             f"  Alternative:  memnos setup --docker   (needs Docker)"
         )
 
@@ -384,11 +409,18 @@ def _ensure_embedded_pg():
 
     port = _free_port(EMBEDDED_PG_PREFERRED_PORTS)
 
-    # initdb — creates the data directory; 'trust' auth is safe on localhost-only port
-    initdb = os.path.join(pg_dir, "bin", "initdb")
+    # initdb — creates the data directory; 'trust' auth is safe on localhost-only port.
+    # --encoding/--locale are explicit (not left to the OS default): initdb otherwise
+    # derives them from the system locale, which on Windows is commonly a codepage like
+    # cp1252 rather than UTF-8 — psycopg then negotiates that as the wire encoding and
+    # chokes the moment any DDL/query text has a non-ASCII character (confirmed live:
+    # UnicodeEncodeError on the schema DDL's '→' in core/store.py). macOS/Linux never hit
+    # this because their default locale is already UTF-8.
+    initdb = os.path.join(pg_dir, "bin", _exe("initdb"))
     print("[memnos] initializing database cluster ...")
     r = subprocess.run([initdb, "-D", data_dir, "-U", "memnos",
-                        "--auth", "trust", "--no-instructions"],
+                        "--auth", "trust", "--no-instructions",
+                        "--encoding", "UTF8", "--locale", "C"],
                        capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit(f"initdb failed:\n{r.stderr}")
@@ -398,12 +430,13 @@ def _ensure_embedded_pg():
     with open(conf, "a") as fh:
         fh.write(f"\n# memnos embedded instance\nport = {port}\nlisten_addresses = '127.0.0.1'\n")
 
-    # start
-    pg_ctl = os.path.join(pg_dir, "bin", "pg_ctl")
+    # start — not capture_output=True: see the comment on _embedded_pg_ctl (Windows
+    # grandchild pipe-inheritance hang)
+    pg_ctl = os.path.join(pg_dir, "bin", _exe("pg_ctl"))
     r = subprocess.run([pg_ctl, "start", "-D", data_dir, "-l", log_path, "-w"],
-                       capture_output=True, text=True)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if r.returncode != 0:
-        sys.exit(f"pg_ctl start failed:\n{r.stderr}\n{r.stdout}")
+        sys.exit(f"pg_ctl start failed:\n{_tail_log(log_path)}")
 
     # create database
     import psycopg
@@ -556,6 +589,10 @@ def _pg_not_reachable_hint(host, port):
         return base + ("  Is it running?   sudo systemctl start postgresql\n"
                        "  Not installed?   sudo apt install postgresql postgresql-16-pgvector\n"
                        "  Zero-dep option: memnos setup --embedded  (downloads embedded PG, no Docker)")
+    if sys.platform == "win32":
+        return base + ("  Zero-dep option: memnos setup --embedded  (downloads embedded PG, no Docker)\n"
+                       "  Docker option:   memnos setup --docker\n"
+                       "  See docs/guides/windows.md for the native-Postgres path.")
     return base + ("  Start your PostgreSQL server (needs the pgvector >= 0.6 extension) and re-run.\n"
                    "  Or: memnos setup --embedded  (downloads embedded PG, no Docker needed)")
 
@@ -1234,6 +1271,29 @@ def _fetch_nudges(url, hdr, timeout=2):
         return []
 
 
+def _pid_alive(pid):
+    """Cross-platform PID liveness check. POSIX's os.kill(pid, 0) idiom doesn't translate to
+    Windows: signal 0 isn't a recognized value there (CTRL_C_EVENT is 0, and it only applies
+    to process groups anyway), so it raises WinError 87 — which CPython 3.11 on Windows
+    surfaces as a bare SystemError rather than a catchable OSError subtype (confirmed live
+    in CI). Windows gets its own native check via OpenProcess instead."""
+    if sys.platform == "win32":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:        # exists but owned by another user → treat as alive
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
 def _pidfile_pid():
     """Read PID_PATH and return ('alive', pid) / ('dead', pid) / ('none', None).
     Only `memnos start` writes this file; an autostart-managed server writes none."""
@@ -1243,13 +1303,7 @@ def _pidfile_pid():
         pid = int(open(PID_PATH).read().strip())
     except (ValueError, OSError):
         return ("dead", None)
-    try:
-        os.kill(pid, 0)
-        return ("alive", pid)
-    except PermissionError:        # exists but owned by another user → treat as alive
-        return ("alive", pid)
-    except (ProcessLookupError, OSError):
-        return ("dead", pid)
+    return ("alive", pid) if _pid_alive(pid) else ("dead", pid)
 
 
 def _background_status(running: bool, svc, pidstate) -> dict:
@@ -4544,7 +4598,7 @@ def build_parser():
     p.add_argument("--dsn", help="Postgres DSN (skips the interactive wizard)")
     p.add_argument("--embedded", action="store_true",
                    help="download + use embedded PostgreSQL + pgvector — zero external dependencies "
-                        "(macOS arm64, Linux x86_64; ~20-30 MB one-time download)")
+                        "(macOS arm64, Linux x86_64, Windows x86_64; ~20-30 MB one-time download)")
     p.add_argument("--docker", action="store_true",
                    help="provision a pgvector Postgres in Docker (no Postgres setup needed)")
     p.add_argument("--port", type=int,

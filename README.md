@@ -76,7 +76,7 @@ uv tool install memnos        # no uv?  brew install uv   or
                               #         curl -LsSf https://astral.sh/uv/install.sh | sh
 
 memnos setup --embedded       # ← zero external dependencies: downloads embedded PG + pgvector
-                              #   (~20-30 MB, macOS arm64 / Linux x86_64)
+                              #   (~20-30 MB, macOS arm64 / Linux x86_64 / Windows x86_64)
                               # or: memnos setup          (connect to YOUR existing Postgres)
                               # or: memnos setup --docker (spin up a pgvector container)
 memnos start                  # background server → open http://127.0.0.1:8900/admin
