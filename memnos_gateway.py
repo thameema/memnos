@@ -143,6 +143,11 @@ def _spawn_backend(port):
         cmd = [sys.executable, cli_path, "serve", "--port", str(port)]
     env = dict(os.environ)
     env["MEMNOS_PORT"] = str(port)          # belt + suspenders alongside --port above
+    # tells the backend which gateway owns it (memnos_server.py's _gateway_parent_watcher)
+    # so it can self-terminate if THIS gateway dies without a clean shutdown (SIGKILL, an
+    # OOM-kill, a crash) instead of leaking as an orphan forever — see that watcher's
+    # docstring for the full incident this closes.
+    env["MEMNOS_GATEWAY_PID"] = str(os.getpid())
     # No stdout/stderr override: inherit this process's own fds. When THIS process was
     # itself launched in the background with stdout/stderr redirected to server.log (see
     # memnos_cli.py's `_start_gateway_background`), every backend's output lands in that
