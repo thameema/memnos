@@ -2444,6 +2444,52 @@ def _set_proc_title(title):
         pass
 
 
+def _pid_alive(pid):
+    """Cross-platform PID liveness check — same logic as memnos_cli.py's _pid_alive
+    (duplicated, not imported: memnos_server.py deliberately has no dependency on
+    memnos_cli.py). POSIX's os.kill(pid, 0) doesn't translate to Windows (signal 0 isn't
+    meaningful there — confirmed live in CI to raise a bare SystemError, not a catchable
+    OSError), so Windows gets its own native check via OpenProcess."""
+    if sys.platform == "win32":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
+def _gateway_parent_watcher(gateway_pid: int, interval_s: float = 5.0):
+    """A backend spawned by memnos_gateway.py (_spawn_backend, always with
+    start_new_session=True so it survives the short-lived CLI invocation that started
+    the GATEWAY — see memnos_cli.py's _start_gateway_background) must not survive the
+    GATEWAY ITSELF dying. The gateway's own clean-shutdown path (SIGTERM/SIGINT) already
+    kills its current backend before exiting — but an uncatchable death (SIGKILL, an
+    OOM-kill from real memory pressure, a hard crash) skips that path entirely, orphaning
+    this process: no gateway is left to ever route a request to it again, yet it keeps
+    holding its full embedding/reranker model residency. This is exactly how multiple
+    abandoned memnos-server processes accumulate over repeated crash/restart cycles under
+    memory pressure (field-confirmed) — the same pressure that caused the crash in the
+    first place, a self-reinforcing leak. Polls rather than using a kernel-level
+    parent-death signal (prctl is Linux-only; this needs to work on every platform this
+    codebase supports, Windows included) — the instant the recorded gateway pid is gone,
+    this backend is permanently unreachable, so it exits instead of lingering forever."""
+    while True:
+        time.sleep(interval_s)
+        if not _pid_alive(gateway_pid):
+            print(f"[memnos] gateway (pid {gateway_pid}) is gone — this backend is now "
+                  f"orphaned and unreachable; exiting instead of leaking", flush=True)
+            os._exit(0)   # a daemon thread calling sys.exit() only ends itself, not the process
+
+
 def serve(port=None):
     """Boot + run the memnos server. Importable so the `memnos serve` CLI reuses it."""
     global POOL, EMBED, MCP_INTERNAL_PORT, SCHEMA, _READYZ_WARM_PROVEN
@@ -2541,6 +2587,15 @@ def serve(port=None):
     threading.Thread(target=_pusher_loop, name="memnos-webhook-pusher", daemon=True).start()
     for i in range(INGEST_WORKERS):
         threading.Thread(target=_ingest_worker, name=f"memnos-async-ingest-{i}", daemon=True).start()
+    # set only by memnos_gateway.py's _spawn_backend — absent for a standalone/legacy-mode
+    # `memnos serve` (that process IS the top-level server; it's supposed to outlive the
+    # short-lived CLI invocation that started it, same as the gateway itself is). Present
+    # only for a gateway-managed backend, which must NOT outlive that specific gateway.
+    _gw_pid = os.environ.get("MEMNOS_GATEWAY_PID")
+    if _gw_pid:
+        _gw_interval = float(os.environ.get("MEMNOS_GATEWAY_WATCHER_INTERVAL_S", "5"))
+        threading.Thread(target=_gateway_parent_watcher, args=(int(_gw_pid), _gw_interval),
+                         name="memnos-gateway-parent-watcher", daemon=True).start()
     # issue #37 Layer 1: streamable-HTTP MCP at /mcp — additive. A failure here (bad
     # MEMNOS_MCP_INTERNAL_PORT, port already taken, mount thread died, startup timeout)
     # must NOT take down :8900 — that would break REST and the stdio adapter too, which
