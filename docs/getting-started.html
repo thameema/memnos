@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-K7M6RWTW1P"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-K7M6RWTW1P');
+  </script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Getting Started with memnos — The Friendly Guide</title>
+  <meta name="description" content="A plain-English guide to memnos for anyone who isn't deep in the codebase: what it is, why it helps, and exactly what to hand your IT person to install it on Windows." />
+  <meta name="keywords" content="memnos quickstart, AI memory setup, Windows AI memory install, memnos for beginners, persistent memory AI agents" />
+  <link rel="canonical" href="https://memnos.net/getting-started.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://memnos.net/getting-started.html" />
+  <meta property="og:title" content="Getting Started with memnos — The Friendly Guide" />
+  <meta property="og:description" content="What memnos is, why it helps, and exactly what to hand your IT person — in plain English." />
+  <meta property="og:image" content="https://memnos.net/og-image.png" />
+  <meta property="og:site_name" content="memnos" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Getting Started with memnos — The Friendly Guide" />
+  <meta name="twitter:description" content="What memnos is, why it helps, and exactly what to hand your IT person — in plain English." />
+  <meta name="twitter:image" content="https://memnos.net/og-image.png" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'], mono: ['JetBrains Mono', 'monospace'] },
+          colors: {
+            brand: { purple: '#7c5cfc', blue: '#4f9cf9', cyan: '#00d2ff', dim: '#1a1a2e' },
+          },
+        }
+      }
+    }
+  </script>
+  <style>
+    :root { --bg: #09090f; --surface: #111118; --border: #1e1e2e; --muted: #6b7280; }
+    body { background: var(--bg); font-family: 'Inter', sans-serif; color: #e5e7eb; }
+    .gradient-text {
+      background: linear-gradient(135deg, #a78bfa 0%, #60a5fa 50%, #34d399 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .glow-btn {
+      background: linear-gradient(135deg, #7c5cfc, #4f9cf9);
+      box-shadow: 0 0 20px rgba(124, 92, 252, 0.4);
+      transition: box-shadow 0.3s, transform 0.2s;
+    }
+    .glow-btn:hover { box-shadow: 0 0 35px rgba(124, 92, 252, 0.65); transform: translateY(-1px); }
+    .glass {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.07);
+      backdrop-filter: blur(12px);
+      transition: border-color 0.3s, transform 0.2s, box-shadow 0.3s;
+    }
+    .glass:hover {
+      border-color: rgba(124,92,252,0.35);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(124,92,252,0.12);
+    }
+    body::before {
+      content: '';
+      position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background-image: radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+    .code-block {
+      background: #0d0d1a;
+      border: 1px solid #1e1e3f;
+      border-radius: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      line-height: 1.7;
+    }
+    .token-cmt  { color: #4b5563; }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+    .fade-in { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease, transform 0.6s ease; }
+    .fade-in.visible { opacity: 1; transform: translateY(0); }
+    nav { backdrop-filter: blur(20px); background: rgba(9,9,15,0.8); border-bottom: 1px solid var(--border); }
+    .gradient-border {
+      position: relative; border-radius: 16px; padding: 1px;
+      background: linear-gradient(135deg, rgba(124,92,252,0.4), rgba(79,156,249,0.2), rgba(0,210,255,0.1));
+    }
+    .gradient-border-inner { background: var(--surface); border-radius: 15px; }
+    .step-num {
+      width: 30px; height: 30px; border-radius: 50%;
+      background: linear-gradient(135deg, #7c5cfc, #4f9cf9);
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; font-weight: 600; color: #fff;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body class="antialiased overflow-x-hidden">
+
+<!-- ── NAV ─────────────────────────────────────────────────────────── -->
+<nav class="fixed top-0 left-0 right-0 z-50">
+  <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.6"/>
+        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.8"/>
+        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gnav)"/>
+        <defs>
+          <linearGradient id="gnav" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <span class="text-white font-semibold text-lg tracking-tight">memnos</span>
+    </a>
+    <div class="hidden md:flex items-center gap-7">
+      <a href="index.html#features" class="text-sm text-gray-400 hover:text-white transition-colors">Features</a>
+      <a href="use-cases.html" class="text-sm text-gray-400 hover:text-white transition-colors">Use Cases</a>
+      <a href="governance.html" class="text-sm text-gray-400 hover:text-white transition-colors">Policies</a>
+      <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="text-sm text-gray-400 hover:text-white transition-colors">Docs</a>
+      <a href="compare.html" class="text-sm text-gray-400 hover:text-white transition-colors">Compare</a>
+      <a href="https://github.com/thameema/memnos" class="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-1.5">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        GitHub
+      </a>
+    </div>
+    <div class="flex items-center gap-3">
+      <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white text-sm font-medium px-5 py-2 rounded-full hidden md:inline-flex">Deploy Free</a>
+      <button id="nav-toggle" onclick="toggleMobileNav()" class="md:hidden flex flex-col justify-center items-center w-9 h-9 rounded-lg border border-gray-700 bg-gray-900/60 gap-1.5 px-2">
+        <span id="ham-1" class="block w-4 h-0.5 bg-gray-300 transition-all duration-300 origin-center"></span>
+        <span id="ham-2" class="block w-4 h-0.5 bg-gray-300 transition-all duration-300"></span>
+        <span id="ham-3" class="block w-4 h-0.5 bg-gray-300 transition-all duration-300 origin-center"></span>
+      </button>
+    </div>
+  </div>
+  <div id="mobile-nav" class="hidden md:hidden border-t border-gray-800 bg-gray-950/95 backdrop-blur-xl">
+    <div class="max-w-6xl mx-auto px-6 py-5 flex flex-col gap-1">
+      <a href="index.html#features" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Features</a>
+      <a href="use-cases.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Use Cases</a>
+      <a href="governance.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Policies</a>
+      <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Docs</a>
+      <a href="compare.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Compare</a>
+      <a href="https://github.com/thameema/memnos" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900 flex items-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        GitHub
+      </a>
+      <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white text-sm font-medium px-5 py-2.5 rounded-full text-center mt-3">Deploy Free</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ── HERO ─────────────────────────────────────────────────────────── -->
+<section class="relative pt-32 pb-16 overflow-hidden">
+  <div class="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-600 rounded-full blur-[140px] opacity-10 pointer-events-none"></div>
+  <div class="relative z-10 max-w-3xl mx-auto px-6 text-center">
+    <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">The 5-minute guide</span>
+    <h1 class="text-5xl md:text-6xl font-bold text-white leading-[1.1] tracking-tight mt-4 mb-6">
+      Your AI forgets everything.<br /><span class="gradient-text">memnos makes sure it doesn't.</span>
+    </h1>
+    <p class="text-gray-400 text-lg leading-relaxed max-w-2xl mx-auto">
+      Not a developer? This page is for you — what memnos actually does, why it's worth setting up, and exactly what to hand your IT person. No jargon.
+    </p>
+  </div>
+</section>
+
+<!-- ── BENEFITS ─────────────────────────────────────────────────────── -->
+<section class="relative z-10 pb-16 fade-in">
+  <div class="max-w-5xl mx-auto px-6 grid md:grid-cols-3 gap-5">
+    <div class="glass rounded-2xl p-6">
+      <div class="w-9 h-9 rounded-lg bg-purple-500/15 flex items-center justify-center text-purple-300 mb-3">✓</div>
+      <h3 class="text-white font-semibold mb-2">No more repeating yourself</h3>
+      <p class="text-sm text-gray-400 leading-relaxed">Tell it something once — a decision, a preference, a project detail — and it's there next time, even in a brand-new conversation.</p>
+    </div>
+    <div class="glass rounded-2xl p-6">
+      <div class="w-9 h-9 rounded-lg bg-blue-500/15 flex items-center justify-center text-blue-300 mb-3">✓</div>
+      <h3 class="text-white font-semibold mb-2">Stays on your machine</h3>
+      <p class="text-sm text-gray-400 leading-relaxed">Self-hosted and private by default. Nothing leaves your laptop unless you choose to add a cloud AI key.</p>
+    </div>
+    <div class="glass rounded-2xl p-6">
+      <div class="w-9 h-9 rounded-lg bg-green-500/15 flex items-center justify-center text-green-300 mb-3">✓</div>
+      <h3 class="text-white font-semibold mb-2">Free to run</h3>
+      <p class="text-sm text-gray-400 leading-relaxed">No subscription. One optional cloud key for slightly sharper recall — entirely your choice, and skippable.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── NAMESPACES ───────────────────────────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-4xl mx-auto px-6">
+    <div class="text-center mb-10">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">The one concept worth knowing</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Namespaces — separate notebooks for separate things</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">A <strong class="text-white">namespace</strong> is just a labeled place memories go — think of it as a dedicated notebook. A &ldquo;work&rdquo; notebook and a &ldquo;personal&rdquo; notebook never bleed into each other unless you want them to.</p>
+    </div>
+    <div class="grid md:grid-cols-3 gap-4">
+      <div class="glass rounded-xl p-5">
+        <span class="inline-block text-xs font-mono text-purple-300 bg-purple-500/15 px-2.5 py-1 rounded-full mb-3">work:acme-project</span>
+        <ul class="text-sm text-gray-400 space-y-1 list-disc list-inside">
+          <li>Client decisions</li>
+          <li>Deadlines</li>
+          <li>Who&rsquo;s who</li>
+        </ul>
+      </div>
+      <div class="glass rounded-xl p-5">
+        <span class="inline-block text-xs font-mono text-blue-300 bg-blue-500/15 px-2.5 py-1 rounded-full mb-3">personal</span>
+        <ul class="text-sm text-gray-400 space-y-1 list-disc list-inside">
+          <li>Preferences</li>
+          <li>Ongoing tasks</li>
+          <li>Family notes</li>
+        </ul>
+      </div>
+      <div class="glass rounded-xl p-5">
+        <span class="inline-block text-xs font-mono text-green-300 bg-green-500/15 px-2.5 py-1 rounded-full mb-3">+ one per project</span>
+        <ul class="text-sm text-gray-400 space-y-1 list-disc list-inside">
+          <li>Add more any time</li>
+          <li>Only as needed</li>
+        </ul>
+      </div>
+    </div>
+    <p class="text-sm text-gray-500 text-center mt-6">Most people start with just <strong class="text-gray-300">one</strong> namespace and only add a second once they notice they actually want one.</p>
+  </div>
+</section>
+
+<!-- ── SETUP ────────────────────────────────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-3xl mx-auto px-6">
+    <div class="text-center mb-10">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Setup &middot; Windows</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">What to hand your IT person</h2>
+      <p class="text-gray-400 max-w-xl mx-auto">This installs memnos locally — no cloud account, no Docker, nothing else to set up first. Four commands, run in PowerShell.</p>
+    </div>
+
+    <div class="space-y-6">
+      <div class="flex gap-4">
+        <div class="step-num mt-1">1</div>
+        <div class="flex-1">
+          <h4 class="text-white font-semibold mb-2">Install uv <span class="text-gray-500 font-normal text-sm">(a Python package runner)</span></h4>
+          <pre class="code-block p-4 overflow-x-auto"><code><span class="token-cmt"># run in PowerShell</span>
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"</code></pre>
+        </div>
+      </div>
+      <div class="flex gap-4">
+        <div class="step-num mt-1">2</div>
+        <div class="flex-1">
+          <h4 class="text-white font-semibold mb-2">Open a <em>new</em> PowerShell window, then install memnos</h4>
+          <pre class="code-block p-4 overflow-x-auto"><code>uv tool install memnos
+memnos --help          <span class="token-cmt"># confirms it installed</span></code></pre>
+        </div>
+      </div>
+      <div class="flex gap-4">
+        <div class="step-num mt-1">3</div>
+        <div class="flex-1">
+          <h4 class="text-white font-semibold mb-2">Set it up</h4>
+          <p class="text-sm text-gray-500 mb-2">Downloads its own private database automatically — nothing else to install first.</p>
+          <pre class="code-block p-4 overflow-x-auto"><code>memnos setup</code></pre>
+          <p class="text-sm text-gray-500 mt-2">This prints a one-time admin token — save it somewhere safe.</p>
+        </div>
+      </div>
+      <div class="flex gap-4">
+        <div class="step-num mt-1">4</div>
+        <div class="flex-1">
+          <h4 class="text-white font-semibold mb-2">Start it, and connect it to Claude Code</h4>
+          <pre class="code-block p-4 overflow-x-auto"><code>memnos start
+memnos agent-setup claude-code</code></pre>
+          <p class="text-sm text-gray-500 mt-2">Restart Claude Code once afterward. From then on, recall and save happen automatically in the background.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="gradient-border mt-10">
+      <div class="gradient-border-inner px-6 py-5 rounded-2xl text-center">
+        <p class="text-gray-300 text-sm leading-relaxed"><strong class="text-white">That's the whole install.</strong> For the full step-by-step with troubleshooting (antivirus scan delays, port conflicts), see the <a href="https://github.com/thameema/memnos/blob/master/docs/guides/windows.md" class="text-purple-400 hover:text-purple-300 underline underline-offset-2">Windows guide</a>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── DAY TO DAY ───────────────────────────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-3xl mx-auto px-6">
+    <div class="text-center mb-10">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Using it</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Day to day, there's nothing to learn</h2>
+      <p class="text-gray-400 max-w-xl mx-auto">Just talk to Claude (or whichever AI tool you connected it to) normally. In the background, memnos:</p>
+    </div>
+    <div class="grid md:grid-cols-2 gap-5 mb-6">
+      <div class="glass rounded-xl p-5">
+        <h4 class="text-white font-semibold mb-1.5">Saves</h4>
+        <p class="text-sm text-gray-400">What you tell it — facts, preferences, decisions — as the conversation happens.</p>
+      </div>
+      <div class="glass rounded-xl p-5">
+        <h4 class="text-white font-semibold mb-1.5">Recalls</h4>
+        <p class="text-sm text-gray-400">What's relevant, automatically, before the assistant even answers.</p>
+      </div>
+    </div>
+    <p class="text-sm text-gray-500 text-center">Curious what it remembers? Just ask — <code class="text-purple-300 font-mono text-xs bg-purple-950/40 px-1.5 py-0.5 rounded">&ldquo;what do you remember about the Q3 roadmap?&rdquo;</code> works exactly like you&rsquo;d expect.</p>
+  </div>
+</section>
+
+<!-- ── FAQ ──────────────────────────────────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-2xl mx-auto px-6">
+    <div class="text-center mb-10">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">The honest questions</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Privacy &amp; cost</h2>
+    </div>
+    <div class="space-y-5">
+      <div class="border-t border-gray-800 pt-5">
+        <h4 class="text-white font-semibold mb-1.5">Is my data private?</h4>
+        <p class="text-sm text-gray-400">Yes. Everything lives in a database on your own machine. Nothing is sent anywhere unless you explicitly add a cloud AI key.</p>
+      </div>
+      <div class="border-t border-gray-800 pt-5">
+        <h4 class="text-white font-semibold mb-1.5">Does this cost anything?</h4>
+        <p class="text-sm text-gray-400">No — no subscription, no usage fee. An optional OpenAI key sharpens recall slightly; it's entirely your choice, and skippable.</p>
+      </div>
+      <div class="border-t border-gray-800 pt-5">
+        <h4 class="text-white font-semibold mb-1.5">What if I use more than one AI tool?</h4>
+        <p class="text-sm text-gray-400">memnos connects to Claude Code, Claude Desktop, Cursor, Windsurf, and anything else that speaks MCP — one memory, shared across all of them.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── CTA ──────────────────────────────────────────────────────────── -->
+<section class="relative z-10 py-20 fade-in">
+  <div class="max-w-2xl mx-auto px-6 text-center">
+    <h2 class="text-3xl font-bold text-white mb-4">Ready when you are.</h2>
+    <p class="text-gray-400 mb-8">Free, open source, self-hosted — set up once and your AI stops forgetting.</p>
+    <div class="flex items-center justify-center gap-4 flex-wrap">
+      <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white font-semibold px-8 py-3.5 rounded-full text-sm">Deploy Free</a>
+      <a href="index.html" class="text-sm text-gray-300 hover:text-white border border-gray-700 hover:border-gray-500 px-8 py-3.5 rounded-full transition-colors">Back to memnos.net</a>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ───────────────────────────────────────────────────────── -->
+<footer class="relative z-10 border-t border-gray-800/60 py-12">
+  <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6">
+    <div class="flex items-center gap-2.5">
+      <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gfoot)" opacity="0.6"/>
+        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gfoot)" opacity="0.8"/>
+        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gfoot)"/>
+        <defs><linearGradient id="gfoot" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/></linearGradient></defs>
+      </svg>
+      <span class="text-white font-semibold">memnos</span>
+      <span class="text-gray-600 text-sm ml-2">Memory for AI agents</span>
+    </div>
+    <div class="flex items-center gap-8 text-sm text-gray-500">
+      <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="hover:text-gray-300 transition-colors">Docs</a>
+      <a href="https://github.com/thameema/memnos" class="hover:text-gray-300 transition-colors">GitHub</a>
+      <a href="use-cases.html" class="hover:text-gray-300 transition-colors">Use Cases</a>
+      <a href="governance.html" class="hover:text-gray-300 transition-colors">Policies</a>
+      <a href="compare.html" class="hover:text-gray-300 transition-colors">Compare</a>
+      <a href="https://github.com/thameema/memnos/blob/master/LICENSE" class="hover:text-gray-300 transition-colors">Apache-2.0 License</a>
+    </div>
+    <div class="text-xs text-gray-700">Built by AI agents, for AI agents.</div>
+  </div>
+</footer>
+
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+  function toggleMobileNav() {
+    const menu = document.getElementById('mobile-nav');
+    const h1 = document.getElementById('ham-1');
+    const h2 = document.getElementById('ham-2');
+    const h3 = document.getElementById('ham-3');
+    const open = menu.classList.toggle('hidden') === false;
+    h1.style.transform = open ? 'translateY(6px) rotate(45deg)' : '';
+    h2.style.opacity   = open ? '0' : '';
+    h3.style.transform = open ? 'translateY(-6px) rotate(-45deg)' : '';
+  }
+</script>
+</body>
+</html>

@@ -6,6 +6,7 @@ provenance-stamped portability. No second database; no LLM at query time.
 
 ## Start here
 - **[Quickstart (local, ~5 min)](../QUICKSTART.md)** — run the server + store/recall your first memory.
+- **[Getting Started, the friendly guide](https://memnos.net/getting-started.html)** — a plain-English page for sharing with someone who isn't deep in the codebase: what it is, why it helps, and exactly what to hand their IT person (Windows). Also in the repo as [`guides/friendly-quickstart.md`](guides/friendly-quickstart.md).
 - **[Accuracy baseline + LoCoMo numbers](../benchmarks/README.md)** — the locked config and scores.
 
 ## Integrations
