@@ -139,7 +139,7 @@ def _upgrade_cmd():
 # ---- config -----------------------------------------------------------------
 def load_config():
     try:
-        with open(CONFIG_PATH) as fh:
+        with open(CONFIG_PATH, encoding="utf-8") as fh:
             return json.load(fh)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
@@ -147,7 +147,7 @@ def load_config():
 
 def save_config(cfg):
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(CONFIG_PATH, "w") as fh:
+    with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=2)
     try:
         os.chmod(CONFIG_PATH, 0o600)          # secret_key lives here
@@ -282,7 +282,7 @@ def _embedded_state_path():
 
 def _load_embedded_state():
     try:
-        with open(_embedded_state_path()) as f:
+        with open(_embedded_state_path(), encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return None
@@ -291,7 +291,7 @@ def _load_embedded_state():
 def _save_embedded_state(state):
     os.makedirs(EMBEDDED_PG_HOME, exist_ok=True)
     path = _embedded_state_path()
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
     os.chmod(path, 0o600)
 
@@ -314,7 +314,7 @@ def _embedded_pg_is_running(state):
 
 def _tail_log(path, n=20):
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return "".join(f.readlines()[-n:])
     except OSError:
         return ""
@@ -335,7 +335,13 @@ def _ensure_embedded_pg():
     state = _load_embedded_state()
     if state:
         port = state["port"]
-        dsn = f"postgresql://memnos@localhost:{port}/memnos"
+        # 127.0.0.1, not "localhost": the embedded PG is configured listen_addresses =
+        # '127.0.0.1' (IPv4-only) below, but "localhost" still has to be resolved by the
+        # OS on every single connection -- on Windows that commonly tries ::1 (IPv6)
+        # FIRST and times out before falling back to IPv4, confirmed live to turn every
+        # DB round-trip into a multi-second-to-minutes stall. The literal IP skips
+        # resolution entirely and matches what's actually listening, exactly.
+        dsn = f"postgresql://memnos@127.0.0.1:{port}/memnos"
         if not _embedded_pg_is_running(state):
             print("[memnos] starting embedded PostgreSQL...")
             try:
@@ -427,7 +433,7 @@ def _ensure_embedded_pg():
 
     # tune postgresql.conf (port + bind to localhost only)
     conf = os.path.join(data_dir, "postgresql.conf")
-    with open(conf, "a") as fh:
+    with open(conf, "a", encoding="utf-8") as fh:
         fh.write(f"\n# memnos embedded instance\nport = {port}\nlisten_addresses = '127.0.0.1'\n")
 
     # start — not capture_output=True: see the comment on _embedded_pg_ctl (Windows
@@ -441,7 +447,7 @@ def _ensure_embedded_pg():
     # create database
     import psycopg
     from psycopg.rows import dict_row
-    pg_dsn = f"postgresql://memnos@localhost:{port}/postgres"
+    pg_dsn = f"postgresql://memnos@127.0.0.1:{port}/postgres"   # see the 127.0.0.1 note above
     _wait_dsn(pg_dsn)
     conn = psycopg.connect(pg_dsn, autocommit=True, row_factory=dict_row)
     with conn.cursor() as c:
@@ -450,7 +456,7 @@ def _ensure_embedded_pg():
             c.execute("CREATE DATABASE memnos")
     conn.close()
 
-    dsn = f"postgresql://memnos@localhost:{port}/memnos"
+    dsn = f"postgresql://memnos@127.0.0.1:{port}/memnos"
     conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
     with conn.cursor() as c:
         c.execute("CREATE EXTENSION IF NOT EXISTS vector")
@@ -458,7 +464,7 @@ def _ensure_embedded_pg():
     print("[memnos] ✓ pgvector enabled")
 
     _save_embedded_state({"port": port, "pg_dir": pg_dir, "data_dir": data_dir})
-    print(f"[memnos] ✓ embedded PostgreSQL ready on localhost:{port}")
+    print(f"[memnos] ✓ embedded PostgreSQL ready on 127.0.0.1:{port}")
     return dsn
 
 
@@ -503,21 +509,21 @@ def _ensure_docker_pg():
     if running:
         port, pw = _port(), _env("POSTGRES_PASSWORD")
         if port and pw:
-            dsn = f"postgresql://{user}:{pw}@localhost:{port}/{db}"
-            print(f"[memnos] reusing pgvector container '{name}' on localhost:{port}")
+            dsn = f"postgresql://{user}:{pw}@127.0.0.1:{port}/{db}"   # see the 127.0.0.1 note above
+            print(f"[memnos] reusing pgvector container '{name}' on 127.0.0.1:{port}")
             _wait_dsn(dsn)
             return dsn
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)   # malformed — recreate
 
     port = _free_port([5432, 5433, 5434])
     pw = secrets.token_hex(12)
-    print(f"[memnos] starting pgvector container '{name}' ({image}) on localhost:{port} ...")
+    print(f"[memnos] starting pgvector container '{name}' ({image}) on 127.0.0.1:{port} ...")
     subprocess.run(["docker", "run", "-d", "--name", name, "-p", f"{port}:5432",
                     "-e", f"POSTGRES_USER={user}", "-e", f"POSTGRES_PASSWORD={pw}",
                     "-e", f"POSTGRES_DB={db}", image], capture_output=True, check=True)
-    dsn = f"postgresql://{user}:{pw}@localhost:{port}/{db}"
+    dsn = f"postgresql://{user}:{pw}@127.0.0.1:{port}/{db}"   # see the 127.0.0.1 note above
     _wait_dsn(dsn)
-    print(f"[memnos] ✓ pgvector Postgres ready on localhost:{port}")
+    print(f"[memnos] ✓ pgvector Postgres ready on 127.0.0.1:{port}")
     return dsn
 
 
@@ -822,7 +828,7 @@ def _preflight_pg(cfg):
             print("[memnos] auto-starting embedded PostgreSQL ...")
             try:
                 _start_embedded_pg(state)
-                _wait_dsn(f"postgresql://memnos@localhost:{state['port']}/memnos")
+                _wait_dsn(f"postgresql://memnos@127.0.0.1:{state['port']}/memnos")   # see 127.0.0.1 note above
             except Exception as e:
                 sys.exit(f"Failed to start embedded PostgreSQL: {e}\n"
                          f"  Check: {os.path.join(EMBEDDED_PG_HOME, 'pg.log')}\n"
@@ -979,7 +985,7 @@ def _wait_for_boot_or_die(proc, url, on_fail=None):
         if proc.poll() is not None:
             tail = ""
             try:
-                tail = "".join(open(LOG_PATH).readlines()[-12:])
+                tail = "".join(open(LOG_PATH, encoding="utf-8").readlines()[-12:])
             except Exception:
                 pass
             if on_fail:
@@ -990,7 +996,7 @@ def _wait_for_boot_or_die(proc, url, on_fail=None):
             print(f"    models (~1 GB), which can take a few minutes. Watching {LOG_PATH}:")
         if i >= 4:                            # surface log progress so it never looks hung
             try:
-                cur = open(LOG_PATH).readlines()[-1].replace("\r", " ").strip()
+                cur = open(LOG_PATH, encoding="utf-8").readlines()[-1].replace("\r", " ").strip()
                 if cur and cur != last_line:
                     print(f"    · {cur[:110]}")
                     last_line = cur
@@ -1012,10 +1018,10 @@ def _serve_background(port):
     exe = shutil.which("memnos")
     cmd = ([exe, "serve"] if exe else [sys.executable, os.path.abspath(__file__), "serve"]) + ["--port", str(port)]
     _rotate_log()
-    log = open(LOG_PATH, "a")
+    log = open(LOG_PATH, "a", encoding="utf-8")
     proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                             start_new_session=True, env=dict(os.environ))
-    with open(PID_PATH, "w") as f:
+    with open(PID_PATH, "w", encoding="utf-8") as f:
         f.write(str(proc.pid))
     print(f"[memnos] starting server in the background (pid {proc.pid}) ...")
     _wait_for_boot_or_die(proc, url)
@@ -1040,10 +1046,10 @@ def _start_gateway_background(port):
     exe = shutil.which("memnos")
     cmd = ([exe, "gateway"] if exe else [sys.executable, os.path.abspath(__file__), "gateway"]) + ["--port", str(port)]
     _rotate_log()
-    log = open(LOG_PATH, "a")
+    log = open(LOG_PATH, "a", encoding="utf-8")
     proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                             start_new_session=True, env=dict(os.environ))
-    with open(PID_PATH, "w") as f:
+    with open(PID_PATH, "w", encoding="utf-8") as f:
         f.write(str(proc.pid))
     print(f"[memnos] starting server (zero-downtime gateway mode) in the background (pid {proc.pid}) ...")
     _wait_for_boot_or_die(proc, url, on_fail=_clear_gateway_state)
@@ -1081,7 +1087,7 @@ def _gateway_state():
     """Read GATEWAY_STATE_PATH. Returns the dict, or None if absent/unreadable — the
     normal, expected shape for a classic (pre-Layer-2 or legacy-mode) install."""
     try:
-        with open(GATEWAY_STATE_PATH) as f:
+        with open(GATEWAY_STATE_PATH, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return None
@@ -1300,7 +1306,7 @@ def _pidfile_pid():
     if not os.path.exists(PID_PATH):
         return ("none", None)
     try:
-        pid = int(open(PID_PATH).read().strip())
+        pid = int(open(PID_PATH, encoding="utf-8").read().strip())
     except (ValueError, OSError):
         return ("dead", None)
     return ("alive", pid) if _pid_alive(pid) else ("dead", pid)
@@ -1469,7 +1475,7 @@ def cmd_autostart(args, cfg):
     def _plist(label, prog_args, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         argxml = "".join(f"<string>{a}</string>" for a in prog_args)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -1512,7 +1518,7 @@ def cmd_autostart(args, cfg):
     elif sys.platform.startswith("linux"):
         def _unit(name, desc, cmdline, path):
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(f"[Unit]\nDescription={desc}\nAfter=network.target\n\n"
                         f"[Service]\nExecStart={cmdline}\nRestart=always\nRestartSec=10\n"
                         f"StandardOutput=append:{LOG_PATH}\nStandardError=append:{LOG_PATH}\n\n"
@@ -1555,7 +1561,7 @@ def _stop_quiet():
         return None
     pid = None
     try:
-        pid = int(open(PID_PATH).read().strip())
+        pid = int(open(PID_PATH, encoding="utf-8").read().strip())
         os.kill(pid, signal.SIGTERM)
     except (ProcessLookupError, ValueError):
         pid = None
@@ -1666,7 +1672,7 @@ def _refresh_integrations():
     home = os.path.expanduser("~")
     sj = os.path.join(home, ".claude", "settings.json")
     try:
-        if os.path.exists(sj) and "memnos hook" in open(sj).read():
+        if os.path.exists(sj) and "memnos hook" in open(sj, encoding="utf-8").read():
             print("  refreshing Claude Code wiring (hooks/MCP/skill may have changed) ...")
             r = subprocess.run([exe, "agent-setup", "claude-code"], capture_output=True, text=True)
             print("  ✓ Claude Code re-wired" if r.returncode == 0 else
@@ -1677,7 +1683,7 @@ def _refresh_integrations():
     cd = os.path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json") \
         if sys.platform == "darwin" else os.path.join(home, ".config", "Claude", "claude_desktop_config.json")
     try:
-        if os.path.exists(cd) and "memnos" in open(cd).read():
+        if os.path.exists(cd) and "memnos" in open(cd, encoding="utf-8").read():
             print("  tip: refresh the Desktop skill too:  memnos agent-setup claude-desktop")
     except Exception:
         pass
@@ -2065,7 +2071,7 @@ def cmd_constraint_ls(args, cfg):
                   "then start a new Claude Code session for these to actually enforce")
             continue
         try:
-            with open(cache_path) as f:
+            with open(cache_path, encoding="utf-8") as f:
                 cached_ids = {rr["id"] for rr in json.load(f).get("rules", [])}
         except Exception:
             cached_ids = set()
@@ -2882,7 +2888,7 @@ def cmd_claude_setup(args, cfg):
     # 1. MCP server -> ~/.claude.json (the file Claude Code reads for MCP)
     cj = os.path.join(home, ".claude.json")
     try:
-        d = json.load(open(cj)) if os.path.exists(cj) else {}
+        d = json.load(open(cj, encoding="utf-8")) if os.path.exists(cj) else {}
     except Exception:
         d = {}
     if getattr(args, "transport", "stdio") == "http":
@@ -2898,12 +2904,12 @@ def cmd_claude_setup(args, cfg):
         d.setdefault("mcpServers", {})["memnos"] = {
             "command": cmd, "args": cargs,
             "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns}}
-    _backup(cj); json.dump(d, open(cj, "w"), indent=2)
+    _backup(cj); json.dump(d, open(cj, "w", encoding="utf-8"), indent=2)
 
     # 2. hooks -> ~/.claude/settings.json (recall before prompt, remember after)
     sj = os.path.join(claude_dir, "settings.json")
     try:
-        s = json.load(open(sj)) if os.path.exists(sj) else {}
+        s = json.load(open(sj, encoding="utf-8")) if os.path.exists(sj) else {}
     except Exception:
         s = {}
     hooks = s.setdefault("hooks", {})
@@ -2940,21 +2946,24 @@ def cmd_claude_setup(args, cfg):
             enforce_wired = True
     except Exception:
         pass
-    _backup(sj); json.dump(s, open(sj, "w"), indent=2)
+    _backup(sj); json.dump(s, open(sj, "w", encoding="utf-8"), indent=2)
 
     # 3. /memnos slash command — bake in URL/token inline (issue #27: the slash command must
     # never depend on config.json's admin_token fallback, which field reports show can go
     # blank across a token rotation/reinstall).
+    # encoding="utf-8" everywhere below: these templates are full of Unicode (—, ·, …, →) and
+    # Windows' open()/read()/write() default to the system codepage (cp1252), not UTF-8 —
+    # confirmed live to crash with UnicodeEncodeError during install on a real Windows machine.
     rendered_slash_cmd = _SLASH_CMD.replace("__MEMNOS_URL__", url).replace("__MEMNOS_TOKEN__", token)
-    open(os.path.join(claude_dir, "commands", "memnos.md"), "w").write(rendered_slash_cmd)
+    open(os.path.join(claude_dir, "commands", "memnos.md"), "w", encoding="utf-8").write(rendered_slash_cmd)
 
     # 4. CLAUDE.md memnos section (append once)
     cm = os.path.join(claude_dir, "CLAUDE.md")
-    existing = open(cm).read() if os.path.exists(cm) else ""
+    existing = open(cm, encoding="utf-8").read() if os.path.exists(cm) else ""
     if "## memnos — long-term memory" not in existing:
         if existing:
             _backup(cm)
-        with open(cm, "a") as f:
+        with open(cm, "a", encoding="utf-8") as f:
             f.write(("\n\n" if existing else "") + _CLAUDE_MD)
 
     print("[memnos] Claude Code wired:")
@@ -3140,7 +3149,7 @@ def _install_hermes_native_plugin(url: str, token: str, ns: str) -> None:
     # Write plugin config.json (token stays 0600)
     cfg_path = os.path.join(hermes_plugins_dir, "config.json")
     cfg_data = {"url": url, "token": token, "namespace": ns}
-    with open(cfg_path, "w") as f:
+    with open(cfg_path, "w", encoding="utf-8") as f:
         json.dump(cfg_data, f, indent=2)
     os.chmod(cfg_path, 0o600)
     print(f"  • plugin config  -> {cfg_path}")
@@ -3181,7 +3190,7 @@ def cmd_omnigent_setup(args, cfg):
                       "         Run `omnigent` once to initialize, or pass:\n"
                       "         memnos agent-setup omnigent --agent-dir <path-to-config.yaml-or-dir>")
         try:
-            omni_cfg = _yaml.safe_load(open(omni_cfg_path)) or {}
+            omni_cfg = _yaml.safe_load(open(omni_cfg_path, encoding="utf-8")) or {}
         except Exception as e:
             sys.exit(f"omnigent: failed to parse {omni_cfg_path}: {e}")
         target = omni_cfg.get("default_agent")
@@ -3195,7 +3204,7 @@ def cmd_omnigent_setup(args, cfg):
         sys.exit(f"omnigent: agent config not found at {config_path}")
 
     try:
-        spec = _yaml.safe_load(open(config_path)) or {}
+        spec = _yaml.safe_load(open(config_path, encoding="utf-8")) or {}
     except Exception as e:
         sys.exit(f"omnigent: failed to parse {config_path}: {e}")
     if not isinstance(spec, dict):
@@ -3234,7 +3243,7 @@ def cmd_omnigent_setup(args, cfg):
     spec["tools"] = tools
 
     _backup(config_path)
-    with open(config_path, "w") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         _yaml.safe_dump(spec, f, sort_keys=False, default_flow_style=False)
 
     print(f"[memnos] omnigent wired -> {config_path} (MCP server 'memnos', ns={ns}).")
@@ -3581,7 +3590,7 @@ def cmd_server_setup_omnigent(args, cfg):
     print(ctx, end="")
 
     try:
-        spec = _yaml.safe_load(open(config_path)) if os.path.exists(config_path) else {}
+        spec = _yaml.safe_load(open(config_path, encoding="utf-8")) if os.path.exists(config_path) else {}
     except Exception as e:
         sys.exit(f"server-setup omnigent: failed to parse {config_path}: {e}")
     if spec is None:
@@ -3665,7 +3674,7 @@ def cmd_server_setup_omnigent(args, cfg):
     # often world-readable" per the docstring above, and a hosted/Docker `omnigent server`
     # may run as a different user than whoever ran this command) down to owner-only on
     # every single run. Preserve the pre-existing file's mode, or fall back to the normal
-    # umask-derived default for a brand-new file (matching what `open(path, "w")` would
+    # umask-derived default for a brand-new file (matching what `open(path, "w", encoding="utf-8")` would
     # have created), so permissions never change as a side effect of this atomicity fix.
     if os.path.exists(config_path):
         prior_mode = os.stat(config_path).st_mode & 0o777
@@ -3810,18 +3819,18 @@ def cmd_agent_setup(args, cfg):
 
     if spec["fmt"] == "json":
         try:
-            d = json.load(open(path)) if os.path.exists(path) else {}
+            d = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
         except Exception:
             d = {}
         node = d
         for k in spec.get("key", ("mcpServers",)):
             node = node.setdefault(k, {})
         node["memnos"] = entry
-        _backup(path); json.dump(d, open(path, "w"), indent=2)
+        _backup(path); json.dump(d, open(path, "w", encoding="utf-8"), indent=2)
     elif spec["fmt"] == "yaml":
         import yaml
         try:
-            d = yaml.safe_load(open(path)) if os.path.exists(path) else {}
+            d = yaml.safe_load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
             d = d if isinstance(d, dict) else {}
         except Exception:
             d = {}
@@ -3830,10 +3839,10 @@ def cmd_agent_setup(args, cfg):
             node = node.setdefault(k, {})
         node["memnos"] = entry
         _backup(path)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(d, f, sort_keys=False, default_flow_style=False)
     else:  # toml (codex)
-        existing = open(path).read() if os.path.exists(path) else ""
+        existing = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
         targs = ", ".join(f'"{a}"' for a in cargs)
         block = (f'\n[mcp_servers.memnos]\ncommand = "{cmd}"\nargs = [{targs}]\n\n'
                  f'[mcp_servers.memnos.env]\nMEMNOS_URL = "{url}"\n'
@@ -3842,14 +3851,14 @@ def cmd_agent_setup(args, cfg):
             print(f"[memnos] {args.agent}: MCP entry already present in {spec['path']} (left as-is).")
         else:
             _backup(path)
-            with open(path, "a") as f:
+            with open(path, "a", encoding="utf-8") as f:
                 f.write(("\n" if existing and not existing.endswith("\n") else "") + block)
         am = os.path.expanduser(spec["agents_md"])
-        cur = open(am).read() if os.path.exists(am) else ""
+        cur = open(am, encoding="utf-8").read() if os.path.exists(am) else ""
         if "## memnos — long-term memory" not in cur:
             if cur:
                 _backup(am)
-            with open(am, "a") as f:
+            with open(am, "a", encoding="utf-8") as f:
                 f.write(("\n\n" if cur else "") + _AGENT_MD)
 
     print(f"[memnos] {args.agent} wired -> {spec['path']} (MCP server 'memnos', ns={ns}).")
@@ -3865,7 +3874,7 @@ def cmd_agent_setup(args, cfg):
         # occasional. Write it where the user can add it via Customize → Skills → "+".
         sk_dir = os.path.join(CONFIG_DIR, "claude-desktop-skill")
         os.makedirs(sk_dir, exist_ok=True)
-        with open(os.path.join(sk_dir, "SKILL.md"), "w") as f:
+        with open(os.path.join(sk_dir, "SKILL.md"), "w", encoding="utf-8") as f:
             f.write(_DESKTOP_SKILL)
         print(f"  • memory skill   -> {sk_dir}/SKILL.md")
         print("    Recommended: open Claude Desktop → Customize → Skills → '+' and add that")
@@ -3928,7 +3937,7 @@ def _refresh_enforce_cache(cfg, ns):
                        for r in rows]}
     path = _enforce_cache_path(ns)
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f)
     os.replace(tmp, path)   # atomic — a concurrently-firing PreToolUse hook never sees a partial write
     return len(rows)
@@ -3958,7 +3967,7 @@ def _record_capture(event, reason=None):
     Concurrency (real exposure: ~28 Claude Code sessions on one machine can each fire
     this near-simultaneously): a UNIQUE mkstemp name per writer, not a fixed `.tmp`
     suffix like _refresh_enforce_cache above uses — that fixed name let one process's
-    in-flight temp file be truncated by another's concurrent `open(tmp, "w")`, so
+    in-flight temp file be truncated by another's concurrent `open(tmp, "w", encoding="utf-8")`, so
     os.replace could publish a torn/empty file, which the NEXT reader's
     JSONDecodeError fallback then silently reset to a fresh, empty counter set
     (verified under real concurrent load in review — not just a theoretical race).
@@ -3973,7 +3982,7 @@ def _record_capture(event, reason=None):
     try:
         from datetime import datetime, timezone
         try:
-            with open(CAPTURE_STATS_PATH) as f:
+            with open(CAPTURE_STATS_PATH, encoding="utf-8") as f:
                 stats = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             stats = {}
@@ -4018,7 +4027,7 @@ def cmd_hook_stats(args, cfg):
         print("hook capture stats reset")
         return
     try:
-        with open(CAPTURE_STATS_PATH) as f:
+        with open(CAPTURE_STATS_PATH, encoding="utf-8") as f:
             stats = json.load(f)
         if not isinstance(stats, dict):
             raise ValueError("stats file is not a JSON object")
@@ -4087,7 +4096,7 @@ def cmd_hook(args, cfg):
         # apply (a real gap in an earlier version of this hook, caught in review).
         enforce_ns = nsresolve.resolve()
         try:
-            with open(_enforce_cache_path(enforce_ns)) as f:
+            with open(_enforce_cache_path(enforce_ns), encoding="utf-8") as f:
                 cache = json.load(f)
             rules = cache.get("rules", [])
         except Exception:
@@ -4207,7 +4216,7 @@ def cmd_hook(args, cfg):
         # needing to think to ask — the whole point being fixed here is that a real
         # capture gap went unnoticed until a user happened to question it directly.
         try:
-            with open(CAPTURE_STATS_PATH) as f:
+            with open(CAPTURE_STATS_PATH, encoding="utf-8") as f:
                 _cs = json.load(f)
             if not isinstance(_cs, dict):
                 raise ValueError("stats file is not a JSON object")
@@ -4283,7 +4292,7 @@ def cmd_hook(args, cfg):
                 try:
                     notify_stale = (not os.path.exists(marker)) or (time.time() - os.path.getmtime(marker) > 600)
                     if notify_stale:
-                        open(marker, "w").close()
+                        open(marker, "w", encoding="utf-8").close()
                         print(json.dumps({"systemMessage":
                             f"memnos: memory server unreachable/unhealthy at {url} — recall/auto-save "
                             "are OFF for now. Check `memnos status`; start with `memnos start`, or "
@@ -4345,7 +4354,7 @@ def cmd_hook(args, cfg):
         try:
             last = ""
             saw_user_event = False
-            with open(tp) as f:
+            with open(tp, encoding="utf-8") as f:
                 for line in f:
                     ev = json.loads(line); c = ev.get("message", {}).get("content")
                     if ev.get("type") == "user" and ev.get("isMeta"):
