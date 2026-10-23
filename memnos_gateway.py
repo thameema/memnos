@@ -429,16 +429,23 @@ def _watchdog_loop(stop_evt):
                       "meantime — deferring to it.", flush=True)
             elif ok:
                 _current_port, _current_proc = new_port, new_proc
-                _kill(proc)
                 healed = True
                 consecutive_heal_failures = 0
                 last_heal_ok_at = time.monotonic()
+                # Recorded BEFORE `_kill(proc)` below, deliberately: cleanup of the old
+                # (dead/wedged) process can itself take up to KILL_GRACE_S (a wedged
+                # process doesn't always react to SIGTERM promptly) — the heal is already
+                # complete the instant the swap above happens (a healthy backend is live
+                # and serving), so an external poller of /__gateway__/status must see
+                # `heal_count` reflect that immediately, not lag behind however long this
+                # unrelated cleanup step happens to take.
                 with _heal_lock:
                     _heal_stats["heal_count"] += 1
                     _heal_stats["last_heal_at"] = time.time()
                     _heal_stats["consecutive_heal_failures"] = 0
                 print(f"[memnos-gateway] WATCHDOG: healed — new backend pid {new_proc.pid} "
                       f"on internal port {new_port} is live.", flush=True)
+                _kill(proc)
             else:
                 _kill(new_proc)
                 consecutive_heal_failures += 1
