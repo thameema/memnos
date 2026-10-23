@@ -11,21 +11,21 @@
   </script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>memnos — shared memory for your team's AI coding agents | self-hosted, governed</title>
-  <meta name="description" content="Your AI agents each start from zero. memnos gives them one shared, governed memory on your own PostgreSQL — what one agent learns, every agent knows: attributed, audited, no LLM at query time. For engineering teams on Claude Code, Codex and Cursor, agent builders (LangChain/LangGraph), and regulated enterprises." />
+  <title>memnos — a persistent memory for AI agents | self-hosted, open source</title>
+  <meta name="description" content="Your AI forgets everything between sessions. memnos fixes that — a real, persistent memory for Claude, Cursor, and any AI agent, so it remembers who you are and what you told it. Self-hosted on your own PostgreSQL, fully open source, no LLM required to recall. Works just as well for one person or a whole engineering team sharing one memory." />
   <meta name="keywords" content="persistent memory AI agents, LLM memory, MCP server, Claude Code memory, Cursor AI memory, agent context persistence, memory store AI, RAG memory, memnos, AI agent SDK, shared agent memory, team memory for AI, Codex memory, Claude Code memory, multi-agent memory, LangChain memory backend, self-hosted AI memory, governed AI memory" />
   <link rel="canonical" href="https://memnos.net/" />
   <!-- Open Graph -->
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://memnos.net/" />
-  <meta property="og:title" content="memnos — shared memory for your team's AI coding agents" />
-  <meta property="og:description" content="One shared, governed memory for Claude Code, Codex and Cursor — self-hosted on your own PostgreSQL, no LLM at query time. MCP server + REST API + CLI." />
+  <meta property="og:title" content="memnos — a persistent memory for AI agents" />
+  <meta property="og:description" content="Your AI forgets everything between sessions. memnos fixes that — self-hosted on your own PostgreSQL, fully open source, no LLM required to recall." />
   <meta property="og:image" content="https://memnos.net/og-image.png" />
   <meta property="og:site_name" content="memnos" />
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="memnos — shared memory for your team's AI coding agents" />
-  <meta name="twitter:description" content="One shared, governed memory for Claude Code, Codex and Cursor — self-hosted on your own PostgreSQL, no LLM at query time. MCP server + REST API + CLI." />
+  <meta name="twitter:title" content="memnos — a persistent memory for AI agents" />
+  <meta name="twitter:description" content="Your AI forgets everything between sessions. memnos fixes that — self-hosted on your own PostgreSQL, fully open source, no LLM required to recall." />
   <meta name="twitter:image" content="https://memnos.net/og-image.png" />
   <!-- Structured data -->
   <script type="application/ld+json">
@@ -33,7 +33,7 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "memnos",
-    "description": "Shared, governed memory for AI coding agents and agent frameworks — one PostgreSQL, no LLM at query time. Works with Claude Code, Codex, Cursor, LangChain/LangGraph and any base-URL agent.",
+    "description": "A persistent memory for AI agents — so they remember who you are and what you told them, across every session. Self-hosted on your own PostgreSQL, fully open source, no LLM required to recall. Works with Claude Code, Codex, Cursor, LangChain/LangGraph and any base-URL agent.",
     "url": "https://memnos.net",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Linux, macOS, Windows",
@@ -199,14 +199,14 @@
         Apache-2.0 · Self-hostable · Works with Claude Code, Codex, Cursor &amp; any base-URL agent
       </div>
       <h1 class="hero-display text-5xl md:text-6xl font-bold text-white leading-[1.05] mb-6">
-        Your AI remembers your repo.<br />
-        <span class="gradient-text">memnos remembers your team.</span>
+        Your AI forgets everything.<br />
+        <span class="gradient-text">memnos makes sure it doesn&rsquo;t.</span>
       </h1>
       <p class="text-gray-400 text-lg leading-relaxed mb-6 max-w-lg">
-        Every AI coding agent keeps its own memory — one per tool, per developer, per session. memnos is the shared, governed layer across all of them: what one agent learns, every agent knows — attributed to who learned it, audited, on your own PostgreSQL.
+        memnos gives AI agents a real memory — so Claude, Cursor, or any agent you use remembers who you are, what you decided, and what you told it, across every session. No more re-explaining yourself to a blank slate.
       </p>
       <p class="text-gray-300 text-base leading-relaxed mb-8 max-w-lg">
-        <span class="text-white font-semibold">How we're different:</span> memnos captures <span class="text-white">deterministically</span> through Claude Code hooks and the capture proxy — not the model&rsquo;s discretion (and if the server is down, turns are queued and replayed automatically) — runs <span class="text-white">no LLM at query time</span>, and is fully governed and audited. And we publish <span class="text-white">honest, judge-transparent</span> benchmarks: the full judge band, per-question predictions in the repo.
+        It runs <span class="text-white font-semibold">on your own PostgreSQL</span>, fully open source, with <span class="text-white font-semibold">no LLM required to recall</span> — and it works the same way whether it&rsquo;s just you, or a whole team sharing one memory.
       </p>
       <div class="flex flex-wrap items-center gap-3">
         <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white font-semibold px-6 py-3 rounded-full text-sm whitespace-nowrap">Deploy free</a>
@@ -214,7 +214,7 @@
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
           View on GitHub
         </a>
-        <a href="compare.html" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-6 py-3 rounded-full whitespace-nowrap">How we're different</a>
+        <a href="#how-it-works" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-6 py-3 rounded-full whitespace-nowrap">See how it works</a>
       </div>
       <!-- Stats row -->
       <div class="mt-14 grid grid-cols-2 gap-x-8 gap-y-6 border-t border-gray-800 pt-8">
@@ -406,35 +406,35 @@
   </div>
 </section>
 
-<!-- ── WHY ANOTHER MEMORY SYSTEM ────────────────────────────────────── -->
+<!-- ── WHAT MEMNOS GIVES YOU ────────────────────────────────────────── -->
 <section id="why-memnos" class="relative z-10 py-14 fade-in">
   <div class="max-w-6xl mx-auto px-6">
     <div class="text-center mb-12">
-      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">The empty seat</span>
-      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Why another memory system?</h2>
-      <p class="text-gray-400 max-w-2xl mx-auto">Fair question — there are good ones. But look at what each actually ships, as of June 2026:</p>
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">What you get</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Memory you can actually trust</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Four things memnos ships together, in the free, open-source tier — no paywall between you and any of it.</p>
     </div>
     <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-5 mb-10">
       <div class="glass rounded-2xl p-6">
-        <h3 class="text-white font-semibold mb-2">Zep</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">A polished temporal knowledge graph — as a hosted cloud product. Its open engine (Graphiti) requires a separate graph database, and conflict resolution is LLM-driven.</p>
+        <h3 class="text-white font-semibold mb-2">Fully open engine</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Every line that touches your data is readable, auditable source — Apache-2.0, not a black box behind an API.</p>
       </div>
       <div class="glass rounded-2xl p-6">
-        <h3 class="text-white font-semibold mb-2">Mem0</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Genuinely open source, with the biggest community. But an LLM decides what to add, update or delete at write time, and governance — ACL, audit, vault — isn&rsquo;t part of the package.</p>
+        <h3 class="text-white font-semibold mb-2">Governed by default</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Token auth, namespace ACLs, a full audit log, a cost ledger, and an encrypted secret vault — shipped in the free tier, not a paid add-on.</p>
       </div>
       <div class="glass rounded-2xl p-6">
-        <h3 class="text-white font-semibold mb-2">Letta</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">An agent <em>runtime</em> — capture is complete inside it, but it can&rsquo;t add memory to the tools you already use: Claude Code, Claude Desktop, Cursor stay outside.</p>
+        <h3 class="text-white font-semibold mb-2">Your own PostgreSQL</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Runs on the database your org already operates, backs up, and has compliance sign-off on. No second store to secure.</p>
       </div>
       <div class="glass rounded-2xl p-6">
-        <h3 class="text-white font-semibold mb-2">Supermemory</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Great DX and connectors — but the engine&rsquo;s source is unpublished, local mode is a closed binary with a single API key, and governance starts at paid tiers.</p>
+        <h3 class="text-white font-semibold mb-2">No LLM at query time</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Recall is deterministic — hybrid search plus a local rerank — not a model guessing what you meant.</p>
       </div>
     </div>
     <div class="gradient-border">
       <div class="gradient-border-inner px-8 py-6 rounded-2xl">
-        <p class="text-gray-300 text-sm leading-relaxed text-center">Nobody in that list ships all three of: <strong class="text-white">a fully open engine</strong> (read every line that touches your data), <strong class="text-white">governance by default in the free tier</strong> (token auth, namespace ACL, audit log, cost ledger, encrypted vault, ingest redaction), and <strong class="text-white">running on your own PostgreSQL</strong> — the database your org already operates, backs up, and has compliance sign-off on. memnos is that combination: memory you can audit, govern, and run on your own Postgres. <a href="compare.html" class="text-purple-400 hover:text-purple-300 underline underline-offset-2">See the full comparison &rarr;</a></p>
+        <p class="text-gray-300 text-sm leading-relaxed text-center">memnos is that combination: memory you can read, audit, govern, and run on infrastructure you already trust. Curious how it stacks up against Zep, Mem0, and others? <a href="compare.html" class="text-purple-400 hover:text-purple-300 underline underline-offset-2">See the full comparison &rarr;</a></p>
       </div>
     </div>
   </div>
@@ -751,86 +751,6 @@
           </div>
         </div>
       </div>
-    </div>
-  </div>
-</section>
-
-<!-- ── COMPARISON TEASER ──────────────────────────────────────────────── -->
-<section class="relative z-10 py-14 fade-in">
-  <div class="max-w-6xl mx-auto px-6">
-    <div class="text-center mb-12">
-      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Comparison</span>
-      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Not just another memory layer</h2>
-      <p class="text-gray-400 max-w-lg mx-auto">memnos is the only memory tool built for multi-agent engineering teams — with memory policies, temporal queries, and architecture enforcement no other tool has.</p>
-    </div>
-    <div class="glass rounded-2xl overflow-hidden mb-8">
-      <div class="overflow-x-auto">
-        <table class="w-full compare-table">
-          <thead>
-            <tr>
-              <th class="text-left">Capability</th>
-              <th>memnos</th>
-              <th>mem0</th>
-              <th>Zep</th>
-              <th>Obsidian+Claude</th>
-              <th>ChatGPT Memory</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Multi-agent shared memory</td>
-              <td><span class="check-green">&#10003;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-yellow">~</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-            </tr>
-            <tr>
-              <td>Temporal memory (as_of queries)</td>
-              <td><span class="check-green">&#10003;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-            </tr>
-            <tr>
-              <td>Architecture enforcement</td>
-              <td><span class="check-green">&#10003;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-            </tr>
-            <tr>
-              <td>Complete audit trail</td>
-              <td><span class="check-green">&#10003;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-            </tr>
-            <tr>
-              <td>Self-hostable, 100% local</td>
-              <td><span class="check-green">&#10003;</span></td>
-              <td><span class="check-green">&#10003;</span></td>
-              <td><span class="check-yellow">~</span></td>
-              <td><span class="check-green">&#10003;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-            </tr>
-            <tr>
-              <td>Secret vault</td>
-              <td><span class="check-green">&#10003;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-              <td><span class="check-red">&#10007;</span></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-    <div class="text-center">
-      <a href="compare.html" class="text-sm text-purple-400 hover:text-purple-300 transition-colors font-medium">Full comparison &rarr;</a>
     </div>
   </div>
 </section>
