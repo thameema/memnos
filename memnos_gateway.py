@@ -60,6 +60,15 @@ and there is no other long-lived streaming endpoint in this codebase), so buffer
 full response before relaying (rather than a byte-by-byte streaming relay) is safe and
 keeps this at parity with the established `_forward_mcp` pattern instead of adding new
 streaming-proxy machinery this codebase doesn't otherwise need.
+
+Backend watchdog (steady-state, not an upgrade): everything above only replaces a backend
+when something explicitly asks for a rolling upgrade. A backend that just dies on its own
+— OOM-killed, a crash, a wedge — used to leave this gateway happily squatting the public
+port forever, 502ing every request, for as long as the box stayed up (a real incident: 15
+days). `_watchdog_loop` runs for this process's whole life watching for exactly that and
+self-heals it (or, after repeated failed heals, exits so the port is freed and a service
+manager's own restart-on-failure can take over) — see that function's docstring for the
+full design.
 """
 import json
 import os
@@ -91,6 +100,18 @@ READY_TIMEOUT_S = float(os.environ.get("MEMNOS_GATEWAY_READY_TIMEOUT_S", "300"))
 DRAIN_TIMEOUT_S = float(os.environ.get("MEMNOS_GATEWAY_DRAIN_TIMEOUT_S", "30"))
 KILL_GRACE_S = float(os.environ.get("MEMNOS_GATEWAY_KILL_GRACE_S", "10"))
 
+# Backend watchdog — detects a LIVE gateway proxying to a DEAD/wedged backend during
+# normal (non-upgrade) operation and self-heals it. See `_watchdog_loop` docstring for the
+# incident this closes: a backend OOM-killed outside any rolling upgrade used to leave the
+# gateway squatting the public port forever, every request 502ing, until a human noticed.
+WATCHDOG_INTERVAL_S = float(os.environ.get("MEMNOS_GATEWAY_WATCHDOG_INTERVAL_S", "10"))
+WATCHDOG_HEALTHCHECK_TIMEOUT_S = float(
+    os.environ.get("MEMNOS_GATEWAY_WATCHDOG_HEALTHCHECK_TIMEOUT_S", "5"))
+WATCHDOG_MISS_THRESHOLD = int(os.environ.get("MEMNOS_GATEWAY_WATCHDOG_MISS_THRESHOLD", "3"))
+WATCHDOG_MAX_HEAL_ATTEMPTS = int(os.environ.get("MEMNOS_GATEWAY_WATCHDOG_MAX_HEAL_ATTEMPTS", "3"))
+WATCHDOG_HEAL_BACKOFF_S = float(os.environ.get("MEMNOS_GATEWAY_WATCHDOG_HEAL_BACKOFF_S", "15"))
+WATCHDOG_STABLE_S = float(os.environ.get("MEMNOS_GATEWAY_WATCHDOG_STABLE_S", "60"))
+
 # ---- process-wide state (this module IS the long-lived gateway process) -------------
 _public_port = None
 _control_token = None
@@ -99,6 +120,14 @@ _current_proc = None            # its subprocess.Popen handle
 
 _inflight = {}                  # internal_port -> in-flight request count
 _inflight_lock = threading.Lock()
+
+_heal_stats = {"heal_count": 0, "consecutive_heal_failures": 0, "last_heal_at": None}
+_heal_lock = threading.Lock()
+_watchdog_gave_up = False       # set just before the watchdog calls stop_evt.set() to give
+                                 # up — tells run()'s shutdown path to sys.exit(1) instead of
+                                 # 0, so autostart's restart-on-failure (and its own throttle)
+                                 # takes over rather than this leaving nothing listening and
+                                 # nothing retrying.
 
 _upgrade_lock = threading.Lock()
 _upgrade_state = {"status": "idle"}   # snapshot exposed via /__gateway__/status
@@ -274,6 +303,169 @@ def _kill(proc, grace=None):
         pass
 
 
+def _backend_healthy(port, timeout):
+    """Single /healthz probe against an internal backend port. Deliberately /healthz, not
+    /readyz: /readyz also gates on HNSW-warm proof (issues #59/#31/#12), which a backend
+    can legitimately fail transiently right after ITS OWN restart (mid-rewarm) without
+    being dead — the watchdog must not treat normal rewarm as a crash. /healthz is the
+    bare liveness signal: a refused connection, a timeout, a non-200, or ok != true all
+    mean the process is gone or wedged, which is the only thing this is trying to catch."""
+    try:
+        r = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=timeout)
+        return r.status_code == 200 and r.json().get("ok") is True
+    except Exception:
+        return False
+
+
+def _watchdog_loop(stop_evt):
+    """Background thread, runs for the gateway's whole life: detects a LIVE gateway
+    proxying to a DEAD or wedged backend during normal (non-upgrade) steady-state
+    operation, and self-heals it. `_run_rolling_upgrade` only runs when something
+    explicitly asks for an upgrade — nothing previously covered a backend that just dies
+    on its own (OOM-killed, an unhandled exception, swap-thrashed into a wedge). Without
+    this, the gateway keeps the public port bound and every request 502s forever for as
+    long as the box stays up — a real incident: a `memnos-gateway` process 15 days old,
+    its backend long dead, discovered only when a human happened to investigate.
+
+    Two independent death signals, checked every WATCHDOG_INTERVAL_S:
+      1. `proc.poll() is not None` — the process actually exited. Treated as an
+         IMMEDIATE miss (skips the debounce below) since a dead PID is unambiguous.
+      2. A `_backend_healthy` probe fails. Requires WATCHDOG_MISS_THRESHOLD CONSECUTIVE
+         failures before acting — catches a process that's alive but wedged (deadlocked,
+         or so badly swap-thrashed it never answers a socket) without one slow response
+         triggering a needless respawn.
+
+    Skips its tick entirely while a rolling upgrade is in progress (`_upgrade_state`) —
+    both this loop and `_run_rolling_upgrade` mutate `_current_port`/`_current_proc`, and
+    letting both run at once would race two replacement backends against each other. This
+    narrows, rather than eliminates, that race (the same trade-off `_wait_drain`'s
+    in-flight counting already makes elsewhere in this module): the upgrade-running check
+    happens again, right before the heal's own swap, to catch an upgrade that started
+    while a heal's `_wait_ready` was in flight — but an upgrade beginning in the single
+    tick between those two checks is not caught. Acceptable because a watchdog tick only
+    fires at all once the backend has already failed `_backend_healthy` or exited, which a
+    healthy backend mid-upgrade never does.
+
+    On a confirmed-dead backend: spawn a replacement exactly like a rolling upgrade would
+    (`_spawn_backend` + `_wait_ready`), then swap it in directly — no drain needed, since
+    the old backend is already gone and serving nothing. If the replacement ALSO fails to
+    become ready, back off WATCHDOG_HEAL_BACKOFF_S and retry. After
+    WATCHDOG_MAX_HEAL_ATTEMPTS CONSECUTIVE failed heals (the counter resets once a healed
+    backend survives WATCHDOG_STABLE_S), this gives up — repeated failures almost always
+    mean the underlying machine itself is the problem (e.g. critically memory-starved, as
+    in the originating incident), and spawning a 4th/5th/Nth backend into the same starved
+    box would just produce another corpse. Giving up sets `_watchdog_gave_up` and then
+    `stop_evt` so `run()`'s own shutdown path (httpd.shutdown → kill current proc →
+    clear state → sys.exit(1)) runs — this is deliberate: leaving the gateway alive,
+    holding the port, unable to ever serve again is the EXACT failure this closes, just
+    with better logs. Exiting frees the port (so a concurrent `memnos start` doesn't hang
+    on it) and makes `memnos status` tell the truth (`not running`); a service manager's
+    own autostart (if installed) then retries with ITS OWN throttle, same as any other
+    crash."""
+    global _current_port, _current_proc, _watchdog_gave_up
+    consecutive_misses = 0
+    consecutive_heal_failures = 0
+    last_heal_ok_at = None
+    while not stop_evt.wait(WATCHDOG_INTERVAL_S):
+        with _upgrade_lock:
+            upgrade_running = _upgrade_state.get("status") == "running"
+        if upgrade_running:
+            continue
+
+        port, proc = _current_port, _current_proc
+        if port is None or proc is None:
+            continue   # still booting — run() hasn't set these yet
+
+        proc_dead = proc.poll() is not None
+        if proc_dead:
+            consecutive_misses = WATCHDOG_MISS_THRESHOLD
+        elif _backend_healthy(port, WATCHDOG_HEALTHCHECK_TIMEOUT_S):
+            consecutive_misses = 0
+            if last_heal_ok_at is not None and \
+               time.monotonic() - last_heal_ok_at >= WATCHDOG_STABLE_S:
+                consecutive_heal_failures = 0
+                last_heal_ok_at = None
+            continue
+        else:
+            consecutive_misses += 1
+
+        if consecutive_misses < WATCHDOG_MISS_THRESHOLD:
+            continue
+        consecutive_misses = 0
+
+        reason = "process exited" if proc_dead else \
+            f"{WATCHDOG_MISS_THRESHOLD} consecutive /healthz failures"
+        print(f"[memnos-gateway] WATCHDOG: backend (pid {proc.pid}, port {port}) appears "
+              f"dead ({reason}) — attempting to heal ...", flush=True)
+
+        healed = False
+        try:
+            new_port = _pick_free_port()
+            new_proc = _spawn_backend(new_port)
+        except Exception as e:
+            consecutive_heal_failures += 1
+            print(f"[memnos-gateway] WATCHDOG: heal FAILED to spawn a replacement backend: "
+                  f"{type(e).__name__}: {e} ({consecutive_heal_failures}/"
+                  f"{WATCHDOG_MAX_HEAL_ATTEMPTS} consecutive heal failures).", flush=True)
+        else:
+            ok = _wait_ready(new_port, READY_TIMEOUT_S, new_proc)
+            with _upgrade_lock:
+                upgrade_running = _upgrade_state.get("status") == "running"
+            # Checking `upgrade_running` alone has a gap: an upgrade that started AND
+            # FINISHED entirely during this `_wait_ready` call reports status "done", not
+            # "running", by the time we get here — so that check alone would miss it, and
+            # this heal would then overwrite `_current_proc` with ITS OWN backend, silently
+            # orphaning the upgrade's (already live, already proven-healthy) one. The
+            # identity check is what actually matters: if `_current_proc` is no longer the
+            # SAME object this tick started with (`proc`), something else already replaced
+            # it — regardless of whether that something is still mid-flight or already done.
+            if ok and (upgrade_running or _current_proc is not proc):
+                # Something else (an upgrade, finished or in-flight) already replaced the
+                # backend this heal set out to replace — it owns _current_port/_current_proc
+                # now; drop our replacement rather than clobbering it.
+                _kill(new_proc)
+                print("[memnos-gateway] WATCHDOG: replacement backend ready, but the backend "
+                      "was already replaced by something else (a rolling upgrade?) in the "
+                      "meantime — deferring to it.", flush=True)
+            elif ok:
+                _current_port, _current_proc = new_port, new_proc
+                _kill(proc)
+                healed = True
+                consecutive_heal_failures = 0
+                last_heal_ok_at = time.monotonic()
+                with _heal_lock:
+                    _heal_stats["heal_count"] += 1
+                    _heal_stats["last_heal_at"] = time.time()
+                    _heal_stats["consecutive_heal_failures"] = 0
+                print(f"[memnos-gateway] WATCHDOG: healed — new backend pid {new_proc.pid} "
+                      f"on internal port {new_port} is live.", flush=True)
+            else:
+                _kill(new_proc)
+                consecutive_heal_failures += 1
+                print(f"[memnos-gateway] WATCHDOG: heal FAILED — replacement backend never "
+                      f"became ready within {READY_TIMEOUT_S:.0f}s ("
+                      f"{consecutive_heal_failures}/{WATCHDOG_MAX_HEAL_ATTEMPTS} consecutive "
+                      f"heal failures).", flush=True)
+
+        if healed:
+            continue
+
+        with _heal_lock:
+            _heal_stats["consecutive_heal_failures"] = consecutive_heal_failures
+
+        if consecutive_heal_failures >= WATCHDOG_MAX_HEAL_ATTEMPTS:
+            print(f"[memnos-gateway] WATCHDOG: giving up after {consecutive_heal_failures} "
+                  f"consecutive failed heal attempts — this usually means the underlying "
+                  f"machine can't currently run a backend at all (e.g. memory pressure), "
+                  f"not a transient blip. Shutting the gateway down (frees the port; "
+                  f"autostart, if installed, retries with its own backoff).", flush=True)
+            _watchdog_gave_up = True
+            stop_evt.set()
+            return
+
+        time.sleep(WATCHDOG_HEAL_BACKOFF_S)
+
+
 # ---- state file (how memnos_cli.py's `restart`/`upgrade` find this gateway later) ----
 def _write_state(state):
     os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -298,12 +490,15 @@ def _status_snapshot():
     proc = _current_proc
     with _upgrade_lock:
         upgrade = dict(_upgrade_state)
+    with _heal_lock:
+        heal = dict(_heal_stats)
     return {
         "public_port": _public_port,
         "current_backend_port": _current_port,
         "current_backend_pid": proc.pid if proc else None,
         "inflight": inflight,
         "upgrade": upgrade,
+        "watchdog": heal,
         "gateway_pid": os.getpid(),
     }
 
@@ -354,6 +549,27 @@ def _run_rolling_upgrade():
         print(f"[memnos-gateway] upgrade FAILED: new backend never became ready — killed it. "
               f"OLD backend (pid {old_proc.pid if old_proc else '?'}, port {old_port}) was NEVER "
               f"touched and is still serving all traffic. Nothing was swapped.", flush=True)
+        return
+
+    # The symmetric race to the one `_watchdog_loop` guards against: if the backend this
+    # upgrade set out to replace (`old_proc`) was ALREADY replaced by something else (the
+    # watchdog healing it) while `_wait_ready` above was in flight, `_current_proc` is no
+    # longer `old_proc` — flipping unconditionally here would clobber whatever's live now
+    # (already proven healthy) with this upgrade's own backend, orphaning it with nothing
+    # left pointing at it and nothing left to ever kill it. Defer instead: this upgrade's
+    # new backend was prewarmed against a target that no longer exists, so there is nothing
+    # correct left for it to do — kill it and report failure, touching neither `old_proc`
+    # (not this upgrade's to touch anymore) nor whatever `_current_proc` now actually is.
+    if _current_proc is not old_proc:
+        _kill(new_proc)
+        _set_upgrade(status="failed", phase="superseded",
+                     error="the backend this upgrade set out to replace was already replaced "
+                           "by something else (the watchdog?) while the new backend was "
+                           "prewarming — deferring to it; nothing was swapped.",
+                     finished_at=time.time())
+        print(f"[memnos-gateway] upgrade ABORTED: backend already replaced by something else "
+              f"while prewarming new backend (pid {new_proc.pid}) — killed it, deferring to "
+              f"whatever is live now.", flush=True)
         return
 
     # ---- the atomic flip: from this line on, every NEW request goes to new_port -------
@@ -494,6 +710,22 @@ class GatewayHandler(BaseHTTPRequestHandler):
             try:
                 r = httpx.request(method, url, content=body, headers=fwd_headers, timeout=120)
             except httpx.TransportError as e:
+                if self.path == "/healthz":
+                    # A bare 502 here was the confirmed-confusing signal in a real incident:
+                    # it looks like a generic proxy hiccup, not "this specific backend is
+                    # dead and self-healing is already in progress" — `/healthz` is a
+                    # liveness probe, so its failure response should say that plainly,
+                    # including the watchdog's own state (so a human — or a monitor —
+                    # doesn't need to separately hit /__gateway__/status to find out
+                    # whether anything is even trying to fix this).
+                    with _heal_lock:
+                        heal = dict(_heal_stats)
+                    return self._send_json(503, {
+                        "ok": False,
+                        "error": f"memnos gateway: backend unreachable ({type(e).__name__}) — "
+                                 "watchdog is monitoring and will attempt to heal it",
+                        "watchdog": heal,
+                    })
                 return self._send_json(502, {"error": f"memnos gateway: backend unreachable "
                                              f"({type(e).__name__})"})
             try:
@@ -585,12 +817,19 @@ def run(public_port):
     # thread's own call, so this is always safe here.
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
+
+    threading.Thread(target=_watchdog_loop, args=(stop_evt,),
+                     name="memnos-gateway-watchdog", daemon=True).start()
     stop_evt.wait()
 
     httpd.shutdown()
     if _current_proc is not None:
         _kill(_current_proc)
     _clear_state()
+    if _watchdog_gave_up:
+        print("[memnos-gateway] stopped (watchdog gave up after repeated backend heal "
+              "failures — see WATCHDOG lines above). Port is now free.", flush=True)
+        sys.exit(1)
     print("[memnos-gateway] stopped.", flush=True)
 
 
