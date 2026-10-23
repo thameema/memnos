@@ -11,10 +11,12 @@ no compiler, no Docker. This guide ranks the options honestly.
 
 ---
 
-## Fastest path (recommended): `--embedded` (zero dependencies)
+## Fastest path (the default): `--embedded` (zero dependencies)
 
 No Postgres install, no Docker, no compiler — `memnos` downloads a self-contained
 PostgreSQL 16 + pgvector binary and runs it as your user, listening on localhost only.
+This is what bare `memnos setup` does automatically now — `--embedded` is implied
+whenever no other mode is given.
 
 ```powershell
 # 1. install uv (Python package runner — installs to %USERPROFILE%\.local\bin)
@@ -25,16 +27,17 @@ uv tool install memnos
 memnos --help                  # verify the command resolves
 
 # 3. download + start embedded PostgreSQL 16 + pgvector, create the schema + admin token
-memnos setup --embedded
+memnos setup                   # same as `memnos setup --embedded`, spelled out
 
 # 4. start the server (background) — first start downloads local models (~1 GB)
 memnos start
 memnos status
 ```
 
-`memnos setup --embedded` downloads a ~20-30 MB archive into `%USERPROFILE%\.memnos\embedded_pg\`
+Bare `memnos setup` downloads a ~20-30 MB archive into `%USERPROFILE%\.memnos\embedded_pg\`
 on first run and never touches any Postgres you already have installed. `memnos start`
-auto-starts the embedded database on every boot.
+auto-starts the embedded database on every boot. Want your own Postgres instead? Pass
+`--external` (interactive wizard) or `--dsn postgresql://...` — see the native path below.
 
 Then open the console at **http://127.0.0.1:8900/admin** and paste the admin token that
 setup printed. Continue with the normal flow in [`QUICKSTART.md`](../../QUICKSTART.md)

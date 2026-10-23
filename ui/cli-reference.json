@@ -118,13 +118,19 @@
       },
       {
        "arg": "--embedded",
-       "help": "download + use embedded PostgreSQL + pgvector \u2014 zero external dependencies (macOS arm64, Linux x86_64, Windows x86_64; ~20-30 MB one-time download)",
+       "help": "download + use embedded PostgreSQL + pgvector \u2014 zero external dependencies (macOS arm64, Linux x86_64, Windows x86_64; ~20-30 MB one-time download). This is the DEFAULT when no other mode is given and the platform supports it.",
        "positional": false,
        "required": false
       },
       {
        "arg": "--docker",
        "help": "provision a pgvector Postgres in Docker (no Postgres setup needed)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--external",
+       "help": "connect to your OWN existing Postgres \u2014 opts out of the --embedded default; prompts interactively for host/port/user/password unless --dsn is also given",
        "positional": false,
        "required": false
       },
@@ -137,7 +143,7 @@
      ],
      "command": "setup",
      "example": "memnos setup --docker",
-     "help": "connect to Postgres, create schema + admin token"
+     "help": "connect to Postgres, create schema + admin token (defaults to --embedded on supported platforms)"
     },
     {
      "args": [
