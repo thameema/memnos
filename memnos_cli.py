@@ -664,14 +664,38 @@ def _openai_key_ok(key):
 
 def cmd_setup(args, cfg):
     embedded_mode = getattr(args, "embedded", False)
+    docker_mode = getattr(args, "docker", False)
+    external_mode = getattr(args, "external", False)
+    dsn = args.dsn or os.environ.get("MEMNOS_DSN")
+
+    # Most installs are solo/local — embedded is the zero-dependency golden path, so bare
+    # `memnos setup` (no flags) now defaults to it on any platform that supports it,
+    # instead of falling into the interactive "type your own Postgres details" wizard.
+    # --docker / --external / --dsn are the explicit opt-outs for everyone else; an
+    # UNSUPPORTED platform with nothing else requested still falls through to the
+    # original interactive wizard below, unchanged — this only changes the default on
+    # platforms embedded already works on, it never turns a working bare `setup` into a
+    # hard error.
+    defaulted_to_embedded = False
+    if not (embedded_mode or docker_mode or external_mode or dsn) and _embedded_pg_platform():
+        embedded_mode = True
+        defaulted_to_embedded = True
+
     if embedded_mode:
         print("=== memnos setup --embedded (zero-dependency mode: embedded PostgreSQL + pgvector) ===")
+        if defaulted_to_embedded:
+            print("    (no --docker / --external / --dsn given — defaulting to this. Use "
+                  "--external to connect your own Postgres instead.)")
+    elif docker_mode:
+        print("=== memnos setup --docker (pgvector in a managed Docker container) ===")
     else:
         print("=== memnos setup (Postgres is a prerequisite — this only creates objects in it) ===")
-    dsn = args.dsn or os.environ.get("MEMNOS_DSN")
+        if not (external_mode or dsn):
+            print("    (embedded mode isn't available on this platform yet — connecting to "
+                  "your own Postgres instead. Alternative:  memnos setup --docker)")
     if embedded_mode and not dsn:
         dsn = _ensure_embedded_pg()     # download + start embedded PG (no Docker, no local PG needed)
-    elif getattr(args, "docker", False) and not dsn:
+    elif docker_mode and not dsn:
         dsn = _ensure_docker_pg()       # memnos provisions a pgvector Postgres for you
     if not dsn:
         host = input("Postgres host [localhost]: ").strip() or "localhost"
@@ -4603,13 +4627,18 @@ def build_parser():
     p.set_defaults(fn=cmd_recall)
 
     # ---- lifecycle ----
-    p = sub.add_parser("setup", help="connect to Postgres, create schema + admin token")
+    p = sub.add_parser("setup", help="connect to Postgres, create schema + admin token "
+                       "(defaults to --embedded on supported platforms)")
     p.add_argument("--dsn", help="Postgres DSN (skips the interactive wizard)")
     p.add_argument("--embedded", action="store_true",
                    help="download + use embedded PostgreSQL + pgvector — zero external dependencies "
-                        "(macOS arm64, Linux x86_64, Windows x86_64; ~20-30 MB one-time download)")
+                        "(macOS arm64, Linux x86_64, Windows x86_64; ~20-30 MB one-time download). "
+                        "This is the DEFAULT when no other mode is given and the platform supports it.")
     p.add_argument("--docker", action="store_true",
                    help="provision a pgvector Postgres in Docker (no Postgres setup needed)")
+    p.add_argument("--external", action="store_true",
+                   help="connect to your OWN existing Postgres — opts out of the --embedded default; "
+                        "prompts interactively for host/port/user/password unless --dsn is also given")
     p.add_argument("--port", type=int,
                    help="HTTP port to persist in the config (default 8900) — set this to run "
                         "a second instance alongside one already on 8900")

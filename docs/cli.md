@@ -69,13 +69,14 @@ memnos recall "what did we decide about staging?" --scope all
 
 ### `memnos setup`
 
-connect to Postgres, create schema + admin token
+connect to Postgres, create schema + admin token (defaults to --embedded on supported platforms)
 
 | argument | description |
 |---|---|
 | `--dsn` | Postgres DSN (skips the interactive wizard) |
-| `--embedded` | download + use embedded PostgreSQL + pgvector — zero external dependencies (macOS arm64, Linux x86_64, Windows x86_64; ~20-30 MB one-time download) |
+| `--embedded` | download + use embedded PostgreSQL + pgvector — zero external dependencies (macOS arm64, Linux x86_64, Windows x86_64; ~20-30 MB one-time download). This is the DEFAULT when no other mode is given and the platform supports it. |
 | `--docker` | provision a pgvector Postgres in Docker (no Postgres setup needed) |
+| `--external` | connect to your OWN existing Postgres — opts out of the --embedded default; prompts interactively for host/port/user/password unless --dsn is also given |
 | `--port` | HTTP port to persist in the config (default 8900) — set this to run a second instance alongside one already on 8900 |
 
 ```bash

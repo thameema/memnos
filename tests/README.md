@@ -13,6 +13,7 @@ throwaway namespaces it creates.
 | `test_admin_api.py` | admin bootstrap, principals, tokens, grants |
 | `test_vault.py` | encrypted secret vault, key rotation, redaction |
 | `test_cli.py` | the `memnos` CLI end-to-end (subprocess) |
+| `test_setup_embedded_default.py` | bare `memnos setup` defaults to `--embedded` when no mode is given and the platform supports it; an explicit `--dsn` is never overridden; `--external` opts out and reaches the interactive wizard; an unsupported platform falls back to the wizard instead of a hard error |
 | `test_memory_api.py` | graph reads, memory CRUD, context block |
 | `test_knowledge_api.py` | entity / related / community / contradictions / health |
 | `test_pubsub_api.py` / `test_pubsub_push.py` | subscriptions + webhook delivery |

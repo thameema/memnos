@@ -75,16 +75,21 @@ Install into an isolated environment (`uv` recommended; `pipx` works too — don
 uv tool install memnos        # no uv?  brew install uv   or
                               #         curl -LsSf https://astral.sh/uv/install.sh | sh
 
-memnos setup --embedded       # ← zero external dependencies: downloads embedded PG + pgvector
-                              #   (~20-30 MB, macOS arm64 / Linux x86_64 / Windows x86_64)
-                              # or: memnos setup          (connect to YOUR existing Postgres)
-                              # or: memnos setup --docker (spin up a pgvector container)
+memnos setup                  # ← zero external dependencies by default: downloads embedded
+                              #   PG + pgvector (~20-30 MB, macOS arm64 / Linux x86_64 /
+                              #   Windows x86_64) — no Docker, no brew, no apt
+                              # or: memnos setup --external (connect to YOUR existing Postgres)
+                              # or: memnos setup --docker   (spin up a pgvector container)
 memnos start                  # background server → open http://127.0.0.1:8900/admin
 ```
 
-`memnos setup --embedded` downloads a pre-built PostgreSQL 16 + pgvector binary into
-`~/.memnos/embedded_pg/` on first run. No Docker, no `brew`, no `apt` — just `uv tool install`
-and you're done. `memnos start` auto-restarts the embedded PG on every boot.
+Bare `memnos setup` downloads a pre-built PostgreSQL 16 + pgvector binary into
+`~/.memnos/embedded_pg/` on first run (same as the explicit `memnos setup --embedded` —
+the flag still works, it's just the default now). No Docker, no `brew`, no `apt` — just
+`uv tool install` and you're done. `memnos start` auto-restarts the embedded PG on every boot.
+On a platform without an embedded build (anything other than the three above), it falls
+back to the original interactive wizard automatically — `--docker`/`--external` always work
+everywhere regardless.
 
 Operate it like any daemon: `memnos status` / `stop` / `restart`; `memnos serve` runs in
 the foreground for systemd/launchd/Docker; `memnos upgrade` updates in place;

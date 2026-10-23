@@ -11,21 +11,26 @@ five minutes — one package, one command.
 
 ## Prerequisites
 
-**Nothing required** if you use embedded mode (recommended for solo / first-time installs):
+**Nothing required** — embedded mode is the default (solo / first-time installs):
 
 ```bash
-memnos setup --embedded   # downloads PostgreSQL 16 + pgvector into ~/.memnos/embedded_pg/
-                          # ~20-30 MB one-time download; macOS arm64, Linux x86_64, Windows x86_64
+memnos setup   # downloads PostgreSQL 16 + pgvector into ~/.memnos/embedded_pg/ automatically
+               # ~20-30 MB one-time download; macOS arm64, Linux x86_64, Windows x86_64
+               # (the --embedded flag still works too — it's just implied now)
 ```
 
-If you prefer to connect to your own PostgreSQL:
+If you prefer to connect to your own PostgreSQL, pass `--external`:
 
 - **PostgreSQL 13+** with the **pgvector ≥ 0.6** extension available. memnos **does not install
   Postgres** — it connects to yours and creates its own schema. (For local dev, the
   `pgvector/pgvector` Docker image is easiest: `docker compose -f docker-compose.dev.yml up -d`.)
   - On **Debian/Ubuntu** a plain `sudo apt install postgresql-16-pgvector` (ships pgvector
     **0.6**) is enough — no source build.
+  - `memnos setup --external` prompts for host/port/user/password interactively; pass
+    `--dsn postgresql://...` instead to skip the prompts.
 - Or use Docker: `memnos setup --docker`
+- On a platform without an embedded build (anything other than the three listed above),
+  bare `memnos setup` automatically falls back to the `--external` wizard — no flag needed.
 
 - **Python 3.10+** (for `uv` / `pip`).
 - *Optional:* an **OpenAI API key** for 1536-d embeddings + fact extraction. Without one,
@@ -70,10 +75,11 @@ memnos --help
 
 ## 2. Set up memnos
 
-### Option A — Zero-dependency (recommended for solo developers)
+### Option A — Zero-dependency (the default)
 
 ```bash
-memnos setup --embedded
+memnos setup             # --embedded is implied when no other mode is given
+memnos setup --embedded  # equivalent, spelled out
 ```
 
 Downloads a pre-built **PostgreSQL 16 + pgvector** binary (~20-30 MB) into
@@ -81,7 +87,8 @@ Downloads a pre-built **PostgreSQL 16 + pgvector** binary (~20-30 MB) into
 just this command. `memnos start` auto-starts the embedded database on every boot.
 
 *Supported: macOS arm64 (Apple Silicon), Linux x86_64, Windows x86_64.*
-For other platforms, use Option B or C below.
+On any other platform, bare `memnos setup` automatically falls back to Option C below —
+no flag needed. Use Option B or C explicitly any time you want to opt out of embedded.
 
 ### Option B — Docker (any platform)
 
@@ -92,8 +99,8 @@ memnos setup --docker   # needs Docker Desktop; runs pgvector/pgvector:pg16 cont
 ### Option C — Bring your own Postgres
 
 ```bash
-memnos setup            # interactive wizard: enter your Postgres connection details
-memnos setup --dsn postgresql://user:pass@host:5432/db   # or pass directly
+memnos setup --external                                  # interactive wizard
+memnos setup --dsn postgresql://user:pass@host:5432/db   # or pass directly (any mode)
 ```
 
 ---
