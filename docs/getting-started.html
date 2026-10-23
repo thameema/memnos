@@ -12,7 +12,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Getting Started with memnos — The Friendly Guide</title>
-  <meta name="description" content="A plain-English guide to memnos for anyone who isn't deep in the codebase: what it is, why it helps, and exactly what to hand your IT person to install it on Windows." />
+  <meta name="description" content="A plain-English guide to memnos for anyone who isn't deep in the codebase: what it is, why it helps, and exactly how to install it on Windows." />
   <meta name="keywords" content="memnos quickstart, AI memory setup, Windows AI memory install, memnos for beginners, persistent memory AI agents" />
   <link rel="canonical" href="https://memnos.net/getting-started.html" />
   <meta property="og:type" content="website" />
@@ -81,6 +81,7 @@
     .token-cmt  { color: #4b5563; }
     @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.4} }
     .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+    .nav-active { color: #a78bfa !important; }
     .fade-in { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease, transform 0.6s ease; }
     .fade-in.visible { opacity: 1; transform: translateY(0); }
     nav { backdrop-filter: blur(20px); background: rgba(9,9,15,0.8); border-bottom: 1px solid var(--border); }
@@ -117,10 +118,14 @@
       <span class="text-white font-semibold text-lg tracking-tight">memnos</span>
     </a>
     <div class="hidden md:flex items-center gap-7">
+      <a href="getting-started.html" class="text-sm nav-active hover:text-white transition-colors">Getting Started</a>
       <a href="index.html#features" class="text-sm text-gray-400 hover:text-white transition-colors">Features</a>
       <a href="use-cases.html" class="text-sm text-gray-400 hover:text-white transition-colors">Use Cases</a>
+      <a href="agents.html" class="text-sm text-gray-400 hover:text-white transition-colors">Agents</a>
+      <a href="index.html#sdk" class="text-sm text-gray-400 hover:text-white transition-colors">SDK</a>
       <a href="governance.html" class="text-sm text-gray-400 hover:text-white transition-colors">Policies</a>
       <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="text-sm text-gray-400 hover:text-white transition-colors">Docs</a>
+      <a href="benchmarks.html" class="text-sm text-gray-400 hover:text-white transition-colors">Benchmarks</a>
       <a href="compare.html" class="text-sm text-gray-400 hover:text-white transition-colors">Compare</a>
       <a href="https://github.com/thameema/memnos" class="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-1.5">
         <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
@@ -138,10 +143,14 @@
   </div>
   <div id="mobile-nav" class="hidden md:hidden border-t border-gray-800 bg-gray-950/95 backdrop-blur-xl">
     <div class="max-w-6xl mx-auto px-6 py-5 flex flex-col gap-1">
+      <a href="getting-started.html" class="text-sm text-white font-medium py-2.5 border-b border-gray-900">Getting Started</a>
       <a href="index.html#features" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Features</a>
       <a href="use-cases.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Use Cases</a>
+      <a href="agents.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Agents</a>
+      <a href="index.html#sdk" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">SDK</a>
       <a href="governance.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Policies</a>
       <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Docs</a>
+      <a href="benchmarks.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Benchmarks</a>
       <a href="compare.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Compare</a>
       <a href="https://github.com/thameema/memnos" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900 flex items-center gap-2">
         <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
@@ -161,7 +170,7 @@
       Your AI forgets everything.<br /><span class="gradient-text">memnos makes sure it doesn't.</span>
     </h1>
     <p class="text-gray-400 text-lg leading-relaxed max-w-2xl mx-auto">
-      Not a developer? This page is for you — what memnos actually does, why it's worth setting up, and exactly what to hand your IT person. No jargon.
+      Not a developer? This page is for you — what memnos actually does, why it's worth setting up, and exactly how to install it. No jargon.
     </p>
   </div>
 </section>
@@ -229,7 +238,7 @@
   <div class="max-w-3xl mx-auto px-6">
     <div class="text-center mb-10">
       <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Setup &middot; Windows</span>
-      <h2 class="text-3xl font-bold text-white mt-3 mb-4">What to hand your IT person</h2>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Installing on Windows</h2>
       <p class="text-gray-400 max-w-xl mx-auto">This installs memnos locally — no cloud account, no Docker, nothing else to set up first. Four commands, run in PowerShell.</p>
     </div>
 
