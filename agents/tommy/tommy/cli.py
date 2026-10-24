@@ -754,6 +754,18 @@ def _launch_harness(
 # ---------------------------------------------------------------------------
 
 
+def _tommy_installed_version():
+    """Current on-disk installed version, re-readable at any point in this process's
+    life — unlike `tommy.__version__` (imported once at module load), this reflects a
+    package upgrade that happened WHILE this process is still running, which is exactly
+    what `_do_upgrade`'s post-install re-verify below needs."""
+    import importlib.metadata
+    try:
+        return importlib.metadata.version("tommy-orchestrator")
+    except Exception:
+        return None
+
+
 def _detect_installer(package: str) -> str:
     """Return 'uv', 'pip', 'pipx', or 'unknown' from the INSTALLER dist-info file."""
     import importlib.metadata
@@ -814,17 +826,42 @@ def _do_upgrade() -> None:
         )
         cmd = [sys.executable, "-m", "pip", "install", "-U", "tommy-orchestrator"]
 
+    before = _tommy_installed_version()
     click.echo(f"🔄 Upgrading Tommy ... ({' '.join(cmd)})")
     rc = subprocess.run(cmd, cwd=str(home)).returncode
-    if rc == 0:
-        click.echo("✓ Tommy upgraded. Restart any running sessions.")
-    else:
+    if rc != 0:
         click.echo(
             f"✗ Upgrade failed (exit {rc}).\n"
             "  Try manually:  cd ~ && uv tool upgrade tommy-orchestrator",
             err=True,
         )
         sys.exit(rc)
+    # memnos's cmd_upgrade (issue #175) learned this the hard way, and this code path
+    # had the exact same bug: a zero exit code from `uv tool upgrade`/`pip install -U`
+    # is NOT proof the package actually changed — `uv tool upgrade` exits 0 and prints
+    # "Nothing to upgrade" on a genuine no-op too (a stale package-index cache, a
+    # pinned/locked resolution). Re-check the installed version instead of trusting the
+    # subprocess's exit code alone — `__version__` imported at the top of this module
+    # was captured once at process start and would silently stay stale here regardless.
+    # Known limitation, not fixed here: this only catches "nothing changed" (before ==
+    # after), not a downgrade (after < before). memnos's equivalent check in cmd_upgrade
+    # catches that too because it has a `latest` from PyPI to compare against —
+    # _do_upgrade doesn't check PyPI at all (scope: this fix only ports the exit-code
+    # trust bug, not PyPI checking), so there's nothing here to detect "moved, but the
+    # wrong direction" against. Shouldn't happen via a normal `uv tool upgrade`/`pip
+    # install -U`, which don't install older versions on their own.
+    after = _tommy_installed_version()
+    if after and before and after == before:
+        click.echo(
+            f"⚠ upgrade command exited 0 but the installed version is still v{after} — "
+            "it silently did nothing. This is usually a stale package-index cache. Try:\n"
+            "  uv cache clean tommy-orchestrator && uv tool upgrade tommy-orchestrator\n"
+            "or force a clean reinstall:\n"
+            "  uv tool install tommy-orchestrator --force",
+            err=True,
+        )
+        sys.exit(1)
+    click.echo(f"✓ Tommy upgraded{f' to v{after}' if after else ''}. Restart any running sessions.")
 
 
 TOMMY_LOGO = r"""

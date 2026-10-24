@@ -165,6 +165,8 @@ check PyPI for a newer version, install it, and (zero-downtime gateway mode) app
 |---|---|
 | `--check` | only check; don't install |
 | `--no-restart` | install the new version but don't restart the running server (default: restart automatically — zero-downtime in gateway mode) |
+| `--auto-update` | opt in: the gateway's background check installs new versions itself (still via this same safe path — detect, then a separate `memnos upgrade --no-restart` subprocess) instead of just notifying. Off by default. Sets this and exits — does not also check/install now. |
+| `--no-auto-update` | opt back out of automatic installation (notify-only, the default). Sets this and exits — does not also check/install now. |
 
 ```bash
 memnos upgrade --check

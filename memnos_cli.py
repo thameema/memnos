@@ -40,6 +40,12 @@ GATEWAY_STATE_PATH = os.path.join(CONFIG_DIR, "gateway_state.json")
 # only record that this class of "a real reply silently never got captured" bug exists
 # at all. See _record_capture() / cmd_hook_stats().
 CAPTURE_STATS_PATH = os.path.join(CONFIG_DIR, "hook_capture_stats.json")
+# issue #193-adjacent (update notify): written by memnos_gateway.py's background
+# _update_check_loop, NOT by this file — deliberately a sibling cache file rather than
+# a key in config.json (config.json also holds admin_token, and a background thread
+# writing it every 24h risks a torn write racing a concurrent CLI config change; see
+# that loop's docstring). `_latest_known()` below is the only reader.
+UPDATE_CACHE_PATH = os.path.join(CONFIG_DIR, "update_check.json")
 DEFAULT_DSN = "postgresql://memnos:memnos@localhost:5432/memnos"
 
 
@@ -72,6 +78,27 @@ def _latest_pypi_version(timeout=4):
             return _json.load(r)["info"]["version"]
     except Exception:
         return None
+
+
+def _read_update_cache():
+    """Read ~/.memnos/update_check.json, written by the gateway's background
+    _update_check_loop (memnos_gateway.py) — not by this process. Missing/corrupt
+    cache (never started a gateway, or a torn write mid-read) is just "nothing known
+    yet", never an error."""
+    try:
+        with open(UPDATE_CACHE_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _latest_known(cfg):
+    """The newest version we know about from EITHER source: the gateway's background
+    check (preferred — it's the one that actually runs continuously) or a prior manual
+    `memnos upgrade`/`upgrade --check` (cfg['latest_known'], the pre-existing behavior
+    this is additive to — a user who checked manually before ever starting the gateway
+    still sees their hint)."""
+    return _read_update_cache().get("latest_known") or cfg.get("latest_known")
 
 
 def _detect_installer(package: str) -> str:
@@ -1386,6 +1413,9 @@ def cmd_status(args, cfg):
     port = int(os.environ.get("MEMNOS_PORT", cfg.get("port", 8900)))
     url = f"http://127.0.0.1:{port}"
     print(f"memnos {_version()}")
+    cur, lk = _installed_version(), _latest_known(cfg)
+    if cur and lk and _vparts(lk) > _vparts(cur):
+        print(f"  update:    v{lk} available — run: memnos upgrade")
     have_cfg = os.path.exists(CONFIG_PATH)
     print(f"  config:    {CONFIG_PATH}  ({'ok' if have_cfg else 'missing — run: memnos setup'})")
     dsn = cfg.get("dsn")
@@ -1621,6 +1651,19 @@ def cmd_stop(args, cfg):
 
 
 def cmd_upgrade(args, cfg):
+    set_auto = getattr(args, "set_auto_update", None)
+    if set_auto is not None:
+        # A pure preference toggle — set and exit, don't also check/install now. Read by
+        # memnos_gateway.py's _update_check_loop fresh every tick (not cached), so this
+        # takes effect on the gateway's very next check without a restart.
+        cfg["auto_update"] = set_auto
+        save_config(cfg)
+        state = "enabled" if set_auto else "disabled"
+        print(f"[memnos] auto-update {state}.")
+        if set_auto:
+            print("  the gateway's background check (~every 24h) will now install new "
+                  "versions itself via `memnos upgrade --no-restart`, not just notify.")
+        return
     cur = _installed_version()
     print(f"[memnos] checking for updates (installed v{cur or '?'}) ...")
     latest = _latest_pypi_version()
@@ -4685,7 +4728,16 @@ def build_parser():
     p.add_argument("--no-restart", action="store_true",
                    help="install the new version but don't restart the running server "
                         "(default: restart automatically — zero-downtime in gateway mode)")
-    p.set_defaults(fn=cmd_upgrade)
+    auto_grp = p.add_mutually_exclusive_group()
+    auto_grp.add_argument("--auto-update", dest="set_auto_update", action="store_const", const=True,
+                          help="opt in: the gateway's background check installs new versions "
+                               "itself (still via this same safe path — detect, then a separate "
+                               "`memnos upgrade --no-restart` subprocess) instead of just notifying. "
+                               "Off by default. Sets this and exits — does not also check/install now.")
+    auto_grp.add_argument("--no-auto-update", dest="set_auto_update", action="store_const", const=False,
+                          help="opt back out of automatic installation (notify-only, the default). "
+                               "Sets this and exits — does not also check/install now.")
+    p.set_defaults(fn=cmd_upgrade, set_auto_update=None)
 
     # ---- agent coordination ----
     p = sub.add_parser("lease", help="agent coordination leases — one holder per work item at a time")
@@ -5189,7 +5241,7 @@ def main():
     ap = build_parser()
     args = ap.parse_args(_normalize_argv(sys.argv[1:]))
     if not getattr(args, "cmd", None):     # bare `memnos` → version + help (like Claude Code)
-        cur, lk = _installed_version(), cfg.get("latest_known")
+        cur, lk = _installed_version(), _latest_known(cfg)
         hint = f"   ↑ v{lk} available — run: memnos upgrade" if (cur and lk and _vparts(lk) > _vparts(cur)) else ""
         print(f"memnos {_version()}{hint}\n")
         ap.print_help()

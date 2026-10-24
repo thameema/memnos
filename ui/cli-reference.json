@@ -249,6 +249,18 @@
        "help": "install the new version but don't restart the running server (default: restart automatically \u2014 zero-downtime in gateway mode)",
        "positional": false,
        "required": false
+      },
+      {
+       "arg": "--auto-update",
+       "help": "opt in: the gateway's background check installs new versions itself (still via this same safe path \u2014 detect, then a separate `memnos upgrade --no-restart` subprocess) instead of just notifying. Off by default. Sets this and exits \u2014 does not also check/install now.",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--no-auto-update",
+       "help": "opt back out of automatic installation (notify-only, the default). Sets this and exits \u2014 does not also check/install now.",
+       "positional": false,
+       "required": false
       }
      ],
      "command": "upgrade",
