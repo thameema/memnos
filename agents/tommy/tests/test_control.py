@@ -170,6 +170,8 @@ SDK_METHODS = {
     # MemnosClient public API (sync)
     "remember", "recall", "ingest_file", "context", "consolidate",
     "feedback", "healthy", "close",
+    "memories_by_type",   # issue #193: exact enumeration, not recall() — see mcp_server.py's
+                          # _handoff_records for why recall()'s dedupe makes it unusable here
 }
 
 TOMMY_SOURCES = [
@@ -203,13 +205,26 @@ class TestSDKApiContract:
             bad = re.findall(r"client\.recall\([^)]*\blimit\s*=[^=][^)]*\)", text)
             assert bad == [], f"{src.name} calls recall() with 'limit=': {bad}"
 
-    def test_remember_has_no_memory_type_param(self):
-        """remember() has no 'memory_type' param."""
+    def test_remember_memory_type_is_a_known_literal(self):
+        """remember()'s memory_type was genuinely not an SDK param when this test was
+        first written (d9734cc, Aug 2026) — Tommy's own tommy_remember had a bug calling
+        a kwarg that didn't exist yet, and the fix was to drop it, prefixing "kind" into
+        the text instead (see mcp_server.py:443's surviving comment). The SDK gained a
+        real memory_type param since (issues #83/#84, constraint support), and issue
+        #193's handoff feature is Tommy's first legitimate, intentional use of it — so
+        the original blanket "never pass memory_type" premise is now false, not just for
+        this call but structurally. What's still worth guarding: Tommy should never pass
+        an unknown/typo'd type literal that the server's ALLOWED_MEMORY_TYPES would 400
+        on at the call site instead of at review time."""
         import re
+        known = {"decision", "incident", "constraint", "skill", "fact", "handoff"}
         for src in TOMMY_SOURCES:
             text = src.read_text()
-            bad = re.findall(r"client\.remember\([^)]*memory_type[^)]*\)", text)
-            assert bad == [], f"{src.name} calls remember() with 'memory_type=': {bad}"
+            for m in re.finditer(r'client\.remember\([^)]*memory_type\s*=\s*"(\w+)"', text):
+                assert m.group(1) in known, (
+                    f"{src.name} calls remember() with an unrecognized memory_type "
+                    f"literal {m.group(1)!r} — check ALLOWED_MEMORY_TYPES in memnos_server.py"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +287,7 @@ class TestMcpServerStructure:
         word_to_int = {
             "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
             "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+            "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
         }
         stated = word_to_int.get(m.group(1).lower())
         assert stated == actual, (

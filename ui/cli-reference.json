@@ -25,15 +25,22 @@
         "incident",
         "constraint",
         "skill",
-        "fact"
+        "fact",
+        "handoff"
        ],
-       "help": "classify the memory (constraints are pinned into every recall)",
+       "help": "classify the memory (constraints are pinned into every recall; handoff is a plain queryable tag, no pinning \u2014 issue #193)",
        "positional": false,
        "required": false
       },
       {
        "arg": "--subject",
        "help": "constraint grouping key (--type constraint only). A newer constraint with the SAME subject supersedes the older one; omitted, the server derives one from the text",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--no-extract",
+       "help": "skip LLM fact extraction for this write \u2014 fast, deterministic, no model call; the raw turn is still stored (issue #193)",
        "positional": false,
        "required": false
       },
@@ -86,7 +93,8 @@
         "incident",
         "constraint",
         "skill",
-        "fact"
+        "fact",
+        "handoff"
        ],
        "help": "only memories of this type (pinned constraints always included)",
        "positional": false,
