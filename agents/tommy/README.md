@@ -400,6 +400,9 @@ In `~/.config/zed/settings.json`:
 | `tommy_sketch` | Mermaid sequence diagram -> Canonical Flow Corpus (CFC) constraints -> `/corpus/ingest` |
 | `tommy_drift_sweep` | Check recent commits against the architecture corpus |
 | `tommy_verdict` | Diff a completed task against the architecture corpus (violated/satisfied/uncovered), post-dispatch |
+| `tommy_handoff` | Offer a task to another harness/session — durable, hop-capped (issue #193) |
+| `tommy_handoff_transition` | Move a handoff through `offered -> accepted -> in_progress -> completed \| escalated` |
+| `tommy_handoff_status` | Current state + full transition history for a `handoff_id` |
 
 ### `tommy_dispatch`
 
@@ -527,6 +530,48 @@ memnos#105 keeps them separate: a vacuous `1.0` (`evaluated == 0`, nothing
 matched) must stay distinguishable from a real `1.0` (`evaluated > 0`,
 everything matched was satisfied).
 
+### `tommy_handoff` — structured, enforced cross-harness task handoff
+
+Offers a task to another harness/agent as a durable memnos record — not a freeform chat
+message or a dispatch. **Tommy does not launch, notify, or hand control to the receiving
+harness** — the receiving session picks the handoff up itself, via `tommy_handoff_status`
+(or its own recall). What Tommy guarantees is the record: every hop state-machined
+(`offered -> accepted -> in_progress -> completed | escalated`), hop-capped per `task_id`
+(`tommy.yaml: handoff_hop_limit`, default 8) so two agents can't ping-pong a task forever,
+and attached with a memnos-recall-scoped context bundle — relevant memory, not the full
+transcript.
+
+```
+tommy_handoff(
+    task_id="auth-pkce-migration",
+    to_harness="codex",
+    context_summary="refactor the auth module to use PKCE",
+    expected_deliverable="PR with PKCE flow + tests",
+)
+→ {"ok": true, "handoff_id": "a1b2c3d4e5f6", "task_id": "auth-pkce-migration",
+   "state": "offered", "to_harness": "codex", "hop": 1, "hop_limit": 8,
+   "context_bundle": "...", "namespace": "proj:storefront"}
+
+tommy_handoff_transition(handoff_id="a1b2c3d4e5f6", new_state="accepted")
+→ {"ok": true, "handoff_id": "a1b2c3d4e5f6", "state": "accepted", "hop": 2}
+
+tommy_handoff_status(handoff_id="a1b2c3d4e5f6")
+→ {"handoff_id": "a1b2c3d4e5f6", "task_id": "auth-pkce-migration", "state": "accepted",
+   "to_harness": "codex", "hop": 2, "is_terminal": false,
+   "history": [{"state": "offered", "hop": 1, ...}, {"state": "accepted", "hop": 2, ...}]}
+```
+
+Backed by two memnos-core primitives any SDK/REST caller can use directly, not just
+Tommy: a `handoff` memory type (plain tagging, no pinning behavior of its own, unlike
+`constraint`) and `POST /memory/by_type` — a plain, non-ranked, exact enumeration of
+every memory tagged with a given type. The latter exists because `/recall`'s
+near-duplicate collapse (needed for its own job of surfacing the most relevant memories)
+was found to silently collapse several near-identical handoff-state writes down to a
+single result — proven empirically while building this, not assumed. If you're building
+your own multi-agent handoff logic on `memnos-sdk` rather than through Tommy, the same
+`memory_type="handoff"` + `memories_by_type()` primitives are yours to use; you'd own
+your own state machine and hop cap instead of reusing Tommy's.
+
 ---
 
 ## Control channel (for harness authors)
@@ -616,7 +661,7 @@ agents/tommy/
     ├── generate_cmd.py     ← `tommy generate` / `tommy config show` CLI commands
     ├── control.py          ← ControlServer + ControlClient (TCP IPC)
     ├── install.py          ← tommy --install
-    ├── mcp_server.py       ← FastMCP stdio server, 11 tools
+    ├── mcp_server.py       ← FastMCP stdio server, 14 tools
     ├── prompt.py           ← memnos-enriched system prompt builder
     └── discovery/
         └── harnesses.py    ← auto-detect installed harnesses
