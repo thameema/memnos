@@ -1171,7 +1171,7 @@ paths:
         - name: type
           in: query
           required: false
-          schema: { type: string, enum: [decision, incident, constraint, skill, fact] }
+          schema: { type: string, enum: [decision, incident, constraint, skill, fact, handoff] }
       responses:
         "200":
           description: recent memories page
@@ -1716,7 +1716,7 @@ components:
           description: only memories written by this principal (server-stamped author)
         type:
           type: string
-          enum: [decision, incident, constraint, skill, fact]
+          enum: [decision, incident, constraint, skill, fact, handoff]
           description: >
             only memories of this type. Pinned constraints are exempt — they are always
             injected (disable with constraint_cap=0).
@@ -1972,7 +1972,7 @@ components:
         namespace: { type: string, description: source namespace (wide/grounded rows) }
         type:
           type: string
-          enum: [decision, incident, constraint, skill, fact]
+          enum: [decision, incident, constraint, skill, fact, handoff]
           description: memory type (absent = untyped)
         pinned:
           type: boolean
@@ -2343,7 +2343,7 @@ components:
               items: { type: integer }
             memory_type:
               type: [string, "null"]
-              enum: [decision, incident, constraint, skill, fact, null]
+              enum: [decision, incident, constraint, skill, fact, handoff, null]
               description: inherited when ALL source turns share one type (else null)
         turns:
           type: array
@@ -2379,7 +2379,7 @@ components:
               salience: { type: number }
               memory_type:
                 type: [string, "null"]
-                enum: [decision, incident, constraint, skill, fact, null]
+                enum: [decision, incident, constraint, skill, fact, handoff, null]
                 description: inherited when ALL source turns share one type (else null)
               score:
                 $ref: "#/components/schemas/SqlNumber"
