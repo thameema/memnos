@@ -1302,9 +1302,13 @@ def _handoff_records(client, namespace: str, *, handoff_id: str = "", task_id: s
     ranking to fight (see core/store.py's list_raw_turns_by_type, issue #193).
 
     Known v1 scaling ceiling, left as-is deliberately (see PR description): this pulls
-    every handoff-typed record in the whole namespace (up to the endpoint's cap) and
-    filters in Python, every call — fine at a handful of in-flight handoffs, a real cost
-    at hundreds. No pagination/indexing-by-id-prefix yet."""
+    every handoff-typed record in the whole namespace and filters in Python, every call.
+    list_raw_turns_by_type is `ORDER BY id ASC LIMIT 1000` — the OLDEST 1000 rows, not
+    the most recent — so past ~1000 handoff-typed rows in a namespace (roughly 250 full
+    4-hop lifecycles), the NEWEST handoffs fall off the end of the result set entirely
+    and become invisible to this function: status/hop-cap for a recent handoff_id or
+    task_id can silently read as "doesn't exist" rather than degrading gracefully. No
+    pagination/indexing-by-id yet."""
     if not handoff_id and not task_id:
         return []
     try:
