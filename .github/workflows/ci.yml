@@ -74,6 +74,10 @@ jobs:
       # skips instead — see that test's docstring).
       OMNIGENT_REPO: /home/runner/omnigent
       MEMNOS_REQUIRE_OMNIGENT: "1"
+      # tests/test_zero_downtime_*.py spawn real `memnos_gateway.py` processes, which
+      # inherit this job's env — without this, every one of those runs would ping PyPI
+      # from its background _update_check_loop for no reason a CI run needs.
+      MEMNOS_UPDATE_CHECK: "0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -246,6 +250,7 @@ jobs:
         timeout-minutes: 20
         env:
           MEMNOS_CI: "1"
+          MEMNOS_UPDATE_CHECK: "0"   # don't let the gateway's background loop call PyPI from CI
         run: |
           memnos setup --embedded
           memnos start
