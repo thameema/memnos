@@ -1386,6 +1386,31 @@ class BrainStore:
             c.execute(sql, {"qv": vlit(qvec), "qt": qt, "ns": ns, "k": k})
             return c.fetchall()
 
+    def list_raw_turns_by_type(self, schema, ns, memory_type, limit=200) -> list[dict]:
+        """Issue #193: EXACT, non-ranked enumeration of every raw turn tagged with
+        `memory_type` in `ns`, oldest first (plain id order — raw_turns.id is a
+        bigserial, so this is also insertion order). Unlike search_raw_turns/
+        search_semantic above, this is NOT /recall — no RRF, no vector/FTS ranking, no
+        near-duplicate collapse. That collapse (core/service.py's _dedup_candidates,
+        issue #2) is correct and wanted for /recall's actual job (surfacing the most
+        relevant handful of memories for a question), but it actively defeats a caller
+        that needs to see EVERY record matching a tag — confirmed empirically while
+        building Tommy's structured handoffs (#193): four near-identical
+        memory_type='handoff' writes, each with a distinct id, all collapsed down to
+        just the first-written one by /recall's dedupe, even with a generous
+        raw_quota. A plain indexed SELECT (raw_mtype: (namespace, memory_type) WHERE
+        memory_type IS NOT NULL — already created by schema.sql for exactly this
+        shape) is the correct tool: deterministic, exhaustive up to `limit`, no
+        ranking to fight."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(
+                f"SELECT id, text AS content, observed_at, author_principal AS author, memory_type "
+                f"FROM {schema}.raw_turns WHERE namespace=%s AND memory_type=%s "
+                f"ORDER BY id ASC LIMIT %s",
+                (ns, memory_type, limit))
+            return c.fetchall()
+
     def search_semantic(self, schema, ns, qvec, qtext, k=40, current_only=False) -> list[dict]:
         """Hybrid RRF (vector+FTS) over SEMANTIC; current_only filters superseded facts.
         Returns restatements + salience too — rank-time reinforcement signals for the

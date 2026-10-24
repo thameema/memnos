@@ -8,21 +8,25 @@ Invoked by editors (Cursor, Claude Desktop, VS Code+Continue, Zed) as:
 Tommy reads MCP JSON-RPC from stdin and writes to stdout.  The editor owns
 the process — Tommy never opens a port and never runs as a daemon.
 
-Eleven tools:
-  tommy_recall          — query memnos memory
-  tommy_remember        — persist a fact to memnos
-  tommy_dispatch        — launch a harness task (async by default)
-  tommy_status          — check a running task's output / exit code
-  tommy_control         — send wrap_up / abort / pivot / answer to a running task
-  tommy_switch_project  — set the active project context
-  tommy_route           — dry-run: which harness would Tommy pick?
-  tommy_list_harnesses  — available harnesses + health + active routing
-  tommy_sketch          — mermaid sequence diagram -> CFC constraints -> corpus ingest
-  tommy_drift_sweep     — check recent commits against the architecture corpus
-  tommy_verdict         — post-dispatch diff-against-corpus verdict (violated/satisfied/uncovered)
+Fourteen tools:
+  tommy_recall             — query memnos memory
+  tommy_remember           — persist a fact to memnos
+  tommy_dispatch           — launch a harness task (async by default)
+  tommy_status             — check a running task's output / exit code
+  tommy_control            — send wrap_up / abort / pivot / answer to a running task
+  tommy_switch_project     — set the active project context
+  tommy_route              — dry-run: which harness would Tommy pick?
+  tommy_list_harnesses     — available harnesses + health + active routing
+  tommy_sketch             — mermaid sequence diagram -> CFC constraints -> corpus ingest
+  tommy_drift_sweep        — check recent commits against the architecture corpus
+  tommy_verdict            — post-dispatch diff-against-corpus verdict (violated/satisfied/uncovered)
+  tommy_handoff            — offer a task to another harness/agent (issue #193)
+  tommy_handoff_transition — record a handoff state change (issue #193)
+  tommy_handoff_status     — current state + history of a handoff (issue #193)
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -1214,6 +1218,301 @@ def tommy_status(task_id: str, tail: int = 50) -> dict:
     _session_id_info = {"claude_session_id": t.claude_session_id} if t.claude_session_id else {}
     return {"task_id": task_id, "harness": t.harness, "status": t.status(), "output": t.tail(tail),
             **_session_id_info}
+
+
+# ---------------------------------------------------------------------------
+# Structured task handoffs (issue #193)
+#
+# Every one of the harnesses Tommy supervises has its own cross-session
+# handoff today (Claude Code's peer messaging, Codex's `codex queue`,
+# Cursor's Agents Window, Goose's subagents) — but every one is locked
+# inside its own vendor's ecosystem. Tommy is the one thing in this
+# landscape that already treats the harness as pluggable, so a Tommy
+# handoff can be the one mechanism that lets a Claude Code session hand a
+# task to a Codex session hand it to a Goose subagent — cross-vendor, not
+# just cross-session-within-one-vendor.
+#
+# Durable in memnos, not a freeform chat message: each handoff is a small
+# chain of memory_type='handoff' writes (deterministic, extract=False — no
+# LLM call, no nondeterminism), tagged with handoff_id + task_id in a JSON
+# payload under a `[tommy_handoff]` prefix. Looked up via memnos's
+# /memory/by_type (memnos_sdk's memories_by_type) — a plain indexed
+# enumeration, not /recall. That distinction matters and was learned the
+# hard way while building this: an EARLIER version of this code used
+# /recall, and it silently returned the WRONG state, because /recall's
+# near-duplicate collapse (core/service.py's _dedup_candidates, issue #2 —
+# correct and wanted for recall's own job) collapsed several near-identical
+# memory_type='handoff' writes down to a single result, even with a
+# generous raw_quota. /memory/by_type exists specifically to give a caller
+# that needs EVERY record sharing a tag an exact, deterministic answer.
+#
+# Known v1 scaling ceiling (left as-is — see the PR description): every
+# tommy_handoff/tommy_handoff_transition/tommy_handoff_status call pulls
+# every handoff-typed record in the whole namespace and filters in Python.
+# Fine at a handful of in-flight handoffs; a real cost at hundreds.
+# ---------------------------------------------------------------------------
+
+_HANDOFF_STATES = ("offered", "accepted", "in_progress", "completed", "escalated")
+_HANDOFF_TERMINAL = ("completed", "escalated")
+# offered is the only state tommy_handoff itself writes; every other state is
+# reached only via tommy_handoff_transition, and only along these edges.
+_HANDOFF_TRANSITIONS = {
+    "offered": ("accepted", "escalated"),
+    "accepted": ("in_progress", "escalated"),
+    "in_progress": ("completed", "escalated"),
+}
+def _handoff_project_root(cfg: TommyConfig) -> Path:
+    """Mirrors _drift_workspace()'s own resolution order (explicit arg this module
+    doesn't have here, then active project's git_root, then CWD) — kept as its own
+    small copy for the same reason _drift_workspace is: a cross-cutting refactor
+    isn't worth the merge-conflict risk against other issues landing in this file."""
+    if _active_project:
+        proj = cfg.project_by_key(_active_project)
+        if proj:
+            return Path(getattr(proj, "git_root", str(Path.cwd())))
+    return Path.cwd()
+
+
+def _handoff_hop_limit(cfg: TommyConfig) -> int:
+    try:
+        effective = resolve_effective_config(project_root=_handoff_project_root(cfg))
+        return int(effective.fields["handoff_hop_limit"].value)
+    except Exception:
+        from .effective_config import DEFAULT_HANDOFF_HOP_LIMIT
+        return DEFAULT_HANDOFF_HOP_LIMIT
+
+
+_HANDOFF_MARKER = "[tommy_handoff]"
+
+
+def _handoff_records(client, namespace: str, *, handoff_id: str = "", task_id: str = "") -> list:
+    """Every stored handoff record matching handoff_id and/or task_id (at least one
+    required), oldest hop first. Every handoff write carries BOTH fields in its JSON
+    payload — querying by task_id (not just handoff_id) is what lets tommy_handoff
+    find every prior hop of a task's chain across however many DIFFERENT handoff_ids
+    it's accumulated (each re-offer after an escalation mints a new handoff_id; the
+    hop cap has to see across all of them, or it couldn't actually cap anything).
+
+    Uses memnos's memories_by_type('handoff') — NOT recall() — and filters client-side.
+    This was recall()-based in an earlier version of this code and it was WRONG: proven
+    empirically while building this feature, recall()'s near-duplicate collapse (issue
+    #2 — correct and wanted for recall's own job) collapsed four near-identical
+    memory_type='handoff' writes for the same handoff_id down to just the first-written
+    one, even with raw_quota=50. memories_by_type is a plain indexed lookup with no
+    ranking to fight (see core/store.py's list_raw_turns_by_type, issue #193).
+
+    Known v1 scaling ceiling, left as-is deliberately (see PR description): this pulls
+    every handoff-typed record in the whole namespace (up to the endpoint's cap) and
+    filters in Python, every call — fine at a handful of in-flight handoffs, a real cost
+    at hundreds. No pagination/indexing-by-id-prefix yet."""
+    if not handoff_id and not task_id:
+        return []
+    try:
+        result = client.memories_by_type("handoff", namespace=namespace, limit=1000)
+    except Exception:
+        return []
+    out = []
+    for mem in result.get("memories", []):
+        content = mem.get("content") or ""
+        if _HANDOFF_MARKER not in content:
+            continue
+        try:
+            payload = json.loads(content.split(_HANDOFF_MARKER, 1)[1].strip())
+        except (ValueError, IndexError):
+            continue
+        if handoff_id and payload.get("handoff_id") != handoff_id:
+            continue
+        if task_id and payload.get("task_id") != task_id:
+            continue
+        payload["_observed_at"] = mem.get("observed_at") or mem.get("id") or ""
+        out.append(payload)
+    out.sort(key=lambda r: (r.get("hop", 0), r.get("_observed_at", "")))
+    return out
+
+
+def _handoff_write(client, namespace: str, record: dict) -> None:
+    """record must already carry handoff_id and task_id — both are matched on by
+    _handoff_records above (as JSON fields, not via a per-field text marker)."""
+    text = f"{_HANDOFF_MARKER} " + json.dumps(record)
+    client.remember(text, namespace=namespace, memory_type="handoff", extract=False)
+
+
+@mcp.tool()
+def tommy_handoff(
+    task_id: str,
+    to_harness: str,
+    context_summary: str,
+    expected_deliverable: str = "",
+    priority: str = "normal",
+    namespace: str = "",
+) -> dict:
+    """
+    Offer task_id as a structured handoff to another harness/agent — durable in
+    memnos, not a freeform chat message. This is what makes a Tommy handoff
+    cross-vendor: the receiving side can be ANY harness Tommy supervises, not
+    just another session of the same tool.
+
+    Attaches a memnos-recall-scoped context bundle (built from context_summary),
+    not the full conversation — the receiving agent gets relevant memory, not
+    noise (issue #193's "context-pruned handoff").
+
+    Enforces a hard hop cap per task_id (tommy.yaml: handoff_hop_limit, default
+    8) — refuses with {"ok": false, "reason": "hop_limit_exceeded"} instead of
+    offering again once a task's handoff chain hits the cap, so two agents can't
+    hand it back and forth forever.
+
+    Args:
+        task_id:               Caller-chosen identifier for the underlying task
+                                (reuse the same task_id across every hop of one
+                                task's handoff chain).
+        to_harness:             Which harness/agent this is being offered to
+                                (e.g. "codex", "claude", "goose") — informational,
+                                Tommy does not dispatch it for you.
+        context_summary:        Short description of the task; also used as the
+                                memnos recall query for the attached context bundle.
+        expected_deliverable:   What "done" looks like for this handoff.
+        priority:               Free-form priority label (e.g. "normal", "urgent").
+        namespace:               memnos namespace. Omit for the current project namespace.
+
+    Returns a dict with handoff_id — pass it to tommy_handoff_transition to
+    record state changes and tommy_handoff_status to read the current state +
+    full history.
+    """
+    cfg = _get_cfg()
+    client = _memnos_client(cfg)
+    if client is None:
+        return {"ok": False, "error": "memnos unreachable — handoff not recorded."}
+    ns = namespace or _effective_namespace(cfg)
+
+    # Hop count across EVERY handoff_id this task_id has ever had (a fresh task_id
+    # has none, so a first offer always passes) — this is what makes the cap a
+    # real cap across re-offers after an escalation, not just within one
+    # handoff_id's own chain. See _handoff_records' docstring.
+    prior_hops = max((int(r.get("hop", 0)) for r in _handoff_records(client, ns, task_id=task_id)),
+                     default=0)
+
+    limit = _handoff_hop_limit(cfg)
+    if prior_hops >= limit:
+        return {"ok": False, "reason": "hop_limit_exceeded", "task_id": task_id,
+                "hop_count": prior_hops, "hop_limit": limit}
+
+    handoff_id = uuid.uuid4().hex[:12]
+    hop = prior_hops + 1
+
+    context_bundle = ""
+    try:
+        r = client.recall(context_summary or task_id, namespace=ns, fact_quota=8)
+        context_bundle = r.get("context", "")
+    except Exception:
+        pass  # the context bundle is best-effort — never block a handoff on recall failing
+
+    record = {
+        "handoff_id": handoff_id, "task_id": task_id, "state": "offered",
+        "to_harness": to_harness, "context_summary": context_summary,
+        "expected_deliverable": expected_deliverable, "priority": priority, "hop": hop,
+    }
+    try:
+        _handoff_write(client, ns, record)
+    except Exception as exc:
+        return {"ok": False, "error": f"memnos write failed: {exc}"}
+
+    return {"ok": True, "handoff_id": handoff_id, "task_id": task_id, "state": "offered",
+            "to_harness": to_harness, "hop": hop, "hop_limit": limit,
+            "context_bundle": context_bundle, "namespace": ns}
+
+
+@mcp.tool()
+def tommy_handoff_transition(
+    handoff_id: str,
+    new_state: str,
+    note: str = "",
+    namespace: str = "",
+) -> dict:
+    """
+    Record a state transition for a handoff created by tommy_handoff.
+
+    Valid transitions: offered -> accepted | escalated
+                        accepted -> in_progress | escalated
+                        in_progress -> completed | escalated
+    completed and escalated are terminal — no further transition is accepted
+    from either.
+
+    Args:
+        handoff_id: The handoff_id returned by tommy_handoff.
+        new_state:  One of: accepted, in_progress, completed, escalated.
+        note:       Optional free-text note attached to this transition.
+        namespace:  memnos namespace. Omit for the current project namespace.
+    """
+    if new_state not in _HANDOFF_STATES or new_state == "offered":
+        return {"ok": False, "error": f"invalid new_state {new_state!r} — "
+                                      f"must be one of: accepted, in_progress, completed, escalated"}
+    cfg = _get_cfg()
+    client = _memnos_client(cfg)
+    if client is None:
+        return {"ok": False, "error": "memnos unreachable — transition not recorded."}
+    ns = namespace or _effective_namespace(cfg)
+
+    records = _handoff_records(client, ns, handoff_id=handoff_id)
+    if not records:
+        return {"ok": False, "error": f"no handoff found for handoff_id={handoff_id!r}"}
+    current = records[-1]
+    current_state = current.get("state")
+    if current_state in _HANDOFF_TERMINAL:
+        return {"ok": False, "error": f"handoff {handoff_id!r} is already terminal "
+                                      f"({current_state!r}) — no further transition accepted"}
+    allowed = _HANDOFF_TRANSITIONS.get(current_state, ())
+    if new_state not in allowed:
+        return {"ok": False, "error": f"invalid transition {current_state!r} -> {new_state!r} "
+                                      f"— allowed from {current_state!r}: {allowed}"}
+
+    limit = _handoff_hop_limit(cfg)
+    prior_hop = int(current.get("hop", 0))
+    # Same form as tommy_handoff's own check (prior count >= limit => refuse the NEXT
+    # one) — kept syntactically identical between the two call sites on purpose, so a
+    # reader never has to work out whether ">=" here and ">" there are secretly the
+    # same boundary (they would be: hop=prior_hop+1, so "hop > limit" and
+    # "prior_hop >= limit" are mathematically the same check) or a real discrepancy.
+    if prior_hop >= limit:
+        return {"ok": False, "reason": "hop_limit_exceeded", "handoff_id": handoff_id,
+                "hop_count": prior_hop, "hop_limit": limit}
+    hop = prior_hop + 1
+
+    record = {k: v for k, v in current.items() if not k.startswith("_")}
+    record.update(state=new_state, hop=hop, note=note)
+    try:
+        _handoff_write(client, ns, record)
+    except Exception as exc:
+        return {"ok": False, "error": f"memnos write failed: {exc}"}
+    return {"ok": True, "handoff_id": handoff_id, "task_id": current.get("task_id"),
+            "state": new_state, "hop": hop, "hop_limit": limit}
+
+
+@mcp.tool()
+def tommy_handoff_status(handoff_id: str, namespace: str = "") -> dict:
+    """
+    Current state and full transition history for a handoff created by
+    tommy_handoff.
+
+    Args:
+        handoff_id: The handoff_id returned by tommy_handoff.
+        namespace:  memnos namespace. Omit for the current project namespace.
+    """
+    cfg = _get_cfg()
+    client = _memnos_client(cfg)
+    if client is None:
+        return {"error": "memnos unreachable"}
+    ns = namespace or _effective_namespace(cfg)
+    records = _handoff_records(client, ns, handoff_id=handoff_id)
+    if not records:
+        return {"error": f"no handoff found for handoff_id={handoff_id!r}"}
+    latest = records[-1]
+    return {
+        "handoff_id": handoff_id, "task_id": latest.get("task_id"),
+        "state": latest.get("state"), "to_harness": latest.get("to_harness"),
+        "hop": latest.get("hop"), "is_terminal": latest.get("state") in _HANDOFF_TERMINAL,
+        "history": [{"state": r.get("state"), "hop": r.get("hop"), "note": r.get("note", "")}
+                    for r in records],
+    }
 
 
 @mcp.tool()

@@ -111,6 +111,7 @@ _KNOWN_TOP_LEVEL_KEYS = {
     "env",
     "merge_gate",
     "wave_limit",
+    "handoff_hop_limit",
 }
 
 
@@ -175,6 +176,10 @@ class TommyYamlConfig:
     env: dict[str, str] = field(default_factory=dict)
     merge_gate: Optional[bool] = None
     wave_limit: Optional[int] = None
+    # issue #193: max handoff hops a single task_id may accumulate (offered->accepted->
+    # in_progress->completed/escalated, each a hop) before tommy_handoff refuses to
+    # record another one — prevents two agents handing a task back and forth forever.
+    handoff_hop_limit: Optional[int] = None
 
     # Not part of the schema — bookkeeping for diagnostics / `tommy config show`.
     source_path: Optional[Path] = field(default=None, repr=False)
@@ -301,6 +306,12 @@ def parse_tommy_yaml(text: str, *, source: str = "<string>") -> TommyYamlConfig:
         if raw["wave_limit"] < 0:
             raise TommyYamlError(f"{source}: wave_limit must be >= 0, got {raw['wave_limit']}")
         cfg.wave_limit = raw["wave_limit"]
+    if "handoff_hop_limit" in raw:
+        _require_type(raw["handoff_hop_limit"], int, f"{source}: handoff_hop_limit")
+        if raw["handoff_hop_limit"] < 1:
+            raise TommyYamlError(
+                f"{source}: handoff_hop_limit must be >= 1, got {raw['handoff_hop_limit']}")
+        cfg.handoff_hop_limit = raw["handoff_hop_limit"]
 
     return cfg
 

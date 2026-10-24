@@ -63,7 +63,11 @@ curl -s "${H[@]}" $M/metrics
 Store a turn; in OpenAI mode the server also extracts bi-temporal facts. The memory's
 **author** is the authenticated principal — never client-supplied. `"async": true`
 returns right after the raw turn is stored and queues extraction
-(`{"turn_id": …, "facts": null, "extraction": "queued"}`).
+(`{"turn_id": …, "facts": null, "extraction": "queued"}`). `"extract": false` (issue
+#193) skips fact extraction entirely for this write — fast, deterministic, no LLM
+call — the raw turn is still stored and audited; useful for writes that don't need
+(or shouldn't get) LLM-interpreted facts, e.g. a `type: "handoff"` state-transition
+record. Default `true`, unchanged behavior for every existing caller.
 
 ```bash
 curl -s "${H[@]}" $M/remember -d '{
@@ -146,6 +150,24 @@ optional `pypdf`/`python-docx`). `"extract": true` also runs per-chunk fact extr
 
 ```python
 m.ingest_file("notes.md", open("notes.md").read())
+```
+
+### `POST /memory/by_type`
+
+Issue #193. `{"namespace", "type", "limit"?}` → `{"memories": [{id, content, observed_at,
+author, memory_type}, ...]}`, oldest first, up to `limit` (default 200, max 1000).
+
+**Not `/recall`.** This is a plain indexed lookup — exact `type` match, no vector/FTS
+ranking, no near-duplicate collapse. `/recall`'s dedupe (needed for its own job — surfacing
+the most relevant handful of memories for a question) actively defeats a caller that needs
+to see *every* record sharing a tag: several near-identical `type`-tagged writes can
+collapse down to a single `/recall` result even with a large `raw_quota`. Use this instead
+when you need exhaustive enumeration — e.g. Tommy's structured task handoffs
+(`agents/tommy`'s `tommy_handoff`/`tommy_handoff_transition`/`tommy_handoff_status`), which
+tag every state-transition write `type: "handoff"` and need to see the whole chain back.
+
+```python
+m.memories_by_type("handoff", limit=200)
 ```
 
 ### `POST /namespace/copy`

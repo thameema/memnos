@@ -106,7 +106,7 @@ _FIELD_ORDER = [
     "namespace", "design_docs",
     "corpus_gate", "auto_ingest",
     "default_model", "harness", "smart_routing", "mcp_introspect", "skip_permissions",
-    "merge_gate", "wave_limit",
+    "merge_gate", "wave_limit", "handoff_hop_limit",
 ]
 
 
