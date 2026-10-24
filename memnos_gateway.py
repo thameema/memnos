@@ -69,6 +69,14 @@ days). `_watchdog_loop` runs for this process's whole life watching for exactly 
 self-heals it (or, after repeated failed heals, exits so the port is freed and a service
 manager's own restart-on-failure can take over) — see that function's docstring for the
 full design.
+
+Update check: a second background thread, `_update_check_loop`, periodically asks PyPI
+for the latest memnos version and caches the result (`~/.memnos/update_check.json`) for
+the CLI to surface — detect + cache + log only, never installs anything itself unless
+the user opted in (`memnos upgrade --auto-update`), in which case it still delegates the
+actual install to a separate `memnos upgrade --no-restart` subprocess rather than
+running it inline. See that function's docstring for why it lives here rather than in
+the backend, and why it never upgrades in-process.
 """
 import json
 import os
@@ -111,6 +119,18 @@ WATCHDOG_MISS_THRESHOLD = int(os.environ.get("MEMNOS_GATEWAY_WATCHDOG_MISS_THRES
 WATCHDOG_MAX_HEAL_ATTEMPTS = int(os.environ.get("MEMNOS_GATEWAY_WATCHDOG_MAX_HEAL_ATTEMPTS", "3"))
 WATCHDOG_HEAL_BACKOFF_S = float(os.environ.get("MEMNOS_GATEWAY_WATCHDOG_HEAL_BACKOFF_S", "15"))
 WATCHDOG_STABLE_S = float(os.environ.get("MEMNOS_GATEWAY_WATCHDOG_STABLE_S", "60"))
+
+# Update check — periodically asks PyPI for the latest memnos version and caches the
+# result for the CLI to surface (bare `memnos`, `memnos status`), optionally installing
+# it automatically if the user opted in (`memnos upgrade --auto-update`). See
+# `_update_check_loop` docstring for why this lives here (the gateway, not the backend)
+# and why it never runs the installer itself. MEMNOS_UPDATE_CHECK=0 disables it entirely
+# — set for every sandboxed/test server launch (see .github/workflows/ci.yml's
+# server-tests env block) so tests never call out to PyPI.
+UPDATE_CHECK_ENABLED = os.environ.get("MEMNOS_UPDATE_CHECK", "1") != "0"
+UPDATE_CHECK_INTERVAL_S = float(os.environ.get("MEMNOS_UPDATE_CHECK_INTERVAL_S", str(24 * 3600)))
+UPDATE_CHECK_FIRST_DELAY_S = float(os.environ.get("MEMNOS_UPDATE_CHECK_FIRST_DELAY_S", "60"))
+UPDATE_CACHE_PATH = os.path.join(CONFIG_DIR, "update_check.json")
 
 # ---- process-wide state (this module IS the long-lived gateway process) -------------
 _public_port = None
@@ -473,6 +493,165 @@ def _watchdog_loop(stop_evt):
         time.sleep(WATCHDOG_HEAL_BACKOFF_S)
 
 
+# ---- update check (detect + cache + log; opt-in auto-install via a separate process) --
+# Deliberately duplicated from memnos_cli.py's identical _installed_version/_vparts/
+# _latest_pypi_version rather than imported — this module has no dependency on
+# memnos_cli.py, same convention as memnos_server.py's own duplicated _pid_alive (see
+# PR #181). Small enough functions that the duplication cost is lower than a new
+# cross-module coupling for a stable, rarely-touched helper.
+def _installed_version():
+    try:
+        import importlib.metadata as _m
+        return _m.version("memnos")
+    except Exception:
+        return None
+
+
+def _vparts(v):
+    out = []
+    for p in (v or "0").split(".")[:4]:
+        n = "".join(c for c in p if c.isdigit())
+        out.append(int(n) if n else 0)
+    return tuple(out)
+
+
+def _latest_pypi_version(timeout=4):
+    import urllib.request
+    try:
+        with urllib.request.urlopen("https://pypi.org/pypi/memnos/json", timeout=timeout) as r:
+            return json.load(r)["info"]["version"]
+    except Exception:
+        return None
+
+
+def _write_update_cache(latest):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    tmp = UPDATE_CACHE_PATH + f".tmp{os.getpid()}"
+    with open(tmp, "w") as f:
+        json.dump({"last_checked_at": time.time(), "latest_known": latest}, f)
+    os.replace(tmp, UPDATE_CACHE_PATH)
+
+
+def _read_update_cache():
+    """Read this gateway's own previous check result — used only to decide whether the
+    "UPDATE available" log line would be a repeat (see `_update_check_tick`). The
+    actual cross-process reader for the CLI hint is memnos_cli.py's own
+    `_read_update_cache` (deliberately duplicated, not imported — see this module's
+    other duplicated helpers above)."""
+    try:
+        with open(UPDATE_CACHE_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _read_auto_update_pref():
+    """Re-read config.json fresh on every tick (not cached at thread start) so a user
+    toggling `memnos upgrade --auto-update`/`--no-auto-update` takes effect on the next
+    check, no gateway restart needed. Any read error (missing file, mid-write from a
+    concurrent CLI command, corrupt JSON) returns False — never auto-update by surprise
+    because config.json was momentarily unreadable. A torn read here only skips auto-
+    update for THIS tick, not the feature — `--auto-update` itself already landed on
+    disk via `save_config` by the time a user sees the CLI's "enabled" message, and the
+    next tick (worst case, UPDATE_CHECK_INTERVAL_S later) re-reads it correctly."""
+    try:
+        with open(os.path.join(CONFIG_DIR, "config.json")) as f:
+            return bool(json.load(f).get("auto_update", False))
+    except Exception:
+        return False
+
+
+def _update_check_tick(current):
+    """One check: ask PyPI, cache the result, log + optionally auto-install if newer.
+    Split out from `_update_check_loop`'s sleep/loop scaffold so it's a plain function a
+    test can call directly without dealing with threading.Event timing. Returns the
+    latest version string on success, None if PyPI was unreachable (nothing to log or
+    cache — same "try again next tick" treatment memnos_cli.py's own
+    `_latest_pypi_version` callers already give a None).
+
+    Only PRINTS the "UPDATE available" line when `latest` is newer than what was
+    cached on the PREVIOUS tick, not on every tick an update is still pending — this
+    writes to the same ~/.memnos/server.log a human reads for crash evidence, once a
+    day forever otherwise would be pure noise. The cache file itself is still written,
+    and the hint still shows, every tick regardless; only this log line is deduped."""
+    previously_known = _read_update_cache().get("latest_known")
+    latest = _latest_pypi_version()
+    if not latest:
+        return None
+    _write_update_cache(latest)
+    if current and _vparts(latest) <= _vparts(current):
+        return latest
+    if latest != previously_known:
+        print(f"[memnos-gateway] UPDATE: v{current or '?'} -> v{latest} available "
+              f"(https://github.com/thameema/memnos/releases/tag/v{latest})", flush=True)
+    if _read_auto_update_pref():
+        print(f"[memnos-gateway] AUTO-UPDATE: v{current or '?'} -> v{latest}, "
+              f"running memnos upgrade", flush=True)
+        _spawn_auto_update()
+    return latest
+
+
+def _spawn_auto_update():
+    """Launch `memnos upgrade --no-restart` as a SEPARATE process — never run the
+    installer from inside this gateway's own code. The gateway is the stable process a
+    rolling upgrade is built to preserve; `uv tool upgrade` replaces the files out from
+    under its own already-loaded code, and if anything in that sequence exits the
+    gateway, launchd's KeepAlive respawns it on a short throttle — the exact crash-loop
+    this feature must not cause. `--no-restart`: the upgrade installs the new package
+    but does not touch the running backend itself — the NEXT scheduled watchdog/update
+    tick (or a manual `memnos restart`) picks up the new code; this keeps the auto-
+    installer's blast radius to "files on disk changed", nothing live-reloaded.
+    Resolves the `memnos` binary next to this process's own sys.executable (NOT a bare
+    PATH lookup) because launchd services get a minimal PATH that doesn't include a
+    uv-tool or pipx install location."""
+    memnos_bin = os.path.join(os.path.dirname(sys.executable), "memnos")
+    if not os.path.exists(memnos_bin):
+        memnos_bin = "memnos"   # fall back to PATH (e.g. a pip-installed, non-venv setup)
+    log_path = os.path.join(CONFIG_DIR, "auto_update.log")
+    logf = None
+    try:
+        # NOT a `with` block: Popen's child inherits this fd and needs it to stay open
+        # past the point where this function returns — close explicitly right after
+        # spawning, once the child has its own reference, rather than relying on the
+        # parent's `with` block (which would close it immediately, before the child is
+        # even guaranteed to have duped it) to coincidentally still work.
+        logf = open(log_path, "a")
+        subprocess.Popen([memnos_bin, "upgrade", "--no-restart"],
+                         stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
+    except Exception as e:
+        print(f"[memnos-gateway] AUTO-UPDATE: failed to launch {memnos_bin}: "
+              f"{type(e).__name__}: {e}", flush=True)
+    finally:
+        if logf is not None:
+            logf.close()
+
+
+def _update_check_loop(stop_evt):
+    """Background thread, runs for the gateway's whole life (sibling to
+    `_watchdog_loop`, started alongside it in `run()`). Skips entirely when
+    MEMNOS_UPDATE_CHECK=0 (every sandboxed/test server — see ci.yml) or when
+    `_installed_version()` is None (a dev/source checkout; nothing on PyPI to compare
+    a non-version against). First check is delayed `UPDATE_CHECK_FIRST_DELAY_S`
+    (default 60s) rather than immediate — a gateway that's mid crash-loop for an
+    unrelated reason shouldn't also hammer PyPI on every restart.
+
+    `current` is re-read fresh every tick, not captured once — this is what lets an
+    `auto_update`-triggered install actually "complete" from this loop's point of view:
+    `_installed_version()` reads the on-disk package metadata (importlib.metadata),
+    which `uv tool upgrade`/`pip install -U` update immediately, well before this
+    process ever restarts to run the new code. Without re-reading, this loop would see
+    the same stale "update available" forever and could re-launch the auto-update
+    subprocess on every subsequent tick even after it already succeeded."""
+    if not UPDATE_CHECK_ENABLED or _installed_version() is None:
+        return
+    if stop_evt.wait(UPDATE_CHECK_FIRST_DELAY_S):
+        return
+    while True:
+        _update_check_tick(_installed_version())
+        if stop_evt.wait(UPDATE_CHECK_INTERVAL_S):
+            return
+
+
 # ---- state file (how memnos_cli.py's `restart`/`upgrade` find this gateway later) ----
 def _write_state(state):
     os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -827,6 +1006,8 @@ def run(public_port):
 
     threading.Thread(target=_watchdog_loop, args=(stop_evt,),
                      name="memnos-gateway-watchdog", daemon=True).start()
+    threading.Thread(target=_update_check_loop, args=(stop_evt,),
+                     name="memnos-gateway-update-check", daemon=True).start()
     stop_evt.wait()
 
     httpd.shutdown()
