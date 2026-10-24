@@ -299,6 +299,13 @@ def main():
          name="POST /remember (typed constraint)")
     call("POST", "/memory/write", body={"namespace": NS, "content": "Bob prefers tea over coffee.",
          "type": "decision"}, token=TADM, expect=200)
+    call("POST", "/remember", body={"namespace": NS, "type": "handoff", "extract": False,
+         "text": "[tommy_handoff] oapi coverage probe"}, token=TADM, expect=200,
+         name="POST /remember (typed handoff, extract=False)")
+    call("POST", "/memory/by_type", body={"namespace": NS, "type": "handoff"},
+         token=TADM, expect=200)
+    call("POST", "/memory/by_type", body={"namespace": NS, "type": "wrongtype"},
+         token=TADM, expect=400, name="POST /memory/by_type (unknown type)")
     # knowledge namespace content for grounded recall
     st, ing = call("POST", "/corpus/ingest", token=TADM, expect=200,
                  body={"namespace": NSK, "name": "arch.md", "kind": "doc",

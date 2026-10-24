@@ -50,20 +50,27 @@ class MemnosClient:
                                transport=transport)
 
     def remember(self, text, *, namespace=None, speaker=None, session_id=None,
-                 memory_type=None, constraint_subject=None, async_=False) -> dict:
+                 memory_type=None, constraint_subject=None, async_=False, extract=None) -> dict:
         """Store a turn. With async_=True the server stores the raw turn immediately and
         extracts facts in the background, returning in ~200ms — use it for capture paths on
         slow local-LLM extraction backends (Ollama/vLLM) where a synchronous call would
         otherwise block past the timeout and lose the write.
 
         `constraint_subject` (issues #83/#84): optional, only meaningful when
-        memory_type="constraint" — see openapi.yaml's RememberRequest for the full contract."""
+        memory_type="constraint" — see openapi.yaml's RememberRequest for the full contract.
+
+        `extract=False` (issue #193): skip LLM fact extraction for this write — fast,
+        deterministic, no model call; the raw turn is still stored and audited. Default
+        (None) omits the field, same as the server's own default (True) — existing callers
+        see no behavior change."""
         body = {"namespace": _ns(namespace, self.namespace), "text": text,
                 "speaker": speaker, "session_id": session_id, "async": async_}
         if memory_type is not None:
             body["type"] = memory_type
         if constraint_subject is not None:
             body["constraint_subject"] = constraint_subject
+        if extract is not None:
+            body["extract"] = extract
         return _raise(self._c.post("/remember", json=body))
 
     def recall(self, query, *, namespace=None, raw_quota=None, fact_quota=None, max_chars=None,
@@ -78,6 +85,15 @@ class MemnosClient:
             if v is not None:
                 body[k] = v
         return _raise(self._c.post("/recall", json=body))
+
+    def memories_by_type(self, memory_type, *, namespace=None, limit=200) -> dict:
+        """Issue #193: EXACT, non-ranked enumeration of every memory tagged `memory_type`
+        — NOT recall(). recall()'s near-duplicate dedupe (needed for its own job) can
+        collapse several near-identical typed writes down to one result even with a
+        large raw_quota; this is a plain indexed lookup for callers that need to see
+        every record sharing a tag (e.g. Tommy's structured handoffs). Oldest first."""
+        body = {"namespace": _ns(namespace, self.namespace), "type": memory_type, "limit": limit}
+        return _raise(self._c.post("/memory/by_type", json=body))
 
     def ingest_file(self, filename, text, *, namespace=None, extract=False) -> dict:
         """Chunk a document's text into memory under `filename`. Pass extracted text

@@ -160,7 +160,14 @@ PHASED_OPS = {"/recall", "/memory/search", "/recall_v2", "/memory/context", "/co
 # TYPED MEMORIES (0.1.6): the closed set of memory types. Validated server-side on every
 # write (400 on anything else) so the column can never accumulate junk labels.
 # type='constraint' memories are PINNED into /recall (see _phased_op).
-ALLOWED_MEMORY_TYPES = ("decision", "incident", "constraint", "skill", "fact")
+# type='handoff' (Tommy #193): plain queryable tag for cross-agent task-handoff state
+# records — deliberately NOT given constraint-style treatment anywhere (no pinning, no
+# LLM-extraction bypass of its own). It participates in the SAME `extract` toggle every
+# other type does; callers that want deterministic, LLM-free handoff writes pass
+# `extract=False` explicitly (see `_remember_phased` below), the same knob a 'fact' or
+# 'decision' write could also use. Keeping this orthogonal to the type is what keeps
+# pinned_constraints() correctly untouched by a type that was never meant to be pinned.
+ALLOWED_MEMORY_TYPES = ("decision", "incident", "constraint", "skill", "fact", "handoff")
 
 
 def _memory_type(req):
@@ -1278,6 +1285,17 @@ class Handler(BaseHTTPRequestHandler):
                         if res is None:
                             return self._send(404, {"error": "entity not found"})
                         out = res
+                    elif self.path == "/memory/by_type":   # issue #193: exact enumeration, not /recall
+                        ok, mtype = _memory_type(req)
+                        if not ok:
+                            return self._send(400, mtype)
+                        if mtype is None:
+                            return self._send(400, {"error": "type required"})
+                        try:
+                            lim = max(1, min(int(req.get("limit", 200)), 1000))
+                        except (TypeError, ValueError):
+                            return self._send(400, {"error": "limit must be an integer"})
+                        out = {"memories": store.list_raw_turns_by_type(mem.schema, ns, mtype, limit=lim)}
                     elif self.path == "/contradictions":   # check_contradictions
                         # issue #156: the sample list is capped; total_groups /
                         # contested_facts are the uncapped namespace-wide counts.
@@ -1620,6 +1638,15 @@ class Handler(BaseHTTPRequestHandler):
         speaker = req.get("speaker")
         speaker = (str(speaker)[:40] if speaker is not None else None)
         run_async = bool(req.get("async"))
+        # issue #193: optional, explicit opt-out of LLM fact extraction — default True
+        # (unchanged behavior for every existing caller that never sends this field).
+        # Reuses the SAME "no extraction" branch _have_extraction()==False already takes
+        # below (raw turn stored, audited, 0 facts returned) rather than adding a second
+        # code path — a caller that wants a fast, deterministic, LLM-free write (e.g.
+        # Tommy's handoff-state transitions, #193) gets exactly the same tested behavior
+        # a local-mode server already gives every write, just opted into per-request
+        # instead of server-wide.
+        want_extract = bool(req.get("extract", True))
         usage = _UsageAcc()
         cost0 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
         principal = None                               # bound for the failure-audit path
@@ -1655,7 +1682,7 @@ class Handler(BaseHTTPRequestHandler):
                                    "retired": retired}, status=200)
             # conn is back in the pool. `mem` is reused ONLY for extract_facts below,
             # which never touches its store.
-            if not _have_extraction():                            # local mode: no extraction
+            if not _have_extraction() or not want_extract:        # local mode, or opted out
                 with POOL.connection() as conn:
                     Control.audit(conn, principal, action, ns, True,
                                   latency_ms=int((time.perf_counter() - t0) * 1000), status=200)

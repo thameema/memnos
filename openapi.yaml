@@ -507,6 +507,36 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/DbDown" }
+  /memory/by_type:
+    post:
+      tags: [memory]
+      summary: Exact, non-ranked enumeration of every raw turn tagged with `type`
+      description: >-
+        Issue #193. UNLIKE /recall, this is a plain indexed lookup, not ranked
+        retrieval — no vector/FTS scoring, no near-duplicate collapse. /recall's
+        near-duplicate dedupe (issue #2, needed for its own job of surfacing the
+        most relevant handful of memories) actively defeats a caller that needs to
+        see EVERY record sharing a tag — several near-identical `type`-tagged writes
+        can collapse down to just one /recall result even with a large raw_quota.
+        This exists for callers that need exhaustive enumeration instead (e.g.
+        Tommy's structured task handoffs, agents/tommy's tommy_handoff*). Returns
+        oldest-first (raw_turns.id order), up to `limit` (default 200, max 1000).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemoryByTypeRequest" }
+      responses:
+        "200":
+          description: every raw turn tagged `type`, oldest first
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryByTypeResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
   /contradictions:
     post:
       tags: [graph]
@@ -1141,7 +1171,7 @@ paths:
         - name: type
           in: query
           required: false
-          schema: { type: string, enum: [decision, incident, constraint, skill, fact] }
+          schema: { type: string, enum: [decision, incident, constraint, skill, fact, handoff] }
       responses:
         "200":
           description: recent memories page
@@ -1596,6 +1626,16 @@ components:
       required: [namespace]
       properties:
         namespace: { type: string, maxLength: 200 }
+    MemoryByTypeRequest:
+      type: object
+      required: [namespace, type]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        type:
+          type: string
+          enum: [decision, incident, constraint, skill, fact, handoff]
+          description: issue #193 — exact match, not a ranked-relevance filter
+        limit: { type: integer, default: 200, maximum: 1000 }
     RememberRequest:
       type: object
       required: [namespace, text]
@@ -1606,11 +1646,14 @@ components:
         session_id: { type: string }
         type:
           type: string
-          enum: [decision, incident, constraint, skill, fact]
+          enum: [decision, incident, constraint, skill, fact, handoff]
           description: >
             classify the memory; facts extracted from the turn inherit it. Unknown
             values are rejected (400). `constraint` memories are PINNED into every
-            recall on the namespace.
+            recall on the namespace. `handoff` (issue #193) is a plain queryable tag
+            for cross-agent task-handoff state records — it gets no pinning and no
+            special extraction treatment of its own; pair it with `extract: false`
+            for a deterministic, LLM-free write.
         constraint_subject:
           type: string
           maxLength: 200
@@ -1629,6 +1672,16 @@ components:
         async:
           type: boolean
           description: defer fact extraction to background workers (fast return)
+        extract:
+          type: boolean
+          default: true
+          description: >
+            issue #193. false skips LLM fact extraction entirely — the raw turn is
+            still stored and audited, same code path a local-mode server (no LLM
+            configured) already takes for every write. For a fast, deterministic
+            write with no extraction cost/nondeterminism (e.g. tagging a handoff
+            state transition). Ignored (treated as false) when the server has no
+            extraction backend configured, same as today.
     MemoryWriteRequest:
       type: object
       required: [namespace]
@@ -1641,12 +1694,13 @@ components:
         session_id: { type: string }
         type:
           type: string
-          enum: [decision, incident, constraint, skill, fact]
+          enum: [decision, incident, constraint, skill, fact, handoff]
         constraint_subject:
           type: string
           maxLength: 200
           description: see RememberRequest.constraint_subject (issues #83/#84)
         async: { type: boolean }
+        extract: { type: boolean, default: true, description: "see RememberRequest.extract (issue #193)" }
     RecallRequest:
       type: object
       required: [namespace, query]
@@ -1662,7 +1716,7 @@ components:
           description: only memories written by this principal (server-stamped author)
         type:
           type: string
-          enum: [decision, incident, constraint, skill, fact]
+          enum: [decision, incident, constraint, skill, fact, handoff]
           description: >
             only memories of this type. Pinned constraints are exempt — they are always
             injected (disable with constraint_cap=0).
@@ -1918,7 +1972,7 @@ components:
         namespace: { type: string, description: source namespace (wide/grounded rows) }
         type:
           type: string
-          enum: [decision, incident, constraint, skill, fact]
+          enum: [decision, incident, constraint, skill, fact, handoff]
           description: memory type (absent = untyped)
         pinned:
           type: boolean
@@ -2165,6 +2219,21 @@ components:
         size: { type: integer, description: members returned + the seed entity }
         max_hops: { type: integer }
         limit: { type: integer }
+    MemoryByTypeResponse:
+      type: object
+      required: [memories]
+      properties:
+        memories:
+          type: array
+          items:
+            type: object
+            required: [id, content]
+            properties:
+              id: { type: integer }
+              content: { type: string }
+              observed_at: { type: string }
+              author: { type: string, nullable: true }
+              memory_type: { type: string }
     ContradictionsResponse:
       type: object
       required: [contradictions]
@@ -2274,7 +2343,7 @@ components:
               items: { type: integer }
             memory_type:
               type: [string, "null"]
-              enum: [decision, incident, constraint, skill, fact, null]
+              enum: [decision, incident, constraint, skill, fact, handoff, null]
               description: inherited when ALL source turns share one type (else null)
         turns:
           type: array
@@ -2310,7 +2379,7 @@ components:
               salience: { type: number }
               memory_type:
                 type: [string, "null"]
-                enum: [decision, incident, constraint, skill, fact, null]
+                enum: [decision, incident, constraint, skill, fact, handoff, null]
                 description: inherited when ALL source turns share one type (else null)
               score:
                 $ref: "#/components/schemas/SqlNumber"

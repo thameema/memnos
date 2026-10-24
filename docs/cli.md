@@ -39,8 +39,9 @@ save a memory (data client — talks to the server)
 |---|---|
 | `text` | the text to remember |
 | `--namespace` | target namespace (default: auto-resolve for this folder) |
-| `--type` | classify the memory (constraints are pinned into every recall) (one of: `decision`, `incident`, `constraint`, `skill`, `fact`) |
+| `--type` | classify the memory (constraints are pinned into every recall; handoff is a plain queryable tag, no pinning — issue #193) (one of: `decision`, `incident`, `constraint`, `skill`, `fact`, `handoff`) |
 | `--subject` | constraint grouping key (--type constraint only). A newer constraint with the SAME subject supersedes the older one; omitted, the server derives one from the text |
+| `--no-extract` | skip LLM fact extraction for this write — fast, deterministic, no model call; the raw turn is still stored (issue #193) |
 | `--token` | bearer token (default: MEMNOS_TOKEN or the config admin token) |
 | `--json` | also print the raw server response JSON |
 
@@ -57,7 +58,7 @@ recall relevant memories (data client)
 | `query` | what to recall |
 | `--namespace` | namespace to search (default: auto-resolve) |
 | `--scope` | widen across every namespace your token may read (one of: `all`, `wide`) |
-| `--type` | only memories of this type (pinned constraints always included) (one of: `decision`, `incident`, `constraint`, `skill`, `fact`) |
+| `--type` | only memories of this type (pinned constraints always included) (one of: `decision`, `incident`, `constraint`, `skill`, `fact`, `handoff`) |
 | `--token` | bearer token (default: MEMNOS_TOKEN or the config admin token) |
 
 ```bash

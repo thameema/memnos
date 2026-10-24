@@ -51,6 +51,7 @@ ENV_CORPUS_GATE = "TOMMY_CFG_CORPUS_GATE"
 ENV_AUTO_INGEST = "TOMMY_CFG_AUTO_INGEST"
 ENV_MERGE_GATE = "TOMMY_CFG_MERGE_GATE"
 ENV_WAVE_LIMIT = "TOMMY_CFG_WAVE_LIMIT"
+ENV_HANDOFF_HOP_LIMIT = "TOMMY_CFG_HANDOFF_HOP_LIMIT"
 
 # Built-in fallbacks used when neither tommy.conf, tommy.yaml, nor env sets a
 # value and there's no TommyConfig equivalent to fall back to (project.*,
@@ -60,6 +61,13 @@ ENV_WAVE_LIMIT = "TOMMY_CFG_WAVE_LIMIT"
 # change today's behavior for anyone who hasn't opted into tommy.yaml yet.
 DEFAULT_WAVE_LIMIT = 4
 DEFAULT_MERGE_GATE = False
+# issue #193: how many handoff hops (offered->accepted->in_progress->completed/
+# escalated, each one a hop) a single task_id may accumulate before tommy_handoff
+# refuses to record another — a hard cap against two agents ping-ponging a task
+# forever, borrowed from Cursor's "cyclic loop with a safety cap" pattern. 8 is
+# generous enough for a real multi-step review cycle (propose -> review -> revise
+# -> re-review...) without being effectively unbounded.
+DEFAULT_HANDOFF_HOP_LIMIT = 8
 DEFAULT_CORPUS_GATE = False
 DEFAULT_AUTO_INGEST = False
 
@@ -209,6 +217,9 @@ def resolve_effective_config(
     _set(resolved, "wave_limit", DEFAULT_WAVE_LIMIT,
          yaml_cfg.wave_limit if yaml_cfg else None,
          ENV_WAVE_LIMIT, env, env_cast=int, base_source="default")
+    _set(resolved, "handoff_hop_limit", DEFAULT_HANDOFF_HOP_LIMIT,
+         yaml_cfg.handoff_hop_limit if yaml_cfg else None,
+         ENV_HANDOFF_HOP_LIMIT, env, env_cast=int, base_source="default")
 
     return EffectiveConfig(
         fields=resolved,

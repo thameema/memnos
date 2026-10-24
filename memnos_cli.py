@@ -2706,6 +2706,8 @@ def cmd_remember(args, cfg):
         if getattr(args, "type", None) != "constraint":
             sys.exit("--subject only applies to --type constraint")
         body["constraint_subject"] = args.subject
+    if getattr(args, "no_extract", False):
+        body["extract"] = False
     out = _post(cfg, "/remember", body,
                 args.token or os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token"))
     # write-time attribution (issue #20, Part B): always say WHERE it landed.
@@ -4609,11 +4611,15 @@ def build_parser():
     p = sub.add_parser("remember", help="save a memory (data client — talks to the server)")
     p.add_argument("text", help="the text to remember")
     p.add_argument("--namespace", default="auto", help="target namespace (default: auto-resolve for this folder)")
-    p.add_argument("--type", choices=["decision", "incident", "constraint", "skill", "fact"],
-                   help="classify the memory (constraints are pinned into every recall)")
+    p.add_argument("--type", choices=["decision", "incident", "constraint", "skill", "fact", "handoff"],
+                   help="classify the memory (constraints are pinned into every recall; "
+                        "handoff is a plain queryable tag, no pinning — issue #193)")
     p.add_argument("--subject", help="constraint grouping key (--type constraint only). A newer "
                         "constraint with the SAME subject supersedes the older one; omitted, "
                         "the server derives one from the text")
+    p.add_argument("--no-extract", action="store_true",
+                   help="skip LLM fact extraction for this write — fast, deterministic, no model "
+                        "call; the raw turn is still stored (issue #193)")
     p.add_argument("--token", help="bearer token (default: MEMNOS_TOKEN or the config admin token)")
     p.add_argument("--json", action="store_true", help="also print the raw server response JSON")
     p.set_defaults(fn=cmd_remember)
@@ -4621,7 +4627,7 @@ def build_parser():
     p.add_argument("query", help="what to recall")
     p.add_argument("--namespace", default="auto", help="namespace to search (default: auto-resolve)")
     p.add_argument("--scope", choices=["all", "wide"], help="widen across every namespace your token may read")
-    p.add_argument("--type", choices=["decision", "incident", "constraint", "skill", "fact"],
+    p.add_argument("--type", choices=["decision", "incident", "constraint", "skill", "fact", "handoff"],
                    help="only memories of this type (pinned constraints always included)")
     p.add_argument("--token", help="bearer token (default: MEMNOS_TOKEN or the config admin token)")
     p.set_defaults(fn=cmd_recall)
