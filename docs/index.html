@@ -13,7 +13,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>memnos — a persistent memory for AI agents | self-hosted, open source</title>
   <meta name="description" content="Your AI forgets everything between sessions. memnos fixes that — a real, persistent memory for Claude, Cursor, and any AI agent, so it remembers who you are and what you told it. Self-hosted on your own PostgreSQL, fully open source, no LLM required to recall. Works just as well for one person or a whole engineering team sharing one memory." />
-  <meta name="keywords" content="persistent memory AI agents, LLM memory, MCP server, Claude Code memory, Cursor AI memory, agent context persistence, memory store AI, RAG memory, memnos, AI agent SDK, shared agent memory, team memory for AI, Codex memory, Claude Code memory, multi-agent memory, LangChain memory backend, self-hosted AI memory, governed AI memory" />
+  <meta name="keywords" content="persistent memory AI agents, LLM memory, MCP server, Claude Code memory, Cursor AI memory, agent context persistence, memory store AI, RAG memory, memnos, AI agent SDK, shared agent memory, team memory for AI, Codex memory, Claude Code memory, multi-agent memory, LangChain memory backend, self-hosted AI memory, governed AI memory, cross-harness agent handoff, multi-agent task handoff, Tommy orchestrator, agent-to-agent handoff" />
   <link rel="canonical" href="https://memnos.net/" />
   <!-- Open Graph -->
   <meta property="og:type" content="website" />
@@ -121,6 +121,22 @@
     .compare-table td { padding: 10px 14px; font-size: 0.8rem; border-top: 1px solid rgba(255,255,255,0.05); text-align: center; }
     .compare-table td:first-child { text-align: left; color: #d1d5db; }
     .compare-table tr:hover td { background: rgba(255,255,255,0.02); }
+    /* Hero slides: stacked in the same grid cell so the container's height is the
+       max of both slides — crossfading via opacity/visibility (not display/hidden)
+       means a slide still occupies layout space while inactive, so switching never
+       jumps the page height. */
+    .hero-slides { display: grid; }
+    /* min-width:0 overrides a grid item's default min-width:auto, which otherwise lets a
+       long unbreakable string (whitespace-nowrap buttons, a mono-font namespace label)
+       force this slide's intrinsic content width onto the shared .hero-slides track —
+       stretching the whole hero section past the viewport at narrow widths. */
+    .hero-slide { grid-area: 1 / 1; min-width: 0; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 0.5s ease; }
+    .hero-slide.active { opacity: 1; visibility: visible; pointer-events: auto; }
+    .hero-dot {
+      width: 8px; height: 8px; border-radius: 9999px; border: none; cursor: pointer;
+      background: rgba(255,255,255,0.2); transition: background 0.3s, transform 0.3s; padding: 0;
+    }
+    .hero-dot[aria-current="true"] { background: #a78bfa; transform: scale(1.35); }
   </style>
 </head>
 <body class="antialiased overflow-x-hidden">
@@ -189,11 +205,15 @@
 </nav>
 
 <!-- ── HERO ─────────────────────────────────────────────────────────── -->
-<section class="relative min-h-screen flex items-center pt-16 overflow-hidden">
+<section id="hero" class="relative min-h-screen flex items-center pt-16 overflow-hidden">
   <div class="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-600 rounded-full blur-[140px] opacity-10 pointer-events-none"></div>
   <div class="absolute bottom-1/4 right-1/4 w-80 h-80 bg-blue-500 rounded-full blur-[120px] opacity-8 pointer-events-none"></div>
 
-  <div class="relative z-10 max-w-6xl mx-auto px-6 w-full grid md:grid-cols-2 gap-16 items-center py-14">
+  <div class="relative z-10 max-w-6xl mx-auto px-6 w-full py-14">
+  <div class="hero-slides">
+
+    <!-- SLIDE 1 — memory -->
+    <div class="hero-slide active grid md:grid-cols-2 gap-16 items-center">
     <!-- Left -->
     <div>
       <div class="inline-flex items-center gap-2 bg-purple-500/10 border border-purple-500/20 rounded-full px-4 py-1.5 text-sm text-purple-300 mb-8">
@@ -283,6 +303,99 @@
         </div>
       </div>
     </div>
+    </div>
+    <!-- /SLIDE 1 -->
+
+    <!-- SLIDE 2 — cross-harness handoffs -->
+    <div class="hero-slide grid md:grid-cols-2 gap-16 items-center">
+    <!-- Left -->
+    <div>
+      <div class="inline-flex items-center gap-2 bg-purple-500/10 border border-purple-500/20 rounded-full px-4 py-1.5 text-sm text-purple-300 mb-8">
+        <span class="w-1.5 h-1.5 bg-purple-400 rounded-full pulse-dot"></span>
+        New: cross-harness handoffs via Tommy · same primitives via the SDK
+      </div>
+      <h2 class="hero-display text-5xl md:text-6xl font-bold text-white leading-[1.05] mb-6">
+        Claude Code. Codex. Cursor.<br />
+        <span class="gradient-text">One memory between all of them.</span>
+      </h2>
+      <p class="text-gray-400 text-lg leading-relaxed mb-6 max-w-lg">
+        Most teams don&rsquo;t run one harness anymore — Claude Code for one task, Codex for another, Cursor for a third, often in the same week. Without a shared memory, every one of them starts cold. memnos gives every harness, every agent and every session the same memory to read from and write to.
+      </p>
+      <p class="text-gray-300 text-base leading-relaxed mb-8 max-w-lg">
+        When a task has to move from one harness to another, Tommy&rsquo;s <code class="text-purple-300 font-mono text-sm">tommy_handoff</code> records it as a <span class="text-white font-semibold">durable, auditable handoff</span> — state-machined, hop-capped so it can&rsquo;t ping-pong forever. Building your own multi-agent system on the SDK instead? The same handoff primitives are yours to call directly.
+      </p>
+      <div class="flex flex-wrap items-center gap-3">
+        <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white font-semibold px-6 py-3 rounded-full text-sm whitespace-nowrap">Deploy free</a>
+        <a href="agents.html" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-6 py-3 rounded-full flex items-center gap-2 whitespace-nowrap">See Tommy &rarr;</a>
+        <a href="#coordination" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-6 py-3 rounded-full whitespace-nowrap">See handoffs in action</a>
+      </div>
+      <!-- Stats row -->
+      <div class="mt-14 grid grid-cols-2 gap-x-8 gap-y-6 border-t border-gray-800 pt-8">
+        <div>
+          <div class="text-2xl font-bold text-white">6 harnesses</div>
+          <div class="text-xs text-gray-500 mt-0.5">Claude Code, Codex, aider, goose, cursor-agent, kiro supervised by Tommy today</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-white">Hop-capped</div>
+          <div class="text-xs text-gray-500 mt-0.5">a handoff can&rsquo;t ping-pong between agents forever — enforced, not prompted</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-white">Audited</div>
+          <div class="text-xs text-gray-500 mt-0.5">every transition is a signed, durable memnos write — full history, not a chat log</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-white">SDK too</div>
+          <div class="text-xs text-gray-500 mt-0.5">the same handoff type &amp; enumeration endpoint, callable directly from your own agent code</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right — live handoff widget -->
+    <div class="relative">
+      <div class="glass rounded-2xl p-5 space-y-3 max-w-md ml-auto">
+        <div class="flex items-center justify-between mb-4">
+          <span class="text-xs text-gray-500 font-mono">handoff: auth-pkce-migration</span>
+          <span class="text-xs text-gray-500">claude &rarr; codex</span>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full font-mono">offered</span>
+            <span class="text-xs text-gray-500">hop 1 · claude &rarr; codex</span>
+          </div>
+          <p class="text-sm text-gray-200">Task &ldquo;refactor the auth module to use PKCE&rdquo; offered to codex, with a memnos context bundle attached — not the full transcript.</p>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full font-mono">accepted</span>
+            <span class="text-xs text-gray-500">hop 2 · codex</span>
+          </div>
+          <p class="text-sm text-gray-200">codex accepted the handoff. Full context received — nothing re-explained.</p>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-yellow-500/20 text-yellow-300 px-2 py-0.5 rounded-full font-mono">in_progress</span>
+            <span class="text-xs text-gray-500">hop 3 · codex</span>
+          </div>
+          <p class="text-sm text-gray-200">&ldquo;PKCE flow drafted, writing tests next.&rdquo; — a note attached to the transition, not a side channel.</p>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-green-500/20 text-green-300 px-2 py-0.5 rounded-full font-mono">completed</span>
+            <span class="text-xs text-gray-500">hop 4 · terminal</span>
+          </div>
+          <p class="text-sm text-gray-200">PR opened with the PKCE flow and tests. Full 4-hop history auditable via <code class="text-green-300 font-mono text-xs bg-green-950/50 px-1 rounded">tommy_handoff_status</code>.</p>
+        </div>
+      </div>
+    </div>
+    </div>
+    <!-- /SLIDE 2 -->
+
+  </div>
+  <!-- Slide dots -->
+  <div class="flex items-center justify-center gap-2 mt-10">
+    <button type="button" class="hero-dot" data-hero-dot="0" aria-label="Show the persistent-memory slide" aria-current="true"></button>
+    <button type="button" class="hero-dot" data-hero-dot="1" aria-label="Show the cross-harness handoffs slide" aria-current="false"></button>
+  </div>
   </div>
 </section>
 
@@ -459,7 +572,7 @@
       <div class="glass rounded-2xl p-6">
         <div class="text-2xl mb-3">🤖</div>
         <h3 class="text-white font-semibold mb-2">Agent builders</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Building on LangChain, LangGraph or your own stack? memnos is a real memory backend via the <code class="text-green-300">memnos-sdk</code>, MCP and REST — hybrid recall, bi-temporal facts, no LLM at query time. Vendor-neutral, runs anywhere.</p>
+        <p class="text-sm text-gray-400 leading-relaxed">Building on LangChain, LangGraph or your own stack? memnos is a real memory backend via the <code class="text-green-300">memnos-sdk</code>, MCP and REST — hybrid recall, bi-temporal facts, no LLM at query time. If your own agents need to hand work to each other, the same durable <code class="text-green-300">handoff</code> memory type and exact-enumeration endpoint Tommy uses are callable directly — build your own state machine on top. Vendor-neutral, runs anywhere.</p>
       </div>
       <div class="glass rounded-2xl p-6">
         <div class="text-2xl mb-3">🏛️</div>
@@ -523,8 +636,11 @@
         <div class="w-10 h-10 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-center mb-5">
           <svg class="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/></svg>
         </div>
-        <h3 class="text-white font-semibold mb-2">Multi-Agent Coordination</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Pub/sub across agents — webhook push and cursor-based polling, delivered at-least-once. When one agent writes a discovery, subscribed agents hear about it on the next delivery pass.</p>
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+          <h3 class="text-white font-semibold">Multi-Agent Coordination &amp; Handoffs</h3>
+          <span class="text-[10px] uppercase tracking-wide bg-purple-500/15 border border-purple-500/25 text-purple-300 px-2 py-0.5 rounded-full whitespace-nowrap">new</span>
+        </div>
+        <p class="text-sm text-gray-400 leading-relaxed">Pub/sub across agents — webhook push and cursor-based polling, delivered at-least-once. For structured work handoffs between harnesses (Claude Code &rarr; Codex &rarr; Cursor, or any mix), Tommy&rsquo;s <code class="text-purple-300 font-mono text-xs">tommy_handoff</code> adds a durable, hop-capped state machine on top — and the same <code class="text-purple-300 font-mono text-xs">handoff</code> memory type is callable directly from the SDK if you&rsquo;re building your own.</p>
       </div>
 
       <div class="glass rounded-2xl p-6">
@@ -1003,19 +1119,20 @@ curl -X POST http://127.0.0.1:8900/corpus/check \
     <div class="text-center mb-12">
       <div class="inline-flex items-center gap-2 mb-3">
         <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Multi-agent coordination</span>
-        <span class="text-[10px] uppercase tracking-wide bg-purple-500/15 border border-purple-500/25 text-purple-300 px-2 py-0.5 rounded-full whitespace-nowrap">new in 0.1.6</span>
+        <span class="text-[10px] uppercase tracking-wide bg-purple-500/15 border border-purple-500/25 text-purple-300 px-2 py-0.5 rounded-full whitespace-nowrap">new</span>
       </div>
       <h2 class="text-3xl font-bold text-white mb-4">Agent handoffs you can audit</h2>
-      <p class="text-gray-400 max-w-2xl mx-auto">The classic blackboard pattern, with a policy layer: agents share a namespace, every write is signed with the <span class="text-gray-200">authenticated</span> principal — set by the server, never client-supplied — and webhook subscriptions push new memories to the agents that care (at-least-once). When another agent recalls, it sees exactly who said what.</p>
+      <p class="text-gray-400 max-w-2xl mx-auto">Two ways to coordinate, both signed with the <span class="text-gray-200">authenticated</span> principal — set by the server, never client-supplied. Pick the raw primitive for your own stack, or Tommy&rsquo;s structured state machine for cross-harness task handoffs.</p>
     </div>
-    <div class="max-w-3xl mx-auto code-block p-6">
-      <div class="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800">
-        <div class="w-3 h-3 rounded-full bg-red-500/60"></div>
-        <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
-        <div class="w-3 h-3 rounded-full bg-green-500/60"></div>
-        <span class="ml-3 text-xs text-gray-600">blackboard.sh — a governed handoff between two agents</span>
-      </div>
-      <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># Give the agent its own identity, key and scope</span>
+    <div class="grid md:grid-cols-2 gap-6">
+      <div class="code-block p-6 min-w-0">
+        <div class="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800">
+          <div class="w-3 h-3 rounded-full bg-red-500/60"></div>
+          <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
+          <div class="w-3 h-3 rounded-full bg-green-500/60"></div>
+          <span class="ml-3 text-xs text-gray-600">blackboard.sh — pub/sub, raw memnos primitives</span>
+        </div>
+        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># Give the agent its own identity, key and scope</span>
 memnos principal create billing-bot --kind service
 memnos token mint billing-bot                  <span class="token-cmt"># → mnk_…</span>
 memnos grant add billing-bot proj:storefront
@@ -1030,8 +1147,31 @@ curl -s -H <span class="token-str">"Authorization: Bearer $MEMNOS_TOKEN"</span> 
 
 <span class="token-cmt"># …and every other agent's recall shows who said it — server-signed:</span>
 <span class="token-var">- (fact, 2026-06-11, by billing-bot) Refund r-1041 approved — customer churned …</span></code></pre>
+      </div>
+      <div class="code-block p-6 min-w-0">
+        <div class="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800">
+          <div class="w-3 h-3 rounded-full bg-red-500/60"></div>
+          <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
+          <div class="w-3 h-3 rounded-full bg-green-500/60"></div>
+          <span class="ml-3 text-xs text-gray-600">tommy_handoff — structured, cross-harness (MCP tool)</span>
+        </div>
+        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># claude-code session hands a task to codex — a durable record,</span>
+<span class="token-cmt"># not a dispatch: codex still has to pick it up itself.</span>
+<span class="token-fn">tommy_handoff</span>(
+  task_id=<span class="token-str">"auth-pkce-migration"</span>,
+  to_harness=<span class="token-str">"codex"</span>,
+  context_summary=<span class="token-str">"refactor auth module to use PKCE"</span>,
+  expected_deliverable=<span class="token-str">"PR with PKCE flow + tests"</span>,
+)
+<span class="token-var">→ {"ok": true, "handoff_id": "a1b2c3d4e5f6", "state": "offered", "hop": 1, "hop_limit": 8}</span>
+
+<span class="token-cmt"># …the codex session accepts, works, completes — each hop is its own</span>
+<span class="token-cmt"># audited write, state-machined offered → accepted → in_progress → completed</span>
+<span class="token-fn">tommy_handoff_status</span>(handoff_id=<span class="token-str">"a1b2c3d4e5f6"</span>)
+<span class="token-var">→ {"state": "completed", "hop": 4, "is_terminal": true, "history": [...]}</span></code></pre>
+      </div>
     </div>
-    <p class="text-xs text-gray-600 text-center max-w-2xl mx-auto mt-4">Delivery is webhook push plus cursor-based polling, at-least-once on each pusher pass — not a millisecond bus. Full details in the <a href="https://github.com/thameema/memnos/blob/master/docs/api.md" class="text-gray-500 hover:text-gray-300 underline underline-offset-2">API reference</a>.</p>
+    <p class="text-xs text-gray-600 text-center max-w-2xl mx-auto mt-4">Delivery for pub/sub is webhook push plus cursor-based polling, at-least-once — not a millisecond bus. A handoff's hop cap (<code class="text-gray-500">tommy.yaml: handoff_hop_limit</code>, default 8) stops two agents re-offering the same task forever. Full details in the <a href="https://github.com/thameema/memnos/blob/master/docs/api.md" class="text-gray-500 hover:text-gray-300 underline underline-offset-2">API reference</a> and the <a href="agents.html" class="text-gray-500 hover:text-gray-300 underline underline-offset-2">Tommy page</a>.</p>
   </div>
 </section>
 
@@ -1054,7 +1194,7 @@ curl -s -H <span class="token-str">"Authorization: Bearer $MEMNOS_TOKEN"</span> 
               <h3 class="text-white font-semibold text-lg">Tommy</h3>
               <span class="text-[10px] uppercase tracking-wide bg-purple-500/15 border border-purple-500/25 text-purple-300 px-2 py-0.5 rounded-full whitespace-nowrap">memnos-native coding orchestrator</span>
             </div>
-            <p class="text-sm text-gray-400 leading-relaxed mb-4">Tommy sits in front of a coding-agent CLI &mdash; Claude Code, Codex, aider, goose, cursor-agent or kiro &mdash; and gives that session memnos memory it wouldn&rsquo;t otherwise have: recall before dispatch, session journaling (Claude Code today), and prompted memnos leases so two concurrent sessions don&rsquo;t pick up the same ticket. One binary, two entry points &mdash; an interactive CLI and an MCP server.</p>
+            <p class="text-sm text-gray-400 leading-relaxed mb-4">Tommy sits in front of a coding-agent CLI &mdash; Claude Code, Codex, aider, goose, cursor-agent or kiro &mdash; and gives that session memnos memory it wouldn&rsquo;t otherwise have: recall before dispatch, session journaling (Claude Code today), prompted memnos leases so two concurrent sessions don&rsquo;t pick up the same ticket, and <code class="text-purple-300 font-mono text-xs">tommy_handoff</code> for durable, hop-capped task handoffs to a <em>different</em> harness. One binary, two entry points &mdash; an interactive CLI and an MCP server.</p>
             <div class="flex flex-wrap items-center gap-4">
               <div class="code-block px-4 py-2 text-xs flex items-center gap-2">
                 <span class="text-gray-500">$</span>
@@ -1173,15 +1313,57 @@ curl -s -H <span class="token-str">"Authorization: Bearer $MEMNOS_TOKEN"</span> 
     });
   });
 
-  const cards = document.querySelectorAll('.glass .glass');
+  // Re-queried every tick (not cached once) so this only ever pulses cards inside
+  // whichever hero slide is currently active — a stale cached list would include
+  // the hidden slide's cards too and desync the pulse once the hero rotates.
   let idx = 0;
   setInterval(() => {
+    const cards = document.querySelectorAll('.hero-slide.active .glass .glass');
     cards.forEach((c, i) => {
       c.style.borderColor = i === idx % cards.length
         ? 'rgba(124,92,252,0.4)' : 'rgba(255,255,255,0.07)';
     });
     idx++;
   }, 1800);
+
+  // Hero slides: crossfade, no layout jump (both slides share one grid cell —
+  // see .hero-slide/.hero-slides CSS). Auto-rotates unless the viewer prefers
+  // reduced motion or has already clicked a dot (that choice sticks for the
+  // rest of the visit); pauses on hover so it never fights a reader mid-sentence.
+  (function heroSlides() {
+    const slides = document.querySelectorAll('.hero-slide');
+    const dots = document.querySelectorAll('.hero-dot');
+    const hero = document.getElementById('hero');
+    if (!slides.length || !dots.length) return;
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let heroIdx = 0;
+    let timer = null;
+    let userPicked = false;
+
+    function show(i) {
+      heroIdx = i;
+      slides.forEach((s, j) => s.classList.toggle('active', j === i));
+      dots.forEach((d, j) => d.setAttribute('aria-current', j === i ? 'true' : 'false'));
+    }
+    function start() {
+      if (reduceMotion || userPicked || slides.length < 2 || timer) return;
+      timer = setInterval(() => show((heroIdx + 1) % slides.length), 7000);
+    }
+    function stop() {
+      if (timer) { clearInterval(timer); timer = null; }
+    }
+
+    dots.forEach((d, i) => d.addEventListener('click', () => {
+      userPicked = true;
+      stop();
+      show(i);
+    }));
+    if (hero) {
+      hero.addEventListener('mouseenter', stop);
+      hero.addEventListener('mouseleave', start);
+    }
+    start();
+  })();
 
   // Mobile nav toggle
   function toggleMobileNav() {

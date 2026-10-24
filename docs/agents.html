@@ -12,8 +12,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Tommy — memnos-native coding-agent orchestrator | memnos</title>
-  <meta name="description" content="Tommy is a memnos-native coding orchestrator: one binary, an interactive CLI and an MCP server, that gives Claude Code, Codex, aider, goose, cursor-agent and kiro sessions memnos memory — recall before dispatch, leases against duplicate work, and multi-harness supervision." />
-  <meta name="keywords" content="Tommy orchestrator, memnos agents, coding agent orchestrator, Claude Code orchestration, Codex orchestration, multi-agent coordination, tommy-orchestrator, AI coding agent memory, memnos MCP" />
+  <meta name="description" content="Tommy is a memnos-native coding orchestrator: one binary, an interactive CLI and an MCP server, that gives Claude Code, Codex, aider, goose, cursor-agent and kiro sessions memnos memory — recall before dispatch, leases against duplicate work, multi-harness supervision, and durable, hop-capped cross-harness task handoffs." />
+  <meta name="keywords" content="Tommy orchestrator, memnos agents, coding agent orchestrator, Claude Code orchestration, Codex orchestration, multi-agent coordination, tommy-orchestrator, AI coding agent memory, memnos MCP, cross-harness handoff, agent-to-agent handoff" />
   <link rel="canonical" href="https://memnos.net/agents.html" />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://memnos.net/agents.html" />
@@ -217,7 +217,7 @@
              test_control.py::test_module_docstring_tool_count. Nothing in
              CI catches this page drifting out of sync with that count —
              update it by hand when tools are added/removed. -->
-        <p class="text-sm text-gray-400 leading-relaxed">Runs as an MCP stdio server that an editor &mdash; Claude Desktop, Cursor, Continue, Zed &mdash; drives directly over JSON-RPC, instead of a human running the CLI at a terminal. Exposes 11 tools, including <code class="text-purple-300 font-mono text-xs">tommy_recall</code>, <code class="text-purple-300 font-mono text-xs">tommy_dispatch</code> and <code class="text-purple-300 font-mono text-xs">tommy_status</code>.</p>
+        <p class="text-sm text-gray-400 leading-relaxed">Runs as an MCP stdio server that an editor &mdash; Claude Desktop, Cursor, Continue, Zed &mdash; drives directly over JSON-RPC, instead of a human running the CLI at a terminal. Exposes 14 tools, including <code class="text-purple-300 font-mono text-xs">tommy_recall</code>, <code class="text-purple-300 font-mono text-xs">tommy_dispatch</code>, <code class="text-purple-300 font-mono text-xs">tommy_status</code> and <code class="text-purple-300 font-mono text-xs">tommy_handoff</code>.</p>
       </div>
     </div>
   </div>
@@ -275,6 +275,65 @@
         <p class="text-sm text-gray-400 leading-relaxed">Rather than dispatching everything at once, the coordinator prompt asks for wave-based dispatch, typed <code class="text-yellow-300 font-mono text-xs">PURPOSE</code> headers, and named tasks &mdash; so a human reviewing a session can tell what was dispatched, to what, and why.</p>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- ── CROSS-HARNESS HANDOFFS ───────────────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <div class="inline-flex items-center gap-2 mb-3">
+        <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">New</span>
+      </div>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Hands a task to a <em>different</em> harness, auditably</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">People increasingly run more than one harness &mdash; Claude Code for one task, Codex for another, a Cursor session for a third. <code class="text-purple-300 font-mono text-xs">tommy_handoff</code> turns that into a durable, state-machined record instead of a freeform chat message: <strong class="text-gray-200">Tommy does not launch or dispatch the receiving harness for you</strong> &mdash; the receiving session picks the handoff up itself, via <code class="text-purple-300 font-mono text-xs">tommy_handoff_status</code> or its own recall. What Tommy guarantees is the record.</p>
+    </div>
+    <div class="max-w-3xl mx-auto code-block p-6 mb-8">
+      <div class="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800">
+        <div class="w-3 h-3 rounded-full bg-red-500/60"></div>
+        <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
+        <div class="w-3 h-3 rounded-full bg-green-500/60"></div>
+        <span class="ml-3 text-xs text-gray-600">a handoff's full lifecycle, three MCP tool calls</span>
+      </div>
+      <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-fn">tommy_handoff</span>(
+  task_id=<span class="token-str">"auth-pkce-migration"</span>, to_harness=<span class="token-str">"codex"</span>,
+  context_summary=<span class="token-str">"refactor auth module to use PKCE"</span>,
+  expected_deliverable=<span class="token-str">"PR with PKCE flow + tests"</span>,
+)
+<span class="token-var">→ {"ok": true, "handoff_id": "a1b2c3d4e5f6", "state": "offered", "hop": 1, "hop_limit": 8}</span>
+
+<span class="token-cmt"># the codex session accepts it, works, marks it done — each hop its own audited write</span>
+<span class="token-fn">tommy_handoff_transition</span>(handoff_id=<span class="token-str">"a1b2c3d4e5f6"</span>, new_state=<span class="token-str">"accepted"</span>)
+<span class="token-fn">tommy_handoff_transition</span>(handoff_id=<span class="token-str">"a1b2c3d4e5f6"</span>, new_state=<span class="token-str">"completed"</span>)
+
+<span class="token-fn">tommy_handoff_status</span>(handoff_id=<span class="token-str">"a1b2c3d4e5f6"</span>)
+<span class="token-var">→ {"state": "completed", "hop": 3, "is_terminal": true,
+   "history": [{"state":"offered",...},{"state":"accepted",...},{"state":"completed",...}]}</span></code></pre>
+    </div>
+    <div class="grid md:grid-cols-3 gap-6">
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">State-machined, not freeform</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Every hop moves through <code class="text-purple-300 font-mono text-xs">offered &rarr; accepted &rarr; in_progress &rarr; completed | escalated</code> &mdash; an invalid transition (skipping a state, acting on a terminal handoff) is rejected, not silently accepted.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Hop-capped</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">A hard cap per <code class="text-blue-300 font-mono text-xs">task_id</code> (<code class="text-blue-300 font-mono text-xs">tommy.yaml: handoff_hop_limit</code>, default 8), enforced across re-offers after an escalation &mdash; not just within one <code class="text-blue-300 font-mono text-xs">handoff_id</code>'s own chain &mdash; so two agents can't hand a task back and forth indefinitely.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-green-500/10 border border-green-500/20 rounded-xl flex items-center justify-center mb-5">
+          <svg class="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">Context-pruned, not transcript-dumped</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Every offer attaches a memnos-recall-scoped context bundle built from the task summary &mdash; the receiving agent gets relevant memory, not the full conversation that led up to it.</p>
+      </div>
+    </div>
+    <p class="text-xs text-gray-600 text-center max-w-2xl mx-auto mt-8">Cross-vendor by construction: the receiving side can be any harness Tommy supervises, not just another session of the same tool. Building your own multi-agent handoff logic instead of using Tommy? The same primitives &mdash; a <code class="text-gray-500">handoff</code> memory type and memnos's exact-enumeration <code class="text-gray-500">/memory/by_type</code> endpoint &mdash; are callable directly from <code class="text-gray-500">memnos-sdk</code> or REST.</p>
   </div>
 </section>
 

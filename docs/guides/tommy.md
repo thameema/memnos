@@ -36,10 +36,13 @@ Concretely, Tommy ships two entry points from one `tommy` binary:
   with that prompt attached, staying alive to capture output after the harness exits.
 - **`tommy --mcp`** — an MCP stdio server. An editor (Claude Desktop, Cursor, Continue,
   Zed) spawns this process and drives it over JSON-RPC/stdio instead of a human running the
-  CLI directly. It exposes 11 tools (`tommy_recall`, `tommy_remember`, `tommy_dispatch`,
+  CLI directly. It exposes 14 tools (`tommy_recall`, `tommy_remember`, `tommy_dispatch`,
   `tommy_status`, `tommy_control`, `tommy_switch_project`, `tommy_route`,
-  `tommy_list_harnesses`, `tommy_sketch`, `tommy_drift_sweep`, `tommy_verdict`) — see the
-  README for their signatures.
+  `tommy_list_harnesses`, `tommy_sketch`, `tommy_drift_sweep`, `tommy_verdict`,
+  `tommy_handoff`, `tommy_handoff_transition`, `tommy_handoff_status` — the last three a
+  structured, enforced cross-harness task handoff: durable, state-machined
+  `offered -> accepted -> in_progress -> completed | escalated`, hop-capped so two agents
+  can't ping-pong a task forever) — see the README for their signatures.
 
 These two paths share the harness registry and memnos config, and now also share the same
 core.md coordinator prompt-injection — both call `tommy/prompt.py`'s `build_prompt()`. See
