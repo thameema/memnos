@@ -10,7 +10,17 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "click>=8.1",
-    "memnos-sdk>=0.1.43",   # handoffs (#193) need remember(extract=...) + memories_by_type()
+    "memnos-sdk>=0.1.27",   # TODO after memnos-sdk 0.1.43 is released: floor this to
+                             # >=0.1.43 -- handoffs (#193) need remember(extract=...) and
+                             # memories_by_type(), which that release adds. Not bumped yet
+                             # in this PR: 0.1.43 doesn't exist on PyPI until AFTER this PR
+                             # ships and a release is cut, and the tommy-tests CI job
+                             # installs this package's deps from PyPI (not this checkout),
+                             # so pointing the floor at a version that isn't published yet
+                             # fails `pip install -e ./agents/tommy` immediately -- this is
+                             # exactly the sequencing issue #120's own 0.1.21->0.1.27 floor
+                             # bump avoided by only ever bumping to an already-released sdk
+                             # version in its own follow-up commit, never the feature PR.
     "httpx>=0.27",
     "fastmcp>=2.0",
     "pyyaml>=6",
