@@ -574,6 +574,41 @@ your own state machine and hop cap instead of reusing Tommy's.
 
 ---
 
+## Curated skills (one install, pinned upstream)
+
+```bash
+uv tool install tommy-orchestrator
+claude plugin marketplace add thameema/memnos && claude plugin install tommy@memnos
+```
+
+That single `tommy` plugin installs memnos plus three role stacks. Each stack is a thin plugin whose only job is to depend on
+upstream plugins, so nothing is copied into this repo: Claude Code fetches each one straight from its own GitHub repo at a commit
+pinned in `.claude-plugin/marketplace.json`.
+
+| Stack | Upstream plugins (repo, licence) |
+|---|---|
+| `tommy-architect` | `comprehensive-review`, `c4-architecture` (wshobson/agents, MIT) |
+| `tommy-review` | `differential-review`, `audit-context-building`, `variant-analysis` (trailofbits/skills, CC-BY-SA-4.0) |
+| `tommy-security` | `sharp-edges`, `supply-chain-risk-auditor`, `agentic-actions-auditor`, `static-analysis` (trailofbits/skills, CC-BY-SA-4.0) |
+
+Credit and licences stay with the authors: `tommy skills list` shows every plugin's upstream repo, pinned commit and licence.
+Trail of Bits' plugins are CC-BY-SA-4.0, which is why they are only ever fetched from upstream and never vendored here.
+`static-analysis` needs `semgrep` installed.
+
+```bash
+tommy skills list            # curated plugins: upstream, pin, licence, installed?
+tommy skills stats           # which installed skills actually fire (from your session transcripts) and what the idle ones cost per turn
+tommy skills update          # maintainers: where upstream has moved past each pin; prints a compare URL, changes nothing
+tommy skills update --apply NAME   # move one pin to upstream HEAD after you have read the diff
+```
+
+Deliberately left out of v1: `fp-check` (its `Stop` hook adds a model call to every stop, in every session), `second-opinion`
+(shells out to other agent CLIs), and any pentest skills. None of the pentest candidates asks for authorization before acting
+the way a bundle installed by other people must, so a pentest stack waits for a gated design.
+
+Updating: pins only move when a maintainer runs `tommy skills update --apply`, reads the diff, and ships it in a release.
+Users get the new pins with `claude plugin marketplace update memnos` (or the plugin auto-update toggle).
+
 ## Control channel (for harness authors)
 
 If you write a custom harness in Python, connect back to Tommy using the

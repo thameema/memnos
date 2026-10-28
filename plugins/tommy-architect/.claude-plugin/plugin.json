@@ -1,0 +1,13 @@
+{
+  "name": "tommy-architect",
+  "description": "Architecture review stack: C4 documentation and multi-perspective design review. Installs pinned upstream plugins; nothing is copied.",
+  "author": {
+    "name": "Thameem Ansari",
+    "url": "https://github.com/thameema"
+  },
+  "license": "Apache-2.0",
+  "dependencies": [
+    "comprehensive-review",
+    "c4-architecture"
+  ]
+}

@@ -90,6 +90,7 @@ from .discovery.harnesses import (
     DISPATCH_TRIGGER_PROMPT,
 )
 from .generate_cmd import config_group, generate_command
+from .skills_cmd import skills_group
 from .memnos_scope import (
     DISPATCH_SCOPE_SETTING_SOURCES,
     generate_scoping_files,
@@ -967,6 +968,9 @@ def main(
         return
     if extra_args and extra_args[0] == "config":
         config_group.main(args=list(extra_args[1:]), prog_name="tommy config", standalone_mode=True)
+        return
+    if extra_args and extra_args[0] == "skills":
+        skills_group.main(args=list(extra_args[1:]), prog_name="tommy skills", standalone_mode=True)
         return
     if "--help" in extra_args or "-h" in extra_args:
         click.echo(ctx.get_help())

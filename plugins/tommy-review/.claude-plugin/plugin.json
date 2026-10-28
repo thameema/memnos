@@ -1,0 +1,14 @@
+{
+  "name": "tommy-review",
+  "description": "PR/MR review stack: differential security review, context building and variant analysis. Installs pinned upstream plugins; nothing is copied.",
+  "author": {
+    "name": "Thameem Ansari",
+    "url": "https://github.com/thameema"
+  },
+  "license": "Apache-2.0",
+  "dependencies": [
+    "differential-review",
+    "audit-context-building",
+    "variant-analysis"
+  ]
+}

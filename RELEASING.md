@@ -62,6 +62,12 @@ opt-in env var, no live Claude Code credentials needed. A tommy-orchestrator rel
 never go out if this suite isn't green — don't rely on "CI was green" from memory; check that
 job specifically before cutting a release.
 
+## tommy-orchestrator: curated skill pins
+
+Before a Tommy release, run `tommy skills update` from the repo root. For every plugin that moved, read the compare URL it prints
+(hooks, install scripts, new network calls, licence changes), then `tommy skills update --apply <name>` only for the ones you
+accept. Never move a pin without reading the diff: these plugins run inside users' sessions.
+
 ## Why not publish on every push to `master`?
 
 That would require auto-incrementing versions and would spam PyPI with releases nobody asked
