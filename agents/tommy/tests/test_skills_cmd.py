@@ -159,7 +159,7 @@ def _transcript(tmp_path):
         use("bad-skill"), act, _res(True),
         _ev("user", "no, that's wrong, undo it"),               # correction
         use("bad-skill"), _res(True), _ev("user", "wrong again"),
-        use("bad-skill"), _res(True), _ev("user", "no"),
+        use("bad-skill"), _res(True), _ev("user", "no, not like that"),
     ]))
     (p / "s" / "subagents").mkdir(parents=True)
     (p / "s" / "subagents" / "a.jsonl").write_text(use("sub-only"))  # skipped: no human prompts there
