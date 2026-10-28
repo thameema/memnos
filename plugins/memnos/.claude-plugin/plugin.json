@@ -1,0 +1,9 @@
+{
+  "name": "memnos",
+  "description": "Namespace-scoped, token-authenticated shared memory for AI coding agents: auto recall before each prompt, auto save after, MCP tools and /memnos:memnos. Needs the memnos CLI (uv tool install memnos && memnos setup).",
+  "author": { "name": "Thameem Ansari", "url": "https://github.com/thameema" },
+  "homepage": "https://memnos.net",
+  "repository": "https://github.com/thameema/memnos",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "mcp", "namespaces", "governance", "postgres"]
+}

@@ -1900,13 +1900,23 @@ def cmd_proxy(args, cfg):
     memnos_proxy.serve(port=args.port)
 
 
+def _session_token(cfg):
+    """Token for editor/agent sessions (hooks, MCP, /memnos): env -> the scoped claude-code
+    token persisted by `claude-setup` -> admin token. The scoped one is a normal user
+    principal, so writes are attributed to the human and limited to their grants; the admin
+    token stays a last resort for installs that never ran claude-setup."""
+    return (os.environ.get("MEMNOS_TOKEN")
+            or (cfg.get("agent_tokens") or {}).get("claude-code")
+            or cfg.get("admin_token", ""))
+
+
 def cmd_mcp(args, cfg):
     # stdio MCP adapter for Claude Code / Cursor / Windsurf / any MCP client.
     # MEMNOS_URL / MEMNOS_TOKEN / MEMNOS_NS come from the client's env block;
     # fall back to the local config so `memnos mcp` works out of the box.
     os.environ.setdefault("MEMNOS_URL", f"http://127.0.0.1:{cfg.get('port', 8900)}")
-    if cfg.get("admin_token"):
-        os.environ.setdefault("MEMNOS_TOKEN", cfg["admin_token"])
+    if _session_token(cfg):
+        os.environ.setdefault("MEMNOS_TOKEN", _session_token(cfg))
     if args.namespace:
         os.environ["MEMNOS_NS"] = args.namespace
     import memnos_mcp
@@ -2751,8 +2761,7 @@ def cmd_remember(args, cfg):
         body["constraint_subject"] = args.subject
     if getattr(args, "no_extract", False):
         body["extract"] = False
-    out = _post(cfg, "/remember", body,
-                args.token or os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token"))
+    out = _post(cfg, "/remember", body, args.token or _session_token(cfg))
     # write-time attribution (issue #20, Part B): always say WHERE it landed.
     print(f"→ remembered in {ns}")
     _print_constraint_subject(out)
@@ -2774,8 +2783,7 @@ def cmd_recall(args, cfg):
         body["scope"] = "all"
     if getattr(args, "type", None):
         body["type"] = args.type
-    out = _post(cfg, "/recall", body,
-                args.token or os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token"))
+    out = _post(cfg, "/recall", body, args.token or _session_token(cfg))
     if out.get("namespaces_searched"):
         print(f"[searched: {', '.join(out['namespaces_searched'])}]")
     print(out.get("context", json.dumps(out)))
@@ -2886,7 +2894,13 @@ def _ensure_claude_token(cfg, extra_ns=None):
     Control.grant(conn, pid, "proj:*")
     if extra_ns and not _ns_covered(extra_ns, (f"user:{name}", "proj:*")):
         Control.grant(conn, pid, extra_ns)
-    return Control.mint_token(conn, pid, "claude-code"), f"user:{name}"
+    saved = (cfg.get("agent_tokens") or {}).get("claude-code")
+    if saved and Control.authenticate(conn, saved) == pid:
+        return saved, f"user:{name}"        # reuse: re-running setup must not mint a new token
+    tok = Control.mint_token(conn, pid, "claude-code")
+    cfg.setdefault("agent_tokens", {})["claude-code"] = tok
+    save_config(cfg)
+    return tok, f"user:{name}"
 
 
 def _ns_covered(target, grants):
@@ -2923,6 +2937,65 @@ def _ensure_agent_token(cfg, agent, extra_ns=None):
     return Control.mint_token(conn, pid, f"agent-setup:{principal}"), ns
 
 
+def _legacy_hooks_wired():
+    """True if a previous claude-setup left recall/save hooks in ~/.claude/settings.json."""
+    try:
+        with open(os.path.expanduser("~/.claude/settings.json"), encoding="utf-8") as f:
+            return "memnos hook recall" in f.read()
+    except OSError:
+        return False
+
+
+def _memnos_plugin_installed(claude_dir):
+    """True if the memnos Claude Code plugin is installed (it supplies the hooks, MCP server
+    and /memnos command itself)."""
+    try:
+        with open(os.path.join(claude_dir, "plugins", "installed_plugins.json"), encoding="utf-8") as f:
+            return any(k.split("@")[0] == "memnos" for k in json.load(f).get("plugins", {}))
+    except (OSError, ValueError):
+        return False
+
+
+def _unwire_claude_legacy(home, claude_dir):
+    """Remove what an earlier claude-setup baked into user config, because the plugin now
+    provides it. Plugin hooks run IN ADDITION to settings.json hooks, so leaving the old
+    entries would recall + save twice per turn. Only memnos-owned entries are touched; the
+    opt-in PreToolUse enforce hook is left alone. Returns the list of things removed."""
+    removed = []
+    cj = os.path.join(home, ".claude.json")
+    try:
+        d = json.load(open(cj, encoding="utf-8"))
+        if d.get("mcpServers", {}).pop("memnos", None) is not None:
+            _backup(cj); json.dump(d, open(cj, "w", encoding="utf-8"), indent=2)
+            removed.append("MCP server (~/.claude.json)")
+    except (OSError, ValueError):
+        pass
+    sj = os.path.join(claude_dir, "settings.json")
+    try:
+        s = json.load(open(sj, encoding="utf-8"))
+        hooks, changed = s.get("hooks", {}), False
+        for ev in ("UserPromptSubmit", "Stop", "SessionStart"):
+            keep = [g for g in hooks.get(ev, []) if "memnos hook" not in json.dumps(g)]
+            if len(keep) != len(hooks.get(ev, [])):
+                changed = True
+                hooks[ev] = keep
+                if not keep:
+                    del hooks[ev]
+        if changed:
+            _backup(sj); json.dump(s, open(sj, "w", encoding="utf-8"), indent=2)
+            removed.append("hooks (~/.claude/settings.json)")
+    except (OSError, ValueError):
+        pass
+    cmd = os.path.join(claude_dir, "commands", "memnos.md")
+    try:
+        if open(cmd, encoding="utf-8").read().startswith("---\ndescription: memnos memory"):
+            _backup(cmd); os.remove(cmd)
+            removed.append("/memnos command (~/.claude/commands/memnos.md)")
+    except OSError:
+        pass
+    return removed
+
+
 def cmd_claude_setup(args, cfg):
     """Auto-wire Claude Code (MCP + hooks + /memnos + CLAUDE.md) — friction-free. Idempotent;
     backs up files it edits. Detects ~/.claude; safe to re-run."""
@@ -2954,26 +3027,31 @@ def cmd_claude_setup(args, cfg):
         cfg["admin_token"] = Control.mint_token(aconn, apid, "console")
         save_config(cfg)
 
-    # 1. MCP server -> ~/.claude.json (the file Claude Code reads for MCP)
-    cj = os.path.join(home, ".claude.json")
-    try:
-        d = json.load(open(cj, encoding="utf-8")) if os.path.exists(cj) else {}
-    except Exception:
-        d = {}
-    if getattr(args, "transport", "stdio") == "http":
-        # Streamable-HTTP MCP server config (issue #37 Layer 1): Claude Code requires an
-        # explicit "type" — a `url` with no `type` is a hard config error, not inferred —
-        # per docs.claude.com/en/docs/claude-code/mcp. Confirmed shape, not guessed:
-        #   {"type": "http", "url": "...", "headers": {"Authorization": "Bearer ..."}}
-        d.setdefault("mcpServers", {})["memnos"] = {
-            "type": "http", "url": f"{url}/mcp",
-            "headers": {"Authorization": f"Bearer {token}", "X-Memnos-Namespace": ns}}
-    else:
-        cmd, cargs = _mcp_launcher()           # absolute path — GUI/min-PATH launches
-        d.setdefault("mcpServers", {})["memnos"] = {
-            "command": cmd, "args": cargs,
-            "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns}}
-    _backup(cj); json.dump(d, open(cj, "w", encoding="utf-8"), indent=2)
+    use_plugin = _memnos_plugin_installed(claude_dir)
+    if use_plugin:
+        removed = _unwire_claude_legacy(home, claude_dir)
+
+    if not use_plugin:
+        # 1. MCP server -> ~/.claude.json (the file Claude Code reads for MCP)
+        cj = os.path.join(home, ".claude.json")
+        try:
+            d = json.load(open(cj, encoding="utf-8")) if os.path.exists(cj) else {}
+        except Exception:
+            d = {}
+        if getattr(args, "transport", "stdio") == "http":
+            # Streamable-HTTP MCP server config (issue #37 Layer 1): Claude Code requires an
+            # explicit "type" — a `url` with no `type` is a hard config error, not inferred —
+            # per docs.claude.com/en/docs/claude-code/mcp. Confirmed shape, not guessed:
+            #   {"type": "http", "url": "...", "headers": {"Authorization": "Bearer ..."}}
+            d.setdefault("mcpServers", {})["memnos"] = {
+                "type": "http", "url": f"{url}/mcp",
+                "headers": {"Authorization": f"Bearer {token}", "X-Memnos-Namespace": ns}}
+        else:
+            cmd, cargs = _mcp_launcher()           # absolute path — GUI/min-PATH launches
+            d.setdefault("mcpServers", {})["memnos"] = {
+                "command": cmd, "args": cargs,
+                "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns}}
+        _backup(cj); json.dump(d, open(cj, "w", encoding="utf-8"), indent=2)
 
     # 2. hooks -> ~/.claude/settings.json (recall before prompt, remember after)
     sj = os.path.join(claude_dir, "settings.json")
@@ -2991,9 +3069,10 @@ def cmd_claude_setup(args, cfg):
             group["matcher"] = matcher
         groups.append(group)
         hooks[event] = groups
-    wire("UserPromptSubmit", f"{env} memnos hook recall")
-    wire("Stop", f"{env} memnos hook remember")
-    wire("SessionStart", f"{env} memnos hook status")   # visible "memory ON/OFF" each session
+    if not use_plugin:
+        wire("UserPromptSubmit", f"{env} memnos hook recall")
+        wire("Stop", f"{env} memnos hook remember")
+        wire("SessionStart", f"{env} memnos hook status")   # visible "memory ON/OFF" each session
 
     # issue #28: PreToolUse enforcement — auto-wired ONLY if at least one ask/block
     # constraint exists anywhere (opt-in through USE, not a flag to remember). The hook
@@ -3011,7 +3090,7 @@ def cmd_claude_setup(args, cfg):
         econn = _conn(cfg)
         Control.init(econn)
         if Control.list_constraint_enforcement(econn):
-            wire("PreToolUse", f"{env} memnos hook enforce", matcher="*")
+            wire("PreToolUse", "memnos hook enforce" if use_plugin else f"{env} memnos hook enforce", matcher="*")
             enforce_wired = True
     except Exception:
         pass
@@ -3023,8 +3102,9 @@ def cmd_claude_setup(args, cfg):
     # encoding="utf-8" everywhere below: these templates are full of Unicode (—, ·, …, →) and
     # Windows' open()/read()/write() default to the system codepage (cp1252), not UTF-8 —
     # confirmed live to crash with UnicodeEncodeError during install on a real Windows machine.
-    rendered_slash_cmd = _SLASH_CMD.replace("__MEMNOS_URL__", url).replace("__MEMNOS_TOKEN__", token)
-    open(os.path.join(claude_dir, "commands", "memnos.md"), "w", encoding="utf-8").write(rendered_slash_cmd)
+    if not use_plugin:
+        rendered_slash_cmd = _SLASH_CMD.replace("__MEMNOS_URL__", url).replace("__MEMNOS_TOKEN__", token)
+        open(os.path.join(claude_dir, "commands", "memnos.md"), "w", encoding="utf-8").write(rendered_slash_cmd)
 
     # 4. CLAUDE.md memnos section (append once)
     cm = os.path.join(claude_dir, "CLAUDE.md")
@@ -3036,9 +3116,15 @@ def cmd_claude_setup(args, cfg):
             f.write(("\n\n" if existing else "") + _CLAUDE_MD)
 
     print("[memnos] Claude Code wired:")
-    print(f"  • MCP server      -> ~/.claude.json (memnos, ns={ns})")
-    print("  • hooks           -> ~/.claude/settings.json (auto recall + save)")
-    print("  • /memnos command -> ~/.claude/commands/memnos.md")
+    if use_plugin:
+        print("  • memnos plugin detected — it supplies the MCP server, hooks and /memnos command"
+              " (no tokens baked into your config)")
+        for r in removed:
+            print(f"  • removed legacy {r} (the plugin replaces it; backup kept)")
+    else:
+        print(f"  • MCP server      -> ~/.claude.json (memnos, ns={ns})")
+        print("  • hooks           -> ~/.claude/settings.json (auto recall + save)")
+        print("  • /memnos command -> ~/.claude/commands/memnos.md")
     print("  • CLAUDE.md       -> memnos usage + staleness-check instructions")
     if enforce_wired:
         print("  • PreToolUse hook -> ~/.claude/settings.json (enforces your ask/block constraints)")
@@ -4140,7 +4226,7 @@ def cmd_hook(args, cfg):
         return cmd_hook_stats(args, cfg)
     import nsresolve
     url = os.environ.get("MEMNOS_URL") or f"http://127.0.0.1:{cfg.get('port', 8900)}"
-    token = os.environ.get("MEMNOS_TOKEN") or cfg.get("admin_token", "")
+    token = _session_token(cfg)
     hdr = {"Content-Type": "application/json", **({"Authorization": "Bearer " + token} if token else {})}
     try:
         data = json.load(sys.stdin)
@@ -4303,6 +4389,13 @@ def cmd_hook(args, cfg):
             # never take down the status line — every other block in this section
             # follows the same "never breaks the status line" rule, this one should too
             pass
+        if os.environ.get("CLAUDE_PLUGIN_ROOT") and _legacy_hooks_wired():
+            parts.append("⚠ legacy memnos hooks still in ~/.claude/settings.json — every prompt "
+                         "recalls twice. Run `memnos claude-setup` to migrate to the plugin")
+        if (cfg.get("admin_token") and not os.environ.get("MEMNOS_TOKEN")
+                and not (cfg.get("agent_tokens") or {}).get("claude-code")):
+            parts.append("⚠ using the admin token — run `memnos claude-setup` for a scoped token "
+                         "so writes are attributed to you")
         msg = "memnos: " + "  ·  ".join(parts)
         # deferred suggest-on-mismatch (issue #20, Part B3): async writes (the Stop hook)
         # can't carry the advisory in their immediate response, so the ingest worker parks a

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "memnos",
+  "owner": { "name": "Thameem Ansari", "url": "https://github.com/thameema" },
+  "description": "memnos: namespace-scoped, token-authenticated shared memory for AI coding agents.",
+  "plugins": [
+    {
+      "name": "memnos",
+      "source": "./plugins/memnos",
+      "description": "Auto recall + save, MCP tools and /memnos for your self-hosted memnos server (embedded Postgres by default).",
+      "category": "productivity",
+      "tags": ["memory", "mcp", "namespaces", "governance"]
+    }
+  ]
+}
