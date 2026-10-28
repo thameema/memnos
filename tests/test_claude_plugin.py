@@ -145,6 +145,12 @@ def test_plugin_files():
                    for dp, _, fs in os.walk(pdir) for f in fs if not f.endswith(".png"))
     check("no token or namespace baked into any plugin file", "mnk_" not in blob and "MEMNOS_TOKEN=" not in blob
           and "MEMNOS_NS=" not in blob)
+    import struct
+    ic = open(os.path.join(pdir, ".claude-plugin", "icon.png"), "rb").read(24)
+    w, h = struct.unpack(">II", ic[16:24])
+    check("icon is a square PNG, 512-2048 px, under 2 MB (directory requirement)",
+          ic[:8] == b"\x89PNG\r\n\x1a\n" and w == h and 512 <= w <= 2048
+          and os.path.getsize(os.path.join(pdir, ".claude-plugin", "icon.png")) < 2_000_000)
     check("session-start script is executable", os.access(os.path.join(pdir, "scripts", "session-start.sh"), os.X_OK))
     expected = cli._SLASH_CMD.replace(" --token __MEMNOS_TOKEN__", "").replace("__MEMNOS_URL__", "http://127.0.0.1:8900")
     check("commands/memnos.md is generated from the claude-setup template (no drift)",
