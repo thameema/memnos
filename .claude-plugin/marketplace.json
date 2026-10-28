@@ -33,6 +33,18 @@
       "license": "Apache-2.0"
     },
     {
+      "name": "tommy-all",
+      "source": "./plugins/tommy-all",
+      "description": "One install for everything Tommy curates: memory plus all skill bundles (no pentesting).",
+      "category": "productivity",
+      "tags": [
+        "tommy-curated",
+        "bundle",
+        "all"
+      ],
+      "license": "Apache-2.0"
+    },
+    {
       "name": "tommy-architect",
       "source": "./plugins/tommy-architect",
       "description": "Architecture review stack: C4 documentation and multi-perspective design review.",
@@ -94,6 +106,18 @@
         "tommy-curated",
         "bundle",
         "testing"
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "tommy-explain",
+      "source": "./plugins/tommy-explain",
+      "description": "Opt-in explainer skill: plain English with a real-world scenario (Tommy-authored).",
+      "category": "development",
+      "tags": [
+        "tommy-curated",
+        "bundle",
+        "explain"
       ],
       "license": "Apache-2.0"
     },
