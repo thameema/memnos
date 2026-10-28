@@ -1,0 +1,16 @@
+{
+  "name": "tommy-security",
+  "description": "Security review stack: sharp edges, supply chain, CI agent actions and static analysis. Installs pinned upstream plugins; nothing is copied.",
+  "author": {
+    "name": "Thameem Ansari",
+    "url": "https://github.com/thameema"
+  },
+  "license": "Apache-2.0",
+  "dependencies": [
+    "sharp-edges",
+    "supply-chain-risk-auditor",
+    "agentic-actions-auditor",
+    "static-analysis"
+  ],
+  "version": "0.1.9"
+}

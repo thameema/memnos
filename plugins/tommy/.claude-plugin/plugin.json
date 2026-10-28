@@ -1,0 +1,20 @@
+{
+  "name": "tommy",
+  "description": "Tommy, the memnos-backed coding orchestrator: dispatch, durable cross-harness handoffs and Secret Shield, with memnos memory on by default. Skill bundles are opt-in: install tommy-engineering, tommy-review, tommy-architect, tommy-design-review, tommy-qa or tommy-security as you need them. Needs the tommy CLI (uv tool install tommy-orchestrator).",
+  "author": {
+    "name": "Thameem Ansari",
+    "url": "https://github.com/thameema"
+  },
+  "homepage": "https://memnos.net/agents.html",
+  "repository": "https://github.com/thameema/memnos",
+  "license": "Apache-2.0",
+  "keywords": [
+    "orchestrator",
+    "handoff",
+    "memory"
+  ],
+  "dependencies": [
+    "memnos"
+  ],
+  "version": "0.1.9"
+}

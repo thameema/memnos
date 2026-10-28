@@ -574,6 +574,60 @@ your own state machine and hop cap instead of reusing Tommy's.
 
 ---
 
+## Curated skills (one install, pinned upstream)
+
+```bash
+uv tool install memnos && memnos setup          # the memory server (embedded Postgres, no Docker)
+uv tool install tommy-orchestrator
+claude plugin marketplace add thameema/memnos && claude plugin install tommy@memnos
+memnos claude-setup                             # your scoped token; removes any old baked-in hooks
+```
+
+`tommy` is the core: it installs the memnos plugin (memory on by default, for recall and save) and nothing else. Skill bundles are
+opt-in, so you only pay the context cost of the ones you want:
+
+```bash
+claude plugin install tommy-engineering@memnos     # or any bundle below
+```
+
+Bundles that wrap upstream work are thin plugins whose only job is to depend on upstream plugins. Nothing is copied into this repo:
+Claude Code fetches each one straight from its own GitHub repo at a commit pinned in `.claude-plugin/marketplace.json`.
+
+| Bundle | Contents (repo, licence) |
+|---|---|
+| `tommy-engineering` | `agent-skills`: spec, plan, build, TDD, review and ship skills, plus code-review, security, test and web-performance sub-agents (addyosmani/agent-skills, MIT) |
+| `tommy-architect` | `comprehensive-review`, `c4-architecture` (wshobson/agents, MIT) |
+| `tommy-review` | `differential-review`, `audit-context-building`, `variant-analysis` (trailofbits/skills, CC-BY-SA-4.0) |
+| `tommy-security` | `sharp-edges`, `supply-chain-risk-auditor`, `agentic-actions-auditor`, `static-analysis` (trailofbits/skills, CC-BY-SA-4.0) |
+| `tommy-design-review` | `hld-review`, `lld-review`: Tommy-authored design reviewers that check a design against the real code |
+| `tommy-qa` | `qa-frontend`, `qa-backend`, `qa-rest-api`: Tommy-authored QA skills, for apps you own and test environments only |
+
+Penetration-testing skills are not bundled: none of the upstream options check that you are allowed to test the target, so they wait for a gated design.
+
+Credit and licences stay with the authors: `tommy skills list` shows every plugin's upstream repo, pinned commit and licence.
+Trail of Bits' plugins are CC-BY-SA-4.0, which is why they are only ever fetched from upstream and never vendored here.
+`static-analysis` needs `semgrep` installed.
+
+```bash
+tommy skills list            # curated plugins: upstream, pin, licence, installed?
+tommy skills stats           # which installed skills actually fire (from your session transcripts) and what the idle ones cost per turn
+tommy skills eval            # productivity scorecard per skill: uses, sessions, edits/commands after, tool errors, your corrections, prompt cost, verdict
+tommy skills vet owner/repo  # read-only look at a GitHub repo before adding it: licence, hooks, scripts, exec/network patterns, the pinned entry to add
+tommy skills update          # maintainers: where upstream has moved past each pin; prints a compare URL, changes nothing
+tommy skills update --apply NAME   # move one pin to upstream HEAD after you have read the diff
+```
+
+`eval` reads proxies, not quality: a skill can fire often and help little, or fire rarely and matter. The verdict is a prompt to look
+(why is an idle skill idle? why are the uses of another often followed by your corrections?), not a grade and never a reason to delete. `vet` adds nothing; you read the repo's
+skills and every hook or script it flags, then add the pinned entry and a bundle yourself, and `update` keeps the pin current.
+
+Deliberately left out of v1: `fp-check` (its `Stop` hook adds a model call to every stop, in every session), `second-opinion`
+(shells out to other agent CLIs), and any pentest skills. None of the pentest candidates asks for authorization before acting
+the way a bundle installed by other people must, so a pentest stack waits for a gated design.
+
+Updating: pins only move when a maintainer runs `tommy skills update --apply`, reads the diff, and ships it in a release.
+Users get the new pins with `claude plugin marketplace update memnos` (or the plugin auto-update toggle).
+
 ## Control channel (for harness authors)
 
 If you write a custom harness in Python, connect back to Tommy using the

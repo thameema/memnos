@@ -1,15 +1,274 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "memnos",
-  "owner": { "name": "Thameem Ansari", "url": "https://github.com/thameema" },
-  "description": "memnos: namespace-scoped, token-authenticated shared memory for AI coding agents.",
+  "owner": {
+    "name": "Thameem Ansari",
+    "url": "https://github.com/thameema"
+  },
+  "description": "memnos (shared, governed memory) and Tommy (orchestrator + curated review/security skills).",
   "plugins": [
     {
       "name": "memnos",
       "source": "./plugins/memnos",
       "description": "Auto recall + save, MCP tools and /memnos for your self-hosted memnos server (embedded Postgres by default).",
       "category": "productivity",
-      "tags": ["memory", "mcp", "namespaces", "governance"]
+      "tags": [
+        "memory",
+        "mcp",
+        "namespaces",
+        "governance"
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "tommy",
+      "source": "./plugins/tommy",
+      "description": "Tommy orchestrator with memnos memory on by default. Skill bundles are opt-in.",
+      "category": "productivity",
+      "tags": [
+        "orchestrator",
+        "handoff",
+        "memory"
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "tommy-architect",
+      "source": "./plugins/tommy-architect",
+      "description": "Architecture review stack: C4 documentation and multi-perspective design review.",
+      "category": "development",
+      "tags": [
+        "tommy-curated"
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "tommy-review",
+      "source": "./plugins/tommy-review",
+      "description": "PR/MR review stack: differential security review, context building and variant analysis.",
+      "category": "development",
+      "tags": [
+        "tommy-curated"
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "tommy-security",
+      "source": "./plugins/tommy-security",
+      "description": "Security review stack: sharp edges, supply chain, CI agent actions and static analysis.",
+      "category": "development",
+      "tags": [
+        "tommy-curated"
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "tommy-engineering",
+      "source": "./plugins/tommy-engineering",
+      "description": "Opt-in engineering lifecycle bundle: spec, plan, build, TDD, review and ship skills plus sub-agents (upstream agent-skills, MIT, pinned).",
+      "category": "development",
+      "tags": [
+        "tommy-curated",
+        "bundle"
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "tommy-design-review",
+      "source": "./plugins/tommy-design-review",
+      "description": "Opt-in HLD and LLD design reviewers (Tommy-authored).",
+      "category": "development",
+      "tags": [
+        "tommy-curated",
+        "bundle",
+        "architecture"
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "tommy-qa",
+      "source": "./plugins/tommy-qa",
+      "description": "Opt-in QA skills for frontend, backend and REST APIs (Tommy-authored).",
+      "category": "development",
+      "tags": [
+        "tommy-curated",
+        "bundle",
+        "testing"
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "comprehensive-review",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/wshobson/agents.git",
+        "path": "plugins/comprehensive-review",
+        "sha": "0874a27b17a22e2b7c2e2bcd725768e0803cad06"
+      },
+      "description": "Multi-perspective code, architecture and security review agents (upstream: wshobson/agents, MIT; pinned, not copied)",
+      "category": "development",
+      "tags": [
+        "architecture",
+        "review",
+        "tommy-curated"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/wshobson/agents/tree/0874a27b17a2/plugins/comprehensive-review"
+    },
+    {
+      "name": "c4-architecture",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/wshobson/agents.git",
+        "path": "plugins/c4-architecture",
+        "sha": "0874a27b17a22e2b7c2e2bcd725768e0803cad06"
+      },
+      "description": "C4-model architecture documentation agents (context/container/component/code) (upstream: wshobson/agents, MIT; pinned, not copied)",
+      "category": "development",
+      "tags": [
+        "architecture",
+        "tommy-curated"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/wshobson/agents/tree/0874a27b17a2/plugins/c4-architecture"
+    },
+    {
+      "name": "differential-review",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/trailofbits/skills.git",
+        "path": "plugins/differential-review",
+        "sha": "bf23bfb21f10a2a4b0406086d690dc8cb1b3ccf3"
+      },
+      "description": "Security-focused review of diffs and PRs (upstream: trailofbits/skills, CC-BY-SA-4.0; pinned, not copied)",
+      "category": "security",
+      "tags": [
+        "pr-review",
+        "tommy-curated"
+      ],
+      "license": "CC-BY-SA-4.0",
+      "homepage": "https://github.com/trailofbits/skills/tree/bf23bfb21f10/plugins/differential-review"
+    },
+    {
+      "name": "audit-context-building",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/trailofbits/skills.git",
+        "path": "plugins/audit-context-building",
+        "sha": "bf23bfb21f10a2a4b0406086d690dc8cb1b3ccf3"
+      },
+      "description": "Build deep code context before auditing (upstream: trailofbits/skills, CC-BY-SA-4.0; pinned, not copied)",
+      "category": "security",
+      "tags": [
+        "pr-review",
+        "tommy-curated"
+      ],
+      "license": "CC-BY-SA-4.0",
+      "homepage": "https://github.com/trailofbits/skills/tree/bf23bfb21f10/plugins/audit-context-building"
+    },
+    {
+      "name": "variant-analysis",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/trailofbits/skills.git",
+        "path": "plugins/variant-analysis",
+        "sha": "bf23bfb21f10a2a4b0406086d690dc8cb1b3ccf3"
+      },
+      "description": "Find other instances of a bug across the codebase (upstream: trailofbits/skills, CC-BY-SA-4.0; pinned, not copied)",
+      "category": "security",
+      "tags": [
+        "pr-review",
+        "security",
+        "tommy-curated"
+      ],
+      "license": "CC-BY-SA-4.0",
+      "homepage": "https://github.com/trailofbits/skills/tree/bf23bfb21f10/plugins/variant-analysis"
+    },
+    {
+      "name": "sharp-edges",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/trailofbits/skills.git",
+        "path": "plugins/sharp-edges",
+        "sha": "bf23bfb21f10a2a4b0406086d690dc8cb1b3ccf3"
+      },
+      "description": "Spot error-prone APIs, dangerous defaults and footguns (upstream: trailofbits/skills, CC-BY-SA-4.0; pinned, not copied)",
+      "category": "security",
+      "tags": [
+        "security",
+        "tommy-curated"
+      ],
+      "license": "CC-BY-SA-4.0",
+      "homepage": "https://github.com/trailofbits/skills/tree/bf23bfb21f10/plugins/sharp-edges"
+    },
+    {
+      "name": "supply-chain-risk-auditor",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/trailofbits/skills.git",
+        "path": "plugins/supply-chain-risk-auditor",
+        "sha": "bf23bfb21f10a2a4b0406086d690dc8cb1b3ccf3"
+      },
+      "description": "Audit npm/PyPI/Go dependencies for supply-chain risk (upstream: trailofbits/skills, CC-BY-SA-4.0; pinned, not copied)",
+      "category": "security",
+      "tags": [
+        "security",
+        "tommy-curated"
+      ],
+      "license": "CC-BY-SA-4.0",
+      "homepage": "https://github.com/trailofbits/skills/tree/bf23bfb21f10/plugins/supply-chain-risk-auditor"
+    },
+    {
+      "name": "agentic-actions-auditor",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/trailofbits/skills.git",
+        "path": "plugins/agentic-actions-auditor",
+        "sha": "bf23bfb21f10a2a4b0406086d690dc8cb1b3ccf3"
+      },
+      "description": "Audit GitHub Actions that run AI agents (upstream: trailofbits/skills, CC-BY-SA-4.0; pinned, not copied)",
+      "category": "security",
+      "tags": [
+        "security",
+        "tommy-curated"
+      ],
+      "license": "CC-BY-SA-4.0",
+      "homepage": "https://github.com/trailofbits/skills/tree/bf23bfb21f10/plugins/agentic-actions-auditor"
+    },
+    {
+      "name": "static-analysis",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/trailofbits/skills.git",
+        "path": "plugins/static-analysis",
+        "sha": "bf23bfb21f10a2a4b0406086d690dc8cb1b3ccf3"
+      },
+      "description": "Semgrep/CodeQL-driven static analysis (needs semgrep installed) (upstream: trailofbits/skills, CC-BY-SA-4.0; pinned, not copied)",
+      "category": "security",
+      "tags": [
+        "security",
+        "tommy-curated"
+      ],
+      "license": "CC-BY-SA-4.0",
+      "homepage": "https://github.com/trailofbits/skills/tree/bf23bfb21f10/plugins/static-analysis"
+    },
+    {
+      "name": "agent-skills",
+      "source": {
+        "source": "github",
+        "repo": "addyosmani/agent-skills",
+        "sha": "aeac41d4d005999432bb7312f7ff06383a91d59d"
+      },
+      "description": "Production-grade engineering skills, sub-agents and commands (upstream: addyosmani/agent-skills, MIT; pinned, not copied)",
+      "category": "development",
+      "tags": [
+        "engineering",
+        "tdd",
+        "review",
+        "tommy-curated"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/addyosmani/agent-skills/tree/aeac41d4d005"
     }
   ]
 }
