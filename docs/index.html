@@ -333,7 +333,87 @@
     </div>
     <!-- /SLIDE 1 -->
 
-    <!-- SLIDE 2 — cross-harness handoffs -->
+    <!-- SLIDE 2 — namespaces + authentication -->
+    <div class="hero-slide grid md:grid-cols-2 gap-16 items-center">
+    <div>
+      <div class="inline-flex items-center gap-2 bg-purple-500/10 border border-purple-500/20 rounded-full px-4 py-1.5 text-sm text-purple-300 mb-8">
+        <span class="w-1.5 h-1.5 bg-purple-400 rounded-full pulse-dot"></span>
+        Namespaces &middot; per-agent tokens &middot; server-stamped authorship
+      </div>
+      <h2 class="hero-display text-5xl md:text-6xl font-bold text-white leading-[1.05] mb-6">
+        Shared memory,<br />
+        <span class="gradient-text">governed.</span>
+      </h2>
+      <p class="text-gray-400 text-lg leading-relaxed mb-6 max-w-lg">
+        Every memory lives in a namespace. Every person and every agent gets its own token, and a token reaches only the namespaces it was granted &mdash; read, write, or both &mdash; checked on the server, not suggested in a prompt.
+      </p>
+      <p class="text-gray-300 text-base leading-relaxed mb-8 max-w-lg">
+        Authorship is stamped from the authenticated token, so a client can&rsquo;t claim to be someone else. Add an audit log and an encrypted secret vault &mdash; all in the open-source build, on your own Postgres (embedded by default, no Docker).
+      </p>
+      <div class="flex flex-wrap items-center gap-3">
+        <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white font-semibold px-6 py-3 rounded-full text-sm whitespace-nowrap">Deploy free</a>
+        <a href="governance.html" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-6 py-3 rounded-full whitespace-nowrap">How governance works &rarr;</a>
+        <a href="compare.html#vs-mem0" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-6 py-3 rounded-full whitespace-nowrap">Compare with mem0</a>
+      </div>
+      <div class="mt-14 grid grid-cols-2 gap-x-8 gap-y-6 border-t border-gray-800 pt-8">
+        <div>
+          <div class="text-2xl font-bold text-white">Per-namespace</div>
+          <div class="text-xs text-gray-500 mt-0.5">read / write grants per principal, enforced server-side</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-white">Server-stamped</div>
+          <div class="text-xs text-gray-500 mt-0.5">author comes from the token; an <code>author</code> field in the request is ignored</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-white">Revocable</div>
+          <div class="text-xs text-gray-500 mt-0.5">tokens are individual, scoped, and can be revoked one at a time</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-white">No LLM</div>
+          <div class="text-xs text-gray-500 mt-0.5">at recall time &mdash; fast, cheap, deterministic</div>
+        </div>
+      </div>
+    </div>
+    <div class="relative">
+      <div class="glass rounded-2xl p-5 space-y-3 max-w-md ml-auto">
+        <div class="flex items-center justify-between mb-4">
+          <span class="text-xs text-gray-500 font-mono">namespace: team:eng</span>
+          <span class="text-xs text-gray-500">example</span>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-green-500/20 text-green-300 px-2 py-0.5 rounded-full font-mono">read + write</span>
+            <span class="text-xs text-gray-500">dev-alice&rsquo;s token</span>
+          </div>
+          <p class="text-sm text-gray-200">Decides the auth approach and saves it. Stored as <span class="font-mono text-xs">by dev-alice</span>.</p>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-green-500/20 text-green-300 px-2 py-0.5 rounded-full font-mono">read + write</span>
+            <span class="text-xs text-gray-500">dev-bob&rsquo;s token</span>
+          </div>
+          <p class="text-sm text-gray-200">A fresh agent that never saw Alice&rsquo;s session recalls her decision, attributed to her, and adds a constraint.</p>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full font-mono">read only</span>
+            <span class="text-xs text-gray-500">a CI agent&rsquo;s token</span>
+          </div>
+          <p class="text-sm text-gray-200">Can recall the team&rsquo;s decisions. It was never granted write, so it can&rsquo;t change them.</p>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full font-mono">audit log</span>
+            <span class="text-xs text-gray-500">every call</span>
+          </div>
+          <p class="text-sm text-gray-200">Who read or wrote what, and when &mdash; recorded by the server, not by the client.</p>
+        </div>
+      </div>
+    </div>
+    </div>
+    <!-- /SLIDE 2 -->
+
+    <!-- SLIDE 3 — cross-harness handoffs -->
     <div class="hero-slide grid md:grid-cols-2 gap-16 items-center">
     <!-- Left -->
     <div>
@@ -415,13 +495,14 @@
       </div>
     </div>
     </div>
-    <!-- /SLIDE 2 -->
+    <!-- /SLIDE 3 -->
 
   </div>
   <!-- Slide dots -->
   <div class="flex items-center justify-center gap-2 mt-10">
     <button type="button" class="hero-dot" data-hero-dot="0" aria-label="Show the persistent-memory slide" aria-current="true"></button>
-    <button type="button" class="hero-dot" data-hero-dot="1" aria-label="Show the cross-harness handoffs slide" aria-current="false"></button>
+    <button type="button" class="hero-dot" data-hero-dot="1" aria-label="Show the namespaces and access control slide" aria-current="false"></button>
+    <button type="button" class="hero-dot" data-hero-dot="2" aria-label="Show the cross-harness handoffs slide" aria-current="false"></button>
   </div>
   </div>
 </section>

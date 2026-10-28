@@ -118,6 +118,16 @@ Full walkthrough: [`QUICKSTART.md`](QUICKSTART.md) · Windows:
 
 ## What makes it different
 
+- **Namespaces with real access control.** Every memory lives in a namespace (`user:alice`,
+  `team:eng`, `proj:api`). Each person and each agent gets its own token, and a token reaches
+  only the namespaces it was granted (read, write, or both) — checked on the server, not
+  suggested in a prompt. Authorship is stamped from the authenticated token, so a request body
+  can't claim to be someone else (`author` in the payload is ignored; tested). Tokens are
+  individually revocable, and every call is audit-logged. Other memory layers scope with ids
+  the caller passes on each request (mem0's `user_id`/`agent_id`/`app_id`/`run_id` are filters,
+  per its docs) and enforce access at the project or key-owner level; memnos enforces it per
+  namespace, per principal. See [memnos.net/compare](https://memnos.net/compare.html#vs-mem0)
+  for the sourced, dated comparison.
 - **It knows what's true *now*.** Facts are bi-temporal (when it happened vs. when memnos
   learned it). Single-valued facts (`lives_in`, `works_at`) supersede on contradiction —
   by rule, not by asking an LLM — so "where do I live?" returns the current answer, with
