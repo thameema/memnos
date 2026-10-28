@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "memnos": { "command": "memnos", "args": ["mcp"] }
+  }
+}

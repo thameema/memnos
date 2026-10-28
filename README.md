@@ -143,7 +143,22 @@ comparison with other memory systems lives at
 
 ## Integrations
 
-One command wires memnos into your agent — no manual config editing:
+**Claude Code — install as a plugin** (no tokens written into your config):
+
+```bash
+uv tool install memnos && memnos setup      # embedded Postgres by default, no Docker
+claude plugin marketplace add thameema/memnos && claude plugin install memnos@memnos
+```
+
+The plugin supplies auto recall/save hooks, the MCP tools and `/memnos:memnos`. Hooks and the
+MCP server read your token from `~/.memnos/config.json` (a scoped per-user token, created once
+and reused), so rotating a token is one file, not four. Already ran `memnos claude-setup`
+before? Run it again after installing the plugin — it removes its old hooks/MCP/command entries
+(backups kept), because plugin hooks run *in addition to* `settings.json` hooks and would
+otherwise recall twice per prompt. GUI launches with a minimal `PATH` can't find `memnos`; use
+`memnos claude-setup` there instead (it writes an absolute path).
+
+One command wires memnos into any other agent — no manual config editing:
 
 ```bash
 memnos agent-setup claude-code     # Claude Code: MCP + hooks (auto recall/save) + /memnos
