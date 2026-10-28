@@ -9,5 +9,6 @@
   "dependencies": [
     "comprehensive-review",
     "c4-architecture"
-  ]
+  ],
+  "version": "0.1.9"
 }

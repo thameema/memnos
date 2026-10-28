@@ -583,15 +583,26 @@ claude plugin marketplace add thameema/memnos && claude plugin install tommy@mem
 memnos claude-setup                             # your scoped token; removes any old baked-in hooks
 ```
 
-That single `tommy` plugin installs the memnos plugin plus three role stacks. Each stack is a thin plugin whose only job is to depend on
-upstream plugins, so nothing is copied into this repo: Claude Code fetches each one straight from its own GitHub repo at a commit
-pinned in `.claude-plugin/marketplace.json`.
+`tommy` is the core: it installs the memnos plugin (memory on by default, for recall and save) and nothing else. Skill bundles are
+opt-in, so you only pay the context cost of the ones you want:
 
-| Stack | Upstream plugins (repo, licence) |
+```bash
+claude plugin install tommy-engineering@memnos     # or any bundle below
+```
+
+Bundles that wrap upstream work are thin plugins whose only job is to depend on upstream plugins. Nothing is copied into this repo:
+Claude Code fetches each one straight from its own GitHub repo at a commit pinned in `.claude-plugin/marketplace.json`.
+
+| Bundle | Contents (repo, licence) |
 |---|---|
+| `tommy-engineering` | `agent-skills`: spec, plan, build, TDD, review and ship skills, plus code-review, security, test and web-performance sub-agents (addyosmani/agent-skills, MIT) |
 | `tommy-architect` | `comprehensive-review`, `c4-architecture` (wshobson/agents, MIT) |
 | `tommy-review` | `differential-review`, `audit-context-building`, `variant-analysis` (trailofbits/skills, CC-BY-SA-4.0) |
 | `tommy-security` | `sharp-edges`, `supply-chain-risk-auditor`, `agentic-actions-auditor`, `static-analysis` (trailofbits/skills, CC-BY-SA-4.0) |
+| `tommy-design-review` | `hld-review`, `lld-review`: Tommy-authored design reviewers that check a design against the real code |
+| `tommy-qa` | `qa-frontend`, `qa-backend`, `qa-rest-api`: Tommy-authored QA skills, for apps you own and test environments only |
+
+Penetration-testing skills are not bundled: none of the upstream options check that you are allowed to test the target, so they wait for a gated design.
 
 Credit and licences stay with the authors: `tommy skills list` shows every plugin's upstream repo, pinned commit and licence.
 Trail of Bits' plugins are CC-BY-SA-4.0, which is why they are only ever fetched from upstream and never vendored here.

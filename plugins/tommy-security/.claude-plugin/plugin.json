@@ -11,5 +11,6 @@
     "supply-chain-risk-auditor",
     "agentic-actions-auditor",
     "static-analysis"
-  ]
+  ],
+  "version": "0.1.9"
 }

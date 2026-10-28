@@ -23,13 +23,12 @@
     {
       "name": "tommy",
       "source": "./plugins/tommy",
-      "description": "Tommy orchestrator + curated architecture, PR-review and security skills (installs memnos too).",
+      "description": "Tommy orchestrator with memnos memory on by default. Skill bundles are opt-in.",
       "category": "productivity",
       "tags": [
         "orchestrator",
         "handoff",
-        "review",
-        "security"
+        "memory"
       ],
       "license": "Apache-2.0"
     },
@@ -60,6 +59,41 @@
       "category": "development",
       "tags": [
         "tommy-curated"
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "tommy-engineering",
+      "source": "./plugins/tommy-engineering",
+      "description": "Opt-in engineering lifecycle bundle: spec, plan, build, TDD, review and ship skills plus sub-agents (upstream agent-skills, MIT, pinned).",
+      "category": "development",
+      "tags": [
+        "tommy-curated",
+        "bundle"
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "tommy-design-review",
+      "source": "./plugins/tommy-design-review",
+      "description": "Opt-in HLD and LLD design reviewers (Tommy-authored).",
+      "category": "development",
+      "tags": [
+        "tommy-curated",
+        "bundle",
+        "architecture"
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "tommy-qa",
+      "source": "./plugins/tommy-qa",
+      "description": "Opt-in QA skills for frontend, backend and REST APIs (Tommy-authored).",
+      "category": "development",
+      "tags": [
+        "tommy-curated",
+        "bundle",
+        "testing"
       ],
       "license": "Apache-2.0"
     },
@@ -217,6 +251,24 @@
       ],
       "license": "CC-BY-SA-4.0",
       "homepage": "https://github.com/trailofbits/skills/tree/bf23bfb21f10/plugins/static-analysis"
+    },
+    {
+      "name": "agent-skills",
+      "source": {
+        "source": "github",
+        "repo": "addyosmani/agent-skills",
+        "sha": "aeac41d4d005999432bb7312f7ff06383a91d59d"
+      },
+      "description": "Production-grade engineering skills, sub-agents and commands (upstream: addyosmani/agent-skills, MIT; pinned, not copied)",
+      "category": "development",
+      "tags": [
+        "engineering",
+        "tdd",
+        "review",
+        "tommy-curated"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/addyosmani/agent-skills/tree/aeac41d4d005"
     }
   ]
 }

@@ -42,24 +42,38 @@ def main():
         deps = json.load(open(os.path.join(ROOT, p["source"], ".claude-plugin", "plugin.json"))).get("dependencies", [])
         missing = [d for d in deps if d not in names]
         check(f"'{n}' dependencies all listed ({len(deps)})", not missing, missing)
-    check("tommy pulls in memnos and the three role stacks",
-          set(json.load(open(os.path.join(ROOT, "plugins/tommy/.claude-plugin/plugin.json")))["dependencies"])
-          == {"memnos", "tommy-architect", "tommy-review", "tommy-security"})
+    check("tommy core pulls in memnos only; every skill bundle is opt-in",
+          json.load(open(os.path.join(ROOT, "plugins/tommy/.claude-plugin/plugin.json")))["dependencies"] == ["memnos"])
+    check("opt-in bundles exist for engineering, review, architecture, design review, QA and security",
+          {"tommy-engineering", "tommy-review", "tommy-architect", "tommy-design-review", "tommy-qa", "tommy-security"} <= set(local))
+    tv = re.search(r'^version = "([^"]+)"', open(os.path.join(ROOT, "agents/tommy/pyproject.toml")).read(), re.M).group(1)
+    pinned = {n: json.load(open(os.path.join(ROOT, p["source"], ".claude-plugin", "plugin.json"))).get("version")
+              for n, p in local.items() if n.startswith("tommy")}
+    check(f"every tommy plugin pins version == tommy-orchestrator {tv}", all(v == tv for v in pinned.values()), pinned)
 
     print("=== upstream plugins are pinned, attributed, never copied ===")
     for n, p in upstream.items():
         s = p["source"]
-        check(f"'{n}': git-subdir from github, full 40-hex sha, path set",
-              s["source"] == "git-subdir" and s["url"].startswith("https://github.com/")
-              and re.fullmatch(r"[0-9a-f]{40}", s.get("sha", "")) and s.get("path"), s)
+        check(f"'{n}': github source (git-subdir or whole repo), full 40-hex sha",
+              ((s["source"] == "git-subdir" and s["url"].startswith("https://github.com/") and s.get("path"))
+               or (s["source"] == "github" and "/" in s.get("repo", "")))
+              and re.fullmatch(r"[0-9a-f]{40}", s.get("sha", "")), s)
         check(f"'{n}': licence declared and upstream linked", bool(p.get("license")) and "github.com" in p.get("homepage", ""))
         check(f"'{n}': entry declares no hooks (upstream hooks were read by hand at this sha: only fp-check has one, and it is excluded)", "hooks" not in p)
     sa = [n for n, p in upstream.items() if "SA" in p.get("license", "").upper().split("-")]
     check("share-alike (CC-BY-SA) plugins exist only as upstream sources, so nothing is vendored here",
           all(n in upstream for n in sa) and not any(
               "SA" in local[n].get("license", "").upper().split("-") for n in local))
-    vendored = [d for d, _, fs in os.walk(os.path.join(ROOT, "plugins")) for f in fs if f == "SKILL.md"]
-    check("no SKILL.md is vendored under plugins/ (all curated skills come from upstream)", not vendored, vendored)
+    own = {"tommy-design-review", "tommy-qa"}  # the only plugins whose skills Tommy authors itself
+    vendored = [d for d, _, fs in os.walk(os.path.join(ROOT, "plugins")) for f in fs
+                if f == "SKILL.md" and os.path.relpath(d, os.path.join(ROOT, "plugins")).split(os.sep)[0] not in own]
+    check("no upstream SKILL.md is vendored under plugins/ (only Tommy-authored skills live here)", not vendored, vendored)
+    for n in own:
+        for d in sorted(os.listdir(os.path.join(ROOT, "plugins", n, "skills"))):
+            t = open(os.path.join(ROOT, "plugins", n, "skills", d, "SKILL.md")).read()
+            check(f"{n}/{d}: frontmatter name matches dir and description is set",
+                  f"\nname: {d}\n" in t and "\ndescription: " in t.split("---")[1])
+    check("no pentest plugin is bundled (needs a gated design first)", not [n for n in names if "pentest" in n])
 
     if shutil.which("claude"):
         r = subprocess.run(["claude", "plugin", "validate", ROOT], capture_output=True, text=True, timeout=90)

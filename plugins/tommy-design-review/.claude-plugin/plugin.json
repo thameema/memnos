@@ -1,0 +1,7 @@
+{
+  "name": "tommy-design-review",
+  "version": "0.1.9",
+  "description": "Design-review bundle (opt-in): HLD and LLD reviewers that check a design against the real code before anyone builds it.",
+  "author": {"name": "Thameem Ansari", "url": "https://github.com/thameema"},
+  "license": "Apache-2.0"
+}
