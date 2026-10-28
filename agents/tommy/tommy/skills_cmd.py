@@ -269,7 +269,7 @@ def outcomes(projects_dir: Path, since_days: Optional[int] = None) -> tuple[dict
 
 def _verdict(uses: int, errors: int, corrections: int) -> str:
     if uses == 0:
-        return "idle: drop it or move it to an opt-in bundle"
+        return "idle: look at why (description unclear? not relevant yet? shadowed by another skill?)"
     if uses < 3:
         return "too few uses to judge"
     if corrections / uses >= 0.5 or errors / uses >= 3:

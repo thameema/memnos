@@ -187,7 +187,7 @@ def test_injected_skill_body_is_not_a_human_reaction(tmp_path):
 
 
 def test_verdicts():
-    assert sk._verdict(0, 0, 0).startswith("idle")
+    assert sk._verdict(0, 0, 0).startswith("idle: look at why") and "drop" not in sk._verdict(0, 0, 0)
     assert sk._verdict(2, 9, 2).startswith("too few")
     assert sk._verdict(3, 0, 2).startswith("review")
     assert sk._verdict(5, 1, 0) == "keep"

@@ -618,7 +618,7 @@ tommy skills update --apply NAME   # move one pin to upstream HEAD after you hav
 ```
 
 `eval` reads proxies, not quality: a skill can fire often and help little, or fire rarely and matter. The verdict is a prompt to look
-(drop an idle skill, review one that is often followed by your corrections), not a grade. `vet` adds nothing; you read the repo's
+(why is an idle skill idle? why are the uses of another often followed by your corrections?), not a grade and never a reason to delete. `vet` adds nothing; you read the repo's
 skills and every hook or script it flags, then add the pinned entry and a bundle yourself, and `update` keeps the pin current.
 
 Deliberately left out of v1: `fp-check` (its `Stop` hook adds a model call to every stop, in every session), `second-opinion`
