@@ -142,7 +142,7 @@ def test_plugin_files():
     check("hooks wrapped under top-level 'hooks' with recall+remember+status",
           {"UserPromptSubmit", "Stop", "SessionStart"} == set(hooks["hooks"]))
     blob = "".join(open(os.path.join(dp, f), encoding="utf-8").read()
-                   for dp, _, fs in os.walk(pdir) for f in fs)
+                   for dp, _, fs in os.walk(pdir) for f in fs if not f.endswith(".png"))
     check("no token or namespace baked into any plugin file", "mnk_" not in blob and "MEMNOS_TOKEN=" not in blob
           and "MEMNOS_NS=" not in blob)
     check("session-start script is executable", os.access(os.path.join(pdir, "scripts", "session-start.sh"), os.X_OK))
