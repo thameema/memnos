@@ -107,3 +107,15 @@ class TestUnaffectedBaselineBehavior:
         proc = _run(["--list-harnesses"], tmp_path, isolated_env)
         assert proc.returncode == 0, proc.stderr
         assert "Harnesses:" in proc.stdout
+
+
+class TestSkillsDispatch:
+    def test_tommy_skills_help_shows_subcommand_help_and_short_circuits(self, tmp_path, isolated_env):
+        proc = _run(["skills", "--help"], tmp_path, isolated_env)
+        assert proc.returncode == 0, proc.stderr
+        assert "tommy skills" in proc.stdout and "stats" in proc.stdout and "update" in proc.stdout
+
+    def test_tommy_skills_list_runs_without_launching_a_harness(self, tmp_path, isolated_env):
+        isolated_env["CLAUDE_CONFIG_DIR"] = str(tmp_path / "claude")
+        proc = _run(["skills", "list"], tmp_path, isolated_env)
+        assert proc.returncode != 0 and "marketplace add thameema/memnos" in proc.stderr + proc.stdout

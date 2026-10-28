@@ -37,14 +37,17 @@ def _claude(tmp_path):
     (cd / "skills" / "security-and-hardening").mkdir(parents=True)
     (cd / "skills" / "security-and-hardening" / "SKILL.md").write_text(
         "---\nname: security-and-hardening\ndescription: Hardens code\n---\n")
+    sub = cd / "projects" / "p1" / "s1" / "subagents"
+    sub.mkdir(parents=True)
+    (sub / "agent-a.jsonl").write_text(_tool_use("Skill", skill="differential-review:differential-review"))
     return cd
 
 
 def test_usage_counts_skills_and_subagents(tmp_path):
     cd = _claude(tmp_path)
     skills, agents, n = sk.usage(cd / "projects")
-    assert n == 1
-    assert skills["differential-review:differential-review"] == 2 and skills["security-and-hardening"] == 1
+    assert n == 2   # the session transcript and its sub-agent transcript
+    assert skills["differential-review:differential-review"] == 3   # 2 in the session + 1 fired by a sub-agent and skills["security-and-hardening"] == 1
     assert agents["code-reviewer"] == 1
 
 
@@ -53,8 +56,9 @@ def test_usage_since_days_skips_old_transcripts(tmp_path):
     cd = _claude(tmp_path)
     f = cd / "projects" / "p1" / "s1.jsonl"
     os.utime(f, (time.time() - 90 * 86400,) * 2)
+    os.utime(cd / "projects" / "p1" / "s1" / "subagents" / "agent-a.jsonl", (time.time() - 90 * 86400,) * 2)
     assert sk.usage(cd / "projects", since_days=30)[2] == 0
-    assert sk.usage(cd / "projects", since_days=None)[2] == 1
+    assert sk.usage(cd / "projects", since_days=None)[2] == 2
 
 
 def test_stats_marks_unused_and_matches_plugin_prefixed_names(tmp_path, monkeypatch):
@@ -62,7 +66,7 @@ def test_stats_marks_unused_and_matches_plugin_prefixed_names(tmp_path, monkeypa
     out = CliRunner().invoke(sk.skills_group, ["stats", "--days", "0"]).output
     assert "3 installed, 1 never used" in out
     line = next(l for l in out.splitlines() if "differential-review" in l and "memnos" not in l and "desc" not in l)
-    assert line.split()[0] == "2"
+    assert line.split()[0] == "3"
     assert "code-reviewer x1" in out
 
 

@@ -86,7 +86,7 @@ def usage(projects_dir: Path, since_days: Optional[int] = None) -> tuple[Counter
     skills: Counter = Counter()
     agents: Counter = Counter()
     n = 0
-    for f in projects_dir.glob("*/*.jsonl"):
+    for f in projects_dir.rglob("*.jsonl"):   # includes <session>/subagents/*.jsonl, where dispatched reviewers fire skills
         if f.stat().st_mtime < cutoff:
             continue
         n += 1

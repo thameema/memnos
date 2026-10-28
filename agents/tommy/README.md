@@ -577,11 +577,13 @@ your own state machine and hop cap instead of reusing Tommy's.
 ## Curated skills (one install, pinned upstream)
 
 ```bash
+uv tool install memnos && memnos setup          # the memory server (embedded Postgres, no Docker)
 uv tool install tommy-orchestrator
 claude plugin marketplace add thameema/memnos && claude plugin install tommy@memnos
+memnos claude-setup                             # your scoped token; removes any old baked-in hooks
 ```
 
-That single `tommy` plugin installs memnos plus three role stacks. Each stack is a thin plugin whose only job is to depend on
+That single `tommy` plugin installs the memnos plugin plus three role stacks. Each stack is a thin plugin whose only job is to depend on
 upstream plugins, so nothing is copied into this repo: Claude Code fetches each one straight from its own GitHub repo at a commit
 pinned in `.claude-plugin/marketplace.json`.
 
