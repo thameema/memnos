@@ -15,5 +15,8 @@
     "namespaces",
     "governance",
     "postgres"
-  ]
+  ],
+  "documentationUrl": "https://memnos.net/getting-started.html",
+  "supportUrl": "https://github.com/thameema/memnos/issues",
+  "privacyPolicyUrl": "https://github.com/thameema/memnos/blob/master/plugins/memnos/README.md#data-handling"
 }
