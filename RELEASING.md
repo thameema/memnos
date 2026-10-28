@@ -44,6 +44,14 @@ That's it — `uv tool upgrade memnos` (or, fallback: `pip install -U memnos`) p
 version once the workflow goes green. Keep `memnos` + `memnos-sdk` + the git tag on the same
 version line (stay in **0.x** until adoption).
 
+## The Claude Code plugin rides the memnos release
+
+`plugins/memnos/.claude-plugin/plugin.json` carries a `version` that must equal `pyproject.toml`'s (a test enforces it).
+Bump it in the same release PR, so plugin users (and the Anthropic directory, which wants a raised version per release)
+only see a new plugin when a matching `memnos` is on PyPI. The plugin only calls the installed CLI (`memnos hook`,
+`memnos mcp`), so release order is: merge the release PR, publish the GitHub Release, confirm PyPI, then announce. After
+changing a hook or the data it handles, update the Data handling section of `plugins/memnos/README.md` in that same PR.
+
 ## tommy-orchestrator: dispatch-delivery check
 
 `agents/tommy/tests/test_dispatch_stdin_isolation.py` is a real (non-mocked-harness)
