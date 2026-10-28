@@ -150,6 +150,13 @@ def test_plugin_files():
     check("commands/memnos.md is generated from the claude-setup template (no drift)",
           open(os.path.join(pdir, "commands", "memnos.md"), encoding="utf-8").read() == expected)
     check("every hook command is token-free", all("mnk_" not in c for c in cmds))
+    import re
+    pv = json.load(open(os.path.join(pdir, ".claude-plugin", "plugin.json"))).get("version")
+    for toml in ("pyproject.toml", "sdk/pyproject.toml"):
+        v = re.search(r'^version = "([^"]+)"', open(os.path.join(ROOT, toml)).read(), re.M).group(1)
+        check(f"plugin version {pv} matches {toml} ({v}) so plugin updates follow releases", pv == v)
+    readme = open(os.path.join(pdir, "README.md"), encoding="utf-8").read()
+    check("plugin README: >= 40 words and a Data handling section", len(readme.split()) >= 40 and "## Data handling" in readme)
     if shutil.which("claude"):
         r = subprocess.run(["claude", "plugin", "validate", ROOT], capture_output=True, text=True, timeout=60)
         check("`claude plugin validate` passes on the marketplace", r.returncode == 0, r.stdout[-300:] + r.stderr[-300:])
