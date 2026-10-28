@@ -157,12 +157,28 @@ def test_plugin_files():
         print("  SKIP  claude CLI not installed — `claude plugin validate` not run")
 
 
+def test_status_warns_when_running_as_admin():
+    print("=== hook status: warns only when falling back to the admin token ===")
+    def status(cfg):
+        with tempfile.TemporaryDirectory() as h:
+            os.makedirs(os.path.join(h, ".memnos"))
+            json.dump({"port": 59999, **cfg}, open(os.path.join(h, ".memnos", "config.json"), "w"))
+            r = subprocess.run([sys.executable, os.path.join(ROOT, "memnos_cli.py"), "hook", "status"],
+                               input='{"session_id":"s","cwd":"/tmp"}', capture_output=True, text=True,
+                               env={"HOME": h, "PATH": os.environ["PATH"]}, timeout=30)
+            return json.loads(r.stdout).get("systemMessage", "")
+    check("admin-only config -> warning", "using the admin token" in status({"admin_token": "mnk_a"}))
+    check("scoped token present -> no warning",
+          "admin token" not in status({"admin_token": "mnk_a", "agent_tokens": {"claude-code": "mnk_s"}}))
+
+
 def main():
     test_session_token_precedence()
     test_scoped_token_reuse()
     test_unwire_legacy()
     test_plugin_detection()
     test_plugin_files()
+    test_status_warns_when_running_as_admin()
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 

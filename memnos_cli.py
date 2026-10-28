@@ -4392,6 +4392,10 @@ def cmd_hook(args, cfg):
         if os.environ.get("CLAUDE_PLUGIN_ROOT") and _legacy_hooks_wired():
             parts.append("⚠ legacy memnos hooks still in ~/.claude/settings.json — every prompt "
                          "recalls twice. Run `memnos claude-setup` to migrate to the plugin")
+        if (cfg.get("admin_token") and not os.environ.get("MEMNOS_TOKEN")
+                and not (cfg.get("agent_tokens") or {}).get("claude-code")):
+            parts.append("⚠ using the admin token — run `memnos claude-setup` for a scoped token "
+                         "so writes are attributed to you")
         msg = "memnos: " + "  ·  ".join(parts)
         # deferred suggest-on-mismatch (issue #20, Part B3): async writes (the Stop hook)
         # can't carry the advisory in their immediate response, so the ingest worker parks a
