@@ -307,6 +307,64 @@ installed package. `--force` overwrites existing files.
 
 ---
 
+## Skills bundles
+
+Separately from the orchestrator itself, the memnos marketplace curates upstream Claude
+Code skill plugins into opt-in bundles. Tommy ships no copies of anyone else's skills —
+each bundle is a plugin whose `dependencies` pin upstream plugins to a commit SHA via
+`git-subdir` sources, so credit, licence and updates stay with the original author.
+
+```bash
+tommy skills install            # list the bundles
+tommy skills install all        # memnos memory + every bundle below, one install
+tommy skills install engineering  # or just one bundle
+```
+
+| Bundle | What's inside |
+|---|---|
+| `core` | memnos memory only, no skill bundles |
+| `engineering` | spec, plan, build, TDD, review and ship skills, plus code-review/security/test/web-perf sub-agents (`agent-skills`, MIT) |
+| `architect` | C4 documentation and multi-perspective design review (`comprehensive-review`, `c4-architecture`; wshobson/agents, MIT) |
+| `review` | differential security review, context building, variant analysis (trailofbits/skills, CC-BY-SA-4.0) |
+| `security` | sharp-edges, supply-chain, agentic-actions and static-analysis audits (trailofbits/skills, CC-BY-SA-4.0; `static-analysis` needs `semgrep` installed) |
+| `design-review` | Tommy-authored HLD and LLD reviewers that check a design against the real code |
+| `qa` | Tommy-authored frontend, backend and REST API QA — for apps you own and test environments only |
+| `explain` | Tommy-authored: explains code, bugs and findings in plain English with a real-world scenario |
+| `pentest` | 25-skill penetration-testing pack: an ROE/authorization + scope gate runs first (and can't itself run `curl`/`wget`/`nmap`/`sqlmap`/`nikto`), then header/TLS/CORS/secret/dependency/code scans and OWASP Top 10-mapped reporting (jeremylongshore/claude-code-plugins-plus-skills, MIT). Not included in `all`. |
+
+Restart the Claude Code session (or run `/reload-plugins`) to load newly installed
+skills. A plugin's own skills only show up under `/<plugin-name>`, not under `/tommy` —
+`tommy-qa`, `tommy-design-review` and `tommy-explain` ship their own skills, but
+`tommy-engineering`, `tommy-architect`, `tommy-review` and `tommy-security` are pure
+dependency lists, so their skills surface under the upstream plugin's own name
+(`/agent-skills:…`, `/sharp-edges`, etc.).
+
+Other `tommy skills` commands:
+
+```bash
+tommy skills list            # curated plugins: upstream repo, pinned commit, licence, installed?
+tommy skills stats           # which installed skills actually fire, from your own transcripts
+tommy skills eval            # productivity scorecard per skill: uses, edits/commands after, tool errors, your corrections, verdict
+tommy skills vet owner/repo  # read-only look at an upstream repo before adding it: licence, hooks, scripts, risky exec/network patterns
+tommy skills bench prompts.jsonl  # offline: would a keyword hint put the right installed skill in the top 3? no model calls
+tommy skills update          # maintainers only: where upstream has moved past each pin
+```
+
+`stats`/`eval` read proxies, not quality: a skill can fire often and help little, or
+rarely and matter. The verdict is a prompt to look, never a grade on its own.
+
+Claude Code lists every installed skill's name and description each turn inside a fixed
+context budget (`skillListingBudgetFraction` in `~/.claude/settings.json`, default 1% of
+the context window). Install only what you'll use, or raise the budget if new skills
+start showing as name-only.
+
+`tommy-pentest` is deliberately excluded from `all` — pentest is a different risk class
+from the other bundles, so it stays a separate, explicit `tommy skills install pentest`.
+
+Full command reference: [`agents/tommy/README.md`](https://github.com/thameema/memnos/tree/master/agents/tommy#readme).
+
+---
+
 ## Configuration
 
 Tommy reads `~/.memnos/agents/tommy/tommy.conf` (`KEY=VALUE`, one per line), merged in this

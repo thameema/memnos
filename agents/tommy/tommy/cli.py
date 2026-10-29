@@ -915,6 +915,10 @@ def _print_banner(cfg: TommyConfig, project_key: Optional[str] = None) -> None:
     help="Tommy — personal coding orchestrator built on memnos.",
     add_help_option=False,
     epilog=(
+        "Curated skill bundles: `tommy skills install` lists opt-in Claude Code "
+        "plugin bundles (engineering, architect, review, security, design-review, "
+        "qa, explain, pentest, or `all`); `tommy skills --help` for the full set including "
+        "`list`, `stats`, `eval`, `vet` and `bench`.\n\n"
         "Resuming a session (memnos#144): any flag Tommy doesn't recognize "
         "is passed straight through, verbatim, to the launched harness "
         "('claude' today), so claude's own resume flags already work — see "
