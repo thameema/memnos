@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from click.testing import CliRunner
@@ -235,8 +236,15 @@ def test_vet_reports_hooks_and_exec_patterns_and_prints_a_pinned_entry(tmp_path,
 
 def test_install_lists_bundles_and_maps_names(monkeypatch):
     out = CliRunner().invoke(sk.skills_group, ["install"]).output
-    assert "all" in out and "explain" in out and not [k for k in sk.BUNDLES if "pentest" in k]
-    assert [sk._plugin(b) for b in ("all", "core", "qa", "design-review")] == ["tommy-all", "tommy", "tommy-qa", "tommy-design-review"]
+    assert "all" in out and "explain" in out and "pentest" in sk.BUNDLES
+    assert [sk._plugin(b) for b in ("all", "core", "qa", "design-review", "pentest")] == \
+        ["tommy-all", "tommy", "tommy-qa", "tommy-design-review", "tommy-pentest"]
+
+
+def test_pentest_bundle_is_not_in_all():
+    all_deps = json.loads((Path(__file__).resolve().parents[3] / "plugins" / "tommy-all"
+                            / ".claude-plugin" / "plugin.json").read_text())["dependencies"]
+    assert "tommy-pentest" not in all_deps
 
 
 def test_install_adds_marketplace_once_then_installs(monkeypatch):

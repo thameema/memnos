@@ -35,7 +35,7 @@
     {
       "name": "tommy-all",
       "source": "./plugins/tommy-all",
-      "description": "One install for everything Tommy curates: memory plus all skill bundles (no pentesting).",
+      "description": "One install for everything Tommy curates: memory plus all skill bundles. tommy-pentest is separate and not included.",
       "category": "productivity",
       "tags": [
         "tommy-curated",
@@ -118,6 +118,19 @@
         "tommy-curated",
         "bundle",
         "explain"
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "tommy-pentest",
+      "source": "./plugins/tommy-pentest",
+      "description": "Opt-in penetration-testing pack: ROE/authorization gate runs first, then header/TLS/CORS/dependency/code scans and OWASP-mapped reporting. Not included in tommy-all.",
+      "category": "security",
+      "tags": [
+        "tommy-curated",
+        "bundle",
+        "security",
+        "pentest"
       ],
       "license": "Apache-2.0"
     },
@@ -293,6 +306,25 @@
       ],
       "license": "MIT",
       "homepage": "https://github.com/addyosmani/agent-skills/tree/aeac41d4d005"
+    },
+    {
+      "name": "penetration-tester",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/jeremylongshore/claude-code-plugins-plus-skills.git",
+        "path": "plugins/security/penetration-tester",
+        "sha": "ab85a061f7bcc039dac13ee193de7a4cd4388571"
+      },
+      "description": "25-skill pentest pack: ROE/authorization + scope gate first, then header/TLS/CORS/secret/dependency/code scans, OWASP Top 10 mapping and exec-readable reporting (upstream: jeremylongshore/claude-code-plugins-plus-skills, MIT; pinned, not copied)",
+      "category": "security",
+      "tags": [
+        "security",
+        "pentest",
+        "owasp",
+        "tommy-curated"
+      ],
+      "license": "MIT",
+      "homepage": "https://github.com/jeremylongshore/claude-code-plugins-plus-skills/tree/ab85a061f7bc/plugins/security/penetration-tester"
     }
   ]
 }
