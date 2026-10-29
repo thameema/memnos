@@ -64,7 +64,7 @@ def test_usage_since_days_skips_old_transcripts(tmp_path):
 def test_stats_marks_unused_and_matches_plugin_prefixed_names(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(_claude(tmp_path)))
     out = CliRunner().invoke(sk.skills_group, ["stats", "--days", "0"]).output
-    assert "3 installed, 1 never used" in out
+    assert "3 installed. 1 never used in this window" in out
     line = next(l for l in out.splitlines() if "differential-review" in l and "memnos" not in l and "desc" not in l)
     assert line.split()[0] == "3"
     assert "code-reviewer x1" in out
@@ -260,3 +260,63 @@ def test_install_fails_clearly_without_claude(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda n: None)
     r = CliRunner().invoke(sk.skills_group, ["install", "all"])
     assert r.exit_code != 0 and "claude" in r.output
+
+
+def _plugin_with_age(tmp_path, installed_at):
+    cd = _claude(tmp_path)
+    plug = next((cd / "plugins" / "cache").rglob("1.0"))
+    (cd / "plugins" / "installed_plugins.json").write_text(json.dumps(
+        {"plugins": {"differential-review@memnos": [{"installPath": str(plug), "installedAt": installed_at}]}}))
+    return cd
+
+
+def test_recently_installed_unused_skill_is_too_new_to_judge_not_unused(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    two_days = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(_plugin_with_age(tmp_path, two_days)))
+    out = CliRunner().invoke(sk.skills_group, ["stats", "--days", "0"]).output
+    assert "0 never used" in out and "1 more were installed under 7 days ago" in out
+    ev = CliRunner().invoke(sk.skills_group, ["eval", "--days", "0"]).output
+    assert "too new to judge" in next(l for l in ev.splitlines() if l.startswith("unused-one"))
+
+
+def test_long_installed_unused_skill_still_counts_as_unused(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(_plugin_with_age(tmp_path, "2026-01-01T00:00:00.000Z")))
+    out = CliRunner().invoke(sk.skills_group, ["stats", "--days", "0"]).output
+    assert "1 never used" in out and "0 more were installed" in out
+    assert sk._verdict(0, 0, 0, age_days=30).startswith("idle")
+
+
+def test_age_days_handles_missing_and_bad_input():
+    assert sk._age_days(None) is None and sk._age_days("nope") is None
+
+
+def test_index_ranks_by_description_and_ignores_stopwords():
+    from tommy.skill_match import Index
+    idx = Index([("debugging", "find the root cause when tests fail or a build breaks"),
+                 ("api-design", "design stable REST endpoints and contracts"),
+                 ("frontend", "build accessible responsive user interfaces")])
+    assert idx.rank("the build is broken and tests fail")[0][0] == "debugging"
+    assert idx.rank("design the endpoints")[0][0] == "api-design"
+    assert idx.rank("the and of to") == []   # only stopwords: nothing to hint
+    assert len(idx.rank("build design tests", k=2)) <= 2
+
+
+def test_bench_reports_recall_and_false_hints_and_skips_uninstalled(tmp_path, monkeypatch):
+    cd = tmp_path / "claude"
+    for n, d in (("debugging", "find the root cause when tests fail or a build breaks"),
+                 ("api-design", "design stable REST endpoints and contracts")):
+        (cd / "skills" / n).mkdir(parents=True)
+        (cd / "skills" / n / "SKILL.md").write_text(f"---\nname: {n}\ndescription: {d}\n---\n")
+    f = tmp_path / "p.jsonl"
+    f.write_text("\n".join(json.dumps(r) for r in [
+        {"prompt": "tests fail and the build breaks", "skill": "debugging"},
+        {"prompt": "design the REST endpoints", "skill": "plugin:api-design"},
+        {"prompt": "write a poem", "skill": "not-installed"},
+        {"prompt": "good morning", "skill": None},
+    ]))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cd))
+    out = CliRunner().invoke(sk.skills_group, ["bench", str(f)]).output
+    assert "2 positive prompts, 1 negative; 1 skipped" in out
+    assert "100%" in out   # both installed labels land in the top 3
+    assert "missed" not in out
