@@ -263,10 +263,11 @@
           <tr><td class="text-green-300 font-mono text-xs">design-review</td><td class="text-gray-300 font-mono text-xs">tommy-design-review</td><td>Tommy-authored HLD and LLD reviewers that check a design against the real code.</td></tr>
           <tr><td class="text-green-300 font-mono text-xs">qa</td><td class="text-gray-300 font-mono text-xs">tommy-qa</td><td>Tommy-authored frontend, backend and REST API QA &mdash; for apps you own and test environments only.</td></tr>
           <tr><td class="text-green-300 font-mono text-xs">explain</td><td class="text-gray-300 font-mono text-xs">tommy-explain</td><td>Tommy-authored: explains code, bugs and findings in plain English with a real-world scenario.</td></tr>
+          <tr><td class="text-green-300 font-mono text-xs">pentest</td><td class="text-gray-300 font-mono text-xs">tommy-pentest</td><td>25-skill penetration-testing pack: an ROE/authorization + scope gate runs first (and can&rsquo;t itself run curl/wget/nmap/sqlmap/nikto), then header/TLS/CORS/secret/dependency/code scans and OWASP Top 10-mapped reporting (jeremylongshore/claude-code-plugins-plus-skills, MIT). Not included in <code>all</code>.</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="text-xs text-gray-600 text-center max-w-2xl mx-auto mt-6">Penetration-testing skills are deliberately not bundled yet: the upstream options don&rsquo;t check that you&rsquo;re authorized to test the target, so a <code class="text-gray-500">tommy-pentest</code> bundle is waiting on a design that gates every active step behind an explicit scope confirmation first.</p>
+    <p class="text-xs text-gray-600 text-center max-w-2xl mx-auto mt-6"><code class="text-gray-500">tommy-pentest</code> is deliberately excluded from <code class="text-gray-500">all</code> &mdash; pentest is a different risk class from the other bundles, so it stays a separate, explicit install.</p>
   </div>
 </section>
 

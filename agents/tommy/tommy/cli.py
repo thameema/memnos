@@ -917,7 +917,7 @@ def _print_banner(cfg: TommyConfig, project_key: Optional[str] = None) -> None:
     epilog=(
         "Curated skill bundles: `tommy skills install` lists opt-in Claude Code "
         "plugin bundles (engineering, architect, review, security, design-review, "
-        "qa, explain, or `all`); `tommy skills --help` for the full set including "
+        "qa, explain, pentest, or `all`); `tommy skills --help` for the full set including "
         "`list`, `stats`, `eval`, `vet` and `bench`.\n\n"
         "Resuming a session (memnos#144): any flag Tommy doesn't recognize "
         "is passed straight through, verbatim, to the launched harness "
