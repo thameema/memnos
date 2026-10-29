@@ -44,11 +44,13 @@ def main():
         check(f"'{n}' dependencies all listed ({len(deps)})", not missing, missing)
     check("tommy core pulls in memnos only; every skill bundle is opt-in",
           json.load(open(os.path.join(ROOT, "plugins/tommy/.claude-plugin/plugin.json")))["dependencies"] == ["memnos"])
-    check("opt-in bundles exist for engineering, review, architecture, design review, QA and security",
-          {"tommy-engineering", "tommy-review", "tommy-architect", "tommy-design-review", "tommy-qa", "tommy-security", "tommy-explain", "tommy-all"} <= set(local))
+    check("opt-in bundles exist for engineering, review, architecture, design review, QA, security and pentest",
+          {"tommy-engineering", "tommy-review", "tommy-architect", "tommy-design-review", "tommy-qa", "tommy-security",
+           "tommy-explain", "tommy-pentest", "tommy-all"} <= set(local))
     allp = json.load(open(os.path.join(ROOT, "plugins/tommy-all/.claude-plugin/plugin.json")))["dependencies"]
-    check("tommy-all installs the core and every other tommy bundle (and no pentest)",
-          set(allp) == {n for n in local if n.startswith("tommy") and n != "tommy-all"} and not [d for d in allp if "pentest" in d], allp)
+    check("tommy-all installs the core and every other tommy bundle except tommy-pentest",
+          set(allp) == {n for n in local if n.startswith("tommy") and n not in ("tommy-all", "tommy-pentest")}, allp)
+    check("tommy-pentest is never pulled in by tommy-all", "tommy-pentest" not in allp)
     tv = re.search(r'^version = "([^"]+)"', open(os.path.join(ROOT, "agents/tommy/pyproject.toml")).read(), re.M).group(1)
     pinned = {n: json.load(open(os.path.join(ROOT, p["source"], ".claude-plugin", "plugin.json"))).get("version")
               for n, p in local.items() if n.startswith("tommy")}
@@ -76,7 +78,8 @@ def main():
             t = open(os.path.join(ROOT, "plugins", n, "skills", d, "SKILL.md")).read()
             check(f"{n}/{d}: frontmatter name matches dir and description is set",
                   f"\nname: {d}\n" in t and "\ndescription: " in t.split("---")[1])
-    check("no pentest plugin is bundled (needs a gated design first)", not [n for n in names if "pentest" in n])
+    pt = json.load(open(os.path.join(ROOT, "plugins/tommy-pentest/.claude-plugin/plugin.json")))
+    check("tommy-pentest depends only on the pinned upstream penetration-tester plugin", pt["dependencies"] == ["penetration-tester"])
 
     if shutil.which("claude"):
         r = subprocess.run(["claude", "plugin", "validate", ROOT], capture_output=True, text=True, timeout=90)

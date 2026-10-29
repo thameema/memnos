@@ -605,8 +605,7 @@ Claude Code fetches each one straight from its own GitHub repo at a commit pinne
 | `tommy-design-review` | `hld-review`, `lld-review`: Tommy-authored design reviewers that check a design against the real code |
 | `tommy-qa` | `qa-frontend`, `qa-backend`, `qa-rest-api`: Tommy-authored QA skills, for apps you own and test environments only |
 | `tommy-explain` | `explain`: Tommy-authored; explains code, bugs and findings in plain English with a real-world scenario |
-
-Penetration-testing skills are not bundled: none of the upstream options check that you are allowed to test the target, so they wait for a gated design.
+| `tommy-pentest` | `penetration-tester`: 25 skills, ROE/authorization + scope gate runs first (and can't itself run `curl`/`wget`/`nmap`/`sqlmap`/`nikto`), then header/TLS/CORS/secret/dependency/code scans and OWASP Top 10-mapped reporting (jeremylongshore/claude-code-plugins-plus-skills, MIT). Not included in `tommy-all`. |
 
 Credit and licences stay with the authors: `tommy skills list` shows every plugin's upstream repo, pinned commit and licence.
 Trail of Bits' plugins are CC-BY-SA-4.0, which is why they are only ever fetched from upstream and never vendored here.
@@ -627,9 +626,8 @@ tommy skills update --apply NAME   # move one pin to upstream HEAD after you hav
 (why is an idle skill idle? why are the uses of another often followed by your corrections?), not a grade and never a reason to delete. `vet` adds nothing; you read the repo's
 skills and every hook or script it flags, then add the pinned entry and a bundle yourself, and `update` keeps the pin current.
 
-Deliberately left out of v1: `fp-check` (its `Stop` hook adds a model call to every stop, in every session), `second-opinion`
-(shells out to other agent CLIs), and any pentest skills. None of the pentest candidates asks for authorization before acting
-the way a bundle installed by other people must, so a pentest stack waits for a gated design.
+Deliberately left out of v1: `fp-check` (its `Stop` hook adds a model call to every stop, in every session) and `second-opinion`
+(shells out to other agent CLIs).
 
 Updating: pins only move when a maintainer runs `tommy skills update --apply`, reads the diff, and ships it in a release.
 Users get the new pins with `claude plugin marketplace update memnos` (or the plugin auto-update toggle).

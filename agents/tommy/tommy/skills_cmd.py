@@ -379,7 +379,7 @@ def vet_cmd(repo: str) -> None:
 
 # --- install: one command for a bundle, or everything --------------------------------------------------
 BUNDLES = {
-    "all": "everything below in one install (memory + all bundles, no pentesting)",
+    "all": "everything below in one install (memory + all bundles; pentest is separate, not included)",
     "core": "memnos memory only",
     "engineering": "spec, plan, build, TDD, review and ship skills + sub-agents (agent-skills)",
     "architect": "C4 documentation and multi-perspective design review",
@@ -388,6 +388,8 @@ BUNDLES = {
     "design-review": "HLD and LLD reviewers",
     "qa": "frontend, backend and REST API QA",
     "explain": "plain-English explanations with a real-world scenario",
+    "pentest": "penetration testing: ROE/authorization + scope gate runs first, then header/TLS/CORS/secret/"
+               "dependency/code scans and OWASP-mapped reporting (not in `all`)",
 }
 
 
