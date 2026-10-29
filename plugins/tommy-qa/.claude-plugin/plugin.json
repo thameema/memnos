@@ -1,6 +1,6 @@
 {
   "name": "tommy-qa",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "QA bundle (opt-in): test planning and execution for frontend UIs, backend logic and REST APIs. Tests only what you point it at.",
   "author": {"name": "Thameem Ansari", "url": "https://github.com/thameema"},
   "license": "Apache-2.0"

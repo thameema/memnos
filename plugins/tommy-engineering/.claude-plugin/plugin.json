@@ -1,6 +1,6 @@
 {
   "name": "tommy-engineering",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Engineering-lifecycle bundle (opt-in): spec, plan, build, TDD, review and ship skills plus code-review, security, test and web-performance sub-agents. Installs the pinned upstream agent-skills plugin; nothing is copied.",
   "author": {"name": "Thameem Ansari", "url": "https://github.com/thameema"},
   "license": "Apache-2.0",
