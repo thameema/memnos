@@ -91,6 +91,7 @@ from .discovery.harnesses import (
 )
 from .generate_cmd import config_group, generate_command
 from .skills_cmd import skills_group
+from . import update_check
 from .memnos_scope import (
     DISPATCH_SCOPE_SETTING_SOURCES,
     generate_scoping_files,
@@ -939,6 +940,10 @@ def _print_banner(cfg: TommyConfig, project_key: Optional[str] = None) -> None:
 @click.option("--list-harnesses", is_flag=True, help="List detected harnesses.")
 @click.option("--mcp", "mcp_mode", is_flag=True, help="Run as MCP stdio server (editor-managed subprocess, no daemon, no port).")
 @click.option("--upgrade", "do_upgrade", is_flag=True, help="Upgrade Tommy via uv tool install (same venv, no pip).")
+@click.option("--auto-update", "set_auto_update", flag_value=True, default=None,
+              help="With --upgrade: just enable Tommy's daily background auto-update (default off), don't upgrade now.")
+@click.option("--no-auto-update", "set_auto_update", flag_value=False,
+              help="With --upgrade: disable the daily background auto-update.")
 @click.option("--no-memnos-check", is_flag=True, help="Skip memnos health check at startup.")
 @click.option("--ask-permissions", is_flag=True, help="Require manual approval for every harness tool call (overrides SKIP_PERMISSIONS=on).")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
@@ -953,6 +958,7 @@ def main(
     list_harnesses: bool,
     mcp_mode: bool,
     do_upgrade: bool,
+    set_auto_update: Optional[bool],
     no_memnos_check: bool,
     ask_permissions: bool,
     extra_args: tuple,
@@ -976,14 +982,34 @@ def main(
         click.echo(ctx.get_help())
         return
 
+    if set_auto_update is not None and not do_upgrade:
+        raise click.UsageError("--auto-update/--no-auto-update only make sense with --upgrade "
+                                "(e.g. `tommy --upgrade --auto-update`).")
+
     cfg = TommyConfig.load(conf_path=Path(conf) if conf else None)
 
     # Logo + terminal title (only when actually launching, not for --install/--list-*)
     if not (do_upgrade or mcp_mode or do_install or list_projects or list_harnesses):
         _print_banner(cfg, project_key=project)
+        # Check-on-launch for a newer PyPI release — mirrors memnos_gateway.py's daily
+        # check; see update_check.py's module docstring for why this is check-on-launch
+        # rather than a background daemon loop. Fire-and-forget: never adds latency to
+        # the harness launch below, and never raises into this path.
+        update_check.check_in_background(_tommy_installed_version())
 
     # --upgrade
     if do_upgrade:
+        if set_auto_update is not None:
+            # A pure preference toggle — set and exit, don't also check/install now.
+            # Read fresh on every check-on-launch tick (not cached at process start),
+            # so this takes effect on the very next `tommy` launch, no restart needed.
+            update_check.set_auto_update(set_auto_update)
+            state = "enabled" if set_auto_update else "disabled"
+            click.echo(f"[tommy] auto-update {state}.")
+            if set_auto_update:
+                click.echo("  future launches will install a newer release themselves "
+                           "(checked at most once a day), not just notify.")
+            return
         _do_upgrade()
         return
 

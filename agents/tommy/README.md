@@ -697,6 +697,25 @@ tommy --upgrade
 Tommy detects whether it was installed with `uv`, `pipx`, or `pip` and uses
 the same tool to upgrade — so the venv is never mixed.
 
+Every normal launch also checks PyPI for a newer release, at most once a day (cached
+locally; adds no latency — the check runs on a background thread, never blocking the
+harness launch). By default it only notifies, once per newly-seen version, with a
+`tommy --upgrade` reminder. Skipped entirely for `tommy --mcp`, `--install`,
+`--list-projects`/`--list-harnesses`, `config`, `generate` and `skills` — only the
+actual harness-launch path checks.
+
+```bash
+tommy --upgrade --auto-update      # install new releases themselves from now on (default: off)
+tommy --upgrade --no-auto-update   # back to notify-only
+TOMMY_UPDATE_CHECK=0 tommy         # disable the check entirely
+```
+
+`--auto-update`/`--no-auto-update` are pure preference toggles — they don't also run an
+upgrade right now, just like `tommy --upgrade` on its own does. With it on, a newer
+release is installed by launching `tommy --upgrade` as a separate background process
+(never from inside the already-loaded, currently-running `tommy`), the next time the
+daily check finds one.
+
 To upgrade manually with uv:
 
 ```bash
