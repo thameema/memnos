@@ -1,6 +1,6 @@
 {
   "name": "tommy-explain",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Explainer bundle (opt-in): explains code, designs, bugs and review findings in plain English with a real-world scenario, so a busy reader gets it in one pass.",
   "author": {"name": "Thameem Ansari", "url": "https://github.com/thameema"},
   "license": "Apache-2.0"
