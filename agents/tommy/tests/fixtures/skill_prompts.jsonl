@@ -1,0 +1,52 @@
+{"prompt": "The checkout page crashes whenever the cart is empty and I can't see why", "skill": "debugging-and-error-recovery"}
+{"prompt": "CI went red after my merge, the same test passed yesterday, figure out what changed", "skill": "debugging-and-error-recovery"}
+{"prompt": "Write the failing test first for the discount calculation, then make it pass", "skill": "test-driven-development"}
+{"prompt": "Add unit tests to this parser function and cover the empty-input case", "skill": "test-driven-development"}
+{"prompt": "Can you look over my pull request before I merge it", "skill": "code-review-and-quality"}
+{"prompt": "Is this diff safe to ship? Check readability, correctness and tests", "skill": "code-review-and-quality"}
+{"prompt": "This 200-line function is unreadable, make it simpler without changing what it does", "skill": "code-simplification"}
+{"prompt": "Design the endpoints for the new orders service, including error shapes and versioning", "skill": "api-and-interface-design"}
+{"prompt": "What should the contract between the web app and the billing module look like", "skill": "api-and-interface-design"}
+{"prompt": "Build the settings page with a responsive layout and keyboard accessible controls", "skill": "frontend-ui-engineering"}
+{"prompt": "The dashboard looks generic, make the components feel production quality and WCAG compliant", "skill": "frontend-ui-engineering"}
+{"prompt": "Open the app in Chrome and look at the console errors and failing network calls", "skill": "browser-testing-with-devtools"}
+{"prompt": "Set up a pipeline that runs tests and lint on every push and deploys on tag", "skill": "ci-cd-and-automation"}
+{"prompt": "Our deploy takes forty minutes, automate the quality gates", "skill": "ci-cd-and-automation"}
+{"prompt": "Write the spec for the notifications feature before we write any code", "skill": "spec-driven-development"}
+{"prompt": "We have a one-line idea for a referral program, flesh out what it should be", "skill": "spec-driven-development"}
+{"prompt": "Break this feature into small ordered tasks I can hand to people", "skill": "planning-and-task-breakdown"}
+{"prompt": "Implement the import feature in thin steps, verifying each before moving on", "skill": "incremental-implementation"}
+{"prompt": "Our API is slow under load and the product list query has an N+1 problem", "skill": "performance-optimization"}
+{"prompt": "Page load is 6 seconds on mobile, find the bottleneck and fix it", "skill": "performance-optimization"}
+{"prompt": "Audit the login flow for injection and session problems", "skill": "security-and-hardening"}
+{"prompt": "Review our dependencies for known vulnerabilities and supply chain risk", "skill": "security-and-hardening"}
+{"prompt": "We need to rename a production column without downtime", "skill": "deprecation-and-migration"}
+{"prompt": "Sunset the v1 endpoints and move every client to v2", "skill": "deprecation-and-migration"}
+{"prompt": "Write an ADR recording why we chose Postgres over DynamoDB", "skill": "documentation-and-adrs"}
+{"prompt": "Add logging, metrics and alerts so we can tell when the worker is stuck", "skill": "observability-and-instrumentation"}
+{"prompt": "Production had an incident and the logs told us nothing, instrument the service", "skill": "observability-and-instrumentation"}
+{"prompt": "Prepare the release checklist and rollback plan for Friday's launch", "skill": "shipping-and-launch"}
+{"prompt": "Clean up my messy working tree into small commits and open a PR", "skill": "git-workflow-and-versioning"}
+{"prompt": "What version number should this release get and what goes in the changelog", "skill": "git-workflow-and-versioning"}
+{"prompt": "Check the React docs for the right way to do this instead of guessing from memory", "skill": "source-driven-development"}
+{"prompt": "My agent keeps losing track of project conventions, how should I configure its context files", "skill": "context-engineering"}
+{"prompt": "Ask me questions until you know what I really want before building anything", "skill": "interview-me"}
+{"prompt": "Stress-test this plan, assume every assumption is wrong and challenge it", "skill": "doubt-driven-development"}
+{"prompt": "Set coverage and accessibility thresholds and stop the agent from skipping tests to get green", "skill": "constraint-driven-development"}
+{"prompt": "Review the high level design of the new ingestion pipeline: components, data flow, failure modes", "skill": "hld-review"}
+{"prompt": "Review the low level design for the retry module: classes, interfaces, edge cases", "skill": "lld-review"}
+{"prompt": "QA the signup form in the browser: validation, error states, keyboard, mobile layout", "skill": "qa-frontend"}
+{"prompt": "QA the order service: transactions, idempotency, concurrency and data integrity", "skill": "qa-backend"}
+{"prompt": "Test the REST API: status codes, auth, pagination, malformed bodies and rate limits", "skill": "qa-rest-api"}
+{"prompt": "Why does our retry logic hammer the payment provider when it is down? Explain it simply", "skill": "explain"}
+{"prompt": "Explain how the token refresh works so a new teammate gets it in one read", "skill": "explain"}
+{"prompt": "What is the weather like in Dallas this weekend", "skill": null}
+{"prompt": "Translate this sentence into Spanish: the meeting is moved to Tuesday", "skill": null}
+{"prompt": "thanks, that worked", "skill": null}
+{"prompt": "yes go ahead", "skill": null}
+{"prompt": "what is 15 percent of 240", "skill": null}
+{"prompt": "tell me a joke", "skill": null}
+{"prompt": "list the files in this directory", "skill": null}
+{"prompt": "open src/app.py", "skill": null}
+{"prompt": "good morning", "skill": null}
+{"prompt": "how long is a marathon", "skill": null}

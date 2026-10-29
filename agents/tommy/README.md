@@ -618,6 +618,7 @@ tommy skills list            # curated plugins: upstream, pin, licence, installe
 tommy skills stats           # which installed skills actually fire (from your session transcripts) and what the idle ones cost per turn
 tommy skills eval            # productivity scorecard per skill: uses, sessions, edits/commands after, tool errors, your corrections, prompt cost, verdict
 tommy skills vet owner/repo  # read-only look at a GitHub repo before adding it: licence, hooks, scripts, exec/network patterns, the pinned entry to add
+tommy skills bench PROMPTS.jsonl  # offline: would a keyword hint put the right installed skill in the top 3? recall vs false-hint rate, no model calls
 tommy skills update          # maintainers: where upstream has moved past each pin; prints a compare URL, changes nothing
 tommy skills update --apply NAME   # move one pin to upstream HEAD after you have read the diff
 ```

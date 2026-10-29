@@ -17,10 +17,13 @@ import re
 import subprocess
 import time
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import click
+
+from tommy.skill_match import Index
 
 MARKETPLACE = "memnos"
 
@@ -61,20 +64,35 @@ def _frontmatter(path: Path) -> dict:
     return out
 
 
+MIN_AGE_DAYS = 7   # a skill installed more recently than this has had no fair chance to fire yet
+
+
+def _age_days(iso: Optional[str]) -> Optional[float]:
+    try:
+        return (time.time() - datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()) / 86400
+    except (AttributeError, ValueError):
+        return None
+
+
 def installed_skills(claude_dir: Path) -> list[dict]:
-    """One row per skill Claude will list every turn: {name, plugin, desc_chars}. Covers plugin skills
-    and ~/.claude/skills, since both cost the same prompt overhead."""
+    """One row per skill Claude will list every turn: {name, plugin, desc_chars, age_days}. Covers plugin
+    skills and ~/.claude/skills, since both cost the same prompt overhead. age_days is None when unknown."""
     rows = []
     for key, entries in _installed(claude_dir).items():
+        ages = [a for a in (_age_days(e.get("installedAt")) for e in entries) if a is not None]
         for e in entries:
             for md in Path(e.get("installPath", "")).glob("skills/*/SKILL.md"):
                 fm = _frontmatter(md)
                 rows.append({"name": fm.get("name") or md.parent.name, "plugin": key.split("@")[0],
-                             "desc_chars": len(fm.get("description", ""))})
+                             "desc_chars": len(fm.get("description", "")), "desc": fm.get("description", ""),
+                             "age_days": max(ages, default=None)})
     for md in (claude_dir / "skills").glob("*/SKILL.md"):
         fm = _frontmatter(md)
+        st = md.parent.stat()
+        born = getattr(st, "st_birthtime", st.st_mtime)   # no install record for a hand-copied skill
         rows.append({"name": fm.get("name") or md.parent.name, "plugin": "(user skills)",
-                     "desc_chars": len(fm.get("description", ""))})
+                     "desc_chars": len(fm.get("description", "")), "desc": fm.get("description", ""),
+                     "age_days": (time.time() - born) / 86400})
     return rows
 
 
@@ -130,12 +148,16 @@ def stats_cmd(days: int) -> None:
         r["uses"] = _uses(skills, r["name"], r["plugin"])
     rows.sort(key=lambda r: (-r["uses"], r["plugin"], r["name"]))
     click.echo(f"{n} transcript(s) scanned" + (f" (last {days} days)" if days else "") + "\n")
-    click.echo(f"{'uses':>5}  {'skill':<38} {'from':<30} desc chars")
+    click.echo(f"{'uses':>5}  {'skill':<38} {'from':<30} {'age':>5}  desc chars")
     for r in rows:
-        click.echo(f"{r['uses']:>5}  {r['name']:<38} {r['plugin']:<30} {r['desc_chars']}")
+        age = "?" if r["age_days"] is None else f"{r['age_days']:.0f}d"
+        click.echo(f"{r['uses']:>5}  {r['name']:<38} {r['plugin']:<30} {age:>5}  {r['desc_chars']}")
     unused = [r for r in rows if r["uses"] == 0]
-    click.echo(f"\n{len(rows)} installed, {len(unused)} never used in this window. The unused ones still cost "
-               f"~{sum(r['desc_chars'] for r in unused) // 4} tokens of description on every turn.")
+    new = [r for r in unused if r["age_days"] is not None and r["age_days"] < MIN_AGE_DAYS]
+    old = [r for r in unused if r not in new]
+    click.echo(f"\n{len(rows)} installed. {len(old)} never used in this window and installed {MIN_AGE_DAYS}+ days ago "
+               f"(or age unknown): ~{sum(r['desc_chars'] for r in old) // 4} tokens of description on every turn. "
+               f"{len(new)} more were installed under {MIN_AGE_DAYS} days ago: too new to judge.")
     if agents:
         click.echo("\nsub-agents dispatched: " + ", ".join(f"{k} x{v}" for k, v in agents.most_common(10)))
 
@@ -267,7 +289,9 @@ def outcomes(projects_dir: Path, since_days: Optional[int] = None) -> tuple[dict
     return stats, n
 
 
-def _verdict(uses: int, errors: int, corrections: int) -> str:
+def _verdict(uses: int, errors: int, corrections: int, age_days: Optional[float] = None) -> str:
+    if uses == 0 and age_days is not None and age_days < MIN_AGE_DAYS:
+        return f"too new to judge (installed {age_days:.0f}d ago)"
     if uses == 0:
         return "idle: look at why (description unclear? not relevant yet? shadowed by another skill?)"
     if uses < 3:
@@ -291,14 +315,14 @@ def eval_cmd(days: int) -> None:
         for k in (r["name"], f"{r['plugin']}:{r['name']}"):
             for f in agg:
                 agg[f] += stats.get(k, {}).get(f, 0)
-        merged[(r["plugin"], r["name"])] = {**agg, "desc_chars": r["desc_chars"]}
+        merged[(r["plugin"], r["name"])] = {**agg, "desc_chars": r["desc_chars"], "age_days": r["age_days"]}
     click.echo(f"{n} session transcript(s) scanned" + (f" (last {days} days)" if days else "") + "\n")
     click.echo(f"{'skill':<34} {'from':<22} {'uses':>4} {'sess':>4} {'acts/use':>8} {'err/use':>7} {'corr':>4} {'tok/turn':>8}  verdict")
     for (plugin, name), m in sorted(merged.items(), key=lambda kv: (-kv[1]["uses"], kv[0])):
         u = m["uses"] or 1
         click.echo(f"{name:<34} {plugin:<22} {m['uses']:>4} {m['sessions']:>4} {m['actions'] / u:>8.1f} "
                    f"{m['errors'] / u:>7.1f} {m['corrections']:>4} {m['desc_chars'] // 4:>8}  "
-                   f"{_verdict(m['uses'], m['errors'], m['corrections'])}")
+                   f"{_verdict(m['uses'], m['errors'], m['corrections'], m['age_days'])}")
     click.echo("\nacts/use = edits/commands that followed a use; err/use = tool errors after it; corr = times your next prompt "
                "looked like a correction. tok/turn = description cost paid every turn whether or not it fires.")
 
@@ -396,3 +420,56 @@ def install_cmd(bundle: Optional[str]) -> None:
     if rc:
         raise click.ClickException(f"claude plugin install {name}@{MARKETPLACE} failed (exit {rc})")
     click.echo("done. Restart Claude Code sessions to load the new skills. `tommy skills eval` shows which ones you actually use.")
+
+
+def _load_prompts(path: str) -> list[tuple[str, set]]:
+    """JSONL rows {"prompt": str, "skill": name | [names] | null}. null = no skill should be hinted."""
+    out = []
+    for line in Path(path).read_text("utf-8").splitlines():
+        if line.strip():
+            o = json.loads(line)
+            want = o.get("skill")
+            want = set() if want is None else {want} if isinstance(want, str) else set(want)
+            out.append((o["prompt"], {w.split(":")[-1] for w in want}))
+    return out
+
+
+@skills_group.command("bench")
+@click.argument("prompts", type=click.Path(exists=True, dir_okay=False))
+@click.option("-k", default=3, show_default=True, help="A hint names at most this many skills.")
+def bench_cmd(prompts: str, k: int) -> None:
+    """Offline check of the per-prompt skill hint: does keyword (BM25) ranking over your INSTALLED skills put
+    the right one in the top k, and how often does it hint when nothing should fire? No model calls, free.
+    PROMPTS is JSONL: {"prompt": "...", "skill": "name" | ["a","b"] | null}. A miss here caps what any hint can do."""
+    rows = {r["name"]: r["desc"] for r in installed_skills(_claude_dir())}
+    idx = Index(list(rows.items()))
+    cases = _load_prompts(prompts)
+    pos = [(p, w) for p, w in cases if w]
+    skipped = [(p, w) for p, w in pos if not (w & rows.keys())]
+    pos = [(p, w & rows.keys()) for p, w in pos if w & rows.keys()]
+    neg = [p for p, w in cases if not w]
+    if not pos:
+        raise click.ClickException("none of the labelled skills are installed: nothing to measure")
+    ranked = {p: idx.rank(p, k) for p, _ in pos}
+    negr = {p: idx.rank(p, k) for p in neg}
+    top1 = sorted(r[0][1] for r in list(ranked.values()) + list(negr.values()) if r)
+    cuts = sorted({0.0, *(top1[int(len(top1) * q)] for q in (0.25, 0.5, 0.75))}) if top1 else [0.0]
+    click.echo(f"{len(rows)} installed skills; {len(pos)} positive prompts, {len(neg)} negative"
+               + (f"; {len(skipped)} skipped (labelled skill not installed)" if skipped else "") + "\n")
+    click.echo(f"{'min score':>9} {'recall@1':>9} {'recall@' + str(k):>9} {'hinted':>7} {'false hint':>11}")
+    for c in cuts:
+        def hit(p, want, n):
+            return any(nm in want for nm, sc in ranked[p][:n] if sc >= c)
+        r1 = sum(hit(p, w, 1) for p, w in pos) / len(pos)
+        rk = sum(hit(p, w, k) for p, w in pos) / len(pos)
+        hinted = sum(any(sc >= c for _, sc in ranked[p]) for p, _ in pos) / len(pos)
+        fh = (sum(any(sc >= c for _, sc in negr[p]) for p in neg) / len(neg)) if neg else float("nan")
+        click.echo(f"{c:>9.2f} {r1:>9.0%} {rk:>9.0%} {hinted:>7.0%} {fh:>11.0%}")
+    miss = [(p, w) for p, w in pos if not any(n in w for n, _ in ranked[p])]
+    if miss:
+        click.echo(f"\nmissed at min score 0 ({len(miss)}):")
+        for p, w in miss[:15]:
+            got = ", ".join(n for n, _ in ranked[p]) or "(nothing)"
+            click.echo(f"  want {'/'.join(sorted(w))}: {p[:70]!r} -> {got}")
+    click.echo("\nship bar for a hint: recall@k >= 90% with false hint < 10% at the same min score. "
+               "Labels are hand-written; a pass here does not show the model picks better, only that the hint is accurate.")
