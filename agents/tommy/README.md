@@ -583,12 +583,15 @@ claude plugin marketplace add thameema/memnos && claude plugin install tommy@mem
 memnos claude-setup                             # your scoped token; removes any old baked-in hooks
 ```
 
-`tommy` is the core: it installs the memnos plugin (memory on by default, for recall and save) and nothing else. Skill bundles are
-opt-in, so you only pay the context cost of the ones you want:
+**One command installs everything Tommy curates:**
 
 ```bash
-claude plugin install tommy-engineering@memnos     # or any bundle below
+tommy skills install all          # or: claude plugin install tommy-all@memnos
 ```
+
+That is memnos memory plus every bundle below (about 20 plugins and 40 skills in a clean install). It costs prompt space, since every
+skill's description is read each turn, so `tommy skills eval` shows which ones you actually use. Prefer less? `tommy` is the lean core
+(memnos memory only) and each bundle installs on its own: `tommy skills install qa`, `tommy skills install` lists them all.
 
 Bundles that wrap upstream work are thin plugins whose only job is to depend on upstream plugins. Nothing is copied into this repo:
 Claude Code fetches each one straight from its own GitHub repo at a commit pinned in `.claude-plugin/marketplace.json`.
@@ -601,6 +604,7 @@ Claude Code fetches each one straight from its own GitHub repo at a commit pinne
 | `tommy-security` | `sharp-edges`, `supply-chain-risk-auditor`, `agentic-actions-auditor`, `static-analysis` (trailofbits/skills, CC-BY-SA-4.0) |
 | `tommy-design-review` | `hld-review`, `lld-review`: Tommy-authored design reviewers that check a design against the real code |
 | `tommy-qa` | `qa-frontend`, `qa-backend`, `qa-rest-api`: Tommy-authored QA skills, for apps you own and test environments only |
+| `tommy-explain` | `explain`: Tommy-authored; explains code, bugs and findings in plain English with a real-world scenario |
 
 Penetration-testing skills are not bundled: none of the upstream options check that you are allowed to test the target, so they wait for a gated design.
 
@@ -609,6 +613,7 @@ Trail of Bits' plugins are CC-BY-SA-4.0, which is why they are only ever fetched
 `static-analysis` needs `semgrep` installed.
 
 ```bash
+tommy skills install all     # install everything curated (or one bundle: engineering, qa, explain, ...)
 tommy skills list            # curated plugins: upstream, pin, licence, installed?
 tommy skills stats           # which installed skills actually fire (from your session transcripts) and what the idle ones cost per turn
 tommy skills eval            # productivity scorecard per skill: uses, sessions, edits/commands after, tool errors, your corrections, prompt cost, verdict

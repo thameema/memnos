@@ -351,3 +351,48 @@ def vet_cmd(repo: str) -> None:
         click.echo(json.dumps({"name": slug.rsplit("/", 1)[-1],
                                "source": {"source": "github", "repo": slug, "sha": sha},
                                "license": "<fill in from the licence file>", "tags": ["tommy-curated"]}, indent=2))
+
+
+# --- install: one command for a bundle, or everything --------------------------------------------------
+BUNDLES = {
+    "all": "everything below in one install (memory + all bundles, no pentesting)",
+    "core": "memnos memory only",
+    "engineering": "spec, plan, build, TDD, review and ship skills + sub-agents (agent-skills)",
+    "architect": "C4 documentation and multi-perspective design review",
+    "review": "differential security review, context building, variant analysis",
+    "security": "sharp-edges, supply-chain, agentic-actions and static-analysis audits",
+    "design-review": "HLD and LLD reviewers",
+    "qa": "frontend, backend and REST API QA",
+    "explain": "plain-English explanations with a real-world scenario",
+}
+
+
+def _plugin(bundle: str) -> str:
+    return {"all": "tommy-all", "core": "tommy"}.get(bundle, f"tommy-{bundle}")
+
+
+@skills_group.command("install")
+@click.argument("bundle", required=False, type=click.Choice(sorted(BUNDLES)))
+def install_cmd(bundle: Optional[str]) -> None:
+    """Install a Tommy bundle (or `all`) through Claude Code, adding the memnos marketplace first if needed.
+    Run with no argument to list the bundles."""
+    if not bundle:
+        for k, v in BUNDLES.items():
+            click.echo(f"  {k:<14} {v}")
+        click.echo("\nUsage: tommy skills install all")
+        return
+    import shutil
+    claude = shutil.which("claude")
+    if not claude:
+        raise click.ClickException("the `claude` CLI is not on PATH. Install Claude Code first.")
+    have = subprocess.run([claude, "plugin", "marketplace", "list"], capture_output=True, text=True).stdout
+    if MARKETPLACE not in have:
+        click.echo("adding the memnos marketplace ...")
+        if subprocess.run([claude, "plugin", "marketplace", "add", "thameema/memnos"]).returncode:
+            raise click.ClickException("could not add the marketplace: claude plugin marketplace add thameema/memnos")
+    name = _plugin(bundle)
+    click.echo(f"installing {name} ...")
+    rc = subprocess.run([claude, "plugin", "install", f"{name}@{MARKETPLACE}"]).returncode
+    if rc:
+        raise click.ClickException(f"claude plugin install {name}@{MARKETPLACE} failed (exit {rc})")
+    click.echo("done. Restart Claude Code sessions to load the new skills. `tommy skills eval` shows which ones you actually use.")

@@ -1,0 +1,8 @@
+{
+  "name": "tommy-all",
+  "version": "0.1.10",
+  "description": "Everything Tommy curates, in one install: memnos memory plus the engineering, architecture, review, security, design-review, QA and explainer bundles. Pentesting is not included. Installs pinned upstream plugins; nothing is copied.",
+  "author": {"name": "Thameem Ansari", "url": "https://github.com/thameema"},
+  "license": "Apache-2.0",
+  "dependencies": ["tommy", "tommy-engineering", "tommy-architect", "tommy-review", "tommy-security", "tommy-design-review", "tommy-qa", "tommy-explain"]
+}

@@ -45,7 +45,10 @@ def main():
     check("tommy core pulls in memnos only; every skill bundle is opt-in",
           json.load(open(os.path.join(ROOT, "plugins/tommy/.claude-plugin/plugin.json")))["dependencies"] == ["memnos"])
     check("opt-in bundles exist for engineering, review, architecture, design review, QA and security",
-          {"tommy-engineering", "tommy-review", "tommy-architect", "tommy-design-review", "tommy-qa", "tommy-security"} <= set(local))
+          {"tommy-engineering", "tommy-review", "tommy-architect", "tommy-design-review", "tommy-qa", "tommy-security", "tommy-explain", "tommy-all"} <= set(local))
+    allp = json.load(open(os.path.join(ROOT, "plugins/tommy-all/.claude-plugin/plugin.json")))["dependencies"]
+    check("tommy-all installs the core and every other tommy bundle (and no pentest)",
+          set(allp) == {n for n in local if n.startswith("tommy") and n != "tommy-all"} and not [d for d in allp if "pentest" in d], allp)
     tv = re.search(r'^version = "([^"]+)"', open(os.path.join(ROOT, "agents/tommy/pyproject.toml")).read(), re.M).group(1)
     pinned = {n: json.load(open(os.path.join(ROOT, p["source"], ".claude-plugin", "plugin.json"))).get("version")
               for n, p in local.items() if n.startswith("tommy")}
@@ -64,7 +67,7 @@ def main():
     check("share-alike (CC-BY-SA) plugins exist only as upstream sources, so nothing is vendored here",
           all(n in upstream for n in sa) and not any(
               "SA" in local[n].get("license", "").upper().split("-") for n in local))
-    own = {"tommy-design-review", "tommy-qa"}  # the only plugins whose skills Tommy authors itself
+    own = {"tommy-design-review", "tommy-qa", "tommy-explain"}  # the only plugins whose skills Tommy authors itself
     vendored = [d for d, _, fs in os.walk(os.path.join(ROOT, "plugins")) for f in fs
                 if f == "SKILL.md" and os.path.relpath(d, os.path.join(ROOT, "plugins")).split(os.sep)[0] not in own]
     check("no upstream SKILL.md is vendored under plugins/ (only Tommy-authored skills live here)", not vendored, vendored)

@@ -231,3 +231,32 @@ def test_vet_reports_hooks_and_exec_patterns_and_prints_a_pinned_entry(tmp_path,
     out = CliRunner().invoke(sk.skills_group, ["vet", "owner/repo"]).output
     assert "skills: 1" in out and "HOOKS" in out and "EXEC/NET  run.sh: curl" in out
     assert '"repo": "owner/repo"' in out and "c" * 40 in out and "MIT License" in out
+
+
+def test_install_lists_bundles_and_maps_names(monkeypatch):
+    out = CliRunner().invoke(sk.skills_group, ["install"]).output
+    assert "all" in out and "explain" in out and not [k for k in sk.BUNDLES if "pentest" in k]
+    assert [sk._plugin(b) for b in ("all", "core", "qa", "design-review")] == ["tommy-all", "tommy", "tommy-qa", "tommy-design-review"]
+
+
+def test_install_adds_marketplace_once_then_installs(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd[1:])
+        return MagicMock(returncode=0, stdout="" if cmd[2:4] == ["marketplace", "list"] else "")
+    monkeypatch.setattr("shutil.which", lambda n: "/bin/claude")
+    monkeypatch.setattr(sk.subprocess, "run", fake_run)
+    r = CliRunner().invoke(sk.skills_group, ["install", "all"])
+    assert r.exit_code == 0, r.output
+    assert ["plugin", "marketplace", "add", "thameema/memnos"] in calls and ["plugin", "install", "tommy-all@memnos"] in calls
+    calls.clear()
+    monkeypatch.setattr(sk.subprocess, "run", lambda cmd, **kw: (calls.append(cmd[1:]), MagicMock(returncode=0, stdout="memnos"))[1])
+    CliRunner().invoke(sk.skills_group, ["install", "qa"])
+    assert ["plugin", "marketplace", "add", "thameema/memnos"] not in calls and ["plugin", "install", "tommy-qa@memnos"] in calls
+
+
+def test_install_fails_clearly_without_claude(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda n: None)
+    r = CliRunner().invoke(sk.skills_group, ["install", "all"])
+    assert r.exit_code != 0 and "claude" in r.output
