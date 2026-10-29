@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-K7M6RWTW1P"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-K7M6RWTW1P');
+  </script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tommy Skills — curated plugin bundles for Claude Code | memnos</title>
+  <meta name="description" content="Tommy curates upstream Claude Code skill plugins into opt-in bundles — engineering, architecture, review, security, design review, QA, explainer — pinned to a commit, installed with one command, and measured against your own transcripts." />
+  <meta name="keywords" content="Tommy skills, Claude Code plugins, claude plugin marketplace, tommy-orchestrator skills, curated agent skills, tommy skills install, tommy skills stats, tommy skills bench" />
+  <link rel="canonical" href="https://memnos.net/skills.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://memnos.net/skills.html" />
+  <meta property="og:title" content="Tommy Skills — curated plugin bundles for Claude Code" />
+  <meta property="og:description" content="Opt-in bundles of pinned upstream Claude Code skill plugins, installed with one command and measured against your own usage." />
+  <meta property="og:image" content="https://memnos.net/og-image.png" />
+  <meta property="og:site_name" content="memnos" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Tommy Skills — curated plugin bundles for Claude Code" />
+  <meta name="twitter:description" content="Opt-in bundles of pinned upstream Claude Code skill plugins, installed with one command and measured against your own usage." />
+  <meta name="twitter:image" content="https://memnos.net/og-image.png" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'], mono: ['JetBrains Mono', 'monospace'] },
+          colors: {
+            brand: { purple: '#7c5cfc', blue: '#4f9cf9', cyan: '#00d2ff', dim: '#1a1a2e' },
+          },
+        }
+      }
+    }
+  </script>
+  <style>
+    :root { --bg: #09090f; --surface: #111118; --border: #1e1e2e; --muted: #6b7280; }
+    body { background: var(--bg); font-family: 'Inter', sans-serif; color: #e5e7eb; }
+    .hero-display { font-family: 'Space Grotesk', 'Inter', sans-serif; letter-spacing: -0.02em; }
+    .gradient-text {
+      background: linear-gradient(135deg, #a78bfa 0%, #60a5fa 50%, #34d399 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .glow-btn {
+      background: linear-gradient(135deg, #7c5cfc, #4f9cf9);
+      box-shadow: 0 0 20px rgba(124, 92, 252, 0.4);
+      transition: box-shadow 0.3s, transform 0.2s;
+    }
+    .glow-btn:hover { box-shadow: 0 0 35px rgba(124, 92, 252, 0.65); transform: translateY(-1px); }
+    .glass {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.07);
+      backdrop-filter: blur(12px);
+      transition: border-color 0.3s, transform 0.2s, box-shadow 0.3s;
+    }
+    .glass:hover {
+      border-color: rgba(124,92,252,0.35);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(124,92,252,0.12);
+    }
+    body::before {
+      content: '';
+      position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background-image: radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+    .code-block {
+      background: #0d0d1a;
+      border: 1px solid #1e1e3f;
+      border-radius: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      line-height: 1.7;
+    }
+    .token-fn   { color: #7dd3fc; }
+    .token-str  { color: #86efac; }
+    .token-kw   { color: #c084fc; }
+    .token-cmt  { color: #4b5563; }
+    .token-num  { color: #fb923c; }
+    .token-var  { color: #e5e7eb; }
+    .fade-in { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease, transform 0.6s ease; }
+    .fade-in.visible { opacity: 1; transform: translateY(0); }
+    nav { backdrop-filter: blur(20px); background: rgba(9,9,15,0.8); border-bottom: 1px solid var(--border); }
+    .gradient-border {
+      position: relative; border-radius: 16px; padding: 1px;
+      background: linear-gradient(135deg, rgba(124,92,252,0.4), rgba(79,156,249,0.2), rgba(0,210,255,0.1));
+    }
+    .gradient-border-inner { background: var(--surface); border-radius: 15px; }
+    .nav-active { color: #a78bfa !important; }
+    .layer-tag {
+      font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em;
+      padding: 0.15rem 0.55rem; border-radius: 999px; font-weight: 600;
+    }
+    .nav-dropdown-panel {
+      position: absolute; top: calc(100% + 0.6rem); left: 0; min-width: 170px;
+      background: rgba(15,15,22,0.98); backdrop-filter: blur(20px);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 0.4rem;
+      opacity: 0; visibility: hidden; transform: translateY(-6px); pointer-events: none;
+      transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+    }
+    .nav-dropdown-panel.open { opacity: 1; visibility: visible; transform: translateY(0); pointer-events: auto; }
+    .nav-dropdown-panel a { display: block; padding: 0.55rem 0.75rem; border-radius: 8px; font-size: 0.8125rem; color: #9ca3af; transition: background 0.15s, color 0.15s; }
+    .nav-dropdown-panel a:hover { background: rgba(255,255,255,0.06); color: #fff; }
+    table.bundle-table { width: 100%; border-collapse: collapse; }
+    table.bundle-table th, table.bundle-table td { text-align: left; padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    table.bundle-table th { color: #9ca3af; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    table.bundle-table td { font-size: 0.875rem; color: #d1d5db; }
+  </style>
+</head>
+<body class="antialiased overflow-x-hidden">
+
+<!-- ── NAV ─────────────────────────────────────────────────────────── -->
+<nav class="fixed top-0 left-0 right-0 z-50">
+  <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.6"/>
+        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.8"/>
+        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gnav)"/>
+        <defs>
+          <linearGradient id="gnav" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <span class="text-white font-semibold text-lg tracking-tight">memnos</span>
+    </a>
+    <!-- Desktop links -->
+    <div class="hidden md:flex items-center gap-7">
+      <a href="getting-started.html" class="text-sm text-gray-400 hover:text-white transition-colors">Getting Started</a>
+      <a href="index.html#features" class="text-sm text-gray-400 hover:text-white transition-colors">Features</a>
+      <a href="agents.html" class="text-sm text-gray-400 hover:text-white transition-colors">Agents</a>
+      <a href="skills.html" class="text-sm nav-active hover:text-white transition-colors">Skills</a>
+      <div class="relative">
+        <button type="button" id="nav-resources-trigger" class="flex items-center gap-1 text-sm text-gray-400 hover:text-white transition-colors" aria-expanded="false" aria-haspopup="true">
+          Resources
+          <svg id="nav-resources-chevron" class="w-3 h-3 transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+        </button>
+        <div id="nav-resources-panel" class="nav-dropdown-panel" role="menu" aria-label="Resources">
+          <a href="use-cases.html" role="menuitem">Use Cases</a>
+          <a href="index.html#sdk" role="menuitem">SDK</a>
+          <a href="benchmarks.html" role="menuitem">Benchmarks</a>
+          <a href="compare.html" role="menuitem">Compare</a>
+          <a href="governance.html" role="menuitem">Policies</a>
+          <a href="https://github.com/thameema/memnos/tree/master/docs/guides" role="menuitem">Docs</a>
+        </div>
+      </div>
+      <a href="https://github.com/thameema/memnos" class="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-1.5">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        GitHub
+      </a>
+    </div>
+    <!-- Right: CTA + hamburger -->
+    <div class="flex items-center gap-3">
+      <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white text-sm font-medium px-5 py-2 rounded-full hidden md:inline-flex">Deploy Free</a>
+      <button id="nav-toggle" onclick="toggleMobileNav()" class="md:hidden flex flex-col justify-center items-center w-9 h-9 rounded-lg border border-gray-700 bg-gray-900/60 gap-1.5 px-2">
+        <span id="ham-1" class="block w-4 h-0.5 bg-gray-300 transition-all duration-300 origin-center"></span>
+        <span id="ham-2" class="block w-4 h-0.5 bg-gray-300 transition-all duration-300"></span>
+        <span id="ham-3" class="block w-4 h-0.5 bg-gray-300 transition-all duration-300 origin-center"></span>
+      </button>
+    </div>
+  </div>
+  <!-- Mobile menu -->
+  <div id="mobile-nav" class="hidden md:hidden border-t border-gray-800 bg-gray-950/95 backdrop-blur-xl">
+    <div class="max-w-6xl mx-auto px-6 py-5 flex flex-col gap-1">
+      <a href="getting-started.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Getting Started</a>
+      <a href="index.html#features" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Features</a>
+      <a href="agents.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Agents</a>
+      <a href="skills.html" class="text-sm text-white font-medium py-2.5 border-b border-gray-900">Skills</a>
+      <button type="button" id="mobile-resources-trigger" onclick="toggleMobileResources()" class="flex items-center justify-between w-full text-left text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900" aria-expanded="false">
+        <span>Resources</span>
+        <svg id="mobile-resources-chevron" class="w-3.5 h-3.5 transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+      </button>
+      <div id="mobile-resources-panel" class="hidden flex flex-col pl-4">
+        <a href="use-cases.html" class="text-sm text-gray-400 hover:text-white transition-colors py-2.5 border-b border-gray-900">Use Cases</a>
+        <a href="index.html#sdk" class="text-sm text-gray-400 hover:text-white transition-colors py-2.5 border-b border-gray-900">SDK</a>
+        <a href="benchmarks.html" class="text-sm text-gray-400 hover:text-white transition-colors py-2.5 border-b border-gray-900">Benchmarks</a>
+        <a href="compare.html" class="text-sm text-gray-400 hover:text-white transition-colors py-2.5 border-b border-gray-900">Compare</a>
+        <a href="governance.html" class="text-sm text-gray-400 hover:text-white transition-colors py-2.5 border-b border-gray-900">Policies</a>
+        <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="text-sm text-gray-400 hover:text-white transition-colors py-2.5 border-b border-gray-900">Docs</a>
+      </div>
+      <a href="https://github.com/thameema/memnos" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900 flex items-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        GitHub
+      </a>
+      <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white text-sm font-medium px-5 py-2.5 rounded-full text-center mt-3">Deploy Free</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ── HERO ─────────────────────────────────────────────────────────── -->
+<section class="relative pt-32 pb-16 overflow-hidden">
+  <div class="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-600 rounded-full blur-[140px] opacity-10 pointer-events-none"></div>
+  <div class="relative z-10 max-w-4xl mx-auto px-6 text-center">
+    <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Skills</span>
+    <h1 class="hero-display text-4xl md:text-6xl font-bold text-white leading-[1.05] mt-4 mb-6">
+      Curated skills, <span class="gradient-text">one install at a time.</span>
+    </h1>
+    <p class="text-gray-400 text-lg leading-relaxed max-w-2xl mx-auto mb-8">
+      Tommy ships no copies of anyone else&rsquo;s skills. The memnos marketplace pins upstream Claude Code plugins to a commit and groups them into opt-in bundles &mdash; install one, measure whether it actually fires, drop what doesn&rsquo;t.
+    </p>
+    <div class="flex flex-wrap items-center justify-center gap-3">
+      <div class="code-block px-4 py-2 text-xs flex items-center gap-2">
+        <span class="text-gray-500">$</span>
+        <span class="text-green-300">tommy skills install all</span>
+      </div>
+      <a href="https://github.com/thameema/memnos/tree/master/agents/tommy#readme" class="text-sm text-purple-400 hover:text-purple-300 transition-colors font-medium border border-purple-500/30 hover:border-purple-500/50 rounded-full px-5 py-2.5">Read the full reference &rarr;</a>
+    </div>
+  </div>
+</section>
+
+<!-- ── WHAT A BUNDLE IS ─────────────────────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-4xl mx-auto px-6">
+    <div class="text-center mb-10">
+      <span class="text-sm text-blue-400 font-medium tracking-wider uppercase">How it works</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Pinned, not vendored</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Every bundle is a Claude Code plugin whose <code class="text-purple-300 font-mono text-xs">dependencies</code> point at upstream plugins &mdash; pinned to a commit SHA via <code class="text-purple-300 font-mono text-xs">git-subdir</code> sources in the memnos marketplace. Nothing is copied into this repo, so credit, licence and updates stay with the original author.</p>
+    </div>
+    <div class="grid md:grid-cols-3 gap-5">
+      <div class="glass rounded-2xl p-6">
+        <h3 class="text-white font-semibold text-lg mb-2">Install a bundle</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">One command adds the memnos marketplace (if needed) and installs the plugin. Restart the Claude Code session, or run <code class="text-purple-300 font-mono text-xs">/reload-plugins</code>, to load the new skills.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <h3 class="text-white font-semibold text-lg mb-2">Measure, don&rsquo;t guess</h3>
+        <p class="text-sm text-gray-400 leading-relaxed"><code class="text-purple-300 font-mono text-xs">tommy skills stats</code> and <code class="text-purple-300 font-mono text-xs">eval</code> read your own Claude Code transcripts &mdash; uses, tool errors, your corrections &mdash; per installed skill, so you decide what to keep from evidence, not a guess.</p>
+      </div>
+      <div class="glass rounded-2xl p-6">
+        <h3 class="text-white font-semibold text-lg mb-2">Mind the budget</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Claude Code lists every installed skill's name and description each turn inside a fixed context budget (<code class="text-purple-300 font-mono text-xs">skillListingBudgetFraction</code>, default 1%). Install only what you&rsquo;ll use, or raise the budget in <code class="text-purple-300 font-mono text-xs">settings.json</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── BUNDLES TABLE ────────────────────────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-4xl mx-auto px-6">
+    <div class="text-center mb-10">
+      <span class="text-sm text-green-400 font-medium tracking-wider uppercase">Catalog</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">The bundles</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Install one, several, or <code class="text-purple-300 font-mono text-xs">all</code> &mdash; every bundle below plus memnos memory, in one plugin.</p>
+    </div>
+    <div class="glass rounded-2xl overflow-hidden overflow-x-auto">
+      <table class="bundle-table">
+        <thead><tr><th>tommy skills install</th><th>Plugin</th><th>What&rsquo;s inside</th></tr></thead>
+        <tbody>
+          <tr><td class="text-green-300 font-mono text-xs">all</td><td class="text-gray-300 font-mono text-xs">tommy-all</td><td>Everything below, plus memnos memory, in one install.</td></tr>
+          <tr><td class="text-green-300 font-mono text-xs">core</td><td class="text-gray-300 font-mono text-xs">tommy</td><td>memnos memory only &mdash; no skill bundles.</td></tr>
+          <tr><td class="text-green-300 font-mono text-xs">engineering</td><td class="text-gray-300 font-mono text-xs">tommy-engineering</td><td>Spec, plan, build, TDD, review and ship skills, plus code-review / security / test / web-perf sub-agents (<code>agent-skills</code>, MIT).</td></tr>
+          <tr><td class="text-green-300 font-mono text-xs">architect</td><td class="text-gray-300 font-mono text-xs">tommy-architect</td><td>C4 documentation and multi-perspective design review (<code>comprehensive-review</code>, <code>c4-architecture</code>; wshobson/agents, MIT).</td></tr>
+          <tr><td class="text-green-300 font-mono text-xs">review</td><td class="text-gray-300 font-mono text-xs">tommy-review</td><td>Differential security review, context building, variant analysis (trailofbits/skills, CC-BY-SA-4.0).</td></tr>
+          <tr><td class="text-green-300 font-mono text-xs">security</td><td class="text-gray-300 font-mono text-xs">tommy-security</td><td>Sharp-edges, supply-chain, agentic-actions and static-analysis audits (trailofbits/skills, CC-BY-SA-4.0; <code>static-analysis</code> needs <code>semgrep</code> installed).</td></tr>
+          <tr><td class="text-green-300 font-mono text-xs">design-review</td><td class="text-gray-300 font-mono text-xs">tommy-design-review</td><td>Tommy-authored HLD and LLD reviewers that check a design against the real code.</td></tr>
+          <tr><td class="text-green-300 font-mono text-xs">qa</td><td class="text-gray-300 font-mono text-xs">tommy-qa</td><td>Tommy-authored frontend, backend and REST API QA &mdash; for apps you own and test environments only.</td></tr>
+          <tr><td class="text-green-300 font-mono text-xs">explain</td><td class="text-gray-300 font-mono text-xs">tommy-explain</td><td>Tommy-authored: explains code, bugs and findings in plain English with a real-world scenario.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="text-xs text-gray-600 text-center max-w-2xl mx-auto mt-6">Penetration-testing skills are deliberately not bundled yet: the upstream options don&rsquo;t check that you&rsquo;re authorized to test the target, so a <code class="text-gray-500">tommy-pentest</code> bundle is waiting on a design that gates every active step behind an explicit scope confirmation first.</p>
+  </div>
+</section>
+
+<!-- ── COMMANDS ─────────────────────────────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-4xl mx-auto px-6">
+    <div class="text-center mb-10">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Reference</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">tommy skills &hellip;</h2>
+    </div>
+    <div class="code-block px-6 py-5">
+      <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># install a bundle through Claude Code (adds the memnos marketplace first if needed)</span>
+<span class="token-fn">tommy skills install</span> <span class="token-var">all</span>
+
+<span class="token-cmt"># curated plugins: upstream repo, pinned commit, licence, installed?</span>
+<span class="token-fn">tommy skills list</span>
+
+<span class="token-cmt"># which installed skills actually fire, from your own session transcripts</span>
+<span class="token-fn">tommy skills stats</span>
+
+<span class="token-cmt"># productivity scorecard per skill: uses, edits/commands after, tool errors, your corrections, verdict</span>
+<span class="token-fn">tommy skills eval</span>
+
+<span class="token-cmt"># read-only look at an upstream repo before adding it: licence, hooks, scripts, risky exec/network patterns</span>
+<span class="token-fn">tommy skills vet</span> <span class="token-var">owner/repo</span>
+
+<span class="token-cmt"># offline: would a keyword hint put the right installed skill in the top 3? no model calls, free</span>
+<span class="token-fn">tommy skills bench</span> <span class="token-var">prompts.jsonl</span>
+
+<span class="token-cmt"># maintainers only: where upstream has moved past each pin</span>
+<span class="token-fn">tommy skills update</span></code></pre>
+    </div>
+    <p class="text-xs text-gray-600 text-center max-w-2xl mx-auto mt-6"><code class="text-gray-500">eval</code> reads proxies, not quality &mdash; a skill can fire often and help little, or fire rarely and matter. The verdict is a prompt to look, never a grade and never a reason to delete on its own. Full command reference, including <code class="text-gray-500">update --apply</code>, is in the <a href="https://github.com/thameema/memnos/tree/master/agents/tommy#readme" class="text-gray-500 hover:text-gray-300 underline underline-offset-2">Tommy README</a>.</p>
+  </div>
+</section>
+
+<!-- ── FOOTER ───────────────────────────────────────────────────────── -->
+<footer class="relative z-10 border-t border-gray-800/60 py-12">
+  <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6">
+    <div class="flex items-center gap-2.5">
+      <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gfoot)" opacity="0.6"/>
+        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gfoot)" opacity="0.8"/>
+        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gfoot)"/>
+        <defs><linearGradient id="gfoot" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/></linearGradient></defs>
+      </svg>
+      <span class="text-white font-semibold">memnos</span>
+      <span class="text-gray-600 text-sm ml-2">Memory for AI agents</span>
+    </div>
+    <div class="flex items-center gap-8 text-sm text-gray-500">
+      <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="hover:text-gray-300 transition-colors">Docs</a>
+      <a href="https://github.com/thameema/memnos/blob/master/docs/api.md" class="hover:text-gray-300 transition-colors">API Reference</a>
+      <a href="https://github.com/thameema/memnos/blob/master/docs/cli.md" class="hover:text-gray-300 transition-colors">CLI Reference</a>
+      <a href="https://github.com/thameema/memnos" class="hover:text-gray-300 transition-colors">GitHub</a>
+      <a href="use-cases.html" class="hover:text-gray-300 transition-colors">Use Cases</a>
+      <a href="agents.html" class="hover:text-gray-300 transition-colors">Agents</a>
+      <a href="skills.html" class="hover:text-gray-300 transition-colors">Skills</a>
+      <a href="governance.html" class="hover:text-gray-300 transition-colors">Policies</a>
+      <a href="compare.html" class="hover:text-gray-300 transition-colors">Compare</a>
+      <a href="https://github.com/thameema/memnos/blob/master/LICENSE" class="hover:text-gray-300 transition-colors">Apache-2.0 License</a>
+    </div>
+    <div class="text-xs text-gray-700">Built by AI agents, for AI agents.</div>
+  </div>
+</footer>
+
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+  document.querySelectorAll('a[href^="#"]').forEach(a => {
+    a.addEventListener('click', e => {
+      const target = document.querySelector(a.getAttribute('href'));
+      if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth' }); }
+    });
+  });
+
+  function toggleMobileNav() {
+    const menu = document.getElementById('mobile-nav');
+    const h1 = document.getElementById('ham-1');
+    const h2 = document.getElementById('ham-2');
+    const h3 = document.getElementById('ham-3');
+    const open = menu.classList.toggle('hidden') === false;
+    h1.style.transform = open ? 'translateY(6px) rotate(45deg)' : '';
+    h2.style.opacity   = open ? '0' : '';
+    h3.style.transform = open ? 'translateY(-6px) rotate(-45deg)' : '';
+  }
+
+  // Nav "Resources" dropdown (desktop) — click-toggle, not hover-only, so it
+  // works on touch devices and doesn't fight keyboard focus.
+  (function () {
+    const trigger = document.getElementById('nav-resources-trigger');
+    const panel = document.getElementById('nav-resources-panel');
+    const chevron = document.getElementById('nav-resources-chevron');
+    if (!trigger || !panel) return;
+    function closeDropdown() {
+      panel.classList.remove('open');
+      trigger.setAttribute('aria-expanded', 'false');
+      if (chevron) chevron.style.transform = '';
+    }
+    function openDropdown() {
+      panel.classList.add('open');
+      trigger.setAttribute('aria-expanded', 'true');
+      if (chevron) chevron.style.transform = 'rotate(180deg)';
+    }
+    trigger.addEventListener('click', e => {
+      e.stopPropagation();
+      panel.classList.contains('open') ? closeDropdown() : openDropdown();
+    });
+    document.addEventListener('click', e => {
+      if (!trigger.contains(e.target) && !panel.contains(e.target)) closeDropdown();
+    });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDropdown(); });
+  })();
+
+  // Nav "Resources" accordion (mobile)
+  function toggleMobileResources() {
+    const panel = document.getElementById('mobile-resources-panel');
+    const trigger = document.getElementById('mobile-resources-trigger');
+    const chevron = document.getElementById('mobile-resources-chevron');
+    const nowHidden = panel.classList.toggle('hidden');
+    trigger.setAttribute('aria-expanded', nowHidden ? 'false' : 'true');
+    if (chevron) chevron.style.transform = nowHidden ? '' : 'rotate(180deg)';
+  }
+</script>
+</body>
+</html>
