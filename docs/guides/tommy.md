@@ -330,7 +330,7 @@ tommy skills install engineering  # or just one bundle
 | `design-review` | Tommy-authored HLD and LLD reviewers that check a design against the real code |
 | `qa` | Tommy-authored frontend, backend and REST API QA — for apps you own and test environments only |
 | `explain` | Tommy-authored: explains code, bugs and findings in plain English with a real-world scenario |
-| `pentest` | 25-skill penetration-testing pack: an ROE/authorization + scope gate runs first (and can't itself run `curl`/`wget`/`nmap`/`sqlmap`/`nikto`), then header/TLS/CORS/secret/dependency/code scans and OWASP Top 10-mapped reporting (jeremylongshore/claude-code-plugins-plus-skills, MIT). Not included in `all`. |
+| `pentest` | 25-skill penetration-testing pack: an ROE/authorization + scope gate runs first (and can't itself run `curl`/`wget`/`nmap`/`sqlmap`/`nikto`), then header/TLS/CORS/secret/dependency/code scans and OWASP Top 10-mapped reporting (jeremylongshore/claude-code-plugins-plus-skills, MIT) — plus a Tommy-authored `performing-live-cluster-penetration-testing` skill for internal live-Kubernetes-cluster testing (workload identity, internal endpoints, RBAC, network policy; its own authorization + non-prod gate). Not included in `all`. |
 
 Restart the Claude Code session (or run `/reload-plugins`) to load newly installed
 skills. A plugin's own skills only show up under `/<plugin-name>`, not under `/tommy` —

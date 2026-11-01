@@ -124,7 +124,7 @@
     {
       "name": "tommy-pentest",
       "source": "./plugins/tommy-pentest",
-      "description": "Opt-in penetration-testing pack: ROE/authorization gate runs first, then header/TLS/CORS/dependency/code scans and OWASP-mapped reporting. Not included in tommy-all.",
+      "description": "Opt-in penetration-testing pack: ROE/authorization gate runs first, then header/TLS/CORS/dependency/code scans, OWASP-mapped reporting, and (Tommy-authored) an internal live-Kubernetes-cluster pentest skill for the gap passive scans can't see. Not included in tommy-all.",
       "category": "security",
       "tags": [
         "tommy-curated",
