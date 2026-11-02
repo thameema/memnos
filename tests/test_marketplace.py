@@ -69,7 +69,7 @@ def main():
     check("share-alike (CC-BY-SA) plugins exist only as upstream sources, so nothing is vendored here",
           all(n in upstream for n in sa) and not any(
               "SA" in local[n].get("license", "").upper().split("-") for n in local))
-    own = {"tommy-design-review", "tommy-qa", "tommy-explain"}  # the only plugins whose skills Tommy authors itself
+    own = {"tommy-design-review", "tommy-qa", "tommy-explain", "tommy-pentest"}  # the only plugins whose skills Tommy authors itself
     vendored = [d for d, _, fs in os.walk(os.path.join(ROOT, "plugins")) for f in fs
                 if f == "SKILL.md" and os.path.relpath(d, os.path.join(ROOT, "plugins")).split(os.sep)[0] not in own]
     check("no upstream SKILL.md is vendored under plugins/ (only Tommy-authored skills live here)", not vendored, vendored)
