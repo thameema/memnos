@@ -15,6 +15,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from collections import Counter
 from datetime import datetime
@@ -421,6 +422,17 @@ def install_cmd(bundle: Optional[str]) -> None:
     rc = subprocess.run([claude, "plugin", "install", f"{name}@{MARKETPLACE}"]).returncode
     if rc:
         raise click.ClickException(f"claude plugin install {name}@{MARKETPLACE} failed (exit {rc})")
+    if bundle == "pentest":
+        click.echo("installing the strix-agent CLI (pip, for running-dynamic-exploitation-with-strix) ...")
+        rc2 = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "strix-agent"]).returncode
+        if rc2:
+            click.echo(f"strix-agent install failed (exit {rc2}) — it needs Python >=3.12, this interpreter is "
+                       f"{sys.version.split()[0]}. Install it yourself once a 3.12+ interpreter is available "
+                       "(pipx install strix-agent, or see https://docs.strix.ai/quickstart). Every other "
+                       "tommy-pentest skill still works without it.", err=True)
+        else:
+            click.echo("strix-agent installed. Docker and an LLM API key are still yours to provide — "
+                       "see the skill's Prerequisites step.")
     click.echo("done. Restart Claude Code sessions to load the new skills. `tommy skills eval` shows which ones you actually use.")
 
 

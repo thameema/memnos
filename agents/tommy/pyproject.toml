@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+pentest = ["strix-agent>=1.0"]  # CLI for running-dynamic-exploitation-with-strix; needs Python >=3.12
 
 [project.scripts]
 tommy = "tommy.cli:main"
