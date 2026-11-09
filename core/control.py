@@ -1079,7 +1079,8 @@ class Control:
         return c
 
     @staticmethod
-    def _sub_rows(c, namespace, session, principal_id, channels, from_beginning=False):
+    def _sub_rows(c, namespace, session, principal_id, channels, from_beginning=False, new_from_beginning=False):
+        insert_zero = bool(from_beginning or new_from_beginning)
         for ch in channels:
             c.execute("""
                 INSERT INTO memnos_control.channel_subscriptions(namespace,session_name,principal_id,channel,cursor)
@@ -1088,7 +1089,7 @@ class Control:
                 ON CONFLICT (namespace,session_name,channel) DO UPDATE
                     SET cursor = CASE WHEN %s THEN 0 ELSE memnos_control.channel_subscriptions.cursor END
                     WHERE memnos_control.channel_subscriptions.principal_id = EXCLUDED.principal_id
-            """, (namespace, session, principal_id, ch, from_beginning, namespace, from_beginning))
+            """, (namespace, session, principal_id, ch, insert_zero, namespace, from_beginning))
 
     @staticmethod
     def _iso(row):
@@ -1102,7 +1103,7 @@ class Control:
         non-offline name (raises SessionConflict); same principal or expired/offline may."""
         from psycopg.types.json import Jsonb
         name = Control._slug(name, "session name")
-        topic_chans = ["#general"] + [Control._channel(x) for x in (channels or [])]
+        explicit_chans = [f"@{name}"] + [Control._channel(x) for x in (channels or [])]
         with conn.cursor() as c:
             c.execute("""
                 INSERT INTO memnos_control.agent_sessions(namespace,name,principal_id,harness,model,role,
@@ -1126,8 +1127,8 @@ class Control:
             c.execute("""DELETE FROM memnos_control.channel_subscriptions
                          WHERE namespace=%s AND session_name=%s AND principal_id<>%s""",
                       (namespace, name, principal_id))
-            Control._sub_rows(c, namespace, name, principal_id, [f"@{name}"], from_beginning=True)
-            Control._sub_rows(c, namespace, name, principal_id, topic_chans)
+            Control._sub_rows(c, namespace, name, principal_id, explicit_chans, new_from_beginning=True)
+            Control._sub_rows(c, namespace, name, principal_id, ["#general"])
             c.execute("""SELECT channel FROM memnos_control.channel_subscriptions
                          WHERE namespace=%s AND session_name=%s ORDER BY channel""", (namespace, name))
             subs = [r["channel"] for r in c.fetchall()]

@@ -247,9 +247,20 @@ def _token():
     """Bearer token for the loopback call to the memnos HTTP server. HTTP mount: the
     CALLER's own already-validated token (forwarded as-is, never re-minted) so the REST
     layer's auth/ACL/audit runs exactly as it would for any other caller. stdio: the
-    fixed env-configured token for this process."""
+    fixed env-configured token for this process, falling back to ~/.memnos/config.json."""
     ctx = _REQUEST_CTX.get()
-    return ctx[0] if ctx is not None else TOKEN
+    if ctx is not None:
+        return ctx[0]
+    tok = os.environ.get("MEMNOS_TOKEN") or TOKEN
+    if tok:
+        return tok
+    try:
+        with open(os.path.join(_config_dir(), "config.json"), encoding="utf-8") as f:
+            cfg = json.load(f)
+        at = cfg.get("agent_tokens") or {}
+        return at.get("claude-code") or at.get("antigravity") or cfg.get("admin_token", "")
+    except Exception:
+        return ""
 
 
 def _post(path, payload, timeout=60):
