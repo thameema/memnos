@@ -816,6 +816,213 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/DbDown" }
+  # ───────────────────── sessions + channels (issue #231) ─────────────────────
+  /session/register:
+    post:
+      tags: [pubsub]
+      summary: Register/refresh a named agent session (auto-subscribes @name and #general)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SessionRegisterRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: session name is held by another principal
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /session/heartbeat:
+    post:
+      tags: [pubsub]
+      summary: Refresh session liveness/status/current_task (publishes status:<name> on task change)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SessionHeartbeatRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /session/unregister:
+    post:
+      tags: [pubsub]
+      summary: Mark a session offline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SessionNameRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionUnregisterResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /session/list:
+    post:
+      tags: [pubsub]
+      summary: List sessions with presence, channels and unread counts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SessionListRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionListResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /channel/publish:
+    post:
+      tags: [pubsub]
+      summary: Publish to a channel (#topic, @session, status:<session>); server-stamped author; optional remember
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelPublishRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelMessage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /channel/subscribe:
+    post:
+      tags: [pubsub]
+      summary: Subscribe a session to channels with its own cursor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelSubscribeRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelSubscribeResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /channel/unsubscribe:
+    post:
+      tags: [pubsub]
+      summary: Remove channel subscriptions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelSubscribeRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelUnsubscribeResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /channel/poll:
+    post:
+      tags: [pubsub]
+      summary: Fetch unread messages for a session and advance its cursors (peek=true to not advance)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelPollRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelPollResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /channel/wait:
+    post:
+      tags: [pubsub]
+      summary: Long-poll (1..120s, default 30) until >=1 unread message or timeout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelPollRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelWaitResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /channel/list:
+    post:
+      tags: [pubsub]
+      summary: List channels with message counts and subscribers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NamespaceOnlyRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelListResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
   /feed:
     post:
       tags: [pubsub]
@@ -1914,6 +2121,170 @@ components:
       properties:
         namespace: { type: string, maxLength: 200 }
         subscription_id: { type: integer }
+
+    # ── sessions + channels (issue #231) ──
+    NamespaceOnlyRequest:
+      type: object
+      required: [namespace]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+    SessionNameRequest:
+      type: object
+      required: [namespace, name]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        name: { type: string, maxLength: 64 }
+    SessionRegisterRequest:
+      type: object
+      required: [namespace, name]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        name: { type: string, maxLength: 64, description: "slug; a leading @ is stripped" }
+        harness: { type: string }
+        model: { type: string }
+        role: { type: string }
+        host: { type: string }
+        cwd: { type: string }
+        status: { type: string }
+        current_task: { type: string }
+        metadata: { type: object }
+        channels: { type: array, items: { type: string } }
+        ttl_seconds: { type: integer }
+    SessionHeartbeatRequest:
+      type: object
+      required: [namespace, name]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        name: { type: string, maxLength: 64 }
+        status: { type: string }
+        current_task: { type: string }
+        metadata: { type: object }
+        ttl_seconds: { type: integer }
+        publish_status: { type: boolean }
+    SessionListRequest:
+      type: object
+      required: [namespace]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        include_expired: { type: boolean }
+        role: { type: string }
+        harness: { type: string }
+    ChannelPublishRequest:
+      type: object
+      required: [namespace, channel, content, sender_session]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        channel: { type: string }
+        sender_session: { type: string }
+        content: { type: string }
+        intent: { type: string, enum: [message, status, task, review_request, critique, question, answer, handoff, done] }
+        metadata: { type: object }
+        remember: { type: boolean, description: "also persist a durable raw turn (memory_type handoff, or decision for answer/done)" }
+    ChannelSubscribeRequest:
+      type: object
+      required: [namespace, session_name, channels]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        session_name: { type: string }
+        channels: { type: array, items: { type: string } }
+        from_beginning: { type: boolean }
+    ChannelPollRequest:
+      type: object
+      required: [namespace, session_name]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        session_name: { type: string }
+        channel: { type: string }
+        peek: { type: boolean }
+        limit: { type: integer }
+        timeout_seconds: { type: number, description: "/channel/wait only; clamped 1..120" }
+    Session:
+      type: object
+      required: [namespace, name, status]
+      properties:
+        namespace: { type: string }
+        name: { type: string }
+        harness: { type: string }
+        model: { type: string }
+        role: { type: string }
+        status: { type: string }
+        current_task: { type: string }
+        expires_at: { type: string }
+        subscribed_channels: { type: array, items: { type: string } }
+    SessionUnregisterResponse:
+      type: object
+      required: [unregistered]
+      properties:
+        unregistered: { type: boolean }
+    SessionListResponse:
+      type: object
+      required: [sessions]
+      properties:
+        sessions:
+          type: array
+          items:
+            type: object
+            required: [name, author, active, channels, unread]
+            properties:
+              name: { type: string }
+              author: { type: string }
+              active: { type: boolean }
+              channels: { type: array, items: { type: string } }
+              unread: { type: integer }
+    ChannelMessage:
+      type: object
+      required: [id, channel, sender_session, author, intent, content, created_at]
+      properties:
+        id: { type: integer }
+        channel: { type: string }
+        sender_session: { type: string }
+        author: { type: string, description: "server-stamped authenticated principal; cannot be spoofed" }
+        intent: { type: string }
+        content: { type: string }
+        metadata: { type: object }
+        created_at: { type: string }
+        remembered: { type: boolean }
+    ChannelSubscribeResponse:
+      type: object
+      required: [session_name, subscribed_channels]
+      properties:
+        session_name: { type: string }
+        subscribed_channels: { type: array, items: { type: string } }
+    ChannelUnsubscribeResponse:
+      type: object
+      required: [session_name, unsubscribed]
+      properties:
+        session_name: { type: string }
+        unsubscribed: { type: integer }
+    ChannelPollResponse:
+      type: object
+      required: [session_name, messages, count]
+      properties:
+        session_name: { type: string }
+        messages: { type: array, items: { $ref: "#/components/schemas/ChannelMessage" } }
+        count: { type: integer }
+    ChannelWaitResponse:
+      type: object
+      required: [session_name, messages, count, timed_out]
+      properties:
+        session_name: { type: string }
+        messages: { type: array, items: { $ref: "#/components/schemas/ChannelMessage" } }
+        count: { type: integer }
+        timed_out: { type: boolean }
+    ChannelListResponse:
+      type: object
+      required: [channels]
+      properties:
+        channels:
+          type: array
+          items:
+            type: object
+            required: [channel, message_count, subscribers]
+            properties:
+              channel: { type: string }
+              message_count: { type: integer }
+              last_message_at: { type: [string, "null"] }
+              subscribers: { type: array, items: { type: string } }
 
     # ── data-plane responses ──
     RememberResponse:

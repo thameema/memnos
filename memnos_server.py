@@ -84,7 +84,7 @@ from psycopg_pool import ConnectionPool, PoolTimeout
 from core.store import (BrainStore, query_clamp, RECALL_ARM_FAILURES, classify_arm_failure,
                         record_arm_failure, health_unavailable)
 from core.service import MemnosMemory, effective_constraint_subject
-from core.control import Control, SECRET_NS_PREFIX
+from core.control import Control, SessionConflict, SECRET_NS_PREFIX
 from core import rerank as brain_rerank
 from core import memrelief
 
@@ -123,7 +123,9 @@ BUDGET_DAILY_USD = _parse_budget_env("MEMNOS_BUDGET_DAILY_USD")
 BUDGET_MONTHLY_USD = _parse_budget_env("MEMNOS_BUDGET_MONTHLY_USD")
 WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/corpus/ingest",
              "/corpus/deviation", "/ingest/file", "/episode/segment", "/episode/decay",
-             "/namespace/copy", "/lease/acquire", "/lease/heartbeat", "/lease/release"}
+             "/namespace/copy", "/lease/acquire", "/lease/heartbeat", "/lease/release",
+             "/session/register", "/session/heartbeat", "/session/unregister",
+             "/channel/publish", "/channel/subscribe", "/channel/unsubscribe"}
 
 
 def _suggest_enabled():
@@ -1401,6 +1403,74 @@ class Handler(BaseHTTPRequestHandler):
                         out = Control.lease_who_holds(conn, ns, key)
                     elif self.path == "/lease/list":
                         out = {"leases": Control.lease_list(conn, ns)}
+                    # --- named sessions + channel pub/sub (issue #231) ---
+                    elif self.path.startswith(("/session/", "/channel/")):
+                        pname = (Control.principal_info(conn, principal) or {}).get("name")
+                        sess = str(req.get("name") or req.get("session_name") or req.get("sender_session") or "")
+                        if self.path == "/session/register":
+                            out = Control.session_register(
+                                conn, ns, sess, principal,
+                                harness=str(req.get("harness", "")), model=str(req.get("model", "")),
+                                role=str(req.get("role", "")), host=str(req.get("host", "")),
+                                cwd=str(req.get("cwd", "")), status=str(req.get("status", "active")),
+                                current_task=str(req.get("current_task", "")),
+                                metadata=req.get("metadata"), channels=req.get("channels"),
+                                ttl_seconds=int(req.get("ttl_seconds", 1800)))
+                        elif self.path == "/session/heartbeat":
+                            out = Control.session_heartbeat(
+                                conn, ns, sess, principal, status=req.get("status"),
+                                current_task=req.get("current_task"), metadata=req.get("metadata"),
+                                ttl_seconds=int(req.get("ttl_seconds", 1800)),
+                                publish_status=bool(req.get("publish_status", True)))
+                            if out is None:
+                                return self._send(404, {"error": "session not registered by this principal"})
+                        elif self.path == "/session/unregister":
+                            out = Control.session_unregister(conn, ns, sess, principal)
+                        elif self.path == "/session/list":
+                            out = {"sessions": Control.session_list(
+                                conn, ns, include_expired=bool(req.get("include_expired", False)),
+                                role=req.get("role") or None, harness=req.get("harness") or None)}
+                        elif self.path == "/channel/publish":
+                            out = Control.channel_publish(
+                                conn, ns, req.get("channel"), sess, principal, str(req.get("content", "")),
+                                intent=str(req.get("intent", "message")), metadata=req.get("metadata"))
+                            if req.get("remember"):
+                                mt = "decision" if out["intent"] in ("answer", "done") else "handoff"
+                                store.insert_raw_turn(
+                                    mem.schema, ns, "", f"channel:{out['channel']}",
+                                    f"[{out['sender_session']} -> {out['channel']} ({out['intent']})] {out['content']}",
+                                    datetime.now(timezone.utc), None, author=pname, memory_type=mt)
+                                out["remembered"] = True
+                        elif self.path == "/channel/subscribe":
+                            out = Control.channel_subscribe(conn, ns, sess, principal, req.get("channels"),
+                                                            from_beginning=bool(req.get("from_beginning", False)))
+                        elif self.path == "/channel/unsubscribe":
+                            out = Control.channel_unsubscribe(conn, ns, sess, principal, req.get("channels"))
+                        elif self.path == "/channel/poll":
+                            out = Control.channel_poll(conn, ns, sess, principal, channel=req.get("channel") or None,
+                                                       peek=bool(req.get("peek", False)),
+                                                       limit=int(req.get("limit", 50)))
+                        elif self.path == "/channel/wait":
+                            # LISTEN first, then poll, so a publish between the two is never missed.
+                            timeout = max(1.0, min(float(req.get("timeout_seconds", 30)), 120.0))
+                            deadline = time.monotonic() + timeout
+                            kw = dict(channel=req.get("channel") or None, limit=int(req.get("limit", 50)))
+                            conn.execute("LISTEN memnos_channel")
+                            try:
+                                while True:
+                                    out = Control.channel_poll(conn, ns, sess, principal, **kw)
+                                    left = deadline - time.monotonic()
+                                    if out["count"] or left <= 0:
+                                        break
+                                    for _ in conn.notifies(timeout=min(left, 5.0), stop_after=1):
+                                        pass
+                            finally:
+                                conn.execute("UNLISTEN memnos_channel")
+                            out["timed_out"] = out["count"] == 0
+                        elif self.path == "/channel/list":
+                            out = {"channels": Control.channel_list(conn, ns)}
+                        else:
+                            return self._send(404, {"error": "not found"})
                     # --- corpus ingestion + checks (Batch 4) ---
                     elif self.path == "/corpus/ingest":    # parse doc constraints -> facts
                         name = str(req.get("name", "")).strip()
@@ -1540,6 +1610,10 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         return self._send(404, {"error": "not found"})
                 except Exception as op_err:
+                    if isinstance(op_err, SessionConflict):
+                        return self._send(409, {"error": str(op_err)})
+                    if isinstance(op_err, ValueError) and self.path.startswith(("/session/", "/channel/")):
+                        return self._send(400, {"error": str(op_err)})
                     # capture WHAT broke (type+message) so it's actionable via `memnos_admin.py errors`
                     Control.audit(conn, principal, action, ns, False,
                                   {"error": type(op_err).__name__, "msg": str(op_err)[:300]},

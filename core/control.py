@@ -332,6 +332,55 @@ CREATE TABLE IF NOT EXISTS memnos_control.leases(
 );
 CREATE UNIQUE INDEX IF NOT EXISTS leases_active
     ON memnos_control.leases(namespace, key) WHERE released_at IS NULL;
+-- Named session registry + channel pub/sub bus (issue #231).
+CREATE TABLE IF NOT EXISTS memnos_control.agent_sessions(
+    id                bigserial PRIMARY KEY,
+    namespace         text NOT NULL,
+    name              text NOT NULL,
+    principal_id      bigint NOT NULL REFERENCES memnos_control.principals(id),
+    harness           text NOT NULL DEFAULT '',
+    model             text NOT NULL DEFAULT '',
+    role              text NOT NULL DEFAULT '',
+    host              text NOT NULL DEFAULT '',
+    cwd               text NOT NULL DEFAULT '',
+    status            text NOT NULL DEFAULT 'active',
+    current_task      text NOT NULL DEFAULT '',
+    metadata          jsonb NOT NULL DEFAULT '{}'::jsonb,
+    registered_at     timestamptz NOT NULL DEFAULT now(),
+    last_heartbeat_at timestamptz NOT NULL DEFAULT now(),
+    expires_at        timestamptz NOT NULL,
+    UNIQUE(namespace, name)
+);
+CREATE INDEX IF NOT EXISTS agent_sessions_ns_exp
+    ON memnos_control.agent_sessions(namespace, expires_at DESC);
+CREATE TABLE IF NOT EXISTS memnos_control.channel_messages(
+    id             bigserial PRIMARY KEY,
+    namespace      text NOT NULL,
+    channel        text NOT NULL,
+    sender_session text NOT NULL,
+    principal_id   bigint NOT NULL REFERENCES memnos_control.principals(id),
+    intent         text NOT NULL DEFAULT 'message',
+    content        text NOT NULL,
+    metadata       jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at     timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS channel_messages_ns_ch_id
+    ON memnos_control.channel_messages(namespace, channel, id);
+CREATE INDEX IF NOT EXISTS channel_messages_ns_id
+    ON memnos_control.channel_messages(namespace, id);
+CREATE TABLE IF NOT EXISTS memnos_control.channel_subscriptions(
+    id             bigserial PRIMARY KEY,
+    namespace      text NOT NULL,
+    session_name   text NOT NULL,
+    principal_id   bigint NOT NULL REFERENCES memnos_control.principals(id),
+    channel        text NOT NULL,
+    cursor         bigint NOT NULL DEFAULT 0,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    last_polled_at timestamptz,
+    UNIQUE(namespace, session_name, channel)
+);
+CREATE INDEX IF NOT EXISTS channel_subs_ns_session
+    ON memnos_control.channel_subscriptions(namespace, session_name);
 -- `memnos namespace reconcile` resume watermark (issue #155): the keyset cursor of the
 -- last COMMITTED chunk, written in the same transaction as that chunk's mutations.
 -- core/reconcile.py also issues this same CREATE (RUNS_DDL) itself, because the CLI can
@@ -397,6 +446,10 @@ SECRET_NS_PREFIX = "secret:"
 
 def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+class SessionConflict(ValueError):
+    """session name held by another principal (HTTP 409)."""
 
 
 class Control:
@@ -989,6 +1042,266 @@ class Control:
         return [{"key": r["key"], "holder_id": r["holder_id"],
                  "acquired_at": r["acquired_at"].isoformat(),
                  "expires_at": r["expires_at"].isoformat()} for r in rows]
+
+
+    # --- named sessions + channel pub/sub (issue #231) ------------------------
+
+    INTENTS = ("message", "status", "task", "review_request", "critique", "question",
+               "answer", "handoff", "done")
+    _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    # does message m match subscription s? exact | `prefix*` | `*` (all but other sessions'
+    # direct inboxes); a session never sees its own posts except in its own @inbox.
+    _SUB_MATCH = """m.namespace = s.namespace AND m.id > s.cursor AND (
+        m.channel = s.channel
+        OR (s.channel = '*' AND (m.channel NOT LIKE '@%%' OR m.channel = '@' || s.session_name))
+        OR (s.channel <> '*' AND right(s.channel, 1) = '*'
+            AND starts_with(m.channel, left(s.channel, length(s.channel) - 1))))
+        AND (m.sender_session <> s.session_name OR m.channel = '@' || s.session_name)"""
+
+    @staticmethod
+    def _slug(name, what="name"):
+        n = str(name or "").strip().lstrip("@")
+        if not Control._NAME_RE.match(n):
+            raise ValueError(f"{what} must match [A-Za-z0-9][A-Za-z0-9._-]{{0,63}}")
+        return n
+
+    @staticmethod
+    def _channel(ch, *, allow_wild=True):
+        c = str(ch or "").strip()
+        if c and c[0] not in "#@*" and not c.startswith("status:"):
+            c = "#" + c
+        ok = (re.fullmatch(r"[#@][A-Za-z0-9._-]{1,64}", c)
+              or re.fullmatch(r"status:[A-Za-z0-9._-]{1,64}", c)
+              or (allow_wild and re.fullmatch(r"\*|status:\*", c)))
+        if not ok:
+            raise ValueError(f"invalid channel {ch!r} (use #topic, @session, status:<session>"
+                             + (", status:*, *" if allow_wild else "") + ")")
+        return c
+
+    @staticmethod
+    def _sub_rows(c, namespace, session, principal_id, channels, from_beginning=False):
+        for ch in channels:
+            c.execute("""
+                INSERT INTO memnos_control.channel_subscriptions(namespace,session_name,principal_id,channel,cursor)
+                VALUES (%s,%s,%s,%s, CASE WHEN %s THEN 0 ELSE
+                    (SELECT COALESCE(MAX(id),0) FROM memnos_control.channel_messages WHERE namespace=%s) END)
+                ON CONFLICT (namespace,session_name,channel) DO UPDATE
+                    SET cursor = CASE WHEN %s THEN 0 ELSE memnos_control.channel_subscriptions.cursor END
+                    WHERE memnos_control.channel_subscriptions.principal_id = EXCLUDED.principal_id
+            """, (namespace, session, principal_id, ch, from_beginning, namespace, from_beginning))
+
+    @staticmethod
+    def _iso(row):
+        return {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in row.items()}
+
+    @staticmethod
+    def session_register(conn, namespace, name, principal_id, *, harness="", model="", role="",
+                         host="", cwd="", status="active", current_task="", metadata=None,
+                         channels=None, ttl_seconds=1800):
+        """Upsert a named session. A different principal may not take over an UNEXPIRED,
+        non-offline name (raises SessionConflict); same principal or expired/offline may."""
+        from psycopg.types.json import Jsonb
+        name = Control._slug(name, "session name")
+        chans = [f"@{name}", "#general"] + [Control._channel(x) for x in (channels or [])]
+        with conn.cursor() as c:
+            c.execute("""
+                INSERT INTO memnos_control.agent_sessions(namespace,name,principal_id,harness,model,role,
+                    host,cwd,status,current_task,metadata,expires_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now() + (%s * interval '1 second'))
+                ON CONFLICT (namespace,name) DO UPDATE SET
+                    principal_id=EXCLUDED.principal_id, harness=EXCLUDED.harness, model=EXCLUDED.model,
+                    role=EXCLUDED.role, host=EXCLUDED.host, cwd=EXCLUDED.cwd, status=EXCLUDED.status,
+                    current_task=EXCLUDED.current_task, metadata=EXCLUDED.metadata,
+                    registered_at=now(), last_heartbeat_at=now(), expires_at=EXCLUDED.expires_at
+                WHERE memnos_control.agent_sessions.principal_id = EXCLUDED.principal_id
+                   OR memnos_control.agent_sessions.expires_at <= now()
+                   OR memnos_control.agent_sessions.status = 'offline'
+                RETURNING *
+            """, (namespace, name, principal_id, harness, model, role, host, cwd, status,
+                  current_task, Jsonb(metadata or {}), max(1, int(ttl_seconds))))
+            row = c.fetchone()
+            if not row:
+                raise SessionConflict(f"session name '{name}' is held by another principal")
+            # takeover: the previous owner's subscriptions (and cursors) don't carry over
+            c.execute("""DELETE FROM memnos_control.channel_subscriptions
+                         WHERE namespace=%s AND session_name=%s AND principal_id<>%s""",
+                      (namespace, name, principal_id))
+            Control._sub_rows(c, namespace, name, principal_id, chans)
+            c.execute("""SELECT channel FROM memnos_control.channel_subscriptions
+                         WHERE namespace=%s AND session_name=%s ORDER BY channel""", (namespace, name))
+            subs = [r["channel"] for r in c.fetchall()]
+        out = Control._iso(row)
+        out["subscribed_channels"] = subs
+        return out
+
+    @staticmethod
+    def session_heartbeat(conn, namespace, name, principal_id, *, status=None, current_task=None,
+                          metadata=None, ttl_seconds=1800, publish_status=True):
+        """Refresh liveness; returns the session dict, or None if not registered to this principal."""
+        from psycopg.types.json import Jsonb
+        name = Control._slug(name, "session name")
+        with conn.cursor() as c:
+            c.execute("""SELECT current_task FROM memnos_control.agent_sessions
+                         WHERE namespace=%s AND name=%s AND principal_id=%s""",
+                      (namespace, name, principal_id))
+            prev = c.fetchone()
+            if not prev:
+                return None
+            c.execute("""
+                UPDATE memnos_control.agent_sessions SET
+                    last_heartbeat_at=now(), expires_at=now() + (%s * interval '1 second'),
+                    status=COALESCE(%s, status), current_task=COALESCE(%s, current_task),
+                    metadata=COALESCE(%s, metadata)
+                WHERE namespace=%s AND name=%s AND principal_id=%s RETURNING *
+            """, (max(1, int(ttl_seconds)), status, current_task,
+                  Jsonb(metadata) if metadata is not None else None, namespace, name, principal_id))
+            row = c.fetchone()
+        if publish_status and current_task and current_task != prev["current_task"]:
+            Control.channel_publish(conn, namespace, f"status:{name}", name, principal_id,
+                                    current_task, intent="status", metadata={"status": row["status"]})
+        return Control._iso(row)
+
+    @staticmethod
+    def session_list(conn, namespace, *, include_expired=False, role=None, harness=None):
+        with conn.cursor() as c:
+            c.execute(f"""
+                SELECT a.*, p.name AS author, (a.expires_at > now() AND a.status <> 'offline') AS active,
+                  COALESCE((SELECT array_agg(s.channel ORDER BY s.channel)
+                            FROM memnos_control.channel_subscriptions s
+                            WHERE s.namespace=a.namespace AND s.session_name=a.name), '{{}}') AS channels,
+                  (SELECT count(DISTINCT m.id) FROM memnos_control.channel_subscriptions s
+                   JOIN memnos_control.channel_messages m ON {Control._SUB_MATCH}
+                   WHERE s.namespace=a.namespace AND s.session_name=a.name) AS unread
+                FROM memnos_control.agent_sessions a
+                JOIN memnos_control.principals p ON p.id = a.principal_id
+                WHERE a.namespace=%s
+                  AND (%s OR (a.expires_at > now() AND a.status <> 'offline'))
+                  AND (%s::text IS NULL OR a.role=%s) AND (%s::text IS NULL OR a.harness=%s)
+                ORDER BY a.name
+            """, (namespace, include_expired, role, role, harness, harness))
+            return [Control._iso(r) for r in c.fetchall()]
+
+    @staticmethod
+    def session_unregister(conn, namespace, name, principal_id):
+        name = Control._slug(name, "session name")
+        with conn.cursor() as c:
+            c.execute("""UPDATE memnos_control.agent_sessions SET status='offline', expires_at=now()
+                         WHERE namespace=%s AND name=%s AND principal_id=%s RETURNING id""",
+                      (namespace, name, principal_id))
+            return {"unregistered": bool(c.fetchone())}
+
+    @staticmethod
+    def channel_subscribe(conn, namespace, session_name, principal_id, channels, *,
+                          from_beginning=False):
+        session = Control._slug(session_name, "session name")
+        chans = [Control._channel(x) for x in (channels or [])]
+        if not chans:
+            raise ValueError("channels required")
+        with conn.cursor() as c:
+            Control._sub_rows(c, namespace, session, principal_id, chans, from_beginning)
+            c.execute("""SELECT channel FROM memnos_control.channel_subscriptions
+                         WHERE namespace=%s AND session_name=%s AND principal_id=%s ORDER BY channel""",
+                      (namespace, session, principal_id))
+            return {"session_name": session, "subscribed_channels": [r["channel"] for r in c.fetchall()]}
+
+    @staticmethod
+    def channel_unsubscribe(conn, namespace, session_name, principal_id, channels):
+        session = Control._slug(session_name, "session name")
+        chans = [Control._channel(x) for x in (channels or [])]
+        with conn.cursor() as c:
+            c.execute("""DELETE FROM memnos_control.channel_subscriptions
+                         WHERE namespace=%s AND session_name=%s AND principal_id=%s AND channel = ANY(%s)""",
+                      (namespace, session, principal_id, chans))
+            return {"session_name": session, "unsubscribed": c.rowcount}
+
+    @staticmethod
+    def channel_publish(conn, namespace, channel, sender_session, principal_id, content, *,
+                        intent="message", metadata=None):
+        from psycopg.types.json import Jsonb
+        channel = Control._channel(channel, allow_wild=False)
+        sender = Control._slug(sender_session, "sender_session")
+        if not str(content or "").strip():
+            raise ValueError("content required")
+        if intent not in Control.INTENTS:
+            raise ValueError(f"intent must be one of {', '.join(Control.INTENTS)}")
+        with conn.cursor() as c:
+            c.execute("""
+                INSERT INTO memnos_control.channel_messages(namespace,channel,sender_session,principal_id,
+                                                            intent,content,metadata)
+                VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id, created_at
+            """, (namespace, channel, sender, principal_id, intent, content, Jsonb(metadata or {})))
+            m = c.fetchone()
+            # publishing is proof of life: slide a live session's expiry forward
+            c.execute("""UPDATE memnos_control.agent_sessions SET last_heartbeat_at=now(),
+                             expires_at = GREATEST(expires_at, now() + interval '30 minutes')
+                         WHERE namespace=%s AND name=%s AND principal_id=%s
+                           AND status <> 'offline' AND expires_at > now()""",
+                      (namespace, sender, principal_id))
+            c.execute("SELECT pg_notify('memnos_channel', %s)", (namespace,))
+            c.execute("SELECT name FROM memnos_control.principals WHERE id=%s", (principal_id,))
+            author = (c.fetchone() or {}).get("name")
+        return {"id": m["id"], "namespace": namespace, "channel": channel, "sender_session": sender,
+                "author": author, "intent": intent, "content": content, "metadata": metadata or {},
+                "created_at": m["created_at"].isoformat()}
+
+    @staticmethod
+    def channel_poll(conn, namespace, session_name, principal_id, *, channel=None, peek=False, limit=50):
+        """Unread messages for a session's subscriptions (own subs only). An explicit `channel`
+        the session isn't subscribed to is auto-subscribed from the beginning. peek=True never
+        advances cursors."""
+        session = Control._slug(session_name, "session name")
+        limit = max(1, min(int(limit), 500))
+        ch = Control._channel(channel) if channel else None
+        args = [namespace, session, principal_id]
+        with conn.cursor() as c:
+            if ch:
+                c.execute("""SELECT 1 FROM memnos_control.channel_subscriptions
+                             WHERE namespace=%s AND session_name=%s AND principal_id=%s AND channel=%s""",
+                          args + [ch])
+                if not c.fetchone():
+                    Control._sub_rows(c, namespace, session, principal_id, [ch], from_beginning=True)
+            c.execute(f"""
+                SELECT s.id AS sub_id, m.id, m.channel, m.sender_session, m.intent, m.content,
+                       m.metadata, m.created_at, p.name AS author
+                FROM memnos_control.channel_subscriptions s
+                JOIN memnos_control.channel_messages m ON {Control._SUB_MATCH}
+                LEFT JOIN memnos_control.principals p ON p.id = m.principal_id
+                WHERE s.namespace=%s AND s.session_name=%s AND s.principal_id=%s
+                  {"AND s.channel=%s" if ch else ""}
+                ORDER BY m.id LIMIT %s
+            """, args + ([ch] if ch else []) + [limit])
+            rows = c.fetchall()
+            if not peek:
+                top = {}
+                for r in rows:
+                    top[r["sub_id"]] = max(top.get(r["sub_id"], 0), r["id"])
+                for sid, mx in top.items():
+                    c.execute("""UPDATE memnos_control.channel_subscriptions
+                                 SET cursor=%s, last_polled_at=now() WHERE id=%s""", (mx, sid))
+        seen, msgs = set(), []
+        for r in rows:   # a message matching two overlapping subs (e.g. #x and *) is returned once
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                msgs.append(Control._iso({k: v for k, v in r.items() if k != "sub_id"}))
+        return {"session_name": session, "messages": msgs, "count": len(msgs)}
+
+    @staticmethod
+    def channel_list(conn, namespace):
+        with conn.cursor() as c:
+            c.execute("""
+                SELECT u.ch AS channel, COALESCE(mc.n,0) AS message_count, mc.last_at AS last_message_at,
+                       COALESCE(sc.subs, '{}') AS subscribers
+                FROM (SELECT channel AS ch FROM memnos_control.channel_messages WHERE namespace=%s
+                      UNION SELECT channel FROM memnos_control.channel_subscriptions WHERE namespace=%s) u
+                LEFT JOIN (SELECT channel, count(*) n, max(created_at) last_at
+                           FROM memnos_control.channel_messages WHERE namespace=%s GROUP BY channel) mc
+                       ON mc.channel = u.ch
+                LEFT JOIN (SELECT channel, array_agg(session_name ORDER BY session_name) subs
+                           FROM memnos_control.channel_subscriptions WHERE namespace=%s GROUP BY channel) sc
+                       ON sc.channel = u.ch
+                ORDER BY u.ch
+            """, (namespace,) * 4)
+            return [Control._iso(r) for r in c.fetchall()]
 
 
     @staticmethod

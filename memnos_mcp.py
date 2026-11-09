@@ -892,6 +892,144 @@ def lease_list() -> str:
         return _err(e, "lease_list")
 
 
+# --- named sessions + channel pub/sub (issue #231) ------------------------------------
+_SESSION_DEFAULT = ""   # set by session_register; falls back to $MEMNOS_SESSION
+
+
+def _sess(name=""):
+    n = (name or _SESSION_DEFAULT or os.environ.get("MEMNOS_SESSION", "")).strip()
+    if not n:
+        raise ValueError("no session name — pass one, call session_register first, or set MEMNOS_SESSION")
+    return n
+
+
+def _chan_call(path, payload, what, timeout=60):
+    """POST + JSON-string result; surfaces the server's 400/409 detail (e.g. name conflict)."""
+    try:
+        return json.dumps(_post(path, payload, timeout=timeout), default=str)
+    except httpx.HTTPStatusError as e:
+        try:
+            detail = e.response.json().get("error", "")
+        except Exception:
+            detail = ""
+        if e.response.status_code in (400, 404, 409) and detail:
+            return f"(memnos {what}: {detail})"
+        return _err(e, what)
+    except Exception as e:
+        return _err(e, what)
+
+
+@mcp.tool()
+def session_register(name: str, role: str = "", harness: str = "", model: str = "",
+                     current_task: str = "", channels: list[str] | None = None,
+                     ttl_seconds: int = 1800) -> str:
+    """Register this agent under a human-friendly session name (e.g. 'claude-dev',
+    'gemini-critic') so peers can find and message it. Auto-subscribes @<name> and #general.
+    The name becomes this process's default session for the other session_/channel_ tools."""
+    global _SESSION_DEFAULT
+    out = _chan_call("/session/register", {
+        "name": name, "role": role, "harness": harness, "model": model,
+        "current_task": current_task, "channels": channels or [], "ttl_seconds": ttl_seconds,
+        "host": os.uname().nodename, "cwd": os.getcwd()}, "session_register")
+    if not out.startswith("(memnos"):
+        _SESSION_DEFAULT = name.strip().lstrip("@")
+    return out
+
+
+@mcp.tool()
+def session_heartbeat(status: str = "active", current_task: str = "", name: str = "") -> str:
+    """Keep this session alive and publish what you're working on (a changed current_task
+    is announced on status:<name>). Call periodically; sessions expire after their TTL."""
+    try:
+        body = {"name": _sess(name), "status": status}
+        if current_task:
+            body["current_task"] = current_task
+        return _chan_call("/session/heartbeat", body, "session_heartbeat")
+    except ValueError as e:
+        return f"(memnos session_heartbeat: {e})"
+
+
+@mcp.tool()
+def session_list(include_expired: bool = False) -> str:
+    """Who's online in this namespace: names, roles, harnesses, current tasks, subscribed
+    channels and unread counts."""
+    return _chan_call("/session/list", {"include_expired": include_expired}, "session_list")
+
+
+@mcp.tool()
+def session_unregister(name: str = "") -> str:
+    """Mark this session offline (call when you finish)."""
+    try:
+        return _chan_call("/session/unregister", {"name": _sess(name)}, "session_unregister")
+    except ValueError as e:
+        return f"(memnos session_unregister: {e})"
+
+
+@mcp.tool()
+def channel_publish(channel: str, content: str, intent: str = "message", sender_session: str = "",
+                    remember: bool = False, reply_to: int = 0) -> str:
+    """Post to a channel: '#review' topic, '@claude-dev' direct inbox, 'status:<session>'.
+    intent: message|status|task|review_request|critique|question|answer|handoff|done.
+    remember=true also saves it to long-term memory. reply_to = id of the message answered."""
+    try:
+        body = {"channel": channel, "content": content, "intent": intent,
+                "sender_session": _sess(sender_session), "remember": remember}
+        if reply_to:
+            body["metadata"] = {"reply_to": reply_to}
+        return _chan_call("/channel/publish", body, "channel_publish")
+    except ValueError as e:
+        return f"(memnos channel_publish: {e})"
+
+
+@mcp.tool()
+def channel_subscribe(channels: list[str], session_name: str = "", from_beginning: bool = False) -> str:
+    """Subscribe this session to channels ('#review', '@name', 'status:*', '*'). By default
+    only messages published after subscribing are delivered."""
+    try:
+        return _chan_call("/channel/subscribe", {"channels": channels, "session_name": _sess(session_name),
+                                                 "from_beginning": from_beginning}, "channel_subscribe")
+    except ValueError as e:
+        return f"(memnos channel_subscribe: {e})"
+
+
+@mcp.tool()
+def channel_unsubscribe(channels: list[str], session_name: str = "") -> str:
+    """Stop receiving messages from the given channels."""
+    try:
+        return _chan_call("/channel/unsubscribe", {"channels": channels, "session_name": _sess(session_name)},
+                          "channel_unsubscribe")
+    except ValueError as e:
+        return f"(memnos channel_unsubscribe: {e})"
+
+
+@mcp.tool()
+def channel_poll(session_name: str = "", channel: str = "", peek: bool = False, limit: int = 50) -> str:
+    """Fetch unread messages for this session (advances its cursor unless peek=true)."""
+    try:
+        return _chan_call("/channel/poll", {"session_name": _sess(session_name), "channel": channel,
+                                            "peek": peek, "limit": limit}, "channel_poll")
+    except ValueError as e:
+        return f"(memnos channel_poll: {e})"
+
+
+@mcp.tool()
+def channel_wait(channel: str = "", session_name: str = "", timeout_seconds: int = 60) -> str:
+    """Block until a peer posts something unread (or timeout, max 120s) — use to hold a
+    multi-turn review/implementation loop with another agent."""
+    try:
+        t = max(1, min(int(timeout_seconds), 120))
+        return _chan_call("/channel/wait", {"session_name": _sess(session_name), "channel": channel,
+                                            "timeout_seconds": t}, "channel_wait", timeout=t + 15)
+    except ValueError as e:
+        return f"(memnos channel_wait: {e})"
+
+
+@mcp.tool()
+def channel_list() -> str:
+    """List channels in this namespace with message counts and subscribers."""
+    return _chan_call("/channel/list", {}, "channel_list")
+
+
 # ---- self-re-exec on version change (issue #68) ---------------------------------------
 #
 # Problem: `memnos mcp` is a long-lived stdio process. `memnos upgrade` (uv tool

@@ -135,6 +135,51 @@ class MemnosClient:
         except httpx.HTTPError:
             return False
 
+    def _post_json(self, path, body, namespace, timeout=None):
+        r = self._c.post(path, json={"namespace": _ns(namespace, self.namespace), **body},
+                         **({"timeout": timeout} if timeout else {}))
+        return _raise(r)
+    def session_register(self, name, *, role='', harness='', model='', current_task='', channels=None, ttl_seconds=1800, namespace=None) -> dict:
+        """POST /session/register (issue #231)."""
+        return self._post_json("/session/register", {"name": name, "role": role, "harness": harness, "model": model, "current_task": current_task, "channels": channels or [], "ttl_seconds": ttl_seconds}, namespace)
+
+    def session_heartbeat(self, name, *, status=None, current_task=None, namespace=None) -> dict:
+        """POST /session/heartbeat (issue #231)."""
+        return self._post_json("/session/heartbeat", {k: v for k, v in {"name": name, "status": status, "current_task": current_task}.items() if v is not None}, namespace)
+
+    def session_list(self, *, include_expired=False, namespace=None) -> dict:
+        """POST /session/list (issue #231)."""
+        return self._post_json("/session/list", {"include_expired": include_expired}, namespace)
+
+    def session_unregister(self, name, *, namespace=None) -> dict:
+        """POST /session/unregister (issue #231)."""
+        return self._post_json("/session/unregister", {"name": name}, namespace)
+
+    def channel_publish(self, channel, content, *, sender_session, intent='message', remember=False, metadata=None, namespace=None) -> dict:
+        """POST /channel/publish (issue #231)."""
+        return self._post_json("/channel/publish", {"channel": channel, "content": content, "sender_session": sender_session, "intent": intent, "remember": remember, "metadata": metadata or {}}, namespace)
+
+    def channel_subscribe(self, channels, *, session_name, from_beginning=False, namespace=None) -> dict:
+        """POST /channel/subscribe (issue #231)."""
+        return self._post_json("/channel/subscribe", {"channels": channels, "session_name": session_name, "from_beginning": from_beginning}, namespace)
+
+    def channel_unsubscribe(self, channels, *, session_name, namespace=None) -> dict:
+        """POST /channel/unsubscribe (issue #231)."""
+        return self._post_json("/channel/unsubscribe", {"channels": channels, "session_name": session_name}, namespace)
+
+    def channel_poll(self, session_name, *, channel=None, peek=False, limit=50, namespace=None) -> dict:
+        """POST /channel/poll (issue #231)."""
+        return self._post_json("/channel/poll", {"session_name": session_name, "channel": channel or "", "peek": peek, "limit": limit}, namespace)
+
+    def channel_wait(self, session_name, *, channel=None, timeout_seconds=30, namespace=None) -> dict:
+        """POST /channel/wait (issue #231)."""
+        timeout = max(1.0, float(timeout_seconds)) + 15.0
+        return self._post_json("/channel/wait", {"session_name": session_name, "channel": channel or "", "timeout_seconds": timeout_seconds}, namespace, timeout=timeout)
+
+    def channel_list(self, *, namespace=None) -> dict:
+        """POST /channel/list (issue #231)."""
+        return self._post_json("/channel/list", {}, namespace)
+
     def close(self):
         self._c.close()
 
@@ -193,6 +238,51 @@ class AsyncMemnosClient:
     async def resolve_secret(self, name) -> str:
         """Async counterpart of MemnosClient.resolve_secret -- see its docstring."""
         return _raise(await self._c.post("/secret/resolve", json={"name": name}))["value"]
+
+    async def _post_json(self, path, body, namespace, timeout=None):
+        r = await self._c.post(path, json={"namespace": _ns(namespace, self.namespace), **body},
+                         **({"timeout": timeout} if timeout else {}))
+        return _raise(r)
+    async def session_register(self, name, *, role='', harness='', model='', current_task='', channels=None, ttl_seconds=1800, namespace=None) -> dict:
+        """POST /session/register (issue #231)."""
+        return await self._post_json("/session/register", {"name": name, "role": role, "harness": harness, "model": model, "current_task": current_task, "channels": channels or [], "ttl_seconds": ttl_seconds}, namespace)
+
+    async def session_heartbeat(self, name, *, status=None, current_task=None, namespace=None) -> dict:
+        """POST /session/heartbeat (issue #231)."""
+        return await self._post_json("/session/heartbeat", {k: v for k, v in {"name": name, "status": status, "current_task": current_task}.items() if v is not None}, namespace)
+
+    async def session_list(self, *, include_expired=False, namespace=None) -> dict:
+        """POST /session/list (issue #231)."""
+        return await self._post_json("/session/list", {"include_expired": include_expired}, namespace)
+
+    async def session_unregister(self, name, *, namespace=None) -> dict:
+        """POST /session/unregister (issue #231)."""
+        return await self._post_json("/session/unregister", {"name": name}, namespace)
+
+    async def channel_publish(self, channel, content, *, sender_session, intent='message', remember=False, metadata=None, namespace=None) -> dict:
+        """POST /channel/publish (issue #231)."""
+        return await self._post_json("/channel/publish", {"channel": channel, "content": content, "sender_session": sender_session, "intent": intent, "remember": remember, "metadata": metadata or {}}, namespace)
+
+    async def channel_subscribe(self, channels, *, session_name, from_beginning=False, namespace=None) -> dict:
+        """POST /channel/subscribe (issue #231)."""
+        return await self._post_json("/channel/subscribe", {"channels": channels, "session_name": session_name, "from_beginning": from_beginning}, namespace)
+
+    async def channel_unsubscribe(self, channels, *, session_name, namespace=None) -> dict:
+        """POST /channel/unsubscribe (issue #231)."""
+        return await self._post_json("/channel/unsubscribe", {"channels": channels, "session_name": session_name}, namespace)
+
+    async def channel_poll(self, session_name, *, channel=None, peek=False, limit=50, namespace=None) -> dict:
+        """POST /channel/poll (issue #231)."""
+        return await self._post_json("/channel/poll", {"session_name": session_name, "channel": channel or "", "peek": peek, "limit": limit}, namespace)
+
+    async def channel_wait(self, session_name, *, channel=None, timeout_seconds=30, namespace=None) -> dict:
+        """POST /channel/wait (issue #231)."""
+        timeout = max(1.0, float(timeout_seconds)) + 15.0
+        return await self._post_json("/channel/wait", {"session_name": session_name, "channel": channel or "", "timeout_seconds": timeout_seconds}, namespace, timeout=timeout)
+
+    async def channel_list(self, *, namespace=None) -> dict:
+        """POST /channel/list (issue #231)."""
+        return await self._post_json("/channel/list", {}, namespace)
 
     async def aclose(self):
         await self._c.aclose()

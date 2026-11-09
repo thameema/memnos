@@ -150,6 +150,9 @@ def cleanup(conn):
             c.execute("DELETE FROM memnos_control.namespaces WHERE name=%s", (ns,))
             c.execute("DELETE FROM memnos_control.namespace_links WHERE src_ns=%s OR dst_ns=%s", (ns, ns))
             c.execute("DELETE FROM memnos_control.subscriptions WHERE namespace=%s", (ns,))
+            c.execute("DELETE FROM memnos_control.agent_sessions WHERE namespace=%s", (ns,))
+            c.execute("DELETE FROM memnos_control.channel_messages WHERE namespace=%s", (ns,))
+            c.execute("DELETE FROM memnos_control.channel_subscriptions WHERE namespace=%s", (ns,))
             c.execute("DELETE FROM memnos_control.corpus_sources WHERE namespace=%s", (ns,))
             c.execute("DELETE FROM memnos_control.corpus_deviations WHERE namespace=%s", (ns,))
         for p in ("oapi_admin", "oapi_limited", "oapi_tmp"):
@@ -471,6 +474,27 @@ def main():
          expect=404, name="POST /feed (unknown sub)")
     call("POST", "/unsubscribe", token=TADM,
          body={"namespace": NS, "subscription_id": sub["subscription_id"]}, expect=200)
+
+    print("=== data plane: sessions + channels (issue #231) ===")
+    call("POST", "/session/register", token=TADM, body={"namespace": NS, "name": "oapi-a", "role": "dev"}, expect=200)
+    call("POST", "/session/register", token=TADM, body={"namespace": NS, "name": "bad name!"}, expect=400,
+         name="POST /session/register (invalid name)")
+    call("POST", "/session/heartbeat", token=TADM,
+         body={"namespace": NS, "name": "oapi-a", "current_task": "contract"}, expect=200)
+    call("POST", "/session/heartbeat", token=TADM, body={"namespace": NS, "name": "oapi-nobody"}, expect=404,
+         name="POST /session/heartbeat (unknown)")
+    call("POST", "/channel/subscribe", token=TADM,
+         body={"namespace": NS, "session_name": "oapi-a", "channels": ["#review"]}, expect=200)
+    call("POST", "/channel/publish", token=TADM,
+         body={"namespace": NS, "channel": "#review", "sender_session": "oapi-b", "content": "hi"}, expect=200)
+    call("POST", "/channel/poll", token=TADM, body={"namespace": NS, "session_name": "oapi-a"}, expect=200)
+    call("POST", "/channel/wait", token=TADM,
+         body={"namespace": NS, "session_name": "oapi-a", "timeout_seconds": 1}, expect=200)
+    call("POST", "/channel/list", token=TADM, body={"namespace": NS}, expect=200)
+    call("POST", "/session/list", token=TADM, body={"namespace": NS}, expect=200)
+    call("POST", "/channel/unsubscribe", token=TADM,
+         body={"namespace": NS, "session_name": "oapi-a", "channels": ["#review"]}, expect=200)
+    call("POST", "/session/unregister", token=TADM, body={"namespace": NS, "name": "oapi-a"}, expect=200)
 
     print("=== bindings + hosts (user-scoped, issue #20) ===")
     call("GET", "/bindings", expect=401, name="GET /bindings (no token)")

@@ -649,6 +649,65 @@ pull server bindings into the local cache + register THIS host now
 |---|---|
 | `--token` | bearer token (else $MEMNOS_TOKEN / config) |
 
+### `memnos channel ls`
+
+list channels
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+
+### `memnos channel poll`
+
+fetch unread messages
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `--session` | session name (default: $MEMNOS_SESSION) |
+| `--channel` |  |
+| `--peek` | don't advance the cursor |
+
+### `memnos channel pub`
+
+publish a message
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `--session` | session name (default: $MEMNOS_SESSION) |
+| `channel` |  |
+| `message` |  |
+| `--intent` | (one of: `message`, `status`, `task`, `review_request`, `critique`, `question`, `answer`, `handoff`, `done`; default `message`) |
+| `--remember` | also save to long-term memory |
+
+### `memnos channel sub`
+
+subscribe to channels
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `--session` | session name (default: $MEMNOS_SESSION) |
+| `channels` |  |
+| `--from-beginning` |  |
+
+### `memnos channel wait`
+
+block until a message arrives
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `--session` | session name (default: $MEMNOS_SESSION) |
+| `--channel` |  |
+| `--timeout` | (default `60`) |
+
 ### `memnos constraint add`
 
 add a constraint; --enforce ask|block also registers a PreToolUse enforcement rule
@@ -766,6 +825,54 @@ show who currently holds a lease
 | `key` |  |
 | `--namespace` |  |
 | `--token` |  |
+
+### `memnos session heartbeat`
+
+refresh liveness / current task
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `name` | (optional) |
+| `--status` | (default `active`) |
+| `--task` |  |
+
+### `memnos session ls`
+
+who is online, with unread counts
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `--all` | include expired/offline sessions |
+
+### `memnos session register`
+
+register this agent under a name (auto-subscribes @name, #general)
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `name` |  |
+| `--role` | (default ``) |
+| `--harness` | (default ``) |
+| `--model` | (default ``) |
+| `--task` | current task (default ``) |
+| `--channels` | extra channels, comma-separated (default ``) |
+| `--ttl` | (default `1800`) |
+
+### `memnos session unregister`
+
+mark a session offline
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `name` | (optional) |
 
 ### `memnos unbind`
 

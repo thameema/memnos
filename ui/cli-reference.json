@@ -1157,6 +1157,203 @@
     {
      "args": [
       {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "channel ls",
+     "example": null,
+     "help": "list channels"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--channel",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--peek",
+       "help": "don't advance the cursor",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "channel poll",
+     "example": null,
+     "help": "fetch unread messages"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "channel",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "message",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--intent",
+       "choices": [
+        "message",
+        "status",
+        "task",
+        "review_request",
+        "critique",
+        "question",
+        "answer",
+        "handoff",
+        "done"
+       ],
+       "default": "message",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--remember",
+       "help": "also save to long-term memory",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "channel pub",
+     "example": null,
+     "help": "publish a message"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "channels",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--from-beginning",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "channel sub",
+     "example": null,
+     "help": "subscribe to channels"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--channel",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--timeout",
+       "default": "60",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "channel wait",
+     "example": null,
+     "help": "block until a message arrives"
+    },
+    {
+     "args": [
+      {
        "arg": "namespace",
        "help": "namespace this constraint governs",
        "positional": true,
@@ -1457,6 +1654,165 @@
      "command": "lease who-holds",
      "example": null,
      "help": "show who currently holds a lease"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "name",
+       "help": "",
+       "positional": true,
+       "required": false
+      },
+      {
+       "arg": "--status",
+       "default": "active",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--task",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "session heartbeat",
+     "example": null,
+     "help": "refresh liveness / current task"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--all",
+       "help": "include expired/offline sessions",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "session ls",
+     "example": null,
+     "help": "who is online, with unread counts"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "name",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--role",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--harness",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--model",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--task",
+       "default": "",
+       "help": "current task",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--channels",
+       "default": "",
+       "help": "extra channels, comma-separated",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--ttl",
+       "default": "1800",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "session register",
+     "example": null,
+     "help": "register this agent under a name (auto-subscribes @name, #general)"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "name",
+       "help": "",
+       "positional": true,
+       "required": false
+      }
+     ],
+     "command": "session unregister",
+     "example": null,
+     "help": "mark a session offline"
     },
     {
      "args": [
