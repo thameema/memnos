@@ -1447,9 +1447,17 @@ class Handler(BaseHTTPRequestHandler):
                         elif self.path == "/channel/unsubscribe":
                             out = Control.channel_unsubscribe(conn, ns, sess, principal, req.get("channels"))
                         elif self.path == "/channel/poll":
+                            host, cwd = str(req.get("host") or ""), str(req.get("cwd") or "")
+                            if not sess and host and cwd:   # bound by workspace, not by name
+                                sess = Control.resolve_session_for_cwd(conn, ns, host, cwd) or ""
+                            if not sess:
+                                if host and cwd:
+                                    return self._send(200, {"session_name": "", "messages": [], "count": 0})
+                                return self._send(400, {"error": "session_name (or host+cwd) required"})
                             out = Control.channel_poll(conn, ns, sess, principal, channel=req.get("channel") or None,
                                                        peek=bool(req.get("peek", False)),
                                                        limit=int(req.get("limit", 50)))
+                            out["session_name"] = sess
                         elif self.path == "/channel/wait":
                             # LISTEN first, then poll, so a publish between the two is never missed.
                             timeout = max(1.0, min(float(req.get("timeout_seconds", 30)), 120.0))

@@ -1245,6 +1245,17 @@ class Control:
                 "created_at": m["created_at"].isoformat()}
 
     @staticmethod
+    def resolve_session_for_cwd(conn, namespace, host, cwd):
+        """Most recently heartbeating live session registered from this (host, cwd), or None."""
+        with conn.cursor() as c:
+            c.execute("""SELECT name FROM memnos_control.agent_sessions
+                         WHERE namespace=%s AND host=%s AND cwd=%s AND status != 'offline'
+                           AND expires_at > now() ORDER BY last_heartbeat_at DESC LIMIT 1""",
+                      (namespace, host, cwd))
+            row = c.fetchone()
+        return row["name"] if row else None
+
+    @staticmethod
     def channel_poll(conn, namespace, session_name, principal_id, *, channel=None, peek=False, limit=50):
         """Unread messages for a session's subscriptions (own subs only). An explicit `channel`
         the session isn't subscribed to is auto-subscribed from the beginning. peek=True never

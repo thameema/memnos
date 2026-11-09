@@ -320,3 +320,47 @@ def test_13_hook_recall_combines_inbox_and_recalled_memories(monkeypatch, capsys
     assert ctx.index('<memnos:inbox session="claude-dev">') < ctx.index("## Relevant memories (memnos)")
     assert "Fix retry loop" in ctx and "Retry budget is 3 attempts" in ctx
 
+
+
+def test_14_chat_registered_session_binds_inbox_without_env(env, monkeypatch):
+    """Register in chat (no MEMNOS_SESSION anywhere) -> hook recall injects the inbox for this cwd."""
+    import nsresolve
+    home = os.environ.get("SPS_HOME", "/tmp/sps-home")
+    os.makedirs(home, exist_ok=True)
+    monkeypatch.setenv("HOME", home)
+    monkeypatch.delenv("MEMNOS_SESSION", raising=False)
+    monkeypatch.delenv("MEMNOS_CONFIG_DIR", raising=False)
+    nsresolve.clear_active_session(cwd="/tmp")      # stale binding from an earlier run
+    s, _ = call("/session/register", env["tb"], {"namespace": NS, "name": "chat-bound"})
+    assert s == 200
+    call("/channel/publish", env["ta"], {"namespace": NS, "channel": "@chat-bound",
+                                         "sender_session": "gemini-critic", "content": "BOUND-MARKER"})
+    payload = json.dumps({"prompt": "what is next", "session_id": "sps-bound"})
+    assert nsresolve.resolve_active_session(cwd="/tmp") == ""
+    r = _cli(["hook", "recall"], env, stdin=payload)
+    assert "memnos:inbox" not in r.stdout          # unbound: nothing injected
+    nsresolve.save_active_session("@chat-bound", cwd="/tmp", namespace=NS)
+    assert nsresolve.resolve_active_session(cwd="/tmp") == "chat-bound"
+    r = _cli(["hook", "recall"], env, stdin=payload)
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert '<memnos:inbox session="chat-bound">' in ctx and "BOUND-MARKER" in ctx, r.stdout + r.stderr
+    # unregister clears the binding
+    nsresolve.clear_active_session(name="chat-bound", cwd="/tmp")
+    assert nsresolve.resolve_active_session(cwd="/tmp") == ""
+
+
+def test_15_server_resolves_session_by_host_and_cwd(env):
+    s, _ = call("/session/register", env["tb"], {"namespace": NS, "name": "cwd-bound",
+                                                 "host": "h-test", "cwd": "/work/x"})
+    assert s == 200
+    call("/channel/publish", env["ta"], {"namespace": NS, "channel": "@cwd-bound",
+                                         "sender_session": "gemini-critic", "content": "CWD-MARKER"})
+    s, r = call("/channel/poll", env["tb"], {"namespace": NS, "host": "h-test", "cwd": "/work/x"})
+    assert s == 200 and r["session_name"] == "cwd-bound" and r["count"] == 1
+    s, r = call("/channel/poll", env["tb"], {"namespace": NS, "host": "h-test", "cwd": "/work/none"})
+    assert s == 200 and r == {"session_name": "", "messages": [], "count": 0}
+    s, r = call("/channel/poll", env["tb"], {"namespace": NS})
+    assert s == 400
+    call("/session/unregister", env["tb"], {"namespace": NS, "name": "cwd-bound"})
+    s, r = call("/channel/poll", env["tb"], {"namespace": NS, "host": "h-test", "cwd": "/work/x"})
+    assert r["session_name"] == ""      # offline sessions are not resolved

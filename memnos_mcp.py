@@ -897,7 +897,7 @@ _SESSION_DEFAULT = ""   # set by session_register; falls back to $MEMNOS_SESSION
 
 
 def _sess(name=""):
-    n = (name or _SESSION_DEFAULT or os.environ.get("MEMNOS_SESSION", "")).strip()
+    n = (name or _SESSION_DEFAULT or (nsresolve.resolve_active_session(cwd=os.getcwd()) if nsresolve else "")).strip().lstrip("@")
     if not n:
         raise ValueError("no session name — pass one, call session_register first, or set MEMNOS_SESSION")
     return n
@@ -933,6 +933,7 @@ def session_register(name: str, role: str = "", harness: str = "", model: str = 
         "host": os.uname().nodename, "cwd": os.getcwd()}, "session_register")
     if not out.startswith("(memnos"):
         _SESSION_DEFAULT = name.strip().lstrip("@")
+        nsresolve and nsresolve.save_active_session(_SESSION_DEFAULT, cwd=os.getcwd(), namespace=_ns())
     return out
 
 
@@ -959,8 +960,14 @@ def session_list(include_expired: bool = False) -> str:
 @mcp.tool()
 def session_unregister(name: str = "") -> str:
     """Mark this session offline (call when you finish)."""
+    global _SESSION_DEFAULT
     try:
-        return _chan_call("/session/unregister", {"name": _sess(name)}, "session_unregister")
+        target = _sess(name)
+        out = _chan_call("/session/unregister", {"name": target}, "session_unregister")
+        if not out.startswith("(memnos"):
+            _SESSION_DEFAULT = ""
+            nsresolve and nsresolve.clear_active_session(name=target, cwd=os.getcwd())
+        return out
     except ValueError as e:
         return f"(memnos session_unregister: {e})"
 

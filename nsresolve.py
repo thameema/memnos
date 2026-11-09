@@ -27,6 +27,8 @@ import os
 import re
 import socket
 import subprocess
+import tempfile
+import time
 
 _DIR = os.path.join(os.path.expanduser("~"), ".memnos")
 _OVR = os.path.join(_DIR, "ns_overrides.json")
@@ -260,3 +262,48 @@ def set_override(namespace, cwd=None):
     with open(_OVR, "w") as f:
         json.dump(m, f, indent=2)
     return action
+
+
+# --- active named-session binding per workspace (issue #231) --------------------------
+def _active_path():
+    # resolved per call (not import time) so MEMNOS_CONFIG_DIR / HOME overrides apply
+    return os.path.join(os.environ.get("MEMNOS_CONFIG_DIR") or os.path.expanduser("~/.memnos"),
+                        "active_sessions.json")
+
+
+def _write_active(m):
+    p = _active_path()
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        json.dump(m, f, indent=2)
+    os.replace(tmp, p)
+
+
+def save_active_session(name, cwd=None, namespace=None):
+    """Bind a session name to this workspace so hooks/MCP/CLI find it without $MEMNOS_SESSION.
+    shortcut: read-modify-write without a lock, last writer wins; fine for a per-user file."""
+    m = _load(_active_path()) or {}
+    m[os.path.realpath(cwd or os.getcwd())] = {"name": name.strip().lstrip("@"),
+                                               "namespace": namespace or "", "updated_at": time.time()}
+    _write_active(m)
+
+
+def clear_active_session(name=None, cwd=None):
+    """Drop the binding for this cwd (and/or any binding with this name)."""
+    m = _load(_active_path()) or {}
+    key = os.path.realpath(cwd or os.getcwd())
+    name = (name or "").strip().lstrip("@")
+    keep = {k: v for k, v in m.items()
+            if not ((k == key and (not name or v.get("name") == name)) or (name and not cwd and v.get("name") == name))}
+    if keep != m:
+        _write_active(keep)
+
+
+def resolve_active_session(cwd=None, data=None):
+    """$MEMNOS_SESSION, else the name bound to this cwd (hook payload cwd wins), else ''."""
+    env = os.environ.get("MEMNOS_SESSION", "").strip().lstrip("@")
+    if env:
+        return env
+    key = os.path.realpath((data or {}).get("cwd") or cwd or os.getcwd())
+    return ((_load(_active_path()) or {}).get(key) or {}).get("name", "")
