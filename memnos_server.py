@@ -1483,14 +1483,16 @@ class Handler(BaseHTTPRequestHandler):
                             try:
                                 while True:
                                     out = Control.channel_poll(conn, ns, sess, principal, **kw)
+                                    out["inbox_items"] = Control.inbox_list(
+                                        conn, ns, sess, principal, status="pending", mark_read=True)["items"]
                                     left = deadline - time.monotonic()
-                                    if out["count"] or left <= 0:
+                                    if out["count"] or out["inbox_items"] or left <= 0:
                                         break
                                     for _ in conn.notifies(timeout=min(left, 5.0), stop_after=1):
                                         pass
                             finally:
                                 conn.execute("UNLISTEN memnos_channel")
-                            out["timed_out"] = out["count"] == 0
+                            out["timed_out"] = (out["count"] == 0 and not out["inbox_items"])
                         elif self.path == "/channel/list":
                             out = {"channels": Control.channel_list(conn, ns),
                                    "active_sessions": Control.session_list(conn, ns),
