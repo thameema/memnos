@@ -362,12 +362,42 @@ CREATE TABLE IF NOT EXISTS memnos_control.channel_messages(
     intent         text NOT NULL DEFAULT 'message',
     content        text NOT NULL,
     metadata       jsonb NOT NULL DEFAULT '{}'::jsonb,
-    created_at     timestamptz NOT NULL DEFAULT now()
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    recalled_at    timestamptz,
+    recall_reason  text NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS channel_messages_ns_ch_id
     ON memnos_control.channel_messages(namespace, channel, id);
 CREATE INDEX IF NOT EXISTS channel_messages_ns_id
     ON memnos_control.channel_messages(namespace, id);
+-- Email-style per-agent inbox queue (issue #231): fire-and-forget send, in-queue replace,
+-- recall, read/act lifecycle.
+CREATE TABLE IF NOT EXISTS memnos_control.agent_inbox (
+    id                BIGSERIAL PRIMARY KEY,
+    namespace         TEXT NOT NULL,
+    to_session        TEXT NOT NULL,
+    from_session      TEXT NOT NULL,
+    principal_id      BIGINT NOT NULL REFERENCES memnos_control.principals(id),
+    subject           TEXT NOT NULL DEFAULT '',
+    content           TEXT NOT NULL,
+    intent            TEXT NOT NULL DEFAULT 'task',
+    priority          TEXT NOT NULL DEFAULT 'normal',
+    status            TEXT NOT NULL DEFAULT 'pending',
+    thread_key        TEXT NOT NULL DEFAULT '',
+    replaces_id       BIGINT REFERENCES memnos_control.agent_inbox(id),
+    superseded_by_id  BIGINT REFERENCES memnos_control.agent_inbox(id),
+    in_reply_to       BIGINT REFERENCES memnos_control.agent_inbox(id),
+    resolution        TEXT NOT NULL DEFAULT '',
+    recall_reason     TEXT NOT NULL DEFAULT '',
+    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    read_at           TIMESTAMPTZ,
+    acted_at          TIMESTAMPTZ,
+    recalled_at       TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS agent_inbox_ns_to_status_idx
+    ON memnos_control.agent_inbox(namespace, to_session, status, id);
 CREATE TABLE IF NOT EXISTS memnos_control.channel_subscriptions(
     id             bigserial PRIMARY KEY,
     namespace      text NOT NULL,
@@ -473,6 +503,9 @@ class Control:
     def init(conn):
         with conn.cursor() as c:
             c.execute(CONTROL_DDL)               # DDL failures must still crash boot
+            c.execute("""ALTER TABLE memnos_control.channel_messages
+                         ADD COLUMN IF NOT EXISTS recalled_at TIMESTAMPTZ,
+                         ADD COLUMN IF NOT EXISTS recall_reason TEXT NOT NULL DEFAULT ''""")
             if Control._namespace_registry_needs_backfill(c):
                 # This wraps the WHOLE backfill call -- the paginated scan across both
                 # tables plus the final marker-row INSERT -- not just the marker row.
@@ -1070,7 +1103,8 @@ class Control:
         OR (s.channel = '*' AND (m.channel NOT LIKE '@%%' OR m.channel = '@' || s.session_name))
         OR (s.channel <> '*' AND right(s.channel, 1) = '*'
             AND starts_with(m.channel, left(s.channel, length(s.channel) - 1))))
-        AND (m.sender_session <> s.session_name OR m.channel = '@' || s.session_name)"""
+        AND (m.sender_session <> s.session_name OR m.channel = '@' || s.session_name)
+        AND m.recalled_at IS NULL"""
 
     @staticmethod
     def _slug(name, what="name"):
@@ -1474,6 +1508,192 @@ class Control:
             r["what_you_get"] = r["what_you_get"] or w
             r["intents"] = r["intents"] or i
             out.append(r)
+        return out
+
+    # --- email-style agent inbox queue (issue #231) ---------------------------
+
+    _PRIORITIES = ("urgent", "high", "normal", "low")
+    _INBOX_LIVE = ("pending", "read", "in_progress")
+
+    @staticmethod
+    def _inbox_foreign(c, namespace, to_s, principal_id):
+        """True if a live session named to_s is registered to a DIFFERENT principal."""
+        c.execute("""SELECT principal_id FROM memnos_control.agent_sessions
+                     WHERE namespace=%s AND name=%s AND status <> 'offline' AND expires_at > now()""",
+                  (namespace, to_s))
+        row = c.fetchone()
+        return bool(row) and row["principal_id"] != principal_id
+
+    @staticmethod
+    def inbox_send(conn, namespace, to_session, from_session, principal_id, content, *,
+                   subject="", intent="task", priority="normal", thread_key="", replaces_id=None,
+                   replace_pending=False, in_reply_to=None, metadata=None):
+        """Fire-and-forget enqueue into @to_session's inbox. replaces_id / (thread_key +
+        replace_pending) supersede the caller's own not-yet-acted prior items."""
+        from psycopg.types.json import Jsonb
+        to_s = Control._slug(to_session, "to_session")
+        from_s = Control._slug(from_session, "from_session")
+        content = str(content or "")
+        if not 1 <= len(content) <= 32000:
+            raise ValueError("content must be 1..32000 chars")
+        if intent not in Control.INTENTS:
+            raise ValueError(f"intent must be one of {', '.join(Control.INTENTS)}")
+        if priority not in Control._PRIORITIES:
+            raise ValueError(f"priority must be one of {', '.join(Control._PRIORITIES)}")
+        thread_key = str(thread_key or "")
+        with conn.cursor() as c:
+            c.execute("""
+                INSERT INTO memnos_control.agent_inbox(namespace,to_session,from_session,principal_id,
+                    subject,content,intent,priority,thread_key,replaces_id,in_reply_to,metadata)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *
+            """, (namespace, to_s, from_s, principal_id, str(subject or ""), content, intent, priority,
+                  thread_key, replaces_id, in_reply_to, Jsonb(metadata or {})))
+            item = c.fetchone()
+            conds, args = [], []
+            if replaces_id is not None:
+                conds.append("id=%s")
+                args.append(replaces_id)
+            if thread_key and replace_pending:
+                conds.append("(thread_key=%s AND to_session=%s)")
+                args += [thread_key, to_s]
+            superseded = []
+            if conds:
+                c.execute(f"""UPDATE memnos_control.agent_inbox
+                              SET status='superseded', superseded_by_id=%s, updated_at=now()
+                              WHERE namespace=%s AND from_session=%s AND principal_id=%s
+                                AND status IN ('pending','read','in_progress') AND id <> %s
+                                AND ({' OR '.join(conds)}) RETURNING id""",
+                          [item["id"], namespace, from_s, principal_id, item["id"]] + args)
+                superseded = sorted(r["id"] for r in c.fetchall())
+            c.execute("SELECT pg_notify('memnos_channel', %s)",
+                      (json.dumps({"namespace": namespace, "channel": f"@{to_s}", "inbox_id": item["id"]}),))
+            c.execute("SELECT name FROM memnos_control.principals WHERE id=%s", (principal_id,))
+            author = (c.fetchone() or {}).get("name")
+        out = Control._iso(item)
+        out["author"] = author
+        out["superseded_ids"] = superseded
+        return out
+
+    @staticmethod
+    def inbox_recall(conn, namespace, principal_id, *, message_id=None, channel_message_id=None,
+                     thread_key="", from_session="", reason=""):
+        """Sender-side recall of an inbox item (by id, or thread_key + from_session) and/or a
+        pub/sub channel message. Already-acted items cannot be recalled."""
+        thread_key = str(thread_key or "")
+        if message_id is None and channel_message_id is None and not thread_key:
+            raise ValueError("message_id, channel_message_id or thread_key required")
+        reason = str(reason or "")
+        out = {}
+        with conn.cursor() as c:
+            if message_id is not None or thread_key:
+                if message_id is not None:
+                    where, args = "id=%s", [message_id]
+                else:
+                    where, args = "thread_key=%s AND from_session=%s", [
+                        thread_key, Control._slug(from_session, "from_session")]
+                c.execute(f"""SELECT * FROM memnos_control.agent_inbox
+                              WHERE namespace=%s AND principal_id=%s AND {where} ORDER BY id""",
+                          [namespace, principal_id] + args)
+                rows = c.fetchall()
+                if not rows:
+                    raise ValueError("inbox message not found or not owned by caller")
+                acted = [r for r in rows if r["status"] == "acted"]
+                if message_id is not None and acted:
+                    out = {"recalled": False, "already_acted": True, "item": Control._iso(acted[0])}
+                else:
+                    c.execute("""UPDATE memnos_control.agent_inbox
+                                 SET status='recalled', recalled_at=now(), recall_reason=%s, updated_at=now()
+                                 WHERE id = ANY(%s) AND status IN ('pending','read','in_progress')
+                                 RETURNING *""", (reason, [r["id"] for r in rows]))
+                    done = sorted(c.fetchall(), key=lambda r: r["id"])
+                    out = {"recalled": bool(done), "already_acted": bool(acted) and not done}
+                    if message_id is not None:
+                        out["item"] = Control._iso(done[0] if done else rows[0])
+                    else:
+                        out["recalled_ids"] = [r["id"] for r in done]
+            if channel_message_id is not None:
+                c.execute("""UPDATE memnos_control.channel_messages SET recalled_at=now(), recall_reason=%s
+                             WHERE id=%s AND namespace=%s AND principal_id=%s RETURNING id""",
+                          (reason, channel_message_id, namespace, principal_id))
+                ok = bool(c.fetchone())
+                if out:
+                    out["channel_message_id"], out["channel_recalled"] = int(channel_message_id), ok
+                else:
+                    out = {"recalled": ok, "channel_message_id": int(channel_message_id)}
+        return out
+
+    @staticmethod
+    def inbox_list(conn, namespace, to_session, principal_id, *, status="active", priority=None,
+                   include_recalled=False, mark_read=False, limit=50):
+        to_s = Control._slug(to_session, "to_session")
+        empty = {"to_session": to_s, "items": [], "count": 0}
+        limit = max(1, min(int(limit), 500))
+        live = list(Control._INBOX_LIVE)
+        if status == "active":
+            cond, sargs = "i.status = ANY(%s)", [live]
+        elif status == "all":
+            cond, sargs = ("TRUE", []) if include_recalled else ("i.status NOT IN ('recalled','superseded')", [])
+        elif status in live + ["acted", "recalled", "superseded"]:
+            cond, sargs = "i.status = %s", [status]
+        else:
+            raise ValueError("status must be active|pending|read|in_progress|acted|recalled|superseded|all")
+        if priority is not None and priority not in Control._PRIORITIES:
+            raise ValueError(f"priority must be one of {', '.join(Control._PRIORITIES)}")
+        with conn.cursor() as c:
+            if Control._inbox_foreign(c, namespace, to_s, principal_id):
+                return empty
+            c.execute(f"""
+                SELECT i.*, p.name AS author FROM memnos_control.agent_inbox i
+                LEFT JOIN memnos_control.principals p ON p.id = i.principal_id
+                WHERE i.namespace=%s AND i.to_session=%s AND {cond}
+                  {"AND i.priority=%s" if priority else ""}
+                ORDER BY CASE i.priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END,
+                         i.id ASC LIMIT %s
+            """, [namespace, to_s] + sargs + ([priority] if priority else []) + [limit])
+            rows = c.fetchall()
+            if mark_read:
+                ids = [r["id"] for r in rows if r["status"] == "pending"]
+                if ids:
+                    c.execute("""UPDATE memnos_control.agent_inbox
+                                 SET status='read', read_at=now(), updated_at=now()
+                                 WHERE id = ANY(%s) AND status='pending'""", (ids,))
+                    for r in rows:
+                        if r["id"] in ids:
+                            r["status"] = "read"
+        items = [Control._iso(r) for r in rows]
+        return {"to_session": to_s, "items": items, "count": len(items)}
+
+    @staticmethod
+    def inbox_act(conn, namespace, to_session, principal_id, message_id, *, action="acted",
+                  resolution="", reply=""):
+        to_s = Control._slug(to_session, "to_session")
+        action = "acted" if action == "done" else action
+        if action not in ("read", "in_progress", "acted"):
+            raise ValueError("action must be read|in_progress|acted|done")
+        with conn.cursor() as c:
+            if Control._inbox_foreign(c, namespace, to_s, principal_id):
+                raise ValueError("inbox message not found")
+            c.execute("""SELECT * FROM memnos_control.agent_inbox
+                         WHERE id=%s AND namespace=%s AND to_session=%s""", (message_id, namespace, to_s))
+            row = c.fetchone()
+            if not row:
+                raise ValueError("inbox message not found")
+            if row["status"] in ("recalled", "superseded"):
+                return {"ok": False, "cancelled": True, "status": row["status"],
+                        "recall_reason": row["recall_reason"], "superseded_by_id": row["superseded_by_id"],
+                        "item": Control._iso(row)}
+            c.execute("""UPDATE memnos_control.agent_inbox
+                         SET status=%s, resolution=%s, read_at=COALESCE(read_at, now()),
+                             acted_at=CASE WHEN %s = 'acted' THEN now() ELSE acted_at END, updated_at=now()
+                         WHERE id=%s RETURNING *""",
+                      (action, resolution or row["resolution"], action, row["id"]))
+            updated = c.fetchone()
+        out = {"ok": True, "cancelled": False, "item": Control._iso(updated)}
+        if reply:
+            out["reply_item"] = Control.inbox_send(
+                conn, namespace, row["from_session"], to_s, principal_id, reply,
+                subject=(f"Re: {row['subject']}" if row["subject"] else ""), intent="answer",
+                thread_key=row["thread_key"], in_reply_to=row["id"])
         return out
 
     @staticmethod

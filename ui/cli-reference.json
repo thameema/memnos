@@ -1554,6 +1554,257 @@
     {
      "args": [
       {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "id",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--action",
+       "choices": [
+        "read",
+        "in_progress",
+        "acted",
+        "done"
+       ],
+       "default": "acted",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--resolution",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--reply",
+       "default": "",
+       "help": "auto-reply to the sender in-thread",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "inbox act",
+     "example": null,
+     "help": "mark an inbox item read / in_progress / done"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--status",
+       "default": "active",
+       "help": "active|pending|read|in_progress|acted|recalled|superseded|all",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--include-recalled",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--mark-read",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "inbox ls",
+     "example": null,
+     "help": "list this session's inbox"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "id",
+       "help": "inbox message id",
+       "positional": true,
+       "required": false
+      },
+      {
+       "arg": "--channel-message-id",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--thread-key",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--reason",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "inbox recall",
+     "example": null,
+     "help": "cancel something you sent before it is acted on"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "to",
+       "help": "recipient session name",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "message",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--subject",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--intent",
+       "choices": [
+        "message",
+        "status",
+        "task",
+        "review_request",
+        "critique",
+        "question",
+        "answer",
+        "handoff",
+        "done"
+       ],
+       "default": "task",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--priority",
+       "choices": [
+        "urgent",
+        "high",
+        "normal",
+        "low"
+       ],
+       "default": "normal",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--thread-key",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--replaces-id",
+       "help": "supersede your earlier unacted item",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--replace-pending",
+       "help": "with --thread-key: supersede all your unacted items in that thread to the recipient",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "inbox send",
+     "example": null,
+     "help": "queue a message in another session's inbox"
+    },
+    {
+     "args": [
+      {
        "arg": "key",
        "help": "work item key, e.g. 'ticket:PROJ-543' or 'mr:!51'",
        "positional": true,

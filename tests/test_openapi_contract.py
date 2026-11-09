@@ -150,6 +150,7 @@ def cleanup(conn):
             c.execute("DELETE FROM memnos_control.namespaces WHERE name=%s", (ns,))
             c.execute("DELETE FROM memnos_control.namespace_links WHERE src_ns=%s OR dst_ns=%s", (ns, ns))
             c.execute("DELETE FROM memnos_control.subscriptions WHERE namespace=%s", (ns,))
+            c.execute("DELETE FROM memnos_control.agent_inbox WHERE namespace=%s", (ns,))
             c.execute("DELETE FROM memnos_control.agent_sessions WHERE namespace=%s", (ns,))
             c.execute("DELETE FROM memnos_control.channel_messages WHERE namespace=%s", (ns,))
             c.execute("DELETE FROM memnos_control.channel_catalog WHERE namespace=%s", (ns,))
@@ -494,6 +495,16 @@ def main():
     call("POST", "/channel/advertise", token=TADM,
          body={"namespace": NS, "channel": "#oapi", "description": "d", "intents": ["task"]}, expect=200)
     call("POST", "/channel/list", token=TADM, body={"namespace": NS}, expect=200)
+    st, ib = call("POST", "/inbox/send", token=TADM,
+                  body={"namespace": NS, "to_session": "oapi-a", "sender_session": "oapi-b",
+                        "content": "do it", "priority": "high", "thread_key": "t1"}, expect=200)
+    call("POST", "/inbox/list", token=TADM, body={"namespace": NS, "to_session": "oapi-a"}, expect=200)
+    call("POST", "/inbox/act", token=TADM,
+         body={"namespace": NS, "to_session": "oapi-a", "message_id": ib["id"], "action": "read"}, expect=200)
+    call("POST", "/inbox/recall", token=TADM,
+         body={"namespace": NS, "sender_session": "oapi-b", "message_id": ib["id"], "reason": "x"}, expect=200)
+    call("POST", "/inbox/recall", token=TADM, body={"namespace": NS, "sender_session": "oapi-b"}, expect=400,
+         name="POST /inbox/recall (nothing to recall)")
     call("POST", "/session/list", token=TADM, body={"namespace": NS}, expect=200)
     call("POST", "/channel/unsubscribe", token=TADM,
          body={"namespace": NS, "session_name": "oapi-a", "channels": ["#review"]}, expect=200)

@@ -1053,6 +1053,67 @@ def channel_list() -> str:
 
 
 @mcp.tool()
+def inbox_send(to_session: str, content: str, subject: str = "", intent: str = "task",
+               priority: str = "normal", thread_key: str = "", replaces_id: int = 0,
+               replace_pending: bool = False, sender_session: str = "") -> str:
+    """Fire-and-forget: queue a message in @to_session's inbox (no waiting). priority:
+    urgent|high|normal|low. replaces_id (or thread_key + replace_pending=true) supersedes your own
+    not-yet-acted earlier item so the recipient only sees the latest."""
+    try:
+        body = {"to_session": to_session, "content": content, "subject": subject, "intent": intent,
+                "priority": priority, "thread_key": thread_key, "replace_pending": replace_pending,
+                "sender_session": _sess(sender_session)}
+        if replaces_id:
+            body["replaces_id"] = replaces_id
+        return _chan_call("/inbox/send", body, "inbox_send")
+    except ValueError as e:
+        return f"(memnos inbox_send: {e})"
+
+
+@mcp.tool()
+def inbox_recall(message_id: int = 0, channel_message_id: int = 0, thread_key: str = "",
+                 reason: str = "", sender_session: str = "") -> str:
+    """Cancel something you sent before the recipient acts on it: an inbox item (message_id, or
+    thread_key) and/or a channel post (channel_message_id). Acted items can't be recalled."""
+    try:
+        body = {"thread_key": thread_key, "reason": reason, "sender_session": _sess(sender_session)}
+        if message_id:
+            body["message_id"] = message_id
+        if channel_message_id:
+            body["channel_message_id"] = channel_message_id
+        return _chan_call("/inbox/recall", body, "inbox_recall")
+    except ValueError as e:
+        return f"(memnos inbox_recall: {e})"
+
+
+@mcp.tool()
+def inbox_list(status: str = "active", priority: str = "", mark_read: bool = False,
+               include_recalled: bool = False, limit: int = 50, session_name: str = "") -> str:
+    """List this session's inbox, urgent first. status: active|pending|read|in_progress|acted|
+    recalled|superseded|all."""
+    try:
+        return _chan_call("/inbox/list", {"to_session": _sess(session_name), "status": status,
+                                          "priority": priority, "mark_read": mark_read,
+                                          "include_recalled": include_recalled, "limit": limit},
+                          "inbox_list")
+    except ValueError as e:
+        return f"(memnos inbox_list: {e})"
+
+
+@mcp.tool()
+def inbox_act(message_id: int, action: str = "acted", resolution: str = "", reply: str = "",
+              session_name: str = "") -> str:
+    """Mark an inbox item read|in_progress|acted (alias done). If the result has cancelled=true the
+    sender recalled/replaced it - don't act on it. reply auto-answers the sender in-thread."""
+    try:
+        return _chan_call("/inbox/act", {"to_session": _sess(session_name), "message_id": message_id,
+                                         "action": action, "resolution": resolution, "reply": reply},
+                          "inbox_act")
+    except ValueError as e:
+        return f"(memnos inbox_act: {e})"
+
+
+@mcp.tool()
 def channel_advertise(channel: str, description: str, what_you_get: str = "",
                       intents: list[str] | None = None, owner_session: str = "") -> str:
     """Advertise a channel so peers know what it is for and what subscribers receive."""

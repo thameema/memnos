@@ -187,6 +187,32 @@ class MemnosClient:
         """POST /channel/advertise (issue #231)."""
         return self._post_json("/channel/advertise", {"channel": channel, "description": description, "what_you_get": what_you_get, "intents": intents or [], "owner_session": owner_session}, namespace)
 
+    def inbox_send(self, to_session, content, *, sender_session, subject='', intent='task', priority='normal', thread_key='', replaces_id=None, replace_pending=False, in_reply_to=None, metadata=None, namespace=None) -> dict:
+        """POST /inbox/send (issue #231)."""
+        body = {"to_session": to_session, "content": content, "sender_session": sender_session, "subject": subject, "intent": intent, "priority": priority, "thread_key": thread_key, "replace_pending": replace_pending, "metadata": metadata or {}}
+        if replaces_id is not None:
+            body["replaces_id"] = replaces_id
+        if in_reply_to is not None:
+            body["in_reply_to"] = in_reply_to
+        return self._post_json("/inbox/send", body, namespace)
+
+    def inbox_recall(self, *, sender_session='', message_id=None, channel_message_id=None, thread_key='', reason='', namespace=None) -> dict:
+        """POST /inbox/recall (issue #231)."""
+        body = {"sender_session": sender_session, "thread_key": thread_key, "reason": reason}
+        if message_id is not None:
+            body["message_id"] = message_id
+        if channel_message_id is not None:
+            body["channel_message_id"] = channel_message_id
+        return self._post_json("/inbox/recall", body, namespace)
+
+    def inbox_list(self, session_name, *, status='active', priority=None, include_recalled=False, mark_read=False, limit=50, namespace=None) -> dict:
+        """POST /inbox/list (issue #231)."""
+        return self._post_json("/inbox/list", {"to_session": session_name, "status": status, "priority": priority or "", "include_recalled": include_recalled, "mark_read": mark_read, "limit": limit}, namespace)
+
+    def inbox_act(self, session_name, message_id, *, action='acted', resolution='', reply='', namespace=None) -> dict:
+        """POST /inbox/act (issue #231)."""
+        return self._post_json("/inbox/act", {"to_session": session_name, "message_id": message_id, "action": action, "resolution": resolution, "reply": reply}, namespace)
+
     def close(self):
         self._c.close()
 
@@ -297,6 +323,32 @@ class AsyncMemnosClient:
     async def channel_advertise(self, channel, description, *, what_you_get='', intents=None, owner_session='', namespace=None) -> dict:
         """POST /channel/advertise (issue #231)."""
         return await self._post_json("/channel/advertise", {"channel": channel, "description": description, "what_you_get": what_you_get, "intents": intents or [], "owner_session": owner_session}, namespace)
+
+    async def inbox_send(self, to_session, content, *, sender_session, subject='', intent='task', priority='normal', thread_key='', replaces_id=None, replace_pending=False, in_reply_to=None, metadata=None, namespace=None) -> dict:
+        """POST /inbox/send (issue #231)."""
+        body = {"to_session": to_session, "content": content, "sender_session": sender_session, "subject": subject, "intent": intent, "priority": priority, "thread_key": thread_key, "replace_pending": replace_pending, "metadata": metadata or {}}
+        if replaces_id is not None:
+            body["replaces_id"] = replaces_id
+        if in_reply_to is not None:
+            body["in_reply_to"] = in_reply_to
+        return await self._post_json("/inbox/send", body, namespace)
+
+    async def inbox_recall(self, *, sender_session='', message_id=None, channel_message_id=None, thread_key='', reason='', namespace=None) -> dict:
+        """POST /inbox/recall (issue #231)."""
+        body = {"sender_session": sender_session, "thread_key": thread_key, "reason": reason}
+        if message_id is not None:
+            body["message_id"] = message_id
+        if channel_message_id is not None:
+            body["channel_message_id"] = channel_message_id
+        return await self._post_json("/inbox/recall", body, namespace)
+
+    async def inbox_list(self, session_name, *, status='active', priority=None, include_recalled=False, mark_read=False, limit=50, namespace=None) -> dict:
+        """POST /inbox/list (issue #231)."""
+        return await self._post_json("/inbox/list", {"to_session": session_name, "status": status, "priority": priority or "", "include_recalled": include_recalled, "mark_read": mark_read, "limit": limit}, namespace)
+
+    async def inbox_act(self, session_name, message_id, *, action='acted', resolution='', reply='', namespace=None) -> dict:
+        """POST /inbox/act (issue #231)."""
+        return await self._post_json("/inbox/act", {"to_session": session_name, "message_id": message_id, "action": action, "resolution": resolution, "reply": reply}, namespace)
 
     async def aclose(self):
         await self._c.aclose()

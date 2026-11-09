@@ -786,6 +786,65 @@ list this principal's machines, or `hosts rename <name>` for THIS one
 | `name` | rename: the friendly name (optional) |
 | `--token` | bearer token (else $MEMNOS_TOKEN / config) |
 
+### `memnos inbox act`
+
+mark an inbox item read / in_progress / done
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `--session` | session name (default: $MEMNOS_SESSION) |
+| `id` |  |
+| `--action` | (one of: `read`, `in_progress`, `acted`, `done`; default `acted`) |
+| `--resolution` | (default ``) |
+| `--reply` | auto-reply to the sender in-thread (default ``) |
+
+### `memnos inbox ls`
+
+list this session's inbox
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `--session` | session name (default: $MEMNOS_SESSION) |
+| `--status` | active|pending|read|in_progress|acted|recalled|superseded|all (default `active`) |
+| `--include-recalled` |  |
+| `--mark-read` |  |
+
+### `memnos inbox recall`
+
+cancel something you sent before it is acted on
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `--session` | session name (default: $MEMNOS_SESSION) |
+| `id` | inbox message id (optional) |
+| `--channel-message-id` |  |
+| `--thread-key` | (default ``) |
+| `--reason` | (default ``) |
+
+### `memnos inbox send`
+
+queue a message in another session's inbox
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `--session` | session name (default: $MEMNOS_SESSION) |
+| `to` | recipient session name |
+| `message` |  |
+| `--subject` | (default ``) |
+| `--intent` | (one of: `message`, `status`, `task`, `review_request`, `critique`, `question`, `answer`, `handoff`, `done`; default `task`) |
+| `--priority` | (one of: `urgent`, `high`, `normal`, `low`; default `normal`) |
+| `--thread-key` | (default ``) |
+| `--replaces-id` | supersede your earlier unacted item |
+| `--replace-pending` | with --thread-key: supersede all your unacted items in that thread to the recipient |
+
 ### `memnos lease acquire`
 
 atomically claim a work item; returns granted or denied+who-holds

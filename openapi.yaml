@@ -963,6 +963,86 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/DbDown" }
+  /inbox/send:
+    post:
+      tags: [pubsub]
+      summary: Fire-and-forget enqueue into a session's email-style inbox; replaces_id / thread_key+replace_pending supersede the sender's own unacted items
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InboxSendRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InboxItem" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /inbox/recall:
+    post:
+      tags: [pubsub]
+      summary: Sender recalls an unacted inbox item (message_id or thread_key) and/or a channel message (channel_message_id)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InboxRecallRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InboxRecallResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /inbox/list:
+    post:
+      tags: [pubsub]
+      summary: List a session's inbox (priority-ordered; hides recalled/superseded unless asked)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InboxListRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InboxListResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /inbox/act:
+    post:
+      tags: [pubsub]
+      summary: Recipient marks an item read|in_progress|acted|done, optionally auto-replying; recalled/superseded items return cancelled=true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InboxActRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InboxActResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
   /channel/poll:
     post:
       tags: [pubsub]
@@ -1679,9 +1759,9 @@ paths:
                       properties:
                         write_ns: { type: string }
                         suggested_ns: { type: string }
-                        reason: { type: string, nullable: true }
+                        reason: { type: [string, "null"] }
                         hits: { type: integer }
-                        last_turn_id: { type: integer, nullable: true }
+                        last_turn_id: { type: [integer, "null"] }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
 
@@ -2290,6 +2370,106 @@ components:
       properties:
         session_name: { type: string }
         unsubscribed: { type: integer }
+    InboxItem:
+      type: object
+      required: [id, to_session, from_session, status, priority, content]
+      properties:
+        id: { type: integer }
+        namespace: { type: string }
+        to_session: { type: string }
+        from_session: { type: string }
+        author: { type: [string, "null"] }
+        subject: { type: string }
+        content: { type: string }
+        intent: { type: string }
+        priority: { type: string, enum: [urgent, high, normal, low] }
+        status: { type: string, enum: [pending, read, in_progress, acted, recalled, superseded] }
+        thread_key: { type: string }
+        replaces_id: { type: [integer, "null"] }
+        superseded_by_id: { type: [integer, "null"] }
+        in_reply_to: { type: [integer, "null"] }
+        resolution: { type: string }
+        recall_reason: { type: string }
+        superseded_ids: { type: array, items: { type: integer }, description: "/inbox/send only" }
+    InboxSendRequest:
+      type: object
+      required: [namespace, to_session, sender_session, content]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        to_session: { type: string }
+        sender_session: { type: string }
+        content: { type: string, maxLength: 32000 }
+        subject: { type: string }
+        intent: { type: string }
+        priority: { type: string, enum: [urgent, high, normal, low] }
+        thread_key: { type: string }
+        replaces_id: { type: integer }
+        replace_pending: { type: boolean }
+        in_reply_to: { type: integer }
+        metadata: { type: object }
+    InboxRecallRequest:
+      type: object
+      required: [namespace]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        message_id: { type: integer }
+        channel_message_id: { type: integer }
+        thread_key: { type: string }
+        sender_session: { type: string, description: "required with thread_key" }
+        reason: { type: string }
+    InboxRecallResponse:
+      type: object
+      required: [recalled]
+      properties:
+        recalled: { type: boolean }
+        already_acted: { type: boolean }
+        item: { $ref: "#/components/schemas/InboxItem" }
+        recalled_ids: { type: array, items: { type: integer } }
+        channel_message_id: { type: integer }
+        channel_recalled: { type: boolean }
+    InboxListRequest:
+      type: object
+      required: [namespace]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        to_session: { type: string, description: "omit with host+cwd to resolve from the workspace" }
+        host: { type: string }
+        cwd: { type: string }
+        status: { type: string, description: "active (default) | pending | read | in_progress | acted | recalled | superseded | all" }
+        priority: { type: string, enum: [urgent, high, normal, low] }
+        include_recalled: { type: boolean }
+        mark_read: { type: boolean }
+        limit: { type: integer }
+    InboxListResponse:
+      type: object
+      required: [to_session, items, count]
+      properties:
+        to_session: { type: string }
+        items: { type: array, items: { $ref: "#/components/schemas/InboxItem" } }
+        count: { type: integer }
+    InboxActRequest:
+      type: object
+      required: [namespace, message_id]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        to_session: { type: string }
+        host: { type: string }
+        cwd: { type: string }
+        message_id: { type: integer }
+        action: { type: string, enum: [read, in_progress, acted, done] }
+        resolution: { type: string }
+        reply: { type: string, description: "auto-sent back to the original sender as an answer in the same thread" }
+    InboxActResponse:
+      type: object
+      required: [ok, cancelled, item]
+      properties:
+        ok: { type: boolean }
+        cancelled: { type: boolean, description: "true when the item was recalled/superseded - do not act on it" }
+        status: { type: string }
+        recall_reason: { type: string }
+        superseded_by_id: { type: [integer, "null"] }
+        item: { $ref: "#/components/schemas/InboxItem" }
+        reply_item: { $ref: "#/components/schemas/InboxItem" }
     ChannelPollResponse:
       type: object
       required: [session_name, messages, count]
@@ -2297,6 +2477,7 @@ components:
         session_name: { type: string }
         messages: { type: array, items: { $ref: "#/components/schemas/ChannelMessage" } }
         count: { type: integer }
+        inbox_items: { type: array, items: { $ref: "#/components/schemas/InboxItem" }, description: "pending agent-inbox items (marked read unless peek)" }
     ChannelWaitResponse:
       type: object
       required: [session_name, messages, count, timed_out]
@@ -2667,7 +2848,7 @@ components:
               id: { type: integer }
               content: { type: string }
               observed_at: { type: string }
-              author: { type: string, nullable: true }
+              author: { type: [string, "null"] }
               memory_type: { type: string }
     ContradictionsResponse:
       type: object

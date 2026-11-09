@@ -125,7 +125,8 @@ WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/c
              "/corpus/deviation", "/ingest/file", "/episode/segment", "/episode/decay",
              "/namespace/copy", "/lease/acquire", "/lease/heartbeat", "/lease/release",
              "/session/register", "/session/heartbeat", "/session/unregister",
-             "/channel/publish", "/channel/subscribe", "/channel/unsubscribe", "/channel/advertise"}
+             "/channel/publish", "/channel/subscribe", "/channel/unsubscribe", "/channel/advertise",
+             "/inbox/send", "/inbox/recall", "/inbox/act"}
 
 
 def _suggest_enabled():
@@ -1404,7 +1405,7 @@ class Handler(BaseHTTPRequestHandler):
                     elif self.path == "/lease/list":
                         out = {"leases": Control.lease_list(conn, ns)}
                     # --- named sessions + channel pub/sub (issue #231) ---
-                    elif self.path.startswith(("/session/", "/channel/")):
+                    elif self.path.startswith(("/session/", "/channel/", "/inbox/")):
                         pname = (Control.principal_info(conn, principal) or {}).get("name")
                         sess = str(req.get("name") or req.get("session_name") or req.get("sender_session") or "")
                         if self.path == "/session/register":
@@ -1470,6 +1471,9 @@ class Handler(BaseHTTPRequestHandler):
                                                        peek=bool(req.get("peek", False)),
                                                        limit=int(req.get("limit", 50)))
                             out["session_name"] = sess
+                            out["inbox_items"] = Control.inbox_list(
+                                conn, ns, sess, principal, status="pending",
+                                mark_read=not bool(req.get("peek", False)))["items"]
                         elif self.path == "/channel/wait":
                             # LISTEN first, then poll, so a publish between the two is never missed.
                             timeout = max(1.0, min(float(req.get("timeout_seconds", 30)), 120.0))
@@ -1491,6 +1495,42 @@ class Handler(BaseHTTPRequestHandler):
                             out = {"channels": Control.channel_list(conn, ns),
                                    "active_sessions": Control.session_list(conn, ns),
                                    "wildcard_subscriptions": Control.WILDCARD_ADS}
+                        elif self.path == "/inbox/send":
+                            out = Control.inbox_send(
+                                conn, ns, req.get("to_session"), sess, principal, req.get("content"),
+                                subject=str(req.get("subject", "")), intent=str(req.get("intent", "task")),
+                                priority=str(req.get("priority", "normal")),
+                                thread_key=str(req.get("thread_key", "")),
+                                replaces_id=req.get("replaces_id"),
+                                replace_pending=bool(req.get("replace_pending", False)),
+                                in_reply_to=req.get("in_reply_to"), metadata=req.get("metadata"))
+                        elif self.path == "/inbox/recall":
+                            out = Control.inbox_recall(
+                                conn, ns, principal, message_id=req.get("message_id"),
+                                channel_message_id=req.get("channel_message_id"),
+                                thread_key=str(req.get("thread_key", "")),
+                                from_session=sess, reason=str(req.get("reason", "")))
+                        elif self.path in ("/inbox/list", "/inbox/act"):
+                            to_s = str(req.get("to_session") or sess)
+                            host, cwd = str(req.get("host") or ""), str(req.get("cwd") or "")
+                            if not to_s and host and cwd:   # bound by workspace, like /channel/poll
+                                to_s = Control.resolve_session_for_cwd(conn, ns, host, cwd) or ""
+                            if not to_s:
+                                if host and cwd and self.path == "/inbox/list":
+                                    return self._send(200, {"to_session": "", "items": [], "count": 0})
+                                return self._send(400, {"error": "to_session (or host+cwd) required"})
+                            if self.path == "/inbox/list":
+                                out = Control.inbox_list(
+                                    conn, ns, to_s, principal, status=str(req.get("status", "active")),
+                                    priority=req.get("priority") or None,
+                                    include_recalled=bool(req.get("include_recalled", False)),
+                                    mark_read=bool(req.get("mark_read", False)),
+                                    limit=int(req.get("limit", 50)))
+                            else:
+                                out = Control.inbox_act(
+                                    conn, ns, to_s, principal, req.get("message_id"),
+                                    action=str(req.get("action", "acted")),
+                                    resolution=str(req.get("resolution", "")), reply=str(req.get("reply", "")))
                         else:
                             return self._send(404, {"error": "not found"})
                     # --- corpus ingestion + checks (Batch 4) ---
@@ -1634,7 +1674,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as op_err:
                     if isinstance(op_err, SessionConflict):
                         return self._send(409, {"error": str(op_err)})
-                    if isinstance(op_err, ValueError) and self.path.startswith(("/session/", "/channel/")):
+                    if isinstance(op_err, ValueError) and self.path.startswith(("/session/", "/channel/", "/inbox/")):
                         return self._send(400, {"error": str(op_err)})
                     # capture WHAT broke (type+message) so it's actionable via `memnos_admin.py errors`
                     Control.audit(conn, principal, action, ns, False,
@@ -2319,6 +2359,8 @@ class Handler(BaseHTTPRequestHandler):
                         if req.get("session_name") and req.get("poll_inbox"):
                             out["inbox"] = Control.channel_poll(
                                 pconn, ns, str(req["session_name"]), principal)["messages"]
+                            out["agent_inbox"] = Control.inbox_list(
+                                pconn, ns, str(req["session_name"]), principal, status="active")["items"]
             if degraded:                   # deadline hit / warming / arm failure — flagged
                 out["degraded"] = True
                 # issue #41 fix C: only present when a real arm failed (deadline/warming

@@ -25,6 +25,7 @@ from core.control import Control  # noqa: E402
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
 URL = os.environ.get("MEMNOS_URL", "http://127.0.0.1:8900")
 NS = "test:session-pubsub"
+NS_OTHER = "test:session-pubsub-other"
 SCHEMA = "tenant_memnos"
 
 
@@ -46,25 +47,29 @@ def env():
 
     def wipe():
         with conn.cursor() as c:
-            for t in ("channel_subscriptions", "channel_messages", "agent_sessions", "channel_catalog"):
-                c.execute(f"DELETE FROM memnos_control.{t} WHERE namespace=%s", (NS,))
-            c.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s", (NS,))
+            for ns in (NS, NS_OTHER):
+                # agent_inbox first: it FKs principals (and itself)
+                for t in ("agent_inbox", "channel_subscriptions", "channel_messages", "agent_sessions",
+                          "channel_catalog"):
+                    c.execute(f"DELETE FROM memnos_control.{t} WHERE namespace=%s", (ns,))
+                c.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s", (ns,))
     wipe()
     ids, toks = {}, {}
-    for tag in ("pa", "pb"):
+    for tag in ("pa", "pb", "pc"):
         name = f"sps-{tag}"
         with conn.cursor() as c:
             c.execute("SELECT id FROM memnos_control.principals WHERE name=%s", (name,))
             row = c.fetchone()
         ids[tag] = row["id"] if row else Control.create_principal(conn, name, "service")
-        Control.grant(conn, ids[tag], NS)
+        Control.grant(conn, ids[tag], NS_OTHER if tag == "pc" else NS)   # pc: NS_OTHER only
         toks[tag] = Control.mint_token(conn, ids[tag], "sps")
     Control.create_namespace(conn, NS, created_by=ids["pa"])
-    yield {"conn": conn, "ta": toks["pa"], "tb": toks["pb"], "pa": ids["pa"], "pb": ids["pb"],
+    Control.create_namespace(conn, NS_OTHER, created_by=ids["pc"])
+    yield {"conn": conn, "ta": toks["pa"], "tb": toks["pb"], "tc": toks["pc"], "pa": ids["pa"], "pb": ids["pb"],
            "na": "sps-pa", "nb": "sps-pb"}
     wipe()
     with conn.cursor() as c:
-        for tag in ("pa", "pb"):
+        for tag in ("pa", "pb", "pc"):
             c.execute("DELETE FROM memnos_control.api_tokens WHERE principal_id=%s", (ids[tag],))
             c.execute("DELETE FROM memnos_control.grants WHERE principal_id=%s", (ids[tag],))
             c.execute("DELETE FROM memnos_control.namespaces WHERE created_by=%s", (ids[tag],))
@@ -470,3 +475,167 @@ def test_20_hook_recall_injects_peers_block_once(env):
     assert "channel #rest-ad: REST-D | gets: REST-W" in ctx and "peer adv-b" not in ctx
     r = _cli(["hook", "recall"], env, stdin=payload, session="adv-b")
     assert "memnos:peers" not in r.stdout, "peers block only on the first turn"
+
+
+# ---- email-style agent inbox queue (issue #231) ----------------------------------------
+
+def _inbox_sessions(env):
+    for tok, name in ((env["ta"], "inb-send"), (env["tb"], "inb-recv")):
+        s, _ = call("/session/register", tok, {"namespace": NS, "name": name})
+        assert s == 200
+
+
+def _isend(env, content, tok=None, frm="inb-send", to="inb-recv", **kw):
+    s, r = call("/inbox/send", tok or env["ta"], {"namespace": NS, "to_session": to, "sender_session": frm,
+                                                   "content": content, **kw})
+    assert s == 200, r
+    return r
+
+
+def _ilist(env, tok=None, to="inb-recv", **kw):
+    s, r = call("/inbox/list", tok or env["tb"], {"namespace": NS, "to_session": to, **kw})
+    assert s == 200, r
+    return r
+
+
+def test_21_namespace_and_acl_isolation(env):
+    _inbox_sessions(env)
+    call("/channel/advertise", env["ta"], {"namespace": NS, "channel": "#iso-chan", "description": "iso"})
+    _isend(env, "ISO-SECRET")
+    # a token granted only on NS_OTHER sees nothing from NS, even with the same session name
+    s, _ = call("/session/register", env["tc"], {"namespace": NS_OTHER, "name": "inb-recv"})
+    assert s == 200
+    s, r = call("/session/list", env["tc"], {"namespace": NS_OTHER})
+    assert {x["name"] for x in r["sessions"]} == {"inb-recv"}
+    s, r = call("/channel/list", env["tc"], {"namespace": NS_OTHER})
+    assert "#iso-chan" not in {c["channel"] for c in r["channels"]}
+    s, r = call("/inbox/list", env["tc"], {"namespace": NS_OTHER, "to_session": "inb-recv", "status": "all"})
+    assert s == 200 and r["count"] == 0 and "ISO-SECRET" not in json.dumps(r)
+    for path, body in (("/session/list", {}), ("/channel/list", {}), ("/inbox/list", {"to_session": "inb-recv"})):
+        s, _ = call(path, env["tc"], {"namespace": NS, **body})
+        assert s == 403, path
+    # and the NS tokens (no grant on NS_OTHER) get 403 on both read and write ops there
+    for path, body in (("/channel/list", {}),
+                       ("/channel/advertise", {"channel": "#x", "description": "d"}),
+                       ("/inbox/send", {"to_session": "inb-recv", "sender_session": "inb-send", "content": "x"}),
+                       ("/inbox/list", {"to_session": "inb-recv"})):
+        s, _ = call(path, env["ta"], {"namespace": NS_OTHER, **body})
+        assert s == 403, path
+    # within NS, another principal cannot read a session inbox registered to someone else
+    assert _ilist(env, tok=env["ta"], to="inb-recv")["count"] == 0
+    assert _ilist(env)["count"] >= 1
+
+
+def test_22_inbox_priority_and_replace_in_queue(env):
+    _inbox_sessions(env)
+    base = {m["id"] for m in _ilist(env, status="all")["items"]}
+    a = _isend(env, "A normal", subject="a", thread_key="t-a")
+    b = _isend(env, "B urgent", priority="urgent")
+    c = _isend(env, "C high", priority="high")
+    a2 = _isend(env, "A2 replaces A", subject="a", replaces_id=a["id"])
+    assert a2["superseded_ids"] == [a["id"]] and a["status"] == "pending"
+    d = _isend(env, "D low", priority="low", thread_key="t-d")
+    e = _isend(env, "E low replaces D by thread", priority="low", thread_key="t-d", replace_pending=True)
+    assert e["superseded_ids"] == [d["id"]]
+    mine = [m for m in _ilist(env)["items"] if m["id"] not in base]
+    assert [m["content"] for m in mine] == ["B urgent", "C high", "A2 replaces A", "E low replaces D by thread"]
+    sup = {m["id"]: m for m in _ilist(env, status="superseded")["items"]}
+    assert sup[a["id"]]["superseded_by_id"] == a2["id"] and sup[d["id"]]["superseded_by_id"] == e["id"]
+    assert [m["id"] for m in _ilist(env, priority="urgent")["items"] if m["id"] not in base] == [b["id"]]
+    # another principal can't supersede someone else's item, even with the id
+    r = _isend(env, "hijack", tok=env["tb"], frm="inb-recv", to="inb-send", replaces_id=c["id"])
+    assert r["superseded_ids"] == []
+    assert any(m["id"] == c["id"] for m in _ilist(env)["items"])
+    # validation
+    for bad in ({"priority": "asap"}, {"intent": "bogus"}, {"content": ""}):
+        s, _ = call("/inbox/send", env["ta"], {"namespace": NS, "to_session": "inb-recv",
+                                               "sender_session": "inb-send", **{"content": "x", **bad}})
+        assert s == 400, bad
+
+
+def test_23_inbox_recall_and_cancellation(env):
+    _inbox_sessions(env)
+    payload = json.dumps({"prompt": "go", "session_id": "sps-inbox-hook"})
+    # recall before the recipient acts: gone from list + hook, act reports cancelled
+    m = _isend(env, "RECALL-ME-MARKER")
+    s, r = call("/inbox/recall", env["ta"], {"namespace": NS, "sender_session": "inb-send",
+                                             "message_id": m["id"], "reason": "wrong repo"})
+    assert s == 200 and r["recalled"] and not r["already_acted"] and r["item"]["status"] == "recalled"
+    assert all(x["id"] != m["id"] for x in _ilist(env)["items"])
+    assert any(x["id"] == m["id"] for x in _ilist(env, status="recalled")["items"])
+    r = _cli(["hook", "recall"], env, stdin=payload, session="inb-recv")
+    assert "RECALL-ME-MARKER" not in r.stdout
+    s, r = call("/inbox/act", env["tb"], {"namespace": NS, "to_session": "inb-recv", "message_id": m["id"]})
+    assert s == 200 and r["ok"] is False and r["cancelled"] and r["status"] == "recalled"
+    assert r["recall_reason"] == "wrong repo"
+    # a live item shows up once in the hook (marked read), with the how-to-finish hint
+    live = _isend(env, "LIVE-HOOK-MARKER", subject="do it", priority="high")
+    r = _cli(["hook", "recall"], env, stdin=payload, session="inb-recv")
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert f"#{live['id']} [high] do it" in ctx and "LIVE-HOOK-MARKER" in ctx and "inbox_act(message_id=" in ctx
+    assert "LIVE-HOOK-MARKER" not in _cli(["hook", "recall"], env, stdin=payload, session="inb-recv").stdout
+    assert _ilist(env, status="read")["items"][0]["read_at"]
+    # cannot recall what is already acted on
+    s, r = call("/inbox/act", env["tb"], {"namespace": NS, "to_session": "inb-recv",
+                                          "message_id": live["id"], "action": "done", "resolution": "ok"})
+    assert s == 200 and r["ok"] and r["item"]["status"] == "acted" and r["item"]["acted_at"]
+    s, r = call("/inbox/recall", env["ta"], {"namespace": NS, "sender_session": "inb-send", "message_id": live["id"]})
+    assert s == 200 and r["recalled"] is False and r["already_acted"] is True
+    # not found / not owned
+    s, _ = call("/inbox/recall", env["tb"], {"namespace": NS, "sender_session": "inb-recv", "message_id": live["id"]})
+    assert s == 400
+    # thread recall
+    t1 = _isend(env, "T1", thread_key="th-r")
+    t2 = _isend(env, "T2", thread_key="th-r")
+    s, r = call("/inbox/recall", env["ta"], {"namespace": NS, "sender_session": "inb-send", "thread_key": "th-r"})
+    assert s == 200 and r["recalled_ids"] == [t1["id"], t2["id"]]
+    # pub/sub message recall: never delivered by poll
+    s, pm = call("/channel/publish", env["ta"], {"namespace": NS, "channel": "@inb-recv",
+                                                 "sender_session": "inb-send", "content": "CHAN-RECALLED"})
+    s, r = call("/inbox/recall", env["ta"], {"namespace": NS, "sender_session": "inb-send",
+                                             "channel_message_id": pm["id"], "reason": "oops"})
+    assert s == 200 and r["recalled"] is True and r["channel_message_id"] == pm["id"]
+    s, r = call("/channel/poll", env["tb"], {"namespace": NS, "session_name": "inb-recv", "peek": True})
+    assert "CHAN-RECALLED" not in json.dumps(r)
+    s, r = call("/inbox/recall", env["tb"], {"namespace": NS, "sender_session": "inb-recv",
+                                             "channel_message_id": pm["id"]})
+    assert s == 200 and r["recalled"] is False   # not the owner
+
+
+def test_24_inbox_act_reply_sdk_and_cli(env):
+    from memnos_sdk import MemnosClient
+    _inbox_sessions(env)
+    m = _isend(env, "please review", subject="Review PR", thread_key="th-pr", intent="review_request")
+    s, r = call("/inbox/act", env["tb"], {"namespace": NS, "to_session": "inb-recv", "message_id": m["id"],
+                                          "action": "in_progress"})
+    assert r["item"]["status"] == "in_progress" and r["item"]["acted_at"] is None
+    s, r = call("/inbox/act", env["tb"], {"namespace": NS, "to_session": "inb-recv", "message_id": m["id"],
+                                          "action": "done", "reply": "LGTM"})
+    assert r["ok"] and r["reply_item"]["subject"] == "Re: Review PR" and r["reply_item"]["intent"] == "answer"
+    assert r["reply_item"]["in_reply_to"] == m["id"] and r["reply_item"]["thread_key"] == "th-pr"
+    back = _ilist(env, tok=env["ta"], to="inb-send")["items"]
+    assert any(x["id"] == r["reply_item"]["id"] and x["content"] == "LGTM" for x in back)
+    s, _ = call("/inbox/act", env["tb"], {"namespace": NS, "to_session": "inb-recv", "message_id": m["id"], "action": "bogus"})
+    assert s == 400
+    s, _ = call("/inbox/act", env["tb"], {"namespace": NS, "to_session": "inb-recv", "message_id": 10**9})
+    assert s == 400
+    # SDK
+    with MemnosClient(base_url=URL, token=env["tb"], namespace=NS) as mem:
+        it = mem.inbox_send("inb-send", "sdk hello", sender_session="inb-recv", priority="low")
+        assert it["status"] == "pending"
+        assert mem.inbox_recall(sender_session="inb-recv", message_id=it["id"])["recalled"]
+        mine = _isend(env, "for sdk")
+        assert any(x["id"] == mine["id"] for x in mem.inbox_list("inb-recv")["items"])
+        assert mem.inbox_act("inb-recv", mine["id"], action="read")["item"]["status"] == "read"
+    # CLI (runs as the tb principal / inb-recv)
+    r = _cli(["inbox", "send", "inb-send", "cli msg", "--priority", "urgent", "--session", "inb-recv",
+              "--namespace", NS], env)
+    assert r.returncode == 0 and "queued #" in r.stdout, r.stdout + r.stderr
+    cid = int(r.stdout.split("#")[1].split()[0])
+    r = _cli(["inbox", "recall", str(cid), "--reason", "cli", "--session", "inb-recv", "--namespace", NS], env)
+    assert r.returncode == 0 and "recalled" in r.stdout, r.stdout + r.stderr
+    cm = _isend(env, "CLI-ACT-MARKER")
+    r = _cli(["inbox", "ls", "--session", "inb-recv", "--namespace", NS], env)
+    assert f"#{cm['id']}" in r.stdout and "CLI-ACT-MARKER" in r.stdout, r.stdout + r.stderr
+    r = _cli(["inbox", "act", str(cm["id"]), "--reply", "done!", "--session", "inb-recv", "--namespace", NS], env)
+    assert r.returncode == 0 and "acted" in r.stdout and "reply sent" in r.stdout, r.stdout + r.stderr
