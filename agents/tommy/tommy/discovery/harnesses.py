@@ -110,9 +110,10 @@ _SUPPORTS_SESSION_NAME = {"claude"}
 
 def apply_headless(cmd: list[str], harness_name: str) -> list[str]:
     """Headless dispatch: agy runs non-interactively with -p/--print instead of
-    --prompt-interactive. No-op for other harnesses (claude goes headless via stdout=PIPE).
-    shortcut: assumes `agy -p <file>` takes the prompt file like --prompt-interactive does;
-    unverified against a real agy, confirm before relying on it."""
+    --prompt-interactive (-i). Verified against `agy --help` (`-p` / `--print`:
+    'Run a single prompt non-interactively and print the response';
+    `--dangerously-skip-permissions`: 'Auto-approve all tool permission requests
+    without prompting'). No-op for other harnesses (claude goes headless via stdout=PIPE)."""
     if harness_name in ("agy", "antigravity"):
         return ["-p" if a == "--prompt-interactive" else a for a in cmd]
     return cmd
