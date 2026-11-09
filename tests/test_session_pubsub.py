@@ -364,3 +364,23 @@ def test_15_server_resolves_session_by_host_and_cwd(env):
     call("/session/unregister", env["tb"], {"namespace": NS, "name": "cwd-bound"})
     s, r = call("/channel/poll", env["tb"], {"namespace": NS, "host": "h-test", "cwd": "/work/x"})
     assert r["session_name"] == ""      # offline sessions are not resolved
+
+
+def test_16_transcript_agent_name_auto_resolves_for_inbox(env, tmp_path):
+    """A Claude/Tommy session with agentName/customTitle in its transcript (e.g. 'Tommy | MEMNOS')
+    automatically resolves as 'tommy-memnos' and receives @tommy-memnos messages via hook recall."""
+    import nsresolve
+    tp = tmp_path / "730d3723.jsonl"
+    tp.write_text(
+        json.dumps({"type": "custom-title", "customTitle": "Tommy | MEMNOS | 730d3723"}) + "\n"
+        + json.dumps({"type": "agent-name", "agentName": "Tommy | MEMNOS"}) + "\n",
+        encoding="utf-8",
+    )
+    assert nsresolve.resolve_active_session(cwd=str(tmp_path), data={"transcript_path": str(tp)}) == "tommy-memnos"
+    call("/channel/publish", env["ta"], {"namespace": NS, "channel": "@tommy-memnos",
+                                         "sender_session": "gemini-critic", "content": "HELLO-TOMMY-MEMNOS"})
+    payload = json.dumps({"prompt": "check peer inbox", "session_id": "730d3723",
+                          "cwd": str(tmp_path), "transcript_path": str(tp)})
+    r = _cli(["hook", "recall"], env, stdin=payload)
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert '<memnos:inbox session="tommy-memnos">' in ctx and "HELLO-TOMMY-MEMNOS" in ctx, r.stdout + r.stderr

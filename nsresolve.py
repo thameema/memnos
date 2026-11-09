@@ -300,10 +300,44 @@ def clear_active_session(name=None, cwd=None):
         _write_active(keep)
 
 
+def _slugify_session_title(title):
+    """Turn a Claude/Tommy session title like 'Tommy | MEMNOS' or 'Tommy | DAAX | 37beb4cb'
+    into a valid session slug ('tommy-memnos', 'tommy-daax')."""
+    t = re.sub(r"\|\s*[0-9a-f]{8}\s*$", "", (title or "").strip(), flags=re.IGNORECASE)
+    s = re.sub(r"[^a-z0-9_.:-]+", "-", t.lower()).strip("-._:")
+    return s[:64]
+
+
+def _transcript_session_name(transcript_path):
+    """Extract agentName / customTitle from a Claude Code .jsonl transcript if present."""
+    if not transcript_path or not os.path.isfile(transcript_path):
+        return ""
+    title = ""
+    try:
+        with open(transcript_path, encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i > 64:
+                    break
+                if "agentName" not in line and "customTitle" not in line:
+                    continue
+                obj = json.loads(line)
+                t = obj.get("agentName") or obj.get("customTitle") or ""
+                if t:
+                    title = t
+    except Exception:
+        return ""
+    return _slugify_session_title(title)
+
+
 def resolve_active_session(cwd=None, data=None):
-    """$MEMNOS_SESSION, else the name bound to this cwd (hook payload cwd wins), else ''."""
+    """$MEMNOS_SESSION, else the name bound to this cwd (hook payload cwd wins),
+    else Claude/Tommy transcript agentName/customTitle (e.g. 'Tommy | MEMNOS' -> 'tommy-memnos'), else ''."""
     env = os.environ.get("MEMNOS_SESSION", "").strip().lstrip("@")
     if env:
         return env
     key = os.path.realpath((data or {}).get("cwd") or cwd or os.getcwd())
-    return ((_load(_active_path()) or {}).get(key) or {}).get("name", "")
+    bound = ((_load(_active_path()) or {}).get(key) or {}).get("name", "")
+    if bound:
+        return bound
+    tp = (data or {}).get("transcript_path") or (data or {}).get("transcriptPath") or ""
+    return _transcript_session_name(tp)

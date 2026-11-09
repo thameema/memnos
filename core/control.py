@@ -1102,7 +1102,7 @@ class Control:
         non-offline name (raises SessionConflict); same principal or expired/offline may."""
         from psycopg.types.json import Jsonb
         name = Control._slug(name, "session name")
-        chans = [f"@{name}", "#general"] + [Control._channel(x) for x in (channels or [])]
+        topic_chans = ["#general"] + [Control._channel(x) for x in (channels or [])]
         with conn.cursor() as c:
             c.execute("""
                 INSERT INTO memnos_control.agent_sessions(namespace,name,principal_id,harness,model,role,
@@ -1126,7 +1126,8 @@ class Control:
             c.execute("""DELETE FROM memnos_control.channel_subscriptions
                          WHERE namespace=%s AND session_name=%s AND principal_id<>%s""",
                       (namespace, name, principal_id))
-            Control._sub_rows(c, namespace, name, principal_id, chans)
+            Control._sub_rows(c, namespace, name, principal_id, [f"@{name}"], from_beginning=True)
+            Control._sub_rows(c, namespace, name, principal_id, topic_chans)
             c.execute("""SELECT channel FROM memnos_control.channel_subscriptions
                          WHERE namespace=%s AND session_name=%s ORDER BY channel""", (namespace, name))
             subs = [r["channel"] for r in c.fetchall()]
@@ -1265,12 +1266,12 @@ class Control:
         ch = Control._channel(channel) if channel else None
         args = [namespace, session, principal_id]
         with conn.cursor() as c:
-            if ch:
-                c.execute("""SELECT 1 FROM memnos_control.channel_subscriptions
-                             WHERE namespace=%s AND session_name=%s AND principal_id=%s AND channel=%s""",
-                          args + [ch])
-                if not c.fetchone():
-                    Control._sub_rows(c, namespace, session, principal_id, [ch], from_beginning=True)
+            target_ch = ch or f"@{session}"
+            c.execute("""SELECT 1 FROM memnos_control.channel_subscriptions
+                         WHERE namespace=%s AND session_name=%s AND principal_id=%s AND channel=%s""",
+                      args + [target_ch])
+            if not c.fetchone():
+                Control._sub_rows(c, namespace, session, principal_id, [target_ch], from_beginning=True)
             c.execute(f"""
                 SELECT s.id AS sub_id, m.id, m.channel, m.sender_session, m.intent, m.content,
                        m.metadata, m.created_at, p.name AS author
