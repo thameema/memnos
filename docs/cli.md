@@ -649,6 +649,20 @@ pull server bindings into the local cache + register THIS host now
 |---|---|
 | `--token` | bearer token (else $MEMNOS_TOKEN / config) |
 
+### `memnos channel advertise`
+
+describe a channel so peers can discover it
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `--session` | session name (default: $MEMNOS_SESSION) |
+| `channel` |  |
+| `-d, --description` |  |
+| `-w, --what-you-get` | (default ``) |
+| `--intents` | comma-separated intents (default ``) |
+
 ### `memnos channel ls`
 
 list channels

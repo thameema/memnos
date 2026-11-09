@@ -381,6 +381,20 @@ CREATE TABLE IF NOT EXISTS memnos_control.channel_subscriptions(
 );
 CREATE INDEX IF NOT EXISTS channel_subs_ns_session
     ON memnos_control.channel_subscriptions(namespace, session_name);
+CREATE TABLE IF NOT EXISTS memnos_control.channel_catalog (
+    namespace       TEXT NOT NULL,
+    channel         TEXT NOT NULL,
+    kind            TEXT NOT NULL DEFAULT 'topic',
+    description     TEXT NOT NULL DEFAULT '',
+    what_you_get    TEXT NOT NULL DEFAULT '',
+    intents         TEXT[] NOT NULL DEFAULT '{}',
+    owner_session   TEXT NOT NULL DEFAULT '',
+    principal_id    BIGINT REFERENCES memnos_control.principals(id),
+    metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (namespace, channel)
+);
 -- `memnos namespace reconcile` resume watermark (issue #155): the keyset cursor of the
 -- last COMMITTED chunk, written in the same transaction as that chunk's mutations.
 -- core/reconcile.py also issues this same CREATE (RUNS_DDL) itself, because the CLI can
@@ -1078,6 +1092,109 @@ class Control:
                              + (", status:*, *" if allow_wild else "") + ")")
         return c
 
+    WILDCARD_ADS = [
+        {
+            "channel": "status:*",
+            "kind": "wildcard",
+            "description": "All peer session status feeds in this namespace.",
+            "what_you_get": "Every heartbeat task transition and status update (intent='status') across all active sessions.",
+            "intents": ["status", "done"],
+        },
+        {
+            "channel": "*",
+            "kind": "wildcard",
+            "description": "All topic (#...) and status (status:...) channels in this namespace.",
+            "what_you_get": "Every broadcast/topic message and status update (excludes other sessions' private @<session> direct inboxes).",
+            "intents": ["message", "status", "task", "review_request", "critique", "question", "answer", "handoff", "done"],
+        },
+    ]
+
+    @staticmethod
+    def _channel_kind(ch):
+        if ch in ("*", "status:*"):
+            return "wildcard"
+        if ch.startswith("@"):
+            return "direct"
+        if ch.startswith("status:"):
+            return "status"
+        return "topic"
+
+    @staticmethod
+    def _default_channel_ad(ch, *, role="", harness="", owner_session=""):
+        kind = Control._channel_kind(ch)
+        if ch == "#general":
+            return (kind, "Default namespace-wide broadcast channel for all sessions.",
+                    "Broadcast announcements, shared context, questions, and cross-agent coordination updates.",
+                    ["message", "status", "question", "answer", "handoff", "done"])
+        if kind == "direct":
+            n = ch[1:]
+            who = f" (role={role}, harness={harness})" if role or harness else ""
+            return (kind, f"Direct 1-to-1 inbox for session '{n}'{who}.",
+                    f"Direct tasks, review requests, critiques, questions, handoffs, and replies addressed to @{n}.",
+                    ["task", "review_request", "critique", "question", "answer", "handoff", "message"])
+        if kind == "status":
+            n = ch[len("status:"):]
+            return (kind, f"Live heartbeat & task feed for session '{n}'.",
+                    f"Automatic status transitions and current_task announcements whenever '{n}' updates its task.",
+                    ["status", "done"])
+        if kind == "wildcard":
+            ad = next(a for a in Control.WILDCARD_ADS if a["channel"] == ch)
+            return (kind, ad["description"], ad["what_you_get"], list(ad["intents"]))
+        return (kind, f"Topic channel {ch} for multi-agent coordination.",
+                f"Messages, review requests, critiques, tasks, and decisions published to {ch}.",
+                ["message", "task", "review_request", "critique", "question", "answer", "handoff", "done"])
+
+    @staticmethod
+    def channel_advertise(conn, namespace, channel, principal_id, *, owner_session="", description="",
+                          what_you_get="", intents=None, metadata=None):
+        """Upsert a channel's catalog entry. Blank fields get defaults on first insert and are
+        left untouched on later calls."""
+        from psycopg.types.json import Jsonb
+        ch = Control._channel(channel)
+        owner = Control._slug(owner_session, "owner_session") if owner_session else ""
+        kind, d_desc, d_wyg, d_int = Control._default_channel_ad(ch, owner_session=owner)
+        intents = [str(i) for i in (intents or [])]
+        bad = [i for i in intents if i not in Control.INTENTS]
+        if bad:
+            raise ValueError(f"unknown intents {bad}; use {', '.join(Control.INTENTS)}")
+        with conn.cursor() as c:
+            c.execute("""
+                INSERT INTO memnos_control.channel_catalog(namespace,channel,kind,description,what_you_get,
+                    intents,owner_session,principal_id,metadata)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (namespace,channel) DO UPDATE SET
+                    description  = CASE WHEN %s <> '' THEN EXCLUDED.description  ELSE memnos_control.channel_catalog.description END,
+                    what_you_get = CASE WHEN %s <> '' THEN EXCLUDED.what_you_get ELSE memnos_control.channel_catalog.what_you_get END,
+                    intents      = CASE WHEN cardinality(%s::text[]) > 0 THEN EXCLUDED.intents ELSE memnos_control.channel_catalog.intents END,
+                    owner_session= CASE WHEN %s <> '' THEN EXCLUDED.owner_session ELSE memnos_control.channel_catalog.owner_session END,
+                    metadata     = CASE WHEN %s::jsonb <> '{}'::jsonb THEN EXCLUDED.metadata ELSE memnos_control.channel_catalog.metadata END,
+                    updated_at   = now()
+                RETURNING *
+            """, (namespace, ch, kind, description or d_desc, what_you_get or d_wyg, intents or d_int,
+                  owner, principal_id, Jsonb(metadata or {}),
+                  description or "", what_you_get or "", intents, owner, Jsonb(metadata or {})))
+            row = c.fetchone()
+            c.execute("SELECT name FROM memnos_control.principals WHERE id=%s", (principal_id,))
+            row["author"] = (c.fetchone() or {}).get("name")
+        return Control._iso(row)
+
+    @staticmethod
+    def _ensure_catalog(c, namespace, channels, principal_id):
+        for ch in channels:
+            if ch in ("*", "status:*"):
+                continue
+            kind, d, w, i = Control._default_channel_ad(ch)
+            c.execute("""INSERT INTO memnos_control.channel_catalog(namespace,channel,kind,description,
+                             what_you_get,intents,principal_id)
+                         VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
+                      (namespace, ch, kind, d, w, i, principal_id))
+
+    @staticmethod
+    def discover(conn, namespace):
+        return {"namespace": namespace, "active_sessions": Control.session_list(conn, namespace),
+                "channels": Control.channel_list(conn, namespace),
+                "wildcard_subscriptions": Control.WILDCARD_ADS}
+
     @staticmethod
     def _sub_rows(c, namespace, session, principal_id, channels, from_beginning=False, new_from_beginning=False):
         insert_zero = bool(from_beginning or new_from_beginning)
@@ -1098,7 +1215,7 @@ class Control:
     @staticmethod
     def session_register(conn, namespace, name, principal_id, *, harness="", model="", role="",
                          host="", cwd="", status="active", current_task="", metadata=None,
-                         channels=None, ttl_seconds=1800):
+                         channels=None, channel_ads=None, ttl_seconds=1800):
         """Upsert a named session. A different principal may not take over an UNEXPIRED,
         non-offline name (raises SessionConflict); same principal or expired/offline may."""
         from psycopg.types.json import Jsonb
@@ -1134,6 +1251,21 @@ class Control:
             subs = [r["channel"] for r in c.fetchall()]
         out = Control._iso(row)
         out["subscribed_channels"] = subs
+        ads = {k if k in ("*", "status:*") else Control._channel(k): v for k, v in (channel_ads or {}).items()}
+        Control.channel_advertise(conn, namespace, f"@{name}", principal_id, owner_session=name,
+                                  description=Control._default_channel_ad(f"@{name}", role=role, harness=harness)[1])
+        Control.channel_advertise(conn, namespace, f"status:{name}", principal_id, owner_session=name)
+        Control.channel_advertise(conn, namespace, "#general", principal_id)
+        for ch in dict.fromkeys(Control._channel(x) for x in (channels or [])):
+            ad = ads.get(ch)
+            ad = {"description": ad} if isinstance(ad, str) else (ad or {})
+            Control.channel_advertise(conn, namespace, ch, principal_id, owner_session=name,
+                                      description=ad.get("description", ""),
+                                      what_you_get=ad.get("what_you_get", ""), intents=ad.get("intents"))
+        out["direct_channel"] = f"@{name}"
+        out["status_channel"] = f"status:{name}"
+        out["peers"] = [x for x in Control.session_list(conn, namespace) if x["name"] != name]
+        out["available_channels"] = Control.channel_list(conn, namespace)
         return out
 
     @staticmethod
@@ -1181,7 +1313,8 @@ class Control:
                   AND (%s::text IS NULL OR a.role=%s) AND (%s::text IS NULL OR a.harness=%s)
                 ORDER BY a.name
             """, (namespace, include_expired, role, role, harness, harness))
-            return [Control._iso(r) for r in c.fetchall()]
+            return [{**Control._iso(r), "direct_channel": f"@{r['name']}",
+                     "status_channel": f"status:{r['name']}"} for r in c.fetchall()]
 
     @staticmethod
     def session_unregister(conn, namespace, name, principal_id):
@@ -1194,17 +1327,24 @@ class Control:
 
     @staticmethod
     def channel_subscribe(conn, namespace, session_name, principal_id, channels, *,
-                          from_beginning=False):
+                          from_beginning=False, description="", what_you_get=""):
         session = Control._slug(session_name, "session name")
         chans = [Control._channel(x) for x in (channels or [])]
         if not chans:
             raise ValueError("channels required")
         with conn.cursor() as c:
             Control._sub_rows(c, namespace, session, principal_id, chans, from_beginning)
+            Control._ensure_catalog(c, namespace, chans, principal_id)
             c.execute("""SELECT channel FROM memnos_control.channel_subscriptions
                          WHERE namespace=%s AND session_name=%s AND principal_id=%s ORDER BY channel""",
                       (namespace, session, principal_id))
-            return {"session_name": session, "subscribed_channels": [r["channel"] for r in c.fetchall()]}
+            res = {"session_name": session, "subscribed_channels": [r["channel"] for r in c.fetchall()]}
+        if description or what_you_get:
+            for ch in chans:
+                if ch not in ("*", "status:*"):
+                    Control.channel_advertise(conn, namespace, ch, principal_id,
+                                              description=description, what_you_get=what_you_get)
+        return res
 
     @staticmethod
     def channel_unsubscribe(conn, namespace, session_name, principal_id, channels):
@@ -1218,7 +1358,7 @@ class Control:
 
     @staticmethod
     def channel_publish(conn, namespace, channel, sender_session, principal_id, content, *,
-                        intent="message", metadata=None):
+                        intent="message", metadata=None, description="", what_you_get=""):
         from psycopg.types.json import Jsonb
         channel = Control._channel(channel, allow_wild=False)
         sender = Control._slug(sender_session, "sender_session")
@@ -1227,6 +1367,7 @@ class Control:
         if intent not in Control.INTENTS:
             raise ValueError(f"intent must be one of {', '.join(Control.INTENTS)}")
         with conn.cursor() as c:
+            Control._ensure_catalog(c, namespace, [channel], principal_id)
             c.execute("""
                 INSERT INTO memnos_control.channel_messages(namespace,channel,sender_session,principal_id,
                                                             intent,content,metadata)
@@ -1242,6 +1383,9 @@ class Control:
             c.execute("SELECT pg_notify('memnos_channel', %s)", (namespace,))
             c.execute("SELECT name FROM memnos_control.principals WHERE id=%s", (principal_id,))
             author = (c.fetchone() or {}).get("name")
+        if description or what_you_get:
+            Control.channel_advertise(conn, namespace, channel, principal_id,
+                                      description=description, what_you_get=what_you_get)
         return {"id": m["id"], "namespace": namespace, "channel": channel, "sender_session": sender,
                 "author": author, "intent": intent, "content": content, "metadata": metadata or {},
                 "created_at": m["created_at"].isoformat()}
@@ -1302,20 +1446,35 @@ class Control:
     def channel_list(conn, namespace):
         with conn.cursor() as c:
             c.execute("""
-                SELECT u.ch AS channel, COALESCE(mc.n,0) AS message_count, mc.last_at AS last_message_at,
-                       COALESCE(sc.subs, '{}') AS subscribers
-                FROM (SELECT channel AS ch FROM memnos_control.channel_messages WHERE namespace=%s
+                SELECT u.ch AS channel, cc.kind, cc.description, cc.what_you_get, cc.intents,
+                       COALESCE(cc.owner_session,'') AS owner_session,
+                       COALESCE(mc.n,0) AS message_count, mc.last_at AS last_message_at,
+                       COALESCE(sc.subs, '{}') AS subscribers, COALESCE(mc.pubs, '{}') AS publishers
+                FROM (SELECT channel AS ch FROM memnos_control.channel_catalog WHERE namespace=%s
+                      UNION SELECT channel FROM memnos_control.channel_messages WHERE namespace=%s
                       UNION SELECT channel FROM memnos_control.channel_subscriptions WHERE namespace=%s) u
-                LEFT JOIN (SELECT channel, count(*) n, max(created_at) last_at
+                LEFT JOIN memnos_control.channel_catalog cc ON cc.namespace=%s AND cc.channel=u.ch
+                LEFT JOIN (SELECT channel, count(*) n, max(created_at) last_at,
+                                  array_agg(DISTINCT sender_session ORDER BY sender_session) pubs
                            FROM memnos_control.channel_messages WHERE namespace=%s GROUP BY channel) mc
                        ON mc.channel = u.ch
                 LEFT JOIN (SELECT channel, array_agg(session_name ORDER BY session_name) subs
                            FROM memnos_control.channel_subscriptions WHERE namespace=%s GROUP BY channel) sc
                        ON sc.channel = u.ch
+                WHERE u.ch NOT IN ('*', 'status:*')
                 ORDER BY u.ch
-            """, (namespace,) * 4)
-            return [Control._iso(r) for r in c.fetchall()]
-
+            """, (namespace,) * 6)
+            rows = c.fetchall()
+        out = []
+        for r in rows:
+            r = Control._iso(r)
+            kind, d, w, i = Control._default_channel_ad(r["channel"], owner_session=r["owner_session"])
+            r["kind"] = r["kind"] or kind
+            r["description"] = r["description"] or d
+            r["what_you_get"] = r["what_you_get"] or w
+            r["intents"] = r["intents"] or i
+            out.append(r)
+        return out
 
     @staticmethod
     def entity_dossier_candidates(conn, schema, namespace, min_mentions=3) -> list[dict]:

@@ -46,7 +46,7 @@ def env():
 
     def wipe():
         with conn.cursor() as c:
-            for t in ("channel_subscriptions", "channel_messages", "agent_sessions"):
+            for t in ("channel_subscriptions", "channel_messages", "agent_sessions", "channel_catalog"):
                 c.execute(f"DELETE FROM memnos_control.{t} WHERE namespace=%s", (NS,))
             c.execute(f"DELETE FROM {SCHEMA}.raw_turns WHERE namespace=%s", (NS,))
     wipe()
@@ -384,3 +384,89 @@ def test_16_transcript_agent_name_auto_resolves_for_inbox(env, tmp_path):
     r = _cli(["hook", "recall"], env, stdin=payload)
     ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
     assert '<memnos:inbox session="tommy-memnos">' in ctx and "HELLO-TOMMY-MEMNOS" in ctx, r.stdout + r.stderr
+
+
+def test_17_register_auto_advertises_and_returns_peers(env):
+    call("/session/register", env["ta"], {"namespace": NS, "name": "adv-a", "role": "critic", "harness": "gemini"})
+    s, r = call("/session/register", env["tb"], {
+        "namespace": NS, "name": "adv-b", "role": "dev", "harness": "claude-code", "channels": ["#adv-topic"],
+        "channel_ads": {"#adv-topic": {"description": "ADV-DESC", "what_you_get": "ADV-WYG", "intents": ["task", "done"]}}})
+    assert s == 200 and r["direct_channel"] == "@adv-b" and r["status_channel"] == "status:adv-b"
+    assert "adv-a" in [p["name"] for p in r["peers"]] and "adv-b" not in [p["name"] for p in r["peers"]]
+    by = {c["channel"]: c for c in r["available_channels"]}
+    assert {"@adv-b", "status:adv-b", "#general", "#adv-topic"} <= set(by)
+    assert "role=dev, harness=claude-code" in by["@adv-b"]["description"] and by["@adv-b"]["owner_session"] == "adv-b"
+    assert by["#adv-topic"]["description"] == "ADV-DESC" and by["#adv-topic"]["intents"] == ["task", "done"]
+    assert by["#general"]["description"].startswith("Default namespace-wide")
+
+
+def test_18_advertise_and_list_rest_mcp_sdk_cli(env):
+    s, r = call("/channel/advertise", env["ta"], {"namespace": NS, "channel": "#rest-ad", "description": "REST-D",
+                                                  "what_you_get": "REST-W", "intents": ["question", "answer"],
+                                                  "owner_session": "adv-a"})
+    assert s == 200 and r["description"] == "REST-D" and r["author"] == env["na"]
+    s, _ = call("/channel/advertise", env["ta"], {"namespace": NS, "channel": "#rest-ad", "intents": ["bogus"]})
+    assert s == 400
+    call("/channel/subscribe", env["tb"], {"namespace": NS, "session_name": "adv-b", "channels": ["#rest-ad"]})
+    call("/channel/publish", env["ta"], {"namespace": NS, "channel": "#rest-ad", "sender_session": "adv-a", "content": "x"})
+    # blank re-advertise keeps text; publish/subscribe with description updates it
+    call("/channel/advertise", env["ta"], {"namespace": NS, "channel": "#rest-ad"})
+    s, r = call("/channel/list", env["ta"], {"namespace": NS})
+    by = {c["channel"]: c for c in r["channels"]}
+    ad = by["#rest-ad"]
+    assert (ad["description"], ad["what_you_get"], ad["intents"]) == ("REST-D", "REST-W", ["question", "answer"])
+    assert ad["subscribers"] == ["adv-b"] and ad["publishers"] == ["adv-a"] and ad["kind"] == "topic"
+    assert {"adv-a", "adv-b"} <= {x["name"] for x in r["active_sessions"]}
+    assert [w["channel"] for w in r["wildcard_subscriptions"]] == ["status:*", "*"]
+    assert "*" not in by and "status:*" not in by
+    call("/channel/publish", env["ta"], {"namespace": NS, "channel": "#pub-ad", "sender_session": "adv-a",
+                                         "content": "y", "description": "PUB-D"})
+    s, r = call("/channel/list", env["ta"], {"namespace": NS})
+    assert {c["channel"]: c for c in r["channels"]}["#pub-ad"]["description"] == "PUB-D"
+    # SDK
+    from memnos_sdk import MemnosClient
+    with MemnosClient(base_url=URL, token=env["tb"], namespace=NS) as mem:
+        out = mem.channel_advertise("#sdk-ad", "SDK-D", what_you_get="SDK-W", intents=["message"], owner_session="adv-b")
+        assert out["description"] == "SDK-D"
+        assert mem.session_register("adv-b", channel_ads={"#sdk-ad2": "SDK2-D"}, channels=["#sdk-ad2"])["available_channels"]
+    # MCP tool (module-level function, calls the same REST endpoint)
+    import memnos_mcp
+    env_old = {k: os.environ.get(k) for k in ("MEMNOS_URL", "MEMNOS_TOKEN", "MEMNOS_NS")}
+    os.environ.update({"MEMNOS_URL": URL, "MEMNOS_TOKEN": env["tb"], "MEMNOS_NS": NS})
+    try:
+        res = memnos_mcp.channel_advertise("#mcp-ad", "MCP-D", what_you_get="MCP-W", intents=["task"], owner_session="adv-b")
+        assert "MCP-D" in res, res
+    finally:
+        for k, v in env_old.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+    # CLI
+    r = _cli(["channel", "advertise", "#cli-ad", "-d", "CLI-D", "-w", "CLI-W", "--intents", "task,done",
+              "--session", "adv-b", "--namespace", NS], env)
+    assert r.returncode == 0 and "CLI-D" in r.stdout, r.stdout + r.stderr
+    r = _cli(["channel", "ls", "--namespace", NS], env)
+    assert "CLI-D" in r.stdout and "gets: CLI-W" in r.stdout and "topic" in r.stdout
+
+
+def test_19_recall_with_peers_and_inbox_single_call(env):
+    call("/channel/publish", env["ta"], {"namespace": NS, "channel": "@adv-b", "sender_session": "adv-a",
+                                         "content": "RECALL-INBOX-MARKER"})
+    s, r = call("/recall", env["tb"], {"namespace": NS, "query": "anything", "include_peers": True})
+    assert s == 200 and "inbox" not in r
+    assert "adv-a" in [x["name"] for x in r["peer_directory"]["active_sessions"]]
+    s, r = call("/recall", env["tb"], {"namespace": NS, "query": "anything", "session_name": "adv-b", "poll_inbox": True})
+    assert s == 200 and "channels" in r["peer_directory"]
+    assert any(m["content"] == "RECALL-INBOX-MARKER" for m in r["inbox"])
+    s, r = call("/recall", env["tb"], {"namespace": NS, "query": "anything"})
+    assert "peer_directory" not in r and "inbox" not in r
+
+
+def test_20_hook_recall_injects_peers_block_once(env):
+    import uuid
+    payload = json.dumps({"prompt": "who is around", "session_id": "sps-peers-" + uuid.uuid4().hex[:8]})
+    r = _cli(["hook", "recall"], env, stdin=payload, session="adv-b")
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert f'<memnos:peers namespace="{NS}">' in ctx, r.stdout + r.stderr
+    assert "peer adv-a" in ctx and "direct=@adv-a" in ctx and "status=status:adv-a" in ctx
+    assert "channel #rest-ad: REST-D | gets: REST-W" in ctx and "peer adv-b" not in ctx
+    r = _cli(["hook", "recall"], env, stdin=payload, session="adv-b")
+    assert "memnos:peers" not in r.stdout, "peers block only on the first turn"

@@ -152,6 +152,7 @@ def cleanup(conn):
             c.execute("DELETE FROM memnos_control.subscriptions WHERE namespace=%s", (ns,))
             c.execute("DELETE FROM memnos_control.agent_sessions WHERE namespace=%s", (ns,))
             c.execute("DELETE FROM memnos_control.channel_messages WHERE namespace=%s", (ns,))
+            c.execute("DELETE FROM memnos_control.channel_catalog WHERE namespace=%s", (ns,))
             c.execute("DELETE FROM memnos_control.channel_subscriptions WHERE namespace=%s", (ns,))
             c.execute("DELETE FROM memnos_control.corpus_sources WHERE namespace=%s", (ns,))
             c.execute("DELETE FROM memnos_control.corpus_deviations WHERE namespace=%s", (ns,))
@@ -490,6 +491,8 @@ def main():
     call("POST", "/channel/poll", token=TADM, body={"namespace": NS, "session_name": "oapi-a"}, expect=200)
     call("POST", "/channel/wait", token=TADM,
          body={"namespace": NS, "session_name": "oapi-a", "timeout_seconds": 1}, expect=200)
+    call("POST", "/channel/advertise", token=TADM,
+         body={"namespace": NS, "channel": "#oapi", "description": "d", "intents": ["task"]}, expect=200)
     call("POST", "/channel/list", token=TADM, body={"namespace": NS}, expect=200)
     call("POST", "/session/list", token=TADM, body={"namespace": NS}, expect=200)
     call("POST", "/channel/unsubscribe", token=TADM,

@@ -1006,7 +1006,7 @@ paths:
   /channel/list:
     post:
       tags: [pubsub]
-      summary: List channels with message counts and subscribers
+      summary: Discover channels (descriptions, publishers, subscribers), active peer sessions and wildcard subscriptions
       requestBody:
         required: true
         content:
@@ -1018,6 +1018,26 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ChannelListResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
+  /channel/advertise:
+    post:
+      tags: [pubsub]
+      summary: Advertise a channel (what it is for, what subscribers receive)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelAdvertiseRequest" }
+      responses:
+        "200":
+          description: catalog entry
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelAd" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -1914,6 +1934,9 @@ components:
       properties:
         namespace: { type: string, maxLength: 200 }
         query: { type: string, maxLength: 4000 }
+        include_peers: { type: boolean, description: "/recall only: also return peer_directory (active sessions, channels, wildcards)" }
+        session_name: { type: string, description: "/recall only: your session name; implies peer_directory" }
+        poll_inbox: { type: boolean, description: "/recall only: with session_name, also return unread inbox messages (advances cursors)" }
         scope:
           type: string
           enum: [all, wide]
@@ -2149,6 +2172,9 @@ components:
         current_task: { type: string }
         metadata: { type: object }
         channels: { type: array, items: { type: string } }
+        channel_ads:
+          type: object
+          description: "channel -> description string, or {description, what_you_get, intents}"
         ttl_seconds: { type: integer }
     SessionHeartbeatRequest:
       type: object
@@ -2180,6 +2206,8 @@ components:
         intent: { type: string, enum: [message, status, task, review_request, critique, question, answer, handoff, done] }
         metadata: { type: object }
         remember: { type: boolean, description: "also persist a durable raw turn (memory_type handoff, or decision for answer/done)" }
+        description: { type: string, description: "optional: advertise/update the channel description" }
+        what_you_get: { type: string }
     ChannelSubscribeRequest:
       type: object
       required: [namespace, session_name, channels]
@@ -2188,6 +2216,8 @@ components:
         session_name: { type: string }
         channels: { type: array, items: { type: string } }
         from_beginning: { type: boolean }
+        description: { type: string, description: "optional: advertise/update the channel description" }
+        what_you_get: { type: string }
     ChannelPollRequest:
       type: object
       required: [namespace, session_name]
@@ -2211,6 +2241,10 @@ components:
         current_task: { type: string }
         expires_at: { type: string }
         subscribed_channels: { type: array, items: { type: string } }
+        direct_channel: { type: string }
+        status_channel: { type: string }
+        peers: { type: array, items: { type: object } }
+        available_channels: { type: array, items: { $ref: "#/components/schemas/ChannelInfo" } }
     SessionUnregisterResponse:
       type: object
       required: [unregistered]
@@ -2271,20 +2305,50 @@ components:
         messages: { type: array, items: { $ref: "#/components/schemas/ChannelMessage" } }
         count: { type: integer }
         timed_out: { type: boolean }
+    ChannelAdvertiseRequest:
+      type: object
+      required: [namespace, channel]
+      properties:
+        namespace: { type: string, maxLength: 200 }
+        channel: { type: string }
+        description: { type: string }
+        what_you_get: { type: string }
+        intents: { type: array, items: { type: string, enum: [message, status, task, review_request, critique, question, answer, handoff, done] } }
+        owner_session: { type: string }
+        metadata: { type: object }
+    ChannelAd:
+      type: object
+      required: [channel, kind, description, what_you_get, intents]
+      properties:
+        namespace: { type: string }
+        channel: { type: string }
+        kind: { type: string, enum: [topic, direct, status, wildcard] }
+        description: { type: string }
+        what_you_get: { type: string }
+        intents: { type: array, items: { type: string } }
+        owner_session: { type: string }
+        author: { type: [string, "null"] }
+    ChannelInfo:
+      type: object
+      required: [channel, kind, description, what_you_get, intents, message_count, subscribers, publishers]
+      properties:
+        channel: { type: string }
+        kind: { type: string }
+        description: { type: string }
+        what_you_get: { type: string }
+        intents: { type: array, items: { type: string } }
+        owner_session: { type: string }
+        message_count: { type: integer }
+        last_message_at: { type: [string, "null"] }
+        subscribers: { type: array, items: { type: string } }
+        publishers: { type: array, items: { type: string } }
     ChannelListResponse:
       type: object
-      required: [channels]
+      required: [channels, active_sessions, wildcard_subscriptions]
       properties:
-        channels:
-          type: array
-          items:
-            type: object
-            required: [channel, message_count, subscribers]
-            properties:
-              channel: { type: string }
-              message_count: { type: integer }
-              last_message_at: { type: [string, "null"] }
-              subscribers: { type: array, items: { type: string } }
+        channels: { type: array, items: { $ref: "#/components/schemas/ChannelInfo" } }
+        active_sessions: { type: array, items: { type: object } }
+        wildcard_subscriptions: { type: array, items: { $ref: "#/components/schemas/ChannelAd" } }
 
     # ── data-plane responses ──
     RememberResponse:

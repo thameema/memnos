@@ -933,14 +933,17 @@ def _chan_call(path, payload, what, timeout=60):
 @mcp.tool()
 def session_register(name: str, role: str = "", harness: str = "", model: str = "",
                      current_task: str = "", channels: list[str] | None = None,
-                     ttl_seconds: int = 1800) -> str:
+                     channel_ads: dict[str, str] | None = None, ttl_seconds: int = 1800) -> str:
     """Register this agent under a human-friendly session name (e.g. 'claude-dev',
     'gemini-critic') so peers can find and message it. Auto-subscribes @<name> and #general.
-    The name becomes this process's default session for the other session_/channel_ tools."""
+    The name becomes this process's default session for the other session_/channel_ tools.
+    channel_ads maps channel -> description to advertise channels you own. The reply lists
+    peers and available_channels (what each channel is for)."""
     global _SESSION_DEFAULT
     out = _chan_call("/session/register", {
         "name": name, "role": role, "harness": harness, "model": model,
-        "current_task": current_task, "channels": channels or [], "ttl_seconds": ttl_seconds,
+        "current_task": current_task, "channels": channels or [], "channel_ads": channel_ads or {},
+        "ttl_seconds": ttl_seconds,
         "host": os.uname().nodename, "cwd": os.getcwd()}, "session_register")
     if not out.startswith("(memnos"):
         _SESSION_DEFAULT = name.strip().lstrip("@")
@@ -1044,8 +1047,21 @@ def channel_wait(channel: str = "", session_name: str = "", timeout_seconds: int
 
 @mcp.tool()
 def channel_list() -> str:
-    """List channels in this namespace with message counts and subscribers."""
+    """Discover channels (description, what_you_get, intents, publishers, subscribers),
+    active peer sessions and wildcard subscriptions in this namespace."""
     return _chan_call("/channel/list", {}, "channel_list")
+
+
+@mcp.tool()
+def channel_advertise(channel: str, description: str, what_you_get: str = "",
+                      intents: list[str] | None = None, owner_session: str = "") -> str:
+    """Advertise a channel so peers know what it is for and what subscribers receive."""
+    try:
+        return _chan_call("/channel/advertise", {
+            "channel": channel, "description": description, "what_you_get": what_you_get,
+            "intents": intents or [], "owner_session": _sess(owner_session)}, "channel_advertise")
+    except ValueError as e:
+        return f"(memnos channel_advertise: {e})"
 
 
 # ---- self-re-exec on version change (issue #68) ---------------------------------------

@@ -125,7 +125,7 @@ WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/c
              "/corpus/deviation", "/ingest/file", "/episode/segment", "/episode/decay",
              "/namespace/copy", "/lease/acquire", "/lease/heartbeat", "/lease/release",
              "/session/register", "/session/heartbeat", "/session/unregister",
-             "/channel/publish", "/channel/subscribe", "/channel/unsubscribe"}
+             "/channel/publish", "/channel/subscribe", "/channel/unsubscribe", "/channel/advertise"}
 
 
 def _suggest_enabled():
@@ -1415,6 +1415,7 @@ class Handler(BaseHTTPRequestHandler):
                                 cwd=str(req.get("cwd", "")), status=str(req.get("status", "active")),
                                 current_task=str(req.get("current_task", "")),
                                 metadata=req.get("metadata"), channels=req.get("channels"),
+                                channel_ads=req.get("channel_ads"),
                                 ttl_seconds=int(req.get("ttl_seconds", 1800)))
                         elif self.path == "/session/heartbeat":
                             out = Control.session_heartbeat(
@@ -1433,7 +1434,9 @@ class Handler(BaseHTTPRequestHandler):
                         elif self.path == "/channel/publish":
                             out = Control.channel_publish(
                                 conn, ns, req.get("channel"), sess, principal, str(req.get("content", "")),
-                                intent=str(req.get("intent", "message")), metadata=req.get("metadata"))
+                                intent=str(req.get("intent", "message")), metadata=req.get("metadata"),
+                                description=str(req.get("description", "")),
+                                what_you_get=str(req.get("what_you_get", "")))
                             if req.get("remember"):
                                 mt = "decision" if out["intent"] in ("answer", "done") else "handoff"
                                 store.insert_raw_turn(
@@ -1443,7 +1446,16 @@ class Handler(BaseHTTPRequestHandler):
                                 out["remembered"] = True
                         elif self.path == "/channel/subscribe":
                             out = Control.channel_subscribe(conn, ns, sess, principal, req.get("channels"),
-                                                            from_beginning=bool(req.get("from_beginning", False)))
+                                                            from_beginning=bool(req.get("from_beginning", False)),
+                                                            description=str(req.get("description", "")),
+                                                            what_you_get=str(req.get("what_you_get", "")))
+                        elif self.path == "/channel/advertise":
+                            out = Control.channel_advertise(
+                                conn, ns, req.get("channel"), principal,
+                                owner_session=str(req.get("owner_session") or sess),
+                                description=str(req.get("description", "")),
+                                what_you_get=str(req.get("what_you_get", "")),
+                                intents=req.get("intents"), metadata=req.get("metadata"))
                         elif self.path == "/channel/unsubscribe":
                             out = Control.channel_unsubscribe(conn, ns, sess, principal, req.get("channels"))
                         elif self.path == "/channel/poll":
@@ -1476,7 +1488,9 @@ class Handler(BaseHTTPRequestHandler):
                                 conn.execute("UNLISTEN memnos_channel")
                             out["timed_out"] = out["count"] == 0
                         elif self.path == "/channel/list":
-                            out = {"channels": Control.channel_list(conn, ns)}
+                            out = {"channels": Control.channel_list(conn, ns),
+                                   "active_sessions": Control.session_list(conn, ns),
+                                   "wildcard_subscriptions": Control.WILDCARD_ADS}
                         else:
                             return self._send(404, {"error": "not found"})
                     # --- corpus ingestion + checks (Batch 4) ---
@@ -2299,6 +2313,12 @@ class Handler(BaseHTTPRequestHandler):
                                      + " -- token can also read: "
                                      + ", ".join(other_readable))
                 out["scope"] = scope
+                if req.get("include_peers") or req.get("session_name"):
+                    with POOL.connection() as pconn:     # short conn, after all model I/O
+                        out["peer_directory"] = Control.discover(pconn, ns)
+                        if req.get("session_name") and req.get("poll_inbox"):
+                            out["inbox"] = Control.channel_poll(
+                                pconn, ns, str(req["session_name"]), principal)["messages"]
             if degraded:                   # deadline hit / warming / arm failure — flagged
                 out["degraded"] = True
                 # issue #41 fix C: only present when a real arm failed (deadline/warming

@@ -1168,6 +1168,58 @@
        "help": "",
        "positional": false,
        "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "channel",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "-d, --description",
+       "help": "",
+       "positional": false,
+       "required": true
+      },
+      {
+       "arg": "-w, --what-you-get",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--intents",
+       "default": "",
+       "help": "comma-separated intents",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "channel advertise",
+     "example": null,
+     "help": "describe a channel so peers can discover it"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
       }
      ],
      "command": "channel ls",

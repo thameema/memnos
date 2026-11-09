@@ -74,8 +74,9 @@ class MemnosClient:
         return _raise(self._c.post("/remember", json=body))
 
     def recall(self, query, *, namespace=None, raw_quota=None, fact_quota=None, max_chars=None,
-               session_id=None) -> dict:
-        """session_id (issue #82): optional, has no effect on retrieval/ranking — recorded on
+               session_id=None, include_peers=False, session_name=None, poll_inbox=False) -> dict:
+        """include_peers / session_name / poll_inbox: also return peer_directory (and inbox) in the same call.
+        session_id (issue #82): optional, has no effect on retrieval/ranking — recorded on
         the server's per-constraint injection audit event for every pinned constraint this
         recall returns, so a compliance query can prove which guardrails a given agent
         session actually saw."""
@@ -84,6 +85,8 @@ class MemnosClient:
                      ("session_id", session_id)):
             if v is not None:
                 body[k] = v
+        body.update({k: v for k, v in (("include_peers", include_peers or None), ("session_name", session_name),
+                                       ("poll_inbox", poll_inbox or None)) if v})
         return _raise(self._c.post("/recall", json=body))
 
     def memories_by_type(self, memory_type, *, namespace=None, limit=200) -> dict:
@@ -139,9 +142,9 @@ class MemnosClient:
         r = self._c.post(path, json={"namespace": _ns(namespace, self.namespace), **body},
                          **({"timeout": timeout} if timeout else {}))
         return _raise(r)
-    def session_register(self, name, *, role='', harness='', model='', current_task='', channels=None, ttl_seconds=1800, namespace=None) -> dict:
-        """POST /session/register (issue #231)."""
-        return self._post_json("/session/register", {"name": name, "role": role, "harness": harness, "model": model, "current_task": current_task, "channels": channels or [], "ttl_seconds": ttl_seconds}, namespace)
+    def session_register(self, name, *, role='', harness='', model='', current_task='', channels=None, channel_ads=None, ttl_seconds=1800, namespace=None) -> dict:
+        """POST /session/register (issue #231). channel_ads: {channel: description | {description, what_you_get, intents}}."""
+        return self._post_json("/session/register", {"name": name, "role": role, "harness": harness, "model": model, "current_task": current_task, "channels": channels or [], "channel_ads": channel_ads or {}, "ttl_seconds": ttl_seconds}, namespace)
 
     def session_heartbeat(self, name, *, status=None, current_task=None, namespace=None) -> dict:
         """POST /session/heartbeat (issue #231)."""
@@ -180,6 +183,10 @@ class MemnosClient:
         """POST /channel/list (issue #231)."""
         return self._post_json("/channel/list", {}, namespace)
 
+    def channel_advertise(self, channel, description, *, what_you_get='', intents=None, owner_session='', namespace=None) -> dict:
+        """POST /channel/advertise (issue #231)."""
+        return self._post_json("/channel/advertise", {"channel": channel, "description": description, "what_you_get": what_you_get, "intents": intents or [], "owner_session": owner_session}, namespace)
+
     def close(self):
         self._c.close()
 
@@ -215,13 +222,16 @@ class AsyncMemnosClient:
         return _raise(await self._c.post("/remember", json=body))
 
     async def recall(self, query, *, namespace=None, raw_quota=None, fact_quota=None, max_chars=None,
-                     session_id=None) -> dict:
-        """session_id (issue #82): see MemnosClient.recall's docstring."""
+                     session_id=None, include_peers=False, session_name=None, poll_inbox=False) -> dict:
+        """include_peers / session_name / poll_inbox: also return peer_directory (and inbox) in the same call.
+        session_id (issue #82): see MemnosClient.recall's docstring."""
         body = {"namespace": _ns(namespace, self.namespace), "query": query}
         for k, v in (("raw_quota", raw_quota), ("fact_quota", fact_quota), ("max_chars", max_chars),
                      ("session_id", session_id)):
             if v is not None:
                 body[k] = v
+        body.update({k: v for k, v in (("include_peers", include_peers or None), ("session_name", session_name),
+                                       ("poll_inbox", poll_inbox or None)) if v})
         return _raise(await self._c.post("/recall", json=body))
 
     async def context(self, query, *, namespace=None, **kw) -> str:
@@ -243,9 +253,9 @@ class AsyncMemnosClient:
         r = await self._c.post(path, json={"namespace": _ns(namespace, self.namespace), **body},
                          **({"timeout": timeout} if timeout else {}))
         return _raise(r)
-    async def session_register(self, name, *, role='', harness='', model='', current_task='', channels=None, ttl_seconds=1800, namespace=None) -> dict:
-        """POST /session/register (issue #231)."""
-        return await self._post_json("/session/register", {"name": name, "role": role, "harness": harness, "model": model, "current_task": current_task, "channels": channels or [], "ttl_seconds": ttl_seconds}, namespace)
+    async def session_register(self, name, *, role='', harness='', model='', current_task='', channels=None, channel_ads=None, ttl_seconds=1800, namespace=None) -> dict:
+        """POST /session/register (issue #231). channel_ads: {channel: description | {description, what_you_get, intents}}."""
+        return await self._post_json("/session/register", {"name": name, "role": role, "harness": harness, "model": model, "current_task": current_task, "channels": channels or [], "channel_ads": channel_ads or {}, "ttl_seconds": ttl_seconds}, namespace)
 
     async def session_heartbeat(self, name, *, status=None, current_task=None, namespace=None) -> dict:
         """POST /session/heartbeat (issue #231)."""
@@ -283,6 +293,10 @@ class AsyncMemnosClient:
     async def channel_list(self, *, namespace=None) -> dict:
         """POST /channel/list (issue #231)."""
         return await self._post_json("/channel/list", {}, namespace)
+
+    async def channel_advertise(self, channel, description, *, what_you_get='', intents=None, owner_session='', namespace=None) -> dict:
+        """POST /channel/advertise (issue #231)."""
+        return await self._post_json("/channel/advertise", {"channel": channel, "description": description, "what_you_get": what_you_get, "intents": intents or [], "owner_session": owner_session}, namespace)
 
     async def aclose(self):
         await self._c.aclose()
