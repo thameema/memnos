@@ -54,6 +54,7 @@ from .discovery.harnesses import (
     apply_setting_sources,
     apply_skip_permissions,
     DISPATCH_TRIGGER_PROMPT,
+    apply_headless,
     supports_session_id,
 )
 from .effective_config import resolve_effective_config
@@ -660,6 +661,7 @@ def tommy_dispatch(
 
     cmd = [part.replace("{prompt_file}", _tf_path) for part in spec.launch_template]
     cmd = apply_skip_permissions(cmd, chosen, cfg.skip_permissions)
+    cmd = apply_headless(cmd, chosen)
 
     # memnos#144: claude_session_id is generated here — BEFORE the session
     # title below, so the title can embed it too — and passed to claude as

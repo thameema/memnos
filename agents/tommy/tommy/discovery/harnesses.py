@@ -76,12 +76,24 @@ HARNESS_REGISTRY: dict[str, HarnessSpec] = {
         supports_mcp=False,
         description="Kiro (Amazon) — IDE-integrated, use when user requests",
     ),
+    # Google Antigravity CLI (Gemini). Headless dispatch uses `agy -p`/`--print`;
+    # interactive tommy launches use --prompt-interactive with the prompt file.
+    "agy": HarnessSpec(
+        name="agy",
+        binary="agy",
+        launch_template=["agy", "--prompt-interactive", "{prompt_file}"],
+        supports_tools=True,
+        supports_mcp=True,
+        description="Google Antigravity CLI (Gemini) — full tool, subagent + MCP support",
+    ),
 }
+# `antigravity` is an alias for the same spec (so cfg.harness = "antigravity" resolves).
+HARNESS_REGISTRY["antigravity"] = HARNESS_REGISTRY["agy"]
 
 
 
 # Harnesses that accept --dangerously-skip-permissions
-_SUPPORTS_SKIP_PERMISSIONS = {"claude"}
+_SUPPORTS_SKIP_PERMISSIONS = {"claude", "agy", "antigravity"}
 
 
 def apply_skip_permissions(cmd: list[str], harness_name: str, skip: bool) -> list[str]:
@@ -94,6 +106,16 @@ def apply_skip_permissions(cmd: list[str], harness_name: str, skip: bool) -> lis
 
 
 _SUPPORTS_SESSION_NAME = {"claude"}
+
+
+def apply_headless(cmd: list[str], harness_name: str) -> list[str]:
+    """Headless dispatch: agy runs non-interactively with -p/--print instead of
+    --prompt-interactive. No-op for other harnesses (claude goes headless via stdout=PIPE).
+    shortcut: assumes `agy -p <file>` takes the prompt file like --prompt-interactive does;
+    unverified against a real agy, confirm before relying on it."""
+    if harness_name in ("agy", "antigravity"):
+        return ["-p" if a == "--prompt-interactive" else a for a in cmd]
+    return cmd
 
 
 def apply_session_name(cmd: list[str], harness_name: str, name: str) -> list[str]:

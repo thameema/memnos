@@ -196,6 +196,15 @@ def _find_latest_claude_transcript() -> Optional[Path]:
     return Path(max(files, key=os.path.getmtime))
 
 
+def _find_latest_agy_transcript() -> Optional[Path]:
+    """Most recently modified Antigravity transcript.jsonl (CLI or IDE brain dir)."""
+    files = []
+    for root in ("antigravity-cli", "antigravity"):
+        files += glob.glob(str(Path.home() / ".gemini" / root / "brain" / "*"
+                               / ".system_generated" / "logs" / "transcript.jsonl"))
+    return Path(max(files, key=os.path.getmtime)) if files else None
+
+
 def _post_run_capture(client, cfg: TommyConfig, run_id: str, project_key: Optional[str]) -> None:
     """
     After the sub-agent exits:
@@ -208,7 +217,8 @@ def _post_run_capture(client, cfg: TommyConfig, run_id: str, project_key: Option
         pass  # sub_id is threaded through via caller; nothing to do here
 
         # Layer 3: ingest conversation transcript
-        transcript = _find_latest_claude_transcript()
+        transcript = (_find_latest_agy_transcript() if cfg.harness in ("agy", "antigravity")
+                      else _find_latest_claude_transcript())
         if transcript:
             text = transcript.read_text(errors="replace")
             client.ingest_file(

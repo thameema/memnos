@@ -50,7 +50,7 @@ def _resolve_or_die(
 @click.command(
     "generate",
     help="Read tommy.yaml and write/update harness adapter files "
-    "(CLAUDE.md, .cursor/rules/tommy.mdc, .windsurfrules, .github/copilot-instructions.md).",
+    "(CLAUDE.md, .cursor/rules/tommy.mdc, .windsurfrules, .github/copilot-instructions.md, GEMINI.md, .agents/rules/AGENTS.md).",
 )
 @click.option("--conf", default=None, metavar="PATH", help="Path to tommy.conf override.")
 @click.option("--tommy-yaml", default=None, metavar="PATH", help="Explicit path to tommy.yaml (skips discovery).")

@@ -3220,7 +3220,11 @@ _AGENTS = {
     # ~/.omnigent/config.yaml's default_agent) and writes an inline `tools.memnos` MCP
     # entry, so it gets its own "special" dispatch like claude-code.
     "omnigent":       {"special": "omnigent"},
+    # Google Antigravity (`agy` CLI / IDE, Gemini models): MCP + lifecycle hooks + GEMINI.md
+    # under ~/.gemini/config. Aliases agy/gemini normalize to this (see _AGENT_ALIASES).
+    "antigravity":    {"special": "antigravity"},
 }
+_AGENT_ALIASES = {"agy": "antigravity", "gemini": "antigravity"}
 
 
 def _detect_installed_agents():
@@ -3234,6 +3238,7 @@ def _detect_installed_agents():
       windsurf      — ~/.codeium directory exists
       hermes        — ~/.hermes directory exists
       openclaw      — ~/.openclaw directory exists
+      antigravity   — `agy` on PATH, or ~/.gemini/config or ~/.gemini/antigravity-cli exists
 
     Returns a list of names in the order they appear in _AGENTS so output
     is predictable.
@@ -3253,6 +3258,9 @@ def _detect_installed_agents():
         "hermes":         lambda: os.path.isdir(os.path.expanduser("~/.hermes")),
         "openclaw":       lambda: os.path.isdir(os.path.expanduser("~/.openclaw")),
         "omnigent":       lambda: os.path.isdir(os.path.expanduser("~/.omnigent")),
+        "antigravity":    lambda: (shutil.which("agy") is not None
+                                   or os.path.isdir(os.path.expanduser("~/.gemini/config"))
+                                   or os.path.isdir(os.path.expanduser("~/.gemini/antigravity-cli"))),
     }
     for name in _AGENTS:
         check = checks.get(name)
@@ -3890,6 +3898,73 @@ def cmd_server_setup(args, cfg):
     sys.exit(f"server-setup: unknown target {args.target!r}")
 
 
+def cmd_antigravity_setup(args, cfg):
+    """Wire Google Antigravity (agy CLI / IDE): MCP server, lifecycle hooks and a GEMINI.md
+    instruction block, all under ~/.gemini/config. Idempotent; backs up every file it edits;
+    other hook groups / MCP servers already in those files are preserved."""
+    import shlex
+    cfg_dir = os.path.expanduser("~/.gemini/config")
+    if not os.path.isdir(cfg_dir) and not args.force and \
+            "antigravity" not in _detect_installed_agents():
+        print("Antigravity not detected (no `agy`, no ~/.gemini/config). Re-run with --force.")
+        return
+    os.makedirs(cfg_dir, exist_ok=True)
+    url = os.environ.get("MEMNOS_URL") or f"http://127.0.0.1:{cfg.get('port', 8900)}"
+    token, default_ns = _ensure_claude_token(cfg, extra_ns=args.namespace)
+    ns = args.namespace or default_ns
+
+    def load(path):
+        try:
+            d = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
+            return d if isinstance(d, dict) else {}
+        except Exception:
+            return {}
+
+    # 1. MCP server
+    mcp_path = os.path.join(cfg_dir, "mcp_config.json")
+    d = load(mcp_path)
+    if args.transport == "http":
+        # shortcut: Antigravity's HTTP header field name is assumed to be `headers`
+        # (as in Claude Code); verify against a real agy before relying on it.
+        entry = {"url": f"{url}/mcp",
+                 "headers": {"Authorization": f"Bearer {token}", "X-Memnos-Namespace": ns}}
+    else:
+        cmd, cargs = _mcp_launcher()
+        entry = {"command": cmd, "args": cargs,
+                 "env": {"MEMNOS_URL": url, "MEMNOS_TOKEN": token, "MEMNOS_NS": ns}}
+    d.setdefault("mcpServers", {})["memnos"] = entry
+    _backup(mcp_path); json.dump(d, open(mcp_path, "w", encoding="utf-8"), indent=2)
+
+    # 2. lifecycle hooks: a top-level "memnos" group, replaced wholesale on re-run
+    hooks_path = os.path.join(cfg_dir, "hooks.json")
+    h = load(hooks_path)
+    cmd, cargs = _mcp_launcher()
+    base = " ".join(shlex.quote(x) for x in [cmd] + cargs[:-1])      # cargs ends with "mcp"
+    env = f"MEMNOS_URL={url} MEMNOS_TOKEN={token} MEMNOS_NS={ns}"
+
+    def hk(which, timeout=15):
+        return {"type": "command", "command": f"{env} {base} hook {which}", "timeout": timeout}
+    h["memnos"] = {
+        "SessionStart": [hk("status")],
+        "PreInvocation": [hk("recall")],
+        "Stop": [hk("remember")],
+        "PreToolUse": [{"matcher": "*", "hooks": [hk("enforce", 10)]}],
+    }
+    _backup(hooks_path); json.dump(h, open(hooks_path, "w", encoding="utf-8"), indent=2)
+
+    # 3. GEMINI.md instruction block (append once)
+    gm = os.path.join(cfg_dir, "GEMINI.md")
+    cur = open(gm, encoding="utf-8").read() if os.path.exists(gm) else ""
+    if "## memnos — long-term memory" not in cur:
+        if cur:
+            _backup(gm)
+        with open(gm, "a", encoding="utf-8") as f:
+            f.write(("\n\n" if cur else "") + _AGENT_MD)
+
+    print(f"[memnos] antigravity wired -> {cfg_dir} (MCP {args.transport}, hooks, GEMINI.md; ns={ns}).")
+    print("          Restart agy / the Antigravity IDE to activate memory.")
+
+
 def cmd_agent_setup(args, cfg):
     """Wire memnos into another MCP-capable agent (codex/cursor/windsurf/claude-desktop/
     openclaw/hermes/omnigent). Writes its MCP server config (+ an AGENTS.md instruction
@@ -3934,17 +4009,22 @@ def cmd_agent_setup(args, cfg):
                   "Restart each agent to activate memory.")
         return
 
+    args.agent = _AGENT_ALIASES.get(args.agent, args.agent)
     spec = _AGENTS.get(args.agent)
     if not spec:
         sys.exit(f"unknown agent '{args.agent}' — choose: {', '.join(_AGENTS)}")
     transport = getattr(args, "transport", "stdio")
-    if transport == "http" and args.agent not in ("claude-code", "omnigent"):
-        sys.exit(f"--transport http is only supported for claude-code and omnigent "
+    if transport == "http" and args.agent not in ("claude-code", "omnigent", "antigravity"):
+        sys.exit(f"--transport http is only supported for claude-code, omnigent and antigravity "
                  f"(got '{args.agent}') — its HTTP MCP config shape hasn't been verified yet.")
     if spec.get("special") == "claude":       # full Claude Code setup (MCP + hooks + /memnos)
         return cmd_claude_setup(argparse.Namespace(namespace=args.namespace,
                                                    force=getattr(args, "force", False),
                                                    transport=transport), cfg)
+    if spec.get("special") == "antigravity":   # MCP + hooks + GEMINI.md under ~/.gemini/config
+        return cmd_antigravity_setup(argparse.Namespace(namespace=args.namespace,
+                                                        force=getattr(args, "force", False),
+                                                        transport=transport), cfg)
     if spec.get("special") == "omnigent":      # inline MCP entry in the agent's config.yaml
         return cmd_omnigent_setup(argparse.Namespace(namespace=args.namespace,
                                                       force=getattr(args, "force", False),
@@ -4098,16 +4178,50 @@ def _refresh_enforce_cache(cfg, ns):
     return len(rows)
 
 
+_AGY_PAYLOAD_KEYS = ("conversationId", "workspacePaths", "lastUserInput", "transcriptPath",
+                      "toolCall", "invocationNum", "terminationReason")
+
+
+def _is_antigravity_hook(data):
+    """Antigravity hooks send camelCase protojson on stdin (Claude Code sends snake_case)."""
+    return isinstance(data, dict) and any(k in data for k in _AGY_PAYLOAD_KEYS)
+
+
+def _agy_inject(*msgs, markdown=False):
+    """Antigravity stdout for SessionStart/PreInvocation: one injected system step per msg.
+    markdown=True (SessionStart) also shows the message to the user via user_markdown."""
+    def step(m):
+        sm = {"systemMessage": m}
+        if markdown:
+            sm["metadata"] = {"user_markdown": m}
+        return {"systemMessage": sm}
+    return json.dumps({"injectSteps": [step(m) for m in msgs]})
+
+
+def _agy_user_text(c):
+    """Strip Antigravity's <ADDITIONAL_METADATA> block and <USER_REQUEST> wrapper from a user step."""
+    if not isinstance(c, str):
+        return ""
+    c = re.sub(r"<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>", "", c, flags=re.S)
+    m = re.search(r"<USER_REQUEST>(.*?)</USER_REQUEST>", c, flags=re.S)
+    return (m.group(1) if m else c).strip()
+
+
 def _tool_match_subject(tool_name, tool_input):
     """The string a --tool glob is matched against — mirrors Claude Code's OWN allowed-tools
     syntax (Bash(cmd), so users write matchers in a form they already know from #27's
     Bash(memnos:*) pattern. Falls back to the bare tool name (e.g. just "Bash") for --tool
     patterns that don't care about the specific input."""
     inner = ""
+    ti = tool_input if isinstance(tool_input, dict) else {}
     if tool_name == "Bash":
-        inner = (tool_input or {}).get("command", "")
-    elif isinstance(tool_input, dict) and tool_input.get("file_path"):
-        inner = tool_input["file_path"]
+        inner = ti.get("command", "")
+    elif tool_name == "run_command":                      # Antigravity
+        inner = ti.get("CommandLine", "")
+    elif tool_name in ("read_file", "write_file", "edit_file"):   # Antigravity
+        inner = ti.get("Path", "")
+    elif ti.get("file_path"):
+        inner = ti["file_path"]
     return f"{tool_name}({inner})" if inner else tool_name
 
 
@@ -4232,6 +4346,10 @@ def cmd_hook(args, cfg):
         data = json.load(sys.stdin)
     except Exception:
         return
+    agy = _is_antigravity_hook(data)
+    if agy and not data.get("cwd") and isinstance(data.get("workspacePaths"), list) \
+            and data["workspacePaths"]:
+        data["cwd"] = data["workspacePaths"][0]
 
     if args.which == "enforce":
         # PreToolUse (issue #28 part 2). Cache-only — NO DB/server/LLM call on this path
@@ -4240,8 +4358,14 @@ def cmd_hook(args, cfg):
         # working and enforcement being silently bypassed). No decision printed = defer to
         # Claude Code's normal permission flow (NOT the same as "allow" — verified: an
         # empty/absent permissionDecision defers, it doesn't grant).
-        tool_name = data.get("tool_name") or ""
-        tool_input = data.get("tool_input") or {}
+        _tc = data.get("toolCall") if isinstance(data.get("toolCall"), dict) else {}
+        tool_name = _tc.get("name") or data.get("tool_name") or ""
+        tool_input = _tc.get("args") or data.get("tool_input") or {}
+        # Antigravity's PreToolUse REQUIRES a JSON decision on stdout; Claude Code defers
+        # when nothing is printed. `allow()` is that no-match exit for both.
+        def allow():
+            if agy:
+                print(json.dumps({"decision": "allow"}))
         # nsresolve.resolve() (no data arg -> pure cwd + local-bindings-cache resolution),
         # NOT the baked MEMNOS_NS env var directly: bindings take precedence over env in
         # nsresolve's own resolution order, so this self-heals if the user rebinds the
@@ -4255,22 +4379,27 @@ def cmd_hook(args, cfg):
                 cache = json.load(f)
             rules = cache.get("rules", [])
         except Exception:
-            return   # no cache yet (never refreshed) or unreadable — fail OPEN, not closed
+            return allow()   # no cache yet (never refreshed) or unreadable — fail OPEN, not closed
         if not rules:
-            return
+            return allow()
         subject = _tool_match_subject(tool_name, tool_input)
+        # a rule written as Bash(rm -rf*) must also catch Antigravity's run_command
+        subjects = [subject, tool_name]
+        if tool_name == "run_command" and isinstance(tool_input, dict):
+            subjects.append(f"Bash({tool_input.get('CommandLine', '')})")
+            subjects.append("Bash")
         import fnmatch
         matched = []
         for r in rules:
             try:
                 pat = r.get("tool_matcher") or ""
-                if fnmatch.fnmatch(subject, pat) or fnmatch.fnmatch(tool_name, pat):
+                if any(fnmatch.fnmatch(x, pat) for x in subjects):
                     matched.append(r)
             except Exception:
                 continue   # one broken matcher fails OPEN for itself only — never blocks
                           # everything, and never suppresses a DIFFERENT rule's real match
         if not matched:
-            return
+            return allow()
         level = "block" if any(r["enforce_level"] == "block" for r in matched) else "ask"
         fired = next(r for r in matched if r["enforce_level"] == level)
         decision = "deny" if level == "block" else "ask"
@@ -4282,10 +4411,13 @@ def cmd_hook(args, cfg):
         src_ns = fired.get("namespace")
         source = f" [from {src_ns}]" if src_ns and src_ns != enforce_ns else ""
         reason = f"memnos constraint (id={fired['id']}){source}: {fired['rule_text']}"
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": decision,
-            "permissionDecisionReason": reason}}))
+        if agy:
+            print(json.dumps({"decision": decision, "reason": reason}))
+        else:
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": decision,
+                "permissionDecisionReason": reason}}))
         # Audit AFTER printing the decision — a slow/failed audit write must never delay or
         # suppress the actual deny/ask (that's the rare path; the DB round-trip here, unlike
         # the common allow path above, is acceptable).
@@ -4318,7 +4450,7 @@ def cmd_hook(args, cfg):
             pass
 
     ns, ns_source = nsresolve.resolve_with_source(data)
-    session_id = data.get("session_id") or data.get("sessionId")
+    session_id = data.get("session_id") or data.get("sessionId") or data.get("conversationId")
 
     if args.which == "status":
         # issue #28 part 2: refresh THIS namespace's enforce cache for the PreToolUse hook.
@@ -4412,12 +4544,26 @@ def cmd_hook(args, cfg):
                         f"If so, bind this repo:  memnos bind <repo|key> {s}")
         except Exception:
             pass
-        print(json.dumps({"systemMessage": msg}))
+        print(_agy_inject(msg, markdown=True) if agy else json.dumps({"systemMessage": msg}))
         return
 
     if args.which == "recall":
-        prompt = (data.get("prompt") or "").strip()
-        if not prompt:
+        prompt = (data.get("prompt") or data.get("lastUserInput") or "").strip()
+        if agy:
+            prompt = _agy_user_text(prompt) or prompt
+        # Antigravity's PreInvocation fires before EVERY model call (inner tool loops too).
+        # Skip a repeat only when it's an inner step (invocationNum > 1) of a (conversation,
+        # prompt) we already recalled for — a NEW prompt always recalls, so a counter that
+        # doesn't reset per turn can't silence recall.
+        skip_repeat = False
+        if agy and prompt:
+            import hashlib
+            _ph = hashlib.sha1(prompt.encode()).hexdigest()[:16]
+            _first = nsresolve.session_first_time(session_id, _ph, kind="agyrecall")
+            skip_repeat = (data.get("invocationNum") or 1) > 1 and not _first
+        if not prompt or skip_repeat:
+            if agy:
+                print("{}")
             return
         is_stale = False
         snap = None
@@ -4451,16 +4597,19 @@ def cmd_hook(args, cfg):
                 # know memory is off. Tell them once per ~10 min (marker-file throttle).
                 marker = os.path.join(CONFIG_DIR, ".hook_down_notified")
                 import time
+                notify_stale = False
                 try:
                     notify_stale = (not os.path.exists(marker)) or (time.time() - os.path.getmtime(marker) > 600)
                     if notify_stale:
                         open(marker, "w", encoding="utf-8").close()
-                        print(json.dumps({"systemMessage":
-                            f"memnos: memory server unreachable/unhealthy at {url} — recall/auto-save "
-                            "are OFF for now. Check `memnos status`; start with `memnos start`, or "
-                            "`memnos autostart` to keep it running across reboots."}))
+                        _down = (f"memnos: memory server unreachable/unhealthy at {url} — recall/auto-save "
+                                 "are OFF for now. Check `memnos status`; start with `memnos start`, or "
+                                 "`memnos autostart` to keep it running across reboots.")
+                        print(_agy_inject(_down) if agy else json.dumps({"systemMessage": _down}))
                 except Exception:
                     pass
+                if agy and not notify_stale:
+                    print("{}")
                 return
         # write-side transparency (issue #20, Part B): tell the user WHERE memory for this
         # folder will be written — ONCE per session, and again only when the namespace
@@ -4502,16 +4651,32 @@ def cmd_hook(args, cfg):
                 _ctx_block = ctx
             out["hookSpecificOutput"] = {"hookEventName": "UserPromptSubmit",
                   "additionalContext": "## Relevant memories (memnos)\n" + _ctx_block}
-        if out:
+        if agy:
+            msgs = [out["systemMessage"]] if out.get("systemMessage") else []
+            if out.get("hookSpecificOutput"):
+                msgs.append(out["hookSpecificOutput"]["additionalContext"])
+            print(_agy_inject(*msgs) if msgs else "{}")
+        elif out:
             print(json.dumps(out))
         return
 
+    # Antigravity's Stop hook must emit a JSON object whatever happens inside.
+    if agy:
+        try:
+            _hook_remember(data, ns, url, hdr, token)
+        finally:
+            print("{}")
+        return
+    return _hook_remember(data, ns, url, hdr, token)
+
+
+def _hook_remember(data, ns, url, hdr, token):
     # remember (Stop): save the last user message AND the assistant's reply to it.
     # The reply is where conclusions live (decisions, ticket IDs, outcomes) — capturing
     # only the question made everything the agent said invisible across sessions.
-    text = data.get("prompt", "")
+    text = data.get("prompt") or _agy_user_text(data.get("lastUserInput")) or ""
     a_text = ""
-    tp = data.get("transcript_path", "")
+    tp = data.get("transcript_path") or data.get("transcriptPath") or ""
     if tp and os.path.exists(tp):
         try:
             last = ""
@@ -4519,6 +4684,19 @@ def cmd_hook(args, cfg):
             with open(tp, encoding="utf-8") as f:
                 for line in f:
                     ev = json.loads(line); c = ev.get("message", {}).get("content")
+                    # Antigravity transcript.jsonl steps (flat: type/source + string content)
+                    _st, _src = ev.get("type"), ev.get("source")
+                    if _st == "USER_INPUT" or _src == "USER_EXPLICIT":
+                        saw_user_event = True
+                        u_text = _agy_user_text(ev.get("content"))
+                        if u_text:
+                            last = u_text; a_text = ""
+                        continue
+                    if _st == "PLANNER_RESPONSE" or (_src == "MODEL" and not _st):
+                        t = ev.get("content")
+                        if isinstance(t, str) and t.strip():
+                            a_text = (a_text + "\n" + t.strip()) if a_text else t.strip()
+                        continue
                     if ev.get("type") == "user" and ev.get("isMeta"):
                         # Real transcripts pair a genuine list-shaped turn (e.g. an image
                         # paste) with a companion "user" event carrying `isMeta: true` and a
@@ -5082,7 +5260,7 @@ def build_parser():
 
     # ---- integrations ----
     p = sub.add_parser("agent-setup", help="wire memnos into an agent (claude-code, codex, cursor, omnigent, ...) or 'all'")
-    p.add_argument("agent", choices=list(_AGENTS) + ["all"],
+    p.add_argument("agent", choices=list(_AGENTS) + list(_AGENT_ALIASES) + ["all"],
                    help="which agent to wire — use 'all' to auto-detect and wire every installed agent")
     p.add_argument("--namespace", help="default namespace for the agent")
     p.add_argument("--force", action="store_true", help="set up even if the agent isn't detected")
@@ -5090,7 +5268,7 @@ def build_parser():
                    help="omnigent only: path to an agent's config.yaml (or its containing "
                         "directory); defaults to ~/.omnigent/config.yaml's default_agent")
     p.add_argument("--transport", choices=("stdio", "http"), default="stdio",
-                   help="MCP transport to wire (claude-code/omnigent only): 'stdio' (default, "
+                   help="MCP transport to wire (claude-code/omnigent/antigravity only): 'stdio' (default, "
                         "spawns `memnos mcp` as a subprocess) or 'http' (connects to the "
                         "already-running server's streamable-HTTP endpoint at :8900/mcp — "
                         "survives a memnos restart without a client-side session reset). "
