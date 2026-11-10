@@ -1114,6 +1114,18 @@ def inbox_act(message_id: int, action: str = "acted", resolution: str = "", repl
 
 
 @mcp.tool()
+def channel_cleanup(idle_days: int = 7, message_retention_days: int = 30, dry_run: bool = False) -> str:
+    """Reap idle subscriptions, abandoned sessions, old channel messages, finished inbox items and
+    orphaned channels in this namespace. dry_run=true only reports the counts."""
+    try:
+        return _chan_call("/channel/cleanup", {"idle_days": idle_days,
+                                               "message_retention_days": message_retention_days,
+                                               "dry_run": dry_run}, "channel_cleanup")
+    except ValueError as e:
+        return f"(memnos channel_cleanup: {e})"
+
+
+@mcp.tool()
 def channel_advertise(channel: str, description: str, what_you_get: str = "",
                       intents: list[str] | None = None, owner_session: str = "") -> str:
     """Advertise a channel so peers know what it is for and what subscribers receive."""

@@ -663,6 +663,18 @@ describe a channel so peers can discover it
 | `-w, --what-you-get` | (default ``) |
 | `--intents` | comma-separated intents (default ``) |
 
+### `memnos channel cleanup`
+
+reap idle subscriptions/sessions, old messages, orphan channels
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `--idle-days` | (default `7`) |
+| `--retention-days` | (default `30`) |
+| `--dry-run` | report counts only |
+
 ### `memnos channel ls`
 
 list channels

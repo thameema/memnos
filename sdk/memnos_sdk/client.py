@@ -213,6 +213,14 @@ class MemnosClient:
         """POST /inbox/act (issue #231)."""
         return self._post_json("/inbox/act", {"to_session": session_name, "message_id": message_id, "action": action, "resolution": resolution, "reply": reply}, namespace)
 
+    def channel_cleanup(self, *, idle_days=7, message_retention_days=30, dry_run=False, namespace=None) -> dict:
+        """POST /channel/cleanup (issue #231)."""
+        return self._post_json("/channel/cleanup", {"idle_days": idle_days, "message_retention_days": message_retention_days, "dry_run": dry_run}, namespace)
+
+    def channel_cleanup(self, *, idle_days=7, message_retention_days=30, dry_run=False, namespace=None) -> dict:
+        """POST /channel/cleanup (issue #231)."""
+        return self._post_json("/channel/cleanup", {"idle_days": idle_days, "message_retention_days": message_retention_days, "dry_run": dry_run}, namespace)
+
     def close(self):
         self._c.close()
 
@@ -349,6 +357,10 @@ class AsyncMemnosClient:
     async def inbox_act(self, session_name, message_id, *, action='acted', resolution='', reply='', namespace=None) -> dict:
         """POST /inbox/act (issue #231)."""
         return await self._post_json("/inbox/act", {"to_session": session_name, "message_id": message_id, "action": action, "resolution": resolution, "reply": reply}, namespace)
+
+    async def channel_cleanup(self, *, idle_days=7, message_retention_days=30, dry_run=False, namespace=None) -> dict:
+        """POST /channel/cleanup (issue #231)."""
+        return await self._post_json("/channel/cleanup", {"idle_days": idle_days, "message_retention_days": message_retention_days, "dry_run": dry_run}, namespace)
 
     async def aclose(self):
         await self._c.aclose()

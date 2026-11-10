@@ -1220,6 +1220,46 @@
        "help": "",
        "positional": false,
        "required": false
+      },
+      {
+       "arg": "--idle-days",
+       "default": "7",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--retention-days",
+       "default": "30",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--dry-run",
+       "help": "report counts only",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "channel cleanup",
+     "example": null,
+     "help": "reap idle subscriptions/sessions, old messages, orphan channels"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
       }
      ],
      "command": "channel ls",

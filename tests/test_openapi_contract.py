@@ -505,6 +505,7 @@ def main():
          body={"namespace": NS, "sender_session": "oapi-b", "message_id": ib["id"], "reason": "x"}, expect=200)
     call("POST", "/inbox/recall", token=TADM, body={"namespace": NS, "sender_session": "oapi-b"}, expect=400,
          name="POST /inbox/recall (nothing to recall)")
+    call("POST", "/channel/cleanup", token=TADM, body={"namespace": NS, "dry_run": True}, expect=200)
     call("POST", "/session/list", token=TADM, body={"namespace": NS}, expect=200)
     call("POST", "/channel/unsubscribe", token=TADM,
          body={"namespace": NS, "session_name": "oapi-a", "channels": ["#review"]}, expect=200)

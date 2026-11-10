@@ -126,7 +126,7 @@ WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/c
              "/namespace/copy", "/lease/acquire", "/lease/heartbeat", "/lease/release",
              "/session/register", "/session/heartbeat", "/session/unregister",
              "/channel/publish", "/channel/subscribe", "/channel/unsubscribe", "/channel/advertise",
-             "/inbox/send", "/inbox/recall", "/inbox/act"}
+             "/inbox/send", "/inbox/recall", "/inbox/act", "/channel/cleanup"}
 
 
 def _suggest_enabled():
@@ -1493,6 +1493,11 @@ class Handler(BaseHTTPRequestHandler):
                             finally:
                                 conn.execute("UNLISTEN memnos_channel")
                             out["timed_out"] = (out["count"] == 0 and not out["inbox_items"])
+                        elif self.path == "/channel/cleanup":
+                            out = Control.channel_cleanup(
+                                conn, ns, idle_days=int(req.get("idle_days", 7)),
+                                message_retention_days=int(req.get("message_retention_days", 30)),
+                                dry_run=bool(req.get("dry_run", False)))
                         elif self.path == "/channel/list":
                             out = {"channels": Control.channel_list(conn, ns),
                                    "active_sessions": Control.session_list(conn, ns),
@@ -2395,6 +2400,11 @@ class Handler(BaseHTTPRequestHandler):
             # read (conn) -> per-entity dossier LLM + embeddings (NO conn) -> write (conn)
             infer_flag = os.environ.get("MEMNOS_INFER_ON_SLEEP") == "1" and mem.llm is not None
             result = mem.consolidate(ns, conn_factory=POOL.connection, infer=infer_flag)
+            try:   # best-effort: sleep cycle also reaps idle pub/sub state (#231)
+                with POOL.connection() as conn:
+                    result["channel_cleanup"] = Control.channel_cleanup(conn, ns)
+            except Exception:
+                traceback.print_exc()
             # ENTITY DOSSIER GENERATION (issue #23): only when MEMNOS_ENTITY_DOSSIERS=1
             if os.environ.get("MEMNOS_ENTITY_DOSSIERS") == "1" and mem.llm is not None:
                 from core.service import generate_entity_dossier

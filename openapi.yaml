@@ -1043,6 +1043,26 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/DbDown" }
+  /channel/cleanup:
+    post:
+      tags: [pubsub]
+      summary: Reap idle subscriptions, abandoned/offline sessions, old channel messages, finished inbox items and orphaned catalog channels (dry_run=true only counts)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelCleanupRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelCleanupResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/DbDown" }
   /channel/poll:
     post:
       tags: [pubsub]
@@ -2470,6 +2490,28 @@ components:
         superseded_by_id: { type: [integer, "null"] }
         item: { $ref: "#/components/schemas/InboxItem" }
         reply_item: { $ref: "#/components/schemas/InboxItem" }
+    ChannelCleanupRequest:
+      type: object
+      required: [namespace]
+      properties:
+        namespace: { type: string }
+        idle_days: { type: integer, default: 7, minimum: 1, maximum: 3650 }
+        message_retention_days: { type: integer, default: 30, minimum: 1, maximum: 3650 }
+        dry_run: { type: boolean, default: false }
+    ChannelCleanupResponse:
+      type: object
+      required: [namespace, dry_run, idle_days, message_retention_days, unsubscribed, sessions_reaped,
+                 channel_messages_pruned, inbox_items_pruned, catalog_channels_pruned]
+      properties:
+        namespace: { type: string }
+        dry_run: { type: boolean }
+        idle_days: { type: integer }
+        message_retention_days: { type: integer }
+        unsubscribed: { type: integer }
+        sessions_reaped: { type: integer }
+        channel_messages_pruned: { type: integer }
+        inbox_items_pruned: { type: integer }
+        catalog_channels_pruned: { type: integer }
     ChannelPollResponse:
       type: object
       required: [session_name, messages, count]
