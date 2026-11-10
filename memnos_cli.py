@@ -4589,6 +4589,23 @@ def cmd_hook(args, cfg):
         prompt = (data.get("prompt") or "").strip()
         if not prompt:
             return
+        is_stale = False
+        snap = None
+        _recall_err = None
+        try:
+            # issue #82: session_id (resolved above from the hook payload) rides along so
+            # the server's per-constraint injection audit event can record WHICH session a
+            # pinned constraint was shown to — durable, queryable proof of what guardrails
+            # this agent session actually saw, not just that memory was recalled.
+            req = urllib.request.Request(f"{url}/recall", method="POST",
+                data=json.dumps({"namespace": ns, "query": prompt,
+                                 "session_id": session_id}).encode(), headers=hdr)
+            _resp = json.load(urllib.request.urlopen(req, timeout=8))
+            ctx = _resp.get("context", "")
+            _mem_count = len(_resp.get("memories") or [])
+            offline_queue.save_snapshot(CONFIG_DIR, ns, ctx, _mem_count)
+        except Exception as e:
+            _recall_err = e
         # issue #231: unread channel messages for this named session, best-effort, 2s cap
         inbox = ""
         _sn = nsresolve.resolve_active_session(data=data)
@@ -4630,21 +4647,8 @@ def cmd_hook(args, cfg):
                         + "\n</memnos:peers>")
         except Exception:
             pass
-        is_stale = False
-        snap = None
-        try:
-            # issue #82: session_id (resolved above from the hook payload) rides along so
-            # the server's per-constraint injection audit event can record WHICH session a
-            # pinned constraint was shown to — durable, queryable proof of what guardrails
-            # this agent session actually saw, not just that memory was recalled.
-            req = urllib.request.Request(f"{url}/recall", method="POST",
-                data=json.dumps({"namespace": ns, "query": prompt,
-                                 "session_id": session_id}).encode(), headers=hdr)
-            _resp = json.load(urllib.request.urlopen(req, timeout=8))
-            ctx = _resp.get("context", "")
-            _mem_count = len(_resp.get("memories") or [])
-            offline_queue.save_snapshot(CONFIG_DIR, ns, ctx, _mem_count)
-        except Exception as e:
+        if _recall_err is not None:
+            e = _recall_err
             # issue #37 Layer 3: on a TRANSIENT outage, serve the last-synced snapshot for
             # THIS SAME namespace (clearly labeled stale below) instead of silently
             # returning nothing — never a divergent/local answer, just an older one from
