@@ -217,10 +217,6 @@ class MemnosClient:
         """POST /channel/cleanup (issue #231)."""
         return self._post_json("/channel/cleanup", {"idle_days": idle_days, "message_retention_days": message_retention_days, "dry_run": dry_run}, namespace)
 
-    def channel_cleanup(self, *, idle_days=7, message_retention_days=30, dry_run=False, namespace=None) -> dict:
-        """POST /channel/cleanup (issue #231)."""
-        return self._post_json("/channel/cleanup", {"idle_days": idle_days, "message_retention_days": message_retention_days, "dry_run": dry_run}, namespace)
-
     def close(self):
         self._c.close()
 
