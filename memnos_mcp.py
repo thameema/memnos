@@ -247,9 +247,20 @@ def _token():
     """Bearer token for the loopback call to the memnos HTTP server. HTTP mount: the
     CALLER's own already-validated token (forwarded as-is, never re-minted) so the REST
     layer's auth/ACL/audit runs exactly as it would for any other caller. stdio: the
-    fixed env-configured token for this process."""
+    fixed env-configured token for this process, falling back to ~/.memnos/config.json."""
     ctx = _REQUEST_CTX.get()
-    return ctx[0] if ctx is not None else TOKEN
+    if ctx is not None:
+        return ctx[0]
+    tok = os.environ.get("MEMNOS_TOKEN") or TOKEN
+    if tok:
+        return tok
+    try:
+        with open(os.path.join(_config_dir(), "config.json"), encoding="utf-8") as f:
+            cfg = json.load(f)
+        at = cfg.get("agent_tokens") or {}
+        return at.get("claude-code") or at.get("antigravity") or cfg.get("admin_token", "")
+    except Exception:
+        return ""
 
 
 def _post(path, payload, timeout=60):
@@ -890,6 +901,240 @@ def lease_list() -> str:
         return f"{len(leases)} active lease(s):\n" + "\n".join(lines)
     except Exception as e:
         return _err(e, "lease_list")
+
+
+# --- named sessions + channel pub/sub (issue #231) ------------------------------------
+_SESSION_DEFAULT = ""   # set by session_register; falls back to $MEMNOS_SESSION
+
+
+def _sess(name=""):
+    n = (name or _SESSION_DEFAULT or (nsresolve.resolve_active_session(cwd=os.getcwd()) if nsresolve else "")).strip().lstrip("@")
+    if not n:
+        raise ValueError("no session name — pass one, call session_register first, or set MEMNOS_SESSION")
+    return n
+
+
+def _chan_call(path, payload, what, timeout=60):
+    """POST + JSON-string result; surfaces the server's 400/409 detail (e.g. name conflict)."""
+    try:
+        return json.dumps(_post(path, payload, timeout=timeout), default=str)
+    except httpx.HTTPStatusError as e:
+        try:
+            detail = e.response.json().get("error", "")
+        except Exception:
+            detail = ""
+        if e.response.status_code in (400, 404, 409) and detail:
+            return f"(memnos {what}: {detail})"
+        return _err(e, what)
+    except Exception as e:
+        return _err(e, what)
+
+
+@mcp.tool()
+def session_register(name: str, role: str = "", harness: str = "", model: str = "",
+                     current_task: str = "", channels: list[str] | None = None,
+                     channel_ads: dict[str, str] | None = None, ttl_seconds: int = 1800) -> str:
+    """Register this agent under a human-friendly session name (e.g. 'claude-dev',
+    'gemini-critic') so peers can find and message it. Auto-subscribes @<name> and #general.
+    The name becomes this process's default session for the other session_/channel_ tools.
+    channel_ads maps channel -> description to advertise channels you own. The reply lists
+    peers and available_channels (what each channel is for)."""
+    global _SESSION_DEFAULT
+    out = _chan_call("/session/register", {
+        "name": name, "role": role, "harness": harness, "model": model,
+        "current_task": current_task, "channels": channels or [], "channel_ads": channel_ads or {},
+        "ttl_seconds": ttl_seconds,
+        "host": os.uname().nodename, "cwd": os.getcwd()}, "session_register")
+    if not out.startswith("(memnos"):
+        _SESSION_DEFAULT = name.strip().lstrip("@")
+        nsresolve and nsresolve.save_active_session(_SESSION_DEFAULT, cwd=os.getcwd(), namespace=_ns())
+    return out
+
+
+@mcp.tool()
+def session_heartbeat(status: str = "active", current_task: str = "", name: str = "") -> str:
+    """Keep this session alive and publish what you're working on (a changed current_task
+    is announced on status:<name>). Call periodically; sessions expire after their TTL."""
+    try:
+        body = {"name": _sess(name), "status": status}
+        if current_task:
+            body["current_task"] = current_task
+        return _chan_call("/session/heartbeat", body, "session_heartbeat")
+    except ValueError as e:
+        return f"(memnos session_heartbeat: {e})"
+
+
+@mcp.tool()
+def session_list(include_expired: bool = False) -> str:
+    """Who's online in this namespace: names, roles, harnesses, current tasks, subscribed
+    channels and unread counts."""
+    return _chan_call("/session/list", {"include_expired": include_expired}, "session_list")
+
+
+@mcp.tool()
+def session_unregister(name: str = "") -> str:
+    """Mark this session offline (call when you finish)."""
+    global _SESSION_DEFAULT
+    try:
+        target = _sess(name)
+        out = _chan_call("/session/unregister", {"name": target}, "session_unregister")
+        if not out.startswith("(memnos"):
+            _SESSION_DEFAULT = ""
+            nsresolve and nsresolve.clear_active_session(name=target, cwd=os.getcwd())
+        return out
+    except ValueError as e:
+        return f"(memnos session_unregister: {e})"
+
+
+@mcp.tool()
+def channel_publish(channel: str, content: str, intent: str = "message", sender_session: str = "",
+                    remember: bool = False, reply_to: int = 0) -> str:
+    """Post to a channel: '#review' topic, '@claude-dev' direct inbox, 'status:<session>'.
+    intent: message|status|task|review_request|critique|question|answer|handoff|done.
+    remember=true also saves it to long-term memory. reply_to = id of the message answered."""
+    try:
+        body = {"channel": channel, "content": content, "intent": intent,
+                "sender_session": _sess(sender_session), "remember": remember}
+        if reply_to:
+            body["metadata"] = {"reply_to": reply_to}
+        return _chan_call("/channel/publish", body, "channel_publish")
+    except ValueError as e:
+        return f"(memnos channel_publish: {e})"
+
+
+@mcp.tool()
+def channel_subscribe(channels: list[str], session_name: str = "", from_beginning: bool = False) -> str:
+    """Subscribe this session to channels ('#review', '@name', 'status:*', '*'). By default
+    only messages published after subscribing are delivered."""
+    try:
+        return _chan_call("/channel/subscribe", {"channels": channels, "session_name": _sess(session_name),
+                                                 "from_beginning": from_beginning}, "channel_subscribe")
+    except ValueError as e:
+        return f"(memnos channel_subscribe: {e})"
+
+
+@mcp.tool()
+def channel_unsubscribe(channels: list[str], session_name: str = "") -> str:
+    """Stop receiving messages from the given channels."""
+    try:
+        return _chan_call("/channel/unsubscribe", {"channels": channels, "session_name": _sess(session_name)},
+                          "channel_unsubscribe")
+    except ValueError as e:
+        return f"(memnos channel_unsubscribe: {e})"
+
+
+@mcp.tool()
+def channel_poll(session_name: str = "", channel: str = "", peek: bool = False, limit: int = 50) -> str:
+    """Fetch unread messages for this session (advances its cursor unless peek=true)."""
+    try:
+        return _chan_call("/channel/poll", {"session_name": _sess(session_name), "channel": channel,
+                                            "peek": peek, "limit": limit}, "channel_poll")
+    except ValueError as e:
+        return f"(memnos channel_poll: {e})"
+
+
+@mcp.tool()
+def channel_wait(channel: str = "", session_name: str = "", timeout_seconds: int = 60) -> str:
+    """Block until a peer posts something unread (or timeout, max 120s) — use to hold a
+    multi-turn review/implementation loop with another agent."""
+    try:
+        t = max(1, min(int(timeout_seconds), 120))
+        return _chan_call("/channel/wait", {"session_name": _sess(session_name), "channel": channel,
+                                            "timeout_seconds": t}, "channel_wait", timeout=t + 15)
+    except ValueError as e:
+        return f"(memnos channel_wait: {e})"
+
+
+@mcp.tool()
+def channel_list() -> str:
+    """Discover channels (description, what_you_get, intents, publishers, subscribers),
+    active peer sessions and wildcard subscriptions in this namespace."""
+    return _chan_call("/channel/list", {}, "channel_list")
+
+
+@mcp.tool()
+def inbox_send(to_session: str, content: str, subject: str = "", intent: str = "task",
+               priority: str = "normal", thread_key: str = "", replaces_id: int = 0,
+               replace_pending: bool = False, sender_session: str = "") -> str:
+    """Fire-and-forget: queue a message in @to_session's inbox (no waiting). priority:
+    urgent|high|normal|low. replaces_id (or thread_key + replace_pending=true) supersedes your own
+    not-yet-acted earlier item so the recipient only sees the latest."""
+    try:
+        body = {"to_session": to_session, "content": content, "subject": subject, "intent": intent,
+                "priority": priority, "thread_key": thread_key, "replace_pending": replace_pending,
+                "sender_session": _sess(sender_session)}
+        if replaces_id:
+            body["replaces_id"] = replaces_id
+        return _chan_call("/inbox/send", body, "inbox_send")
+    except ValueError as e:
+        return f"(memnos inbox_send: {e})"
+
+
+@mcp.tool()
+def inbox_recall(message_id: int = 0, channel_message_id: int = 0, thread_key: str = "",
+                 reason: str = "", sender_session: str = "") -> str:
+    """Cancel something you sent before the recipient acts on it: an inbox item (message_id, or
+    thread_key) and/or a channel post (channel_message_id). Acted items can't be recalled."""
+    try:
+        body = {"thread_key": thread_key, "reason": reason, "sender_session": _sess(sender_session)}
+        if message_id:
+            body["message_id"] = message_id
+        if channel_message_id:
+            body["channel_message_id"] = channel_message_id
+        return _chan_call("/inbox/recall", body, "inbox_recall")
+    except ValueError as e:
+        return f"(memnos inbox_recall: {e})"
+
+
+@mcp.tool()
+def inbox_list(status: str = "active", priority: str = "", mark_read: bool = False,
+               include_recalled: bool = False, limit: int = 50, session_name: str = "") -> str:
+    """List this session's inbox, urgent first. status: active|pending|read|in_progress|acted|
+    recalled|superseded|all."""
+    try:
+        return _chan_call("/inbox/list", {"to_session": _sess(session_name), "status": status,
+                                          "priority": priority, "mark_read": mark_read,
+                                          "include_recalled": include_recalled, "limit": limit},
+                          "inbox_list")
+    except ValueError as e:
+        return f"(memnos inbox_list: {e})"
+
+
+@mcp.tool()
+def inbox_act(message_id: int, action: str = "acted", resolution: str = "", reply: str = "",
+              session_name: str = "") -> str:
+    """Mark an inbox item read|in_progress|acted (alias done). If the result has cancelled=true the
+    sender recalled/replaced it - don't act on it. reply auto-answers the sender in-thread."""
+    try:
+        return _chan_call("/inbox/act", {"to_session": _sess(session_name), "message_id": message_id,
+                                         "action": action, "resolution": resolution, "reply": reply},
+                          "inbox_act")
+    except ValueError as e:
+        return f"(memnos inbox_act: {e})"
+
+
+@mcp.tool()
+def channel_cleanup(idle_days: int = 7, message_retention_days: int = 30, dry_run: bool = False) -> str:
+    """Reap idle subscriptions, abandoned sessions, old channel messages, finished inbox items and
+    orphaned channels in this namespace. dry_run=true only reports the counts."""
+    try:
+        return _chan_call("/channel/cleanup", {"idle_days": idle_days,
+                                               "message_retention_days": message_retention_days,
+                                               "dry_run": dry_run}, "channel_cleanup")
+    except ValueError as e:
+        return f"(memnos channel_cleanup: {e})"
+
+
+@mcp.tool()
+def channel_advertise(channel: str, description: str, what_you_get: str = "",
+                      intents: list[str] | None = None, owner_session: str = "") -> str:
+    """Advertise a channel so peers know what it is for and what subscribers receive."""
+    try:
+        return _chan_call("/channel/advertise", {
+            "channel": channel, "description": description, "what_you_get": what_you_get,
+            "intents": intents or [], "owner_session": _sess(owner_session)}, "channel_advertise")
+    except ValueError as e:
+        return f"(memnos channel_advertise: {e})"
 
 
 # ---- self-re-exec on version change (issue #68) ---------------------------------------

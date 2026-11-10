@@ -332,6 +332,99 @@ CREATE TABLE IF NOT EXISTS memnos_control.leases(
 );
 CREATE UNIQUE INDEX IF NOT EXISTS leases_active
     ON memnos_control.leases(namespace, key) WHERE released_at IS NULL;
+-- Named session registry + channel pub/sub bus (issue #231).
+CREATE TABLE IF NOT EXISTS memnos_control.agent_sessions(
+    id                bigserial PRIMARY KEY,
+    namespace         text NOT NULL,
+    name              text NOT NULL,
+    principal_id      bigint NOT NULL REFERENCES memnos_control.principals(id),
+    harness           text NOT NULL DEFAULT '',
+    model             text NOT NULL DEFAULT '',
+    role              text NOT NULL DEFAULT '',
+    host              text NOT NULL DEFAULT '',
+    cwd               text NOT NULL DEFAULT '',
+    status            text NOT NULL DEFAULT 'active',
+    current_task      text NOT NULL DEFAULT '',
+    metadata          jsonb NOT NULL DEFAULT '{}'::jsonb,
+    registered_at     timestamptz NOT NULL DEFAULT now(),
+    last_heartbeat_at timestamptz NOT NULL DEFAULT now(),
+    expires_at        timestamptz NOT NULL,
+    UNIQUE(namespace, name)
+);
+CREATE INDEX IF NOT EXISTS agent_sessions_ns_exp
+    ON memnos_control.agent_sessions(namespace, expires_at DESC);
+CREATE TABLE IF NOT EXISTS memnos_control.channel_messages(
+    id             bigserial PRIMARY KEY,
+    namespace      text NOT NULL,
+    channel        text NOT NULL,
+    sender_session text NOT NULL,
+    principal_id   bigint NOT NULL REFERENCES memnos_control.principals(id),
+    intent         text NOT NULL DEFAULT 'message',
+    content        text NOT NULL,
+    metadata       jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    recalled_at    timestamptz,
+    recall_reason  text NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS channel_messages_ns_ch_id
+    ON memnos_control.channel_messages(namespace, channel, id);
+CREATE INDEX IF NOT EXISTS channel_messages_ns_id
+    ON memnos_control.channel_messages(namespace, id);
+-- Email-style per-agent inbox queue (issue #231): fire-and-forget send, in-queue replace,
+-- recall, read/act lifecycle.
+CREATE TABLE IF NOT EXISTS memnos_control.agent_inbox (
+    id                BIGSERIAL PRIMARY KEY,
+    namespace         TEXT NOT NULL,
+    to_session        TEXT NOT NULL,
+    from_session      TEXT NOT NULL,
+    principal_id      BIGINT NOT NULL REFERENCES memnos_control.principals(id),
+    subject           TEXT NOT NULL DEFAULT '',
+    content           TEXT NOT NULL,
+    intent            TEXT NOT NULL DEFAULT 'task',
+    priority          TEXT NOT NULL DEFAULT 'normal',
+    status            TEXT NOT NULL DEFAULT 'pending',
+    thread_key        TEXT NOT NULL DEFAULT '',
+    replaces_id       BIGINT REFERENCES memnos_control.agent_inbox(id),
+    superseded_by_id  BIGINT REFERENCES memnos_control.agent_inbox(id),
+    in_reply_to       BIGINT REFERENCES memnos_control.agent_inbox(id),
+    resolution        TEXT NOT NULL DEFAULT '',
+    recall_reason     TEXT NOT NULL DEFAULT '',
+    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    read_at           TIMESTAMPTZ,
+    acted_at          TIMESTAMPTZ,
+    recalled_at       TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS agent_inbox_ns_to_status_idx
+    ON memnos_control.agent_inbox(namespace, to_session, status, id);
+CREATE TABLE IF NOT EXISTS memnos_control.channel_subscriptions(
+    id             bigserial PRIMARY KEY,
+    namespace      text NOT NULL,
+    session_name   text NOT NULL,
+    principal_id   bigint NOT NULL REFERENCES memnos_control.principals(id),
+    channel        text NOT NULL,
+    cursor         bigint NOT NULL DEFAULT 0,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    last_polled_at timestamptz,
+    UNIQUE(namespace, session_name, channel)
+);
+CREATE INDEX IF NOT EXISTS channel_subs_ns_session
+    ON memnos_control.channel_subscriptions(namespace, session_name);
+CREATE TABLE IF NOT EXISTS memnos_control.channel_catalog (
+    namespace       TEXT NOT NULL,
+    channel         TEXT NOT NULL,
+    kind            TEXT NOT NULL DEFAULT 'topic',
+    description     TEXT NOT NULL DEFAULT '',
+    what_you_get    TEXT NOT NULL DEFAULT '',
+    intents         TEXT[] NOT NULL DEFAULT '{}',
+    owner_session   TEXT NOT NULL DEFAULT '',
+    principal_id    BIGINT REFERENCES memnos_control.principals(id),
+    metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (namespace, channel)
+);
 -- `memnos namespace reconcile` resume watermark (issue #155): the keyset cursor of the
 -- last COMMITTED chunk, written in the same transaction as that chunk's mutations.
 -- core/reconcile.py also issues this same CREATE (RUNS_DDL) itself, because the CLI can
@@ -399,6 +492,10 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+class SessionConflict(ValueError):
+    """session name held by another principal (HTTP 409)."""
+
+
 class Control:
     """Operates over a pooled connection (passed per call) so it's stateless + poolable."""
 
@@ -406,6 +503,9 @@ class Control:
     def init(conn):
         with conn.cursor() as c:
             c.execute(CONTROL_DDL)               # DDL failures must still crash boot
+            c.execute("""ALTER TABLE memnos_control.channel_messages
+                         ADD COLUMN IF NOT EXISTS recalled_at TIMESTAMPTZ,
+                         ADD COLUMN IF NOT EXISTS recall_reason TEXT NOT NULL DEFAULT ''""")
             if Control._namespace_registry_needs_backfill(c):
                 # This wraps the WHOLE backfill call -- the paginated scan across both
                 # tables plus the final marker-row INSERT -- not just the marker row.
@@ -990,6 +1090,757 @@ class Control:
                  "acquired_at": r["acquired_at"].isoformat(),
                  "expires_at": r["expires_at"].isoformat()} for r in rows]
 
+
+    # --- named sessions + channel pub/sub (issue #231) ------------------------
+
+    INTENTS = ("message", "status", "task", "review_request", "critique", "question",
+               "answer", "handoff", "done")
+    _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    # does message m match subscription s? exact | `prefix*` | `*` (all but other sessions'
+    # direct inboxes); a session never sees its own posts except in its own @inbox.
+    _SUB_MATCH = """m.namespace = s.namespace AND m.id > s.cursor AND (
+        m.channel = s.channel
+        OR (s.channel = '*' AND (m.channel NOT LIKE '@%%' OR m.channel = '@' || s.session_name))
+        OR (s.channel <> '*' AND right(s.channel, 1) = '*'
+            AND starts_with(m.channel, left(s.channel, length(s.channel) - 1))))
+        AND (m.sender_session <> s.session_name OR m.channel = '@' || s.session_name)
+        AND m.recalled_at IS NULL"""
+
+    @staticmethod
+    def _slug(name, what="name"):
+        n = str(name or "").strip().lstrip("@")
+        if not Control._NAME_RE.match(n):
+            raise ValueError(f"{what} must match [A-Za-z0-9][A-Za-z0-9._-]{{0,63}}")
+        return n
+
+    @staticmethod
+    def _channel(ch, *, allow_wild=True):
+        c = str(ch or "").strip()
+        if c and c[0] not in "#@*" and not c.startswith("status:"):
+            c = "#" + c
+        ok = (re.fullmatch(r"[#@][A-Za-z0-9._-]{1,64}", c)
+              or re.fullmatch(r"status:[A-Za-z0-9._-]{1,64}", c)
+              or (allow_wild and re.fullmatch(r"\*|status:\*", c)))
+        if not ok:
+            raise ValueError(f"invalid channel {ch!r} (use #topic, @session, status:<session>"
+                             + (", status:*, *" if allow_wild else "") + ")")
+        return c
+
+    WILDCARD_ADS = [
+        {
+            "channel": "status:*",
+            "kind": "wildcard",
+            "description": "All peer session status feeds in this namespace.",
+            "what_you_get": "Every heartbeat task transition and status update (intent='status') across all active sessions.",
+            "intents": ["status", "done"],
+        },
+        {
+            "channel": "*",
+            "kind": "wildcard",
+            "description": "All topic (#...) and status (status:...) channels in this namespace.",
+            "what_you_get": "Every broadcast/topic message and status update (excludes other sessions' private @<session> direct inboxes).",
+            "intents": ["message", "status", "task", "review_request", "critique", "question", "answer", "handoff", "done"],
+        },
+    ]
+
+    @staticmethod
+    def _channel_kind(ch):
+        if ch in ("*", "status:*"):
+            return "wildcard"
+        if ch.startswith("@"):
+            return "direct"
+        if ch.startswith("status:"):
+            return "status"
+        return "topic"
+
+    @staticmethod
+    def _default_channel_ad(ch, *, role="", harness="", owner_session=""):
+        kind = Control._channel_kind(ch)
+        if ch == "#general":
+            return (kind, "Default namespace-wide broadcast channel for all sessions.",
+                    "Broadcast announcements, shared context, questions, and cross-agent coordination updates.",
+                    ["message", "status", "question", "answer", "handoff", "done"])
+        if kind == "direct":
+            n = ch[1:]
+            who = f" (role={role}, harness={harness})" if role or harness else ""
+            return (kind, f"Direct 1-to-1 inbox for session '{n}'{who}.",
+                    f"Direct tasks, review requests, critiques, questions, handoffs, and replies addressed to @{n}.",
+                    ["task", "review_request", "critique", "question", "answer", "handoff", "message"])
+        if kind == "status":
+            n = ch[len("status:"):]
+            return (kind, f"Live heartbeat & task feed for session '{n}'.",
+                    f"Automatic status transitions and current_task announcements whenever '{n}' updates its task.",
+                    ["status", "done"])
+        if kind == "wildcard":
+            ad = next(a for a in Control.WILDCARD_ADS if a["channel"] == ch)
+            return (kind, ad["description"], ad["what_you_get"], list(ad["intents"]))
+        return (kind, f"Topic channel {ch} for multi-agent coordination.",
+                f"Messages, review requests, critiques, tasks, and decisions published to {ch}.",
+                ["message", "task", "review_request", "critique", "question", "answer", "handoff", "done"])
+
+    @staticmethod
+    def channel_advertise(conn, namespace, channel, principal_id, *, owner_session="", description="",
+                          what_you_get="", intents=None, metadata=None):
+        """Upsert a channel's catalog entry. Blank fields get defaults on first insert and are
+        left untouched on later calls."""
+        from psycopg.types.json import Jsonb
+        ch = Control._channel(channel)
+        owner = Control._slug(owner_session, "owner_session") if owner_session else ""
+        kind, d_desc, d_wyg, d_int = Control._default_channel_ad(ch, owner_session=owner)
+        intents = [str(i) for i in (intents or [])]
+        bad = [i for i in intents if i not in Control.INTENTS]
+        if bad:
+            raise ValueError(f"unknown intents {bad}; use {', '.join(Control.INTENTS)}")
+        Control._bound("description", description, 2000)
+        Control._bound("what_you_get", what_you_get, 2000)
+        Control._bound_meta(metadata)
+        with conn.cursor() as c:
+            if owner:
+                Control._verify_session_owner(c, namespace, owner, principal_id, claim_if_missing=True)
+            if ch.startswith(("@", "status:")):
+                Control._verify_session_owner(c, namespace, ch.split(":", 1)[1] if ":" in ch else ch[1:], principal_id)
+            c.execute("""
+                INSERT INTO memnos_control.channel_catalog(namespace,channel,kind,description,what_you_get,
+                    intents,owner_session,principal_id,metadata)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (namespace,channel) DO UPDATE SET
+                    description  = CASE WHEN %s <> '' THEN EXCLUDED.description  ELSE memnos_control.channel_catalog.description END,
+                    what_you_get = CASE WHEN %s <> '' THEN EXCLUDED.what_you_get ELSE memnos_control.channel_catalog.what_you_get END,
+                    intents      = CASE WHEN cardinality(%s::text[]) > 0 THEN EXCLUDED.intents ELSE memnos_control.channel_catalog.intents END,
+                    owner_session= CASE WHEN %s <> '' THEN EXCLUDED.owner_session ELSE memnos_control.channel_catalog.owner_session END,
+                    metadata     = CASE WHEN %s::jsonb <> '{}'::jsonb THEN EXCLUDED.metadata ELSE memnos_control.channel_catalog.metadata END,
+                    updated_at   = now()
+                RETURNING *
+            """, (namespace, ch, kind, description or d_desc, what_you_get or d_wyg, intents or d_int,
+                  owner, principal_id, Jsonb(metadata or {}),
+                  description or "", what_you_get or "", intents, owner, Jsonb(metadata or {})))
+            row = c.fetchone()
+            c.execute("SELECT name FROM memnos_control.principals WHERE id=%s", (principal_id,))
+            row["author"] = (c.fetchone() or {}).get("name")
+        return Control._iso(row)
+
+    @staticmethod
+    def _ensure_catalog(c, namespace, channels, principal_id):
+        for ch in channels:
+            if ch in ("*", "status:*"):
+                continue
+            kind, d, w, i = Control._default_channel_ad(ch)
+            c.execute("""INSERT INTO memnos_control.channel_catalog(namespace,channel,kind,description,
+                             what_you_get,intents,principal_id)
+                         VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
+                      (namespace, ch, kind, d, w, i, principal_id))
+
+    @staticmethod
+    def discover(conn, namespace):
+        return {"namespace": namespace, "active_sessions": Control.session_list(conn, namespace),
+                "channels": Control.channel_list(conn, namespace),
+                "wildcard_subscriptions": Control.WILDCARD_ADS}
+
+    @staticmethod
+    def _sub_rows(c, namespace, session, principal_id, channels, from_beginning=False, new_from_beginning=False):
+        insert_zero = bool(from_beginning or new_from_beginning)
+        for ch in channels:
+            c.execute("""
+                INSERT INTO memnos_control.channel_subscriptions(namespace,session_name,principal_id,channel,cursor)
+                VALUES (%s,%s,%s,%s, CASE WHEN %s THEN 0 ELSE
+                    (SELECT COALESCE(MAX(id),0) FROM memnos_control.channel_messages WHERE namespace=%s) END)
+                ON CONFLICT (namespace,session_name,channel) DO UPDATE
+                    SET cursor = CASE WHEN %s THEN 0 ELSE memnos_control.channel_subscriptions.cursor END
+                    WHERE memnos_control.channel_subscriptions.principal_id = EXCLUDED.principal_id
+            """, (namespace, session, principal_id, ch, insert_zero, namespace, from_beginning))
+
+    @staticmethod
+    def _verify_session_owner(c, namespace, session_name, principal_id, *, claim_if_missing=False):
+        """Session names (and their @direct channel / agent_inbox) belong to the registering
+        principal until explicitly unregistered (status='offline') or reaped by channel_cleanup;
+        heartbeat expiry alone does NOT release them. Raises SessionConflict if owned by another."""
+        c.execute("SELECT principal_id, status FROM memnos_control.agent_sessions "
+                  "WHERE namespace=%s AND name=%s", (namespace, session_name))
+        row = c.fetchone()
+        if row and row["principal_id"] != principal_id and row["status"] != "offline":
+            raise SessionConflict(f"session '{session_name}' is owned by another principal")
+        if claim_if_missing and (not row or (row["principal_id"] != principal_id)):
+            # placeholder claim: owned but inactive (expires_at=now) until a real register
+            c.execute("""INSERT INTO memnos_control.agent_sessions(namespace,name,principal_id,expires_at)
+                         VALUES (%s,%s,%s,now())
+                         ON CONFLICT (namespace,name) DO UPDATE SET principal_id=EXCLUDED.principal_id,
+                             status='active', expires_at=now(), registered_at=now(), last_heartbeat_at=now()
+                         WHERE memnos_control.agent_sessions.status='offline'""",
+                      (namespace, session_name, principal_id))
+            c.execute("""DELETE FROM memnos_control.channel_subscriptions
+                         WHERE namespace=%s AND session_name=%s AND principal_id<>%s""",
+                      (namespace, session_name, principal_id))
+        return row
+
+    @staticmethod
+    def _bound(what, val, n):
+        if len(str(val or "")) > n:
+            raise ValueError(f"{what} too long (max {n} chars)")
+        return val
+
+    @staticmethod
+    def _bound_meta(metadata):
+        if len(json.dumps(metadata or {})) > 65536:
+            raise ValueError("metadata too large (max 65536 bytes)")
+
+    @staticmethod
+    def _bound_channels(channels):
+        if len(channels or []) > 50:
+            raise ValueError("too many channels (max 50)")
+
+    @staticmethod
+    def _iso(row):
+        return {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in row.items()}
+
+    @staticmethod
+    def session_register(conn, namespace, name, principal_id, *, harness="", model="", role="",
+                         host="", cwd="", status="active", current_task="", metadata=None,
+                         channels=None, channel_ads=None, ttl_seconds=1800):
+        """Upsert a named session. A different principal may not take over a non-offline name,
+        even after heartbeat expiry (raises SessionConflict); only unregister/channel_cleanup frees it."""
+        from psycopg.types.json import Jsonb
+        name = Control._slug(name, "session name")
+        Control._bound_channels(channels)
+        Control._bound_meta(metadata)
+        explicit_chans = [f"@{name}"] + [Control._channel(x) for x in (channels or [])]
+        with conn.cursor() as c:
+            c.execute("""
+                INSERT INTO memnos_control.agent_sessions(namespace,name,principal_id,harness,model,role,
+                    host,cwd,status,current_task,metadata,expires_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now() + (%s * interval '1 second'))
+                ON CONFLICT (namespace,name) DO UPDATE SET
+                    principal_id=EXCLUDED.principal_id, harness=EXCLUDED.harness, model=EXCLUDED.model,
+                    role=EXCLUDED.role, host=EXCLUDED.host, cwd=EXCLUDED.cwd, status=EXCLUDED.status,
+                    current_task=EXCLUDED.current_task, metadata=EXCLUDED.metadata,
+                    registered_at=now(), last_heartbeat_at=now(), expires_at=EXCLUDED.expires_at
+                WHERE memnos_control.agent_sessions.principal_id = EXCLUDED.principal_id
+                   OR memnos_control.agent_sessions.status = 'offline'
+                RETURNING *
+            """, (namespace, name, principal_id, harness, model, role, host, cwd, status,
+                  current_task, Jsonb(metadata or {}), max(1, int(ttl_seconds))))
+            row = c.fetchone()
+            if not row:
+                raise SessionConflict(f"session name '{name}' is held by another principal")
+            # takeover: the previous owner's subscriptions (and cursors) don't carry over
+            c.execute("""DELETE FROM memnos_control.channel_subscriptions
+                         WHERE namespace=%s AND session_name=%s AND principal_id<>%s""",
+                      (namespace, name, principal_id))
+            Control._sub_rows(c, namespace, name, principal_id, explicit_chans, new_from_beginning=True)
+            Control._sub_rows(c, namespace, name, principal_id, ["#general"])
+            c.execute("""SELECT channel FROM memnos_control.channel_subscriptions
+                         WHERE namespace=%s AND session_name=%s ORDER BY channel""", (namespace, name))
+            subs = [r["channel"] for r in c.fetchall()]
+        out = Control._iso(row)
+        out["subscribed_channels"] = subs
+        ads = {k if k in ("*", "status:*") else Control._channel(k): v for k, v in (channel_ads or {}).items()}
+        Control.channel_advertise(conn, namespace, f"@{name}", principal_id, owner_session=name,
+                                  description=Control._default_channel_ad(f"@{name}", role=role, harness=harness)[1])
+        Control.channel_advertise(conn, namespace, f"status:{name}", principal_id, owner_session=name)
+        Control.channel_advertise(conn, namespace, "#general", principal_id)
+        for ch in dict.fromkeys(Control._channel(x) for x in (channels or [])):
+            ad = ads.get(ch)
+            ad = {"description": ad} if isinstance(ad, str) else (ad or {})
+            Control.channel_advertise(conn, namespace, ch, principal_id, owner_session=name,
+                                      description=ad.get("description", ""),
+                                      what_you_get=ad.get("what_you_get", ""), intents=ad.get("intents"))
+        out["direct_channel"] = f"@{name}"
+        out["status_channel"] = f"status:{name}"
+        out["peers"] = [x for x in Control.session_list(conn, namespace) if x["name"] != name]
+        out["available_channels"] = Control.channel_list(conn, namespace)
+        return out
+
+    @staticmethod
+    def session_heartbeat(conn, namespace, name, principal_id, *, status=None, current_task=None,
+                          metadata=None, ttl_seconds=1800, publish_status=True):
+        """Refresh liveness; returns the session dict, or None if not registered to this principal."""
+        from psycopg.types.json import Jsonb
+        name = Control._slug(name, "session name")
+        with conn.cursor() as c:
+            c.execute("""SELECT current_task FROM memnos_control.agent_sessions
+                         WHERE namespace=%s AND name=%s AND principal_id=%s""",
+                      (namespace, name, principal_id))
+            prev = c.fetchone()
+            if not prev:
+                return None
+            c.execute("""
+                UPDATE memnos_control.agent_sessions SET
+                    last_heartbeat_at=now(), expires_at=now() + (%s * interval '1 second'),
+                    status=COALESCE(%s, status), current_task=COALESCE(%s, current_task),
+                    metadata=COALESCE(%s, metadata)
+                WHERE namespace=%s AND name=%s AND principal_id=%s RETURNING *
+            """, (max(1, int(ttl_seconds)), status, current_task,
+                  Jsonb(metadata) if metadata is not None else None, namespace, name, principal_id))
+            row = c.fetchone()
+        if publish_status and current_task and current_task != prev["current_task"]:
+            Control.channel_publish(conn, namespace, f"status:{name}", name, principal_id,
+                                    current_task, intent="status", metadata={"status": row["status"]})
+        return Control._iso(row)
+
+    @staticmethod
+    def session_list(conn, namespace, *, include_expired=False, role=None, harness=None):
+        with conn.cursor() as c:
+            c.execute(f"""
+                SELECT a.*, p.name AS author, (a.expires_at > now() AND a.status <> 'offline') AS active,
+                  COALESCE((SELECT array_agg(s.channel ORDER BY s.channel)
+                            FROM memnos_control.channel_subscriptions s
+                            WHERE s.namespace=a.namespace AND s.session_name=a.name), '{{}}') AS channels,
+                  (SELECT count(DISTINCT m.id) FROM memnos_control.channel_subscriptions s
+                   JOIN memnos_control.channel_messages m ON {Control._SUB_MATCH}
+                   WHERE s.namespace=a.namespace AND s.session_name=a.name) AS unread
+                FROM memnos_control.agent_sessions a
+                JOIN memnos_control.principals p ON p.id = a.principal_id
+                WHERE a.namespace=%s
+                  AND (%s OR (a.expires_at > now() AND a.status <> 'offline'))
+                  AND (%s::text IS NULL OR a.role=%s) AND (%s::text IS NULL OR a.harness=%s)
+                ORDER BY a.name
+            """, (namespace, include_expired, role, role, harness, harness))
+            return [{**Control._iso(r), "direct_channel": f"@{r['name']}",
+                     "status_channel": f"status:{r['name']}"} for r in c.fetchall()]
+
+    @staticmethod
+    def session_unregister(conn, namespace, name, principal_id):
+        name = Control._slug(name, "session name")
+        with conn.cursor() as c:
+            c.execute("""UPDATE memnos_control.agent_sessions SET status='offline', expires_at=now()
+                         WHERE namespace=%s AND name=%s AND principal_id=%s RETURNING id""",
+                      (namespace, name, principal_id))
+            return {"unregistered": bool(c.fetchone())}
+
+    @staticmethod
+    def channel_subscribe(conn, namespace, session_name, principal_id, channels, *,
+                          from_beginning=False, description="", what_you_get=""):
+        session = Control._slug(session_name, "session name")
+        chans = [Control._channel(x) for x in (channels or [])]
+        if not chans:
+            raise ValueError("channels required")
+        Control._bound_channels(chans)
+        Control._bound("description", description, 2000)
+        Control._bound("what_you_get", what_you_get, 2000)
+        for ch in chans:
+            if ch.startswith("@") and ch != f"@{session}":
+                raise ValueError(f"session '{session}' cannot subscribe to another session's direct channel '{ch}'")
+        with conn.cursor() as c:
+            Control._verify_session_owner(c, namespace, session, principal_id, claim_if_missing=True)
+            Control._sub_rows(c, namespace, session, principal_id, chans, from_beginning)
+            Control._ensure_catalog(c, namespace, chans, principal_id)
+            c.execute("""SELECT channel FROM memnos_control.channel_subscriptions
+                         WHERE namespace=%s AND session_name=%s AND principal_id=%s ORDER BY channel""",
+                      (namespace, session, principal_id))
+            res = {"session_name": session, "subscribed_channels": [r["channel"] for r in c.fetchall()]}
+        if description or what_you_get:
+            for ch in chans:
+                if ch not in ("*", "status:*"):
+                    Control.channel_advertise(conn, namespace, ch, principal_id,
+                                              description=description, what_you_get=what_you_get)
+        return res
+
+    @staticmethod
+    def channel_unsubscribe(conn, namespace, session_name, principal_id, channels):
+        session = Control._slug(session_name, "session name")
+        Control._bound_channels(channels)
+        chans = [Control._channel(x) for x in (channels or [])]
+        with conn.cursor() as c:
+            c.execute("""DELETE FROM memnos_control.channel_subscriptions
+                         WHERE namespace=%s AND session_name=%s AND principal_id=%s AND channel = ANY(%s)""",
+                      (namespace, session, principal_id, chans))
+            return {"session_name": session, "unsubscribed": c.rowcount}
+
+    @staticmethod
+    def channel_publish(conn, namespace, channel, sender_session, principal_id, content, *,
+                        intent="message", metadata=None, description="", what_you_get=""):
+        from psycopg.types.json import Jsonb
+        channel = Control._channel(channel, allow_wild=False)
+        sender = Control._slug(sender_session, "sender_session")
+        if not str(content or "").strip():
+            raise ValueError("content required")
+        if intent not in Control.INTENTS:
+            raise ValueError(f"intent must be one of {', '.join(Control.INTENTS)}")
+        Control._bound_meta(metadata)
+        Control._bound("description", description, 2000)
+        Control._bound("what_you_get", what_you_get, 2000)
+        if channel.startswith("status:") and channel != f"status:{sender}":
+            raise ValueError(f"session '{sender}' cannot publish to another session's status channel '{channel}'")
+        with conn.cursor() as c:
+            Control._verify_session_owner(c, namespace, sender, principal_id, claim_if_missing=True)
+            Control._ensure_catalog(c, namespace, [channel], principal_id)
+            c.execute("""
+                INSERT INTO memnos_control.channel_messages(namespace,channel,sender_session,principal_id,
+                                                            intent,content,metadata)
+                VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id, created_at
+            """, (namespace, channel, sender, principal_id, intent, content, Jsonb(metadata or {})))
+            m = c.fetchone()
+            # publishing is proof of life: slide a live session's expiry forward
+            c.execute("""UPDATE memnos_control.agent_sessions SET last_heartbeat_at=now(),
+                             expires_at = GREATEST(expires_at, now() + interval '30 minutes')
+                         WHERE namespace=%s AND name=%s AND principal_id=%s
+                           AND status <> 'offline' AND expires_at > now()""",
+                      (namespace, sender, principal_id))
+            c.execute("SELECT pg_notify('memnos_channel', %s)", (namespace,))
+            c.execute("SELECT name FROM memnos_control.principals WHERE id=%s", (principal_id,))
+            author = (c.fetchone() or {}).get("name")
+        if description or what_you_get:
+            Control.channel_advertise(conn, namespace, channel, principal_id,
+                                      description=description, what_you_get=what_you_get)
+        return {"id": m["id"], "namespace": namespace, "channel": channel, "sender_session": sender,
+                "author": author, "intent": intent, "content": content, "metadata": metadata or {},
+                "created_at": m["created_at"].isoformat()}
+
+    @staticmethod
+    def resolve_session_for_cwd(conn, namespace, host, cwd):
+        """Most recently heartbeating live session registered from this (host, cwd), or None."""
+        with conn.cursor() as c:
+            c.execute("""SELECT name FROM memnos_control.agent_sessions
+                         WHERE namespace=%s AND host=%s AND cwd=%s AND status != 'offline'
+                           AND expires_at > now() ORDER BY last_heartbeat_at DESC LIMIT 1""",
+                      (namespace, host, cwd))
+            row = c.fetchone()
+        return row["name"] if row else None
+
+    @staticmethod
+    def channel_poll(conn, namespace, session_name, principal_id, *, channel=None, peek=False, limit=50):
+        """Unread messages for a session's subscriptions (own subs only). An explicit `channel`
+        the session isn't subscribed to is auto-subscribed from the beginning. peek=True never
+        advances cursors."""
+        session = Control._slug(session_name, "session name")
+        limit = max(1, min(int(limit), 500))
+        ch = Control._channel(channel) if channel else None
+        args = [namespace, session, principal_id]
+        if ch and ch.startswith("@") and ch != f"@{session}":
+            raise ValueError(f"session '{session}' cannot poll another session's direct channel '{ch}'")
+        with conn.cursor() as c:
+            try:
+                Control._verify_session_owner(c, namespace, session, principal_id)
+            except SessionConflict:
+                return {"session_name": session, "messages": [], "count": 0}
+            target_ch = ch or f"@{session}"
+            c.execute("""SELECT 1 FROM memnos_control.channel_subscriptions
+                         WHERE namespace=%s AND session_name=%s AND principal_id=%s AND channel=%s""",
+                      args + [target_ch])
+            if not c.fetchone():
+                Control._sub_rows(c, namespace, session, principal_id, [target_ch], from_beginning=True)
+            c.execute(f"""
+                SELECT s.id AS sub_id, m.id, m.channel, m.sender_session, m.intent, m.content,
+                       m.metadata, m.created_at, p.name AS author
+                FROM memnos_control.channel_subscriptions s
+                JOIN memnos_control.channel_messages m ON {Control._SUB_MATCH}
+                LEFT JOIN memnos_control.principals p ON p.id = m.principal_id
+                WHERE s.namespace=%s AND s.session_name=%s AND s.principal_id=%s
+                  {"AND s.channel=%s" if ch else ""}
+                ORDER BY m.id LIMIT %s
+            """, args + ([ch] if ch else []) + [limit])
+            rows = c.fetchall()
+            if not peek:
+                top = {}
+                for r in rows:
+                    top[r["sub_id"]] = max(top.get(r["sub_id"], 0), r["id"])
+                for sid, mx in top.items():
+                    c.execute("""UPDATE memnos_control.channel_subscriptions
+                                 SET cursor=%s, last_polled_at=now() WHERE id=%s""", (mx, sid))
+        seen, msgs = set(), []
+        for r in rows:   # a message matching two overlapping subs (e.g. #x and *) is returned once
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                msgs.append(Control._iso({k: v for k, v in r.items() if k != "sub_id"}))
+        return {"session_name": session, "messages": msgs, "count": len(msgs)}
+
+    @staticmethod
+    def channel_list(conn, namespace):
+        with conn.cursor() as c:
+            c.execute("""
+                SELECT u.ch AS channel, cc.kind, cc.description, cc.what_you_get, cc.intents,
+                       COALESCE(cc.owner_session,'') AS owner_session,
+                       COALESCE(mc.n,0) AS message_count, mc.last_at AS last_message_at,
+                       COALESCE(sc.subs, '{}') AS subscribers, COALESCE(mc.pubs, '{}') AS publishers
+                FROM (SELECT channel AS ch FROM memnos_control.channel_catalog WHERE namespace=%s
+                      UNION SELECT channel FROM memnos_control.channel_messages WHERE namespace=%s
+                      UNION SELECT channel FROM memnos_control.channel_subscriptions WHERE namespace=%s) u
+                LEFT JOIN memnos_control.channel_catalog cc ON cc.namespace=%s AND cc.channel=u.ch
+                LEFT JOIN (SELECT channel, count(*) n, max(created_at) last_at,
+                                  array_agg(DISTINCT sender_session ORDER BY sender_session) pubs
+                           FROM memnos_control.channel_messages WHERE namespace=%s GROUP BY channel) mc
+                       ON mc.channel = u.ch
+                LEFT JOIN (SELECT channel, array_agg(session_name ORDER BY session_name) subs
+                           FROM memnos_control.channel_subscriptions WHERE namespace=%s GROUP BY channel) sc
+                       ON sc.channel = u.ch
+                WHERE u.ch NOT IN ('*', 'status:*')
+                ORDER BY u.ch
+            """, (namespace,) * 6)
+            rows = c.fetchall()
+        out = []
+        for r in rows:
+            r = Control._iso(r)
+            kind, d, w, i = Control._default_channel_ad(r["channel"], owner_session=r["owner_session"])
+            r["kind"] = r["kind"] or kind
+            r["description"] = r["description"] or d
+            r["what_you_get"] = r["what_you_get"] or w
+            r["intents"] = r["intents"] or i
+            out.append(r)
+        return out
+
+    # --- email-style agent inbox queue (issue #231) ---------------------------
+
+    _PRIORITIES = ("urgent", "high", "normal", "low")
+    _INBOX_LIVE = ("pending", "read", "in_progress")
+
+    @staticmethod
+    def _inbox_foreign(c, namespace, to_s, principal_id):
+        """True if to_s's inbox is not this principal's: the session is registered to another
+        principal (even if heartbeat-expired, unless offline), or it is unregistered but already
+        holds items from another principal (blocked until its owner registers it)."""
+        c.execute("""SELECT principal_id, status FROM memnos_control.agent_sessions
+                     WHERE namespace=%s AND name=%s""", (namespace, to_s))
+        row = c.fetchone()
+        if row and row["status"] != "offline":
+            return row["principal_id"] != principal_id
+        if row and row["principal_id"] == principal_id:
+            return False
+        c.execute("""SELECT 1 FROM memnos_control.agent_inbox
+                     WHERE namespace=%s AND to_session=%s AND principal_id <> %s LIMIT 1""",
+                  (namespace, to_s, principal_id))
+        return bool(c.fetchone())
+
+    @staticmethod
+    def inbox_send(conn, namespace, to_session, from_session, principal_id, content, *,
+                   subject="", intent="task", priority="normal", thread_key="", replaces_id=None,
+                   replace_pending=False, in_reply_to=None, metadata=None):
+        """Fire-and-forget enqueue into @to_session's inbox. replaces_id / (thread_key +
+        replace_pending) supersede the caller's own not-yet-acted prior items."""
+        from psycopg.types.json import Jsonb
+        to_s = Control._slug(to_session, "to_session")
+        from_s = Control._slug(from_session, "from_session")
+        content = str(content or "")
+        if not 1 <= len(content) <= 32000:
+            raise ValueError("content must be 1..32000 chars")
+        if intent not in Control.INTENTS:
+            raise ValueError(f"intent must be one of {', '.join(Control.INTENTS)}")
+        if priority not in Control._PRIORITIES:
+            raise ValueError(f"priority must be one of {', '.join(Control._PRIORITIES)}")
+        thread_key = str(thread_key or "")
+        Control._bound("subject", subject, 500)
+        Control._bound("thread_key", thread_key, 128)
+        Control._bound_meta(metadata)
+        with conn.cursor() as c:
+            Control._verify_session_owner(c, namespace, from_s, principal_id, claim_if_missing=True)
+            c.execute("""
+                INSERT INTO memnos_control.agent_inbox(namespace,to_session,from_session,principal_id,
+                    subject,content,intent,priority,thread_key,replaces_id,in_reply_to,metadata)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *
+            """, (namespace, to_s, from_s, principal_id, str(subject or ""), content, intent, priority,
+                  thread_key, replaces_id, in_reply_to, Jsonb(metadata or {})))
+            item = c.fetchone()
+            conds, args = [], []
+            if replaces_id is not None:
+                conds.append("id=%s")
+                args.append(replaces_id)
+            if thread_key and replace_pending:
+                conds.append("(thread_key=%s AND to_session=%s)")
+                args += [thread_key, to_s]
+            superseded = []
+            if conds:
+                c.execute(f"""UPDATE memnos_control.agent_inbox
+                              SET status='superseded', superseded_by_id=%s, updated_at=now()
+                              WHERE namespace=%s AND from_session=%s AND principal_id=%s
+                                AND status IN ('pending','read','in_progress') AND id <> %s
+                                AND ({' OR '.join(conds)}) RETURNING id""",
+                          [item["id"], namespace, from_s, principal_id, item["id"]] + args)
+                superseded = sorted(r["id"] for r in c.fetchall())
+            c.execute("SELECT pg_notify('memnos_channel', %s)",
+                      (json.dumps({"namespace": namespace, "channel": f"@{to_s}", "inbox_id": item["id"]}),))
+            c.execute("SELECT name FROM memnos_control.principals WHERE id=%s", (principal_id,))
+            author = (c.fetchone() or {}).get("name")
+        out = Control._iso(item)
+        out["author"] = author
+        out["superseded_ids"] = superseded
+        return out
+
+    @staticmethod
+    def inbox_recall(conn, namespace, principal_id, *, message_id=None, channel_message_id=None,
+                     thread_key="", from_session="", reason=""):
+        """Sender-side recall of an inbox item (by id, or thread_key + from_session) and/or a
+        pub/sub channel message. Already-acted items cannot be recalled."""
+        thread_key = str(thread_key or "")
+        if message_id is None and channel_message_id is None and not thread_key:
+            raise ValueError("message_id, channel_message_id or thread_key required")
+        reason = str(Control._bound("reason", reason or "", 2000))
+        Control._bound("thread_key", thread_key, 128)
+        out = {}
+        with conn.cursor() as c:
+            if message_id is not None or thread_key:
+                if message_id is not None:
+                    where, args = "id=%s", [message_id]
+                else:
+                    where, args = "thread_key=%s AND from_session=%s", [
+                        thread_key, Control._slug(from_session, "from_session")]
+                c.execute(f"""SELECT * FROM memnos_control.agent_inbox
+                              WHERE namespace=%s AND principal_id=%s AND {where} ORDER BY id""",
+                          [namespace, principal_id] + args)
+                rows = c.fetchall()
+                if not rows:
+                    raise ValueError("inbox message not found or not owned by caller")
+                acted = [r for r in rows if r["status"] == "acted"]
+                if message_id is not None and acted:
+                    out = {"recalled": False, "already_acted": True, "item": Control._iso(acted[0])}
+                else:
+                    c.execute("""UPDATE memnos_control.agent_inbox
+                                 SET status='recalled', recalled_at=now(), recall_reason=%s, updated_at=now()
+                                 WHERE id = ANY(%s) AND status IN ('pending','read','in_progress')
+                                 RETURNING *""", (reason, [r["id"] for r in rows]))
+                    done = sorted(c.fetchall(), key=lambda r: r["id"])
+                    out = {"recalled": bool(done), "already_acted": bool(acted) and not done}
+                    if message_id is not None:
+                        out["item"] = Control._iso(done[0] if done else rows[0])
+                    else:
+                        out["recalled_ids"] = [r["id"] for r in done]
+            if channel_message_id is not None:
+                c.execute("""UPDATE memnos_control.channel_messages SET recalled_at=now(), recall_reason=%s
+                             WHERE id=%s AND namespace=%s AND principal_id=%s RETURNING id""",
+                          (reason, channel_message_id, namespace, principal_id))
+                ok = bool(c.fetchone())
+                if out:
+                    out["channel_message_id"], out["channel_recalled"] = int(channel_message_id), ok
+                else:
+                    out = {"recalled": ok, "channel_message_id": int(channel_message_id)}
+        return out
+
+    @staticmethod
+    def inbox_list(conn, namespace, to_session, principal_id, *, status="active", priority=None,
+                   include_recalled=False, mark_read=False, limit=50):
+        to_s = Control._slug(to_session, "to_session")
+        empty = {"to_session": to_s, "items": [], "count": 0}
+        limit = max(1, min(int(limit), 500))
+        live = list(Control._INBOX_LIVE)
+        if status == "active":
+            cond, sargs = "i.status = ANY(%s)", [live]
+        elif status == "all":
+            cond, sargs = ("TRUE", []) if include_recalled else ("i.status NOT IN ('recalled','superseded')", [])
+        elif status in live + ["acted", "recalled", "superseded"]:
+            cond, sargs = "i.status = %s", [status]
+        else:
+            raise ValueError("status must be active|pending|read|in_progress|acted|recalled|superseded|all")
+        if priority is not None and priority not in Control._PRIORITIES:
+            raise ValueError(f"priority must be one of {', '.join(Control._PRIORITIES)}")
+        with conn.cursor() as c:
+            if Control._inbox_foreign(c, namespace, to_s, principal_id):
+                return empty
+            Control._verify_session_owner(c, namespace, to_s, principal_id, claim_if_missing=True)
+            c.execute(f"""
+                SELECT i.*, p.name AS author FROM memnos_control.agent_inbox i
+                LEFT JOIN memnos_control.principals p ON p.id = i.principal_id
+                WHERE i.namespace=%s AND i.to_session=%s AND {cond}
+                  {"AND i.priority=%s" if priority else ""}
+                ORDER BY CASE i.priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END,
+                         i.id ASC LIMIT %s
+            """, [namespace, to_s] + sargs + ([priority] if priority else []) + [limit])
+            rows = c.fetchall()
+            if mark_read:
+                ids = [r["id"] for r in rows if r["status"] == "pending"]
+                if ids:
+                    c.execute("""UPDATE memnos_control.agent_inbox
+                                 SET status='read', read_at=now(), updated_at=now()
+                                 WHERE id = ANY(%s) AND status='pending'""", (ids,))
+                    for r in rows:
+                        if r["id"] in ids:
+                            r["status"] = "read"
+        items = [Control._iso(r) for r in rows]
+        return {"to_session": to_s, "items": items, "count": len(items)}
+
+    @staticmethod
+    def inbox_act(conn, namespace, to_session, principal_id, message_id, *, action="acted",
+                  resolution="", reply=""):
+        to_s = Control._slug(to_session, "to_session")
+        action = "acted" if action == "done" else action
+        if action not in ("read", "in_progress", "acted"):
+            raise ValueError("action must be read|in_progress|acted|done")
+        Control._bound("resolution", resolution, 4000)
+        with conn.cursor() as c:
+            if Control._inbox_foreign(c, namespace, to_s, principal_id):
+                raise ValueError("inbox message not found")
+            Control._verify_session_owner(c, namespace, to_s, principal_id, claim_if_missing=True)
+            c.execute("""SELECT * FROM memnos_control.agent_inbox
+                         WHERE id=%s AND namespace=%s AND to_session=%s""", (message_id, namespace, to_s))
+            row = c.fetchone()
+            if not row:
+                raise ValueError("inbox message not found")
+            if row["status"] in ("recalled", "superseded"):
+                return {"ok": False, "cancelled": True, "status": row["status"],
+                        "recall_reason": row["recall_reason"], "superseded_by_id": row["superseded_by_id"],
+                        "item": Control._iso(row)}
+            c.execute("""UPDATE memnos_control.agent_inbox
+                         SET status=%s, resolution=%s, read_at=COALESCE(read_at, now()),
+                             acted_at=CASE WHEN %s = 'acted' THEN now() ELSE acted_at END, updated_at=now()
+                         WHERE id=%s RETURNING *""",
+                      (action, resolution or row["resolution"], action, row["id"]))
+            updated = c.fetchone()
+        out = {"ok": True, "cancelled": False, "item": Control._iso(updated)}
+        if reply:
+            out["reply_item"] = Control.inbox_send(
+                conn, namespace, row["from_session"], to_s, principal_id, reply,
+                subject=(f"Re: {row['subject']}" if row["subject"] else ""), intent="answer",
+                thread_key=row["thread_key"], in_reply_to=row["id"])
+        return out
+
+    @staticmethod
+    def channel_cleanup(conn, namespace, *, idle_days=7, message_retention_days=30, dry_run=False):
+        """Reap idle subscriptions, abandoned sessions, old channel messages, terminal/expired
+        inbox items and orphaned catalog channels. dry_run runs the same deletes in a
+        rolled-back transaction, so counts are exact (including cascading orphans)."""
+        idle_days = max(1, min(int(idle_days), 3650))
+        keep = max(1, min(int(message_retention_days), 3650))
+        out = {}
+        with conn.transaction(force_rollback=bool(dry_run)), conn.cursor() as c:
+            c.execute("""DELETE FROM memnos_control.channel_subscriptions s
+                         WHERE s.namespace=%s
+                           AND COALESCE(s.last_polled_at, s.created_at) < now() - (%s * interval '1 day')
+                           AND NOT EXISTS (SELECT 1 FROM memnos_control.agent_sessions a
+                                           WHERE a.namespace=s.namespace AND a.name=s.session_name
+                                             AND a.status <> 'offline'
+                                             AND a.last_heartbeat_at >= now() - (%s * interval '1 day'))""",
+                      (namespace, idle_days, idle_days))
+            out["unsubscribed"] = c.rowcount
+            c.execute("""DELETE FROM memnos_control.agent_sessions
+                         WHERE namespace=%s AND (status = 'offline'
+                               OR last_heartbeat_at < now() - (%s * interval '1 day'))""",
+                      (namespace, idle_days))
+            out["sessions_reaped"] = c.rowcount
+            c.execute("""DELETE FROM memnos_control.channel_messages
+                         WHERE namespace=%s AND (created_at < now() - (%s * interval '1 day')
+                               OR (recalled_at IS NOT NULL AND recalled_at < now() - interval '1 day'))""",
+                      (namespace, keep))
+            out["channel_messages_pruned"] = c.rowcount
+            c.execute("""SELECT id FROM memnos_control.agent_inbox
+                         WHERE namespace=%s AND ((status IN ('acted','recalled','superseded')
+                                  AND updated_at < now() - (%s * interval '1 day'))
+                               OR created_at < now() - (%s * interval '2 day'))""", (namespace, keep, keep))
+            ids = [r["id"] for r in c.fetchall()]
+            if ids:   # self-referencing FKs have no ON DELETE: detach first
+                c.execute("""UPDATE memnos_control.agent_inbox SET
+                                 replaces_id = CASE WHEN replaces_id = ANY(%s) THEN NULL ELSE replaces_id END,
+                                 superseded_by_id = CASE WHEN superseded_by_id = ANY(%s) THEN NULL ELSE superseded_by_id END,
+                                 in_reply_to = CASE WHEN in_reply_to = ANY(%s) THEN NULL ELSE in_reply_to END
+                             WHERE replaces_id = ANY(%s) OR superseded_by_id = ANY(%s) OR in_reply_to = ANY(%s)""",
+                          [ids] * 6)
+                c.execute("DELETE FROM memnos_control.agent_inbox WHERE id = ANY(%s)", (ids,))
+            out["inbox_items_pruned"] = len(ids)
+            c.execute("""DELETE FROM memnos_control.channel_catalog cc
+                         WHERE cc.namespace=%s AND cc.channel <> '#general'
+                           AND cc.updated_at < now() - (%s * interval '1 day')
+                           AND NOT EXISTS (SELECT 1 FROM memnos_control.channel_subscriptions s
+                                           WHERE s.namespace=cc.namespace AND s.channel=cc.channel)
+                           AND NOT EXISTS (SELECT 1 FROM memnos_control.channel_messages m
+                                           WHERE m.namespace=cc.namespace AND m.channel=cc.channel)
+                           AND (cc.kind NOT IN ('direct','status') OR NOT EXISTS (
+                                SELECT 1 FROM memnos_control.agent_sessions a
+                                WHERE a.namespace=cc.namespace
+                                  AND a.name = CASE WHEN cc.channel LIKE '@%%' THEN substr(cc.channel, 2)
+                                                    ELSE substr(cc.channel, 8) END))""",
+                      (namespace, idle_days))
+            out["catalog_channels_pruned"] = c.rowcount
+        return {"namespace": namespace, "dry_run": bool(dry_run), "idle_days": idle_days,
+                "message_retention_days": keep, "unsubscribed": out["unsubscribed"],
+                "sessions_reaped": out["sessions_reaped"],
+                "channel_messages_pruned": out["channel_messages_pruned"],
+                "inbox_items_pruned": out["inbox_items_pruned"],
+                "catalog_channels_pruned": out["catalog_channels_pruned"]}
 
     @staticmethod
     def entity_dossier_candidates(conn, schema, namespace, min_mentions=3) -> list[dict]:

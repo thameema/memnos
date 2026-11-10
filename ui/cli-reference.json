@@ -1160,6 +1160,295 @@
     {
      "args": [
       {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "channel",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "-d, --description",
+       "help": "",
+       "positional": false,
+       "required": true
+      },
+      {
+       "arg": "-w, --what-you-get",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--intents",
+       "default": "",
+       "help": "comma-separated intents",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "channel advertise",
+     "example": null,
+     "help": "describe a channel so peers can discover it"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--idle-days",
+       "default": "7",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--retention-days",
+       "default": "30",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--dry-run",
+       "help": "report counts only",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "channel cleanup",
+     "example": null,
+     "help": "reap idle subscriptions/sessions, old messages, orphan channels"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "channel ls",
+     "example": null,
+     "help": "list channels"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--channel",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--peek",
+       "help": "don't advance the cursor",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "channel poll",
+     "example": null,
+     "help": "fetch unread messages"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "channel",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "message",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--intent",
+       "choices": [
+        "message",
+        "status",
+        "task",
+        "review_request",
+        "critique",
+        "question",
+        "answer",
+        "handoff",
+        "done"
+       ],
+       "default": "message",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--remember",
+       "help": "also save to long-term memory",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "channel pub",
+     "example": null,
+     "help": "publish a message"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "channels",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--from-beginning",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "channel sub",
+     "example": null,
+     "help": "subscribe to channels"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--channel",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--timeout",
+       "default": "60",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "channel wait",
+     "example": null,
+     "help": "block until a message arrives"
+    },
+    {
+     "args": [
+      {
        "arg": "namespace",
        "help": "namespace this constraint governs",
        "positional": true,
@@ -1304,6 +1593,257 @@
      "command": "hosts",
      "example": null,
      "help": "list this principal's machines, or `hosts rename <name>` for THIS one"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "id",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--action",
+       "choices": [
+        "read",
+        "in_progress",
+        "acted",
+        "done"
+       ],
+       "default": "acted",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--resolution",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--reply",
+       "default": "",
+       "help": "auto-reply to the sender in-thread",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "inbox act",
+     "example": null,
+     "help": "mark an inbox item read / in_progress / done"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--status",
+       "default": "active",
+       "help": "active|pending|read|in_progress|acted|recalled|superseded|all",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--include-recalled",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--mark-read",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "inbox ls",
+     "example": null,
+     "help": "list this session's inbox"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "id",
+       "help": "inbox message id",
+       "positional": true,
+       "required": false
+      },
+      {
+       "arg": "--channel-message-id",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--thread-key",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--reason",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "inbox recall",
+     "example": null,
+     "help": "cancel something you sent before it is acted on"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--session",
+       "help": "session name (default: $MEMNOS_SESSION)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "to",
+       "help": "recipient session name",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "message",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--subject",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--intent",
+       "choices": [
+        "message",
+        "status",
+        "task",
+        "review_request",
+        "critique",
+        "question",
+        "answer",
+        "handoff",
+        "done"
+       ],
+       "default": "task",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--priority",
+       "choices": [
+        "urgent",
+        "high",
+        "normal",
+        "low"
+       ],
+       "default": "normal",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--thread-key",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--replaces-id",
+       "help": "supersede your earlier unacted item",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--replace-pending",
+       "help": "with --thread-key: supersede all your unacted items in that thread to the recipient",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "inbox send",
+     "example": null,
+     "help": "queue a message in another session's inbox"
     },
     {
      "args": [
@@ -1460,6 +2000,165 @@
      "command": "lease who-holds",
      "example": null,
      "help": "show who currently holds a lease"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "name",
+       "help": "",
+       "positional": true,
+       "required": false
+      },
+      {
+       "arg": "--status",
+       "default": "active",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--task",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "session heartbeat",
+     "example": null,
+     "help": "refresh liveness / current task"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--all",
+       "help": "include expired/offline sessions",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "session ls",
+     "example": null,
+     "help": "who is online, with unread counts"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "name",
+       "help": "",
+       "positional": true,
+       "required": true
+      },
+      {
+       "arg": "--role",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--harness",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--model",
+       "default": "",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--task",
+       "default": "",
+       "help": "current task",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--channels",
+       "default": "",
+       "help": "extra channels, comma-separated",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--ttl",
+       "default": "1800",
+       "help": "",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "session register",
+     "example": null,
+     "help": "register this agent under a name (auto-subscribes @name, #general)"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "name",
+       "help": "",
+       "positional": true,
+       "required": false
+      }
+     ],
+     "command": "session unregister",
+     "example": null,
+     "help": "mark a session offline"
     },
     {
      "args": [
