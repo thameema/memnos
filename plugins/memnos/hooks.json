@@ -1,0 +1,37 @@
+{
+  "memnos": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "memnos hook status",
+        "timeout": 15
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "memnos hook recall",
+        "timeout": 15
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "memnos hook remember",
+        "timeout": 15
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "memnos hook enforce",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

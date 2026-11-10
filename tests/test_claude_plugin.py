@@ -158,6 +158,8 @@ def test_plugin_files():
     check("every hook command is token-free", all("mnk_" not in c for c in cmds))
     import re
     pv = json.load(open(os.path.join(pdir, ".claude-plugin", "plugin.json"))).get("version")
+    agy_pv = json.load(open(os.path.join(pdir, "plugin.json"))).get("version")
+    check("Antigravity root plugin.json version matches .claude-plugin/plugin.json", agy_pv == pv)
     for toml in ("pyproject.toml", "sdk/pyproject.toml"):
         v = re.search(r'^version = "([^"]+)"', open(os.path.join(ROOT, toml)).read(), re.M).group(1)
         check(f"plugin version {pv} matches {toml} ({v}) so plugin updates follow releases", pv == v)

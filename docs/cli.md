@@ -515,11 +515,11 @@ wire memnos into an agent (claude-code, codex, cursor, omnigent, ...) or 'all'
 
 | argument | description |
 |---|---|
-| `agent` | which agent to wire — use 'all' to auto-detect and wire every installed agent (one of: `claude-code`, `codex`, `cursor`, `windsurf`, `claude-desktop`, `openclaw`, `hermes`, `omnigent`, `all`) |
+| `agent` | which agent to wire — use 'all' to auto-detect and wire every installed agent (one of: `claude-code`, `codex`, `cursor`, `windsurf`, `claude-desktop`, `openclaw`, `hermes`, `omnigent`, `antigravity`, `agy`, `gemini`, `all`) |
 | `--namespace` | default namespace for the agent |
 | `--force` | set up even if the agent isn't detected |
 | `--agent-dir` | omnigent only: path to an agent's config.yaml (or its containing directory); defaults to ~/.omnigent/config.yaml's default_agent |
-| `--transport` | MCP transport to wire (claude-code/omnigent only): 'stdio' (default, spawns `memnos mcp` as a subprocess) or 'http' (connects to the already-running server's streamable-HTTP endpoint at :8900/mcp — survives a memnos restart without a client-side session reset). The default stays 'stdio' — pass 'http' explicitly to actually close issue #37's subprocess-sprawl bug for your own setup (one of: `stdio`, `http`; default `stdio`) |
+| `--transport` | MCP transport to wire (claude-code/omnigent/antigravity only): 'stdio' (default, spawns `memnos mcp` as a subprocess) or 'http' (connects to the already-running server's streamable-HTTP endpoint at :8900/mcp — survives a memnos restart without a client-side session reset). The default stays 'stdio' — pass 'http' explicitly to actually close issue #37's subprocess-sprawl bug for your own setup (one of: `stdio`, `http`; default `stdio`) |
 
 ```bash
 memnos agent-setup claude-code

@@ -76,12 +76,24 @@ HARNESS_REGISTRY: dict[str, HarnessSpec] = {
         supports_mcp=False,
         description="Kiro (Amazon) — IDE-integrated, use when user requests",
     ),
+    # Google Antigravity CLI (Gemini). Headless dispatch uses `agy -p`/`--print`;
+    # interactive tommy launches use --prompt-interactive with the prompt file.
+    "agy": HarnessSpec(
+        name="agy",
+        binary="agy",
+        launch_template=["agy", "--prompt-interactive", "{prompt_file}"],
+        supports_tools=True,
+        supports_mcp=True,
+        description="Google Antigravity CLI (Gemini) — full tool, subagent + MCP support",
+    ),
 }
+# `antigravity` is an alias for the same spec (so cfg.harness = "antigravity" resolves).
+HARNESS_REGISTRY["antigravity"] = HARNESS_REGISTRY["agy"]
 
 
 
 # Harnesses that accept --dangerously-skip-permissions
-_SUPPORTS_SKIP_PERMISSIONS = {"claude"}
+_SUPPORTS_SKIP_PERMISSIONS = {"claude", "agy", "antigravity"}
 
 
 def apply_skip_permissions(cmd: list[str], harness_name: str, skip: bool) -> list[str]:
@@ -94,6 +106,24 @@ def apply_skip_permissions(cmd: list[str], harness_name: str, skip: bool) -> lis
 
 
 _SUPPORTS_SESSION_NAME = {"claude"}
+
+
+def apply_headless(cmd: list[str], harness_name: str) -> list[str]:
+    """Headless dispatch: agy runs non-interactively with -p/--print instead of
+    --prompt-interactive (-i). Verified empirically against the real `agy` binary:
+    both `-p` and `--prompt-interactive` take the prompt STRING (passing a file path
+    causes agy to treat the path as literal prompt text and invoke read_file). If the
+    argument following `-p`/`--prompt-interactive` is an existing file on disk, inline
+    its contents."""
+    if harness_name in ("agy", "antigravity"):
+        out = ["-p" if a == "--prompt-interactive" else a for a in cmd]
+        for i, a in enumerate(out[:-1]):
+            if a in ("-p", "--print", "--prompt", "--prompt-interactive", "-i"):
+                p = Path(out[i + 1])
+                if p.is_file():
+                    out[i + 1] = p.read_text(encoding="utf-8")
+        return out
+    return cmd
 
 
 def apply_session_name(cmd: list[str], harness_name: str, name: str) -> list[str]:
