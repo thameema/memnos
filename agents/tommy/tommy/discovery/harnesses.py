@@ -110,12 +110,19 @@ _SUPPORTS_SESSION_NAME = {"claude"}
 
 def apply_headless(cmd: list[str], harness_name: str) -> list[str]:
     """Headless dispatch: agy runs non-interactively with -p/--print instead of
-    --prompt-interactive (-i). Verified against `agy --help` (`-p` / `--print`:
-    'Run a single prompt non-interactively and print the response';
-    `--dangerously-skip-permissions`: 'Auto-approve all tool permission requests
-    without prompting'). No-op for other harnesses (claude goes headless via stdout=PIPE)."""
+    --prompt-interactive (-i). Verified empirically against the real `agy` binary:
+    both `-p` and `--prompt-interactive` take the prompt STRING (passing a file path
+    causes agy to treat the path as literal prompt text and invoke read_file). If the
+    argument following `-p`/`--prompt-interactive` is an existing file on disk, inline
+    its contents."""
     if harness_name in ("agy", "antigravity"):
-        return ["-p" if a == "--prompt-interactive" else a for a in cmd]
+        out = ["-p" if a == "--prompt-interactive" else a for a in cmd]
+        for i, a in enumerate(out[:-1]):
+            if a in ("-p", "--print", "--prompt", "--prompt-interactive", "-i"):
+                p = Path(out[i + 1])
+                if p.is_file():
+                    out[i + 1] = p.read_text(encoding="utf-8")
+        return out
     return cmd
 
 

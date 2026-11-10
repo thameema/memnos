@@ -659,7 +659,8 @@ def tommy_dispatch(
     tf.close()
     _tf_path = tf.name  # capture for cleanup after proc exits
 
-    cmd = [part.replace("{prompt_file}", _tf_path) for part in spec.launch_template]
+    _prompt_arg = full_prompt if chosen in ("agy", "antigravity") else _tf_path
+    cmd = [part.replace("{prompt_file}", _prompt_arg) for part in spec.launch_template]
     cmd = apply_skip_permissions(cmd, chosen, cfg.skip_permissions)
     cmd = apply_headless(cmd, chosen)
 

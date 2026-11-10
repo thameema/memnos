@@ -123,9 +123,13 @@ def test_generate_skips_absent_and_create_missing_creates(tmp_path):
 
 
 # ---- headless dispatch
-def test_apply_headless_swaps_prompt_flag_for_agy_only():
+def test_apply_headless_swaps_prompt_flag_for_agy_only(tmp_path):
     from tommy.discovery.harnesses import apply_headless
-    tpl = ["agy", "--prompt-interactive", "/tmp/p"]
+    tpl = ["agy", "--prompt-interactive", "nonexistent-literal-prompt"]
     for n in ("agy", "antigravity"):
-        assert apply_headless(tpl, n) == ["agy", "-p", "/tmp/p"]
+        assert apply_headless(tpl, n) == ["agy", "-p", "nonexistent-literal-prompt"]
+    pf = tmp_path / "prompt.md"
+    pf.write_text("INLINE PROMPT BODY", encoding="utf-8")
+    for n in ("agy", "antigravity"):
+        assert apply_headless(["agy", "--prompt-interactive", str(pf)], n) == ["agy", "-p", "INLINE PROMPT BODY"]
     assert apply_headless(["claude", "--x"], "claude") == ["claude", "--x"]

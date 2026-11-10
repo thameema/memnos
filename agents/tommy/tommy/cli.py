@@ -562,8 +562,9 @@ def _launch_harness(
     tf.close()
     prompt_file = tf.name
 
+    _prompt_arg = prompt if cfg.harness in ("agy", "antigravity") else prompt_file
     cmd = [
-        part.replace("{prompt_file}", prompt_file)
+        part.replace("{prompt_file}", _prompt_arg)
         for part in spec.launch_template
     ] + list(extra_args)
     cmd = apply_skip_permissions(cmd, cfg.harness, cfg.skip_permissions)
