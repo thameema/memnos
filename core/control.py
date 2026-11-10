@@ -1722,6 +1722,7 @@ class Control:
         with conn.cursor() as c:
             if Control._inbox_foreign(c, namespace, to_s, principal_id):
                 return empty
+            Control._verify_session_owner(c, namespace, to_s, principal_id, claim_if_missing=True)
             c.execute(f"""
                 SELECT i.*, p.name AS author FROM memnos_control.agent_inbox i
                 LEFT JOIN memnos_control.principals p ON p.id = i.principal_id
@@ -1754,6 +1755,7 @@ class Control:
         with conn.cursor() as c:
             if Control._inbox_foreign(c, namespace, to_s, principal_id):
                 raise ValueError("inbox message not found")
+            Control._verify_session_owner(c, namespace, to_s, principal_id, claim_if_missing=True)
             c.execute("""SELECT * FROM memnos_control.agent_inbox
                          WHERE id=%s AND namespace=%s AND to_session=%s""", (message_id, namespace, to_s))
             row = c.fetchone()
