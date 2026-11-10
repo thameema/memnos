@@ -1,0 +1,11 @@
+{
+  "tommy": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "if command -v tommy >/dev/null 2>&1; then printf '{}\\n'; else printf '{\"injectSteps\":[{\"systemMessage\":{\"systemMessage\":\"tommy plugin: the tommy CLI is not on PATH, so Tommy MCP tools are unavailable. Install it with: uv tool install tommy-orchestrator, then restart agy.\"}}]}\\n'; fi",
+        "timeout": 10
+      }
+    ]
+  }
+}

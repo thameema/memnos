@@ -55,6 +55,8 @@ def main():
     pinned = {n: json.load(open(os.path.join(ROOT, p["source"], ".claude-plugin", "plugin.json"))).get("version")
               for n, p in local.items() if n.startswith("tommy")}
     check(f"every tommy plugin pins version == tommy-orchestrator {tv}", all(v == tv for v in pinned.values()), pinned)
+    tommy_agy_v = json.load(open(os.path.join(ROOT, "plugins/tommy/plugin.json"))).get("version")
+    check(f"plugins/tommy/plugin.json (Antigravity) pins version == tommy-orchestrator {tv}", tommy_agy_v == tv, tommy_agy_v)
 
     print("=== upstream plugins are pinned, attributed, never copied ===")
     for n, p in upstream.items():

@@ -121,6 +121,10 @@ def _simple_present(rel_path: str) -> Callable[[Path], bool]:
     return lambda root: (root / rel_path).exists()
 
 
+def _agents_dir_present(root: Path) -> bool:
+    return (root / ".agents").exists() or (root / ".agent").exists()
+
+
 ADAPTER_TARGETS: list[AdapterTarget] = [
     AdapterTarget(
         name="claude",
@@ -144,6 +148,18 @@ ADAPTER_TARGETS: list[AdapterTarget] = [
         name="copilot",
         rel_path=".github/copilot-instructions.md",
         is_present=_github_present,
+        render_new_file=lambda body: upsert_marked_block("", body),
+    ),
+    AdapterTarget(
+        name="gemini",
+        rel_path="GEMINI.md",
+        is_present=_simple_present("GEMINI.md"),
+        render_new_file=lambda body: upsert_marked_block("", body),
+    ),
+    AdapterTarget(
+        name="antigravity",
+        rel_path=".agents/rules/AGENTS.md",
+        is_present=_agents_dir_present,
         render_new_file=lambda body: upsert_marked_block("", body),
     ),
 ]
@@ -200,7 +216,7 @@ def render_stdout_fallback(effective: EffectiveConfig) -> str:
     body = render_policy_block(effective)
     header = (
         "No recognized harness config file (CLAUDE.md, .cursor/, .windsurfrules, "
-        ".github/) was found under this project root, so nothing was written.\n"
+        ".github/, GEMINI.md, .agents/) was found under this project root, so nothing was written.\n"
         "Create one of those (or pass --create-missing) and re-run `tommy generate`.\n"
         "Generated policy block:\n"
     )

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "tommy": {
+      "command": "tommy",
+      "args": [
+        "--mcp"
+      ]
+    }
+  }
+}
