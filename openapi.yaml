@@ -2276,6 +2276,15 @@ components:
           type: object
           description: "channel -> description string, or {description, what_you_get, intents}"
         ttl_seconds: { type: integer }
+        webhook:
+          type: [string, "null"]
+          description: >-
+            http(s) URL to push this session's channel/inbox events to as they arrive.
+            Omit the field entirely to leave an existing webhook (and its secret) untouched
+            on re-register; pass null/empty to clear it. SSRF-validated server-side
+            (link-local, private-range, multicast and reserved targets are rejected;
+            loopback is allowed). Setting it (re)generates webhook_secret, returned once
+            on the Session response, used to sign deliveries via X-Memnos-Signature.
     SessionHeartbeatRequest:
       type: object
       required: [namespace, name]
@@ -2345,6 +2354,13 @@ components:
         status_channel: { type: string }
         peers: { type: array, items: { type: object } }
         available_channels: { type: array, items: { $ref: "#/components/schemas/ChannelInfo" } }
+        webhook_secret:
+          type: [string, "null"]
+          description: >-
+            Only present on THIS session's own register/heartbeat response, when a webhook
+            is set — never on another session as seen via session_list/peers. Signs
+            deliveries via X-Memnos-Signature: sha256=<hmac>.
+        has_webhook: { type: boolean, description: "set on peer entries instead of the raw webhook URL" }
     SessionUnregisterResponse:
       type: object
       required: [unregistered]

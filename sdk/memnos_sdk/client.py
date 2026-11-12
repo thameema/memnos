@@ -12,6 +12,8 @@ client or per call).
 """
 from __future__ import annotations
 
+_UNSET = object()   # sentinel: webhook arg omitted -> leave server-side value untouched on re-register
+
 import httpx
 
 DEFAULT_URL = "http://127.0.0.1:8900"
@@ -142,9 +144,18 @@ class MemnosClient:
         r = self._c.post(path, json={"namespace": _ns(namespace, self.namespace), **body},
                          **({"timeout": timeout} if timeout else {}))
         return _raise(r)
-    def session_register(self, name, *, role='', harness='', model='', current_task='', channels=None, channel_ads=None, ttl_seconds=1800, namespace=None) -> dict:
-        """POST /session/register (issue #231). channel_ads: {channel: description | {description, what_you_get, intents}}."""
-        return self._post_json("/session/register", {"name": name, "role": role, "harness": harness, "model": model, "current_task": current_task, "channels": channels or [], "channel_ads": channel_ads or {}, "ttl_seconds": ttl_seconds}, namespace)
+    def session_register(self, name, *, role='', harness='', model='', current_task='', channels=None, channel_ads=None, ttl_seconds=1800, webhook=_UNSET, namespace=None) -> dict:
+        """POST /session/register (issue #231). channel_ads: {channel: description | {description, what_you_get, intents}}.
+        webhook: optional http(s) URL — this session's channel/inbox events are POSTed there as
+        they arrive (in addition to the existing pull via channel_wait/inbox_list), so a
+        headless/service subscriber with no interactive loop can still react promptly.
+        Pass None to clear an existing webhook; omit entirely to leave it (and its secret)
+        untouched on re-register. The response's webhook_secret signs each delivery
+        (X-Memnos-Signature: sha256=hmac); verify it before trusting a payload."""
+        body = {"name": name, "role": role, "harness": harness, "model": model, "current_task": current_task, "channels": channels or [], "channel_ads": channel_ads or {}, "ttl_seconds": ttl_seconds}
+        if webhook is not _UNSET:
+            body["webhook"] = webhook
+        return self._post_json("/session/register", body, namespace)
 
     def session_heartbeat(self, name, *, status=None, current_task=None, namespace=None) -> dict:
         """POST /session/heartbeat (issue #231)."""
@@ -283,9 +294,17 @@ class AsyncMemnosClient:
         r = await self._c.post(path, json={"namespace": _ns(namespace, self.namespace), **body},
                          **({"timeout": timeout} if timeout else {}))
         return _raise(r)
-    async def session_register(self, name, *, role='', harness='', model='', current_task='', channels=None, channel_ads=None, ttl_seconds=1800, namespace=None) -> dict:
-        """POST /session/register (issue #231). channel_ads: {channel: description | {description, what_you_get, intents}}."""
-        return await self._post_json("/session/register", {"name": name, "role": role, "harness": harness, "model": model, "current_task": current_task, "channels": channels or [], "channel_ads": channel_ads or {}, "ttl_seconds": ttl_seconds}, namespace)
+    async def session_register(self, name, *, role='', harness='', model='', current_task='', channels=None, channel_ads=None, ttl_seconds=1800, webhook=_UNSET, namespace=None) -> dict:
+        """POST /session/register (issue #231). channel_ads: {channel: description | {description, what_you_get, intents}}.
+        webhook: optional http(s) URL — this session's channel/inbox events are POSTed there as
+        they arrive (in addition to the existing pull via channel_wait/inbox_list).
+        Pass None to clear an existing webhook; omit entirely to leave it (and its secret)
+        untouched on re-register. The response's webhook_secret signs each delivery
+        (X-Memnos-Signature: sha256=hmac); verify it before trusting a payload."""
+        body = {"name": name, "role": role, "harness": harness, "model": model, "current_task": current_task, "channels": channels or [], "channel_ads": channel_ads or {}, "ttl_seconds": ttl_seconds}
+        if webhook is not _UNSET:
+            body["webhook"] = webhook
+        return await self._post_json("/session/register", body, namespace)
 
     async def session_heartbeat(self, name, *, status=None, current_task=None, namespace=None) -> dict:
         """POST /session/heartbeat (issue #231)."""

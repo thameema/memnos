@@ -948,6 +948,7 @@ register this agent under a name (auto-subscribes @name, #general)
 | `--task` | current task (default ``) |
 | `--channels` | extra channels, comma-separated (default ``) |
 | `--ttl` | (default `1800`) |
+| `--webhook` | http(s) URL — push this session's channel/inbox events there as they arrive, in addition to pull (channel wait, inbox ls). Omit to leave an existing webhook untouched on re-register; pass --webhook '' to clear it. |
 
 ### `memnos session unregister`
 

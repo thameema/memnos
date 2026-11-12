@@ -1,6 +1,6 @@
 {
   "name": "tommy-qa",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "QA bundle (opt-in): test planning and execution for frontend UIs, backend logic and REST APIs. Tests only what you point it at.",
   "author": {
     "name": "Thameem Ansari",

@@ -353,6 +353,19 @@ CREATE TABLE IF NOT EXISTS memnos_control.agent_sessions(
 );
 CREATE INDEX IF NOT EXISTS agent_sessions_ns_exp
     ON memnos_control.agent_sessions(namespace, expires_at DESC);
+-- optional webhook push for this session's channel/inbox events (reuses the same
+-- at-least-once delivery model as the namespace subscriptions above). No separate cursor
+-- needed: channel_poll() already advances each subscription's own cursor on delivery, and
+-- inbox_list(mark_read=True) already tracks pending/read per message — delivering via
+-- webhook just calls the same two functions /channel/wait already polls with.
+ALTER TABLE memnos_control.agent_sessions ADD COLUMN IF NOT EXISTS webhook text;
+ALTER TABLE memnos_control.agent_sessions ADD COLUMN IF NOT EXISTS webhook_failures int NOT NULL DEFAULT 0;
+ALTER TABLE memnos_control.agent_sessions ADD COLUMN IF NOT EXISTS webhook_active boolean NOT NULL DEFAULT true;
+-- HMAC signing secret for this session's webhook deliveries (X-Memnos-Signature header),
+-- so the receiver can reject forged POSTs from anyone who discovers the webhook URL.
+-- Only ever returned to the registering principal (session_register's own response);
+-- session_list strips it before exposing sessions to peers.
+ALTER TABLE memnos_control.agent_sessions ADD COLUMN IF NOT EXISTS webhook_secret text;
 CREATE TABLE IF NOT EXISTS memnos_control.channel_messages(
     id             bigserial PRIMARY KEY,
     namespace      text NOT NULL,
@@ -982,6 +995,64 @@ class Control:
         return results
 
     @staticmethod
+    def deliver_pending_sessions(conn, post_fn, *, batch=50, max_failures=5, conn_factory=None):
+        """WEBHOOK PUSH for named-session channel/inbox events — the push-side counterpart to
+        /channel/wait. For each session with an active webhook, POST any new channel messages
+        plus pending inbox items, at-least-once: channel_poll(peek=True)/inbox_list(mark_read=
+        False) read without consuming, post_fn runs, and only on success do cursors advance /
+        items get marked read — a failed POST leaves them pending so the NEXT tick retries the
+        same batch, instead of the cursor already having moved before delivery was even
+        attempted. A failed POST still increments webhook_failures (so a persistently-broken
+        endpoint gets deactivated); after `max_failures` the webhook is deactivated
+        (webhook_active=false) rather than deleted, so re-running `session register` (not
+        heartbeat, which never touches webhook state) re-arms it once the subscriber is back.
+        shortcut: the "commit" step re-polls rather than advancing to the exact ids already
+        posted, so a message arriving in the gap between the peek and the commit rides along
+        marked delivered without its own POST — narrow, and no worse than the race already
+        inherent to any poll-then-mark design; upgrade to id-scoped commits if that gap matters.
+
+        `conn_factory` (pooled callers, e.g. POOL.connection): each DB step uses its own
+        short-lived connection so no pool slot is held across the webhook POSTs."""
+        import contextlib
+        cf = conn_factory if conn_factory is not None else (lambda: contextlib.nullcontext(conn))
+        with cf() as cx, cx.cursor() as c:
+            c.execute("""SELECT namespace, name, principal_id, webhook, webhook_secret, webhook_failures
+                         FROM memnos_control.agent_sessions
+                         WHERE webhook IS NOT NULL AND webhook_active=true
+                           AND status != 'offline' AND expires_at > now() ORDER BY id""")
+            sessions = c.fetchall()
+        results = []
+        for s in sessions:
+            ns, name, pid, url = s["namespace"], s["name"], s["principal_id"], s["webhook"]
+            try:
+                with cf() as cx:
+                    polled = Control.channel_poll(cx, ns, name, pid, peek=True, limit=batch)
+                    inbox = Control.inbox_list(cx, ns, name, pid, status="pending",
+                                               mark_read=False, limit=batch)["items"]
+                if not polled["count"] and not inbox:
+                    continue
+                payload = {"session_name": name, "namespace": ns,
+                           "channel_messages": polled["messages"], "inbox_items": inbox}
+                post_fn(url, payload, s["webhook_secret"])      # network — no conn held when pooled
+                with cf() as cx:   # delivery succeeded -- now commit: advance cursors, mark read
+                    Control.channel_poll(cx, ns, name, pid, limit=batch)
+                    Control.inbox_list(cx, ns, name, pid, status="pending", mark_read=True, limit=batch)
+                with cf() as cx, cx.cursor() as c:
+                    c.execute("UPDATE memnos_control.agent_sessions "
+                              "SET webhook_failures=0 WHERE namespace=%s AND name=%s", (ns, name))
+                results.append({"session_name": name, "delivered": polled["count"] + len(inbox)})
+            except Exception as e:
+                fails = s["webhook_failures"] + 1
+                still_active = fails < max_failures
+                with cf() as cx, cx.cursor() as c:
+                    c.execute("UPDATE memnos_control.agent_sessions "
+                              "SET webhook_failures=%s, webhook_active=%s WHERE namespace=%s AND name=%s",
+                              (fails, still_active, ns, name))
+                results.append({"session_name": name, "error": str(e)[:200],
+                                "failures": fails, "active": still_active})
+        return results
+
+    @staticmethod
     def list_subscriptions(conn, principal_id):
         with conn.cursor() as c:
             c.execute("SELECT id, namespace, webhook, cursor, active, delivery_failures, "
@@ -1292,32 +1363,52 @@ class Control:
     def _iso(row):
         return {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in row.items()}
 
+    _UNSET = object()   # sentinel: "caller didn't mention this field, leave it as-is"
+
     @staticmethod
     def session_register(conn, namespace, name, principal_id, *, harness="", model="", role="",
                          host="", cwd="", status="active", current_task="", metadata=None,
-                         channels=None, channel_ads=None, ttl_seconds=1800):
+                         channels=None, channel_ads=None, ttl_seconds=1800, webhook=_UNSET):
         """Upsert a named session. A different principal may not take over a non-offline name,
-        even after heartbeat expiry (raises SessionConflict); only unregister/channel_cleanup frees it."""
+        even after heartbeat expiry (raises SessionConflict); only unregister/channel_cleanup frees it.
+
+        `webhook`: optional URL, validated by the caller (server-side SSRF guard — this layer
+        just persists it); pass None to clear it, or omit entirely to leave an existing webhook
+        (and its secret) untouched on re-register — e.g. re-registering just to refresh
+        `current_task` must not silently wipe a webhook set earlier. Enables push delivery of
+        this session's channel/inbox events via Control.deliver_pending_sessions(), in addition
+        to the existing pull (/channel/wait, inbox_list). Setting a webhook (re)generates its
+        HMAC signing secret, returned in this call's response only — session_list never
+        includes it, so re-register with the same webhook to rotate it if it's lost."""
+        import secrets as _secrets
         from psycopg.types.json import Jsonb
         name = Control._slug(name, "session name")
         Control._bound_channels(channels)
         Control._bound_meta(metadata)
         explicit_chans = [f"@{name}"] + [Control._channel(x) for x in (channels or [])]
+        touch_webhook = webhook is not Control._UNSET
+        wh = webhook if touch_webhook else None
+        webhook_secret = _secrets.token_hex(32) if wh else None
+        webhook_set_sql = ("webhook=EXCLUDED.webhook, webhook_failures=0, webhook_active=true, "
+                            "webhook_secret=EXCLUDED.webhook_secret") if touch_webhook else (
+                            "webhook=memnos_control.agent_sessions.webhook, "
+                            "webhook_secret=memnos_control.agent_sessions.webhook_secret")
         with conn.cursor() as c:
-            c.execute("""
+            c.execute(f"""
                 INSERT INTO memnos_control.agent_sessions(namespace,name,principal_id,harness,model,role,
-                    host,cwd,status,current_task,metadata,expires_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now() + (%s * interval '1 second'))
+                    host,cwd,status,current_task,metadata,expires_at,webhook,webhook_secret)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now() + (%s * interval '1 second'), %s, %s)
                 ON CONFLICT (namespace,name) DO UPDATE SET
                     principal_id=EXCLUDED.principal_id, harness=EXCLUDED.harness, model=EXCLUDED.model,
                     role=EXCLUDED.role, host=EXCLUDED.host, cwd=EXCLUDED.cwd, status=EXCLUDED.status,
                     current_task=EXCLUDED.current_task, metadata=EXCLUDED.metadata,
-                    registered_at=now(), last_heartbeat_at=now(), expires_at=EXCLUDED.expires_at
+                    registered_at=now(), last_heartbeat_at=now(), expires_at=EXCLUDED.expires_at,
+                    {webhook_set_sql}
                 WHERE memnos_control.agent_sessions.principal_id = EXCLUDED.principal_id
                    OR memnos_control.agent_sessions.status = 'offline'
                 RETURNING *
             """, (namespace, name, principal_id, harness, model, role, host, cwd, status,
-                  current_task, Jsonb(metadata or {}), max(1, int(ttl_seconds))))
+                  current_task, Jsonb(metadata or {}), max(1, int(ttl_seconds)), wh, webhook_secret))
             row = c.fetchone()
             if not row:
                 raise SessionConflict(f"session name '{name}' is held by another principal")
@@ -1394,8 +1485,15 @@ class Control:
                   AND (%s::text IS NULL OR a.role=%s) AND (%s::text IS NULL OR a.harness=%s)
                 ORDER BY a.name
             """, (namespace, include_expired, role, role, harness, harness))
-            return [{**Control._iso(r), "direct_channel": f"@{r['name']}",
-                     "status_channel": f"status:{r['name']}"} for r in c.fetchall()]
+            out = []
+            for r in c.fetchall():
+                row = Control._iso(r)
+                row.pop("webhook_secret", None)   # never expose another session's signing secret
+                # the URL itself may embed a bearer token/query secret -- peers only need to know
+                # push is configured, not where it points
+                row["has_webhook"] = bool(row.pop("webhook", None))
+                out.append({**row, "direct_channel": f"@{r['name']}", "status_channel": f"status:{r['name']}"})
+            return out
 
     @staticmethod
     def session_unregister(conn, namespace, name, principal_id):

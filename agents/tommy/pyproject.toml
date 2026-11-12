@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tommy-orchestrator"
-version = "0.1.16"
+version = "0.1.17"
 description = "Tommy — a personal coding orchestrator built on memnos"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,7 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
-pentest = ["strix-agent>=1.0"]  # CLI for running-dynamic-exploitation-with-strix; needs Python >=3.12
+pentest = ["strix-agent>=1.0; python_version >= '3.12'"]  # CLI for running-dynamic-exploitation-with-strix; needs Python >=3.12
 
 [project.scripts]
 tommy = "tommy.cli:main"

@@ -2790,12 +2790,18 @@ def cmd_session(args, cfg):
     ns, tok = _sess_ctx(args, cfg)
     verb = getattr(args, "verb", None)
     if verb == "register":
-        out = _post(cfg, "/session/register", {
+        body = {
             "namespace": ns, "name": args.name, "role": args.role, "harness": args.harness,
             "model": args.model, "current_task": args.task, "ttl_seconds": args.ttl,
             "channels": [c for c in args.channels.split(",") if c.strip()],
-            "host": platform.node(), "cwd": os.getcwd()}, tok)
+            "host": platform.node(), "cwd": os.getcwd()}
+        if args.webhook is not None:   # omitted entirely -> leave any existing webhook untouched
+            body["webhook"] = args.webhook.strip() or None
+        out = _post(cfg, "/session/register", body, tok)
         print(f"registered {out['name']} in {ns}  subscribed={','.join(out['subscribed_channels'])}")
+        if out.get("webhook_secret"):
+            print(f"webhook secret (save this — shown once, re-register to rotate): {out['webhook_secret']}")
+            print("verify deliveries with the X-Memnos-Signature: sha256=<hmac-sha256 of body> header")
         nsresolve.save_active_session(out["name"], cwd=os.getcwd(), namespace=ns)
         print(f"bound session '{out['name']}' to {os.getcwd()} (<memnos:inbox> auto-injection active)")
     elif verb == "ls":
@@ -5288,6 +5294,10 @@ def build_parser():
     v.add_argument("--task", default="", help="current task")
     v.add_argument("--channels", default="", help="extra channels, comma-separated")
     v.add_argument("--ttl", type=int, default=1800)
+    v.add_argument("--webhook", default=None, help="http(s) URL — push this session's channel/inbox "
+                   "events there as they arrive, in addition to pull (channel wait, inbox ls). "
+                   "Omit to leave an existing webhook untouched on re-register; pass --webhook "
+                   "'' to clear it.")
     v.set_defaults(fn=cmd_session)
     v = _common(ps.add_parser("ls", help="who is online, with unread counts"))
     v.add_argument("--all", action="store_true", help="include expired/offline sessions")

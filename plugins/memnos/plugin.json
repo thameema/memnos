@@ -1,6 +1,6 @@
 {
   "name": "memnos",
-  "version": "0.1.47",
+  "version": "0.1.48",
   "description": "Namespace-scoped, token-authenticated shared memory for AI coding agents: auto recall before each prompt, auto save after, MCP tools and /memnos:memnos. Needs the memnos CLI (uv tool install memnos && memnos setup).",
   "author": {
     "name": "Thameem Ansari",

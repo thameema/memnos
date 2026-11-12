@@ -294,12 +294,49 @@ WEBHOOK_TIMEOUT = float(os.environ.get("MEMNOS_WEBHOOK_TIMEOUT", "5"))
 PUSHER_INTERVAL = float(os.environ.get("MEMNOS_PUSHER_INTERVAL", "3"))
 
 
-def _webhook_post(url, payload):
-    """POST a JSON payload to a subscriber webhook; raises on non-2xx (stdlib, no dep)."""
-    req = urllib.request.Request(url, method="POST",
-                                 data=json.dumps(payload, default=str).encode(),
-                                 headers={"Content-Type": "application/json",
-                                          "User-Agent": "memnos-webhook/1"})
+def _validate_webhook_url(url):
+    """Reject the SSRF-dangerous targets: link-local (incl. cloud metadata endpoints like
+    169.254.169.254), other-host RFC1918 private ranges, multicast, and reserved blocks — the
+    server would otherwise let any session owner make it POST to internal infra it alone can
+    reach. Loopback is deliberately ALLOWED: a self-hosted, single-tenant memnos instance's own
+    principals are already trusted enough to register sessions/recall memories, and an
+    agent + its webhook receiver on the same box (the common case, and what
+    tests/test_pubsub_push.py already relies on for /subscribe) is normal, not an attack —
+    the dangerous case is reaching *other* hosts the principal couldn't otherwise reach, not
+    the loopback interface of the box the server itself is on. Checked once at registration
+    time; shortcut: not re-resolved at delivery time, so a URL that resolves public now but is
+    later DNS-rebound to a private address would slip through on the next delivery — upgrade
+    to a per-delivery re-check if webhooks ever cross a trust boundary wider than this.
+    Raises ValueError."""
+    import ipaddress
+    import socket as _socket
+    u = urlparse(str(url or ""))
+    if u.scheme not in ("http", "https") or not u.hostname:
+        raise ValueError("webhook must be an http:// or https:// URL")
+    try:
+        infos = _socket.getaddrinfo(u.hostname, None)
+    except OSError as e:
+        raise ValueError(f"webhook host does not resolve: {e}")
+    for *_, sockaddr in infos:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if ip.is_loopback:
+            continue
+        if ip.is_private or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+            raise ValueError(f"webhook host resolves to a non-public address ({ip}) — not allowed")
+
+
+def _webhook_post(url, payload, secret=None):
+    """POST a JSON payload to a subscriber webhook; raises on non-2xx (stdlib, no dep).
+    `secret` (session webhooks only — the older namespace-feed subscriptions have none):
+    adds an X-Memnos-Signature: sha256=<hmac-hex> header over the exact request body, same
+    pattern as GitHub/Stripe webhooks, so the receiver can reject payloads from anyone who
+    merely discovers the webhook URL rather than holding its secret."""
+    body = json.dumps(payload, default=str).encode()
+    headers = {"Content-Type": "application/json", "User-Agent": "memnos-webhook/1"}
+    if secret:
+        import hmac, hashlib
+        headers["X-Memnos-Signature"] = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    req = urllib.request.Request(url, method="POST", data=body, headers=headers)
     with urllib.request.urlopen(req, timeout=WEBHOOK_TIMEOUT) as r:
         if not (200 <= r.status < 300):
             raise RuntimeError(f"webhook HTTP {r.status}")
@@ -315,6 +352,7 @@ def _pusher_loop():
         _DELIVER_EVENT.clear()
         try:
             Control.deliver_pending(None, _webhook_post, conn_factory=POOL.connection)
+            Control.deliver_pending_sessions(None, _webhook_post, conn_factory=POOL.connection)
         except (PoolTimeout, OperationalError) as e:
             print(f"[memnos] webhook pusher: DB unreachable ({type(e).__name__}) — will retry", flush=True)
         except Exception:
@@ -927,7 +965,8 @@ class Handler(BaseHTTPRequestHandler):
                     return 200, {"subscriptions": Control.list_subscriptions(conn, int(qs.get("principal", [pid])[0]))}
                 if sub == "deliver" and method == "POST":
                     # run a webhook delivery pass now (ops + deterministic tests)
-                    return 200, {"delivered": Control.deliver_pending(conn, _webhook_post)}
+                    return 200, {"delivered": Control.deliver_pending(conn, _webhook_post),
+                                 "delivered_sessions": Control.deliver_pending_sessions(conn, _webhook_post)}
                 if sub == "provider" and method == "GET":
                     from core.vault import Vault
                     return 200, {"mode": "openai" if os.environ.get("OPENAI_API_KEY") else "local",
@@ -1349,6 +1388,11 @@ class Handler(BaseHTTPRequestHandler):
                     # --- namespace pub/sub (Batch 3) ---
                     elif self.path == "/subscribe":        # namespace_subscribe
                         wh = (str(req.get("webhook")).strip() or None) if req.get("webhook") else None
+                        if wh:
+                            try:
+                                _validate_webhook_url(wh)
+                            except ValueError as e:
+                                return self._send(400, {"error": str(e)})
                         out = Control.subscribe(conn, principal, ns, wh)
                     elif self.path == "/feed":             # namespace_feed (poll since cursor)
                         try:
@@ -1409,6 +1453,15 @@ class Handler(BaseHTTPRequestHandler):
                         pname = (Control.principal_info(conn, principal) or {}).get("name")
                         sess = str(req.get("name") or req.get("session_name") or req.get("sender_session") or "")
                         if self.path == "/session/register":
+                            webhook_kwargs = {}
+                            if "webhook" in req:   # key present -> set/clear; absent -> leave untouched
+                                wh = str(req.get("webhook")).strip() or None if req.get("webhook") else None
+                                if wh:
+                                    try:
+                                        _validate_webhook_url(wh)
+                                    except ValueError as e:
+                                        return self._send(400, {"error": str(e)})
+                                webhook_kwargs["webhook"] = wh
                             out = Control.session_register(
                                 conn, ns, sess, principal,
                                 harness=str(req.get("harness", "")), model=str(req.get("model", "")),
@@ -1417,7 +1470,7 @@ class Handler(BaseHTTPRequestHandler):
                                 current_task=str(req.get("current_task", "")),
                                 metadata=req.get("metadata"), channels=req.get("channels"),
                                 channel_ads=req.get("channel_ads"),
-                                ttl_seconds=int(req.get("ttl_seconds", 1800)))
+                                ttl_seconds=int(req.get("ttl_seconds", 1800)), **webhook_kwargs)
                         elif self.path == "/session/heartbeat":
                             out = Control.session_heartbeat(
                                 conn, ns, sess, principal, status=req.get("status"),

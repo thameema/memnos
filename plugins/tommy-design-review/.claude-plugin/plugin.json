@@ -1,6 +1,6 @@
 {
   "name": "tommy-design-review",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "Design-review bundle (opt-in): HLD and LLD reviewers that check a design against the real code before anyone builds it.",
   "author": {
     "name": "Thameem Ansari",

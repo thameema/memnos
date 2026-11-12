@@ -933,18 +933,25 @@ def _chan_call(path, payload, what, timeout=60):
 @mcp.tool()
 def session_register(name: str, role: str = "", harness: str = "", model: str = "",
                      current_task: str = "", channels: list[str] | None = None,
-                     channel_ads: dict[str, str] | None = None, ttl_seconds: int = 1800) -> str:
+                     channel_ads: dict[str, str] | None = None, ttl_seconds: int = 1800,
+                     webhook: str = "") -> str:
     """Register this agent under a human-friendly session name (e.g. 'claude-dev',
     'gemini-critic') so peers can find and message it. Auto-subscribes @<name> and #general.
     The name becomes this process's default session for the other session_/channel_ tools.
     channel_ads maps channel -> description to advertise channels you own. The reply lists
-    peers and available_channels (what each channel is for)."""
+    peers and available_channels (what each channel is for).
+    webhook: optional http(s) URL to push this session's channel/inbox events to, for a
+    headless subscriber with no interactive loop; leave blank to leave an existing webhook
+    (and its secret) untouched on re-register."""
     global _SESSION_DEFAULT
-    out = _chan_call("/session/register", {
+    body = {
         "name": name, "role": role, "harness": harness, "model": model,
         "current_task": current_task, "channels": channels or [], "channel_ads": channel_ads or {},
         "ttl_seconds": ttl_seconds,
-        "host": os.uname().nodename, "cwd": os.getcwd()}, "session_register")
+        "host": os.uname().nodename, "cwd": os.getcwd()}
+    if webhook:
+        body["webhook"] = webhook
+    out = _chan_call("/session/register", body, "session_register")
     if not out.startswith("(memnos"):
         _SESSION_DEFAULT = name.strip().lstrip("@")
         nsresolve and nsresolve.save_active_session(_SESSION_DEFAULT, cwd=os.getcwd(), namespace=_ns())

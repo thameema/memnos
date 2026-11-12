@@ -1,6 +1,6 @@
 {
   "name": "tommy",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "Tommy, the memnos-backed coding orchestrator: dispatch, durable cross-harness handoffs and Secret Shield, with memnos memory on by default. Skill bundles are opt-in: install tommy-engineering, tommy-review, tommy-architect, tommy-design-review, tommy-qa or tommy-security as you need them. Needs the tommy CLI (uv tool install tommy-orchestrator).",
   "author": {
     "name": "Thameem Ansari",

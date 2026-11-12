@@ -2128,6 +2128,12 @@
        "help": "",
        "positional": false,
        "required": false
+      },
+      {
+       "arg": "--webhook",
+       "help": "http(s) URL \u2014 push this session's channel/inbox events there as they arrive, in addition to pull (channel wait, inbox ls). Omit to leave an existing webhook untouched on re-register; pass --webhook '' to clear it.",
+       "positional": false,
+       "required": false
       }
      ],
      "command": "session register",
