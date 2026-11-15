@@ -899,14 +899,20 @@ class MemnosMemory:
                 n_super += self.store.close_out(self.schema, namespace, cand["id"],
                                                 valid_to=(ev or obs), superseded_by=fid)
 
-        # populate the ENTITY GRAPH from the SPO triple (every fact is an edge)
+        # populate the ENTITY GRAPH from the SPO triple (issue #159: canonicalize identity,
+        # only mint entities for valid named concepts/identifiers — never literals/free clauses,
+        # and attach the statement embedding so entities.embedding is populated at mint time).
         if subj:
-            se = self.store.upsert_entity(self.schema, namespace, subj)
-            self.store.add_mention(self.schema, se, fid, "semantic")
-            if obj:
-                oe = self.store.upsert_entity(self.schema, namespace, obj[:100])
-                self.store.add_mention(self.schema, oe, fid, "semantic")
-                self.store.bump_edge(self.schema, namespace, se, oe)
+            canon_subj = BrainStore.canonicalize_entity_name(subj, user_name=self.user_name)
+            if BrainStore.is_valid_entity_name(canon_subj, is_object=False):
+                se = self.store.upsert_entity(self.schema, namespace, canon_subj, vec=vec)
+                self.store.add_mention(self.schema, se, fid, "semantic")
+                if obj:
+                    canon_obj = BrainStore.canonicalize_entity_name(obj[:100], user_name=self.user_name)
+                    if BrainStore.is_valid_entity_name(canon_obj, is_object=True):
+                        oe = self.store.upsert_entity(self.schema, namespace, canon_obj, vec=vec)
+                        self.store.add_mention(self.schema, oe, fid, "semantic")
+                        self.store.bump_edge(self.schema, namespace, se, oe)
         return 1, n_super
 
     def _extract(self, text, date, *, profile="benchmark"):

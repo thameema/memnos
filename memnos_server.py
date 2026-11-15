@@ -1306,13 +1306,26 @@ class Handler(BaseHTTPRequestHandler):
                     # --- memory CRUD parity (write/search/context are PHASED above) ---
                     elif self.path == "/memory/delete":    # expire a semantic fact by id (system-time)
                         try:
-                            sid = int(req.get("id"))
+                            sid = int(req.get("id", req.get("constraint_id")))
                         except (TypeError, ValueError):
                             return self._send(400, {"error": "id (int) required"})
                         existing = store.get_semantic(mem.schema, ns, sid)
                         if not existing:
-                            return self._send(404, {"error": "fact not found in namespace"})
+                            # issue #152: a local/no-extraction pinned constraint lives in
+                            # raw_turns (no semantic row) — retire it instead of 404ing.
+                            retired = store.retire_constraint_by_id(
+                                mem.schema, ns, sid, retired_by=f"memory_delete:{principal}")
+                            if not retired:
+                                return self._send(404, {"error": "fact not found in namespace"})
+                            Control.audit(conn, principal, "constraint.retire", ns, True,
+                                          {"retired": [{"kind": r["kind"], "id": r["id"]} for r in retired],
+                                           "by": "memory_delete"})
+                            return self._send(200, {"deleted": sid, "constraints_retired": retired,
+                                                    "statement": retired[0]["content"]})
                         store.expire(mem.schema, ns, sid)
+                        if existing.get("memory_type") == "constraint":
+                            store.retire_constraint_by_id(mem.schema, ns, sid, kind="fact",
+                                                          retired_by="memory_delete")
                         out = {"deleted": sid, "statement": existing.get("statement")}
                     # --- graph read (entities/edges already populated; no API existed) ---
                     elif self.path == "/entity":           # get_entity
@@ -2486,16 +2499,22 @@ class Handler(BaseHTTPRequestHandler):
             if cal["measured_ms_per_pair"] is not None:
                 detail["measured_ms_per_pair"] = cal["measured_ms_per_pair"]
             self._audit_detail = detail    # → audit_log.detail (per-stage ledger)
-            # issue #240 (P4): record structured recall explain entry into ring buffer
+            # issue #240 (P4): record structured recall explain entry into ring buffer.
+            # Keep up to 50 pinned constraints PLUS up to 30 ranked non-pinned rows so
+            # namespaces with >30 pins (e.g. user:thameema with 40 pins) do not slice away
+            # all ranked memories before `memnos explain` can inspect them.
             try:
+                _pinned_rows = [r for r in rows if r.get("pinned")]
+                _ranked_rows = [r for r in rows if not r.get("pinned")]
+                _explain_rows = _pinned_rows[:50] + _ranked_rows[:30]
                 _record_recall_explain(ns, {
                     "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     "namespace": ns,
                     "query": q,
                     "scope": "wide" if wide else "narrow",
                     "viewer": mem.author,
-                    "pinned_count": sum(1 for r in rows if r.get("pinned")),
-                    "ranked_count": sum(1 for r in rows if not r.get("pinned")),
+                    "pinned_count": len(_pinned_rows),
+                    "ranked_count": len(_ranked_rows),
                     "suppressed_constraints": list(getattr(self, "_suppress_audit", []) or []),
                     "timings_ms": dict(detail),
                     "memories": [
@@ -2513,7 +2532,7 @@ class Handler(BaseHTTPRequestHandler):
                             "superseded": bool(r.get("superseded")),
                             "code_anchors": r.get("code_anchors") if (r.get("namespace") in (None, ns)) else None,
                         }
-                        for r in rows[:30]
+                        for r in _explain_rows
                     ],
                 })
             except Exception:

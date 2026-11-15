@@ -2159,6 +2159,68 @@ def cmd_constraint_ls(args, cfg):
                   "run `memnos claude-setup`, then start a new session to refresh")
 
 
+def _constraint_store(cfg):
+    from core.control import Control
+    from core.store import BrainStore
+    conn = _conn(cfg)
+    Control.init(conn)
+    return conn, BrainStore(conn=conn)
+
+
+def cmd_constraint_pins(args, cfg):
+    """issue #152: list LIVE pinned constraints (kind:id + subject) — the ones that
+    `constraint ls` (enforced ask/block rules only) doesn't show."""
+    conn, store = _constraint_store(cfg)
+    nss = [args.namespace] if args.namespace else [
+        r["namespace"] for r in conn.execute(
+            "SELECT DISTINCT namespace FROM tenant_memnos.raw_turns WHERE memory_type='constraint' "
+            "AND constraint_retired_at IS NULL UNION "
+            "SELECT DISTINCT namespace FROM tenant_memnos.semantic WHERE memory_type='constraint' "
+            "AND constraint_retired_at IS NULL UNION "
+            "SELECT DISTINCT namespace FROM tenant_memnos.episodic WHERE memory_type='constraint' "
+            "AND constraint_retired_at IS NULL ORDER BY 1").fetchall()]
+    n = 0
+    for ns in nss:
+        for r in store.list_pinned_constraints("tenant_memnos", ns):
+            n += 1
+            txt = r["content"] if len(r["content"]) <= 70 else r["content"][:67] + "..."
+            print(f"  {r['kind']}:{r['id']:<7} {ns:<24} subject={r['constraint_subject'] or '-'}  {txt}")
+    if not n:
+        print("no live pinned constraints" + (f" in '{args.namespace}'" if args.namespace else ""))
+
+
+def cmd_constraint_retire(args, cfg):
+    """issue #152: standalone retirement of a pinned constraint — `<id>`, `<kind>:<id>`
+    (turn|fact|episode) or `--subject S`. Audited as constraint.retire."""
+    from core.control import Control
+    if bool(args.target) == bool(args.subject):
+        sys.exit("give exactly one of <target> (id | kind:id) or --subject")
+    conn, store = _constraint_store(cfg)
+    retired = []
+    try:
+        if args.subject:
+            subj = args.subject.strip().lower()
+            for r in store.list_pinned_constraints("tenant_memnos", args.namespace):
+                if (r["constraint_subject"] or "") == subj:
+                    retired += store.retire_constraint_by_id(
+                        "tenant_memnos", args.namespace, f"{r['kind']}:{r['id']}", retired_by="manual:cli")
+        else:
+            retired = store.retire_constraint_by_id("tenant_memnos", args.namespace, args.target,
+                                                    retired_by="manual:cli")
+    except ValueError as e:
+        sys.exit(str(e))
+    if not retired:
+        sys.exit(f"no live pinned constraint matching {args.target or args.subject!r} in '{args.namespace}'")
+    try:
+        pid = _principal_id(conn, "admin")
+    except SystemExit:
+        pid = None
+    Control.audit(conn, pid, "constraint.retire", args.namespace, True,
+                  {"retired": [{"kind": r["kind"], "id": r["id"]} for r in retired], "by": "cli"})
+    for r in retired:
+        print(f"→ retired {r['kind']}:{r['id']} (subject={r['constraint_subject'] or '-'}): {r['content'][:80]}")
+
+
 def cmd_constraint_rm(args, cfg):
     from core.control import Control
     conn = _conn(cfg)
@@ -4257,6 +4319,12 @@ def cmd_antigravity_setup(args, cfg):
     print("          Restart agy / the Antigravity IDE to activate memory.")
 
 
+class _DefaultHttp(str):
+    """issue #39: the 'http' --transport default, distinguishable from an explicit
+    `--transport http` so agents without a verified HTTP MCP shape fall back to stdio
+    instead of erroring when the user didn't ask for http."""
+
+
 def cmd_agent_setup(args, cfg):
     """Wire memnos into another MCP-capable agent (codex/cursor/windsurf/claude-desktop/
     openclaw/hermes/omnigent). Writes its MCP server config (+ an AGENTS.md instruction
@@ -4307,8 +4375,11 @@ def cmd_agent_setup(args, cfg):
         sys.exit(f"unknown agent '{args.agent}' — choose: {', '.join(_AGENTS)}")
     transport = getattr(args, "transport", "stdio")
     if transport == "http" and args.agent not in ("claude-code", "omnigent", "antigravity"):
-        sys.exit(f"--transport http is only supported for claude-code, omnigent and antigravity "
-                 f"(got '{args.agent}') — its HTTP MCP config shape hasn't been verified yet.")
+        if isinstance(transport, _DefaultHttp):
+            transport = "stdio"       # default, not a request — keep non-HTTP agents working
+        else:
+            sys.exit(f"--transport http is only supported for claude-code, omnigent and antigravity "
+                     f"(got '{args.agent}') — its HTTP MCP config shape hasn't been verified yet.")
     if spec.get("special") == "claude":       # full Claude Code setup (MCP + hooks + /memnos)
         return cmd_claude_setup(argparse.Namespace(namespace=args.namespace,
                                                    force=getattr(args, "force", False),
@@ -5615,7 +5686,7 @@ def build_parser():
     v.set_defaults(fn=cmd_role_members)
 
     # ---- enforced constraints (issue #28) ----
-    p = sub.add_parser("constraint", help="manage constraints: add | ls | rm (advise=pinned memory, ask|block=enforced)")
+    p = sub.add_parser("constraint", help="manage constraints: add | ls | pins | retire | rm (advise=pinned memory, ask|block=enforced)")
     p.set_defaults(fn=lambda a, c, _p=p: _p.print_help())
     ps = p.add_subparsers(dest="verb", metavar="<verb>")
     v = ps.add_parser("add", help="add a constraint; --enforce ask|block also registers a PreToolUse enforcement rule")
@@ -5638,6 +5709,14 @@ def build_parser():
     v = ps.add_parser("rm", help="deactivate an enforced constraint by id (see: constraint ls)")
     v.add_argument("id", type=int)
     v.set_defaults(fn=cmd_constraint_rm)
+    v = ps.add_parser("pins", help="issue #152: list LIVE pinned constraints (kind:id + subject)")
+    v.add_argument("namespace", nargs="?", help="namespace (omit to list across all)")
+    v.set_defaults(fn=cmd_constraint_pins)
+    v = ps.add_parser("retire", help="issue #152: retire a pinned constraint (no successor needed)")
+    v.add_argument("target", nargs="?", help="constraint id, or kind:id (turn:42, fact:19, episode:3) — see: constraint pins")
+    v.add_argument("--subject", help="retire every live pinned constraint with this subject instead")
+    v.add_argument("--namespace", required=True, help="namespace the constraint lives in")
+    v.set_defaults(fn=cmd_constraint_retire)
     vo = ps.add_parser("override", help="issue #83: manage precedence override edges (child wins vs. an ancestor)")
     vo.set_defaults(fn=lambda a, c, _p=vo: _p.print_help())
     vos = vo.add_subparsers(dest="override_verb", metavar="<verb>")
@@ -5757,13 +5836,12 @@ def build_parser():
     p.add_argument("--agent-dir",
                    help="omnigent only: path to an agent's config.yaml (or its containing "
                         "directory); defaults to ~/.omnigent/config.yaml's default_agent")
-    p.add_argument("--transport", choices=("stdio", "http"), default="stdio",
-                   help="MCP transport to wire (claude-code/omnigent/antigravity only): 'stdio' (default, "
-                        "spawns `memnos mcp` as a subprocess) or 'http' (connects to the "
-                        "already-running server's streamable-HTTP endpoint at :8900/mcp — "
-                        "survives a memnos restart without a client-side session reset). "
-                        "The default stays 'stdio' — pass 'http' explicitly to actually "
-                        "close issue #37's subprocess-sprawl bug for your own setup")
+    p.add_argument("--transport", choices=("stdio", "http"), default=_DefaultHttp("http"),
+                   help="MCP transport to wire: 'http' (default; connects to the already-running "
+                        "server's streamable-HTTP endpoint at :8900/mcp — survives a memnos restart "
+                        "and avoids issue #37's subprocess sprawl; claude-code/omnigent/antigravity "
+                        "only, other agents fall back to stdio) or 'stdio' (explicit opt-in; spawns "
+                        "`memnos mcp` as a subprocess)")
     p.set_defaults(fn=cmd_agent_setup)
     p = sub.add_parser("server-setup",
                        help="wire memnos into a server-wide extension point (currently: omnigent)")
@@ -5787,7 +5865,7 @@ def build_parser():
     p = sub.add_parser("claude-setup", help="(alias of: memnos agent-setup claude-code)")
     p.add_argument("--namespace", help="default namespace for Claude Code")
     p.add_argument("--force", action="store_true", help="set up even if ~/.claude is missing")
-    p.add_argument("--transport", choices=("stdio", "http"), default="stdio",
+    p.add_argument("--transport", choices=("stdio", "http"), default=_DefaultHttp("http"),
                    help="MCP transport to wire — see `memnos agent-setup --help`")
     p.set_defaults(fn=cmd_claude_setup)
     p = sub.add_parser("hook", help="Claude Code hook entry (stdin JSON; wired by agent-setup)")

@@ -258,6 +258,26 @@ memnos admin          # bootstrap an admin token → paste into /admin
 
 ## Benchmarks (and how we report them)
 
+### Coding-Agent Memory Bench (`benchmarks/coding_agent_bench.py`)
+
+General chat benchmarks (LoCoMo, LongMemEval) don't test what actually breaks AI coding agents in real repositories: **code drifting away from stored decisions, architecture rules flipping across sprints, debugging fixes buried under status chatter, and cross-agent prompt injection.**
+
+`benchmarks/coding_agent_bench.py` is a fast, deterministic, zero-LLM-cost benchmark suite (24 test cases across 4 suites, ~2.1s against Postgres) that anyone can run locally without an API key:
+
+| Suite | What It Tests | Static `CLAUDE.md` | Flat Vector Store | **memnos (`v0.1.58`)** |
+| :--- | :--- | :---: | :---: | :---: |
+| **1. Code-Drift Resilience** | Symbol modified in git, unchanged symbol in same file, deleted file, dot-dir path, traversal guard | 0/6 | 0/6 | **6/6 (100%)** |
+| **2. Bi-Temporal Supersession** | Single-valued state flip (`Auth0`→`Clerk`), backdated history guard, stale-turn demotion, negation close-out, standalone pin retirement | 1/6 | 1/6 | **6/6 (100%)** |
+| **3. Procedural `fix` Memory** | `Symptom/Cause/Fix/Verify` error-signal detection, rank boost over status chatter, `git` speaker weighting | 0/6 | 2/6 | **6/6 (100%)** |
+| **4. Multi-Agent & Graph Hygiene** | `<memnos:peer_memory>` untrusted data envelope, XML breakout neutralization, 0% literal entity noise | 0/6 | 0/6 | **6/6 (100%)** |
+| **Total** | **24 developer-memory scenarios (0 query-time LLM calls)** | **1/24 (4.2%)** | **3/24 (12.5%)** | **24/24 (100.0%)** |
+
+```bash
+python benchmarks/coding_agent_bench.py
+```
+
+### LongMemEval & LoCoMo (Conversational Memory)
+
 **LongMemEval: 78.4%** on the full 500-question benchmark (gpt-4o answer + judge), run on
 [MemoryBench](https://github.com/supermemoryai/memorybench) — a competitor's own open
 harness. By category: single-session assistant facts 98.2%, user facts 92.9%,

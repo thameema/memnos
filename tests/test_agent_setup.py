@@ -184,7 +184,7 @@ def main():
 
     # --- claude-code routes to the full Claude Code setup ---
     os.makedirs(os.path.join(home, ".claude"), exist_ok=True)
-    rc, out = run(home, "agent-setup", "claude-code")
+    rc, out = run(home, "agent-setup", "claude-code", "--transport", "stdio")
     check("claude-code: exits 0 + wires hooks", rc == 0 and "hooks" in out)
     s = json.load(open(os.path.join(home, ".claude/settings.json")))
     hook_cmds = json.dumps(s.get("hooks", {}))
@@ -221,7 +221,7 @@ def main():
     cfg_on_disk = json.load(open(cfg_path))
     cfg_on_disk["admin_token"] = ""
     json.dump(cfg_on_disk, open(cfg_path, "w"))
-    rc, out = run(home, "agent-setup", "claude-code")
+    rc, out = run(home, "agent-setup", "claude-code", "--transport", "stdio")
     check("claude-code: re-run with blank admin_token exits 0", rc == 0)
     healed = json.load(open(cfg_path))
     check("claude-code: self-heals a blank config.json admin_token",
@@ -241,7 +241,7 @@ def main():
                            "--enforce", "block", "--tool", "Bash(rm*)"],
                           capture_output=True, text=True, env=env, timeout=30)
     check("claude-code: constraint add (setup fixture) exits 0", cadd.returncode == 0)
-    rc, out = run(home, "agent-setup", "claude-code")
+    rc, out = run(home, "agent-setup", "claude-code", "--transport", "stdio")
     check("claude-code: re-run after a constraint exists exits 0", rc == 0)
     s = json.load(open(os.path.join(home, ".claude/settings.json")))
     ptu = s.get("hooks", {}).get("PreToolUse", [])
@@ -272,9 +272,9 @@ def main():
     with open(agent_cfg, "w") as f:
         yaml.safe_dump({"spec_version": 1, "name": "my_agent",
                          "tools": {"agents": ["researcher", "reviewer"]}}, f)
-    rc, out = run(home, "agent-setup", "omnigent", "--agent-dir", agent_dir)
+    rc, out = run(home, "agent-setup", "omnigent", "--transport", "stdio", "--agent-dir", agent_dir)
     check("omnigent: exits 0", rc == 0)
-    run(home, "agent-setup", "omnigent", "--agent-dir", agent_dir)   # idempotency: run twice
+    run(home, "agent-setup", "omnigent", "--transport", "stdio", "--agent-dir", agent_dir)   # idempotency: run twice
     oc = yaml.safe_load(open(agent_cfg))
     otools = oc.get("tools", {})
     check("omnigent: memnos entry valid (abs cmd + URL/TOKEN/NS)", entry_ok(otools.get("memnos", {})))
@@ -287,7 +287,7 @@ def main():
     lone_cfg = os.path.join(home, "lone_agent.yaml")
     with open(lone_cfg, "w") as f:
         yaml.safe_dump({"spec_version": 1, "name": "lone_agent"}, f)
-    rc, out = run(home, "agent-setup", "omnigent", "--agent-dir", lone_cfg)
+    rc, out = run(home, "agent-setup", "omnigent", "--transport", "stdio", "--agent-dir", lone_cfg)
     check("omnigent: exits 0 for a direct *.yaml file target", rc == 0)
     check("omnigent: wired the direct file (not a config.yaml alongside it)",
           entry_ok(yaml.safe_load(open(lone_cfg)).get("tools", {}).get("memnos", {})))
@@ -300,7 +300,7 @@ def main():
         yaml.safe_dump({"spec_version": 1, "name": "default_agent"}, f)
     with open(os.path.join(home, ".omnigent", "config.yaml"), "w") as f:
         yaml.safe_dump({"default_agent": default_agent_dir}, f)
-    rc, out = run(home, "agent-setup", "omnigent")
+    rc, out = run(home, "agent-setup", "omnigent", "--transport", "stdio")
     check("omnigent: exits 0 via default_agent fallback (no --agent-dir)", rc == 0)
     check("omnigent: default_agent's config.yaml got wired",
           entry_ok(yaml.safe_load(open(os.path.join(default_agent_dir, "config.yaml")))
@@ -308,7 +308,7 @@ def main():
 
     # No --agent-dir AND no ~/.omnigent/config.yaml at all: fail loud, not silent.
     home2 = tempfile.mkdtemp(prefix="memnos_agents_")
-    rc, out = run(home2, "agent-setup", "omnigent")
+    rc, out = run(home2, "agent-setup", "omnigent", "--transport", "stdio")
     check("omnigent: fails loud with no --agent-dir and no ~/.omnigent/config.yaml",
           rc != 0 and "agent-dir" in out)
 
@@ -346,7 +346,7 @@ def main():
     omni_remote_cfg = os.path.join(omni_remote_dir, "config.yaml")
     with open(omni_remote_cfg, "w") as f:
         yaml.safe_dump({"spec_version": 1, "name": "omni_remote_agent"}, f)
-    rc, out = run(home, "agent-setup", "omnigent", "--agent-dir", omni_remote_dir,
+    rc, out = run(home, "agent-setup", "omnigent", "--transport", "stdio", "--agent-dir", omni_remote_dir,
                   extra_env=REMOTE_ENV)
     check("omnigent + MEMNOS_TOKEN env: exits 0 against an unreachable DSN (no DB touched)",
           rc == 0)
@@ -362,7 +362,7 @@ def main():
     # home (no pre-existing ~/.memnos/config.json admin_token) to actually exercise that path.
     home3 = tempfile.mkdtemp(prefix="memnos_agents_")
     os.makedirs(os.path.join(home3, ".claude"), exist_ok=True)
-    rc, out = run(home3, "agent-setup", "claude-code", extra_env=REMOTE_ENV)
+    rc, out = run(home3, "agent-setup", "claude-code", "--transport", "stdio", extra_env=REMOTE_ENV)
     check("claude-code + MEMNOS_TOKEN env: exits 0 against an unreachable DSN (no DB touched)",
           rc == 0)
     cc_cfg = json.load(open(os.path.join(home3, ".claude.json")))

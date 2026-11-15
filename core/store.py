@@ -295,7 +295,8 @@ def record_arm_failure(reasons, namespace, arm, exc, hint=None):
 # health()'s own key set as signals are added there.
 _HEALTH_SIGNAL_KEYS = ("facts_current", "facts_superseded", "facts_expired",
                        "entities", "orphan_entities", "contradiction_groups",
-                       "contested_facts", "contradiction_ratio")
+                       "contested_facts", "contradiction_ratio",
+                       "degree_1_share", "literal_name_share", "embedding_coverage")
 
 # knowledge_health contradiction penalty (issue #156). The old `min(40, groups * 5)` was
 # an ABSOLUTE group count that saturated at 8 groups — every real namespace sat on the
@@ -833,15 +834,273 @@ class BrainStore:
             return len(c.fetchall())
 
     # --- associative graph ------------------------------------------------
+    # issue #159: Entity graph quality — stop minting literal/free-text objects as entities,
+    # canonicalize identity aliases ('user'/'the user' -> user_name when configured), and
+    # populate entity embeddings.
+    _LITERAL_STOPWORDS = frozenset({
+        "true", "false", "null", "none", "nil", "nan", "undefined", "unknown",
+        "yes", "no", "ok", "okay", "n/a", "na", "tbd", "wip", "todo", "done",
+        "pass", "passed", "fail", "failed", "green", "red", "active", "inactive",
+        "enabled", "disabled", "open", "closed", "higher", "lower", "same", "other",
+        "all", "any", "both", "either", "neither", "today", "yesterday", "tomorrow",
+        "now", "later", "soon", "always", "never", "sometimes", "often",
+    })
+    _PRONOUN_SUBJECTS = frozenset({
+        "user", "the user", "human", "the human", "owner", "the owner", "author", "me", "i",
+    })
+    _ASSISTANT_ALIASES = frozenset({
+        "assistant", "the assistant", "ai", "the ai", "agent", "the agent", "model", "the model",
+    })
+    # Pure number, currency, percentage, bare version/port, time range, or date-only string
+    _NUMERIC_OR_DATE_RE = re.compile(
+        r"^("
+        r"[$€£¥₹]?\s*[+-]?\d[\d,._/%*\s+-]*(?:[kmbKMB]|ms|s|m|h|d|gb|mb|kb|tb|%|x|X)?"
+        r"|(?:\d{1,4}[-/]\d{1,2}(?:[-/]\d{1,4})?)"
+        r"|(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:,?\s+\d{4})?)"
+        r"|(?:at\s+\d{1,2}:\d{2}.*)"
+        r"|(?::\d{2,5})"
+        r")$",
+        re.I,
+    )
+    # Free-text clause indicators in SPO objects (verbs/prepositions/conjunctions that mark
+    # a sentence fragment rather than a named entity)
+    _CLAUSE_START_RE = re.compile(
+        r"^(?:not\s+|no\s+longer\s+|at\s+|in\s+|on\s+|by\s+|for\s+|with\s+|from\s+|to\s+|"
+        r"into\s+|because\s+|since\s+|after\s+|before\s+|when\s+|while\s+|where\s+|"
+        r"that\s+|which\s+|who\s+|how\s+|whether\s+|if\s+|is\s+|are\s+|was\s+|were\s+|"
+        r"has\s+|have\s+|had\s+|will\s+|would\s+|can\s+|could\s+|should\s+|must\s+|"
+        r"waiting\s+|running\s+|using\s+|fixing\s+|testing\s+)",
+        re.I,
+    )
+
+    @classmethod
+    def is_valid_entity_name(cls, name: str, *, is_object: bool = False) -> bool:
+        """Issue #159: Return True if `name` is a legitimate named entity / concept node,
+        or False if it is a literal value (number, money, boolean, date, status word) or
+        a free-text clause fragment that should stay on `semantic.object` without polluting
+        `entities`/`edges`.
+
+        Subjects are slightly more permissive than objects (a subject up to 60 chars can be
+        a multi-word system name), whereas objects must look like an identifier or named
+        thing (<= 50 chars, <= 5 words, no clause-starting prepositions/auxiliaries, no
+        sentence punctuation).
+        """
+        s = " ".join((name or "").strip().split())
+        if not s:
+            return False
+        max_len = 50 if is_object else 60
+        if len(s) > max_len:
+            return False
+        # Require at least 2 word characters (same baseline as _community_name_ok)
+        if len(re.findall(r"[A-Za-z]", s)) < 2 and not re.match(r"^[A-Za-z0-9_.-]{2,}$", s):
+            return False
+        low = s.lower()
+        if low in cls._LITERAL_STOPWORDS:
+            return False
+        if cls._NUMERIC_OR_DATE_RE.match(s):
+            return False
+        # Reject strings containing sentence/list punctuation or newlines
+        if any(ch in s for ch in (";", "\n", "\r", "?", "!", "=", "<", ">", "{", "}", "[", "]")):
+            return False
+        if s.endswith(".") and not re.search(r"\b(?:Inc|Ltd|Corp|Co|Jr|Sr|Dr|Mr|Mrs|Ms|St)\.$", s):
+            return False
+        words = s.split()
+        max_words = 5 if is_object else 6
+        if len(words) > max_words:
+            return False
+        # Multi-item comma lists (e.g. "Henniya $76.92, Farid $300") are clauses, not one entity
+        if "," in s:
+            return False
+        if is_object:
+            if cls._CLAUSE_START_RE.match(s):
+                return False
+            # Object with currency symbol anywhere inside is a price/cost phrase, not an entity
+            if re.search(r"[$€£¥₹]\s*\d", s):
+                return False
+        return True
+
+    @classmethod
+    def canonicalize_entity_name(cls, name: str, *, user_name: str | None = None) -> str:
+        """Issue #159: Canonicalize entity identity so pronoun stand-ins ('user', 'User',
+        'the user') resolve to `user_name` (when configured) or 'user', and case-variants
+        of common roles normalize cleanly."""
+        s = " ".join((name or "").strip().split())
+        if not s:
+            return ""
+        low = s.lower()
+        if low in cls._PRONOUN_SUBJECTS:
+            return (user_name.strip() if (user_name and user_name.strip()) else "user")
+        if low in cls._ASSISTANT_ALIASES:
+            return "assistant"
+        if user_name and user_name.strip():
+            un = user_name.strip()
+            # Unify first-name-only or case-variant with full configured user_name when unambiguous
+            un_parts = un.lower().split()
+            if low == un.lower() or (len(un_parts) >= 2 and low == un_parts[0]):
+                return un
+        return s
+
     def upsert_entity(self, schema, ns, name, vec=None) -> int:
+        """Upsert an entity node by case-insensitive identity in `ns`. Preserves existing
+        embedding unless a new non-null `vec` is provided (backfills NULL embeddings automatically)."""
         self._chk(schema)
+        clean = " ".join((name or "").strip().split())
+        v_str = vlit(vec) if vec is not None else None
         with self.conn.cursor() as c:
+            # First check case-insensitive match so 'User' and 'user' or 'Postgres' and 'postgres'
+            # resolve to the same existing entity row without creating duplicate nodes.
+            c.execute(
+                f"SELECT id, embedding IS NOT NULL AS has_emb FROM {schema}.entities "
+                f"WHERE namespace=%s AND lower(name)=lower(%s) ORDER BY id ASC LIMIT 1",
+                (ns, clean))
+            existing = c.fetchone()
+            if existing:
+                if v_str is not None and not existing["has_emb"]:
+                    c.execute(
+                        f"UPDATE {schema}.entities SET embedding=%s::{self.vtype} WHERE id=%s",
+                        (v_str, existing["id"]))
+                return existing["id"]
             c.execute(
                 f"INSERT INTO {schema}.entities(namespace,name,embedding) "
-                f"VALUES(%s,%s,%s::{self.vtype}) ON CONFLICT (namespace,name) DO UPDATE SET name=EXCLUDED.name "
+                f"VALUES(%s,%s,%s::{self.vtype}) "
+                f"ON CONFLICT (namespace,name) DO UPDATE SET "
+                f"embedding = COALESCE({schema}.entities.embedding, EXCLUDED.embedding) "
                 f"RETURNING id",
-                (ns, name, vlit(vec) if vec is not None else None))
+                (ns, clean, v_str))
             return c.fetchone()["id"]
+
+    def cleanup_entity_graph(self, schema, ns, *, user_name: str | None = None,
+                             embed_fn=None, embed_limit: int = 200, dry_run: bool = True) -> dict:
+        """Issue #159 (Doctor Tier C / graph cleanup):
+        1. Identify existing entity nodes in `ns` that fail `is_valid_entity_name(..., is_object=True)`
+           (literals, numbers, booleans, money, dates, long clauses) and remove their `edges`,
+           `mentions`, and `entities` rows (leaving `semantic` facts 100% intact).
+        2. Merge alias/case-duplicate entity nodes (via `canonicalize_entity_name(name, user_name=...)`
+           and `lower(name)` grouping) into the canonical survivor, re-pointing `mentions` and
+           accumulating `edges` weights.
+        3. Optionally backfill missing `entities.embedding` on up to `embed_limit` surviving entities
+           when `embed_fn` is provided.
+        Returns before/after stats (`dry_run=True` by default).
+        """
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(f"SELECT id, name, (embedding IS NOT NULL) AS has_emb FROM {schema}.entities WHERE namespace=%s ORDER BY id ASC", (ns,))
+            all_ents = c.fetchall()
+            c.execute(f"SELECT count(*) AS n FROM {schema}.edges WHERE namespace=%s", (ns,))
+            edges_before = c.fetchone()["n"]
+            c.execute(f"SELECT count(*) AS n FROM {schema}.semantic WHERE namespace=%s AND expired_at IS NULL", (ns,))
+            facts_before = c.fetchone()["n"]
+
+        literal_ids = []
+        survivors = []
+        for e in all_ents:
+            if not self.is_valid_entity_name(e["name"], is_object=True):
+                literal_ids.append(e["id"])
+            else:
+                survivors.append(e)
+
+        # Group survivors by canonical lowercased name
+        groups: dict[str, list[dict]] = {}
+        for e in survivors:
+            canon = self.canonicalize_entity_name(e["name"], user_name=user_name)
+            key = canon.lower()
+            groups.setdefault(key, []).append({**e, "canon_name": canon})
+
+        alias_merges = []   # list of (target_id, canon_name, [source_ids])
+        for key, members in groups.items():
+            if len(members) > 1:
+                # Prefer member whose name already equals canon_name, else lowest id
+                target = next((m for m in members if m["name"] == m["canon_name"]), members[0])
+                sources = [m["id"] for m in members if m["id"] != target["id"]]
+                alias_merges.append((target["id"], target["canon_name"], sources))
+            elif members[0]["name"] != members[0]["canon_name"]:
+                alias_merges.append((members[0]["id"], members[0]["canon_name"], []))
+
+        merged_source_ids = [sid for _, _, srcs in alias_merges for sid in srcs]
+        unembedded_survivors = [
+            e for e in survivors
+            if e["id"] not in set(merged_source_ids) and not e["has_emb"]
+        ]
+
+        embedded_count = 0
+        if not dry_run:
+            with self.conn.cursor() as c:
+                # 1. Drop literal entities + their edges & mentions
+                if literal_ids:
+                    c.execute(f"DELETE FROM {schema}.edges WHERE namespace=%s AND (src_entity = ANY(%s) OR dst_entity = ANY(%s))",
+                              (ns, literal_ids, literal_ids))
+                    c.execute(f"DELETE FROM {schema}.mentions WHERE entity_id = ANY(%s)", (literal_ids,))
+                    c.execute(f"DELETE FROM {schema}.entities WHERE namespace=%s AND id = ANY(%s)", (ns, literal_ids))
+
+                # 2. Merge aliases into target_id
+                for target_id, canon_name, src_ids in alias_merges:
+                    if src_ids:
+                        # Re-point mentions (ignore conflicts)
+                        c.execute(
+                            f"INSERT INTO {schema}.mentions(entity_id, memory_id, memory_kind) "
+                            f"SELECT %s, memory_id, memory_kind FROM {schema}.mentions WHERE entity_id = ANY(%s) "
+                            f"ON CONFLICT DO NOTHING",
+                            (target_id, src_ids))
+                        c.execute(f"DELETE FROM {schema}.mentions WHERE entity_id = ANY(%s)", (src_ids,))
+                        # Re-point edges touching src_ids
+                        c.execute(
+                            f"SELECT id, src_entity, dst_entity, weight FROM {schema}.edges "
+                            f"WHERE namespace=%s AND (src_entity = ANY(%s) OR dst_entity = ANY(%s))",
+                            (ns, src_ids, src_ids))
+                        old_edges = c.fetchall()
+                        c.execute(
+                            f"DELETE FROM {schema}.edges WHERE namespace=%s AND (src_entity = ANY(%s) OR dst_entity = ANY(%s))",
+                            (ns, src_ids, src_ids))
+                        for ed in old_edges:
+                            s_id = target_id if ed["src_entity"] in src_ids else ed["src_entity"]
+                            d_id = target_id if ed["dst_entity"] in src_ids else ed["dst_entity"]
+                            if s_id != d_id:
+                                a, b = sorted((s_id, d_id))
+                                c.execute(
+                                    f"INSERT INTO {schema}.edges(namespace, src_entity, dst_entity, weight) "
+                                    f"VALUES(%s, %s, %s, %s) ON CONFLICT (namespace, src_entity, dst_entity) "
+                                    f"DO UPDATE SET weight = {schema}.edges.weight + EXCLUDED.weight",
+                                    (ns, a, b, ed["weight"]))
+                        c.execute(f"DELETE FROM {schema}.entities WHERE namespace=%s AND id = ANY(%s)", (ns, src_ids))
+                    # Ensure canonical name on target (if no collision)
+                    c.execute(
+                        f"UPDATE {schema}.entities SET name=%s WHERE id=%s AND namespace=%s "
+                        f"AND NOT EXISTS (SELECT 1 FROM {schema}.entities WHERE namespace=%s AND name=%s AND id<>%s)",
+                        (canon_name, target_id, ns, ns, canon_name, target_id))
+
+                # 3. Embed unembedded survivors up to embed_limit
+                if embed_fn is not None and embed_limit > 0:
+                    for e in unembedded_survivors[:embed_limit]:
+                        try:
+                            vec = embed_fn(e["name"])
+                            if vec is not None:
+                                c.execute(f"UPDATE {schema}.entities SET embedding=%s::{self.vtype} WHERE id=%s",
+                                          (vlit(vec), e["id"]))
+                                embedded_count += 1
+                        except Exception:
+                            pass
+
+        with self.conn.cursor() as c:
+            c.execute(f"SELECT count(*) AS n FROM {schema}.entities WHERE namespace=%s", (ns,))
+            ents_after = c.fetchone()["n"] if not dry_run else (len(all_ents) - len(literal_ids) - len(merged_source_ids))
+            c.execute(f"SELECT count(*) AS n FROM {schema}.edges WHERE namespace=%s", (ns,))
+            edges_after = c.fetchone()["n"]
+            c.execute(f"SELECT count(*) AS n FROM {schema}.semantic WHERE namespace=%s AND expired_at IS NULL", (ns,))
+            facts_after = c.fetchone()["n"]
+
+        return {
+            "namespace": ns,
+            "dry_run": dry_run,
+            "entities_before": len(all_ents),
+            "entities_after": ents_after,
+            "literal_entities_dropped": len(literal_ids),
+            "alias_entities_merged": len(merged_source_ids),
+            "entities_embedded": embedded_count,
+            "edges_before": edges_before,
+            "edges_after": edges_after,
+            "facts_before": facts_before,
+            "facts_after": facts_after,
+        }
 
     def add_mention(self, schema, entity_id, memory_id, memory_kind) -> None:
         self._chk(schema)
@@ -1360,8 +1619,22 @@ class BrainStore:
         """Hybrid RRF (vector+FTS) over EPISODIC; returns observed_at for recency."""
         self._chk(schema)
         sql = f"""
-        WITH vec AS (SELECT id, text, observed_at, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}, id) rnk
-                     FROM {schema}.episodic WHERE namespace=%(ns)s ORDER BY embedding <=> %(qv)s::{self.vtype}, id LIMIT %(k)s),
+        WITH vec_hnsw AS (
+            SELECT id, text, observed_at, memory_type, (embedding <=> %(qv)s::{self.vtype}) AS dist
+            FROM {schema}.episodic WHERE namespace=%(ns)s
+            ORDER BY embedding <=> %(qv)s::{self.vtype} LIMIT %(k)s
+        ),
+        vec_fallback AS (
+            SELECT id, text, observed_at, memory_type, (embedding <=> %(qv)s::{self.vtype}) AS dist
+            FROM {schema}.episodic WHERE namespace=%(ns)s
+              AND (SELECT count(*) FROM vec_hnsw) < %(k)s
+            ORDER BY (embedding <=> %(qv)s::{self.vtype}) + 0, id LIMIT %(k)s
+        ),
+        vec_union AS (SELECT * FROM vec_hnsw UNION SELECT * FROM vec_fallback),
+        vec AS (
+            SELECT id, text, observed_at, memory_type, row_number() OVER (ORDER BY dist, id) rnk
+            FROM vec_union ORDER BY dist, id LIMIT %(k)s
+        ),
         fts AS (SELECT id, text, observed_at, memory_type, row_number() OVER (ORDER BY ts_rank(fts,q) DESC, id) rnk
                 FROM {schema}.episodic, websearch_to_tsquery('english',%(qt)s) q
                 WHERE namespace=%(ns)s AND fts @@ q ORDER BY ts_rank(fts,q) DESC, id LIMIT %(k)s),
@@ -1375,11 +1648,41 @@ class BrainStore:
             return c.fetchall()
 
     def search_raw_turns(self, schema, ns, qvec, qtext, k=40) -> list[dict]:
-        """Hybrid RRF (vector+FTS) over RAW TURNS — the strong open/single-hop layer."""
+        """Hybrid RRF (vector+FTS) over RAW TURNS — the strong open/single-hop layer.
+
+        Two-tier vector CTE (`vec_hnsw` + `vec_fallback`):
+        - `vec_hnsw` uses a single-column `ORDER BY embedding <=> qv` so Postgres can use
+          the HNSW index (`raw_hnsw`) directly on large namespaces (~3-5ms instead of a
+          1.6s full-table Seq Scan + external disk merge sort caused by a 2-tuple
+          `ORDER BY embedding <=> qv, id`).
+        - `vec_fallback` only executes when `vec_hnsw` returns fewer than `k` rows (e.g.
+          when a medium namespace's rows are filtered out inside HNSW's default `ef_search`
+          window on a shared multi-namespace table), falling back to an exact B-tree scan
+          on `raw_ns` via `ORDER BY (embedding <=> qv) + 0, id`.
+        - `vec` then applies the deterministic `row_number() OVER (ORDER BY dist, id)` tie-break
+          over the at-most `k` winners.
+        """
         self._chk(schema)
         sql = f"""
-        WITH vec AS (SELECT id, text, observed_at, author_principal, memory_type, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}, id) rnk
-                     FROM {schema}.raw_turns WHERE namespace=%(ns)s ORDER BY embedding <=> %(qv)s::{self.vtype}, id LIMIT %(k)s),
+        WITH vec_hnsw AS (
+            SELECT id, text, observed_at, author_principal, memory_type,
+                   (embedding <=> %(qv)s::{self.vtype}) AS dist
+            FROM {schema}.raw_turns WHERE namespace=%(ns)s
+            ORDER BY embedding <=> %(qv)s::{self.vtype} LIMIT %(k)s
+        ),
+        vec_fallback AS (
+            SELECT id, text, observed_at, author_principal, memory_type,
+                   (embedding <=> %(qv)s::{self.vtype}) AS dist
+            FROM {schema}.raw_turns WHERE namespace=%(ns)s
+              AND (SELECT count(*) FROM vec_hnsw) < %(k)s
+            ORDER BY (embedding <=> %(qv)s::{self.vtype}) + 0, id LIMIT %(k)s
+        ),
+        vec_union AS (SELECT * FROM vec_hnsw UNION SELECT * FROM vec_fallback),
+        vec AS (
+            SELECT id, text, observed_at, author_principal, memory_type,
+                   row_number() OVER (ORDER BY dist, id) rnk
+            FROM vec_union ORDER BY dist, id LIMIT %(k)s
+        ),
         fts AS (SELECT id, text, observed_at, author_principal, memory_type, row_number() OVER (ORDER BY ts_rank(fts,q) DESC, id) rnk
                 FROM {schema}.raw_turns, websearch_to_tsquery('english',%(qt)s) q
                 WHERE namespace=%(ns)s AND fts @@ q ORDER BY ts_rank(fts,q) DESC, id LIMIT %(k)s),
@@ -1433,8 +1736,25 @@ class BrainStore:
         self._chk(schema)
         valid = "AND valid_to IS NULL" if current_only else ""
         sql = f"""
-        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, inference_confidence, inference_basis, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}, id) rnk
-                     FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {valid} ORDER BY embedding <=> %(qv)s::{self.vtype}, id LIMIT %(k)s),
+        WITH vec_hnsw AS (
+            SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, inference_confidence, inference_basis,
+                   (embedding <=> %(qv)s::{self.vtype}) AS dist
+            FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {valid}
+            ORDER BY embedding <=> %(qv)s::{self.vtype} LIMIT %(k)s
+        ),
+        vec_fallback AS (
+            SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, inference_confidence, inference_basis,
+                   (embedding <=> %(qv)s::{self.vtype}) AS dist
+            FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {valid}
+              AND (SELECT count(*) FROM vec_hnsw) < %(k)s
+            ORDER BY (embedding <=> %(qv)s::{self.vtype}) + 0, id LIMIT %(k)s
+        ),
+        vec_union AS (SELECT * FROM vec_hnsw UNION SELECT * FROM vec_fallback),
+        vec AS (
+            SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, inference_confidence, inference_basis,
+                   row_number() OVER (ORDER BY dist, id) rnk
+            FROM vec_union ORDER BY dist, id LIMIT %(k)s
+        ),
         fts AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, inference_confidence, inference_basis, row_number() OVER (ORDER BY ts_rank(fts,q) DESC, id) rnk
                 FROM {schema}.semantic, websearch_to_tsquery('english',%(qt)s) q
                 WHERE namespace=%(ns)s AND expired_at IS NULL {valid} AND fts @@ q ORDER BY ts_rank(fts,q) DESC, id LIMIT %(k)s),
@@ -1457,8 +1777,25 @@ class BrainStore:
         self._chk(schema)
         cur = "AND valid_to IS NULL" if current_only else ""
         base = f"""
-        WITH vec AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY embedding <=> %(qv)s::{self.vtype}, id) rnk
-                     FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {cur} ORDER BY embedding <=> %(qv)s::{self.vtype}, id LIMIT %(k)s),
+        WITH vec_hnsw AS (
+            SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience,
+                   (embedding <=> %(qv)s::{self.vtype}) AS dist
+            FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {cur}
+            ORDER BY embedding <=> %(qv)s::{self.vtype} LIMIT %(k)s
+        ),
+        vec_fallback AS (
+            SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience,
+                   (embedding <=> %(qv)s::{self.vtype}) AS dist
+            FROM {schema}.semantic WHERE namespace=%(ns)s AND expired_at IS NULL {cur}
+              AND (SELECT count(*) FROM vec_hnsw) < %(k)s
+            ORDER BY (embedding <=> %(qv)s::{self.vtype}) + 0, id LIMIT %(k)s
+        ),
+        vec_union AS (SELECT * FROM vec_hnsw UNION SELECT * FROM vec_fallback),
+        vec AS (
+            SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience,
+                   row_number() OVER (ORDER BY dist, id) rnk
+            FROM vec_union ORDER BY dist, id LIMIT %(k)s
+        ),
         fts AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, row_number() OVER (ORDER BY ts_rank(fts,q) DESC, id) rnk
                 FROM {schema}.semantic, websearch_to_tsquery('english',%(qt)s) q
                 WHERE namespace=%(ns)s AND expired_at IS NULL {cur} AND fts @@ q ORDER BY ts_rank(fts,q) DESC, id LIMIT %(k)s),
@@ -1829,6 +2166,28 @@ class BrainStore:
                 self.orphan_entities_sql(schema), ns, ns, ns))
             contra_sum = signal("contradictions",
                                 lambda: self.contradiction_summary(schema, ns, limit=0))
+            # issue #159: graph quality metrics (degree_1_share, literal_name_share, embedding_coverage)
+            # Only record arm failures on the core 6 signals above so test_knowledge_health_degrade_http's
+            # exact lock assertions stay unchanged, while computing these safely when tables are unlocked.
+            ent_embedded = None
+            literal_names = None
+            degree_1_count = None
+            try:
+                if ent_total is not None:
+                    ent_embedded = one(f"SELECT count(*) n FROM {schema}.entities WHERE namespace=%s AND embedding IS NOT NULL", ns)
+                    c.execute(f"SELECT name FROM {schema}.entities WHERE namespace=%s", (ns,))
+                    literal_names = sum(1 for r in c.fetchall() if not self.is_valid_entity_name(r["name"], is_object=True))
+                if ent_total is not None and orphans is not None:
+                    degree_1_count = one(
+                        f"SELECT count(*) n FROM ("
+                        f"  SELECT nid FROM ("
+                        f"    SELECT src_entity AS nid FROM {schema}.edges WHERE namespace=%s "
+                        f"    UNION ALL "
+                        f"    SELECT dst_entity AS nid FROM {schema}.edges WHERE namespace=%s"
+                        f"  ) d GROUP BY nid HAVING count(*) = 1"
+                        f") q", ns, ns)
+            except RECALL_ARM_FAILURES:
+                pass
         # issue #156: the TRUE totals (was len() of a LIMIT-1000 list — silently capped).
         contra = None if contra_sum is None else contra_sum["total_groups"]
         contested = None if contra_sum is None else contra_sum["contested_facts"]
@@ -1847,10 +2206,19 @@ class BrainStore:
             orphan_ratio = (orphans / ent_total) if ent_total else 0.0
             score = max(0, 100 - contradiction_penalty(contra_ratio)
                         - int(min(30, orphan_ratio * 30)))
+        degree_1_share = (None if degree_1_count is None or ent_total is None
+                          else round((degree_1_count / ent_total) if ent_total else 0.0, 6))
+        literal_name_share = (None if literal_names is None or ent_total is None
+                              else round((literal_names / ent_total) if ent_total else 0.0, 6))
+        embedding_coverage = (None if ent_embedded is None or ent_total is None
+                              else round((ent_embedded / ent_total) if ent_total else 0.0, 6))
         out = {"score": score, "facts_current": facts_current, "facts_superseded": facts_super,
                "facts_expired": facts_expired, "entities": ent_total, "orphan_entities": orphans,
                "contradiction_groups": contra, "contested_facts": contested,
-               "contradiction_ratio": (None if contra_ratio is None else round(contra_ratio, 6))}
+               "contradiction_ratio": (None if contra_ratio is None else round(contra_ratio, 6)),
+               "degree_1_share": degree_1_share,
+               "literal_name_share": literal_name_share,
+               "embedding_coverage": embedding_coverage}
         if reasons:
             out["degraded"] = True
             out["degraded_reasons"] = reasons
@@ -1860,7 +2228,7 @@ class BrainStore:
         """Fetch a single semantic fact by id (for memory_delete confirmation)."""
         self._chk(schema)
         with self.conn.cursor() as c:
-            c.execute(f"SELECT id, statement, expired_at FROM {schema}.semantic WHERE id=%s AND namespace=%s",
+            c.execute(f"SELECT id, statement, expired_at, memory_type FROM {schema}.semantic WHERE id=%s AND namespace=%s",
                       (semantic_id, ns))
             return c.fetchone()
 
@@ -2100,6 +2468,54 @@ class BrainStore:
                 for r in c.fetchall():
                     retired.append({"kind": kind, "id": r["id"]})
         return retired
+
+    def retire_constraint_by_id(self, schema, ns, constraint_id, *, kind=None,
+                                retired_by="manual") -> list:
+        """issue #152: standalone retirement of a LIVE pinned constraint by id, no
+        successor needed (retire_constraints() only supersedes). `constraint_id` is an
+        int, digit string, or '<kind>:<id>' (kind in turn|fact|episode); without a kind
+        every store in `ns` is tried (ids are per-table, so an untagged id can hit
+        more than one). Returns [{kind, id, content, constraint_subject}] retired."""
+        self._chk(schema)
+        if isinstance(constraint_id, str) and ":" in constraint_id:
+            k, _, constraint_id = constraint_id.partition(":")
+            kind = kind or k.strip().lower()
+        try:
+            cid = int(constraint_id)
+        except (TypeError, ValueError):
+            raise ValueError(f"bad constraint id: {constraint_id!r}")
+        tbls = {"turn": (f"{schema}.raw_turns", "text"),
+                "fact": (f"{schema}.semantic", "statement"),
+                "episode": (f"{schema}.episodic", "text")}
+        if kind is not None and kind not in tbls:
+            raise ValueError(f"bad constraint kind: {kind!r} (turn|fact|episode)")
+        retired = []
+        with self.conn.cursor() as c:
+            for k, (tbl, col) in tbls.items():
+                if kind not in (None, k):
+                    continue
+                c.execute(
+                    f"UPDATE {tbl} SET constraint_retired_at=now(), constraint_retired_by=%(by)s "
+                    f"WHERE id=%(id)s AND namespace=%(ns)s AND memory_type='constraint' "
+                    f"AND constraint_retired_at IS NULL "
+                    f"RETURNING id, {col} AS content, constraint_subject",
+                    {"id": cid, "ns": ns, "by": retired_by})
+                retired += [{"kind": k, "id": r["id"], "content": r["content"],
+                             "constraint_subject": r["constraint_subject"]} for r in c.fetchall()]
+        return retired
+
+    def list_pinned_constraints(self, schema, ns) -> list:
+        """issue #152: live (unretired) pinned constraints in `ns`, all three stores."""
+        self._chk(schema)
+        out = []
+        with self.conn.cursor() as c:
+            for k, tbl, col in (("turn", "raw_turns", "text"), ("fact", "semantic", "statement"),
+                                ("episode", "episodic", "text")):
+                c.execute(f"SELECT id, {col} AS content, constraint_subject FROM {schema}.{tbl} "
+                          f"WHERE namespace=%s AND memory_type='constraint' "
+                          f"AND constraint_retired_at IS NULL ORDER BY id", (ns,))
+                out += [{"kind": k, **r} for r in c.fetchall()]
+        return out
 
     _CONSTRAINT_RE = re.compile(
         r"\b(SHALL NOT|MUST NOT|SHOULD NOT|MAY NOT|SHALL|MUST|REQUIRED|SHOULD|PROHIBITED|FORBIDDEN)\b")

@@ -1049,8 +1049,8 @@
         "stdio",
         "http"
        ],
-       "default": "stdio",
-       "help": "MCP transport to wire (claude-code/omnigent/antigravity only): 'stdio' (default, spawns `memnos mcp` as a subprocess) or 'http' (connects to the already-running server's streamable-HTTP endpoint at :8900/mcp \u2014 survives a memnos restart without a client-side session reset). The default stays 'stdio' \u2014 pass 'http' explicitly to actually close issue #37's subprocess-sprawl bug for your own setup",
+       "default": "http",
+       "help": "MCP transport to wire: 'http' (default; connects to the already-running server's streamable-HTTP endpoint at :8900/mcp \u2014 survives a memnos restart and avoids issue #37's subprocess sprawl; claude-code/omnigent/antigravity only, other agents fall back to stdio) or 'stdio' (explicit opt-in; spawns `memnos mcp` as a subprocess)",
        "positional": false,
        "required": false
       }
@@ -1079,7 +1079,7 @@
         "stdio",
         "http"
        ],
-       "default": "stdio",
+       "default": "http",
        "help": "MCP transport to wire \u2014 see `memnos agent-setup --help`",
        "positional": false,
        "required": false
@@ -1713,6 +1713,44 @@
      "command": "constraint override rm",
      "example": null,
      "help": "remove an override edge by id (see: constraint override ls)"
+    },
+    {
+     "args": [
+      {
+       "arg": "namespace",
+       "help": "namespace (omit to list across all)",
+       "positional": true,
+       "required": false
+      }
+     ],
+     "command": "constraint pins",
+     "example": null,
+     "help": "issue #152: list LIVE pinned constraints (kind:id + subject)"
+    },
+    {
+     "args": [
+      {
+       "arg": "target",
+       "help": "constraint id, or kind:id (turn:42, fact:19, episode:3) \u2014 see: constraint pins",
+       "positional": true,
+       "required": false
+      },
+      {
+       "arg": "--subject",
+       "help": "retire every live pinned constraint with this subject instead",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--namespace",
+       "help": "namespace the constraint lives in",
+       "positional": false,
+       "required": true
+      }
+     ],
+     "command": "constraint retire",
+     "example": null,
+     "help": "issue #152: retire a pinned constraint (no successor needed)"
     },
     {
      "args": [
