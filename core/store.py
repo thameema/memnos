@@ -1032,21 +1032,41 @@ class BrainStore:
             key = canon.lower()
             groups.setdefault(key, []).append({**e, "canon_name": canon})
 
-        alias_merges = []   # list of (target_id, canon_name, [source_ids])
+        alias_merges = []   # list of (target_id, canon_name, [source_ids], emb_donor_id)
         for key, members in groups.items():
             if len(members) > 1:
-                # Prefer member whose name already equals canon_name, else lowest id
-                target = next((m for m in members if m["name"] == m["canon_name"]), members[0])
+                group_canon = next(
+                    (m["canon_name"] for m in members if m["name"] != m["canon_name"]),
+                    next((m["canon_name"] for m in members if any(c.isupper() for c in m["canon_name"])),
+                         members[0]["canon_name"]),
+                )
+                # Prefer member whose name already equals group_canon (and has embedding if available), else lowest id
+                target = next(
+                    (m for m in members if m["name"] == group_canon and m["has_emb"]),
+                    next((m for m in members if m["name"] == group_canon),
+                         next((m for m in members if m["has_emb"]), members[0])),
+                )
                 sources = [m["id"] for m in members if m["id"] != target["id"]]
-                alias_merges.append((target["id"], target["canon_name"], sources))
+                donor_id = None
+                if not target["has_emb"]:
+                    donor = next((m for m in members if m["id"] != target["id"] and m["has_emb"]), None)
+                    if donor is not None:
+                        donor_id = donor["id"]
+                alias_merges.append((target["id"], group_canon, sources, donor_id))
             elif members[0]["name"] != members[0]["canon_name"]:
-                alias_merges.append((members[0]["id"], members[0]["canon_name"], []))
+                alias_merges.append((members[0]["id"], members[0]["canon_name"], [], None))
 
-        merged_source_ids = [sid for _, _, srcs in alias_merges for sid in srcs]
+        src_to_target: dict[int, int] = {
+            sid: target_id
+            for target_id, _, srcs, _ in alias_merges
+            for sid in srcs
+        }
+        merged_source_ids = list(src_to_target.keys())
         merged_source_id_set = set(merged_source_ids)
+        donor_targets = {target_id for target_id, _, _, donor_id in alias_merges if donor_id is not None}
         unembedded_survivors = [
             e for e in survivors
-            if e["id"] not in merged_source_id_set and not e["has_emb"]
+            if e["id"] not in merged_source_id_set and not e["has_emb"] and e["id"] not in donor_targets
         ]
 
         embedded_count = 0
@@ -1071,42 +1091,89 @@ class BrainStore:
                         c.execute(f"DELETE FROM {schema}.mentions WHERE entity_id = ANY(%s)", (literal_ids,))
                         c.execute(f"DELETE FROM {schema}.entities WHERE namespace=%s AND id = ANY(%s)", (ns, literal_ids))
 
-                    # 2. Merge aliases into target_id
-                    for target_id, canon_name, src_ids in alias_merges:
-                        if src_ids:
-                            src_set = set(src_ids)
-                            # Re-point mentions (ignore conflicts)
+                    # 2. Bulk-merge aliases into their target_id in constant SQL round-trips
+                    if merged_source_ids:
+                        # 2a. Copy non-null embeddings from merged source donors onto unembedded targets before deleting sources
+                        donors = [(target_id, donor_id) for target_id, _, _, donor_id in alias_merges if donor_id is not None]
+                        if donors:
+                            t_ids = [t for t, _ in donors]
+                            d_ids = [d for _, d in donors]
                             c.execute(
-                                f"INSERT INTO {schema}.mentions(entity_id, memory_id, memory_kind) "
-                                f"SELECT %s, memory_id, memory_kind FROM {schema}.mentions WHERE entity_id = ANY(%s) "
-                                f"ON CONFLICT DO NOTHING",
-                                (target_id, src_ids))
-                            c.execute(f"DELETE FROM {schema}.mentions WHERE entity_id = ANY(%s)", (src_ids,))
-                            # Re-point edges touching src_ids
-                            c.execute(
-                                f"SELECT id, src_entity, dst_entity, weight FROM {schema}.edges "
-                                f"WHERE namespace=%s AND (src_entity = ANY(%s) OR dst_entity = ANY(%s))",
-                                (ns, src_ids, src_ids))
-                            old_edges = c.fetchall()
+                                f"UPDATE {schema}.entities AS t "
+                                f"SET embedding = s.embedding "
+                                f"FROM unnest(%s::bigint[], %s::bigint[]) AS u(tid, did) "
+                                f"JOIN {schema}.entities AS s ON s.id = u.did "
+                                f"WHERE t.id = u.tid AND t.embedding IS NULL AND s.embedding IS NOT NULL",
+                                (t_ids, d_ids))
+
+                        # 2b. Re-point mentions in bulk (ignore conflicts)
+                        c.execute(
+                            f"SELECT entity_id, memory_id, memory_kind FROM {schema}.mentions "
+                            f"WHERE entity_id = ANY(%s)",
+                            (merged_source_ids,))
+                        old_mentions = c.fetchall()
+                        if old_mentions:
+                            dedup_mentions = list({
+                                (src_to_target[m["entity_id"]], m["memory_id"], m["memory_kind"])
+                                for m in old_mentions
+                                if m["entity_id"] in src_to_target
+                            })
+                            if dedup_mentions:
+                                m_eids = [m[0] for m in dedup_mentions]
+                                m_mids = [m[1] for m in dedup_mentions]
+                                m_kinds = [m[2] for m in dedup_mentions]
+                                c.execute(
+                                    f"INSERT INTO {schema}.mentions(entity_id, memory_id, memory_kind) "
+                                    f"SELECT * FROM unnest(%s::bigint[], %s::bigint[], %s::text[]) "
+                                    f"ON CONFLICT DO NOTHING",
+                                    (m_eids, m_mids, m_kinds))
+                            c.execute(f"DELETE FROM {schema}.mentions WHERE entity_id = ANY(%s)", (merged_source_ids,))
+
+                        # 2c. Re-point edges touching merged_source_ids in bulk
+                        c.execute(
+                            f"SELECT src_entity, dst_entity, weight FROM {schema}.edges "
+                            f"WHERE namespace=%s AND (src_entity = ANY(%s) OR dst_entity = ANY(%s))",
+                            (ns, merged_source_ids, merged_source_ids))
+                        old_edges = c.fetchall()
+                        if old_edges:
                             c.execute(
                                 f"DELETE FROM {schema}.edges WHERE namespace=%s AND (src_entity = ANY(%s) OR dst_entity = ANY(%s))",
-                                (ns, src_ids, src_ids))
+                                (ns, merged_source_ids, merged_source_ids))
+                            edge_weights: dict[tuple[int, int], float] = {}
                             for ed in old_edges:
-                                s_id = target_id if ed["src_entity"] in src_set else ed["src_entity"]
-                                d_id = target_id if ed["dst_entity"] in src_set else ed["dst_entity"]
+                                s_id = src_to_target.get(ed["src_entity"], ed["src_entity"])
+                                d_id = src_to_target.get(ed["dst_entity"], ed["dst_entity"])
                                 if s_id != d_id:
-                                    a, b = sorted((s_id, d_id))
-                                    c.execute(
-                                        f"INSERT INTO {schema}.edges(namespace, src_entity, dst_entity, weight) "
-                                        f"VALUES(%s, %s, %s, %s) ON CONFLICT (namespace, src_entity, dst_entity) "
-                                        f"DO UPDATE SET weight = {schema}.edges.weight + EXCLUDED.weight",
-                                        (ns, a, b, ed["weight"]))
-                            c.execute(f"DELETE FROM {schema}.entities WHERE namespace=%s AND id = ANY(%s)", (ns, src_ids))
-                        # Ensure canonical name on target (if no collision)
+                                    a, b = (s_id, d_id) if s_id < d_id else (d_id, s_id)
+                                    edge_weights[(a, b)] = edge_weights.get((a, b), 0.0) + float(ed["weight"])
+                            if edge_weights:
+                                e_srcs = [k[0] for k in edge_weights]
+                                e_dsts = [k[1] for k in edge_weights]
+                                e_wts = [w for w in edge_weights.values()]
+                                c.execute(
+                                    f"INSERT INTO {schema}.edges(namespace, src_entity, dst_entity, weight) "
+                                    f"SELECT %s, u.s, u.d, u.w FROM unnest(%s::bigint[], %s::bigint[], %s::real[]) AS u(s, d, w) "
+                                    f"ON CONFLICT (namespace, src_entity, dst_entity) "
+                                    f"DO UPDATE SET weight = {schema}.edges.weight + EXCLUDED.weight",
+                                    (ns, e_srcs, e_dsts, e_wts))
+
+                        # 2d. Delete merged source entities in bulk
+                        c.execute(f"DELETE FROM {schema}.entities WHERE namespace=%s AND id = ANY(%s)", (ns, merged_source_ids))
+
+                    # 2e. Ensure canonical name on surviving targets (if no collision) in bulk
+                    if alias_merges:
+                        r_tids = [t for t, _, _, _ in alias_merges]
+                        r_names = [cn for _, cn, _, _ in alias_merges]
                         c.execute(
-                            f"UPDATE {schema}.entities SET name=%s WHERE id=%s AND namespace=%s "
-                            f"AND NOT EXISTS (SELECT 1 FROM {schema}.entities WHERE namespace=%s AND name=%s AND id<>%s)",
-                            (canon_name, target_id, ns, ns, canon_name, target_id))
+                            f"UPDATE {schema}.entities AS e "
+                            f"SET name = u.canon_name "
+                            f"FROM unnest(%s::bigint[], %s::text[]) AS u(tid, canon_name) "
+                            f"WHERE e.id = u.tid AND e.namespace = %s AND e.name <> u.canon_name "
+                            f"AND NOT EXISTS ("
+                            f"  SELECT 1 FROM {schema}.entities AS e2 "
+                            f"  WHERE e2.namespace = %s AND e2.name = u.canon_name AND e2.id <> u.tid"
+                            f")",
+                            (r_tids, r_names, ns, ns))
 
                     # 3. Persist precomputed embeddings on unembedded survivors
                     for v_str, eid in pending_embeddings:
@@ -1134,6 +1201,56 @@ class BrainStore:
             "edges_after": edges_after,
             "facts_before": facts_before,
             "facts_after": facts_after,
+        }
+
+    def cleanup_all_entity_graphs(
+        self,
+        schema: str,
+        *,
+        user_name: str | None = None,
+        embed_fn=None,
+        embed_limit: int = 0,
+        dry_run: bool = False,
+    ) -> dict:
+        """Run `cleanup_entity_graph` across every namespace that has entities in `schema`."""
+        self._chk(schema)
+        with self.conn.cursor() as c:
+            c.execute(f"SELECT DISTINCT namespace FROM {schema}.entities ORDER BY namespace")
+            namespaces = [r["namespace"] for r in c.fetchall()]
+
+        tot_before = tot_after = tot_lit = tot_mrg = tot_emb = 0
+        tot_edges_before = tot_edges_after = 0
+        cleaned_ns = []
+        for ns in namespaces:
+            st = self.cleanup_entity_graph(
+                schema, ns,
+                user_name=user_name,
+                embed_fn=embed_fn,
+                embed_limit=embed_limit,
+                dry_run=dry_run,
+            )
+            tot_before += st["entities_before"]
+            tot_after += st["entities_after"]
+            tot_lit += st["literal_entities_dropped"]
+            tot_mrg += st["alias_entities_merged"]
+            tot_emb += st["entities_embedded"]
+            tot_edges_before += st["edges_before"]
+            tot_edges_after += st["edges_after"]
+            if st["literal_entities_dropped"] or st["alias_entities_merged"] or st["entities_embedded"]:
+                cleaned_ns.append(st)
+
+        return {
+            "dry_run": dry_run,
+            "namespaces_scanned": len(namespaces),
+            "namespaces_cleaned": len(cleaned_ns),
+            "entities_before": tot_before,
+            "entities_after": tot_after,
+            "literal_entities_dropped": tot_lit,
+            "alias_entities_merged": tot_mrg,
+            "entities_embedded": tot_emb,
+            "edges_before": tot_edges_before,
+            "edges_after": tot_edges_after,
+            "cleaned_namespaces": cleaned_ns,
         }
 
     def add_mention(self, schema, entity_id, memory_id, memory_kind) -> None:

@@ -789,7 +789,8 @@
         "link",
         "unlink",
         "links",
-        "reconcile"
+        "reconcile",
+        "cleanup-graph"
        ],
        "help": "what to do",
        "positional": true,
@@ -922,7 +923,7 @@
      ],
      "command": "namespace",
      "example": "memnos namespace add proj:myapp --desc 'my app'",
-     "help": "manage namespaces: add | ls | rm | prune | set | link | unlink | links | copy | move | reconcile"
+     "help": "manage namespaces: add | ls | rm | prune | set | link | unlink | links | copy | move | reconcile | cleanup-graph"
     },
     {
      "args": [
@@ -993,10 +994,66 @@
      "help": "per-op reliability stats (last 24h)"
     },
     {
-     "args": [],
+     "args": [
+      {
+       "arg": "--fix",
+       "help": "also run automatic entity-graph cleanup across namespaces",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--fix-graph",
+       "help": "also run automatic entity-graph cleanup across namespaces",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--dry-run",
+       "help": "report entity-graph cleanup counts without writing",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--namespace, -n",
+       "help": "scope entity-graph cleanup to one namespace",
+       "positional": false,
+       "required": false
+      }
+     ],
      "command": "health",
      "example": "memnos health",
      "help": "actionable findings (the platform doctor)"
+    },
+    {
+     "args": [
+      {
+       "arg": "--fix",
+       "help": "clean junk/literal entities and merge duplicate aliases (default when not --dry-run)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--fix-graph",
+       "help": "clean junk/literal entities and merge duplicate aliases",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--dry-run",
+       "help": "report entity-graph cleanup counts without writing",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--namespace, -n",
+       "help": "scope entity-graph cleanup to one namespace",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "doctor",
+     "example": null,
+     "help": "platform health check + automatic entity-graph cleanup"
     }
    ],
    "title": "Observability"

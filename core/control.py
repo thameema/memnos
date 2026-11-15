@@ -131,6 +131,13 @@ ALTER TABLE memnos_control.namespaces ADD COLUMN IF NOT EXISTS inherit_ancestors
 CREATE TABLE IF NOT EXISTS memnos_control.namespace_registry_backfill(
     id boolean PRIMARY KEY DEFAULT true CHECK (id),
     completed_at timestamptz NOT NULL DEFAULT now());
+-- ENTITY GRAPH CLEANUP V1 COMPLETION MARKER (issue #159): singleton row inserted once
+-- Control.run_entity_graph_cleanup_once has swept pre-0.1.59 literal/junk entities and
+-- merged case/identity aliases across tenant_memnos.entities on upgrade or server boot.
+CREATE TABLE IF NOT EXISTS memnos_control.entity_graph_cleanup_v1(
+    id boolean PRIMARY KEY DEFAULT true CHECK (id),
+    completed_at timestamptz NOT NULL DEFAULT now(),
+    stats jsonb);
 -- GROUNDED RECALL links (0.1.6): recall on src_ns ALSO searches dst_ns — but only if the
 -- CALLING principal holds a read grant on dst_ns (link = policy, grant = permission;
 -- BOTH required). Skipped links are surfaced in the /recall response (links_skipped).
@@ -593,6 +600,70 @@ class Control:
                 "ON CONFLICT (id) DO NOTHING")
         finally:
             c.execute(f"SET statement_timeout = {prior_timeout_ms}")
+
+    @staticmethod
+    def entity_graph_needs_cleanup(conn, schema: str = "tenant_memnos") -> bool:
+        """True if the one-time v1 entity-graph cleanup has not yet completed and the
+        tenant entities table exists."""
+        with conn.cursor() as c:
+            c.execute(
+                "SELECT NOT EXISTS(SELECT 1 FROM memnos_control.entity_graph_cleanup_v1) "
+                "AND to_regclass(%s) IS NOT NULL AS need_cleanup",
+                (f"{schema}.entities",),
+            )
+            return bool(c.fetchone()["need_cleanup"])
+
+    @staticmethod
+    def run_entity_graph_cleanup_once(
+        conn,
+        schema: str = "tenant_memnos",
+        *,
+        user_name: str | None = None,
+        embed_fn=None,
+        embed_limit: int = 0,
+        force: bool = False,
+    ) -> dict | None:
+        """Run `BrainStore.cleanup_all_entity_graphs` across `schema` once per database
+        (tracked by `memnos_control.entity_graph_cleanup_v1`), or unconditionally when
+        `force=True`. Returns the aggregate cleanup stats dict if executed, or `None` if
+        already completed."""
+        from core.store import BrainStore
+        if not force and not Control.entity_graph_needs_cleanup(conn, schema):
+            return None
+        if not user_name:
+            with conn.cursor() as c:
+                c.execute(
+                    "SELECT name FROM memnos_control.principals "
+                    "WHERE kind='user' ORDER BY id ASC LIMIT 1"
+                )
+                row = c.fetchone()
+                user_name = (row["name"] if row else None) or (os.environ.get("USER") or "user").split()[0]
+        with conn.cursor() as c:
+            c.execute("SELECT setting FROM pg_settings WHERE name = 'statement_timeout'")
+            prior_timeout_ms = int(c.fetchone()["setting"])
+            c.execute("SET statement_timeout = 0")
+        try:
+            bs = BrainStore(conn=conn)
+            stats = bs.cleanup_all_entity_graphs(
+                schema,
+                user_name=user_name,
+                embed_fn=embed_fn,
+                embed_limit=embed_limit,
+                dry_run=False,
+            )
+            summary = {k: v for k, v in stats.items() if k != "cleaned_namespaces"}
+            with conn.cursor() as c:
+                c.execute(
+                    "INSERT INTO memnos_control.entity_graph_cleanup_v1(id, completed_at, stats) "
+                    "VALUES (true, now(), %s::jsonb) "
+                    "ON CONFLICT (id) DO UPDATE SET completed_at = now(), stats = EXCLUDED.stats",
+                    (json.dumps(summary),),
+                )
+            Control.audit(conn, None, "entity_graph_cleanup", "-", True, detail=summary)
+            return stats
+        finally:
+            with conn.cursor() as c:
+                c.execute(f"SET statement_timeout = {prior_timeout_ms}")
 
     # --- namespace pub/sub (cursor feed + optional webhook) -----------------
     @staticmethod

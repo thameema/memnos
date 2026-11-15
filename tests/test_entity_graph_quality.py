@@ -10,7 +10,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from core.service import MemnosMemory
-from core.store import BrainStore
+from core.store import BrainStore, vlit
 
 DSN = os.environ.get("MEMNOS_DSN", "postgresql://memnos:memnos@localhost:5432/memnos")
 SCHEMA = "tenant_memnos"
@@ -186,6 +186,25 @@ def main():
               h_after["literal_name_share"] == 0.0, str(h_after))
         check("embedding_coverage == 1.0 after cleanup",
               h_after["embedding_coverage"] == 1.0, str(h_after))
+
+        # Test embedding donor transfer when an unembedded canonical target merges with an embedded alias
+        with conn.cursor() as c:
+            c.execute(f"INSERT INTO {SCHEMA}.entities(namespace, name, embedding) VALUES (%s, %s, NULL) RETURNING id",
+                      (NS, "Redis"))
+            redis_unemb_id = c.fetchone()["id"]
+            c.execute(f"INSERT INTO {SCHEMA}.entities(namespace, name, embedding) VALUES (%s, %s, %s) RETURNING id",
+                      (NS, "redis", vlit(fake_embed("Redis"))))
+        donor_stats = store.cleanup_entity_graph(SCHEMA, NS, user_name="Thameem Ansari", dry_run=False)
+        check("donor merge merges 1 alias",
+              donor_stats["alias_entities_merged"] == 1,
+              str(donor_stats))
+        with conn.cursor() as c:
+            c.execute(f"SELECT (embedding IS NOT NULL) AS has_emb FROM {SCHEMA}.entities WHERE id=%s",
+                      (redis_unemb_id,))
+            redis_row = c.fetchone()
+        check("alias merge preserves non-null embedding from donor onto unembedded canonical target",
+              redis_row is not None and bool(redis_row["has_emb"]),
+              str(redis_row))
     finally:
         cleanup(conn)
 

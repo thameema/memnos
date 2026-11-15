@@ -1744,6 +1744,8 @@ def cmd_upgrade(args, cfg):
     save_config(cfg)
     if cur and _vparts(latest) <= _vparts(cur):
         print(f"[memnos] ✓ you're on the latest version (v{cur}).")
+        if not getattr(args, "check", False):
+            _auto_cleanup_entity_graph(cfg)
         return
     print(f"[memnos] update available: v{cur or '?'} → v{latest}")
     if getattr(args, "check", False):
@@ -1777,6 +1779,7 @@ def cmd_upgrade(args, cfg):
             "then re-run `memnos upgrade` to confirm and restart the server.")
     print(f"[memnos] ✓ upgraded to v{now_installed}.")
     _refresh_integrations()
+    _auto_cleanup_entity_graph(cfg)
     # issue #37 Layer 2: the package on disk is new, but nothing runs it until the server
     # restarts. In (default) gateway mode that restart is zero-downtime, so apply it now
     # instead of leaving a stale-code server running until the user remembers to do it
@@ -1824,6 +1827,23 @@ def _refresh_integrations():
             print("  tip: refresh the Desktop skill too:  memnos agent-setup claude-desktop")
     except Exception:
         pass
+
+
+def _auto_cleanup_entity_graph(cfg, *, force: bool = False):
+    """Run the one-time v1 entity-graph cleanup across tenant_memnos if not yet completed."""
+    try:
+        from core.control import Control
+        conn = _conn(cfg)
+        Control.init(conn)
+        stats = Control.run_entity_graph_cleanup_once(conn, "tenant_memnos", force=force)
+        conn.close()
+        if stats is not None:
+            print(f"  ✓ entity graph cleaned: {stats['entities_before']} → {stats['entities_after']} entities "
+                  f"(dropped {stats['literal_entities_dropped']} junk, "
+                  f"merged {stats['alias_entities_merged']} aliases across "
+                  f"{stats['namespaces_cleaned']}/{stats['namespaces_scanned']} namespaces)")
+    except Exception as e:
+        print(f"  ⚠ entity graph cleanup skipped ({e})")
 
 
 # tables whose `embedding` column is derived from a stored text column (+ its HNSW index)
@@ -2437,6 +2457,29 @@ def cmd_namespace(args, cfg):
             print(f"  {'commits':<14} {res['chunks']}  (lock-timeout retries: {res['retries']})")
         if st == "contention":
             sys.exit(75)                   # EX_TEMPFAIL: safe to retry later
+    elif args.action == "cleanup-graph":
+        from core.store import BrainStore
+        bs = BrainStore(conn=conn)
+        with conn.cursor() as c:
+            c.execute("SELECT name FROM memnos_control.principals WHERE kind='user' ORDER BY id ASC LIMIT 1")
+            r = c.fetchone()
+            user_name = (r["name"] if r else None) or (os.environ.get("USER") or "user").split()[0]
+        if args.name:
+            st = bs.cleanup_entity_graph("tenant_memnos", args.name, user_name=user_name, dry_run=args.dry_run)
+            mode = "dry-run" if args.dry_run else "applied"
+            print(f"namespace cleanup-graph '{args.name}' ({mode}): "
+                  f"{st['entities_before']} → {st['entities_after']} entities "
+                  f"(dropped={st['literal_entities_dropped']}, merged={st['alias_entities_merged']})")
+        else:
+            if args.dry_run:
+                st = bs.cleanup_all_entity_graphs("tenant_memnos", user_name=user_name, dry_run=True)
+            else:
+                st = Control.run_entity_graph_cleanup_once(conn, "tenant_memnos", user_name=user_name, force=True)
+            mode = "dry-run" if args.dry_run else "applied"
+            print(f"namespace cleanup-graph ({mode} across {st['namespaces_scanned']} namespaces): "
+                  f"{st['entities_before']} → {st['entities_after']} entities "
+                  f"(dropped={st['literal_entities_dropped']}, merged={st['alias_entities_merged']}, "
+                  f"cleaned_namespaces={st['namespaces_cleaned']})")
     elif args.action == "links":
         rows = Control.list_links(conn, args.name)
         if not rows:
@@ -2599,6 +2642,59 @@ def cmd_health(args, cfg):
                 print(f"  [budget] monthly ${bs.get('monthly_spend_usd', 0):.4f} / ${monthly_lim}  [{tag}]")
         except Exception as exc:
             print(f"  [budget] could not read budget status: {exc}")
+    if getattr(args, "fix", False) or getattr(args, "fix_graph", False):
+        _run_doctor_graph_check(conn, args)
+
+
+def _run_doctor_graph_check(conn, args):
+    from core.control import Control
+    from core.store import BrainStore
+    Control.init(conn)
+    bs = BrainStore(conn=conn)
+    with conn.cursor() as c:
+        c.execute("SELECT name FROM memnos_control.principals WHERE kind='user' ORDER BY id ASC LIMIT 1")
+        r = c.fetchone()
+        user_name = (r["name"] if r else None) or (os.environ.get("USER") or "user").split()[0]
+    dry_run = bool(getattr(args, "dry_run", False))
+    fix_requested = bool(getattr(args, "fix", False) or getattr(args, "fix_graph", False))
+    ns = getattr(args, "namespace", None)
+    if ns:
+        st = bs.cleanup_entity_graph("tenant_memnos", ns, user_name=user_name, dry_run=dry_run)
+        mode = "dry-run" if dry_run else "cleaned"
+        print(f"  [graph] {ns} ({mode}): {st['entities_before']} → {st['entities_after']} entities "
+              f"(dropped {st['literal_entities_dropped']} junk, merged {st['alias_entities_merged']} aliases)")
+        return
+    # Default when `memnos doctor` is called: if --dry-run is NOT passed, automatically
+    # clean the entity graph (either via --fix/--fix-graph or if any junk/alias entities exist).
+    if dry_run:
+        st = bs.cleanup_all_entity_graphs("tenant_memnos", user_name=user_name, dry_run=True)
+        print(f"  [graph] dry-run across {st['namespaces_scanned']} namespaces: "
+              f"{st['entities_before']} → {st['entities_after']} entities "
+              f"(would drop {st['literal_entities_dropped']} junk, merge {st['alias_entities_merged']} aliases)")
+    else:
+        st = Control.run_entity_graph_cleanup_once(
+            conn, "tenant_memnos", user_name=user_name, force=fix_requested or True
+        )
+        if st["literal_entities_dropped"] or st["alias_entities_merged"]:
+            print(f"  [graph] ✓ cleaned {st['namespaces_cleaned']}/{st['namespaces_scanned']} namespaces: "
+                  f"{st['entities_before']} → {st['entities_after']} entities "
+                  f"(dropped {st['literal_entities_dropped']} junk, merged {st['alias_entities_merged']} aliases)")
+        else:
+            print(f"  [graph] ✓ entity graph clean ({st['entities_after']} entities across "
+                  f"{st['namespaces_scanned']} namespaces, 0 junk/duplicates)")
+
+
+def cmd_doctor(args, cfg):
+    """Platform doctor: control-plane health checks + automatic entity-graph cleanup."""
+    from core.control import Control
+    conn = _conn(cfg)
+    rows = Control.health(conn, 24)
+    if not rows:
+        print("  [health] ✓ OK — no control-plane findings")
+    else:
+        for level, msg in rows:
+            print(f"  [{level}] {msg}")
+    _run_doctor_graph_check(conn, args)
 
 
 def cmd_whoami(args, cfg):
@@ -5827,8 +5923,8 @@ def build_parser():
     vv.set_defaults(fn=cmd_constraint_override_rm)
 
     # ---- namespaces & secrets (already noun-verb via the action positional) ----
-    p = sub.add_parser("namespace", help="manage namespaces: add | ls | rm | prune | set | link | unlink | links | copy | move | reconcile")
-    p.add_argument("action", choices=["add", "ls", "rm", "prune", "copy", "move", "set", "link", "unlink", "links", "reconcile"],
+    p = sub.add_parser("namespace", help="manage namespaces: add | ls | rm | prune | set | link | unlink | links | copy | move | reconcile | cleanup-graph")
+    p.add_argument("action", choices=["add", "ls", "rm", "prune", "copy", "move", "set", "link", "unlink", "links", "reconcile", "cleanup-graph"],
                    help="what to do")
     p.add_argument("name", nargs="?", help="namespace (or copy/move SOURCE, or link SRC)")
     p.add_argument("dst", nargs="?", help="link/unlink destination namespace")
@@ -5916,7 +6012,18 @@ def build_parser():
 
     # ---- observability ----
     sub.add_parser("stats", help="per-op reliability stats (last 24h)").set_defaults(fn=cmd_stats)
-    sub.add_parser("health", help="actionable findings (the platform doctor)").set_defaults(fn=cmd_health)
+    p = sub.add_parser("health", help="actionable findings (the platform doctor)")
+    p.add_argument("--fix", action="store_true", help="also run automatic entity-graph cleanup across namespaces")
+    p.add_argument("--fix-graph", action="store_true", help="also run automatic entity-graph cleanup across namespaces")
+    p.add_argument("--dry-run", action="store_true", help="report entity-graph cleanup counts without writing")
+    p.add_argument("--namespace", "-n", help="scope entity-graph cleanup to one namespace")
+    p.set_defaults(fn=cmd_health)
+    p = sub.add_parser("doctor", help="platform health check + automatic entity-graph cleanup")
+    p.add_argument("--fix", action="store_true", help="clean junk/literal entities and merge duplicate aliases (default when not --dry-run)")
+    p.add_argument("--fix-graph", action="store_true", help="clean junk/literal entities and merge duplicate aliases")
+    p.add_argument("--dry-run", action="store_true", help="report entity-graph cleanup counts without writing")
+    p.add_argument("--namespace", "-n", help="scope entity-graph cleanup to one namespace")
+    p.set_defaults(fn=cmd_doctor)
     p = sub.add_parser("whoami", help="validate a token and show its grants")
     p.add_argument("token", help="bearer token to check")
     p.set_defaults(fn=cmd_whoami)
@@ -6009,7 +6116,7 @@ _DOC_GROUPS = [
               "role grants", "role add-member", "role rm-member", "role members"]),
     ("Namespaces", ["namespace", "ns"]),
     ("Secrets", ["secret"]),
-    ("Observability", ["stats", "health"]),
+    ("Observability", ["stats", "health", "doctor"]),
     ("Agent integrations", ["agent-setup", "claude-setup", "hook"]),
     ("Server integrations", ["server-setup"]),
     ("Maintenance", ["admin", "migrate-embeddings", "help"]),

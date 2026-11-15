@@ -2963,6 +2963,20 @@ def serve(port=None):
         conn.execute("SET statement_timeout = 0")
         bs = BrainStore(conn=conn)
         SCHEMA = bs.create_schema("memnos", dim=DIM)   # memory schema
+        try:
+            eg_stats = Control.run_entity_graph_cleanup_once(conn, SCHEMA)
+            if eg_stats is not None:
+                print(
+                    f"[memnos] entity graph cleanup (v1) complete: "
+                    f"{eg_stats['entities_before']} -> {eg_stats['entities_after']} entities "
+                    f"(dropped {eg_stats['literal_entities_dropped']} junk, "
+                    f"merged {eg_stats['alias_entities_merged']} aliases across "
+                    f"{eg_stats['namespaces_cleaned']}/{eg_stats['namespaces_scanned']} namespaces)",
+                    flush=True,
+                )
+        except Exception as e:
+            print(f"[memnos] WARNING: entity graph cleanup (v1) failed ({type(e).__name__}: {e}) — continuing",
+                  flush=True)
         # issue #59/#31: `SELECT 1` above (and /readyz's own, below) proves Postgres is
         # reachable but says nothing about whether the FIRST real recall pays a cold
         # page-in cost against the HNSW indexes — confirmed live (EXPLAIN) to be a real,

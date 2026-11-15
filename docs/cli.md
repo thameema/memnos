@@ -484,11 +484,11 @@ memnos role members architects
 
 ### `memnos namespace`
 
-manage namespaces: add | ls | rm | prune | set | link | unlink | links | copy | move | reconcile
+manage namespaces: add | ls | rm | prune | set | link | unlink | links | copy | move | reconcile | cleanup-graph
 
 | argument | description |
 |---|---|
-| `action` | what to do (one of: `add`, `ls`, `rm`, `prune`, `copy`, `move`, `set`, `link`, `unlink`, `links`, `reconcile`) |
+| `action` | what to do (one of: `add`, `ls`, `rm`, `prune`, `copy`, `move`, `set`, `link`, `unlink`, `links`, `reconcile`, `cleanup-graph`) |
 | `name` | namespace (or copy/move SOURCE, or link SRC) (optional) |
 | `dst` | link/unlink destination namespace (optional) |
 | `--to` | copy/move destination namespace |
@@ -557,9 +557,27 @@ memnos stats
 
 actionable findings (the platform doctor)
 
+| argument | description |
+|---|---|
+| `--fix` | also run automatic entity-graph cleanup across namespaces |
+| `--fix-graph` | also run automatic entity-graph cleanup across namespaces |
+| `--dry-run` | report entity-graph cleanup counts without writing |
+| `--namespace, -n` | scope entity-graph cleanup to one namespace |
+
 ```bash
 memnos health
 ```
+
+### `memnos doctor`
+
+platform health check + automatic entity-graph cleanup
+
+| argument | description |
+|---|---|
+| `--fix` | clean junk/literal entities and merge duplicate aliases (default when not --dry-run) |
+| `--fix-graph` | clean junk/literal entities and merge duplicate aliases |
+| `--dry-run` | report entity-graph cleanup counts without writing |
+| `--namespace, -n` | scope entity-graph cleanup to one namespace |
 
 
 ## Agent integrations
