@@ -430,6 +430,15 @@ def remember(text: str, memory_type: str = "", constraint_subject: str = "") -> 
 
 
 @mcp.tool()
+def record_fix(symptom: str, cause: str, fix: str, verify_cmd: str = "") -> str:
+    """Record a verified bug fix as a durable 'fix' memory (Symptom / Cause / Fix / Verify).
+    Fix memories get a bounded ranking boost on future error/debug queries. Call it when a
+    fix is confirmed (tests pass), not for guesses."""
+    from core.service import format_fix_memory
+    return remember(format_fix_memory(symptom, cause, fix, verify_cmd or None), memory_type="fix")
+
+
+@mcp.tool()
 def consolidate() -> str:
     """Run memory consolidation (the offline 'sleep' pass): distill recent episodes
     into durable semantic facts and entity dossiers, resolving contradictions. Normally
@@ -620,9 +629,17 @@ def namespace_feed(subscription_id: int) -> str:
     """Poll new memories for a subscription since its last cursor (advances the cursor).
     Returns the new memory items and the updated cursor."""
     try:
-        return str(_post("/feed", {"subscription_id": int(subscription_id)}))
+        out = _post("/feed", {"subscription_id": int(subscription_id)})
     except Exception as e:
         return _err(e, "namespace_feed")
+    # P3: feed items are other principals' writes — hand them over as untrusted DATA.
+    if (isinstance(out, dict) and isinstance(out.get("items"), list)
+            and os.environ.get("MEMNOS_PEER_ENVELOPES", "1") != "0"):
+        from core.service import format_peer_envelope
+        for it in out["items"]:
+            if isinstance(it, dict) and it.get("content"):
+                it["content"] = format_peer_envelope(it["content"], it.get("speaker") or "peer")
+    return str(out)
 
 
 @mcp.tool()

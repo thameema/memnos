@@ -41,6 +41,47 @@ def extract_entities(text: str) -> list[str]:
     return out
 
 
+# --- tier-1 developer signals (deterministic, zero-LLM, high-precision only) ---------
+_TRAILER_RE = re.compile(
+    r"^(Co-authored-by|Signed-off-by|Reviewed-by|Fixes|Closes|Resolves|Refs|Reverts|BREAKING[ -]CHANGE)"
+    r":[ \t]*(\S[^\n]{0,200})$", re.I | re.M)
+_PR_RE = re.compile(r"\b(PR|MR|pull request|issue)\s*#?(\d{1,7})\b", re.I)
+_SHA_RE = re.compile(r"\b(?:commit|sha|rev(?:ision)?)[ :@]+([0-9a-f]{7,40})\b", re.I)
+_VER_RE = re.compile(r"\bv(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)\b|"
+                     r"\b(?:version|released?|tagged?)\s+v?(\d+\.\d+(?:\.\d+)?)\b", re.I)
+_TEST_RE = re.compile(r"\b(\d+)\s+(passed|failed|errors?|skipped)\b", re.I)
+_MAX_SIGNALS = 12
+
+
+def extract_developer_signals(text: str) -> list[dict]:
+    """Deterministic, regex-only facts from developer text: git trailers, PR/issue refs,
+    commit SHAs (cue word required), versions, test-run summaries. High precision by
+    design (cue words, no bare-hex guessing). Facts carry EMPTY subject/predicate so
+    belief-change supersession can never fire from regex output. Capped, de-duplicated.
+    Shape matches MemnosMemory.write_facts: {subject,predicate,object,statement}."""
+    out, seen = [], set()
+
+    def add(stmt):
+        if stmt not in seen and len(out) < _MAX_SIGNALS:
+            seen.add(stmt)
+            out.append({"subject": "", "predicate": "", "object": "", "statement": stmt})
+    text = text or ""
+    for k, v in _TRAILER_RE.findall(text):
+        add(f"Git trailer {k.title()}: {v.strip()}")
+    for k, n in _PR_RE.findall(text):
+        add(f"References {k.upper() if k.lower() in ('pr', 'mr') else k.lower()} #{n}")
+    for sha in _SHA_RE.findall(text):
+        add(f"References commit {sha.lower()}")
+    for a, b in _VER_RE.findall(text):
+        add(f"Mentions version {a or b}")
+    counts = {}
+    for n, word in _TEST_RE.findall(text):
+        counts.setdefault(word.lower().rstrip("s") if word.lower().startswith("error") else word.lower(), n)
+    if counts:
+        add("Test run: " + ", ".join(f"{n} {w}" for w, n in counts.items()))
+    return out
+
+
 def salience(text: str, n_entities: int) -> float:
     """Write-time importance ~ entity density + length, squashed to [0,1]."""
     return 1.0 / (1.0 + math.exp(-(0.4 * n_entities + 0.002 * len(text) - 1.2)))

@@ -170,7 +170,7 @@ PHASED_OPS = {"/recall", "/memory/search", "/recall_v2", "/memory/context", "/co
 # `extract=False` explicitly (see `_remember_phased` below), the same knob a 'fact' or
 # 'decision' write could also use. Keeping this orthogonal to the type is what keeps
 # pinned_constraints() correctly untouched by a type that was never meant to be pinned.
-ALLOWED_MEMORY_TYPES = ("decision", "incident", "constraint", "skill", "fact", "handoff")
+ALLOWED_MEMORY_TYPES = ("decision", "incident", "constraint", "skill", "fact", "handoff", "fix")
 
 
 def _memory_type(req):

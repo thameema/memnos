@@ -200,6 +200,43 @@ def query_intent(query: str) -> str:
     return "neutral"
 
 
+# --- P3: untrusted peer-memory envelopes ---------------------------------------------
+def format_peer_envelope(content, author, *, trust="untrusted") -> str:
+    """Wrap peer-authored memory text as DATA: `<memnos:peer_memory author=".." trust="..">`
+    with &, <, > escaped in the body so a payload can never close the tag or forge another.
+    Gate with MEMNOS_PEER_ENVELOPES (default on; =0 disables)."""
+    from html import escape
+    return (f'<memnos:peer_memory author="{escape(str(author), quote=True)}" '
+            f'trust="{escape(trust, quote=True)}">{escape(str(content), quote=False)}'
+            f'</memnos:peer_memory>')
+
+
+# --- P5: fix memories + bounded error-query boost ------------------------------------
+_ERROR_Q_RE = re.compile(
+    r"\b(error|exception|traceback|stack ?trace|fail(?:s|ed|ing|ure)?|crash(?:es|ed)?|bug|"
+    r"debug|broken|fix|segfault|panic|timeout|500|404)\b", re.I)
+
+
+def is_error_query(query) -> bool:
+    return bool(query and _ERROR_Q_RE.search(query))
+
+
+def format_fix_memory(symptom, cause, fix, verify_cmd=None) -> str:
+    """Canonical text for a client-recorded fix (stored with memory_type='fix')."""
+    parts = [f"Symptom: {symptom.strip()}", f"Cause: {cause.strip()}", f"Fix: {fix.strip()}"]
+    if verify_cmd and verify_cmd.strip():
+        parts.append(f"Verify: {verify_cmd.strip()}")
+    return "\n".join(parts)
+
+
+def _fix_boost(memory_type, err_query) -> float:
+    """Multiplier for fix/skill memories on error/debug queries; capped at +25%.
+    MEMNOS_FIX_BOOST=0 disables."""
+    if not err_query or memory_type not in ("fix", "skill"):
+        return 1.0
+    return 1.0 + min(0.25, max(0.0, _env_float("MEMNOS_FIX_BOOST", 0.10)))
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, default))
@@ -647,6 +684,11 @@ class MemnosMemory:
         it was already stored verbatim by remember_turn()."""
         if memory_type == "constraint":
             return []
+        if self.llm is None and self.extract_fn is None:
+            # local/no-LLM mode: tier-1 deterministic developer signals (trailers, PR refs,
+            # SHAs, versions, test summaries). Plain prose yields [] exactly as before.
+            from .encode import extract_developer_signals
+            return extract_developer_signals(text)
         if _is_assistant(speaker):
             return filter_assistant_facts(
                 self._extract(text, observed_at, profile="developer_assistant"))
@@ -1322,6 +1364,7 @@ class MemnosMemory:
         # it cannot crater single_hop/verbatim. MEMNOS_RECALL_FACT_BOOST=0 disables.
         fb = _env_float("MEMNOS_RECALL_FACT_BOOST", 0.06)
         fact_boost = fb if qi != "verbatim" else 0.0
+        err_q = is_error_query(query)                          # P5: fix/skill boost gate
         # issue #22: operator-tunable PRECISION floor — candidates whose raw cross-encoder
         # score falls below MEMNOS_RERANK_MIN_SCORE are dropped entirely, before quotas are
         # applied (trades recall breadth for precision). Read on the RAW rerank() score, not
@@ -1404,7 +1447,7 @@ class MemnosMemory:
                 s *= 1.0 + min(0.10, fact_boost)
             if kind == "fact" and entity_boost > 0:       # #17: entity-aware subject scope
                 s *= _fact_entity_factor(it)
-            return s
+            return s * _fix_boost(it.get("memory_type"), err_q)
 
         rq = query_clamp(query)                    # #15 follow-up: bound the reranker's query side
         def rr(items, kind):
@@ -1586,6 +1629,7 @@ class MemnosMemory:
                                                       + max(0.0, (it.get("salience") or 0.0) - 0.5)))
                 if kind == "fact" and fact_boost > 0:         # gated, bounded fact preference (#2)
                     s *= 1.0 + min(0.10, fact_boost)
+                s *= _fix_boost(it.get("memory_type"), is_error_query(query))
                 row = {"content": it["content"], "kind": kind, "score": s, "namespace": it["_ns"]}
                 if kind == "fact" and it.get("valid_from"):
                     row["date"] = it["valid_from"].date().isoformat()
@@ -1664,7 +1708,9 @@ class MemnosMemory:
                 if r.get("dup_count"):         # issue #2: N near-identical turns collapsed to 1
                     label += f", x{r['dup_count']}"
                 d = f", {r['date']}" if (r["kind"] == "fact" and r.get("date")) else ""
-                line = f"- ({label}{d}{by}){tag} {r['content']}"
+                body = (format_peer_envelope(r['content'], r['author'])
+                        if by and _env_float("MEMNOS_PEER_ENVELOPES", 1.0) > 0 else r['content'])
+                line = f"- ({label}{d}{by}){tag} {body}"
             # issue #153: a PINNED constraint always renders in full and NEVER counts
             # against max_chars — pins are additive, outside the budget entirely, not
             # merely exempt from being dropped. max_chars is the budget for RANKED
