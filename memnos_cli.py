@@ -2930,6 +2930,13 @@ def cmd_remember(args, cfg):
         body["constraint_subject"] = args.subject
     if getattr(args, "no_extract", False):
         body["extract"] = False
+    try:
+        from core.code_anchors import extract_code_anchors
+        anchors = extract_code_anchors(args.text)
+        if anchors:
+            body["code_anchors"] = anchors
+    except Exception:
+        pass
     out = _post(cfg, "/remember", body, args.token or _session_token(cfg))
     # write-time attribution (issue #20, Part B): always say WHERE it landed.
     print(f"→ remembered in {ns}")
@@ -2955,7 +2962,119 @@ def cmd_recall(args, cfg):
     out = _post(cfg, "/recall", body, args.token or _session_token(cfg))
     if out.get("namespaces_searched"):
         print(f"[searched: {', '.join(out['namespaces_searched'])}]")
+    rows = out.get("memories") if isinstance(out, dict) else None
+    if isinstance(rows, list) and any(isinstance(r, dict) and r.get("code_anchors") for r in rows):
+        try:
+            from core.code_anchors import annotate_rows_with_code_drift
+            from core.service import MemnosMemory
+            annotate_rows_with_code_drift(rows)
+            if any(r.get("code_drift_notice") for r in rows):
+                out["context"] = MemnosMemory.render_context(rows, query=args.query)
+        except Exception:
+            pass
     print(out.get("context", json.dumps(out)))
+
+
+def cmd_fix(args, cfg):
+    """Record a structured Symptom / Cause / Fix / Verify debugging memory (issue #238)."""
+    import nsresolve
+    from core.service import format_fix_memory
+    ns = args.namespace if args.namespace and args.namespace != "auto" else nsresolve.resolve()
+    text = format_fix_memory(args.symptom, args.cause, args.fix, getattr(args, "verify", None))
+    body = {"namespace": ns, "text": text, "type": "fix"}
+    try:
+        from core.code_anchors import extract_code_anchors
+        anchors = extract_code_anchors(text)
+        if anchors:
+            body["code_anchors"] = anchors
+    except Exception:
+        pass
+    out = _post(cfg, "/remember", body, args.token or _session_token(cfg))
+    print(f"→ recorded fix in {ns} (turn {out.get('turn_id')})")
+    if getattr(args, "json", False):
+        print(json.dumps(out))
+
+
+def cmd_init(args, cfg):
+    """Cold-start repository hydration (`CLAUDE.md` rules + recent `git log`, issue #236)."""
+    import nsresolve
+    from core.repo_init import init_repo
+    repo_root = os.path.abspath(getattr(args, "path", None) or os.getcwd())
+    if args.namespace and args.namespace != "auto":
+        ns = args.namespace
+    else:
+        ns = nsresolve.resolve()
+    tok = args.token or _session_token(cfg)
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    def _post_remember(path, payload):
+        return _post(cfg, path, payload, tok)
+
+    summary = init_repo(
+        repo_root,
+        None if dry_run else _post_remember,
+        namespace=ns,
+        since_days=int(getattr(args, "days", 90)),
+        max_commits=int(getattr(args, "max_commits", 50)),
+        include_rules=not getattr(args, "no_rules", False),
+        include_git=not getattr(args, "no_git", False),
+        extract=bool(getattr(args, "extract", False)),
+        dry_run=dry_run,
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(summary, indent=2))
+        return
+    mode = " (dry-run)" if dry_run else ""
+    print(f"[memnos init]{mode} repo={summary['repo_root']} → namespace={ns}")
+    sources = ", ".join(summary["rule_sources"]) if summary["rule_sources"] else "none"
+    print(f"  rules   : {summary['rules_found']} found ({sources}), "
+          f"{summary['rules_written']} written as pinned constraints"
+          + (f" ({summary['constraints_retired']} superseded)" if summary["constraints_retired"] else ""))
+    print(f"  commits : {summary['commits_found']} high-signal commits (last {getattr(args, 'days', 90)}d), "
+          f"{summary['commits_written']} written (speaker='git', 0.85x rank weight)")
+
+
+def cmd_explain(args, cfg):
+    """Inspect the injection audit log for the last N recalls in this namespace (issue #240)."""
+    import nsresolve
+    ns = args.namespace if args.namespace and args.namespace != "auto" else nsresolve.resolve()
+    tok = args.token or _session_token(cfg)
+    q = getattr(args, "query", None)
+    if q:
+        _post(cfg, "/recall", {"namespace": ns, "query": q}, tok)
+    out = _post(cfg, "/recall/explain", {"namespace": ns, "limit": int(getattr(args, "limit", 1))}, tok)
+    if getattr(args, "json", False):
+        print(json.dumps(out, indent=2))
+        return
+    recalls = (out or {}).get("recalls") or []
+    if not recalls:
+        print(f"[memnos explain] no recent recalls recorded in namespace '{ns}'.\n"
+              f"  tip: run `memnos explain --query \"your question\"` to run and audit a recall.")
+        return
+    for idx, rec in enumerate(recalls, 1):
+        ts = rec.get("timestamp", "?")
+        tm = rec.get("timings_ms") or {}
+        print(f"── Recall #{idx} [{rec.get('namespace', ns)}] ({ts}) ──")
+        print(f"  query   : {rec.get('query')!r} (scope={rec.get('scope', 'narrow')})")
+        print(f"  counts  : {rec.get('pinned_count', 0)} pinned constraints, "
+              f"{rec.get('ranked_count', 0)} ranked memories")
+        if tm:
+            parts = [f"{k}={v}ms" for k, v in tm.items() if k.endswith("_ms")]
+            if parts:
+                print(f"  timings : {', '.join(parts)}")
+        mems = rec.get("memories") or []
+        try:
+            from core.code_anchors import annotate_rows_with_code_drift
+            annotate_rows_with_code_drift(mems)
+        except Exception:
+            pass
+        for m in mems:
+            pin_tag = "[PINNED] " if m.get("pinned") else ""
+            score_s = f"{m['score']:.3f}" if isinstance(m.get("score"), (int, float)) else "  pin"
+            mtype = m.get("type") or m.get("kind") or "memory"
+            drift = f" ⚠ {m['code_drift_notice']}" if m.get("code_drift_notice") else ""
+            snippet = (m.get("content") or "").replace("\n", " ")[:100]
+            print(f"    {score_s}  {pin_tag}({mtype}) {snippet}{drift}")
 
 
 # NOTE on the `remember`/`recall` calls below: they carry `--token __MEMNOS_TOKEN__` (a
@@ -5139,6 +5258,9 @@ EXAMPLES = {
     "admin": "memnos admin",
     "migrate-embeddings": "memnos migrate-embeddings --to 1536",
     "help": "memnos help",
+    "fix": "memnos fix --symptom '500 on /recall' --cause 'pool exhausted' --fix 'release conn before rerank' --verify 'pytest tests/test_perf_phases.py'",
+    "init": "memnos init --days 90",
+    "explain": "memnos explain --limit 3",
 }
 
 
@@ -5156,8 +5278,9 @@ def build_parser():
     p = sub.add_parser("remember", help="save a memory (data client — talks to the server)")
     p.add_argument("text", help="the text to remember")
     p.add_argument("--namespace", default="auto", help="target namespace (default: auto-resolve for this folder)")
-    p.add_argument("--type", choices=["decision", "incident", "constraint", "skill", "fact", "handoff"],
+    p.add_argument("--type", choices=["decision", "incident", "constraint", "skill", "fact", "handoff", "fix"],
                    help="classify the memory (constraints are pinned into every recall; "
+                        "fix records a Symptom/Cause/Fix debugging solution; "
                         "handoff is a plain queryable tag, no pinning — issue #193)")
     p.add_argument("--subject", help="constraint grouping key (--type constraint only). A newer "
                         "constraint with the SAME subject supersedes the older one; omitted, "
@@ -5172,10 +5295,38 @@ def build_parser():
     p.add_argument("query", help="what to recall")
     p.add_argument("--namespace", default="auto", help="namespace to search (default: auto-resolve)")
     p.add_argument("--scope", choices=["all", "wide"], help="widen across every namespace your token may read")
-    p.add_argument("--type", choices=["decision", "incident", "constraint", "skill", "fact", "handoff"],
+    p.add_argument("--type", choices=["decision", "incident", "constraint", "skill", "fact", "handoff", "fix"],
                    help="only memories of this type (pinned constraints always included)")
     p.add_argument("--token", help="bearer token (default: MEMNOS_TOKEN or the config admin token)")
     p.set_defaults(fn=cmd_recall)
+    p = sub.add_parser("fix", help="record a verified bug fix (Symptom / Cause / Fix / Verify, boosted on error queries)")
+    p.add_argument("--symptom", required=True, help="error message, failing test, or user-visible symptom")
+    p.add_argument("--cause", required=True, help="root cause of the bug")
+    p.add_argument("--fix", required=True, help="how the bug was resolved")
+    p.add_argument("--verify", help="verification command or test (e.g. 'pytest tests/test_fix.py')")
+    p.add_argument("--namespace", default="auto", help="target namespace (default: auto-resolve)")
+    p.add_argument("--token", help="bearer token (default: MEMNOS_TOKEN or the config admin token)")
+    p.add_argument("--json", action="store_true", help="also print the raw server response JSON")
+    p.set_defaults(fn=cmd_fix)
+    p = sub.add_parser("init", help="hydrate this repository into memnos in <5s (CLAUDE.md rules + recent git history)")
+    p.add_argument("--path", help="repository root directory (default: current directory)")
+    p.add_argument("--namespace", default="auto", help="target namespace (default: auto-resolve for this repo)")
+    p.add_argument("--days", type=int, default=90, help="git log window in days (default 90)")
+    p.add_argument("--max-commits", type=int, default=50, dest="max_commits", help="max high-signal commits to ingest (default 50)")
+    p.add_argument("--no-rules", action="store_true", dest="no_rules", help="skip CLAUDE.md / AGENTS.md / .cursorrules ingestion")
+    p.add_argument("--no-git", action="store_true", dest="no_git", help="skip git log ingestion")
+    p.add_argument("--extract", action="store_true", help="also run fact extraction on git commits (default: fast raw-turn hydration)")
+    p.add_argument("--dry-run", action="store_true", dest="dry_run", help="parse and preview without writing to the server")
+    p.add_argument("--token", help="bearer token (default: MEMNOS_TOKEN or the config admin token)")
+    p.add_argument("--json", action="store_true", help="print full hydration summary as JSON")
+    p.set_defaults(fn=cmd_init)
+    p = sub.add_parser("explain", help="audit what the last /recall injected (pinned constraints, scores, code drift, timings)")
+    p.add_argument("--namespace", default="auto", help="namespace to inspect (default: auto-resolve)")
+    p.add_argument("--limit", type=int, default=1, help="number of recent recalls to show (1..50, default 1)")
+    p.add_argument("--query", help="optional: run a /recall for this query first, then explain it")
+    p.add_argument("--token", help="bearer token (default: MEMNOS_TOKEN or the config admin token)")
+    p.add_argument("--json", action="store_true", help="print raw explain JSON")
+    p.set_defaults(fn=cmd_explain)
 
     # ---- lifecycle ----
     p = sub.add_parser("setup", help="connect to Postgres, create schema + admin token "
@@ -5677,7 +5828,7 @@ def _normalize_argv(argv):
 
 # ---- docs generation (docs/cli.md + ui/cli-reference.json) -------------------
 _DOC_GROUPS = [
-    ("Memory (heroes)", ["remember", "recall"]),
+    ("Memory (heroes)", ["remember", "recall", "fix", "init", "explain"]),
     ("Server lifecycle", ["setup", "start", "stop", "restart", "status", "serve", "gateway",
                           "autostart", "upgrade", "proxy", "mcp"]),
     ("Identity & access", ["principal create", "principal ls", "token mint", "token ls",

@@ -237,6 +237,16 @@ def _fix_boost(memory_type, err_query) -> float:
     return 1.0 + min(0.25, max(0.0, _env_float("MEMNOS_FIX_BOOST", 0.10)))
 
 
+def _git_speaker_weight(it: dict) -> float:
+    """Rank weight for bulk-hydrated git history (`speaker='git'` / `source_speaker='git'`,
+    issue #236). Defaults to 0.85 so organic session memories outrank `memnos init` git
+    commits at equal cosine similarity. MEMNOS_GIT_SPEAKER_WEIGHT=1.0 disables."""
+    spk = str(it.get("speaker") or it.get("source_speaker") or "").strip().lower()
+    if spk != "git":
+        return 1.0
+    return max(0.1, min(1.0, _env_float("MEMNOS_GIT_SPEAKER_WEIGHT", 0.85)))
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, default))
@@ -585,7 +595,7 @@ class MemnosMemory:
     # --- WRITE -------------------------------------------------------------
     def remember(self, namespace: str, text: str, *, speaker=None, session_id=None,
                  observed_at=None, extract=True, memory_type=None,
-                 constraint_subject=None) -> dict:
+                 constraint_subject=None, code_anchors=None) -> dict:
         """Store a message: raw turn (always) + STRUCTURED date-aware SPO fact
         extraction (optional, offline LLM). Each fact is stored with
         subject/predicate/object so belief-change SUPERSESSION fires (close out the
@@ -603,20 +613,24 @@ class MemnosMemory:
         observed_at = observed_at or datetime.now(timezone.utc)
         tid, text, observed_at, retired = self.remember_turn(
             namespace, text, speaker=speaker, session_id=session_id, observed_at=observed_at,
-            memory_type=memory_type, constraint_subject=constraint_subject)
+            memory_type=memory_type, constraint_subject=constraint_subject,
+            code_anchors=code_anchors)
         n_facts = n_super = 0
         if extract and (self.llm is not None or self.extract_fn is not None):
             facts = self.extract_facts(text, observed_at, memory_type=memory_type,
                                        speaker=speaker)
-            n_facts, n_super = self.write_facts(namespace, facts, observed_at, tid,
-                                                memory_type=memory_type, speaker=speaker)
+            if facts:
+                n_facts, n_super = self.write_facts(namespace, facts, observed_at, tid,
+                                                    memory_type=memory_type, speaker=speaker,
+                                                    code_anchors=code_anchors)
         out = {"turn_id": tid, "facts": n_facts, "superseded": n_super}
         if retired:
             out["constraints_retired"] = retired
         return out
 
     def remember_turn(self, namespace: str, text: str, *, speaker=None, session_id=None,
-                      observed_at=None, vec=None, memory_type=None, constraint_subject=None):
+                      observed_at=None, vec=None, memory_type=None, constraint_subject=None,
+                      code_anchors=None):
         """Phase 1 (fast, DB only): redact + store the verbatim raw turn. Returns
         (turn_id, redacted_text, observed_at, retired_constraints) for the later
         extraction phases.
@@ -650,6 +664,9 @@ class MemnosMemory:
         if self.redact:
             from .redact import redact as _redact
             text, _ = _redact(text)             # strip secrets BEFORE storage + extraction
+        if code_anchors is not None:
+            from .code_anchors import normalize_code_anchors
+            code_anchors = normalize_code_anchors(code_anchors)
         cs = effective_constraint_subject(memory_type, constraint_subject, text)
         if cs:
             self.store.backfill_constraint_subjects(self.schema, namespace,
@@ -658,7 +675,7 @@ class MemnosMemory:
                                          text, observed_at,
                                          vec if vec is not None else self.embed(text),
                                          author=self.author, memory_type=memory_type,
-                                         constraint_subject=cs)
+                                         constraint_subject=cs, code_anchors=code_anchors)
         retired = self.store.retire_constraints(self.schema, namespace, cs,
                                                 keep_kind="turn", keep_id=tid) if cs else []
         return tid, text, observed_at, retired
@@ -695,7 +712,7 @@ class MemnosMemory:
         return self._extract(text, observed_at, profile="developer")
 
     def write_facts(self, namespace, facts, observed_at, turn_id, *, memory_type=None,
-                    valid_anchor=None, speaker=None) -> tuple:
+                    valid_anchor=None, speaker=None, code_anchors=None) -> tuple:
         """Phase 3 (fast, DB only): supersession + store + graph for extracted facts.
         `memory_type` = the source TURN's type — derived facts INHERIT it.
 
@@ -707,11 +724,14 @@ class MemnosMemory:
         `speaker` (issue #154): the source turn's speaker, stamped on each fact as
         semantic.source_speaker (queryable provenance). Corroboration is decided from the
         restating turn's raw_turns.speaker inside BrainStore.bump_restatement."""
+        if code_anchors is not None:
+            from .code_anchors import normalize_code_anchors
+            code_anchors = normalize_code_anchors(code_anchors)
         n_facts = n_super = 0
         for f in facts:
             df, ds = self._write_fact(namespace, f, observed_at, source_turn_ids=[turn_id],
                                       memory_type=memory_type, valid_anchor=valid_anchor,
-                                      speaker=speaker)
+                                      speaker=speaker, code_anchors=code_anchors)
             n_facts += df; n_super += ds
         return n_facts, n_super
 
@@ -748,7 +768,7 @@ class MemnosMemory:
         return {"turns": len(turns), "facts": n_facts, "superseded": n_super}
 
     def _write_fact(self, namespace, f, fallback_date, *, source_turn_ids=(),
-                    memory_type=None, valid_anchor=None, speaker=None):
+                    memory_type=None, valid_anchor=None, speaker=None, code_anchors=None):
         """Write ONE SPO fact: near-duplicate collapse → absolute event date →
         belief-change supersession (SPO + reversal/negation close-out) → store with
         subject/predicate/object (+ provenance to its source turn) → populate the
@@ -816,7 +836,8 @@ class MemnosMemory:
         insert_kwargs = dict(subject=subj, predicate=pred, obj=obj, valid_from=ev,
                              salience=0.5, vec=vec, source_turn_ids=source_turn_ids,
                              author=self.author, memory_type=memory_type, observed_at=obs,
-                             source_speaker=(str(speaker)[:40] if speaker else None))
+                             source_speaker=(str(speaker)[:40] if speaker else None),
+                             code_anchors=code_anchors)
         if (subj and pred and _supersedable(pred, obj)       # belief-change ONLY for single-valued attrs
                 and not (hist and explicit_ev is None)):     # (cue list OR quantified-object rule)
             # issue #60 — CONCURRENT/OUT-OF-ORDER WRITER GUARD. Two facts for the same
@@ -1447,7 +1468,7 @@ class MemnosMemory:
                 s *= 1.0 + min(0.10, fact_boost)
             if kind == "fact" and entity_boost > 0:       # #17: entity-aware subject scope
                 s *= _fact_entity_factor(it)
-            return s * _fix_boost(it.get("memory_type"), err_q)
+            return s * _fix_boost(it.get("memory_type"), err_q) * _git_speaker_weight(it)
 
         rq = query_clamp(query)                    # #15 follow-up: bound the reranker's query side
         def rr(items, kind):
@@ -1483,6 +1504,8 @@ class MemnosMemory:
                                                 .astimezone(timezone.utc).date().isoformat())
                 if items[i].get("dup_count"):                  # issue #2: collapsed duplicates
                     row["dup_count"] = items[i]["dup_count"]
+                if items[i].get("code_anchors"):               # issue #239: git file+blob+symbol anchors
+                    row["code_anchors"] = items[i]["code_anchors"]
                 scored.append(row)
             scored.sort(key=lambda r: -r["score"])            # re-sort on adjusted score
             return scored
@@ -1629,7 +1652,7 @@ class MemnosMemory:
                                                       + max(0.0, (it.get("salience") or 0.0) - 0.5)))
                 if kind == "fact" and fact_boost > 0:         # gated, bounded fact preference (#2)
                     s *= 1.0 + min(0.10, fact_boost)
-                s *= _fix_boost(it.get("memory_type"), is_error_query(query))
+                s *= _fix_boost(it.get("memory_type"), is_error_query(query)) * _git_speaker_weight(it)
                 row = {"content": it["content"], "kind": kind, "score": s, "namespace": it["_ns"]}
                 if kind == "fact" and it.get("valid_from"):
                     row["date"] = it["valid_from"].date().isoformat()
@@ -1649,6 +1672,8 @@ class MemnosMemory:
                                                 .astimezone(timezone.utc).date().isoformat())
                 if it.get("dup_count"):                        # issue #2: collapsed duplicates
                     row["dup_count"] = it["dup_count"]
+                if it.get("code_anchors"):                     # issue #239: git file+blob+symbol anchors
+                    row["code_anchors"] = it["code_anchors"]
                 scored.append(row)
             scored.sort(key=lambda r: -r["score"])            # re-sort on adjusted score
             return scored[:quota]
@@ -1660,7 +1685,7 @@ class MemnosMemory:
         return fresh + facts + stale
 
     @staticmethod
-    def render_context(rows, *, max_chars=9000, viewer=None, query=None) -> str:
+    def render_context(rows, *, max_chars=9000, viewer=None, query=None, repo_root=None) -> str:
         """Format ALREADY-RETRIEVED recall rows into a paste-ready context block.
         Lets callers that need both memories AND context (the /recall endpoint) run the
         retrieval+rerank pipeline ONCE instead of twice — measured: halves /recall
@@ -1708,9 +1733,22 @@ class MemnosMemory:
                 if r.get("dup_count"):         # issue #2: N near-identical turns collapsed to 1
                     label += f", x{r['dup_count']}"
                 d = f", {r['date']}" if (r["kind"] == "fact" and r.get("date")) else ""
+                drift_note = r.get("code_drift_notice") or ""
+                if not drift_note and r.get("code_drift"):
+                    from .code_anchors import format_drift_notice
+                    drift_note = format_drift_notice(r["code_drift"])
+                elif (not drift_note and repo_root is not None and r.get("code_anchors")
+                      and _env_float("MEMNOS_CODE_DRIFT_CHECK", 1.0) > 0):
+                    from .code_anchors import check_code_drift, format_drift_notice
+                    drifted = check_code_drift(r["code_anchors"], repo_root=repo_root)
+                    if drifted:
+                        r["code_drift"] = drifted
+                        drift_note = format_drift_notice(drifted)
+                        r["code_drift_notice"] = drift_note
+                drift_part = f", {drift_note}" if drift_note else ""
                 body = (format_peer_envelope(r['content'], r['author'])
                         if by and _env_float("MEMNOS_PEER_ENVELOPES", 1.0) > 0 else r['content'])
-                line = f"- ({label}{d}{by}){tag} {body}"
+                line = f"- ({label}{d}{by}{drift_part}){tag} {body}"
             # issue #153: a PINNED constraint always renders in full and NEVER counts
             # against max_chars — pins are additive, outside the budget entirely, not
             # merely exempt from being dropped. max_chars is the budget for RANKED

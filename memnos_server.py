@@ -172,6 +172,38 @@ PHASED_OPS = {"/recall", "/memory/search", "/recall_v2", "/memory/context", "/co
 # pinned_constraints() correctly untouched by a type that was never meant to be pinned.
 ALLOWED_MEMORY_TYPES = ("decision", "incident", "constraint", "skill", "fact", "handoff", "fix")
 
+# --- P4 (issue #240): per-namespace /recall injection audit ring buffer ---------------
+import collections
+_RECALL_EXPLAIN_LOCK = threading.Lock()
+_RECALL_EXPLAIN_LOG: dict[str, collections.deque] = {}
+_RECALL_EXPLAIN_MAX = 50
+
+
+def _record_recall_explain(namespace: str, entry: dict) -> None:
+    """Append a structured injection-audit entry to the namespace's ring buffer."""
+    with _RECALL_EXPLAIN_LOCK:
+        dq = _RECALL_EXPLAIN_LOG.get(namespace)
+        if dq is None:
+            dq = collections.deque(maxlen=_RECALL_EXPLAIN_MAX)
+            _RECALL_EXPLAIN_LOG[namespace] = dq
+        dq.append(entry)
+
+
+def get_recall_explain(namespace: str, *, limit: int = 1, viewer: str | None = None) -> list[dict]:
+    """Return the most recent `limit` (1..50) recall explain entries for `namespace`
+    (newest first). In-memory per-process diagnostic ring buffer; when `viewer` is set,
+    scopes results to recalls performed by that principal."""
+    lim = max(1, min(int(limit or 1), _RECALL_EXPLAIN_MAX))
+    with _RECALL_EXPLAIN_LOCK:
+        dq = _RECALL_EXPLAIN_LOG.get(namespace)
+        if not dq:
+            return []
+        items = list(dq)
+    items.reverse()
+    if viewer is not None:
+        items = [it for it in items if it.get("viewer") in (None, viewer)]
+    return items[:lim]
+
 
 def _memory_type(req):
     """Parse + validate the optional `type` field. Returns (ok, value_or_error_obj):
@@ -1301,6 +1333,14 @@ class Handler(BaseHTTPRequestHandler):
                         if res is None:
                             return self._send(404, {"error": "fact not found in namespace"})
                         out = res
+                    elif self.path == "/recall/explain":   # issue #240: injection audit ring buffer
+                        try:
+                            lim = int(req.get("limit", 1))
+                        except (TypeError, ValueError):
+                            return self._send(400, {"error": "limit must be an integer"})
+                        vname = (None if Control.is_admin(conn, principal)
+                                 else (Control.principal_info(conn, principal) or {}).get("name"))
+                        out = {"namespace": ns, "recalls": get_recall_explain(ns, limit=lim, viewer=vname)}
                     elif self.path == "/related":          # get_related (adjacency)
                         name = str(req.get("name", "")).strip()
                         if not name:
@@ -1858,6 +1898,8 @@ class Handler(BaseHTTPRequestHandler):
             # the caller can supersede the constraint later.
             cs_given = cs
             cs = effective_constraint_subject(mtype, cs, rtext0)
+            from core.code_anchors import normalize_code_anchors
+            code_anchors = normalize_code_anchors(req.get("code_anchors"))
             vec = EMBED(rtext0)                                   # P1a — network, NO conn
             with POOL.connection() as conn:                       # P1b — short DB write
                 # author = AUTHENTICATED principal's name (token-derived; body ignored)
@@ -1866,7 +1908,8 @@ class Handler(BaseHTTPRequestHandler):
                                    extract_fn=EXTRACT_FN, user_name=USER_NAME)
                 tid, rtext, obs, retired = mem.remember_turn(
                     ns, rtext0, speaker=speaker, session_id=req.get("session_id"),
-                    vec=vec, memory_type=mtype, constraint_subject=cs)
+                    vec=vec, memory_type=mtype, constraint_subject=cs,
+                    code_anchors=code_anchors)
                 if retired:
                     # issue #84: supersession/expiry event — recorded + queryable
                     # (`memnos_admin.py errors`-style audit_log query on action=
@@ -1901,7 +1944,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     _INGEST_Q.put_nowait((ns, rtext, obs, tid, principal, mem, cost0, t0, mtype,
                                           valid_anchor, speaker,
-                                          0))     # 0 = first attempt (issue #31 retry count)
+                                          0, code_anchors))  # 0 = first attempt (issue #31 retry count)
                     out = {"turn_id": tid, "facts": None, "extraction": "queued", "namespace": ns}
                     if cs:                                   # issue #153: effective subject
                         out["constraint_subject"] = cs
@@ -1930,7 +1973,8 @@ class Handler(BaseHTTPRequestHandler):
                 # the PRE-write entity state of every namespace.
                 suggestion = _write_suggestion(conn, principal, ns, facts, rtext)
                 nf, nsup = mem3.write_facts(ns, facts, obs, tid, memory_type=mtype,
-                                            valid_anchor=valid_anchor, speaker=speaker)
+                                            valid_anchor=valid_anchor, speaker=speaker,
+                                            code_anchors=code_anchors)
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 Control.record_usage(conn, principal, ns, action, mem3.extract_model,
                                      usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))
@@ -2442,6 +2486,38 @@ class Handler(BaseHTTPRequestHandler):
             if cal["measured_ms_per_pair"] is not None:
                 detail["measured_ms_per_pair"] = cal["measured_ms_per_pair"]
             self._audit_detail = detail    # → audit_log.detail (per-stage ledger)
+            # issue #240 (P4): record structured recall explain entry into ring buffer
+            try:
+                _record_recall_explain(ns, {
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "namespace": ns,
+                    "query": q,
+                    "scope": "wide" if wide else "narrow",
+                    "viewer": mem.author,
+                    "pinned_count": sum(1 for r in rows if r.get("pinned")),
+                    "ranked_count": sum(1 for r in rows if not r.get("pinned")),
+                    "suppressed_constraints": list(getattr(self, "_suppress_audit", []) or []),
+                    "timings_ms": dict(detail),
+                    "memories": [
+                        {
+                            "content": (r.get("content", "")[:240]
+                                        if (r.get("namespace") in (None, ns))
+                                        else f"[cross-namespace memory from {r.get('namespace')}]"),
+                            "kind": r.get("kind"),
+                            "type": r.get("type"),
+                            "score": round(float(r["score"]), 4) if r.get("score") is not None else None,
+                            "pinned": bool(r.get("pinned")),
+                            "author": r.get("author"),
+                            "namespace": r.get("namespace") or ns,
+                            "date": r.get("date"),
+                            "superseded": bool(r.get("superseded")),
+                            "code_anchors": r.get("code_anchors") if (r.get("namespace") in (None, ns)) else None,
+                        }
+                        for r in rows[:30]
+                    ],
+                })
+            except Exception:
+                pass
             # issue #15: hand the recall's transient heap (candidate strings, fused rows,
             # ONNX forward-pass working set) back to the OS so phys_footprint/RSS stays
             # flat instead of ratcheting up and plateauing high. Rate-limited internally,
@@ -2609,7 +2685,7 @@ def _ingest_worker():
     each worker's P2 is pure model I/O, so they overlap cleanly."""
     while True:
         (ns, rtext, obs, tid, principal, mem, cost0, t0, mtype, valid_anchor, speaker,
-         attempt) = _INGEST_Q.get()
+         attempt, code_anchors) = _INGEST_Q.get()
         try:
             usage = _UsageAcc()
             mem.on_usage = usage
@@ -2637,7 +2713,8 @@ def _ingest_worker():
                     except Exception:
                         pass                                       # a write never fails on the nudge
                 nf, nsup = mem3.write_facts(ns, facts, obs, tid, memory_type=mtype,
-                                            valid_anchor=valid_anchor, speaker=speaker)
+                                            valid_anchor=valid_anchor, speaker=speaker,
+                                            code_anchors=code_anchors)
                 cost1 = getattr(getattr(EMBED, "meter", None), "cost", 0.0)
                 Control.record_usage(conn, principal, ns, "remember", mem3.extract_model,
                                      usage.tin, usage.tout, round((cost1 - cost0) + usage.cost, 6))
@@ -2653,7 +2730,7 @@ def _ingest_worker():
                       f"(attempt {attempt + 1}/{MEMNOS_INGEST_MAX_RETRIES}; raw turn IS stored)",
                       flush=True)
                 item = (ns, rtext, obs, tid, principal, mem, cost0, t0, mtype, valid_anchor,
-                        speaker, attempt + 1)
+                        speaker, attempt + 1, code_anchors)
 
                 def _requeue(item=item, exc=e):
                     try:

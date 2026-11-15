@@ -26,9 +26,10 @@
         "constraint",
         "skill",
         "fact",
-        "handoff"
+        "handoff",
+        "fix"
        ],
-       "help": "classify the memory (constraints are pinned into every recall; handoff is a plain queryable tag, no pinning \u2014 issue #193)",
+       "help": "classify the memory (constraints are pinned into every recall; fix records a Symptom/Cause/Fix debugging solution; handoff is a plain queryable tag, no pinning \u2014 issue #193)",
        "positional": false,
        "required": false
       },
@@ -94,7 +95,8 @@
         "constraint",
         "skill",
         "fact",
-        "handoff"
+        "handoff",
+        "fix"
        ],
        "help": "only memories of this type (pinned constraints always included)",
        "positional": false,
@@ -110,6 +112,165 @@
      "command": "recall",
      "example": "memnos recall \"what did we decide about staging?\" --scope all",
      "help": "recall relevant memories (data client)"
+    },
+    {
+     "args": [
+      {
+       "arg": "--symptom",
+       "help": "error message, failing test, or user-visible symptom",
+       "positional": false,
+       "required": true
+      },
+      {
+       "arg": "--cause",
+       "help": "root cause of the bug",
+       "positional": false,
+       "required": true
+      },
+      {
+       "arg": "--fix",
+       "help": "how the bug was resolved",
+       "positional": false,
+       "required": true
+      },
+      {
+       "arg": "--verify",
+       "help": "verification command or test (e.g. 'pytest tests/test_fix.py')",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "target namespace (default: auto-resolve)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "bearer token (default: MEMNOS_TOKEN or the config admin token)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--json",
+       "help": "also print the raw server response JSON",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "fix",
+     "example": "memnos fix --symptom '500 on /recall' --cause 'pool exhausted' --fix 'release conn before rerank' --verify 'pytest tests/test_perf_phases.py'",
+     "help": "record a verified bug fix (Symptom / Cause / Fix / Verify, boosted on error queries)"
+    },
+    {
+     "args": [
+      {
+       "arg": "--path",
+       "help": "repository root directory (default: current directory)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "target namespace (default: auto-resolve for this repo)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--days",
+       "default": "90",
+       "help": "git log window in days (default 90)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--max-commits",
+       "default": "50",
+       "help": "max high-signal commits to ingest (default 50)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--no-rules",
+       "help": "skip CLAUDE.md / AGENTS.md / .cursorrules ingestion",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--no-git",
+       "help": "skip git log ingestion",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--extract",
+       "help": "also run fact extraction on git commits (default: fast raw-turn hydration)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--dry-run",
+       "help": "parse and preview without writing to the server",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "bearer token (default: MEMNOS_TOKEN or the config admin token)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--json",
+       "help": "print full hydration summary as JSON",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "init",
+     "example": "memnos init --days 90",
+     "help": "hydrate this repository into memnos in <5s (CLAUDE.md rules + recent git history)"
+    },
+    {
+     "args": [
+      {
+       "arg": "--namespace",
+       "default": "auto",
+       "help": "namespace to inspect (default: auto-resolve)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--limit",
+       "default": "1",
+       "help": "number of recent recalls to show (1..50, default 1)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--query",
+       "help": "optional: run a /recall for this query first, then explain it",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--token",
+       "help": "bearer token (default: MEMNOS_TOKEN or the config admin token)",
+       "positional": false,
+       "required": false
+      },
+      {
+       "arg": "--json",
+       "help": "print raw explain JSON",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "explain",
+     "example": "memnos explain --limit 3",
+     "help": "audit what the last /recall injected (pinned constraints, scores, code drift, timings)"
     }
    ],
    "title": "Memory (heroes)"

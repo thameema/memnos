@@ -188,6 +188,13 @@ BEGIN
   EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS inference_basis text', s);
   EXECUTE format('ALTER TABLE %I.semantic ADD COLUMN IF NOT EXISTS source_fact_ids bigint[]', s);
 
+  -- CODE ANCHORS (issue #239): optional client-attached git file + blob_sha + identifier
+  -- anchors (`[{"file": ..., "blob_sha": ..., "identifiers": [...]}]`) so recall can
+  -- detect when a referenced file/symbol has been modified or deleted since the memory
+  -- was recorded. Derived semantic facts inherit their source turn's code_anchors.
+  EXECUTE format('ALTER TABLE %I.raw_turns ADD COLUMN IF NOT EXISTS code_anchors jsonb', s);
+  EXECUTE format('ALTER TABLE %I.semantic  ADD COLUMN IF NOT EXISTS code_anchors jsonb', s);
+
   -- ASSOCIATIVE GRAPH
   EXECUTE format($t$
     CREATE TABLE IF NOT EXISTS %I.entities(

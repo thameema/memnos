@@ -9,16 +9,30 @@
 [![LongMemEval](https://img.shields.io/badge/LongMemEval%20500q-78.4%25-success.svg)](#benchmarks-and-how-we-report-them)
 [![PyPI](https://img.shields.io/pypi/v/memnos.svg)](https://pypi.org/project/memnos/)
 
-**Shared, governed memory for your team's AI coding agents — on your own Postgres.**
+**Git-aware, bi-temporal memory for AI coding agents — shared across Claude Code, Cursor, Codex & Windsurf on a single Postgres.**
 
-memnos is a self-hosted memory server for AI agents. Your conversations are captured,
-distilled into facts, and recalled in later sessions — across Claude Code, Cursor,
-Windsurf, Codex, or anything that speaks MCP, REST, or an OpenAI/Anthropic-compatible
-base URL. It runs on **one PostgreSQL + pgvector database** (no second vector store, no
-graph database), uses **no LLM at query time**, and ships with governance — token auth,
-namespace ACLs, audit log, and an encrypted secret vault — in the open-source build.
+```bash
+uv tool install memnos
+memnos setup && memnos start   # zero-Docker embedded Postgres + pgvector (~25 MB)
+memnos init                    # hydrate CLAUDE.md rules + 90d git history in <5s
+memnos agent-setup all         # wire hooks + MCP into Claude Code, Cursor, Codex, Windsurf
+```
 
-Apache-2.0 · self-hostable · single-org · local-first · `uv tool install memnos`
+### Why Developers Use `memnos` Daily
+
+- **Git-Anchored Provenance (`code_anchors`)** — Links decisions and fixes to exact `(file_path, blob_sha, identifiers)`. When a referenced symbol changes or a file is deleted, recall automatically warns `(code changed: <file> modified since recorded)` instead of feeding stale advice to your agent.
+- **Bi-Temporal Supersession** — When your architecture or config changes, `memnos` closes out (`valid_to`) the old fact instead of piling up contradictory notes. Zero LLM calls on the recall path (`<50ms` hybrid RRF + ONNX cross-encoder rerank).
+- **Structured Fix Memory (`memnos fix` / `record_fix`)** — Capture `Symptom / Cause / Fix / Verify` debugging solutions that automatically receive a bounded rank boost when a future session hits a matching stack trace or error.
+- **5-Second Cold-Start Repo Hydration (`memnos init`)** — Ingests `CLAUDE.md` / `AGENTS.md` / `.cursorrules` as verbatim pinned constraints and your last 90 days of `git log` commits with zero LLM cost.
+- **Multi-Agent Coordination & Auditable Recall (`memnos explain`)** — Built-in agent sessions, pub/sub channels, work-item leases, XML-escaped `<memnos:peer_memory>` untrusted data envelopes for cross-agent safety, and `memnos explain` to inspect every pinned constraint, score, and latency stage injected into your prompt.
+
+| Capability | `CLAUDE.md` / `.cursorrules` | Generic Vector Memory (`mem0` / `Supermemory`) | **memnos** |
+| :--- | :--- | :--- | :--- |
+| **Setup & Infra** | Manual markdown file | Cloud API or multi-DB stack (Vector + Graph) | **1 command** (`uv tool install memnos`, embedded PG) |
+| **When Facts Change** | Manual edits or stale rules | Returns both old & new facts as equals | **Bi-temporal supersession** (`valid_to` + stale-turn demotion) |
+| **When Code Changes** | Silently drifts from code | No git or symbol awareness | **`code_anchors` (`blob_sha` + symbol diff drift alerts)** |
+| **Query-Time LLM Cost** | $0 (loads entire file every turn) | Often requires LLM rerank/summarization | **$0 / 0 LLM calls** (hybrid vector+BM25 + local ONNX rerank) |
+| **Multi-Agent Bus** | None | None | **Sessions, pub/sub channels, inbox, leases & peer envelopes** |
 
 ![memnos supersession demo](docs/assets/supersession-demo.gif)
 

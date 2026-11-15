@@ -700,15 +700,18 @@ class BrainStore:
 
     # --- sensory / verbatim ----------------------------------------------
     def insert_raw_turn(self, schema, ns, session_id, speaker, text, observed_at, vec,
-                        author=None, memory_type=None, constraint_subject=None) -> int:
+                        author=None, memory_type=None, constraint_subject=None,
+                        code_anchors=None) -> int:
+        import json as _json
         self._chk(schema)
+        anchors_json = _json.dumps(code_anchors) if code_anchors else None
         with self.conn.cursor() as c:
             c.execute(
-                f"INSERT INTO {schema}.raw_turns(namespace,session_id,speaker,text,observed_at,embedding,author_principal,memory_type,constraint_subject) "
-                f"VALUES(%s,%s,%s,%s,%s,%s::{self.vtype},%s,%s,%s) RETURNING id",
+                f"INSERT INTO {schema}.raw_turns(namespace,session_id,speaker,text,observed_at,embedding,author_principal,memory_type,constraint_subject,code_anchors) "
+                f"VALUES(%s,%s,%s,%s,%s,%s::{self.vtype},%s,%s,%s,%s::jsonb) RETURNING id",
                 (ns, session_id, speaker, text, observed_at,
                  vlit(vec) if vec is not None else None, author, memory_type,
-                 constraint_subject))
+                 constraint_subject, anchors_json))
             tid = c.fetchone()["id"]
             # issue #41 fix A: the single choke point every new namespace's first write
             # passes through (remember/remember_turn/ingest_session all land here) — upsert
@@ -866,24 +869,27 @@ class BrainStore:
                         salience=0.0, vec=None, source_turn_ids: Iterable[int] = (),
                         author=None, memory_type=None, observed_at=None,
                         inference_confidence=None, inference_basis=None,
-                        source_fact_ids: Iterable[int] = (), source_speaker=None) -> int:
+                        source_fact_ids: Iterable[int] = (), source_speaker=None,
+                        code_anchors=None) -> int:
         # observed_at = the OBSERVATION (knowledge) axis used by bi-temporal supersession:
         # when this fact was learned (server: now; session ingest: session date). None →
         # column default now() (legacy callers unchanged).
         # source_speaker (issue #154): speaker of the turn the fact was extracted from
         # ('user' / 'assistant' / …); None for legacy/consolidated/unattributed writes.
+        import json as _json
         self._chk(schema)
         src = list(source_turn_ids) if source_turn_ids else None
         fact_src = list(source_fact_ids) if source_fact_ids else None
+        anchors_json = _json.dumps(code_anchors) if code_anchors else None
         with self.conn.cursor() as c:
             c.execute(
                 f"INSERT INTO {schema}.semantic"
-                f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding,source_turn_ids,author_principal,memory_type,observed_at,inference_confidence,inference_basis,source_fact_ids,source_speaker) "
-                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::{self.vtype},%s,%s,%s,COALESCE(%s,now()),%s,%s,%s,%s) RETURNING id",
+                f"(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,confidence,salience,embedding,source_turn_ids,author_principal,memory_type,observed_at,inference_confidence,inference_basis,source_fact_ids,source_speaker,code_anchors) "
+                f"VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::{self.vtype},%s,%s,%s,COALESCE(%s,now()),%s,%s,%s,%s,%s::jsonb) RETURNING id",
                 (ns, kind, statement, subject, predicate, obj, valid_from, valid_to,
                  confidence, salience, vlit(vec) if vec is not None else None, src, author,
                  memory_type, observed_at, inference_confidence, inference_basis, fact_src,
-                 source_speaker))
+                 source_speaker, anchors_json))
             return c.fetchone()["id"]
 
     def provenance_of(self, schema, ns, semantic_id) -> dict | None:
@@ -1380,7 +1386,8 @@ class BrainStore:
         fused AS (SELECT id, text, observed_at, author_principal, memory_type, SUM(1.0/(60+rnk)) score
                   FROM (SELECT id,text,observed_at,author_principal,memory_type,rnk FROM vec UNION ALL SELECT id,text,observed_at,author_principal,memory_type,rnk FROM fts) r
                   GROUP BY id,text,observed_at,author_principal,memory_type)
-        SELECT id, text AS content, observed_at, author_principal AS author, memory_type, score FROM fused ORDER BY score DESC, id LIMIT %(k)s;"""
+        SELECT f.id, f.text AS content, f.observed_at, f.author_principal AS author, f.memory_type, f.score, rt.speaker, rt.code_anchors
+        FROM fused f JOIN {schema}.raw_turns rt ON rt.id=f.id ORDER BY f.score DESC, f.id LIMIT %(k)s;"""
         qt = fts_clamp(qtext, self.conn)
         with self.conn.cursor() as c:
             c.execute(sql, {"qv": vlit(qvec), "qt": qt, "ns": ns, "k": k})
@@ -1434,7 +1441,7 @@ class BrainStore:
         fused AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, inference_confidence, inference_basis, SUM(1.0/(60+rnk)) score
                   FROM (SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,inference_confidence,inference_basis,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,inference_confidence,inference_basis,rnk FROM fts) r
                   GROUP BY id,statement,valid_from,author_principal,memory_type,restatements,salience,inference_confidence,inference_basis)
-        SELECT f.id, f.statement AS content, f.valid_from, f.author_principal AS author, f.memory_type, f.restatements, f.salience, f.inference_confidence, f.inference_basis, f.score, s.subject_entity
+        SELECT f.id, f.statement AS content, f.valid_from, f.author_principal AS author, f.memory_type, f.restatements, f.salience, f.inference_confidence, f.inference_basis, f.score, s.subject_entity, s.source_speaker, s.code_anchors
         FROM fused f JOIN {schema}.semantic s ON s.id=f.id ORDER BY f.score DESC, f.id LIMIT %(k)s;"""
         qt = fts_clamp(qtext, self.conn)
         with self.conn.cursor() as c:
@@ -1458,7 +1465,8 @@ class BrainStore:
         fused AS (SELECT id, statement, valid_from, author_principal, memory_type, restatements, salience, SUM(1.0/(60+rnk)) score
                   FROM (SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM vec UNION ALL SELECT id,statement,valid_from,author_principal,memory_type,restatements,salience,rnk FROM fts) r
                   GROUP BY id,statement,valid_from,author_principal,memory_type,restatements,salience)
-        SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience FROM fused ORDER BY score DESC, id LIMIT %(k)s"""
+        SELECT f.id, f.statement AS content, f.valid_from, f.author_principal AS author, f.memory_type, f.restatements, f.salience, s.source_speaker, s.code_anchors
+        FROM fused f JOIN {schema}.semantic s ON s.id=f.id ORDER BY f.score DESC, f.id LIMIT %(k)s"""
         params = {"qv": vlit(qvec), "qt": fts_clamp(qtext, self.conn), "ns": ns, "k": k}
         rows, seen = [], set()
         with self.conn.cursor() as c:
@@ -1468,7 +1476,7 @@ class BrainStore:
                     seen.add(r["id"]); rows.append(r)
             # event-time window guarantee
             if start and end:
-                c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience "
+                c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience, source_speaker, code_anchors "
                           f"FROM {schema}.semantic "
                           f"WHERE namespace=%s AND expired_at IS NULL AND valid_from >= %s AND valid_from < %s "
                           f"ORDER BY valid_from LIMIT %s", (ns, start, end, k))
@@ -1477,7 +1485,7 @@ class BrainStore:
                         seen.add(r["id"]); rows.append(r)
             # first/last boundary facts — apply same valid_to guard as the main CTE
             if order in ("asc", "desc"):
-                c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience "
+                c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, restatements, salience, source_speaker, code_anchors "
                           f"FROM {schema}.semantic "
                           f"WHERE namespace=%s AND expired_at IS NULL {cur} AND valid_from IS NOT NULL "
                           f"ORDER BY valid_from {('ASC' if order=='asc' else 'DESC')} LIMIT 6", (ns,))
@@ -1513,7 +1521,7 @@ class BrainStore:
         direction = "ASC" if order != "desc" else "DESC"
         params.append(limit)
         with self.conn.cursor() as c:
-            c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author, memory_type "
+            c.execute(f"SELECT id, statement AS content, valid_from, author_principal AS author, memory_type, source_speaker, code_anchors "
                       f"FROM {schema}.semantic "
                       f"WHERE {' AND '.join(where)} ORDER BY valid_from {direction} LIMIT %s", params)
             return c.fetchall()

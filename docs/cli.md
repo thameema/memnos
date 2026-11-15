@@ -39,7 +39,7 @@ save a memory (data client — talks to the server)
 |---|---|
 | `text` | the text to remember |
 | `--namespace` | target namespace (default: auto-resolve for this folder) |
-| `--type` | classify the memory (constraints are pinned into every recall; handoff is a plain queryable tag, no pinning — issue #193) (one of: `decision`, `incident`, `constraint`, `skill`, `fact`, `handoff`) |
+| `--type` | classify the memory (constraints are pinned into every recall; fix records a Symptom/Cause/Fix debugging solution; handoff is a plain queryable tag, no pinning — issue #193) (one of: `decision`, `incident`, `constraint`, `skill`, `fact`, `handoff`, `fix`) |
 | `--subject` | constraint grouping key (--type constraint only). A newer constraint with the SAME subject supersedes the older one; omitted, the server derives one from the text |
 | `--no-extract` | skip LLM fact extraction for this write — fast, deterministic, no model call; the raw turn is still stored (issue #193) |
 | `--token` | bearer token (default: MEMNOS_TOKEN or the config admin token) |
@@ -58,11 +58,66 @@ recall relevant memories (data client)
 | `query` | what to recall |
 | `--namespace` | namespace to search (default: auto-resolve) |
 | `--scope` | widen across every namespace your token may read (one of: `all`, `wide`) |
-| `--type` | only memories of this type (pinned constraints always included) (one of: `decision`, `incident`, `constraint`, `skill`, `fact`, `handoff`) |
+| `--type` | only memories of this type (pinned constraints always included) (one of: `decision`, `incident`, `constraint`, `skill`, `fact`, `handoff`, `fix`) |
 | `--token` | bearer token (default: MEMNOS_TOKEN or the config admin token) |
 
 ```bash
 memnos recall "what did we decide about staging?" --scope all
+```
+
+### `memnos fix`
+
+record a verified bug fix (Symptom / Cause / Fix / Verify, boosted on error queries)
+
+| argument | description |
+|---|---|
+| `--symptom` | error message, failing test, or user-visible symptom |
+| `--cause` | root cause of the bug |
+| `--fix` | how the bug was resolved |
+| `--verify` | verification command or test (e.g. 'pytest tests/test_fix.py') |
+| `--namespace` | target namespace (default: auto-resolve) |
+| `--token` | bearer token (default: MEMNOS_TOKEN or the config admin token) |
+| `--json` | also print the raw server response JSON |
+
+```bash
+memnos fix --symptom '500 on /recall' --cause 'pool exhausted' --fix 'release conn before rerank' --verify 'pytest tests/test_perf_phases.py'
+```
+
+### `memnos init`
+
+hydrate this repository into memnos in <5s (CLAUDE.md rules + recent git history)
+
+| argument | description |
+|---|---|
+| `--path` | repository root directory (default: current directory) |
+| `--namespace` | target namespace (default: auto-resolve for this repo) |
+| `--days` | git log window in days (default 90) (default `90`) |
+| `--max-commits` | max high-signal commits to ingest (default 50) (default `50`) |
+| `--no-rules` | skip CLAUDE.md / AGENTS.md / .cursorrules ingestion |
+| `--no-git` | skip git log ingestion |
+| `--extract` | also run fact extraction on git commits (default: fast raw-turn hydration) |
+| `--dry-run` | parse and preview without writing to the server |
+| `--token` | bearer token (default: MEMNOS_TOKEN or the config admin token) |
+| `--json` | print full hydration summary as JSON |
+
+```bash
+memnos init --days 90
+```
+
+### `memnos explain`
+
+audit what the last /recall injected (pinned constraints, scores, code drift, timings)
+
+| argument | description |
+|---|---|
+| `--namespace` | namespace to inspect (default: auto-resolve) |
+| `--limit` | number of recent recalls to show (1..50, default 1) (default `1`) |
+| `--query` | optional: run a /recall for this query first, then explain it |
+| `--token` | bearer token (default: MEMNOS_TOKEN or the config admin token) |
+| `--json` | print raw explain JSON |
+
+```bash
+memnos explain --limit 3
 ```
 
 
