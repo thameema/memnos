@@ -20,6 +20,7 @@ import argparse
 import getpass
 import json
 import os
+import threading
 import re
 import sys
 import urllib.request
@@ -1024,6 +1025,71 @@ def cmd_serve(args, cfg):
           f"(or use `memnos start` to run it in the background)")
     import memnos_server
     memnos_server.serve(port=args.port)
+
+
+def _wake_http_post(cfg, path, payload, token, timeout):
+    """Like _post(), but never sys.exit()s -- a daemon loop must survive one bad call."""
+    import urllib.request
+    import urllib.error
+    req = urllib.request.Request(_server_url(cfg) + path, method="POST",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json",
+                 **({"Authorization": "Bearer " + token} if token else {})})
+    try:
+        return json.loads(urllib.request.urlopen(req, timeout=timeout).read() or b"{}")
+    except Exception:
+        return None
+
+
+def _wake_watch_session(cfg, ns, name, tok, backend):
+    """One long-poll /channel/wait loop per locally-bound session. On a real (non-timed-out)
+    arrival, checks whether this session's terminal is idle and, if so, rings the doorbell —
+    never with the raw message content (see core.wake_backends.format_doorbell)."""
+    import time
+    while True:
+        out = _wake_http_post(cfg, "/channel/wait", {"namespace": ns, "name": name, "timeout_seconds": 30},
+                              tok, timeout=45)
+        if not out or out.get("timed_out"):
+            continue
+        rows = _wake_http_post(cfg, "/session/list", {"namespace": ns}, tok, timeout=15)
+        meta = next((r.get("metadata") or {} for r in (rows or {}).get("sessions", []) if r.get("name") == name), {})
+        meta = {**meta, "name": name}
+        if backend.is_idle(meta):
+            msg_id = ((out.get("messages") or []) + (out.get("inbox_items") or []))
+            msg_id = msg_id[0].get("id", "?") if msg_id else "?"
+            from core.wake_backends import format_doorbell
+            backend.send_doorbell(meta, format_doorbell(name, msg_id))
+
+
+def cmd_wake_daemon(args, cfg):
+    """One shared local watcher bridging idle CLI sessions (Claude Code, Codex, AGY, ...) to
+    Memnos — Layer C of the memnos-wake design (inbox #279/#715). Runs one /channel/wait loop
+    per session bound in ~/.memnos/active_sessions.json on this host; when a message arrives
+    for a session sitting idle, it uses the selected WakeBackend (core/wake_backends.py) to
+    ring a static, non-executable doorbell so the harness wakes and pulls the real payload
+    from Memnos itself. Backend is pluggable (orca/tmux/noop) -- this daemon never shells out
+    to a terminal tool directly."""
+    import time
+    import nsresolve
+    from core.wake_backends import select_backend
+    backend = select_backend(args.backend)
+    print(f"[memnos-wake] backend={type(backend).__name__}  —  Ctrl-C to stop")
+    _, tok = _sess_ctx(args, cfg)
+    watching = {}
+    while True:
+        bindings = nsresolve._load(nsresolve._active_path()) or {}
+        for cwd, b in bindings.items():
+            name = b.get("name")
+            if not name or name in watching:
+                continue
+            ns = b.get("namespace") or nsresolve.resolve({"cwd": cwd}) or ""
+            if not ns:
+                continue
+            t = threading.Thread(target=_wake_watch_session, args=(cfg, ns, name, tok, backend),
+                                  name=f"memnos-wake-{name}", daemon=True)
+            t.start()
+            watching[name] = t
+        time.sleep(15)
 
 
 def _wait_for_boot_or_die(proc, url, on_fail=None):
@@ -2850,6 +2916,22 @@ def _sess_name(args, required=True):
     return n
 
 
+def _detect_wake_metadata():
+    """Best-effort local terminal coordinates for memnos-wake (core/wake_backends.py) to
+    find this session with later. Omitted fields just mean that backend can't wake it."""
+    meta = {}
+    if os.environ.get("TMUX_PANE"):
+        meta["tmux_pane"] = os.environ["TMUX_PANE"]
+    term_id = os.environ.get("ORCA_TERMINAL_ID") or os.environ.get("ORCA_WORKSPACE_ID")
+    if term_id:
+        meta["orca_terminal_id"] = term_id
+    try:
+        meta["tty"] = os.ttyname(0)
+    except OSError:
+        pass
+    return meta
+
+
 def cmd_session(args, cfg):
     import platform
     ns, tok = _sess_ctx(args, cfg)
@@ -2860,6 +2942,9 @@ def cmd_session(args, cfg):
             "model": args.model, "current_task": args.task, "ttl_seconds": args.ttl,
             "channels": [c for c in args.channels.split(",") if c.strip()],
             "host": platform.node(), "cwd": os.getcwd()}
+        wake_meta = _detect_wake_metadata()
+        if wake_meta:
+            body["metadata"] = {**wake_meta, "harness": args.harness}
         if args.webhook is not None:   # omitted entirely -> leave any existing webhook untouched
             body["webhook"] = args.webhook.strip() or None
         out = _post(cfg, "/session/register", body, tok)
@@ -5440,6 +5525,12 @@ def build_parser():
                                        "on internal ports behind a public port that never goes down)")
     p.add_argument("--port", type=int, help="HTTP port (default: config / 8900)")
     p.set_defaults(fn=cmd_gateway)
+    p = sub.add_parser("wake-daemon", help="bridge idle local CLI sessions (Claude Code, Codex, ...) so "
+                                           "they wake on a memnos message without a manual terminal nudge "
+                                           "(memnos-wake, Layer C) — one shared watcher per laptop")
+    p.add_argument("--backend", choices=["orca", "tmux", "noop"], default=None,
+                   help="force a wake backend; default: auto-detect (orca, then tmux, then noop)")
+    p.set_defaults(fn=cmd_wake_daemon)
     p = sub.add_parser("mcp", help="run the stdio MCP adapter (Claude Code / Cursor / Windsurf config)")
     p.add_argument("--namespace", help="default namespace for the MCP tools")
     p.set_defaults(fn=cmd_mcp)

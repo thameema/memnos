@@ -77,6 +77,7 @@ def _load_config():
 _load_env()
 _load_config()
 
+import psycopg
 from psycopg import OperationalError
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
@@ -372,6 +373,50 @@ def _webhook_post(url, payload, secret=None):
     with urllib.request.urlopen(req, timeout=WEBHOOK_TIMEOUT) as r:
         if not (200 <= r.status < 300):
             raise RuntimeError(f"webhook HTTP {r.status}")
+
+
+_WAIT_WAITERS = {}        # namespace -> set[threading.Event], registered by /channel/wait requests
+_WAIT_LOCK = threading.Lock()
+
+
+def _wait_register(ns):
+    ev = threading.Event()
+    with _WAIT_LOCK:
+        _WAIT_WAITERS.setdefault(ns, set()).add(ev)
+    return ev
+
+
+def _wait_unregister(ns, ev):
+    with _WAIT_LOCK:
+        s = _WAIT_WAITERS.get(ns)
+        if s is not None:
+            s.discard(ev)
+            if not s:
+                _WAIT_WAITERS.pop(ns, None)
+
+
+def _listen_loop():
+    """ONE shared LISTEN connection per server process, fanning NOTIFYs out to every
+    in-process /channel/wait waiter via its own Event. Replaces the old per-request
+    LISTEN (N waiters == N held DB connections, each up to 120s) with a single
+    long-lived connection regardless of how many clients are waiting."""
+    while True:
+        try:
+            with psycopg.connect(DSN, autocommit=True) as conn:
+                conn.execute("LISTEN memnos_channel")
+                for note in conn.notifies():
+                    ns = note.payload
+                    try:
+                        ns = json.loads(ns).get("namespace", ns)
+                    except (ValueError, TypeError, AttributeError):
+                        pass
+                    with _WAIT_LOCK:
+                        events = list(_WAIT_WAITERS.get(ns, ()))
+                    for ev in events:
+                        ev.set()
+        except (OperationalError, psycopg.Error):
+            traceback.print_exc()
+            time.sleep(2)
 
 
 def _pusher_loop():
@@ -1581,11 +1626,13 @@ class Handler(BaseHTTPRequestHandler):
                                 conn, ns, sess, principal, status="pending",
                                 mark_read=not bool(req.get("peek", False)))["items"]
                         elif self.path == "/channel/wait":
-                            # LISTEN first, then poll, so a publish between the two is never missed.
+                            # Register for the shared listener's wake-up (set by _listen_loop on a
+                            # NOTIFY for this namespace) before polling, so a publish between the
+                            # two is never missed -- no per-request LISTEN connection anymore.
                             timeout = max(1.0, min(float(req.get("timeout_seconds", 30)), 120.0))
                             deadline = time.monotonic() + timeout
                             kw = dict(channel=req.get("channel") or None, limit=int(req.get("limit", 50)))
-                            conn.execute("LISTEN memnos_channel")
+                            ev = _wait_register(ns)
                             try:
                                 while True:
                                     out = Control.channel_poll(conn, ns, sess, principal, **kw)
@@ -1594,10 +1641,10 @@ class Handler(BaseHTTPRequestHandler):
                                     left = deadline - time.monotonic()
                                     if out["count"] or out["inbox_items"] or left <= 0:
                                         break
-                                    for _ in conn.notifies(timeout=min(left, 5.0), stop_after=1):
-                                        pass
+                                    ev.wait(timeout=min(left, 5.0))
+                                    ev.clear()
                             finally:
-                                conn.execute("UNLISTEN memnos_channel")
+                                _wait_unregister(ns, ev)
                             out["timed_out"] = (out["count"] == 0 and not out["inbox_items"])
                         elif self.path == "/channel/cleanup":
                             out = Control.channel_cleanup(
@@ -2935,6 +2982,7 @@ def serve(port=None):
         conn.execute(f"SET statement_timeout = {stmt_ms}")
         Control.audit(conn, None, "server_start", "-", True,      # heartbeat (uptime/crash-loop signal)
                       detail={"dim": DIM})
+    threading.Thread(target=_listen_loop, name="memnos-channel-listener", daemon=True).start()
     threading.Thread(target=_pusher_loop, name="memnos-webhook-pusher", daemon=True).start()
     for i in range(INGEST_WORKERS):
         threading.Thread(target=_ingest_worker, name=f"memnos-async-ingest-{i}", daemon=True).start()
