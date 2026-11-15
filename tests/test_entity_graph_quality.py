@@ -25,14 +25,15 @@ def check(name, cond, detail=""):
     FAIL += (not cond)
 
 
-def fake_embed(text: str) -> list[float]:
+def fake_embed(text: str, _dim=[int(os.environ.get("MEMNOS_EMBED_DIM", "1536"))]) -> list[float]:
     import hashlib
     import math
-    vec = [0.0] * 1536
+    dim = _dim[0]
+    vec = [0.0] * dim
     tokens = [t.lower() for t in (text or "").split() if t] or ["_"]
     for tok in tokens:
         h = int(hashlib.sha256(tok.encode("utf-8")).hexdigest()[:16], 16)
-        idx = h % 1536
+        idx = h % dim
         sign = 1.0 if ((h >> 16) & 1) == 0 else -1.0
         vec[idx] += sign
     norm = math.sqrt(sum(x * x for x in vec)) or 1.0
@@ -64,6 +65,7 @@ def main():
     for good_obj in [
         "PostgreSQL", "MySQL", "Redis", "host3", "PR #138", "AVAX-USD",
         "Thameem Ansari", "memnos_server.py", "OpenAI", "Claude Code",
+        "In Memory Cache", "On Call Rotation", "For Loop", "Acme, Inc.",
     ]:
         check(f"accepts named entity/identifier object {good_obj!r}",
               BrainStore.is_valid_entity_name(good_obj, is_object=True))
@@ -75,8 +77,13 @@ def main():
           BrainStore.canonicalize_entity_name("User", user_name="Thameem Ansari") == "Thameem Ansari")
     check("the user -> Thameem Ansari",
           BrainStore.canonicalize_entity_name("the user", user_name="Thameem Ansari") == "Thameem Ansari")
-    check("Thameem -> Thameem Ansari (first-name match)",
-          BrainStore.canonicalize_entity_name("Thameem", user_name="Thameem Ansari") == "Thameem Ansari")
+    check("thameem ansari (case-variant) -> Thameem Ansari",
+          BrainStore.canonicalize_entity_name("thameem ansari", user_name="Thameem Ansari") == "Thameem Ansari")
+    check("first-name-only 'Thameem' is NOT collapsed into full user_name",
+          BrainStore.canonicalize_entity_name("Thameem", user_name="Thameem Ansari") == "Thameem")
+    check("coding nouns ('model', 'agent', 'owner') are NOT rewritten",
+          all(BrainStore.canonicalize_entity_name(w, user_name="Thameem Ansari", is_object=True) == w
+              for w in ("model", "agent", "owner")))
     check("user -> 'user' when user_name=None",
           BrainStore.canonicalize_entity_name("User", user_name=None) == "user")
     check("The Assistant -> 'assistant'",
@@ -84,11 +91,16 @@ def main():
 
     print("=== 3. Write path + Backfill + Health metrics against Postgres ===")
     conn = psycopg.connect(DSN, autocommit=True, row_factory=dict_row)
+    with conn.cursor() as c:
+        c.execute(f"SELECT atttypmod FROM pg_attribute WHERE attrelid='{SCHEMA}.raw_turns'::regclass AND attname='embedding'")
+        row = c.fetchone()
+        if row and row["atttypmod"] and row["atttypmod"] > 0:
+            fake_embed.__defaults__[0][0] = int(row["atttypmod"])
     store = BrainStore(conn=conn)
     store.create_schema("memnos")
     cleanup(conn)
     try:
-        mem = MemnosMemory(store, fake_embed, user_name="Thameem Ansari")
+        mem = MemnosMemory(store, fake_embed, dim=fake_embed.__defaults__[0][0], user_name="Thameem Ansari")
         from datetime import datetime, timezone
         now_ts = datetime(2026, 11, 14, tzinfo=timezone.utc)
 
@@ -98,7 +110,7 @@ def main():
              "statement": "Thameem Ansari uses PostgreSQL."},
             {"subject": "User", "predicate": "prefers", "object": "Claude Code",
              "statement": "Thameem Ansari prefers Claude Code."},
-            {"subject": "Thameem", "predicate": "spent", "object": "$25,732",
+            {"subject": "thameem ansari", "predicate": "spent", "object": "$25,732",
              "statement": "Thameem Ansari spent $25,732."},
             {"subject": "deployment", "predicate": "is_active", "object": "true",
              "statement": "The deployment is active (true)."},
@@ -109,10 +121,11 @@ def main():
         check("all 5 semantic facts written", n_f == 5)
 
         with conn.cursor() as c:
-            c.execute(f"SELECT name, (embedding IS NOT NULL) AS has_emb FROM {SCHEMA}.entities WHERE namespace=%s ORDER BY name", (NS,))
+            c.execute(f"SELECT name, (embedding IS NOT NULL) AS has_emb, (embedding <=> %s::{store.vtype}) AS pg_dist FROM {SCHEMA}.entities WHERE namespace=%s ORDER BY name",
+                      (str(fake_embed("PostgreSQL")), NS))
             ents = c.fetchall()
         ent_names = [e["name"] for e in ents]
-        check("user / User / Thameem resolved to single 'Thameem Ansari' entity",
+        check("user / User / thameem ansari resolved to single 'Thameem Ansari' entity",
               ent_names.count("Thameem Ansari") == 1 and "user" not in ent_names and "User" not in ent_names,
               str(ent_names))
         check("named objects ('PostgreSQL', 'Claude Code') became entities",
@@ -124,6 +137,10 @@ def main():
         check("all newly minted entities have non-null embeddings",
               all(e["has_emb"] for e in ents),
               str(ents))
+        pg_ent = next((e for e in ents if e["name"] == "PostgreSQL"), None)
+        check("entity embedding matches entity name vector ('PostgreSQL'), not statement vector",
+              pg_ent is not None and float(pg_ent["pg_dist"]) < 1e-5,
+              str(pg_ent))
 
         # Seed legacy junk entities + unembedded alias directly to test cleanup_entity_graph
         with conn.cursor() as c:

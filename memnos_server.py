@@ -1972,8 +1972,16 @@ class Handler(BaseHTTPRequestHandler):
             date_anchor = valid_anchor if valid_anchor is not None else obs
             facts = mem.extract_facts(rtext, date_anchor, memory_type=mtype,
                                       speaker=speaker)                     # P2 — NO conn held
-            if hasattr(EMBED, "prime") and facts:                 # batch-embed fact statements, NO conn
-                EMBED.prime([f["statement"] for f in facts])
+            if hasattr(EMBED, "prime") and facts:                 # batch-embed statements + entity names, NO conn
+                _prime_texts = [f["statement"] for f in facts]
+                for _f in facts:
+                    _s = BrainStore.canonicalize_entity_name(_f.get("subject") or "", user_name=USER_NAME, is_object=False)
+                    if _s and BrainStore.is_valid_entity_name(_s, is_object=False):
+                        _prime_texts.append(_s)
+                        _o = BrainStore.canonicalize_entity_name((_f.get("object") or "")[:100], user_name=USER_NAME, is_object=True)
+                        if _o and BrainStore.is_valid_entity_name(_o, is_object=True):
+                            _prime_texts.append(_o)
+                EMBED.prime(_prime_texts)
             with POOL.connection() as conn:                       # P3
                 mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
                                     extract_model=EXTRACT_MODEL, on_usage=usage, author=pname,
@@ -2519,7 +2527,7 @@ class Handler(BaseHTTPRequestHandler):
                     "timings_ms": dict(detail),
                     "memories": [
                         {
-                            "content": (r.get("content", "")[:240]
+                            "content": ((r.get("content") or "")[:240]
                                         if (r.get("namespace") in (None, ns))
                                         else f"[cross-namespace memory from {r.get('namespace')}]"),
                             "kind": r.get("kind"),
@@ -2715,10 +2723,21 @@ def _ingest_worker():
             date_anchor = valid_anchor if valid_anchor is not None else obs
             facts = mem.extract_facts(rtext, date_anchor, memory_type=mtype,
                                       speaker=speaker)                     # NO conn held
+            if hasattr(EMBED, "prime") and facts:                          # batch-embed statements + entity names, NO conn
+                _prime_texts = [f["statement"] for f in facts]
+                for _f in facts:
+                    _s = BrainStore.canonicalize_entity_name(_f.get("subject") or "", user_name=USER_NAME, is_object=False)
+                    if _s and BrainStore.is_valid_entity_name(_s, is_object=False):
+                        _prime_texts.append(_s)
+                        _o = BrainStore.canonicalize_entity_name((_f.get("object") or "")[:100], user_name=USER_NAME, is_object=True)
+                        if _o and BrainStore.is_valid_entity_name(_o, is_object=True):
+                            _prime_texts.append(_o)
+                EMBED.prime(_prime_texts)
             with POOL.connection() as conn:
                 # mem.author carries the AUTHENTICATED principal's name from the request
                 mem3 = MemnosMemory(BrainStore(conn=conn), EMBED, dim=DIM, llm=LLM,
-                                    extract_model=EXTRACT_MODEL, on_usage=usage, author=mem.author)
+                                    extract_model=EXTRACT_MODEL, on_usage=usage, author=mem.author,
+                                    user_name=USER_NAME)
                 # suggest-on-mismatch (issue #20, Part B3): the async response already
                 # returned (extraction:queued), so the advisory can't ride it. Compute it
                 # against the PRE-write entity state (same ordering rule as the sync path —

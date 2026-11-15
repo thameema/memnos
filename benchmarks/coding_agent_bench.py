@@ -58,19 +58,20 @@ SCHEMA = "tenant_memnos"
 NS = "bench:coding_agent"
 
 
-def _det_embed(text: str) -> list[float]:
-    """Deterministic 1536-d embedding keyed on token hashes so hybrid vector+FTS runs
-    with zero API cost and 100% reproducibility."""
+def _det_embed(text: str, _dim=[int(os.environ.get("MEMNOS_EMBED_DIM", "1536"))]) -> list[float]:
+    """Deterministic embedding keyed on token hashes so hybrid vector+FTS runs
+    with zero API cost and 100% reproducibility across 384-d and 1536-d schemas."""
     import hashlib
     import math
-    vec = [0.0] * 1536
+    dim = _dim[0]
+    vec = [0.0] * dim
     tokens = [t.lower() for t in (text or "").split() if t]
     if not tokens:
         vec[0] = 1.0
         return vec
     for tok in tokens:
         h = int(hashlib.sha256(tok.encode("utf-8")).hexdigest()[:16], 16)
-        idx = h % 1536
+        idx = h % dim
         sign = 1.0 if ((h >> 16) & 1) == 0 else -1.0
         vec[idx] += sign
     norm = math.sqrt(sum(x * x for x in vec)) or 1.0
@@ -203,7 +204,7 @@ def run_suite_bitemporal_supersession(conn) -> dict:
     """Suite 2: Bi-Temporal Architectural Supersession (6 cases)."""
     _cleanup(conn)
     store = BrainStore(conn=conn)
-    mem = MemnosMemory(store, _det_embed, user_name="Thameem Ansari")
+    mem = MemnosMemory(store, _det_embed, dim=_det_embed.__defaults__[0][0], user_name="Thameem Ansari")
     passed = 0
     total = 6
     details = []
@@ -288,7 +289,7 @@ def run_suite_procedural_fix_memory(conn) -> dict:
     """Suite 3: Procedural Debugging (`type='fix'`) Recall & Rank Promotion (6 cases)."""
     _cleanup(conn)
     store = BrainStore(conn=conn)
-    mem = MemnosMemory(store, _det_embed, user_name="Thameem Ansari")
+    mem = MemnosMemory(store, _det_embed, dim=_det_embed.__defaults__[0][0], user_name="Thameem Ansari")
     passed = 0
     total = 6
     details = []
@@ -336,11 +337,24 @@ def run_suite_procedural_fix_memory(conn) -> dict:
     passed += c4
     details.append(("fix_memory_ranks_first_on_error_query", c4))
 
-    # Case 5: Git commit (`speaker='git'`) receives 0.85x weight vs human decision (`speaker='user'`) at equal base score
-    from core.service import _git_speaker_weight
-    c5 = _git_speaker_weight({"speaker": "git"}) == 0.85 and _git_speaker_weight({"speaker": "user"}) == 1.0
+    # Case 5: Git commit (`speaker='git'`) receives 0.85x weight vs human decision (`speaker='user'`) in recall_rank
+    tid_git, _, _, _ = mem.remember_turn(
+        NS, "Deploy targets us-east-1 region (git commit).", speaker="git", observed_at=now)
+    tid_usr, _, _, _ = mem.remember_turn(
+        NS, "Deploy targets us-east-1 region (human decision).", speaker="user", observed_at=now)
+    b_git = mem.recall_fetch(NS, "what region does deploy target us-east-1", k=10)
+    b_git["raw"] = sorted(
+        [r for r in b_git["raw"] if r["id"] in (tid_git, tid_usr)],
+        key=lambda r: 0 if r.get("speaker") == "git" else 1,
+    )
+    with patch("core.rerank.rerank", side_effect=lambda q, docs, m=None: [(i, 0.80) for i in range(len(docs))]):
+        ranked_git = mem.recall_rank("what region does deploy target us-east-1", b_git, use_rerank=True)
+    non_pins_git = [r for r in ranked_git if not r.get("pinned")]
+    c5 = (len(non_pins_git) >= 2
+          and "human decision" in non_pins_git[0]["content"]
+          and non_pins_git[0]["score"] > non_pins_git[1]["score"])
     passed += c5
-    details.append(("git_speaker_weight_shaping", c5))
+    details.append(("git_speaker_ranked_below_human_at_equal_base_score", c5))
 
     # Case 6: `list_raw_turns_by_type` enumerates all `fix` turns deterministically
     fixes = store.list_raw_turns_by_type(SCHEMA, NS, "fix")
@@ -355,7 +369,7 @@ def run_suite_security_and_graph_hygiene(conn) -> dict:
     """Suite 4: Multi-Agent Untrusted Envelope Isolation & Entity Graph Hygiene (6 cases)."""
     _cleanup(conn)
     store = BrainStore(conn=conn)
-    mem = MemnosMemory(store, _det_embed, user_name="Thameem Ansari")
+    mem = MemnosMemory(store, _det_embed, dim=_det_embed.__defaults__[0][0], user_name="Thameem Ansari")
     passed = 0
     total = 6
     details = []
@@ -414,13 +428,21 @@ def run_suite_security_and_graph_hygiene(conn) -> dict:
     passed += c5
     details.append(("zero_literal_entities_and_full_embedding_coverage", c5))
 
-    # Case 6: Identity canonicalization merges `user` and `User` into `Thameem Ansari`
+    # Case 6: Identity canonicalization merges `user`/`User` into `Thameem Ansari`, preserves coding nouns, and embeds entity names
+    mem.write_facts(NS, [
+        {"subject": "pipeline", "predicate": "uses", "object": "model",
+         "statement": "The pipeline uses model."},
+    ], now, turn_id=1, speaker="user")
     with conn.cursor() as c:
-        c.execute(f"SELECT name FROM {SCHEMA}.entities WHERE namespace=%s ORDER BY name", (NS,))
-        names = [r["name"] for r in c.fetchall()]
-    c6 = "Thameem Ansari" in names and "user" not in names and "User" not in names
+        c.execute(f"SELECT name, (embedding <=> %s::{store.vtype}) AS pg_dist FROM {SCHEMA}.entities WHERE namespace=%s ORDER BY name",
+                  (str(_det_embed("PostgreSQL")), NS))
+        rows_e = c.fetchall()
+    names = [r["name"] for r in rows_e]
+    pg_row = next((r for r in rows_e if r["name"] == "PostgreSQL"), None)
+    c6 = ("Thameem Ansari" in names and "user" not in names and "User" not in names
+          and "model" in names and pg_row is not None and float(pg_row["pg_dist"]) < 1e-5)
     passed += c6
-    details.append(("identity_canonicalization_in_entity_graph", c6))
+    details.append(("identity_canonicalization_and_entity_name_embedding", c6))
 
     _cleanup(conn)
     return {"suite": "security_and_graph_hygiene", "passed": passed, "total": total, "details": details}
@@ -433,6 +455,11 @@ def main():
 
     t0 = time.perf_counter()
     conn = psycopg.connect(DSN, autocommit=True, row_factory=dict_row)
+    with conn.cursor() as c:
+        c.execute(f"SELECT atttypmod FROM pg_attribute WHERE attrelid='{SCHEMA}.raw_turns'::regclass AND attname='embedding'")
+        row = c.fetchone()
+        if row and row["atttypmod"] and row["atttypmod"] > 0:
+            _det_embed.__defaults__[0][0] = int(row["atttypmod"])
     store = BrainStore(conn=conn)
     store.create_schema("memnos")
 
@@ -447,7 +474,7 @@ def main():
     total_cases = sum(s["total"] for s in suites)
 
     report = {
-        "benchmark": "Coding-Agent Memory Bench (memnos v0.1.58)",
+        "benchmark": "Coding-Agent Memory Bench (memnos v0.1.59)",
         "total_passed": total_passed,
         "total_cases": total_cases,
         "accuracy_pct": round(100.0 * total_passed / total_cases, 1) if total_cases else 0.0,

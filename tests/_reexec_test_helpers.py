@@ -27,6 +27,7 @@ ROOT = os.path.dirname(HERE)
 MEMNOS_MCP_SRC = os.path.join(ROOT, "memnos_mcp.py")
 OFFLINE_QUEUE_SRC = os.path.join(ROOT, "offline_queue.py")
 MEMNOS_CLI_SRC = os.path.join(ROOT, "memnos_cli.py")
+NSRESOLVE_SRC = os.path.join(ROOT, "nsresolve.py")
 
 # Appended into a COPY of memnos_mcp.py to simulate `memnos upgrade` shipping new code:
 # a tool that exists ONLY in the "new" build. Its presence (not just a stray log line or
@@ -60,6 +61,8 @@ def make_fake_install(tmp_root: str, with_cli: bool = False) -> str:
     shutil.copy(OFFLINE_QUEUE_SRC, os.path.join(install_dir, "offline_queue.py"))
     if with_cli:
         shutil.copy(MEMNOS_CLI_SRC, os.path.join(install_dir, "memnos_cli.py"))
+        if os.path.exists(NSRESOLVE_SRC):
+            shutil.copy(NSRESOLVE_SRC, os.path.join(install_dir, "nsresolve.py"))
     return install_dir
 
 

@@ -846,10 +846,10 @@ class BrainStore:
         "now", "later", "soon", "always", "never", "sometimes", "often",
     })
     _PRONOUN_SUBJECTS = frozenset({
-        "user", "the user", "human", "the human", "owner", "the owner", "author", "me", "i",
+        "user", "the user", "me", "i", "myself",
     })
     _ASSISTANT_ALIASES = frozenset({
-        "assistant", "the assistant", "ai", "the ai", "agent", "the agent", "model", "the model",
+        "assistant", "the assistant",
     })
     # Pure number, currency, percentage, bare version/port, time range, or date-only string
     _NUMERIC_OR_DATE_RE = re.compile(
@@ -862,16 +862,20 @@ class BrainStore:
         r")$",
         re.I,
     )
-    # Free-text clause indicators in SPO objects (verbs/prepositions/conjunctions that mark
-    # a sentence fragment rather than a named entity)
+    # Free-text clause indicators (verbs/conjunctions/gerunds that mark a sentence fragment)
     _CLAUSE_START_RE = re.compile(
-        r"^(?:not\s+|no\s+longer\s+|at\s+|in\s+|on\s+|by\s+|for\s+|with\s+|from\s+|to\s+|"
-        r"into\s+|because\s+|since\s+|after\s+|before\s+|when\s+|while\s+|where\s+|"
+        r"^(?:not\s+|no\s+longer\s+|because\s+|since\s+|after\s+|before\s+|when\s+|while\s+|where\s+|"
         r"that\s+|which\s+|who\s+|how\s+|whether\s+|if\s+|is\s+|are\s+|was\s+|were\s+|"
         r"has\s+|have\s+|had\s+|will\s+|would\s+|can\s+|could\s+|should\s+|must\s+|"
         r"waiting\s+|running\s+|using\s+|fixing\s+|testing\s+)",
         re.I,
     )
+    # Leading prepositions mark a clause unless the phrase is a Title-Case technical concept
+    # (e.g. "In Memory Cache", "On Call Rotation", "For Loop" are valid; "in the pool" is not).
+    _PREP_START_RE = re.compile(r"^(?:at|in|on|by|for|with|from|to|into)\s+", re.I)
+    _CLAUSE_INTERIOR_STOPWORDS = frozenset({
+        "the", "a", "an", "this", "that", "these", "those", "my", "our", "your", "their", "his", "her", "its",
+    })
 
     @classmethod
     def is_valid_entity_name(cls, name: str, *, is_object: bool = False) -> bool:
@@ -880,10 +884,7 @@ class BrainStore:
         a free-text clause fragment that should stay on `semantic.object` without polluting
         `entities`/`edges`.
 
-        Subjects are slightly more permissive than objects (a subject up to 60 chars can be
-        a multi-word system name), whereas objects must look like an identifier or named
-        thing (<= 50 chars, <= 5 words, no clause-starting prepositions/auxiliaries, no
-        sentence punctuation).
+        Subjects allow up to 60 chars / 6 words; objects allow up to 50 chars / 5 words.
         """
         s = " ".join((name or "").strip().split())
         if not s:
@@ -902,47 +903,58 @@ class BrainStore:
         # Reject strings containing sentence/list punctuation or newlines
         if any(ch in s for ch in (";", "\n", "\r", "?", "!", "=", "<", ">", "{", "}", "[", "]")):
             return False
-        if s.endswith(".") and not re.search(r"\b(?:Inc|Ltd|Corp|Co|Jr|Sr|Dr|Mr|Mrs|Ms|St)\.$", s):
+        if s.endswith(".") and not re.search(r"\b(?:Inc|Ltd|LLC|Corp|Co|Jr|Sr|Dr|Mr|Mrs|Ms|St)\.$", s, re.I):
             return False
         words = s.split()
         max_words = 5 if is_object else 6
         if len(words) > max_words:
             return False
-        # Multi-item comma lists (e.g. "Henniya $76.92, Farid $300") are clauses, not one entity
-        if "," in s:
+        # Multi-item comma lists or non-corporate comma clauses are rejected, while "Acme, Inc." is allowed
+        if "," in s and not re.search(r"^[^,]+\s*,\s*(?:Inc|Ltd|LLC|Corp|Co|Jr|Sr)\.?$", s, re.I):
             return False
-        if is_object:
-            if cls._CLAUSE_START_RE.match(s):
-                return False
-            # Object with currency symbol anywhere inside is a price/cost phrase, not an entity
-            if re.search(r"[$€£¥₹]\s*\d", s):
+        # Embedded currency amount anywhere inside is a price/cost phrase, not an entity
+        if re.search(r"[$€£¥₹]\s*\d", s):
+            return False
+        if cls._CLAUSE_START_RE.match(s):
+            return False
+        if cls._PREP_START_RE.match(s):
+            # Allow Title-Case technical concepts ("In Memory Cache", "On Call Rotation", "For Loop")
+            is_title_concept = (
+                s[0].isupper()
+                and all(w[0].isupper() for w in words[1:] if w and w[0].isalpha())
+                and not any(w.lower() in cls._CLAUSE_INTERIOR_STOPWORDS for w in words[1:])
+            )
+            if not is_title_concept:
                 return False
         return True
 
     @classmethod
-    def canonicalize_entity_name(cls, name: str, *, user_name: str | None = None) -> str:
-        """Issue #159: Canonicalize entity identity so pronoun stand-ins ('user', 'User',
+    def canonicalize_entity_name(cls, name: str, *, user_name: str | None = None,
+                                 is_object: bool = False) -> str:
+        """Issue #159: Canonicalize entity identity so pronoun/role stand-ins ('user', 'User',
         'the user') resolve to `user_name` (when configured) or 'user', and case-variants
-        of common roles normalize cleanly."""
+        of `user_name` / 'assistant' normalize cleanly without rewriting technical nouns
+        like 'model', 'agent', or 'owner' or collapsing distinct people who share a first name."""
         s = " ".join((name or "").strip().split())
         if not s:
             return ""
         low = s.lower()
-        if low in cls._PRONOUN_SUBJECTS:
+        if not is_object and low in cls._PRONOUN_SUBJECTS:
+            return (user_name.strip() if (user_name and user_name.strip()) else "user")
+        if low in ("user", "the user"):
             return (user_name.strip() if (user_name and user_name.strip()) else "user")
         if low in cls._ASSISTANT_ALIASES:
             return "assistant"
         if user_name and user_name.strip():
             un = user_name.strip()
-            # Unify first-name-only or case-variant with full configured user_name when unambiguous
-            un_parts = un.lower().split()
-            if low == un.lower() or (len(un_parts) >= 2 and low == un_parts[0]):
+            if low == un.lower():
                 return un
         return s
 
-    def upsert_entity(self, schema, ns, name, vec=None) -> int:
+    def upsert_entity(self, schema, ns, name, vec=None, *, embed_fn=None) -> int:
         """Upsert an entity node by case-insensitive identity in `ns`. Preserves existing
-        embedding unless a new non-null `vec` is provided (backfills NULL embeddings automatically)."""
+        embedding unless a new non-null `vec` is provided (or `embed_fn(clean)` is used to
+        embed the entity's own canonical name on creation / NULL backfill)."""
         self._chk(schema)
         clean = " ".join((name or "").strip().split())
         v_str = vlit(vec) if vec is not None else None
@@ -955,11 +967,25 @@ class BrainStore:
                 (ns, clean))
             existing = c.fetchone()
             if existing:
-                if v_str is not None and not existing["has_emb"]:
+                if existing["has_emb"]:
+                    return existing["id"]
+                if v_str is None and embed_fn is not None:
+                    try:
+                        ev = embed_fn(clean)
+                        v_str = vlit(ev) if ev is not None else None
+                    except Exception:
+                        v_str = None
+                if v_str is not None:
                     c.execute(
                         f"UPDATE {schema}.entities SET embedding=%s::{self.vtype} WHERE id=%s",
                         (v_str, existing["id"]))
                 return existing["id"]
+            if v_str is None and embed_fn is not None:
+                try:
+                    ev = embed_fn(clean)
+                    v_str = vlit(ev) if ev is not None else None
+                except Exception:
+                    v_str = None
             c.execute(
                 f"INSERT INTO {schema}.entities(namespace,name,embedding) "
                 f"VALUES(%s,%s,%s::{self.vtype}) "
@@ -994,7 +1020,7 @@ class BrainStore:
         literal_ids = []
         survivors = []
         for e in all_ents:
-            if not self.is_valid_entity_name(e["name"], is_object=True):
+            if not self.is_valid_entity_name(e["name"], is_object=False):
                 literal_ids.append(e["id"])
             else:
                 survivors.append(e)
@@ -1017,68 +1043,76 @@ class BrainStore:
                 alias_merges.append((members[0]["id"], members[0]["canon_name"], []))
 
         merged_source_ids = [sid for _, _, srcs in alias_merges for sid in srcs]
+        merged_source_id_set = set(merged_source_ids)
         unembedded_survivors = [
             e for e in survivors
-            if e["id"] not in set(merged_source_ids) and not e["has_emb"]
+            if e["id"] not in merged_source_id_set and not e["has_emb"]
         ]
 
         embedded_count = 0
         if not dry_run:
-            with self.conn.cursor() as c:
-                # 1. Drop literal entities + their edges & mentions
-                if literal_ids:
-                    c.execute(f"DELETE FROM {schema}.edges WHERE namespace=%s AND (src_entity = ANY(%s) OR dst_entity = ANY(%s))",
-                              (ns, literal_ids, literal_ids))
-                    c.execute(f"DELETE FROM {schema}.mentions WHERE entity_id = ANY(%s)", (literal_ids,))
-                    c.execute(f"DELETE FROM {schema}.entities WHERE namespace=%s AND id = ANY(%s)", (ns, literal_ids))
+            # Compute entity embeddings BEFORE opening the transaction so no DB lock is held across embed_fn
+            pending_embeddings: list[tuple[str, int]] = []
+            if embed_fn is not None and embed_limit > 0:
+                for e in unembedded_survivors[:embed_limit]:
+                    try:
+                        vec = embed_fn(e["name"])
+                        if vec is not None:
+                            pending_embeddings.append((vlit(vec), e["id"]))
+                    except Exception:
+                        pass
 
-                # 2. Merge aliases into target_id
-                for target_id, canon_name, src_ids in alias_merges:
-                    if src_ids:
-                        # Re-point mentions (ignore conflicts)
-                        c.execute(
-                            f"INSERT INTO {schema}.mentions(entity_id, memory_id, memory_kind) "
-                            f"SELECT %s, memory_id, memory_kind FROM {schema}.mentions WHERE entity_id = ANY(%s) "
-                            f"ON CONFLICT DO NOTHING",
-                            (target_id, src_ids))
-                        c.execute(f"DELETE FROM {schema}.mentions WHERE entity_id = ANY(%s)", (src_ids,))
-                        # Re-point edges touching src_ids
-                        c.execute(
-                            f"SELECT id, src_entity, dst_entity, weight FROM {schema}.edges "
-                            f"WHERE namespace=%s AND (src_entity = ANY(%s) OR dst_entity = ANY(%s))",
-                            (ns, src_ids, src_ids))
-                        old_edges = c.fetchall()
-                        c.execute(
-                            f"DELETE FROM {schema}.edges WHERE namespace=%s AND (src_entity = ANY(%s) OR dst_entity = ANY(%s))",
-                            (ns, src_ids, src_ids))
-                        for ed in old_edges:
-                            s_id = target_id if ed["src_entity"] in src_ids else ed["src_entity"]
-                            d_id = target_id if ed["dst_entity"] in src_ids else ed["dst_entity"]
-                            if s_id != d_id:
-                                a, b = sorted((s_id, d_id))
-                                c.execute(
-                                    f"INSERT INTO {schema}.edges(namespace, src_entity, dst_entity, weight) "
-                                    f"VALUES(%s, %s, %s, %s) ON CONFLICT (namespace, src_entity, dst_entity) "
-                                    f"DO UPDATE SET weight = {schema}.edges.weight + EXCLUDED.weight",
-                                    (ns, a, b, ed["weight"]))
-                        c.execute(f"DELETE FROM {schema}.entities WHERE namespace=%s AND id = ANY(%s)", (ns, src_ids))
-                    # Ensure canonical name on target (if no collision)
-                    c.execute(
-                        f"UPDATE {schema}.entities SET name=%s WHERE id=%s AND namespace=%s "
-                        f"AND NOT EXISTS (SELECT 1 FROM {schema}.entities WHERE namespace=%s AND name=%s AND id<>%s)",
-                        (canon_name, target_id, ns, ns, canon_name, target_id))
+            with self.conn.transaction():
+                with self.conn.cursor() as c:
+                    # 1. Drop literal entities + their edges & mentions
+                    if literal_ids:
+                        c.execute(f"DELETE FROM {schema}.edges WHERE namespace=%s AND (src_entity = ANY(%s) OR dst_entity = ANY(%s))",
+                                  (ns, literal_ids, literal_ids))
+                        c.execute(f"DELETE FROM {schema}.mentions WHERE entity_id = ANY(%s)", (literal_ids,))
+                        c.execute(f"DELETE FROM {schema}.entities WHERE namespace=%s AND id = ANY(%s)", (ns, literal_ids))
 
-                # 3. Embed unembedded survivors up to embed_limit
-                if embed_fn is not None and embed_limit > 0:
-                    for e in unembedded_survivors[:embed_limit]:
-                        try:
-                            vec = embed_fn(e["name"])
-                            if vec is not None:
-                                c.execute(f"UPDATE {schema}.entities SET embedding=%s::{self.vtype} WHERE id=%s",
-                                          (vlit(vec), e["id"]))
-                                embedded_count += 1
-                        except Exception:
-                            pass
+                    # 2. Merge aliases into target_id
+                    for target_id, canon_name, src_ids in alias_merges:
+                        if src_ids:
+                            src_set = set(src_ids)
+                            # Re-point mentions (ignore conflicts)
+                            c.execute(
+                                f"INSERT INTO {schema}.mentions(entity_id, memory_id, memory_kind) "
+                                f"SELECT %s, memory_id, memory_kind FROM {schema}.mentions WHERE entity_id = ANY(%s) "
+                                f"ON CONFLICT DO NOTHING",
+                                (target_id, src_ids))
+                            c.execute(f"DELETE FROM {schema}.mentions WHERE entity_id = ANY(%s)", (src_ids,))
+                            # Re-point edges touching src_ids
+                            c.execute(
+                                f"SELECT id, src_entity, dst_entity, weight FROM {schema}.edges "
+                                f"WHERE namespace=%s AND (src_entity = ANY(%s) OR dst_entity = ANY(%s))",
+                                (ns, src_ids, src_ids))
+                            old_edges = c.fetchall()
+                            c.execute(
+                                f"DELETE FROM {schema}.edges WHERE namespace=%s AND (src_entity = ANY(%s) OR dst_entity = ANY(%s))",
+                                (ns, src_ids, src_ids))
+                            for ed in old_edges:
+                                s_id = target_id if ed["src_entity"] in src_set else ed["src_entity"]
+                                d_id = target_id if ed["dst_entity"] in src_set else ed["dst_entity"]
+                                if s_id != d_id:
+                                    a, b = sorted((s_id, d_id))
+                                    c.execute(
+                                        f"INSERT INTO {schema}.edges(namespace, src_entity, dst_entity, weight) "
+                                        f"VALUES(%s, %s, %s, %s) ON CONFLICT (namespace, src_entity, dst_entity) "
+                                        f"DO UPDATE SET weight = {schema}.edges.weight + EXCLUDED.weight",
+                                        (ns, a, b, ed["weight"]))
+                            c.execute(f"DELETE FROM {schema}.entities WHERE namespace=%s AND id = ANY(%s)", (ns, src_ids))
+                        # Ensure canonical name on target (if no collision)
+                        c.execute(
+                            f"UPDATE {schema}.entities SET name=%s WHERE id=%s AND namespace=%s "
+                            f"AND NOT EXISTS (SELECT 1 FROM {schema}.entities WHERE namespace=%s AND name=%s AND id<>%s)",
+                            (canon_name, target_id, ns, ns, canon_name, target_id))
+
+                    # 3. Persist precomputed embeddings on unembedded survivors
+                    for v_str, eid in pending_embeddings:
+                        c.execute(f"UPDATE {schema}.entities SET embedding=%s::{self.vtype} WHERE id=%s",
+                                  (v_str, eid))
+                        embedded_count += 1
 
         with self.conn.cursor() as c:
             c.execute(f"SELECT count(*) AS n FROM {schema}.entities WHERE namespace=%s", (ns,))

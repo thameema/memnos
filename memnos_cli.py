@@ -24,7 +24,10 @@ import re
 import sys
 import urllib.request
 
-import nsresolve
+try:
+    import nsresolve
+except ImportError:  # pragma: no cover — isolated CLI launch without nsresolve on sys.path
+    nsresolve = None  # type: ignore[assignment]
 import offline_queue
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".memnos")
