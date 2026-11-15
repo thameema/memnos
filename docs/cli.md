@@ -1041,3 +1041,11 @@ remove a server-side binding by id or key
 |---|---|
 | `target` | binding id (see: memnos bindings ls) or the repo/path key |
 | `--token` | bearer token (else $MEMNOS_TOKEN / config) |
+
+### `memnos wake-daemon`
+
+bridge idle local CLI sessions (Claude Code, Codex, ...) so they wake on a memnos message without a manual terminal nudge (memnos-wake, Layer C) — one shared watcher per laptop
+
+| argument | description |
+|---|---|
+| `--backend` | force a wake backend; default: auto-detect (orca, then tmux, then noop) (one of: `orca`, `tmux`, `noop`) |

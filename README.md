@@ -264,7 +264,7 @@ General chat benchmarks (LoCoMo, LongMemEval) don't test what actually breaks AI
 
 `benchmarks/coding_agent_bench.py` is a fast, deterministic, zero-LLM-cost capability and regression suite (24 test cases across 4 suites, ~2.1s against Postgres) that anyone can run locally without an API key:
 
-| Suite | What It Tests | Static `CLAUDE.md` | Flat Vector Store | **memnos (`v0.1.59`)** |
+| Suite | What It Tests | Static `CLAUDE.md` | Flat Vector Store | **memnos (`v0.1.60`)** |
 | :--- | :--- | :---: | :---: | :---: |
 | **1. Code-Drift Resilience** | Symbol modified in git, unchanged symbol in same file, deleted file, dot-dir path, traversal guard | 0/6 | 0/6 | **6/6 (100%)** |
 | **2. Bi-Temporal Supersession** | Single-valued state flip (`Auth0`→`Clerk`), backdated history guard, stale-turn demotion, negation close-out, standalone pin retirement | 1/6 | 1/6 | **6/6 (100%)** |

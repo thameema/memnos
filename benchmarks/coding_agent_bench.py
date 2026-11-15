@@ -474,7 +474,7 @@ def main():
     total_cases = sum(s["total"] for s in suites)
 
     report = {
-        "benchmark": "Coding-Agent Memory Bench (memnos v0.1.59)",
+        "benchmark": "Coding-Agent Memory Bench (memnos v0.1.60)",
         "total_passed": total_passed,
         "total_cases": total_cases,
         "accuracy_pct": round(100.0 * total_passed / total_cases, 1) if total_cases else 0.0,

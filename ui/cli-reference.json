@@ -2383,6 +2383,24 @@
      "command": "unbind",
      "example": null,
      "help": "remove a server-side binding by id or key"
+    },
+    {
+     "args": [
+      {
+       "arg": "--backend",
+       "choices": [
+        "orca",
+        "tmux",
+        "noop"
+       ],
+       "help": "force a wake backend; default: auto-detect (orca, then tmux, then noop)",
+       "positional": false,
+       "required": false
+      }
+     ],
+     "command": "wake-daemon",
+     "example": null,
+     "help": "bridge idle local CLI sessions (Claude Code, Codex, ...) so they wake on a memnos message without a manual terminal nudge (memnos-wake, Layer C) \u2014 one shared watcher per laptop"
     }
    ],
    "title": "Other"
