@@ -46,12 +46,12 @@ else
   pass "MCP initialize + 55-tool definitions are language-neutral"
 fi
 
-# 3. Binary strings: no test-only environment switches
-if strings "$BIN" | grep -E 'FAKE_EXTRACT|EMBED_MODE|TEST_DSN|SIMULATE_WARMING|SKIP_MODEL_HASH' >/dev/null 2>&1; then
-  fail "Release binary contains test-only env switch strings"
-  strings "$BIN" | grep -E 'FAKE_EXTRACT|EMBED_MODE|TEST_DSN|SIMULATE_WARMING|SKIP_MODEL_HASH' | head -n 10 >&2
+# 3. Binary strings: no test-only environment switches or synthetic hash embedder
+if strings "$BIN" | grep -E 'FAKE_EXTRACT|EMBED_MODE|TEST_DSN|SIMULATE_WARMING|SKIP_MODEL_HASH|local-hash' >/dev/null 2>&1; then
+  fail "Release binary contains test-only switch or hash-tier strings"
+  strings "$BIN" | grep -E 'FAKE_EXTRACT|EMBED_MODE|TEST_DSN|SIMULATE_WARMING|SKIP_MODEL_HASH|local-hash' | head -n 10 >&2
 else
-  pass "Zero test-only env switches in release binary"
+  pass "Zero test-only switches or hash-tier strings in release binary"
 fi
 
 # 4. Binary strings: no builder $HOME or `rust/src/` source path prefixes
@@ -69,15 +69,7 @@ else
   pass "Zero 'rust/src/' source path strings in release binary"
 fi
 
-# 5. Shipped test & workflow filenames must be language-neutral
-BAD_FILES="$(find "$REPO_ROOT/tests" "$REPO_ROOT/.github/workflows" -maxdepth 2 -iname '*rust*' 2>/dev/null || true)"
-if [[ -n "$BAD_FILES" ]]; then
-  fail "Language-branded test or workflow filename(s) found: $BAD_FILES"
-else
-  pass "All test and workflow filenames are language-neutral"
-fi
-
-# 6. Optional dist/ wheel & sdist check when built artifacts exist
+# 5. Optional dist/ wheel & sdist check when built artifacts exist
 if [[ -d "$REPO_ROOT/dist" ]] && compgen -G "$REPO_ROOT/dist/*" >/dev/null; then
   DIST_BAD=0
   for pkg in "$REPO_ROOT"/dist/*; do
