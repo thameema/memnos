@@ -4753,7 +4753,33 @@ def cmd_antigravity_setup(args, cfg):
         with open(gm, "a", encoding="utf-8") as f:
             f.write(("\n\n" if cur else "") + _AGENT_MD)
 
-    print(f"[memnos] antigravity wired -> {cfg_dir} (MCP {args.transport}, hooks, GEMINI.md; ns={ns}).")
+    # 4. Global Antigravity skill (~/.gemini/config/skills/memnos/SKILL.md) so `agy` knows
+    #    `memnos registry`, `memnos watch`, `memnos tips`, `memnos doctor`, and MCP tools.
+    sk_dir = os.path.join(cfg_dir, "skills", "memnos")
+    os.makedirs(sk_dir, exist_ok=True)
+    with open(os.path.join(sk_dir, "SKILL.md"), "w", encoding="utf-8") as f:
+        f.write("""---
+name: memnos
+description: >-
+  Use this skill when the user invokes /memnos or asks to register a topic channel,
+  coordinate with peer Claude Code / Antigravity / Gemini sessions, pin constraints,
+  audit recall, or run memnos doctor/tips/watch.
+---
+
+# MEMNOS — Long-Term Memory & Multi-Agent Mesh (Antigravity / `agy`)
+
+Use either the `memnos` MCP tools (`recall`, `recall_wide`, `remember`, `channel_registry`, `channel_publish`, `channel_poll`, `channel_ack`, `inbox_send`, `inbox_list`, `inbox_retract`) or the `memnos` CLI:
+
+- **Join or create a global cross-namespace topic channel:** `memnos registry <topic>` (or `channel_registry(topic=...)`)
+- **List active terminal sessions (same-laptop vs remote) & topic channels:** `memnos registry`
+- **Post a competing-consumer task (claimed by 1 listener, no duplicate work):** `memnos registry <topic> --task "..."`
+- **Hands-free LISTEN/NOTIFY wakeup watcher:** `memnos watch --timeout 300`
+- **Pin a permanent project rule:** `memnos remember "<rule>" --type constraint`
+- **Platform doctor & entity-graph cleanup:** `memnos doctor --fix`
+- **Feature showcase & workflow tips:** `memnos tips`
+""")
+
+    print(f"[memnos] antigravity wired -> {cfg_dir} (MCP {args.transport}, hooks, GEMINI.md, skill; ns={ns}).")
     print("          Restart agy / the Antigravity IDE to activate memory.")
 
 
@@ -4812,6 +4838,11 @@ def cmd_agent_setup(args, cfg):
     if not spec:
         sys.exit(f"unknown agent '{args.agent}' — choose: {', '.join(_AGENTS)}")
     transport = getattr(args, "transport", "stdio")
+    if transport == "http" and args.agent == "antigravity" and isinstance(transport, _DefaultHttp):
+        # Antigravity's mcp_config.json schema supports `url` without custom auth `headers`, whereas
+        # `stdio` (`memnos mcp`) passes MEMNOS_TOKEN via `env` AND runs zero-touch session auto-registration
+        # + 25s OS PID liveness heartbeats. Keep explicit `--transport http` working when requested.
+        transport = "stdio"
     if transport == "http" and args.agent not in ("claude-code", "omnigent", "antigravity"):
         if isinstance(transport, _DefaultHttp):
             transport = "stdio"       # default, not a request — keep non-HTTP agents working
@@ -5755,7 +5786,7 @@ def _hook_remember(data, ns, url, hdr, token):
     # actionable task/review_request/question/critique/handoff to this session's subscribed
     # channels or inbox while it was working. If so (up to 6 consecutive autonomous turns),
     # emit {"decision": "block", "reason": ...} so the agent continues working immediately.
-    if os.environ.get("MEMNOS_STOP_HOOK_WAKE", "1") != "0" and not data.get("stop_hook_active"):
+    if not _is_antigravity_hook(data) and os.environ.get("MEMNOS_STOP_HOOK_WAKE", "1") != "0" and not data.get("stop_hook_active"):
         try:
             import nsresolve as _nsr
             import platform
@@ -6476,7 +6507,10 @@ def _normalize_argv(argv):
     """Legacy alias forms → new grammar (hidden, permanent):
          memnos principal <name>        → memnos principal create <name>
          memnos token <principal>       → memnos token mint <principal>
-         memnos grant <p> <namespace>   → memnos grant add <p> <namespace>"""
+         memnos grant <p> <namespace>   → memnos grant add <p> <namespace>
+         memnos setup <agent>           → memnos agent-setup <agent>"""
+    if len(argv) >= 2 and argv[0] == "setup" and argv[1] in (set(_AGENTS) | set(_AGENT_ALIASES) | {"all"}):
+        return ["agent-setup"] + argv[1:]
     if len(argv) >= 2 and argv[0] in _NOUN_DEFAULT_VERB and not argv[1].startswith("-"):
         default_verb, verbs = _NOUN_DEFAULT_VERB[argv[0]]
         if argv[1] not in verbs:
