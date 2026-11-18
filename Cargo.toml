@@ -1,0 +1,23 @@
+[package]
+name = "memnos"
+version = "0.1.62"
+edition = "2021"
+description = "Self-hostable, governed, vendor-neutral memory and multi-agent coordination engine (single binary)"
+license = "Apache-2.0"
+authors = ["Thameem Ansari"]
+repository = "https://github.com/thameema/memnos"
+
+[[bin]]
+name = "memnos"
+path = "rust/src/main.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ureq = { version = "2.10", features = ["json"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+codegen-units = 1
