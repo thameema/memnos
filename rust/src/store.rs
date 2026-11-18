@@ -11,7 +11,7 @@
 //! text (`$n::text::vector`), so no pgvector binary codec is needed either.
 
 use crate::code_anchors;
-use crate::embed::{local_feature_embed, vlit, Embedder};
+use crate::embed::{canonical_embed_family, vlit, Embedder};
 use crate::extract::{extract_developer_signals, ExtractedFact, Extractor};
 use crate::predicates::supersedable;
 use crate::redact::redact;
@@ -791,28 +791,46 @@ impl BrainStore {
         jq(&c, sql, p).await
     }
 
-    /// Embed to the column dimension. A dimension mismatch (an existing DB at 384 while an OpenAI
-    /// key is set, or the reverse) falls back to the local embedder at the column's dimension so a
-    /// write never fails on a vector-size error.
-    async fn embed(&self, text: &str) -> Vec<f32> {
-        let (v, _) = self.embedder.embed(text).await;
+    /// Embed passage text to the column dimension, failing loudly on any model or dimension mismatch.
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, String> {
+        let (v, _) = self.embedder.try_embed(text).await?;
         let dim = self.col_dim();
-        if v.len() == dim {
-            v
-        } else {
-            local_feature_embed(text, dim)
+        if v.len() != dim {
+            return Err(format!(
+                "embedding dimension mismatch on schema '{}': column is {}-d, embedder '{}' produced {}-d",
+                self.schema,
+                dim,
+                self.embedder.model_name(),
+                v.len()
+            ));
         }
+        Ok(v)
     }
 
-    async fn embed_lit(&self, text: &str) -> String {
-        vlit(&self.embed(text).await)
+    async fn embed_lit(&self, text: &str) -> Result<String, String> {
+        Ok(vlit(&self.embed(text).await?))
+    }
+
+    async fn embed_query_lit(&self, text: &str) -> Result<String, String> {
+        let (v, _) = self.embedder.try_embed_query(text).await?;
+        let dim = self.col_dim();
+        if v.len() != dim {
+            return Err(format!(
+                "embedding dimension mismatch on schema '{}': column is {}-d, embedder '{}' produced {}-d",
+                self.schema,
+                dim,
+                self.embedder.model_name(),
+                v.len()
+            ));
+        }
+        Ok(vlit(&v))
     }
 
     // --- schema ----------------------------------------------------------------------------
 
     /// Create the extension, schema, tables and indexes. Probes an existing `raw_turns.embedding`
-    /// column for its type/dimension; a new database gets `halfvec` on pgvector >= 0.7, else
-    /// `vector`, at the embedder's dimension.
+    /// column for its type/dimension and enforces `(model, dim)` compatibility via PostgreSQL
+    /// `COMMENT ON SCHEMA` catalog metadata (zero extra tables or columns).
     pub async fn init_schema(&self) -> Result<(), String> {
         let c = self.conn().await?;
         c.batch_execute("CREATE EXTENSION IF NOT EXISTS vector").await.map_err(de)?;
@@ -834,6 +852,29 @@ impl BrainStore {
                     .ok_or_else(|| format!("{}.raw_turns.embedding has unsupported type {:?}", self.schema, s_of(r, "t")))?,
             ),
         };
+        let allow_mismatch = matches!(
+            std::env::var("MEMNOS_ALLOW_EMBED_MISMATCH")
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "1" | "true" | "yes" | "on"
+        );
+        if let Some((ref ex_vtype, ex_dim)) = existing {
+            if ex_dim != self.embedder.dim && !allow_mismatch {
+                return Err(format!(
+                    "embedding dimension mismatch on schema '{}': existing database column is {}({}), \
+                     but active embedder '{}' produces {}-d vectors. Provide the matching embedder \
+                     (e.g. unlock/set OPENAI_API_KEY for 1536-d, or unset it for 384-d local models), \
+                     or set MEMNOS_ALLOW_EMBED_MISMATCH=1 to override.",
+                    self.schema,
+                    ex_vtype,
+                    ex_dim,
+                    self.embedder.model_name(),
+                    self.embedder.dim
+                ));
+            }
+        }
         let (vtype, dim) = match existing {
             Some(x) => x,
             None => {
@@ -853,6 +894,85 @@ impl BrainStore {
             .replace("@COL@", &format!("{}({})", vtype, dim))
             .replace("@OPS@", ops);
         c.batch_execute(&ddl).await.map_err(de)?;
+
+        // Check per-schema embedder model lineage stored in pg_description (`COMMENT ON SCHEMA`)
+        let desc_rows = jq(
+            &c,
+            "SELECT obj_description(to_regnamespace($1), 'pg_namespace') AS d",
+            &[&self.schema],
+        )
+        .await?;
+        let recorded_model: Option<String> = desc_rows
+            .first()
+            .and_then(|r| r.get("d"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .and_then(|j| j.get("embed_model").and_then(|m| m.as_str()).map(String::from));
+
+        let pop_rows = jq(
+            &c,
+            &format!(
+                "SELECT (EXISTS(SELECT 1 FROM {s}.raw_turns WHERE embedding IS NOT NULL LIMIT 1) \
+                 OR EXISTS(SELECT 1 FROM {s}.semantic WHERE embedding IS NOT NULL LIMIT 1)) AS p",
+                s = self.schema
+            ),
+            &[],
+        )
+        .await?;
+        let populated = pop_rows
+            .first()
+            .and_then(|r| r.get("p"))
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false);
+
+        // Seamless backward compatibility: if an existing 384-d database already has vectors
+        // written by `BAAI/bge-small-en-v1.5` (either explicitly recorded or pre-dating schema
+        // comments), automatically preserve `BAAI/bge-small-en-v1.5` unless the caller forced a
+        // different model. Brand-new keyless databases default to `intfloat/multilingual-e5-small`.
+        if populated && dim == 384 && !self.embedder.is_openai() && !self.embedder.explicit_local_override {
+            match recorded_model.as_deref().map(canonical_embed_family) {
+                None | Some("BAAI/bge-small-en-v1.5") => {
+                    self.embedder.switch_local_model(crate::rerank::BGE_REPO_ID);
+                }
+                Some("intfloat/multilingual-e5-small") => {
+                    self.embedder
+                        .switch_local_model(crate::rerank::E5_MULTI_REPO_ID);
+                }
+                _ => {}
+            }
+        }
+
+        let active_model = self.embedder.model_name();
+        if populated && !allow_mismatch {
+            if let Some(ref rec) = recorded_model {
+                if canonical_embed_family(rec) != canonical_embed_family(&active_model) {
+                    return Err(format!(
+                        "embedding model mismatch on schema '{}': existing vectors were written with '{}', \
+                         but active embedder is '{}'. Mixing incompatible {}-d vector spaces corrupts recall; \
+                         configure the matching embedder or run `memnos migrate-embeddings`.",
+                        self.schema, rec, active_model, dim
+                    ));
+                }
+            } else if dim == 384 && canonical_embed_family(&active_model) != "BAAI/bge-small-en-v1.5" {
+                return Err(format!(
+                    "embedding model mismatch on schema '{}': pre-existing 384-d vectors were written with \
+                     'BAAI/bge-small-en-v1.5', but active embedder is '{}'. Unset MEMNOS_LOCAL_MODEL or run \
+                     `memnos migrate-embeddings`.",
+                    self.schema, active_model
+                ));
+            }
+        }
+
+        if recorded_model.is_none() && dim == self.embedder.dim {
+            let meta = json!({
+                "embed_model": active_model,
+                "embed_dim": dim,
+            })
+            .to_string()
+            .replace('\'', "''");
+            let comment_sql = format!("COMMENT ON SCHEMA {} IS '{}'", self.schema, meta);
+            let _ = c.batch_execute(&comment_sql).await;
+        }
         Ok(())
     }
 
@@ -981,26 +1101,26 @@ impl BrainStore {
         out
     }
 
-    async fn prepare_facts(&self, facts: Vec<ExtractedFact>) -> Vec<PreparedFact> {
+    async fn prepare_facts(&self, facts: Vec<ExtractedFact>) -> Result<Vec<PreparedFact>, String> {
         let mut out = Vec::with_capacity(facts.len());
         for f in facts {
-            let vec = self.embed(&f.statement).await;
+            let vec = self.embed(&f.statement).await?;
             let mut ents = vec![];
             if let Some(subj) = nonempty(&f.subject, 100) {
                 let cs = canonicalize_entity_name(&subj, false);
                 if is_valid_entity_name(&cs, false) {
-                    ents.push((cs.clone(), false, self.embed(&cs).await));
+                    ents.push((cs.clone(), false, self.embed(&cs).await?));
                     if let Some(o) = nonempty(&f.object, 100) {
                         let co = canonicalize_entity_name(&o, true);
                         if is_valid_entity_name(&co, true) {
-                            ents.push((co.clone(), true, self.embed(&co).await));
+                            ents.push((co.clone(), true, self.embed(&co).await?));
                         }
                     }
                 }
             }
             out.push(PreparedFact { f, vec, ents });
         }
-        out
+        Ok(out)
     }
 
     /// Store a message: redacted verbatim raw turn, then (unless it is a constraint) extracted
@@ -1066,7 +1186,7 @@ impl BrainStore {
             && constraint_subject.map(str::trim).unwrap_or("").is_empty();
         let cs = effective_constraint_subject(memory_type, constraint_subject, &clean);
         // Every network/CPU step happens before a pool connection is taken.
-        let turn_vec = vlit(&self.embed(&clean).await);
+        let turn_vec = vlit(&self.embed(&clean).await?);
         // A constraint is a guardrail, not prose to summarize: extraction is bypassed entirely.
         let facts = if async_extract || !do_extract || memory_type == Some("constraint") {
             vec![]
@@ -1076,7 +1196,7 @@ impl BrainStore {
         let prepared = if facts.is_empty() {
             vec![]
         } else {
-            self.prepare_facts(facts).await
+            self.prepare_facts(facts).await?
         };
 
         let mut c = self.conn().await?;
@@ -1335,17 +1455,30 @@ impl BrainStore {
         // reversal ("no longer blocked") is never a restatement of what it reverses.
         let thresh = env_f64("MEMNOS_DEDUPE_THRESHOLD", 0.03);
         if thresh > 0.0 && !REVERSAL_RE.is_match(stmt) {
+            static HARD_ID_RE: Lazy<Regex> =
+                Lazy::new(|| Regex::new(r"[A-Za-z0-9_.-]*\d[A-Za-z0-9_.-]*").unwrap());
+            let ids_of = |s: &str| -> HashSet<String> {
+                HARD_ID_RE
+                    .find_iter(s)
+                    .map(|m| m.as_str().trim_matches('.').to_ascii_lowercase())
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            };
+            let new_ids = ids_of(stmt);
             let cast = self.ensure_vt_cast(4);
             let sql = format!(
-                "SELECT id FROM {s}.semantic WHERE namespace=$1 AND kind='fact' AND valid_to IS NULL AND expired_at IS NULL \
+                "SELECT id, statement FROM {s}.semantic WHERE namespace=$1 AND kind='fact' AND valid_to IS NULL AND expired_at IS NULL \
                  AND embedding IS NOT NULL AND ($2::text IS NULL OR subject_entity IS NULL OR lower(subject_entity)=lower($2)) \
                  AND ($3::text IS NULL OR object IS NULL OR lower(object)=lower($3)) \
-                 AND (embedding <=> {v}) < $5::float8 ORDER BY embedding <=> {v} LIMIT 1",
+                 AND (embedding <=> {v}) < $5::float8 ORDER BY embedding <=> {v} LIMIT 5",
                 s = self.schema,
                 v = cast
             );
-            let dup = jq(c, &sql, &[&ns, &subj, &obj, &vec_lit, &thresh]).await?;
-            if let Some(d) = dup.first() {
+            let cands = jq(c, &sql, &[&ns, &subj, &obj, &vec_lit, &thresh]).await?;
+            if let Some(d) = cands
+                .iter()
+                .find(|r| ids_of(s_of(r, "statement")) == new_ids)
+            {
                 self.bump_restatement(c, i_of(d, "id"), &[turn_id]).await?;
                 return Ok((None, 0));
             }
@@ -1966,7 +2099,7 @@ impl BrainStore {
         let qi = query_intent(query);
         let verbatim = qi == "verbatim";
         let err_q = is_error_query(query);
-        let qlit = self.embed_lit(query).await;
+        let qlit = self.embed_query_lit(query).await?;
         let qt = fts_clamp(query);
         let k = opts.k.max(1) as i64;
         let ents: Vec<String> = temporal::query_entities(query).iter().map(|e| e.to_lowercase()).collect();
@@ -2073,9 +2206,13 @@ impl BrainStore {
         });
         let has_tl = !tl.is_empty();
 
-        // --- facts -------------------------------------------------------------------------
+        // --- facts + raw turns (RRF fusion + optional cross-encoder rerank) ------------------
+        let mut past_deadline = opts.deadline.map_or(false, |dl| Instant::now() >= dl);
+        let warming = crate::rerank::rerank_should_degrade_warming();
+        let use_rerank = crate::rerank::rerank_enabled() && !warming && !past_deadline;
+
         let subject_scope = opts.subject.as_ref().map(|x| x.trim().to_lowercase()).filter(|x| !x.is_empty());
-        let mut facts: Vec<Value> = fuse_rows(vec![sem_v, sem_f, tl, ent], "fact")
+        let mut raw_fact_cands: Vec<(Value, f64)> = fuse_rows(vec![sem_v, sem_f, tl, ent], "fact")
             .into_iter()
             .filter(|(r, _)| match &subject_scope {
                 None => true,
@@ -2084,26 +2221,74 @@ impl BrainStore {
                     sl == &se || se.contains(sl.as_str()) || s_of(r, "content").to_lowercase().contains(sl.as_str())
                 }
             })
+            .collect();
+        if use_rerank && !raw_fact_cands.is_empty() {
+            let q_owned = query.to_string();
+            let texts: Vec<String> = raw_fact_cands.iter().map(|(r, _)| s_of(r, "content").to_string()).collect();
+            if let Ok(Ok(rr_scores)) = tokio::task::spawn_blocking(move || {
+                let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                crate::rerank::rerank_candidates(&q_owned, &refs)
+            })
+            .await
+            {
+                for (orig_idx, sig) in rr_scores {
+                    if let Some(entry) = raw_fact_cands.get_mut(orig_idx) {
+                        entry.1 = sig;
+                    }
+                }
+            }
+        }
+        let mut facts: Vec<Value> = raw_fact_cands
+            .into_iter()
             .map(|(r, sc)| shape_row("fact", &r, adjust_score("fact", &r, sc, err_q, verbatim), primary_opt))
             .collect();
         facts.sort_by(|a, b| f_of(b, "score").partial_cmp(&f_of(a, "score")).unwrap());
 
-        // --- raw turns: exact-duplicate collapse, then stale-turn demotion -------------------
-        let mut turns: Vec<Value> = vec![];
+        let mut dedup_turns: Vec<(Value, f64)> = vec![];
         let mut seen_idx: HashMap<String, usize> = HashMap::new();
         let mut scored: Vec<(Value, f64)> = fuse_rows(vec![raw_v, raw_f], "turn");
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
         for (r, sc) in scored {
             let key = norm_content(s_of(&r, "content"));
             if let Some(&i) = seen_idx.get(&key) {
-                let n = turns[i].get("dup_count").and_then(|x| x.as_i64()).unwrap_or(1) + 1;
-                turns[i]["dup_count"] = json!(n);
+                let n = dedup_turns[i].0.get("dup_count").and_then(|x| x.as_i64()).unwrap_or(1) + 1;
+                dedup_turns[i].0["dup_count"] = json!(n);
                 continue;
             }
-            seen_idx.insert(key, turns.len());
-            turns.push(shape_row("turn", &r, adjust_score("turn", &r, sc, err_q, verbatim), primary_opt));
+            seen_idx.insert(key, dedup_turns.len());
+            dedup_turns.push((r, sc));
         }
-        let mut past_deadline = opts.deadline.map_or(false, |dl| Instant::now() >= dl);
+        if let Some(dl) = opts.deadline {
+            if Instant::now() >= dl {
+                past_deadline = true;
+            }
+        }
+        if use_rerank && !past_deadline && !dedup_turns.is_empty() {
+            let q_owned = query.to_string();
+            let texts: Vec<String> = dedup_turns.iter().map(|(r, _)| s_of(r, "content").to_string()).collect();
+            if let Ok(Ok(rr_scores)) = tokio::task::spawn_blocking(move || {
+                let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                crate::rerank::rerank_candidates(&q_owned, &refs)
+            })
+            .await
+            {
+                for (orig_idx, sig) in rr_scores {
+                    if let Some(entry) = dedup_turns.get_mut(orig_idx) {
+                        entry.1 = sig;
+                    }
+                }
+            }
+        }
+        let mut turns: Vec<Value> = dedup_turns
+            .into_iter()
+            .map(|(r, sc)| shape_row("turn", &r, adjust_score("turn", &r, sc, err_q, verbatim), primary_opt))
+            .collect();
+        turns.sort_by(|a, b| f_of(b, "score").partial_cmp(&f_of(a, "score")).unwrap());
+        if let Some(dl) = opts.deadline {
+            if Instant::now() >= dl {
+                past_deadline = true;
+            }
+        }
         let turn_ids: Vec<i64> = turns.iter().map(|t| i_of(t, "id")).collect();
         if !turn_ids.is_empty() && !past_deadline {
             let sql = format!(
@@ -2192,7 +2377,7 @@ impl BrainStore {
             })
             .collect();
 
-        let degraded = !reasons.is_empty() || past_deadline;
+        let degraded = !reasons.is_empty() || past_deadline || warming;
         let mut explain = json!({
             "ts": Utc::now().to_rfc3339(), "query": query, "namespace": primary, "namespaces": namespaces,
             "intent": qi, "temporal": {"temporal": intent.temporal, "current": intent.current, "historical": historical},
@@ -2317,7 +2502,7 @@ impl BrainStore {
         let s = &self.schema;
         let subj = subject.map(str::trim).filter(|x| !x.is_empty());
         let pred = predicate.map(str::trim).filter(|x| !x.is_empty());
-        let qlit = self.embed_lit(statement).await;
+        let qlit = self.embed_query_lit(statement).await?;
         let cast = self.ensure_vt_cast(2);
         let cols = "id, statement, subject_entity, predicate, object, valid_from, valid_to";
         let mut live: Vec<Value> = vec![];
@@ -2335,15 +2520,18 @@ impl BrainStore {
             hist = self.q(&sql("valid_to IS NOT NULL", "valid_to"), &[&namespace, &sub, &pred]).await?;
             exact = !live.is_empty() || !hist.is_empty();
         }
-        // Vector arm: paraphrases, and the case where no subject was supplied.
+        // Vector arm: paraphrases, and the case where no subject was supplied. When a subject IS
+        // supplied, never cross-match rows belonging to a different named subject_entity.
         let vsql = |state: &str| {
             format!(
                 "SELECT {cols}, (embedding <=> {cast}) AS dist FROM {s}.semantic WHERE namespace=$1 AND expired_at IS NULL \
-                 AND {state} AND embedding IS NOT NULL ORDER BY embedding <=> {cast} LIMIT 8"
+                 AND {state} AND embedding IS NOT NULL \
+                 AND ($3::text IS NULL OR subject_entity IS NULL OR lower(subject_entity)=lower($3)) \
+                 ORDER BY embedding <=> {cast} LIMIT 8"
             )
         };
-        let mut vec_live = self.q(&vsql("valid_to IS NULL"), &[&namespace, &qlit]).await?;
-        let mut vec_hist = self.q(&vsql("valid_to IS NOT NULL"), &[&namespace, &qlit]).await?;
+        let mut vec_live = self.q(&vsql("valid_to IS NULL"), &[&namespace, &qlit, &subj]).await?;
+        let mut vec_hist = self.q(&vsql("valid_to IS NOT NULL"), &[&namespace, &qlit, &subj]).await?;
         let near = |r: &Value| r.get("dist").and_then(|d| d.as_f64()).map_or(false, |d| d < 0.45);
         vec_live.retain(near);
         vec_hist.retain(near);
@@ -2886,7 +3074,7 @@ impl BrainStore {
             let body = g.iter().map(|r| format!("{}: {}", if s_of(r, "speaker").is_empty() { "user" } else { s_of(r, "speaker") }, s_of(r, "text"))).collect::<Vec<_>>().join("\n");
             let joined = g.iter().map(|r| s_of(r, "text")).collect::<Vec<_>>().join(" ");
             let summary = extractive_summary(&joined);
-            let vec = self.embed_lit(&summary).await;
+            let vec = self.embed_lit(&summary).await?;
             let types: HashSet<&str> = g.iter().map(|r| s_of(r, "memory_type")).collect();
             let mtype = if types.len() == 1 { types.iter().next().filter(|t| !t.is_empty()).map(|t| t.to_string()) } else { None };
             prepared.push(Prep {
@@ -2916,7 +3104,7 @@ impl BrainStore {
 
     /// Hybrid (vector + FTS, RRF) search over episodes; touches the hits so decay sees the access.
     pub async fn recall_episodes(&self, namespace: &str, query: &str, k: i64) -> Result<Value, String> {
-        let qlit = self.embed_lit(query).await;
+        let qlit = self.embed_query_lit(query).await?;
         let cols = "e.id, e.summary, e.text, e.t_start, e.t_end, e.observed_at, e.salience, e.memory_type";
         let (v, f) = self.ann_fts("episodic", "e", cols, "", &[namespace.to_string()], &qlit, &fts_clamp(query), k.clamp(1, 50)).await;
         let rows: Vec<Value> = fuse_rows(vec![v?, f?], "episode")
@@ -2998,7 +3186,7 @@ impl BrainStore {
             }
             let missing: Vec<&Value> = ents.iter().filter(|e| !e["has_emb"].as_bool().unwrap_or(true) && !bad.contains(&i_of(e, "id"))).take(200).collect();
             for e in missing {
-                let lit = self.embed_lit(s_of(e, "name")).await;
+                let lit = self.embed_lit(s_of(e, "name")).await?;
                 let id = i_of(e, "id");
                 let c = self.conn().await?;
                 c.execute(format!("UPDATE {s}.entities SET embedding={} WHERE id=$2", self.ensure_vt_cast(1)).as_str(), &[&lit, &id]).await.map_err(de)?;
@@ -3817,9 +4005,9 @@ mod tests {
         let now = Utc::now();
         let mk = |obj: &str| PreparedFact { f: ExtractedFact { subject: "AcmeApp".into(), predicate: "deployed_version".into(), object: obj.into(), statement: format!("AcmeApp deployed_version is {}", obj) }, vec: vec![], ents: vec![] };
         let (mut p1, mut p2) = (mk("1.0.0"), mk("2.0.0"));
-        p1.vec = st.embed(&p1.f.statement).await;
-        p2.vec = st.embed(&p2.f.statement).await;
-        p1.ents = vec![("AcmeApp".into(), false, st.embed("AcmeApp").await), ("deploy target".into(), true, st.embed("deploy target").await)];
+        p1.vec = st.embed(&p1.f.statement).await.unwrap();
+        p2.vec = st.embed(&p2.f.statement).await.unwrap();
+        p1.ents = vec![("AcmeApp".into(), false, st.embed("AcmeApp").await.unwrap()), ("deploy target".into(), true, st.embed("deploy target").await.unwrap())];
         let (id1, _) = st.write_fact(&mut c, ns, &p1, now, tid, None, Some("user"), None, &None).await.unwrap();
         let (id2, n) = st.write_fact(&mut c, ns, &p2, now + chrono::Duration::seconds(5), tid, None, Some("user"), None, &None).await.unwrap();
         assert_eq!(n, 1, "second value must supersede the first");
@@ -3925,13 +4113,14 @@ mod tests {
     async fn pf(st: &BrainStore, subj: &str, pred: &str, obj: &str, stmt: &str) -> PreparedFact {
         PreparedFact {
             f: ExtractedFact { subject: subj.into(), predicate: pred.into(), object: obj.into(), statement: stmt.into() },
-            vec: st.embed(stmt).await,
+            vec: st.embed(stmt).await.unwrap(),
             ents: vec![],
         }
     }
 
     /// A database built by the PYTHON engine's `create_brain_schema` (both a 1536-d `vector` and a
-    /// 384-d `halfvec` one) must boot, take writes, recall and reconcile unchanged.
+    /// 384-d `halfvec` one) must boot when configured with a matching-dimension embedder, refuse
+    /// mismatched embedders loudly, and take writes, recall and reconcile unchanged.
     #[tokio::test]
     #[ignore]
     async fn runtime_existing_python_schema() {
@@ -3946,8 +4135,28 @@ mod tests {
             let tenant = format!("compat{}_{}", dim, std::process::id());
             c.execute("SELECT create_brain_schema($1, $2, $3, $4)", &[&tenant, &dim, &vtype, &ops]).await.unwrap();
             let schema = format!("tenant_{}", tenant);
-            // the embedder is ALWAYS 384-d here: for the 1536 schema the column dimension must win
-            let st = BrainStore::new(pool.clone(), Some(&schema), Arc::new(Embedder::from_env(None, Some(384))), Arc::new(Extractor::from_env(None))).unwrap();
+            // 1) A 384-d embedder against a 1536-d schema MUST fail loudly (never silently hash!)
+            if dim == 1536 {
+                let bad_dim = BrainStore::new(
+                    pool.clone(),
+                    Some(&schema),
+                    Arc::new(Embedder::from_env(None, Some(384))),
+                    Arc::new(Extractor::from_env(None)),
+                )
+                .unwrap();
+                let err = bad_dim
+                    .init_schema()
+                    .await
+                    .expect_err("1536-d schema booted with 384-d embedder must fail loudly");
+                assert!(err.contains("dimension mismatch"), "{err}");
+            }
+            // 2) Matching-dimension embedder boots cleanly, writes, recalls, and reconciles
+            let matching_emb = if dim == 384 {
+                Arc::new(Embedder::from_env(None, Some(384)))
+            } else {
+                Arc::new(Embedder::synthetic_for_test(dim as usize, "text-embedding-3-small"))
+            };
+            let st = BrainStore::new(pool.clone(), Some(&schema), matching_emb, Arc::new(Extractor::from_env(None))).unwrap();
             st.init_schema().await.expect("init over a python-built schema");
             assert_eq!((st.vt(), st.col_dim()), (vtype.to_string(), dim as usize));
             st.warm_indexes().await.unwrap();
@@ -3969,6 +4178,21 @@ mod tests {
             let v = st.reconcile_claim(ns, "agy-webapp deployed_version is 1.0.0", Some("agy-webapp"), Some("deployed_version")).await.unwrap();
             assert_eq!(v["verdict"], "stale");
             assert!(st.knowledge_health(ns).await.unwrap()["score"].is_number());
+            // 3) Same-dimension model family mismatch (`BAAI/bge-small-en-v1.5` vs incompatible 384-d model) MUST also fail loudly!
+            if dim == 384 {
+                let wrong_family = BrainStore::new(
+                    pool.clone(),
+                    Some(&schema),
+                    Arc::new(Embedder::synthetic_for_test(384, "incompatible-384-model")),
+                    Arc::new(Extractor::from_env(None)),
+                )
+                .unwrap();
+                let merr = wrong_family
+                    .init_schema()
+                    .await
+                    .expect_err("populated bge-small schema opened with incompatible 384-d model must fail loudly");
+                assert!(merr.contains("model mismatch"), "{merr}");
+            }
             c.batch_execute(&format!("DROP SCHEMA {} CASCADE", schema)).await.unwrap();
         }
     }

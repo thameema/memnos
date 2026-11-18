@@ -16,6 +16,7 @@ pub mod predicates;
 pub mod proxy;
 pub mod redact;
 pub mod repo_init;
+pub mod rerank;
 pub mod server;
 pub mod store;
 pub mod temporal;

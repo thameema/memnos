@@ -92,18 +92,6 @@ pub fn extract_developer_signals(text: &str) -> Vec<ExtractedFact> {
     out
 }
 
-pub fn fake_extract(text: &str) -> Vec<ExtractedFact> {
-    extract_entities(text)
-        .into_iter()
-        .map(|e| ExtractedFact {
-            statement: format!("{} was mentioned.", e),
-            subject: e,
-            predicate: String::new(),
-            object: String::new(),
-        })
-        .collect()
-}
-
 pub fn estimate_cost_usd(model: &str, prompt_tokens: u32, completion_tokens: u32) -> f64 {
     let (pin, pout) = match model {
         "text-embedding-3-small" => (0.02, 0.0),
@@ -118,20 +106,11 @@ pub struct Extractor {
     pub model: String,
     api_key: Option<String>,
     base_url: String,
-    fake_mode: bool,
     http: Client,
 }
 
 impl Extractor {
     pub fn from_env(openai_key: Option<String>) -> Self {
-        let fake_mode = matches!(
-            env::var("MEMNOS_FAKE_EXTRACT")
-                .unwrap_or_default()
-                .trim()
-                .to_ascii_lowercase()
-                .as_str(),
-            "1" | "true" | "yes" | "on"
-        );
         let extract_base = env::var("MEMNOS_EXTRACT_BASE_URL").ok().filter(|s| !s.is_empty());
         let key = openai_key
             .or_else(|| env::var("OPENAI_API_KEY").ok())
@@ -150,19 +129,15 @@ impl Extractor {
             model,
             api_key: key,
             base_url,
-            fake_mode,
             http,
         }
     }
 
     pub fn enabled(&self) -> bool {
-        self.fake_mode || self.api_key.is_some()
+        self.api_key.is_some()
     }
 
     pub async fn extract_facts(&self, text: &str, date_iso: &str) -> (Vec<ExtractedFact>, u32, u32) {
-        if self.fake_mode {
-            return (fake_extract(text), 0, 0);
-        }
         let Some(ref key) = self.api_key else {
             return (Vec::new(), 0, 0);
         };

@@ -41,9 +41,18 @@ url = "2.5"
 futures-util = "0.3"
 anyhow = "1.0"
 thiserror = "1.0"
+candle-core = { version = "0.8", default-features = false }
+candle-nn = { version = "0.8", default-features = false }
+candle-transformers = { version = "0.8", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.8", default-features = false, features = ["accelerate"] }
+candle-nn = { version = "0.8", default-features = false, features = ["accelerate"] }
+candle-transformers = { version = "0.8", default-features = false, features = ["accelerate"] }
 
 [profile.release]
 opt-level = 3
 lto = "thin"
 strip = true
 codegen-units = 1
+panic = "abort"

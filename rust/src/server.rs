@@ -1,4 +1,4 @@
-//! `memnos serve` — Unified Native Rust HTTP Server (`server.rs`).
+//! `memnos serve` — Unified HTTP Server (`server.rs`).
 //!
 //! Serves 100% of the MEMNOS REST API, the zero-build `/admin` web console (embedded directly
 //! inside the single binary), the Streamable-HTTP `/mcp` JSON-RPC 2.0 mount, and the
@@ -136,8 +136,7 @@ async fn healthz_handler() -> Response {
         StatusCode::OK,
         json!({
             "ok": true,
-            "version": VERSION,
-            "engine": "rust"
+            "version": VERSION
         }),
     )
 }
@@ -160,8 +159,7 @@ async fn readyz_handler(State(st): State<AppState>) -> Response {
             "ready": ready,
             "db": db_ok,
             "warm": warm,
-            "version": VERSION,
-            "engine": "rust"
+            "version": VERSION
         }),
     )
 }
@@ -278,7 +276,7 @@ async fn mcp_http_handler(
     if method == Method::GET {
         return json_resp(
             StatusCode::OK,
-            json!({ "ok": true, "transport": "streamable-http", "engine": "rust" }),
+            json!({ "ok": true, "transport": "streamable-http" }),
         );
     }
     if method == Method::DELETE {
@@ -1085,8 +1083,7 @@ async fn admin_api_handler(
                 "extraction": st.extractor.enabled(),
                 "extract_base_url": env::var("MEMNOS_EXTRACT_BASE_URL").ok(),
                 "extract_model": if st.extractor.enabled() { Some(st.extractor.model.clone()) } else { None },
-                "vault_unlocked": Vault::available(),
-                "engine": "rust"
+                "vault_unlocked": Vault::available()
             }),
         ),
         ("secrets", Method::GET) => {
@@ -2875,6 +2872,14 @@ pub async fn run_server(port_override: Option<u16>) -> Result<(), String> {
         mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
         mcp_semaphore: Arc::new(Semaphore::new(24)),
     };
+    let prewarm_model = if state.embedder.is_openai() {
+        crate::rerank::BGE_REPO_ID.to_string()
+    } else {
+        state.embedder.model_name()
+    };
+    if !state.embedder.is_openai() {
+        crate::rerank::spawn_background_prewarm_for(&prewarm_model);
+    }
 
     let app = Router::new()
         .route("/healthz", get(healthz_handler))
@@ -2901,7 +2906,7 @@ pub async fn run_server(port_override: Option<u16>) -> Result<(), String> {
         .map_err(|e| format!("failed to bind {}:{}: {}", bind_host, port, e))?;
 
     println!(
-        "[memnos] Rust engine v{} listening on http://{}:{}",
+        "[memnos] server v{} listening on http://{}:{}",
         VERSION, bind_host, port
     );
 

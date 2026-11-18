@@ -836,30 +836,30 @@ def test_27_agent_mesh_registry_claimable_and_pid_reaping(env):
     try:
         Control.grant(env["conn"], env["pa"], NS_SIB)
         s, reg1 = call("/channel/registry", ta, {
-            "namespace": NS, "topic": "rust single binary", "session_name": "claude-memnos",
+            "namespace": NS, "topic": "gateway rollover", "session_name": "claude-memnos",
         })
-        assert s == 200 and reg1["channel"] == "#rust-single-binary" and reg1["existed"] is False
+        assert s == 200 and reg1["channel"] == "#gateway-rollover" and reg1["existed"] is False
         s, reg2 = call("/channel/registry", ta, {
-            "namespace": NS_SIB, "topic": "#rust-single-binary", "session_name": "agy-memnos",
+            "namespace": NS_SIB, "topic": "#gateway-rollover", "session_name": "agy-memnos",
         })
-        assert s == 200 and reg2["channel"] == "#rust-single-binary" and reg2["existed"] is True
+        assert s == 200 and reg2["channel"] == "#gateway-rollover" and reg2["existed"] is True
         assert len(reg2["subscribers"]) >= 2
 
         # 3. Competing-consumer task claiming across NS and NS_SIB: only ONE session claims the task!
         s, pub = call("/channel/publish", ta, {
-            "namespace": NS, "channel": "#rust-single-binary", "sender_session": "claude-memnos",
-            "content": "Benchmark the Rust hook binary", "intent": "task", "claimable": True,
+            "namespace": NS, "channel": "#gateway-rollover", "sender_session": "claude-memnos",
+            "content": "Benchmark the hook binary", "intent": "task", "claimable": True,
         })
         assert s == 200 and pub["claimable"] is True and pub["claim_status"] == "pending"
 
-        # Establish a second worker in NS (`claude-memnos-2`) subscribed to `#rust-single-binary`
+        # Establish a second worker in NS (`claude-memnos-2`) subscribed to `#gateway-rollover`
         call("/channel/registry", ta, {
-            "namespace": NS, "topic": "#rust-single-binary", "session_name": "claude-memnos-2",
+            "namespace": NS, "topic": "#gateway-rollover", "session_name": "claude-memnos-2",
         })
 
         # Poll from `agy-memnos` in NS_SIB -> claims the task!
         s, poll_agy = call("/channel/poll", ta, {
-            "namespace": NS_SIB, "session_name": "agy-memnos", "channel": "#rust-single-binary",
+            "namespace": NS_SIB, "session_name": "agy-memnos", "channel": "#gateway-rollover",
         })
         assert s == 200
         claimed_msgs = [m for m in poll_agy["messages"] if m["id"] == pub["id"]]
@@ -867,7 +867,7 @@ def test_27_agent_mesh_registry_claimable_and_pid_reaping(env):
 
         # Poll from `claude-memnos-2` in NS -> must NOT receive the already-claimed task (zero duplicate work)!
         s, poll_w2 = call("/channel/poll", ta, {
-            "namespace": NS, "session_name": "claude-memnos-2", "channel": "#rust-single-binary",
+            "namespace": NS, "session_name": "claude-memnos-2", "channel": "#gateway-rollover",
         })
         assert s == 200
         assert all(m["id"] != pub["id"] for m in poll_w2["messages"])
@@ -879,7 +879,7 @@ def test_27_agent_mesh_registry_claimable_and_pid_reaping(env):
         assert s == 200 and ack_rel["claim_status"] == "pending"
 
         s, poll_w2_retry = call("/channel/poll", ta, {
-            "namespace": NS, "session_name": "claude-memnos-2", "channel": "#rust-single-binary",
+            "namespace": NS, "session_name": "claude-memnos-2", "channel": "#gateway-rollover",
         })
         assert s == 200 and any(m["id"] == pub["id"] and m["claimed_by"] == "claude-memnos-2" for m in poll_w2_retry["messages"])
 

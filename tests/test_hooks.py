@@ -59,6 +59,16 @@ def check(name, cond):
     PASS += cond; FAIL += (not cond)
 
 
+def _cli_cmd():
+    cli_bin = os.environ.get("MEMNOS_CLI_BIN")
+    if cli_bin:
+        return [cli_bin]
+    py_cli = os.path.join(ROOT, "memnos_cli.py")
+    if os.path.isfile(py_cli):
+        return [PY, py_cli]
+    return [os.path.join(ROOT, "target", "release", "memnos")]
+
+
 def hook(which, payload, home=None, extra_args=None):
     """`home`: reuse the SAME temp $HOME across several calls (default: a fresh one per
     call, preserving prior test isolation) — needed for issue #171's capture-stats tests,
@@ -66,7 +76,7 @@ def hook(which, payload, home=None, extra_args=None):
     checked."""
     env = dict(os.environ, MEMNOS_URL=f"http://127.0.0.1:{PORT}", MEMNOS_NS="test:hooks",
                MEMNOS_TOKEN="mnk_test", HOME=home or tempfile.mkdtemp(prefix="memnos_hooks_"))
-    return subprocess.run([PY, os.path.join(ROOT, "memnos_cli.py"), "hook", which, *(extra_args or [])],
+    return subprocess.run([*_cli_cmd(), "hook", which, *(extra_args or [])],
                           input=json.dumps(payload), capture_output=True, text=True,
                           env=env, timeout=30)
 
@@ -404,7 +414,7 @@ def main():
           "systemMessage" in r.stdout and "memory ACTIVE" in r.stdout)
     env = dict(os.environ, MEMNOS_URL="http://127.0.0.1:9", MEMNOS_NS="t", MEMNOS_TOKEN="mnk_x",
                HOME=tempfile.mkdtemp(prefix="memnos_hooks_"))
-    r = subprocess.run([PY, os.path.join(ROOT, "memnos_cli.py"), "hook", "status"],
+    r = subprocess.run([*_cli_cmd(), "hook", "status"],
                        input=json.dumps({"source": "startup"}), capture_output=True, text=True,
                        env=env, timeout=30)
     check("status: server down → visible OFF warning",

@@ -1,6 +1,4 @@
-//! `memnos` — Unified Single-Binary Rust CLI, Server, Gateway, MCP Adapter & Agent Mesh.
-//!
-//! 100% native Rust implementation with zero Python runtime dependency.
+//! `memnos` — Unified CLI, Server, Gateway, MCP Adapter & Agent Mesh.
 
 use clap::{CommandFactory, Parser, Subcommand};
 use memnos_core::{
@@ -23,6 +21,10 @@ use memnos_core::{
     },
     proxy::run_proxy,
     repo_init::hydrate_repo,
+    rerank::{
+        default_local_embed_model_from_env, ensure_local_models_ready, is_model_cached,
+        print_local_models_status, specs_for_embed_model, BGE_REPO_ID, E5_MULTI_REPO_ID,
+    },
     server::run_server,
     store::BrainStore,
     vault::Vault,
@@ -40,7 +42,7 @@ use std::time::{Duration, Instant};
 #[command(
     name = "memnos",
     version = VERSION,
-    about = "memnos memory & multi-agent coordination platform CLI (single Rust binary)",
+    about = "memnos memory & multi-agent coordination platform CLI",
     after_help = "Remote use: set MEMNOS_URL and MEMNOS_TOKEN to point data commands (remember/recall) at a remote memnos server."
 )]
 struct Cli {
@@ -430,6 +432,13 @@ enum Commands {
         to: Option<String>,
         #[arg(short, long)]
         yes: bool,
+    },
+    /// inspect or download local neural models (status | pull) so memnos runs without external AI
+    Models {
+        #[arg(default_value = "status")]
+        action: String,
+        #[arg(long)]
+        english_only: bool,
     },
     #[command(hide = true)]
     DocsGen {
@@ -1101,6 +1110,14 @@ fn stop_background_server() -> bool {
     stopped
 }
 
+fn has_configured_openai(cfg: &Config) -> bool {
+    env::var("OPENAI_API_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| cfg.openai.clone().filter(|s| !s.trim().is_empty()))
+        .is_some()
+}
+
 fn start_background_server(cfg: &Config, port_override: Option<u16>) -> Result<(), String> {
     let port = port_override.unwrap_or_else(|| server_port(cfg));
     let health_url = format!("http://127.0.0.1:{}/healthz", port);
@@ -1109,6 +1126,13 @@ fn start_background_server(cfg: &Config, port_override: Option<u16>) -> Result<(
             println!("[memnos] server already running on http://127.0.0.1:{}", port);
             return Ok(());
         }
+    }
+
+    // If no external AI key is configured, notify the user in the foreground terminal and
+    // download required local neural weights BEFORE daemonizing the background gateway.
+    if !has_configured_openai(cfg) {
+        let (local_model, _) = default_local_embed_model_from_env();
+        ensure_local_models_ready(&local_model)?;
     }
 
     let dir = config_dir();
@@ -1166,7 +1190,7 @@ async fn main() {
 
     let cli = Cli::parse_from(norm_args);
     let Some(cmd) = cli.command else {
-        println!("memnos {} (Rust single-binary engine)\n", VERSION);
+        println!("memnos {}\n", VERSION);
         let _ = Cli::command().print_help();
         println!();
         return;
@@ -1285,24 +1309,70 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             }
             Ok(())
         }
+        Commands::Models {
+            action,
+            english_only,
+        } => {
+            let model_id = if english_only {
+                BGE_REPO_ID.to_string()
+            } else {
+                let (m, _) = default_local_embed_model_from_env();
+                m
+            };
+            match action.trim().to_ascii_lowercase().as_str() {
+                "status" | "ls" => {
+                    print_local_models_status(has_configured_openai(&cfg), &model_id);
+                    Ok(())
+                }
+                "pull" | "download" => {
+                    let (emb_spec, rerank_spec) = specs_for_embed_model(&model_id);
+                    let already = is_model_cached(emb_spec) && is_model_cached(rerank_spec);
+                    ensure_local_models_ready(&model_id)?;
+                    if already {
+                        println!(
+                            "[memnos] local neural models already cached & verified ({}, {}).",
+                            emb_spec.repo_id, rerank_spec.repo_id
+                        );
+                    }
+                    Ok(())
+                }
+                other => Err(format!(
+                    "unknown `memnos models` action '{}' (expected `status` or `pull`)",
+                    other
+                )),
+            }
+        }
         Commands::Status => {
             let url = server_url(&cfg);
             let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let (ns, src) = resolve_with_source(&cwd, None);
             let sess = resolve_active_session(&cwd);
-            println!("memnos v{} (Rust single-binary engine)", VERSION);
+            println!("memnos v{}", VERSION);
             println!("  server url: {}", url);
             println!("  config:     {}", config_dir().join("config.json").display());
             println!("  namespace:  {} (source: {})", ns, src);
             if !sess.is_empty() {
                 println!("  session:    @{}", sess);
             }
+            if has_configured_openai(&cfg) {
+                println!("  embeddings: OpenAI 1536-d (OPENAI_API_KEY configured)");
+            } else {
+                let (m, _) = default_local_embed_model_from_env();
+                let (emb_spec, rerank_spec) = specs_for_embed_model(&m);
+                if is_model_cached(emb_spec) && is_model_cached(rerank_spec) {
+                    println!("  embeddings: local ({} — cached, no external AI needed)", m);
+                } else {
+                    println!(
+                        "  embeddings: local ({} — download required; run `memnos models pull` so memnos runs without external AI)",
+                        m
+                    );
+                }
+            }
             match http_get_json(&cfg, "/readyz", None, 2) {
                 Ok(v) => println!(
-                    "  status:     ONLINE (ready={}, warm={}, engine={})",
+                    "  status:     ONLINE (ready={}, warm={})",
                     v.get("ready").and_then(|b| b.as_bool()).unwrap_or(false),
                     v.get("warm").and_then(|b| b.as_bool()).unwrap_or(false),
-                    v.get("engine").and_then(|s| s.as_str()).unwrap_or("unknown")
                 ),
                 Err(_) => println!("  status:     OFFLINE (run `memnos start`)"),
             }
@@ -1436,6 +1506,13 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             println!("  DSN:         {}", chosen_dsn);
             println!("  config:      {}", config_dir().join("config.json").display());
             println!("  admin token: {}", admin_tok);
+
+            // Post-install local neural model download: notify user clearly and pull weights
+            // so memnos works out of the box without any external AI key.
+            if !has_configured_openai(&cfg) {
+                let active_model = E5_MULTI_REPO_ID;
+                ensure_local_models_ready(active_model)?;
+            }
             Ok(())
         }
         Commands::Remember {

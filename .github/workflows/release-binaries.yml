@@ -1,0 +1,34 @@
+name: Cross-OS Binaries & Release Hygiene (macOS, Linux, Windows)
+
+on:
+  push:
+    branches: ["*"]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  test-cross-os:
+    name: Build, Unit Suite & Hygiene Gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run engine unit tests
+        run: cargo test --lib
+      - name: Build path-remapped single binary
+        shell: bash
+        run: bash scripts/build_release.sh
+      - name: Run release hygiene gate
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash scripts/release_hygiene.sh ./target/release/memnos
+      - name: Smoke test CLI (--version and tips)
+        run: |
+          cargo run --release -- --version
+          cargo run --release -- tips

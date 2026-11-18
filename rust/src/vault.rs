@@ -5,7 +5,10 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD as B64, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use chrono::{DateTime, Utc};
 use rand::RngCore;
 use serde::Serialize;
@@ -47,8 +50,12 @@ fn master_key() -> Result<[u8; 32], VaultError> {
 }
 
 fn decode_key_b64(b64: &str) -> Result<[u8; 32], VaultError> {
+    let s = b64.trim();
     let bytes = B64
-        .decode(b64.trim())
+        .decode(s)
+        .or_else(|_| URL_SAFE.decode(s))
+        .or_else(|_| STANDARD_NO_PAD.decode(s))
+        .or_else(|_| URL_SAFE_NO_PAD.decode(s))
         .map_err(|e| VaultError::Locked(format!("MEMNOS_SECRET_KEY is not valid base64: {}", e)))?;
     if bytes.len() != 32 {
         return Err(VaultError::Locked(

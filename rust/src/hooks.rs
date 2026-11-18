@@ -10,7 +10,9 @@
 //!   queues offline on transient failure, and triggers hands-free multi-agent continuation on
 //!   non-Antigravity harnesses when actionable peer tasks arrive.
 
-use crate::config::{config_dir as memnos_dir, server_url, session_token, Config};
+use crate::config::{config_dir as memnos_dir, dsn, server_url, session_token, Config};
+use crate::control::Control;
+use crate::db::build_pool;
 use crate::nsresolve;
 use crate::offline_queue;
 use chrono::Utc;
@@ -20,7 +22,7 @@ use serde_json::{json, Value};
 use sha1::{Digest, Sha1};
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -601,8 +603,8 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
             return;
         }
 
-        let subject = tool_match_subject(tool_name, &tool_input);
-        let mut subjects = vec![subject, tool_name.to_string()];
+        let primary_subject = tool_match_subject(tool_name, &tool_input);
+        let mut subjects = vec![primary_subject.clone(), tool_name.to_string()];
         if tool_name == "run_command" {
             if let Some(cmd_line) = tool_input.get("CommandLine").and_then(|v| v.as_str()) {
                 subjects.push(format!("Bash({})", cmd_line));
@@ -660,6 +662,57 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
                 })
             );
         }
+        let _ = io::stdout().flush();
+
+        // Audit AFTER printing the decision — best-effort with a tight timeout so a DB error
+        // can never delay or suppress the deny/ask output.
+        let dsn_str = dsn(cfg);
+        let audit_ns = enforce_ns.clone();
+        let audit_tool = tool_name.to_string();
+        let audit_level = target_level.to_string();
+        let _ = std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async move {
+                let _ = tokio::time::timeout(Duration::from_millis(1500), async move {
+                    if let Ok(pool) = build_pool(&dsn_str, 2) {
+                        let _ = Control::init(&pool).await;
+                        let mut admin_pid = None;
+                        if let Ok(list) = Control::list_principals(&pool).await {
+                            for p in list {
+                                if p.get("name").and_then(|v| v.as_str()) == Some("admin") {
+                                    admin_pid = p.get("id").and_then(|v| v.as_i64());
+                                    break;
+                                }
+                            }
+                        }
+                        let _ = Control::audit(
+                            &pool,
+                            admin_pid,
+                            "constraint.enforce",
+                            Some(&audit_ns),
+                            true,
+                            Some(json!({
+                                "tool_name": audit_tool,
+                                "matched_id": id,
+                                "level": audit_level,
+                                "subject": primary_subject,
+                            })),
+                            None,
+                            None,
+                            None,
+                        )
+                        .await;
+                    }
+                })
+                .await;
+            });
+        })
+        .join();
         return;
     }
 
@@ -761,6 +814,47 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
 
         let cur_cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let (enforce_ns, _) = nsresolve::resolve_with_source(&cur_cwd, None);
+        // Best-effort refresh of the PreToolUse enforce cache from Postgres on SessionStart
+        if env::var("MEMNOS_DSN").is_ok() || cfg.dsn.is_some() {
+            let dsn_str = dsn(cfg);
+            let ens = enforce_ns.clone();
+            let _ = std::thread::spawn(move || {
+                let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
+                    return;
+                };
+                rt.block_on(async move {
+                    let _ = tokio::time::timeout(Duration::from_millis(1200), async move {
+                        if let Ok(pool) = build_pool(&dsn_str, 2) {
+                            let _ = Control::init(&pool).await;
+                            if let Ok(rows) =
+                                Control::list_constraint_enforcement_fanout(&pool, &ens).await
+                            {
+                                let path = enforce_cache_path(&ens);
+                                if let Some(parent) = path.parent() {
+                                    let _ = fs::create_dir_all(parent);
+                                }
+                                let payload = json!({
+                                    "namespace": ens,
+                                    "refreshed_at": Utc::now().to_rfc3339(),
+                                    "rules": rows,
+                                });
+                                let tmp = path.with_extension("json.tmp");
+                                if let Ok(raw) = serde_json::to_string(&payload) {
+                                    if fs::write(&tmp, raw).is_ok() {
+                                        let _ = fs::rename(&tmp, &path);
+                                    }
+                                }
+                            }
+                        }
+                    })
+                    .await;
+                });
+            })
+            .join();
+        }
         if let Ok(raw) = fs::read_to_string(enforce_cache_path(&enforce_ns)) {
             if let Ok(v) = serde_json::from_str::<Value>(&raw) {
                 let cnt = v
@@ -774,6 +868,37 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
                     if cnt == 1 { "" } else { "s" },
                     enforce_ns
                 ));
+            }
+        }
+
+        // Proactive capture-health visibility (issue #171): surface capture/skip counts and
+        // highlight any assistant-side skips with a visible warning callout.
+        if let Ok(raw_cs) = fs::read_to_string(capture_stats_path()) {
+            if let Ok(cs) = serde_json::from_str::<Value>(&raw_cs) {
+                if cs.is_object() {
+                    let su = cs.get("saved_user").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let sa = cs
+                        .get("saved_assistant")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let ku = cs.get("skipped_user").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let ka = cs
+                        .get("skipped_assistant")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    if su + sa + ku + ka > 0 {
+                        let mut capline =
+                            format!("{} captured, {} skipped as noise", su + sa, ku + ka);
+                        if ka > 0 {
+                            capline.push_str(&format!(
+                                " (\u{26a0} {} assistant repl{} — `memnos hook stats`)",
+                                ka,
+                                if ka == 1 { "y" } else { "ies" }
+                            ));
+                        }
+                        parts.push(capline);
+                    }
+                }
             }
         }
 
@@ -1117,6 +1242,7 @@ fn hook_remember(data: &Value, ns: &str, url: &str, token: &str, agy: bool) {
     {
         if let Ok(raw_tp) = fs::read_to_string(tp) {
             let mut last_user = String::new();
+            let mut saw_user_event = false;
             for line in raw_tp.lines() {
                 let Ok(ev) = serde_json::from_str::<Value>(line) else {
                     continue;
@@ -1124,6 +1250,7 @@ fn hook_remember(data: &Value, ns: &str, url: &str, token: &str, agy: bool) {
                 let st = ev.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 let src = ev.get("source").and_then(|v| v.as_str()).unwrap_or("");
                 if st == "USER_INPUT" || src == "USER_EXPLICIT" {
+                    saw_user_event = true;
                     if let Some(c) = ev.get("content").and_then(|v| v.as_str()) {
                         let u = agy_user_text(c);
                         if !u.is_empty() {
@@ -1150,6 +1277,7 @@ fn hook_remember(data: &Value, ns: &str, url: &str, token: &str, agy: bool) {
                 }
                 let content = ev.get("message").and_then(|m| m.get("content"));
                 if st == "user" {
+                    saw_user_event = true;
                     let u_text = match content {
                         Some(Value::String(s)) => s.clone(),
                         Some(Value::Array(arr)) => arr
@@ -1184,6 +1312,12 @@ fn hook_remember(data: &Value, ns: &str, url: &str, token: &str, agy: bool) {
             }
             if !last_user.is_empty() {
                 text = last_user;
+            }
+            if saw_user_event && text.trim().is_empty() {
+                eprintln!(
+                    "memnos: hook remember found no capturable user text in transcript {} — nothing will be saved for this turn",
+                    tp
+                );
             }
         }
     }
@@ -1407,11 +1541,11 @@ mod tests {
 
     #[test]
     fn test_agy_detection_and_user_text() {
-        let payload = json!({"conversationId": "abc", "lastUserInput": "<ADDITIONAL_METADATA>x</ADDITIONAL_METADATA><USER_REQUEST>ship rust</USER_REQUEST>"});
+        let payload = json!({"conversationId": "abc", "lastUserInput": "<ADDITIONAL_METADATA>x</ADDITIONAL_METADATA><USER_REQUEST>ship release</USER_REQUEST>"});
         assert!(is_antigravity_hook(&payload));
         assert_eq!(
             agy_user_text(payload["lastUserInput"].as_str().unwrap()),
-            "ship rust"
+            "ship release"
         );
     }
 }

@@ -150,7 +150,7 @@ pub fn all_tool_definitions() -> Vec<Value> {
                 "symptom": {"type": "string"},
                 "cause": {"type": "string"},
                 "fix": {"type": "string"},
-                "verify": {"type": "string"},
+                "verify_cmd": {"type": "string"},
                 "namespace": {"type": "string"}
             }),
             &["symptom", "cause", "fix"],
@@ -174,20 +174,19 @@ pub fn all_tool_definitions() -> Vec<Value> {
         ),
         tool_schema(
             "memory_write",
-            "Alias of remember accepting content/text and optional metadata.",
+            "Alias of remember accepting text and optional metadata.",
             json!({
-                "content": {"type": "string"},
                 "text": {"type": "string"},
                 "namespace": {"type": "string"},
                 "memory_type": {"type": "string"}
             }),
-            &[],
+            &["text"],
         ),
         tool_schema(
             "memory_delete",
             "Expire/retire a semantic fact or pinned constraint by id.",
             json!({
-                "id": {"type": ["integer", "string"]},
+                "id": {"type": "integer"},
                 "namespace": {"type": "string"}
             }),
             &["id"],
@@ -195,26 +194,38 @@ pub fn all_tool_definitions() -> Vec<Value> {
         tool_schema(
             "get_entity",
             "Fetch structured facts and mentions known about a named entity.",
-            json!({"entity": {"type": "string"}, "namespace": {"type": "string"}}),
-            &["entity"],
+            json!({
+                "name": {"type": "string"},
+                "depth": {"type": "integer"},
+                "namespace": {"type": "string"}
+            }),
+            &["name"],
         ),
         tool_schema(
             "get_related",
             "Find entities co-mentioned or linked to a given entity in the knowledge graph.",
-            json!({"entity": {"type": "string"}, "namespace": {"type": "string"}}),
-            &["entity"],
+            json!({"name": {"type": "string"}, "namespace": {"type": "string"}}),
+            &["name"],
         ),
         tool_schema(
             "graph_query",
             "Multi-hop entity-relationship traversal across the semantic graph.",
-            json!({"entity": {"type": "string"}, "hops": {"type": "integer"}, "namespace": {"type": "string"}}),
-            &["entity"],
+            json!({
+                "entities": {"type": "array", "items": {"type": "string"}},
+                "hops": {"type": "integer"},
+                "namespace": {"type": "string"}
+            }),
+            &["entities"],
         ),
         tool_schema(
             "community_search",
-            "Search entity clusters/communities matching a topic.",
-            json!({"query": {"type": "string"}, "namespace": {"type": "string"}}),
-            &["query"],
+            "Search entity clusters/communities matching a named entity.",
+            json!({
+                "name": {"type": "string"},
+                "limit": {"type": "integer"},
+                "namespace": {"type": "string"}
+            }),
+            &["name"],
         ),
         tool_schema(
             "check_contradictions",
@@ -231,7 +242,7 @@ pub fn all_tool_definitions() -> Vec<Value> {
                 "predicate": {"type": "string"},
                 "namespace": {"type": "string"}
             }),
-            &["statement", "subject", "predicate"],
+            &["statement"],
         ),
         tool_schema(
             "knowledge_health",
@@ -241,15 +252,19 @@ pub fn all_tool_definitions() -> Vec<Value> {
         ),
         tool_schema(
             "namespace_subscribe",
-            "Register a webhook URL to receive namespace memory events.",
+            "Register a subscription (with optional webhook URL) to receive namespace memory events.",
             json!({"webhook": {"type": "string"}, "namespace": {"type": "string"}}),
-            &["webhook"],
+            &[],
         ),
         tool_schema(
             "namespace_feed",
-            "Poll recent events/turns in a namespace feed since a cursor.",
-            json!({"since_id": {"type": "integer"}, "limit": {"type": "integer"}, "namespace": {"type": "string"}}),
-            &[],
+            "Poll recent events/turns in a namespace feed for a subscription.",
+            json!({
+                "subscription_id": {"type": "integer"},
+                "limit": {"type": "integer"},
+                "namespace": {"type": "string"}
+            }),
+            &["subscription_id"],
         ),
         tool_schema(
             "corpus_ingest",
@@ -257,6 +272,7 @@ pub fn all_tool_definitions() -> Vec<Value> {
             json!({
                 "name": {"type": "string"},
                 "text": {"type": "string"},
+                "kind": {"type": "string"},
                 "since": {"type": "string"},
                 "until": {"type": "string"},
                 "namespace": {"type": "string"}
@@ -292,6 +308,7 @@ pub fn all_tool_definitions() -> Vec<Value> {
             json!({
                 "diff": {"type": "string"},
                 "name": {"type": "string"},
+                "inherit": {"type": "boolean"},
                 "version": {"type": "string"},
                 "namespace": {"type": "string"}
             }),
@@ -312,13 +329,18 @@ pub fn all_tool_definitions() -> Vec<Value> {
         tool_schema(
             "ingest_file",
             "Ingest a document or text file into memory.",
-            json!({"filename": {"type": "string"}, "text": {"type": "string"}, "namespace": {"type": "string"}}),
+            json!({
+                "filename": {"type": "string"},
+                "text": {"type": "string"},
+                "extract": {"type": "boolean"},
+                "namespace": {"type": "string"}
+            }),
             &["filename", "text"],
         ),
         tool_schema(
             "segment_episodes",
             "Segment recent raw turns into episodic events.",
-            json!({"namespace": {"type": "string"}}),
+            json!({"gap_minutes": {"type": "integer"}, "namespace": {"type": "string"}}),
             &[],
         ),
         tool_schema(
@@ -330,30 +352,31 @@ pub fn all_tool_definitions() -> Vec<Value> {
         tool_schema(
             "get_episode",
             "Fetch a single episodic event and its source raw turns.",
-            json!({"episode_id": {"type": "integer"}, "namespace": {"type": "string"}}),
-            &["episode_id"],
+            json!({"id": {"type": "integer"}, "namespace": {"type": "string"}}),
+            &["id"],
         ),
         tool_schema(
             "decay_episodes",
             "Apply salience decay to aged episodic memories.",
-            json!({"namespace": {"type": "string"}}),
+            json!({"half_life_days": {"type": "integer"}, "namespace": {"type": "string"}}),
             &[],
         ),
         tool_schema(
             "copy_memories_from",
-            "Copy matching memories from a source namespace into a target namespace.",
+            "Copy or move matching memories from a source namespace into a target namespace.",
             json!({
-                "source_namespace": {"type": "string"},
-                "target_namespace": {"type": "string"},
-                "like": {"type": "string"}
+                "src": {"type": "string"},
+                "mode": {"type": "string"},
+                "like": {"type": "string"},
+                "namespace": {"type": "string"}
             }),
-            &["source_namespace"],
+            &["src"],
         ),
         tool_schema(
             "get_provenance",
             "Inspect source turn and observation timestamps for a semantic fact.",
-            json!({"fact_id": {"type": "integer"}, "namespace": {"type": "string"}}),
-            &["fact_id"],
+            json!({"id": {"type": "integer"}, "namespace": {"type": "string"}}),
+            &["id"],
         ),
         tool_schema(
             "get_context",
@@ -408,9 +431,12 @@ pub fn all_tool_definitions() -> Vec<Value> {
                 "name": {"type": "string"},
                 "role": {"type": "string"},
                 "harness": {"type": "string"},
+                "model": {"type": "string"},
                 "current_task": {"type": "string"},
-                "channels": {"type": "array", "items": {"type": "string"}},
+                "channels": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]},
+                "channel_ads": {"anyOf": [{"type": "object", "additionalProperties": {"type": "string"}}, {"type": "null"}]},
                 "ttl_seconds": {"type": "integer"},
+                "webhook": {"type": "string"},
                 "namespace": {"type": "string"}
             }),
             &["name"],
@@ -616,7 +642,7 @@ pub fn all_tool_definitions() -> Vec<Value> {
                 "channel": {"type": "string"},
                 "description": {"type": "string"},
                 "what_you_get": {"type": "string"},
-                "intents": {"type": "array", "items": {"type": "string"}},
+                "intents": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]},
                 "owner_session": {"type": "string"},
                 "namespace": {"type": "string"}
             }),
@@ -722,7 +748,11 @@ pub fn dispatch_tool_call(ctx: &McpContext, name: &str, args: &Value) -> Result<
             let sym = args.get("symptom").and_then(|v| v.as_str()).unwrap_or("");
             let cause = args.get("cause").and_then(|v| v.as_str()).unwrap_or("");
             let fix = args.get("fix").and_then(|v| v.as_str()).unwrap_or("");
-            let verify = args.get("verify").and_then(|v| v.as_str()).unwrap_or("");
+            let verify = args
+                .get("verify_cmd")
+                .or_else(|| args.get("verify"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let mut text = format!("SYMPTOM: {}\nCAUSE: {}\nFIX: {}", sym, cause, fix);
             if !verify.is_empty() {
                 text.push_str(&format!("\nVERIFY: {}", verify));
@@ -748,13 +778,15 @@ pub fn dispatch_tool_call(ctx: &McpContext, name: &str, args: &Value) -> Result<
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .unwrap_or(&info.name);
-            let body = json!({
+            let mut body = json!({
                 "namespace": ns,
                 "name": req_name,
                 "role": args.get("role").and_then(|v| v.as_str()).unwrap_or(""),
                 "harness": args.get("harness").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(&info.harness),
+                "model": args.get("model").and_then(|v| v.as_str()).unwrap_or(""),
                 "current_task": args.get("current_task").and_then(|v| v.as_str()).unwrap_or(""),
-                "channels": args.get("channels").cloned().unwrap_or(json!([])),
+                "channels": args.get("channels").filter(|v| !v.is_null()).cloned().unwrap_or(json!([])),
+                "channel_ads": args.get("channel_ads").filter(|v| !v.is_null()).cloned().unwrap_or(json!({})),
                 "ttl_seconds": args.get("ttl_seconds").and_then(|v| v.as_i64()).unwrap_or(1800),
                 "host": info.host,
                 "cwd": info.cwd,
@@ -762,6 +794,9 @@ pub fn dispatch_tool_call(ctx: &McpContext, name: &str, args: &Value) -> Result<
                 "pid": info.pid,
                 "tty": info.tty,
             });
+            if let Some(wh) = args.get("webhook").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
+                body["webhook"] = json!(wh);
+            }
             match ctx.post("/session/register", &body, 10) {
                 Ok(out) => {
                     if let Some(n) = out.get("name").and_then(|v| v.as_str()) {
@@ -935,7 +970,7 @@ pub fn dispatch_tool_call(ctx: &McpContext, name: &str, args: &Value) -> Result<
                 "channel": args.get("channel").and_then(|v| v.as_str()).unwrap_or(""),
                 "description": args.get("description").and_then(|v| v.as_str()).unwrap_or(""),
                 "what_you_get": args.get("what_you_get").and_then(|v| v.as_str()).unwrap_or(""),
-                "intents": args.get("intents").cloned().unwrap_or(json!([])),
+                "intents": args.get("intents").filter(|v| !v.is_null()).cloned().unwrap_or(json!([])),
                 "owner_session": sname,
             });
             ctx.post("/channel/advertise", &body, 10)
@@ -1047,6 +1082,41 @@ pub fn dispatch_tool_call(ctx: &McpContext, name: &str, args: &Value) -> Result<
             };
             let mut merged = args.clone();
             if let Some(obj) = merged.as_object_mut() {
+                match name {
+                    "get_entity" | "get_related" => {
+                        if !obj.contains_key("name") {
+                            if let Some(ent) = obj.get("entity").cloned() {
+                                obj.insert("name".to_string(), ent);
+                            }
+                        }
+                    }
+                    "community_search" => {
+                        if !obj.contains_key("name") {
+                            if let Some(q) = obj.get("query").cloned() {
+                                obj.insert("name".to_string(), q);
+                            }
+                        }
+                        if let Some(lim) = obj.get("limit").cloned() {
+                            obj.entry("max_nodes".to_string()).or_insert(lim);
+                        }
+                    }
+                    "copy_memories_from" => {
+                        if !obj.contains_key("src") {
+                            if let Some(s) = obj.get("source_namespace").cloned() {
+                                obj.insert("src".to_string(), s);
+                            }
+                        }
+                        if let Some(dst) = obj.get("target_namespace").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                            obj.insert("namespace".to_string(), json!(dst));
+                        }
+                    }
+                    "get_context" => {
+                        if let Some(bc) = obj.get("budget_chars").cloned() {
+                            obj.entry("max_chars".to_string()).or_insert(bc);
+                        }
+                    }
+                    _ => {}
+                }
                 obj.entry("namespace".to_string()).or_insert_with(|| json!(ns));
             }
             ctx.post(route, &merged, 30)

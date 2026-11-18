@@ -539,6 +539,23 @@ pub fn run_agent_setup(
         target_path.display(),
         ns
     );
+    let has_openai = env::var("OPENAI_API_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| cfg.openai.clone().filter(|s| !s.trim().is_empty()))
+        .is_some();
+    if !has_openai {
+        let (local_model, _) = crate::rerank::default_local_embed_model_from_env();
+        let (emb_spec, rerank_spec) = crate::rerank::specs_for_embed_model(&local_model);
+        if !crate::rerank::is_model_cached(emb_spec)
+            || !crate::rerank::is_model_cached(rerank_spec)
+        {
+            println!(
+                "[memnos] note: no external AI key detected — a one-time local neural model download (~{} MB) is required so embeddings and semantic recall run locally without external AI. Run `memnos models pull` (or `memnos start`) to download now.",
+                emb_spec.approx_mb + rerank_spec.approx_mb
+            );
+        }
+    }
     Ok(())
 }
 
