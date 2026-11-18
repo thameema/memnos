@@ -1032,7 +1032,7 @@ def channel_publish(channel: str, content: str, intent: str = "message", sender_
 def channel_registry(topic: str, task: str = "", description: str = "",
                      from_beginning: bool = False, session_name: str = "") -> str:
     """Register or join a global cross-namespace topic channel (e.g. '#arch-review' or a topic
-    phrase like 'abillz billing sync'). If the topic already exists in any namespace you can read,
+    phrase like 'payments sync'). If the topic already exists in any namespace you can read,
     subscribes to it; if not, creates it as a shared cross-namespace topic channel and subscribes.
     Optionally posts a competing-consumer `task` (claimed by one listener, never duplicated)."""
     try:
@@ -1511,7 +1511,7 @@ _session_lifecycle_started = False
 def _start_session_lifecycle_watcher():
     """Zero-touch terminal auto-registration & heartbeat for `memnos mcp` stdio processes.
     Detects the parent terminal agent (Claude Code, Antigravity, Gemini CLI, Cursor), assigns
-    a human-readable session name (e.g. `claude-memnos`, `agy-zudioz`), registers `machine_id`,
+    a human-readable session name (e.g. `claude-memnos`, `agy-webapp`), registers `machine_id`,
     `pid`, and `tty`, heartbeats every 25s while the parent PID is alive, and unregisters on exit."""
     global _session_lifecycle_started, _SESSION_DEFAULT
     if _session_lifecycle_started or os.environ.get("MEMNOS_MCP_AUTO_REGISTER", "1") == "0":

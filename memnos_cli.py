@@ -3193,7 +3193,7 @@ def cmd_inbox(args, cfg):
 
 _MEMNOS_TIPS = [
     ("Multi-Agent Topic Channels",
-     "/memnos registry <topic>  — join or create a shared cross-namespace topic channel (e.g. `/memnos registry #arch-review` or `/memnos registry abillz billing`) so Claude Code, Antigravity & Gemini coordinate hands-free."),
+     "/memnos registry <topic>  — join or create a shared cross-namespace topic channel (e.g. `/memnos registry #arch-review` or `/memnos registry payments sync`) so Claude Code, Antigravity & Gemini coordinate hands-free."),
     ("Competing-Consumer Tasks (Zero Duplicate Work)",
      "memnos registry <topic> --task \"...\"  — post a claimable task to a channel; delivered to and claimed by ONE listening agent session, never duplicated."),
     ("Hands-Free Agent Wakeup",
@@ -3279,11 +3279,11 @@ def cmd_tips(args, cfg):
 
 def cmd_registry(args, cfg):
     """Unified `/memnos registry [topic]` command:
-    - Auto-detects this terminal's human-readable session name (`claude-memnos`, `agy-zudioz`),
+    - Auto-detects this terminal's human-readable session name (`claude-memnos`, `agy-webapp`),
       OS PID, TTY, and `machine_id` (same-laptop vs remote).
     - Without `<topic>`: shows active sessions across this laptop and remote hosts, active global
       topic channels, and suggests a topic channel related to the current repo/branch.
-    - With `<topic>` (e.g. `memnos registry #arch-review` or `memnos registry "abillz billing"`):
+    - With `<topic>` (e.g. `memnos registry #arch-review` or `memnos registry "payments sync"`):
       subscribes if `#<topic>` already exists in any readable namespace, or creates it as a
       global cross-namespace topic channel and subscribes; optionally posts a claimable `--task`."""
     import nsresolve
@@ -6185,7 +6185,7 @@ def build_parser():
     v.set_defaults(fn=cmd_inbox)
 
     p = sub.add_parser("registry", help="join or create a global cross-namespace topic channel (or list active terminal sessions)")
-    p.add_argument("topic", nargs="*", help="topic channel name or phrase (e.g. '#arch-review' or 'abillz billing'); omit to list active sessions & channels")
+    p.add_argument("topic", nargs="*", help="topic channel name or phrase (e.g. '#arch-review' or 'payments sync'); omit to list active sessions & channels")
     p.add_argument("--task", default="", help="optional competing-consumer task to post to the topic channel (claimed by one listener)")
     p.add_argument("--description", "-d", default="", help="optional topic description")
     p.add_argument("--from-beginning", action="store_true", dest="from_beginning", help="replay existing messages on the topic channel")

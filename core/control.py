@@ -542,7 +542,12 @@ class Control:
                          ADD COLUMN IF NOT EXISTS recalled_at TIMESTAMPTZ,
                          ADD COLUMN IF NOT EXISTS recall_reason TEXT NOT NULL DEFAULT ''""")
             c.execute("""UPDATE memnos_control.channel_catalog SET global_topic = true
-                         WHERE channel IN ('#arch-review', '#abillz', '#daax2-arch')""")
+                         WHERE kind = 'topic' AND channel LIKE '#%' AND channel <> '#general'
+                           AND channel IN (
+                               SELECT channel FROM memnos_control.channel_catalog
+                               WHERE channel LIKE '#%' AND channel <> '#general'
+                               GROUP BY channel HAVING count(DISTINCT namespace) > 1
+                           )""")
             if Control._namespace_registry_needs_backfill(c):
                 # This wraps the WHOLE backfill call -- the paginated scan across both
                 # tables plus the final marker-row INSERT -- not just the marker row.

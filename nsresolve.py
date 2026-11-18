@@ -301,8 +301,8 @@ def clear_active_session(name=None, cwd=None):
 
 
 def _slugify_session_title(title):
-    """Turn a Claude/Tommy session title like 'Tommy | MEMNOS' or 'Tommy | DAAX | 37beb4cb'
-    into a valid session slug ('tommy-memnos', 'tommy-daax')."""
+    """Turn a session title like 'Claude | Backend' or 'Agent | WebApp | 37beb4cb'
+    into a valid session slug ('claude-backend', 'agent-webapp')."""
     t = re.sub(r"\|\s*[0-9a-f]{8}\s*$", "", (title or "").strip(), flags=re.IGNORECASE)
     s = re.sub(r"[^a-z0-9_.:-]+", "-", t.lower()).strip("-._:")
     return s[:64]
@@ -413,7 +413,7 @@ def detect_terminal_session(cwd=None, data=None) -> dict:
     """Inspect the parent process chain (`os.getppid()`) across macOS, Linux, and Windows to
     identify the active terminal agent (`claude`, `agy`/`antigravity`, `gemini`, `cursor`,
     `claude-desktop`), its OS PID, TTY/console, `machine_id`, and a human-readable, meaningful
-    session name (e.g. `claude-memnos`, `agy-zudioz`, `claude-memnos-rust-engine`)."""
+    session name (e.g. `claude-memnos`, `agy-webapp`, `claude-webapp-auth-redesign`)."""
     real_cwd = os.path.realpath((data or {}).get("cwd") or cwd or os.getcwd())
     explicit_name = resolve_active_session(cwd=real_cwd, data=data)
     harness = ""

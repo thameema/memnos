@@ -481,7 +481,7 @@
      "args": [
       {
        "arg": "topic",
-       "help": "topic channel name or phrase (e.g. '#arch-review' or 'abillz billing'); omit to list active sessions & channels",
+       "help": "topic channel name or phrase (e.g. '#arch-review' or 'payments sync'); omit to list active sessions & channels",
        "positional": true,
        "required": false
       },

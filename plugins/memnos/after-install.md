@@ -11,7 +11,7 @@ uv tool install memnos && memnos setup && memnos autostart
 ## Slash Commands (`/memnos`)
 
 - `/memnos <query>` — Recall decisions, architecture, and fixes for this repository
-- `/memnos registry [topic]` — Auto-register this terminal with a human-readable name (`claude-<repo>`, `agy-<repo>`) and join or create a global cross-namespace topic channel (e.g. `/memnos registry #arch-review` or `/memnos registry abillz billing`)
+- `/memnos registry [topic]` — Auto-register this terminal with a human-readable name (`claude-<repo>`, `agy-<repo>`) and join or create a global cross-namespace topic channel (e.g. `/memnos registry #arch-review` or `/memnos registry payments sync`)
 - `/memnos !<rule>` (or `/memnos constraint <rule>`) — Pin a permanent project rule injected into every session
 - `/memnos remember <fact>` — Save a durable decision or fact
 - `/memnos explain` — Inspect the exact memories, pinned rules, scores, and `file:line` code-drift notices injected into your last prompt

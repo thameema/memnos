@@ -270,7 +270,7 @@ join or create a global cross-namespace topic channel (or list active terminal s
 
 | argument | description |
 |---|---|
-| `topic` | topic channel name or phrase (e.g. '#arch-review' or 'abillz billing'); omit to list active sessions & channels (optional) |
+| `topic` | topic channel name or phrase (e.g. '#arch-review' or 'payments sync'); omit to list active sessions & channels (optional) |
 | `--task` | optional competing-consumer task to post to the topic channel (claimed by one listener) (default ``) |
 | `--description, -d` | optional topic description (default ``) |
 | `--from-beginning` | replay existing messages on the topic channel |

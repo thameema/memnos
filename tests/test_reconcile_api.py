@@ -85,7 +85,7 @@ def main():
 
     # unknown subject -> nothing to contradict
     s, j = call("/reconcile", user_tok, {"namespace": NS,
-                "statement": "Sirath uses Azure", "subject": "Sirath", "predicate": "uses"})
+                "statement": "AcmeApp uses Azure", "subject": "AcmeApp", "predicate": "uses"})
     check("unknown subject -> not stale, no matches", j.get("stale") is False and not j.get("matches"))
 
     cleanup(conn)
