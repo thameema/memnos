@@ -341,3 +341,207 @@ def resolve_active_session(cwd=None, data=None):
         return bound
     tp = (data or {}).get("transcript_path") or (data or {}).get("transcriptPath") or ""
     return _transcript_session_name(tp)
+
+
+def _git_branch(cwd=None) -> str:
+    try:
+        r = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd or os.getcwd(),
+                           capture_output=True, text=True, timeout=2).stdout.strip()
+        return r if r and r != "HEAD" else ""
+    except Exception:
+        return ""
+
+
+def is_local_pid_alive(pid) -> bool:
+    """Return True if integer `pid` is an existing OS process on THIS machine (macOS, Linux, Windows)."""
+    if not pid:
+        return False
+    try:
+        p = int(pid)
+        if p <= 1:
+            return False
+        if os.name == "nt":
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(0x1000, False, p)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not handle:
+                return False
+            try:
+                exit_code = ctypes.c_ulong()
+                if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return exit_code.value == 259  # STILL_ACTIVE
+                return True
+            finally:
+                kernel32.CloseHandle(handle)
+        os.kill(p, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+
+
+def infer_topic_channel(cwd=None, task: str = "", topic: str = "") -> str:
+    """Derive a clean, human-readable `#<topic>` channel name related to the topic discussed,
+    current git branch, or project context."""
+    raw = (topic or task or "").strip()
+    if raw:
+        slug = re.sub(r"[^a-z0-9]+", "-", raw.lower().lstrip("#")).strip("-")
+        # strip filler words at start if derived from a natural-language task
+        if not topic and len(slug) > 28:
+            words = [w for w in slug.split("-") if w not in ("the", "and", "for", "with", "please", "check", "fix", "update", "build", "test")]
+            slug = "-".join(words[:4])
+        slug = slug[:48].strip("-")
+        if slug:
+            return "#" + slug
+    real_cwd = os.path.realpath(cwd or os.getcwd())
+    root = _git_root(real_cwd) or real_cwd
+    repo_slug = re.sub(r"[^a-z0-9]+", "-", os.path.basename(root.rstrip("/\\")).lower()).strip("-")[:24] or "general"
+    branch = _git_branch(real_cwd)
+    branch_slug = ""
+    if branch and branch.lower() not in ("main", "master", "develop", "dev", "head", "trunk"):
+        branch_slug = re.sub(r"^(?:feat|feature|fix|bugfix|chore|hotfix|release)[/-]+", "", branch.lower())
+        branch_slug = re.sub(r"[^a-z0-9]+", "-", branch_slug).strip("-")[:24]
+    if branch_slug and branch_slug != repo_slug:
+        return f"#{repo_slug}-{branch_slug}"[:60]
+    return f"#{repo_slug}"
+
+
+def detect_terminal_session(cwd=None, data=None) -> dict:
+    """Inspect the parent process chain (`os.getppid()`) across macOS, Linux, and Windows to
+    identify the active terminal agent (`claude`, `agy`/`antigravity`, `gemini`, `cursor`,
+    `claude-desktop`), its OS PID, TTY/console, `machine_id`, and a human-readable, meaningful
+    session name (e.g. `claude-memnos`, `agy-zudioz`, `claude-memnos-rust-engine`)."""
+    real_cwd = os.path.realpath((data or {}).get("cwd") or cwd or os.getcwd())
+    explicit_name = resolve_active_session(cwd=real_cwd, data=data)
+    harness = ""
+    agent_pid = os.getppid()
+    tty_str = ""
+    cmd_name = ""
+
+    if os.name == "nt":
+        # Windows: check environment & parent PID via PowerShell/WMIC/tasklist fallback
+        if os.environ.get("ANTIGRAVITY_CLI") or os.environ.get("AGY_SESSION_ID"):
+            harness = "antigravity"
+        elif os.environ.get("CLAUDE_CODE") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.environ.get("CLAUDE_PROJECT_DIR"):
+            harness = "claude-code"
+        elif os.environ.get("CURSOR_VERSION") or os.environ.get("CURSOR_TRACE_ID"):
+            harness = "cursor"
+        elif os.environ.get("GEMINI_CLI"):
+            harness = "gemini"
+        tty_str = f"win-{agent_pid}"
+    else:
+        cur = os.getppid()
+        for _ in range(5):
+            if not cur or cur <= 1:
+                break
+            try:
+                out = subprocess.run(
+                    ["ps", "-o", "pid=,ppid=,tty=,comm=,args=", "-p", str(cur)],
+                    capture_output=True, text=True, timeout=2,
+                ).stdout.strip()
+            except Exception:
+                break
+            if not out:
+                break
+            parts = out.split(None, 4)
+            if len(parts) < 4:
+                break
+            p_pid = int(parts[0])
+            p_ppid = int(parts[1])
+            p_tty = parts[2] if parts[2] not in ("??", "?", "-") else ""
+            p_comm = parts[3].lower()
+            p_args = parts[4] if len(parts) > 4 else parts[3]
+            if p_tty and not tty_str:
+                tty_str = p_tty
+            low_args = p_args.lower()
+            if not harness:
+                if "claude.app" in low_args:
+                    harness = "claude-desktop"
+                    agent_pid = p_pid
+                elif re.search(r"(?:^|/|\s)claude(?:\s|$)", low_args) and "disclaimer" not in p_comm:
+                    harness = "claude-code"
+                    agent_pid = p_pid
+                    m = re.search(r"--name\s+(.+?)(?:\s+--|\s*$)", p_args)
+                    if m:
+                        cmd_name = _slugify_session_title(m.group(1).strip("\"' "))
+                elif re.search(r"(?:^|/|\s)(?:agy|antigravity)(?:\s|$)", low_args):
+                    harness = "antigravity"
+                    agent_pid = p_pid
+                elif re.search(r"(?:^|/|\s)gemini(?:\s|$)", low_args):
+                    harness = "gemini"
+                    agent_pid = p_pid
+                elif "cursor" in low_args:
+                    harness = "cursor"
+                    agent_pid = p_pid
+            cur = p_ppid
+
+    if not harness:
+        if os.environ.get("CLAUDE_PLUGIN_ROOT") or os.environ.get("CLAUDE_PROJECT_DIR"):
+            harness = "claude-code"
+        elif os.environ.get("CURSOR_VERSION"):
+            harness = "cursor"
+
+    if not tty_str and os.name != "nt":
+        try:
+            if os.isatty(0):
+                tty_str = os.path.basename(os.ttyname(0))
+        except Exception:
+            pass
+
+    root = _git_root(real_cwd) or real_cwd
+    repo_slug = re.sub(r"[^a-z0-9]+", "-", os.path.basename(root.rstrip("/\\")).lower()).strip("-")[:22] or "workspace"
+    branch = _git_branch(real_cwd)
+    branch_slug = ""
+    if branch and branch.lower() not in ("main", "master", "develop", "dev", "head", "trunk"):
+        branch_slug = re.sub(r"^(?:feat|feature|fix|bugfix|chore|hotfix|release)[/-]+", "", branch.lower())
+        branch_slug = re.sub(r"[^a-z0-9]+", "-", branch_slug).strip("-")[:18]
+
+    rel_sub = ""
+    if real_cwd != root and real_cwd.startswith(root):
+        sub = os.path.relpath(real_cwd, root).split(os.sep)[0]
+        if sub and sub not in (".", "..", "src", "lib", "app", "apps", "packages"):
+            rel_sub = re.sub(r"[^a-z0-9]+", "-", sub.lower()).strip("-")[:14]
+
+    h_prefix = {
+        "claude-code": "claude",
+        "claude-desktop": "claude-app",
+        "antigravity": "agy",
+        "gemini": "gemini",
+        "cursor": "cursor",
+    }.get(harness, "agent")
+    h_title = {
+        "claude-code": "Claude Code",
+        "claude-desktop": "Claude Desktop",
+        "antigravity": "Antigravity",
+        "gemini": "Gemini CLI",
+        "cursor": "Cursor",
+    }.get(harness, "Agent")
+
+    name = explicit_name or cmd_name
+    auto_named = False
+    if not name:
+        auto_named = True
+        context_slug = branch_slug or rel_sub
+        base_name = f"{h_prefix}-{repo_slug}-{context_slug}" if (context_slug and context_slug != repo_slug) else f"{h_prefix}-{repo_slug}"
+        name = re.sub(r"[^a-z0-9_.-]+", "-", base_name.lower()).strip("-")[:64]
+
+    tty_slug = re.sub(r"[^a-z0-9]+", "", tty_str.lower().replace("/dev/", "").replace("ttys", "s").replace("pts", "p"))
+    topic_channel = infer_topic_channel(cwd=real_cwd)
+    display_label = f"{h_title} · {repo_slug}" + (f" ({branch})" if branch else "") + (f" [{tty_str}]" if tty_str else "")
+
+    return {
+        "name": name,
+        "fallback_suffix": tty_slug or f"p{agent_pid % 10000}",
+        "display_label": display_label,
+        "suggested_topic": topic_channel,
+        "harness": harness or "cli",
+        "pid": agent_pid,
+        "tty": tty_str,
+        "machine_id": machine_id(),
+        "host": socket.gethostname() or "localhost",
+        "cwd": real_cwd,
+        "auto_named": auto_named,
+    }

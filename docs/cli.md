@@ -120,6 +120,14 @@ audit what the last /recall injected (pinned constraints, scores, code drift, ti
 memnos explain --limit 3
 ```
 
+### `memnos tips`
+
+show the MEMNOS feature showcase and rotating workflow tips
+
+```bash
+memnos tips
+```
+
 
 ## Server lifecycle
 
@@ -251,6 +259,43 @@ run the stdio MCP adapter (Claude Code / Cursor / Windsurf config)
 
 ```bash
 memnos mcp --namespace proj:myapp
+```
+
+
+## Multi-agent coordination
+
+### `memnos registry`
+
+join or create a global cross-namespace topic channel (or list active terminal sessions)
+
+| argument | description |
+|---|---|
+| `topic` | topic channel name or phrase (e.g. '#arch-review' or 'abillz billing'); omit to list active sessions & channels (optional) |
+| `--task` | optional competing-consumer task to post to the topic channel (claimed by one listener) (default ``) |
+| `--description, -d` | optional topic description (default ``) |
+| `--from-beginning` | replay existing messages on the topic channel |
+| `--session` | override auto-detected human-readable session name |
+| `--namespace, -n` | namespace (default: auto-resolve) |
+| `--token` | bearer token |
+
+```bash
+memnos registry #arch-review --task 'Review the Rust single-binary PR'
+```
+
+### `memnos watch`
+
+hands-free LISTEN/NOTIFY watcher — blocks until a peer message or task arrives, then prints it and exits
+
+| argument | description |
+|---|---|
+| `--channel` | optional channel filter (e.g. '#arch-review') |
+| `--timeout` | max seconds to wait (default 300) (default `300`) |
+| `--session` | override auto-detected session name |
+| `--namespace, -n` | namespace (default: auto-resolve) |
+| `--token` | bearer token |
+
+```bash
+memnos watch --timeout 300
 ```
 
 
@@ -579,6 +624,10 @@ platform health check + automatic entity-graph cleanup
 | `--dry-run` | report entity-graph cleanup counts without writing |
 | `--namespace, -n` | scope entity-graph cleanup to one namespace |
 
+```bash
+memnos doctor --fix
+```
+
 
 ## Agent integrations
 
@@ -722,6 +771,19 @@ pull server bindings into the local cache + register THIS host now
 |---|---|
 | `--token` | bearer token (else $MEMNOS_TOKEN / config) |
 
+### `memnos channel ack`
+
+mark a claimed competing-consumer channel task done or release it
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `--session` | session name (default: $MEMNOS_SESSION) |
+| `id` | channel message id |
+| `--action` | (one of: `done`, `release`; default `done`) |
+| `--resolution` | optional resolution summary (default ``) |
+
 ### `memnos channel advertise`
 
 describe a channel so peers can discover it
@@ -782,6 +844,7 @@ publish a message
 | `message` |  |
 | `--intent` | (one of: `message`, `status`, `task`, `review_request`, `critique`, `question`, `answer`, `handoff`, `done`; default `message`) |
 | `--remember` | also save to long-term memory |
+| `--claimable` | competing-consumer task: delivered to and claimed by ONE listening session (no duplicate work) |
 
 ### `memnos channel sub`
 
@@ -919,6 +982,20 @@ list this session's inbox
 ### `memnos inbox recall`
 
 cancel something you sent before it is acted on
+
+| argument | description |
+|---|---|
+| `--namespace` |  |
+| `--token` |  |
+| `--session` | session name (default: $MEMNOS_SESSION) |
+| `id` | inbox message id (optional) |
+| `--channel-message-id` |  |
+| `--thread-key` | (default ``) |
+| `--reason` | (default ``) |
+
+### `memnos inbox retract`
+
+retract (unsend) an inbox item or channel post you sent before it is acted on
 
 | argument | description |
 |---|---|

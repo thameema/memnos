@@ -127,7 +127,8 @@ WRITE_OPS = {"/remember", "/consolidate", "/memory/write", "/memory/delete", "/c
              "/namespace/copy", "/lease/acquire", "/lease/heartbeat", "/lease/release",
              "/session/register", "/session/heartbeat", "/session/unregister",
              "/channel/publish", "/channel/subscribe", "/channel/unsubscribe", "/channel/advertise",
-             "/inbox/send", "/inbox/recall", "/inbox/act", "/channel/cleanup"}
+             "/channel/registry", "/channel/ack",
+             "/inbox/send", "/inbox/recall", "/inbox/retract", "/inbox/act", "/channel/cleanup"}
 
 
 def _suggest_enabled():
@@ -411,7 +412,9 @@ def _listen_loop():
                     except (ValueError, TypeError, AttributeError):
                         pass
                     with _WAIT_LOCK:
-                        events = list(_WAIT_WAITERS.get(ns, ()))
+                        # Wake both same-namespace waiters and all active waiters so cross-namespace
+                        # global_topic channels (#arch-review, etc.) wake subscribers in <10ms.
+                        events = [ev for s in _WAIT_WAITERS.values() for ev in s]
                     for ev in events:
                         ev.set()
         except (OperationalError, psycopg.Error):
@@ -1568,13 +1571,19 @@ class Handler(BaseHTTPRequestHandler):
                                 current_task=str(req.get("current_task", "")),
                                 metadata=req.get("metadata"), channels=req.get("channels"),
                                 channel_ads=req.get("channel_ads"),
-                                ttl_seconds=int(req.get("ttl_seconds", 1800)), **webhook_kwargs)
+                                ttl_seconds=int(req.get("ttl_seconds", 1800)),
+                                machine_id=str(req.get("machine_id", "")),
+                                pid=req.get("pid"), tty=str(req.get("tty", "")),
+                                run_state=str(req.get("run_state", "idle")),
+                                **webhook_kwargs)
                         elif self.path == "/session/heartbeat":
                             out = Control.session_heartbeat(
                                 conn, ns, sess, principal, status=req.get("status"),
                                 current_task=req.get("current_task"), metadata=req.get("metadata"),
                                 ttl_seconds=int(req.get("ttl_seconds", 1800)),
-                                publish_status=bool(req.get("publish_status", True)))
+                                publish_status=bool(req.get("publish_status", True)),
+                                machine_id=req.get("machine_id"), pid=req.get("pid"),
+                                tty=req.get("tty"), run_state=req.get("run_state"))
                             if out is None:
                                 return self._send(404, {"error": "session not registered by this principal"})
                         elif self.path == "/session/unregister":
@@ -1588,7 +1597,8 @@ class Handler(BaseHTTPRequestHandler):
                                 conn, ns, req.get("channel"), sess, principal, str(req.get("content", "")),
                                 intent=str(req.get("intent", "message")), metadata=req.get("metadata"),
                                 description=str(req.get("description", "")),
-                                what_you_get=str(req.get("what_you_get", "")))
+                                what_you_get=str(req.get("what_you_get", "")),
+                                claimable=bool(req.get("claimable", False)))
                             if req.get("remember"):
                                 mt = "decision" if out["intent"] in ("answer", "done") else "handoff"
                                 store.insert_raw_turn(
@@ -1596,6 +1606,25 @@ class Handler(BaseHTTPRequestHandler):
                                     f"[{out['sender_session']} -> {out['channel']} ({out['intent']})] {out['content']}",
                                     datetime.now(timezone.utc), None, author=pname, memory_type=mt)
                                 out["remembered"] = True
+                        elif self.path == "/channel/registry":
+                            out = Control.channel_registry(
+                                conn, ns, req.get("topic") or req.get("channel"), sess, principal,
+                                description=str(req.get("description", "")),
+                                what_you_get=str(req.get("what_you_get", "")),
+                                from_beginning=bool(req.get("from_beginning", False)),
+                                task=str(req.get("task", "")),
+                                harness=str(req.get("harness", "")),
+                                role=str(req.get("role", "")),
+                                host=str(req.get("host", "")),
+                                cwd=str(req.get("cwd", "")),
+                                machine_id=str(req.get("machine_id", "")),
+                                pid=req.get("pid"),
+                                tty=str(req.get("tty", "")))
+                        elif self.path == "/channel/ack":
+                            out = Control.channel_ack(
+                                conn, ns, sess, principal, req.get("message_id"),
+                                action=str(req.get("action", "done")),
+                                resolution=str(req.get("resolution", "")))
                         elif self.path == "/channel/subscribe":
                             out = Control.channel_subscribe(conn, ns, sess, principal, req.get("channels"),
                                                             from_beginning=bool(req.get("from_beginning", False)),
@@ -1664,7 +1693,7 @@ class Handler(BaseHTTPRequestHandler):
                                 replaces_id=req.get("replaces_id"),
                                 replace_pending=bool(req.get("replace_pending", False)),
                                 in_reply_to=req.get("in_reply_to"), metadata=req.get("metadata"))
-                        elif self.path == "/inbox/recall":
+                        elif self.path in ("/inbox/recall", "/inbox/retract"):
                             out = Control.inbox_recall(
                                 conn, ns, principal, message_id=req.get("message_id"),
                                 channel_message_id=req.get("channel_message_id"),

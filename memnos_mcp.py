@@ -1012,18 +1012,63 @@ def session_unregister(name: str = "") -> str:
 
 @mcp.tool()
 def channel_publish(channel: str, content: str, intent: str = "message", sender_session: str = "",
-                    remember: bool = False, reply_to: int = 0) -> str:
+                    remember: bool = False, reply_to: int = 0, claimable: bool = False) -> str:
     """Post to a channel: '#review' topic, '@claude-dev' direct inbox, 'status:<session>'.
     intent: message|status|task|review_request|critique|question|answer|handoff|done.
+    claimable=true marks a task as competing-consumer (delivered/claimed by exactly one listening session).
     remember=true also saves it to long-term memory. reply_to = id of the message answered."""
     try:
         body = {"channel": channel, "content": content, "intent": intent,
-                "sender_session": _sess(sender_session), "remember": remember}
+                "sender_session": _sess(sender_session), "remember": remember,
+                "claimable": bool(claimable)}
         if reply_to:
             body["metadata"] = {"reply_to": reply_to}
         return _chan_call("/channel/publish", body, "channel_publish")
     except ValueError as e:
         return f"(memnos channel_publish: {e})"
+
+
+@mcp.tool()
+def channel_registry(topic: str, task: str = "", description: str = "",
+                     from_beginning: bool = False, session_name: str = "") -> str:
+    """Register or join a global cross-namespace topic channel (e.g. '#arch-review' or a topic
+    phrase like 'abillz billing sync'). If the topic already exists in any namespace you can read,
+    subscribes to it; if not, creates it as a shared cross-namespace topic channel and subscribes.
+    Optionally posts a competing-consumer `task` (claimed by one listener, never duplicated)."""
+    try:
+        info = nsresolve.detect_terminal_session(cwd=os.getcwd()) if nsresolve else {}
+        sess = session_name or _SESSION_DEFAULT or info.get("name") or _sess("")
+        body = {
+            "topic": topic,
+            "session_name": sess,
+            "task": task,
+            "description": description,
+            "from_beginning": bool(from_beginning),
+            "harness": info.get("harness", ""),
+            "host": info.get("host", ""),
+            "cwd": info.get("cwd", os.getcwd()),
+            "machine_id": info.get("machine_id", ""),
+            "pid": info.get("pid"),
+            "tty": info.get("tty", ""),
+        }
+        return _chan_call("/channel/registry", body, "channel_registry")
+    except ValueError as e:
+        return f"(memnos channel_registry: {e})"
+
+
+@mcp.tool()
+def channel_ack(message_id: int, action: str = "done", resolution: str = "",
+                session_name: str = "") -> str:
+    """Complete ('done') or release ('release') a competing-consumer channel task claimed by this session."""
+    try:
+        return _chan_call("/channel/ack", {
+            "session_name": _sess(session_name),
+            "message_id": int(message_id),
+            "action": action,
+            "resolution": resolution,
+        }, "channel_ack")
+    except ValueError as e:
+        return f"(memnos channel_ack: {e})"
 
 
 @mcp.tool()
@@ -1097,8 +1142,9 @@ def inbox_send(to_session: str, content: str, subject: str = "", intent: str = "
 @mcp.tool()
 def inbox_recall(message_id: int = 0, channel_message_id: int = 0, thread_key: str = "",
                  reason: str = "", sender_session: str = "") -> str:
-    """Cancel something you sent before the recipient acts on it: an inbox item (message_id, or
-    thread_key) and/or a channel post (channel_message_id). Acted items can't be recalled."""
+    """RETRACT / UNSEND a message YOU sent before the recipient acts on it (NOT for reading your
+    inbox — use `inbox_list` to read your inbox): an inbox item (message_id, or thread_key)
+    and/or a channel post (channel_message_id). Acted items can't be recalled."""
     try:
         body = {"thread_key": thread_key, "reason": reason, "sender_session": _sess(sender_session)}
         if message_id:
@@ -1108,6 +1154,14 @@ def inbox_recall(message_id: int = 0, channel_message_id: int = 0, thread_key: s
         return _chan_call("/inbox/recall", body, "inbox_recall")
     except ValueError as e:
         return f"(memnos inbox_recall: {e})"
+
+
+@mcp.tool()
+def inbox_retract(message_id: int = 0, channel_message_id: int = 0, thread_key: str = "",
+                  reason: str = "", sender_session: str = "") -> str:
+    """Retract (unsend) an inbox item or channel message you sent before the recipient acts on it."""
+    return inbox_recall(message_id=message_id, channel_message_id=channel_message_id,
+                        thread_key=thread_key, reason=reason, sender_session=sender_session)
 
 
 @mcp.tool()
@@ -1451,12 +1505,98 @@ def _reexec_watch_loop():
         return
 
 
+_session_lifecycle_started = False
+
+
+def _start_session_lifecycle_watcher():
+    """Zero-touch terminal auto-registration & heartbeat for `memnos mcp` stdio processes.
+    Detects the parent terminal agent (Claude Code, Antigravity, Gemini CLI, Cursor), assigns
+    a human-readable session name (e.g. `claude-memnos`, `agy-zudioz`), registers `machine_id`,
+    `pid`, and `tty`, heartbeats every 25s while the parent PID is alive, and unregisters on exit."""
+    global _session_lifecycle_started, _SESSION_DEFAULT
+    if _session_lifecycle_started or os.environ.get("MEMNOS_MCP_AUTO_REGISTER", "1") == "0":
+        return
+    if nsresolve is None:
+        return
+    _session_lifecycle_started = True
+
+    def _lifecycle_loop():
+        global _SESSION_DEFAULT
+        import atexit
+        try:
+            info = nsresolve.detect_terminal_session(cwd=os.getcwd())
+        except Exception:
+            return
+        sess_name = info.get("name") or ""
+        parent_pid = info.get("pid")
+        if not sess_name:
+            return
+        ns = _ns()
+        registered_name = ""
+        try:
+            resp = _post("/session/register", {
+                "namespace": ns,
+                "name": sess_name,
+                "harness": info.get("harness", ""),
+                "host": info.get("host", ""),
+                "cwd": info.get("cwd", os.getcwd()),
+                "machine_id": info.get("machine_id", ""),
+                "pid": parent_pid,
+                "tty": info.get("tty", ""),
+                "ttl_seconds": 120,
+                "metadata": {
+                    "auto_named": bool(info.get("auto_named")),
+                    "display_label": info.get("display_label", ""),
+                    "suggested_topic": info.get("suggested_topic", ""),
+                },
+            })
+            registered_name = resp.get("name") or sess_name
+            if not _SESSION_DEFAULT:
+                _SESSION_DEFAULT = registered_name
+            if not nsresolve.resolve_active_session(cwd=info.get("cwd")):
+                nsresolve.save_active_session(registered_name, cwd=info.get("cwd"), namespace=ns)
+        except Exception:
+            registered_name = sess_name
+
+        def _cleanup_on_exit():
+            if registered_name and info.get("auto_named"):
+                try:
+                    _post("/session/unregister", {"namespace": ns, "name": registered_name})
+                except Exception:
+                    pass
+
+        atexit.register(_cleanup_on_exit)
+
+        while True:
+            time.sleep(25)
+            if parent_pid and not nsresolve.is_local_pid_alive(parent_pid):
+                _cleanup_on_exit()
+                return
+            try:
+                cur_sess = _SESSION_DEFAULT or registered_name
+                _post("/session/heartbeat", {
+                    "namespace": _ns(),
+                    "name": cur_sess,
+                    "machine_id": info.get("machine_id", ""),
+                    "pid": parent_pid,
+                    "tty": info.get("tty", ""),
+                    "ttl_seconds": 120,
+                    "publish_status": False,
+                })
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_lifecycle_loop, name="memnos-session-lifecycle", daemon=True)
+    t.start()
+
+
 def run_stdio():
     """Entry point for the stdio transport (`memnos mcp` / `python memnos_mcp.py`).
-    Starts the self-re-exec watcher (issue #68) before handing off to mcp.run() —
-    scoped to stdio only; the HTTP-mounted transport (memnos_server.py) never calls
-    this."""
+    Starts the self-re-exec watcher (issue #68) and zero-touch session lifecycle watcher
+    before handing off to mcp.run() — scoped to stdio only; the HTTP-mounted transport
+    (memnos_server.py) never calls this."""
     _start_reexec_watcher()
+    _start_session_lifecycle_watcher()
     mcp.run()
 
 

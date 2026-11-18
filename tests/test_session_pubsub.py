@@ -783,3 +783,120 @@ def test_26_channel_cleanup_lifecycle(env):
     assert {"#cl-keep", "#general", "@cl-live"} <= set(live["channels"])
     s, _ = call("/session/register", tb, {"namespace": NS, "name": "cl-dead"})
     assert s == 200
+
+
+def test_27_agent_mesh_registry_claimable_and_pid_reaping(env):
+    """Verify the 6-Pillar Autonomous Agent Mesh:
+    1. Same-laptop PID liveness & dead-PID reaping + human-readable auto-name disambiguation.
+    2. Global topic channel (`/channel/registry`) shared across namespaces readable by the principal
+       (and natural-language topic slugification).
+    3. Competing-consumer task claiming (`claimable=True`) — delivered to & claimed by ONE listener,
+       released on `channel_ack(action='release')`, completed on `channel_ack(action='done')`.
+    4. `/inbox/retract` alias for `/inbox/recall`.
+    """
+    import socket
+    from core.control import Control
+    ta = env["ta"]
+    local_mid, local_host = Control._local_machine_info()
+
+    # 1. Human-readable auto_named disambiguation + dead local PID reaping
+    s, r1 = call("/session/register", ta, {
+        "namespace": NS, "name": "claude-memnos", "harness": "claude-code",
+        "host": local_host, "machine_id": local_mid, "pid": os.getpid(), "tty": "ttys001",
+        "metadata": {"auto_named": True},
+    })
+    assert s == 200 and r1["name"] == "claude-memnos"
+    # Second live terminal on a different TTY with auto_named=True gets disambiguated to claude-memnos-2
+    s, r2 = call("/session/register", ta, {
+        "namespace": NS, "name": "claude-memnos", "harness": "claude-code",
+        "host": local_host, "machine_id": local_mid, "pid": os.getppid(), "tty": "ttys002",
+        "metadata": {"auto_named": True},
+    })
+    assert s == 200 and r2["name"] == "claude-memnos-2"
+
+    # Register a session with a dead PID on the same laptop -> reaped automatically on session_list
+    s, r_dead = call("/session/register", ta, {
+        "namespace": NS, "name": "dead-local-term", "harness": "claude-code",
+        "host": local_host, "machine_id": local_mid, "pid": 999999, "tty": "ttys099",
+    })
+    assert s == 200
+    s, slist = call("/session/list", ta, {"namespace": NS})
+    assert s == 200
+    active_names = {x["name"] for x in slist["sessions"]}
+    assert "dead-local-term" not in active_names
+    assert "claude-memnos" in active_names and "claude-memnos-2" in active_names
+    me_row = next(x for x in slist["sessions"] if x["name"] == "claude-memnos")
+    assert me_row["same_laptop"] is True and me_row["pid_alive"] is True
+
+    # 2. Global topic channel across namespaces + natural-language topic slugification
+    NS_SIB = NS + ":subproj"
+    with env["conn"].cursor() as c:
+        for t in ("agent_inbox", "channel_subscriptions", "channel_messages", "agent_sessions", "channel_catalog"):
+            c.execute(f"DELETE FROM memnos_control.{t} WHERE namespace=%s", (NS_SIB,))
+    try:
+        Control.grant(env["conn"], env["pa"], NS_SIB)
+        s, reg1 = call("/channel/registry", ta, {
+            "namespace": NS, "topic": "rust single binary", "session_name": "claude-memnos",
+        })
+        assert s == 200 and reg1["channel"] == "#rust-single-binary" and reg1["existed"] is False
+        s, reg2 = call("/channel/registry", ta, {
+            "namespace": NS_SIB, "topic": "#rust-single-binary", "session_name": "agy-memnos",
+        })
+        assert s == 200 and reg2["channel"] == "#rust-single-binary" and reg2["existed"] is True
+        assert len(reg2["subscribers"]) >= 2
+
+        # 3. Competing-consumer task claiming across NS and NS_SIB: only ONE session claims the task!
+        s, pub = call("/channel/publish", ta, {
+            "namespace": NS, "channel": "#rust-single-binary", "sender_session": "claude-memnos",
+            "content": "Benchmark the Rust hook binary", "intent": "task", "claimable": True,
+        })
+        assert s == 200 and pub["claimable"] is True and pub["claim_status"] == "pending"
+
+        # Establish a second worker in NS (`claude-memnos-2`) subscribed to `#rust-single-binary`
+        call("/channel/registry", ta, {
+            "namespace": NS, "topic": "#rust-single-binary", "session_name": "claude-memnos-2",
+        })
+
+        # Poll from `agy-memnos` in NS_SIB -> claims the task!
+        s, poll_agy = call("/channel/poll", ta, {
+            "namespace": NS_SIB, "session_name": "agy-memnos", "channel": "#rust-single-binary",
+        })
+        assert s == 200
+        claimed_msgs = [m for m in poll_agy["messages"] if m["id"] == pub["id"]]
+        assert len(claimed_msgs) == 1 and claimed_msgs[0]["claimed_by"] == "agy-memnos"
+
+        # Poll from `claude-memnos-2` in NS -> must NOT receive the already-claimed task (zero duplicate work)!
+        s, poll_w2 = call("/channel/poll", ta, {
+            "namespace": NS, "session_name": "claude-memnos-2", "channel": "#rust-single-binary",
+        })
+        assert s == 200
+        assert all(m["id"] != pub["id"] for m in poll_w2["messages"])
+
+        # Release the task from `agy-memnos` -> now `claude-memnos-2` can claim it and mark it done!
+        s, ack_rel = call("/channel/ack", ta, {
+            "namespace": NS_SIB, "session_name": "agy-memnos", "message_id": pub["id"], "action": "release",
+        })
+        assert s == 200 and ack_rel["claim_status"] == "pending"
+
+        s, poll_w2_retry = call("/channel/poll", ta, {
+            "namespace": NS, "session_name": "claude-memnos-2", "channel": "#rust-single-binary",
+        })
+        assert s == 200 and any(m["id"] == pub["id"] and m["claimed_by"] == "claude-memnos-2" for m in poll_w2_retry["messages"])
+
+        s, ack_done = call("/channel/ack", ta, {
+            "namespace": NS, "session_name": "claude-memnos-2", "message_id": pub["id"],
+            "action": "done", "resolution": "hyperfine benchmark complete",
+        })
+        assert s == 200 and ack_done["claim_status"] == "done"
+
+        # 4. `/inbox/retract` alias works identically to `/inbox/recall`
+        m = _isend(env, "RETRACT-ALIAS-TEST")
+        s, ret = call("/inbox/retract", ta, {
+            "namespace": NS, "sender_session": "inb-send", "message_id": m["id"], "reason": "testing retract alias",
+        })
+        assert s == 200 and ret["recalled"] is True
+    finally:
+        # Clean up NS_SIB rows so fixture teardown can delete principals cleanly
+        with env["conn"].cursor() as c:
+            for t in ("agent_inbox", "channel_subscriptions", "channel_messages", "agent_sessions", "channel_catalog"):
+                c.execute(f"DELETE FROM memnos_control.{t} WHERE namespace=%s", (NS_SIB,))

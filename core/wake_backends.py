@@ -136,7 +136,8 @@ def select_backend(name=None):
         if cls is None:
             raise ValueError(f"unknown wake backend '{name}' (choices: {', '.join(_BACKENDS)})")
         return cls()
-    for cls in (OrcaBackend, TmuxBackend, NoopBackend):
+    # Never auto-select OrcaBackend unless explicitly requested via --backend orca
+    for cls in (TmuxBackend, NoopBackend):
         if cls.available():
             return cls()
     return NoopBackend()
