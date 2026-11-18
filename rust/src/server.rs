@@ -166,7 +166,32 @@ async fn readyz_handler(State(st): State<AppState>) -> Response {
     )
 }
 
-async fn metrics_handler(State(st): State<AppState>) -> Response {
+async fn metrics_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(qs): Query<HashMap<String, String>>,
+) -> Response {
+    let tok = bearer_token(&headers).unwrap_or_default();
+    match Control::authenticate(&st.pool, &tok).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return json_resp(StatusCode::UNAUTHORIZED, json!({ "error": "unauthorized" })),
+        Err(e) => return ctrl_err_resp(e),
+    }
+    let hours = qs
+        .get("hours")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(24)
+        .clamp(1, 720);
+    match Control::stats(&st.pool, hours).await {
+        Ok(ops) => json_resp(
+            StatusCode::OK,
+            json!({ "window_hours": hours, "ops": ops }),
+        ),
+        Err(e) => ctrl_err_resp(e),
+    }
+}
+
+async fn metrics_prometheus_handler(State(st): State<AppState>) -> Response {
     let warm = if st.warm_proven.load(Ordering::Relaxed) {
         1
     } else {
@@ -185,7 +210,11 @@ async fn metrics_handler(State(st): State<AppState>) -> Response {
         lines.push("# TYPE memnos_ops_24h gauge".to_string());
         for row in ops {
             let act = row.get("action").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let total = row.get("total").and_then(|v| v.as_i64()).unwrap_or(0);
+            let total = row
+                .get("calls")
+                .or_else(|| row.get("total"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             lines.push(format!("memnos_ops_24h{{action={:?}}} {}", act, total));
         }
     }
@@ -997,7 +1026,26 @@ async fn admin_api_handler(
             )
         }
         ("health", Method::GET) => match Control::health(&st.pool, 24).await {
-            Ok(v) => json_resp(StatusCode::OK, v),
+            Ok(v) => {
+                let findings: Vec<Value> = v
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|item| {
+                                if let Some(pair) = item.as_array() {
+                                    json!({
+                                        "level": pair.first().and_then(|x| x.as_str()).unwrap_or("INFO"),
+                                        "msg": pair.get(1).and_then(|x| x.as_str()).unwrap_or(""),
+                                    })
+                                } else {
+                                    item.clone()
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                json_resp(StatusCode::OK, json!({ "findings": findings }))
+            }
             Err(e) => ctrl_err_resp(e),
         },
         ("quality", Method::GET) => {
@@ -1150,7 +1198,7 @@ async fn api_post_handler(
         .flatten()
         .and_then(|v| v.get("name").and_then(|s| s.as_str()).map(|s| s.to_string()));
 
-    let ns = req
+    let raw_ns = req
         .get("namespace")
         .and_then(|v| v.as_str())
         .or_else(|| {
@@ -1159,17 +1207,34 @@ async fn api_post_handler(
                 .and_then(|h| h.to_str().ok())
         })
         .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("default")
-        .to_string();
+        .filter(|s| !s.is_empty());
 
     let scope_wide = matches!(
         req.get("scope").and_then(|v| v.as_str()),
         Some("all" | "wide")
     );
+    let ns_optional = (scope_wide
+        && matches!(
+            path,
+            "/recall" | "/recall_v2" | "/memory/search" | "/memory/context"
+        ))
+        || path == "/recall/explain";
+    let ns = match raw_ns {
+        Some(s) => s.to_string(),
+        None if ns_optional => "default".to_string(),
+        None => {
+            return json_resp(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "namespace required" }),
+            );
+        }
+    };
+
     let write = is_write_op(path);
 
-    if !(scope_wide && matches!(path, "/recall" | "/recall_v2" | "/memory/search" | "/memory/context")) {
+    if !(scope_wide && matches!(path, "/recall" | "/recall_v2" | "/memory/search" | "/memory/context"))
+        && path != "/recall/explain"
+    {
         match Control::authorize(&st.pool, pid, &ns, write).await {
             Ok(true) => {}
             Ok(false) => {
@@ -1194,36 +1259,6 @@ async fn api_post_handler(
         }
     }
 
-    let build_recall_opts = |ancestors: Vec<String>, overrides: HashSet<(String, String)>| -> RecallOpts {
-        let k = req.get("k").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
-        let max_chars = req
-            .get("max_chars")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(6000) as usize;
-        let subject = req
-            .get("subject")
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-        let repo_root = req
-            .get("repo_root")
-            .or_else(|| req.get("cwd"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from);
-        RecallOpts {
-            k: k.clamp(1, 100),
-            raw_quota: 4,
-            fact_quota: 8,
-            max_chars,
-            ancestors,
-            overrides,
-            subject,
-            viewer: principal_name.clone(),
-            repo_root,
-        }
-    };
-
     let result: Result<(StatusCode, Value), Response> = match path {
         "/remember" | "/memory/write" => {
             let text = req
@@ -1235,10 +1270,29 @@ async fn api_post_handler(
             if text.is_empty() {
                 return json_resp(StatusCode::BAD_REQUEST, json!({ "error": "text required" }));
             }
+            let mtype: Option<&str> = match req.get("type").or_else(|| req.get("memory_type")) {
+                None | Some(Value::Null) => None,
+                Some(Value::String(s)) if s.trim().is_empty() => None,
+                Some(Value::String(s)) => {
+                    let t = s.trim();
+                    if !ALLOWED_MEMORY_TYPES.contains(&t) {
+                        return json_resp(
+                            StatusCode::BAD_REQUEST,
+                            json!({ "error": format!("unknown memory type {:?}", t) }),
+                        );
+                    }
+                    Some(t)
+                }
+                _ => {
+                    return json_resp(
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "type must be a string" }),
+                    );
+                }
+            };
             let speaker = req.get("speaker").and_then(|v| v.as_str()).or(Some("user"));
-            let mtype = req
-                .get("type")
-                .or_else(|| req.get("memory_type"))
+            let session_id = req
+                .get("session_id")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty());
             let csubj = req
@@ -1247,43 +1301,30 @@ async fn api_post_handler(
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty());
             let code_anchors = req.get("code_anchors").cloned();
+            let do_extract = req.get("extract").and_then(|v| v.as_bool()).unwrap_or(true);
+            let async_mode = req.get("async").and_then(|v| v.as_bool()).unwrap_or(false);
 
             let _ = Control::create_namespace(&st.pool, &ns, Some(pid), None).await;
 
-            if path == "/memory/write" {
-                match st
-                    .store
-                    .memory_write(
-                        &ns,
-                        text,
-                        speaker,
-                        mtype,
-                        csubj,
-                        principal_name.as_deref(),
-                    )
-                    .await
-                {
-                    Ok(v) => Ok((StatusCode::OK, v)),
-                    Err(e) => Err(json_resp(StatusCode::BAD_REQUEST, json!({ "error": e }))),
-                }
-            } else {
-                match st
-                    .store
-                    .remember(
-                        &ns,
-                        text,
-                        speaker,
-                        mtype,
-                        csubj,
-                        principal_name.as_deref(),
-                        None,
-                        code_anchors,
-                    )
-                    .await
-                {
-                    Ok(v) => Ok((StatusCode::OK, v)),
-                    Err(e) => Err(json_resp(StatusCode::BAD_REQUEST, json!({ "error": e }))),
-                }
+            match st
+                .store
+                .remember_ex(
+                    &ns,
+                    text,
+                    speaker,
+                    session_id,
+                    mtype,
+                    csubj,
+                    principal_name.as_deref(),
+                    None,
+                    code_anchors,
+                    do_extract,
+                    async_mode,
+                )
+                .await
+            {
+                Ok(v) => Ok((StatusCode::OK, v)),
+                Err(e) => Err(json_resp(StatusCode::BAD_REQUEST, json!({ "error": e }))),
             }
         }
         "/recall" | "/recall_v2" | "/memory/search" | "/memory/context" => {
@@ -1295,6 +1336,76 @@ async fn api_post_handler(
             if query.is_empty() {
                 return json_resp(StatusCode::BAD_REQUEST, json!({ "error": "query required" }));
             }
+            let type_filter: Option<String> = match req.get("type") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(s)) if s.trim().is_empty() => None,
+                Some(Value::String(s)) => {
+                    let t = s.trim();
+                    if !ALLOWED_MEMORY_TYPES.contains(&t) {
+                        return json_resp(
+                            StatusCode::BAD_REQUEST,
+                            json!({ "error": format!("unknown memory type {:?}", t) }),
+                        );
+                    }
+                    Some(t.to_string())
+                }
+                _ => {
+                    return json_resp(
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "type must be a string" }),
+                    );
+                }
+            };
+            let constraint_cap: Option<usize> = match req.get("constraint_cap") {
+                None | Some(Value::Null) => None,
+                Some(v) => match v.as_i64() {
+                    Some(n) => Some(n.max(0) as usize),
+                    None => {
+                        return json_resp(
+                            StatusCode::BAD_REQUEST,
+                            json!({ "error": "constraint_cap must be an integer" }),
+                        );
+                    }
+                },
+            };
+            let deadline: Option<Instant> = match req.get("deadline_ms") {
+                None | Some(Value::Null) => None,
+                Some(v) => match v.as_i64() {
+                    Some(ms) if ms < 0 => Some(t0),
+                    Some(0) => None,
+                    Some(ms) => Some(t0 + Duration::from_millis(ms as u64)),
+                    None => {
+                        return json_resp(
+                            StatusCode::BAD_REQUEST,
+                            json!({ "error": "deadline_ms must be an integer" }),
+                        );
+                    }
+                },
+            };
+            let k = req.get("k").and_then(|v| v.as_u64()).unwrap_or(40) as usize;
+            let raw_quota = req.get("raw_quota").and_then(|v| v.as_u64()).unwrap_or(11) as usize;
+            let fact_quota = req.get("fact_quota").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
+            let max_chars = req
+                .get("max_chars")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(9000) as usize;
+            let subject = req
+                .get("subject")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let author_filter = req
+                .get("author")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let repo_root = req
+                .get("repo_root")
+                .or_else(|| req.get("cwd"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from);
+
             if scope_wide {
                 let nss = match Control::readable_namespaces(&st.pool, pid, None, Some(200)).await {
                     Ok(v) => v,
@@ -1303,16 +1414,49 @@ async fn api_post_handler(
                 if nss.is_empty() {
                     return json_resp(
                         StatusCode::OK,
-                        json!({ "query": query, "context": "", "results": [], "memories": [], "count": 0 }),
+                        json!({
+                            "query": query,
+                            "context": "",
+                            "results": [],
+                            "memories": [],
+                            "namespaces_searched": [],
+                            "count": 0
+                        }),
                     );
                 }
-                let ov = Control::get_constraint_overrides(&st.pool, &nss)
+                let mut ordered = Vec::with_capacity(nss.len());
+                if nss.contains(&ns) {
+                    ordered.push(ns.clone());
+                }
+                for n in nss {
+                    if !ordered.contains(&n) {
+                        ordered.push(n);
+                    }
+                }
+                let ov = Control::get_constraint_overrides(&st.pool, &ordered)
                     .await
                     .unwrap_or_default()
                     .into_iter()
                     .collect::<HashSet<_>>();
-                let opts = build_recall_opts(Vec::new(), ov);
-                match st.store.recall_wide(&nss, query, &opts).await {
+                let opts = RecallOpts {
+                    k: k.clamp(1, 100),
+                    raw_quota,
+                    fact_quota,
+                    max_chars,
+                    ancestors: vec![],
+                    inherited_skipped: vec![],
+                    grounded_in: vec![],
+                    links_skipped: vec![],
+                    overrides: ov,
+                    subject,
+                    type_filter,
+                    author_filter,
+                    constraint_cap,
+                    deadline,
+                    viewer: principal_name.clone(),
+                    repo_root,
+                };
+                match st.store.recall_wide(&ordered, query, &opts).await {
                     Ok(v) => Ok((StatusCode::OK, v)),
                     Err(e) => Err(json_resp(
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1320,28 +1464,62 @@ async fn api_post_handler(
                     )),
                 }
             } else {
-                let mut ancestors = Control::effective_ancestors(&st.pool, &ns)
-                    .await
-                    .unwrap_or_default();
+                let mut grounded_in = Vec::new();
+                let mut links_skipped = Vec::new();
                 if let Ok(linked) = Control::linked_namespaces(&st.pool, &ns).await {
                     for lns in linked {
                         if Control::authorize(&st.pool, pid, &lns, false)
                             .await
                             .unwrap_or(false)
-                            && !ancestors.contains(&lns)
                         {
-                            ancestors.push(lns);
+                            grounded_in.push(lns);
+                        } else {
+                            links_skipped.push(lns);
+                        }
+                    }
+                }
+                let mut inherited = Vec::new();
+                let mut inherited_skipped = Vec::new();
+                if constraint_cap != Some(0) {
+                    if let Ok(ancs) = Control::effective_ancestors(&st.pool, &ns).await {
+                        for ans in ancs {
+                            if Control::authorize(&st.pool, pid, &ans, false)
+                                .await
+                                .unwrap_or(false)
+                            {
+                                inherited.push(ans);
+                            } else {
+                                inherited_skipped.push(ans);
+                            }
                         }
                     }
                 }
                 let mut all_nss = vec![ns.clone()];
-                all_nss.extend(ancestors.clone());
+                all_nss.extend(grounded_in.iter().cloned());
+                all_nss.extend(inherited.iter().cloned());
                 let ov = Control::get_constraint_overrides(&st.pool, &all_nss)
                     .await
                     .unwrap_or_default()
                     .into_iter()
                     .collect::<HashSet<_>>();
-                let opts = build_recall_opts(ancestors, ov);
+                let opts = RecallOpts {
+                    k: k.clamp(1, 100),
+                    raw_quota,
+                    fact_quota,
+                    max_chars,
+                    ancestors: inherited,
+                    inherited_skipped,
+                    grounded_in,
+                    links_skipped,
+                    overrides: ov,
+                    subject,
+                    type_filter,
+                    author_filter,
+                    constraint_cap,
+                    deadline,
+                    viewer: principal_name.clone(),
+                    repo_root,
+                };
                 let res = match path {
                     "/memory/search" => st.store.memory_search(&ns, query, &opts).await,
                     "/memory/context" => st.store.memory_context(&ns, query, &opts).await,
@@ -1362,7 +1540,7 @@ async fn api_post_handler(
                             .and_then(|x| x.as_str())
                             .unwrap_or("")
                             .trim();
-                        if inc_peers || poll_inb {
+                        if inc_peers || poll_inb || !sess_n.is_empty() {
                             if let Ok(pd) = Control::discover(&st.pool, &ns).await {
                                 v["peer_directory"] = pd;
                             }
@@ -1409,7 +1587,24 @@ async fn api_post_handler(
                 return json_resp(StatusCode::BAD_REQUEST, json!({ "error": "id required" }));
             }
             match st.store.memory_delete(&ns, id).await {
-                Ok(v) => Ok((StatusCode::OK, v)),
+                Ok(v) => {
+                    if v.get("deleted").and_then(|x| x.as_bool()).unwrap_or(false) {
+                        Ok((
+                            StatusCode::OK,
+                            json!({
+                                "ok": true,
+                                "deleted": 1,
+                                "id": id,
+                                "statement": v.get("statement").cloned().unwrap_or(Value::Null),
+                            }),
+                        ))
+                    } else {
+                        Ok((
+                            StatusCode::NOT_FOUND,
+                            json!({ "error": "memory not found" }),
+                        ))
+                    }
+                }
                 Err(e) => Err(json_resp(StatusCode::BAD_REQUEST, json!({ "error": e }))),
             }
         }
@@ -1418,7 +1613,14 @@ async fn api_post_handler(
                 .get("type")
                 .or_else(|| req.get("memory_type"))
                 .and_then(|v| v.as_str())
-                .unwrap_or("fact");
+                .unwrap_or("")
+                .trim();
+            if mtype.is_empty() || !ALLOWED_MEMORY_TYPES.contains(&mtype) {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": format!("unknown memory type {:?}", mtype) }),
+                );
+            }
             let limit = req.get("limit").and_then(|v| v.as_i64()).unwrap_or(50);
             match st.store.list_by_type(&ns, mtype, limit).await {
                 Ok(v) => Ok((StatusCode::OK, v)),
@@ -1552,11 +1754,46 @@ async fn api_post_handler(
             }
         }
         "/ingest/file" => {
-            let fpath = req.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let content = req.get("content").and_then(|v| v.as_str());
+            let filename = req
+                .get("filename")
+                .or_else(|| req.get("path"))
+                .or_else(|| req.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("document")
+                .trim();
+            let text_opt: Option<String> = req
+                .get("text")
+                .or_else(|| req.get("content"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    use base64::Engine;
+                    let b64 = req.get("content_b64")?.as_str()?;
+                    let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim()).ok()?;
+                    Some(String::from_utf8_lossy(&bytes).to_string())
+                });
+            let Some(text) = text_opt.filter(|t| !t.trim().is_empty()) else {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "text or content_b64 required" }),
+                );
+            };
+            let chunk_size = req
+                .get("chunk_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1500) as usize;
+            let do_extract = req.get("extract").and_then(|v| v.as_bool()).unwrap_or(false);
+            let _ = Control::create_namespace(&st.pool, &ns, Some(pid), None).await;
             match st
                 .store
-                .ingest_file(&ns, fpath, content, principal_name.as_deref())
+                .ingest_file_opts(
+                    &ns,
+                    filename,
+                    &text,
+                    chunk_size,
+                    do_extract,
+                    principal_name.as_deref(),
+                )
                 .await
             {
                 Ok(v) => Ok((StatusCode::OK, v)),
@@ -1631,15 +1868,16 @@ async fn api_post_handler(
         }
         "/namespace/copy" => {
             let src = req
-                .get("source")
+                .get("src")
+                .or_else(|| req.get("source"))
                 .or_else(|| req.get("from_namespace"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .trim();
-            if src.is_empty() {
+            if src.is_empty() || src == ns {
                 return json_resp(
                     StatusCode::BAD_REQUEST,
-                    json!({ "error": "source namespace required" }),
+                    json!({ "error": "src and dst must be two different non-empty namespaces" }),
                 );
             }
             if !Control::authorize(&st.pool, pid, src, false)
@@ -1651,16 +1889,14 @@ async fn api_post_handler(
                     json!({ "error": "forbidden for source namespace" }),
                 );
             }
-            let types: Vec<String> = req
-                .get("types")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            match st.store.copy_memories_from(src, &ns, &types).await {
+            let mode = req.get("mode").and_then(|v| v.as_str()).unwrap_or("copy");
+            let like_f = req.get("like").and_then(|v| v.as_str());
+            let _ = Control::create_namespace(&st.pool, &ns, Some(pid), None).await;
+            match st
+                .store
+                .namespace_copy(src, &ns, mode, like_f, Some(pid))
+                .await
+            {
                 Ok(v) => Ok((StatusCode::OK, v)),
                 Err(e) => Err(json_resp(StatusCode::BAD_REQUEST, json!({ "error": e }))),
             }
@@ -1697,7 +1933,7 @@ async fn api_post_handler(
                 .unwrap_or(0);
             Control::unsubscribe(&st.pool, pid, sid)
                 .await
-                .map(|ok| (StatusCode::OK, json!({ "ok": ok })))
+                .map(|ok| (StatusCode::OK, json!({ "unsubscribed": ok, "ok": ok })))
                 .map_err(ctrl_err_resp)
         }
         "/corpus/ingest" => {
@@ -1750,6 +1986,12 @@ async fn api_post_handler(
         }
         "/corpus/check_diff" => {
             let diff = req.get("diff").and_then(|v| v.as_str()).unwrap_or("");
+            if diff.trim().is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "diff required" }),
+                );
+            }
             let name = req.get("name").and_then(|v| v.as_str());
             let k = req.get("k").and_then(|v| v.as_u64()).unwrap_or(15) as usize;
             let ver = req.get("version").and_then(|v| v.as_str());
@@ -1767,13 +2009,49 @@ async fn api_post_handler(
                 .get("constraint_id")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
-            let rationale = req.get("rationale").and_then(|v| v.as_str()).unwrap_or("");
+            let rationale = req
+                .get("rationale")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if cid <= 0 || rationale.is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "constraint_id and rationale required" }),
+                );
+            }
+            let until = req
+                .get("until")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            if let Some(u) = until {
+                if let Err(e) = crate::store::parse_semver_key(u) {
+                    return json_resp(StatusCode::BAD_REQUEST, json!({ "error": e }));
+                }
+            }
+            match st.store.constraint_exists(&ns, cid).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return json_resp(
+                        StatusCode::NOT_FOUND,
+                        json!({ "error": "constraint not found" }),
+                    );
+                }
+                Err(e) => {
+                    return json_resp(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json!({ "error": e }),
+                    );
+                }
+            }
             let approved_by = req
                 .get("approved_by")
                 .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
                 .or(principal_name.as_deref())
                 .unwrap_or("unknown");
-            let until = req.get("until").and_then(|v| v.as_str());
             Control::corpus_deviation_record(
                 &st.pool,
                 &ns,
@@ -2602,6 +2880,7 @@ pub async fn run_server(port_override: Option<u16>) -> Result<(), String> {
         .route("/healthz", get(healthz_handler))
         .route("/readyz", get(readyz_handler))
         .route("/metrics", get(metrics_handler))
+        .route("/metrics/prometheus", get(metrics_prometheus_handler))
         .route("/admin", get(admin_index_handler))
         .route("/admin/", get(admin_index_handler))
         .route("/admin/api/*sub", any(admin_api_handler))

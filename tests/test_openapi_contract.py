@@ -120,9 +120,16 @@ def call(method, spec_path, *, token=None, body=None, query="", expect=None, nam
                  **({"Authorization": "Bearer " + token} if token else {})})
     try:
         r = urllib.request.urlopen(req, timeout=60)
-        status, payload = r.status, json.loads(r.read() or b"{}")
+        status, raw = r.status, r.read() or b"{}"
     except urllib.error.HTTPError as e:
-        status, payload = e.code, json.loads(e.read() or b"{}")
+        status, raw = e.code, e.read() or b"{}"
+    try:
+        payload = json.loads(raw)
+    except Exception as exc:
+        check(f"{label} -> {status} returns valid JSON", False,
+              f"non-JSON body ({exc}): {raw[:120]!r}")
+        EXERCISED.add((method.upper(), spec_path))
+        return status, None
     resp_spec = op.get("responses", {}).get(str(status))
     if resp_spec is None:
         check(f"{label} -> {status} documented", False,
@@ -297,6 +304,8 @@ def main():
          expect=403, name="POST /remember (forbidden ns)")
     call("POST", "/remember", body={"namespace": NS}, token=TADM, expect=400,
          name="POST /remember (missing text)")
+    call("POST", "/remember", body={"text": "missing ns"}, token=TADM, expect=400,
+         name="POST /remember (missing namespace)")
     call("POST", "/remember", body={"namespace": NS, "type": "wrongtype", "text": "x"},
          token=TADM, expect=400, name="POST /remember (unknown type)")
     call("POST", "/remember", body={"namespace": NS, "type": "constraint",

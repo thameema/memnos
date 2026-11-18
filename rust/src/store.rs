@@ -88,6 +88,17 @@ fn parse_ts(v: &Value, k: &str) -> Option<DateTime<Utc>> {
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|d| d.with_timezone(&Utc))
 }
+fn utc_date_of(v: &Value, k: &str) -> Option<String> {
+    if let Some(dt) = parse_ts(v, k) {
+        return Some(dt.format("%Y-%m-%d").to_string());
+    }
+    let s = s_of(v, k);
+    if s.len() >= 10 {
+        Some(s[..10].to_string())
+    } else {
+        None
+    }
+}
 fn env_f64(name: &str, default: f64) -> f64 {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
@@ -680,10 +691,24 @@ pub struct RecallOpts {
     pub max_chars: usize,
     /// Ancestor namespaces whose pinned constraints are injected (nearest first).
     pub ancestors: Vec<String>,
+    /// Ancestor namespaces skipped due to missing read grant.
+    pub inherited_skipped: Vec<String>,
+    /// Linked knowledge namespaces consulted for grounded recall.
+    pub grounded_in: Vec<String>,
+    /// Linked namespaces skipped due to missing read grant.
+    pub links_skipped: Vec<String>,
     /// `(child, parent)` explicit precedence-reversal edges.
     pub overrides: HashSet<(String, String)>,
     /// Hard-scope facts to one subject entity.
     pub subject: Option<String>,
+    /// Filter ranked rows to a single memory_type (pinned constraints are exempt).
+    pub type_filter: Option<String>,
+    /// Filter ranked rows to a single writing principal.
+    pub author_filter: Option<String>,
+    /// Cap on injected pinned constraints (`None` = unbounded, `Some(0)` = disabled).
+    pub constraint_cap: Option<usize>,
+    /// Optional wall-clock deadline (`Instant`); if expired, recall returns degraded best-available results.
+    pub deadline: Option<Instant>,
     /// Name of the calling principal, so only other authors are attributed in the context.
     pub viewer: Option<String>,
     /// When set, rows with code anchors are annotated with code drift notices.
@@ -698,8 +723,15 @@ impl Default for RecallOpts {
             fact_quota: 8,
             max_chars: 9000,
             ancestors: vec![],
+            inherited_skipped: vec![],
+            grounded_in: vec![],
+            links_skipped: vec![],
             overrides: HashSet::new(),
             subject: None,
+            type_filter: None,
+            author_filter: None,
+            constraint_cap: None,
+            deadline: None,
             viewer: None,
             repo_root: None,
         }
@@ -985,6 +1017,37 @@ impl BrainStore {
         turn_ts: Option<DateTime<Utc>>,
         code_anchors_opt: Option<Value>,
     ) -> Result<Value, String> {
+        self.remember_ex(
+            namespace,
+            text,
+            speaker,
+            None,
+            memory_type,
+            constraint_subject,
+            author,
+            turn_ts,
+            code_anchors_opt,
+            true,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn remember_ex(
+        &self,
+        namespace: &str,
+        text: &str,
+        speaker: Option<&str>,
+        session_id: Option<&str>,
+        memory_type: Option<&str>,
+        constraint_subject: Option<&str>,
+        author: Option<&str>,
+        turn_ts: Option<DateTime<Utc>>,
+        code_anchors_opt: Option<Value>,
+        do_extract: bool,
+        async_extract: bool,
+    ) -> Result<Value, String> {
         if namespace.trim().is_empty() {
             return Err("namespace required".into());
         }
@@ -999,25 +1062,38 @@ impl BrainStore {
             None => self.derive_anchors(&clean),
         };
         let anchors_json = anchors.as_ref().map(|v| v.to_string());
+        let cs_derived = memory_type == Some("constraint")
+            && constraint_subject.map(str::trim).unwrap_or("").is_empty();
         let cs = effective_constraint_subject(memory_type, constraint_subject, &clean);
         // Every network/CPU step happens before a pool connection is taken.
         let turn_vec = vlit(&self.embed(&clean).await);
         // A constraint is a guardrail, not prose to summarize: extraction is bypassed entirely.
-        let facts = if memory_type == Some("constraint") { vec![] } else { self.extract(&clean, observed).await };
-        let prepared = self.prepare_facts(facts).await;
+        let facts = if async_extract || !do_extract || memory_type == Some("constraint") {
+            vec![]
+        } else {
+            self.extract(&clean, observed).await
+        };
+        let prepared = if facts.is_empty() {
+            vec![]
+        } else {
+            self.prepare_facts(facts).await
+        };
 
         let mut c = self.conn().await?;
         if cs.is_some() {
             self.backfill_constraint_subjects(&c, namespace).await?;
         }
-        let cast = self.ensure_vt_cast(7);
+        let cast = self.ensure_vt_cast(8);
         let sql = format!(
-            "INSERT INTO {}.raw_turns(namespace,speaker,text,observed_at,author_principal,memory_type,embedding,constraint_subject,code_anchors) \
-             VALUES($1,$2,$3,$4,$5,$6,{},$8,$9::text::jsonb) RETURNING id",
+            "INSERT INTO {}.raw_turns(namespace,session_id,speaker,text,observed_at,author_principal,memory_type,embedding,constraint_subject,code_anchors) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,{},$9,$10::text::jsonb) RETURNING id",
             self.schema, cast
         );
         let row = c
-            .query_one(sql.as_str(), &[&namespace, &speaker, &clean, &observed, &author, &memory_type, &turn_vec, &cs, &anchors_json])
+            .query_one(
+                sql.as_str(),
+                &[&namespace, &session_id, &speaker, &clean, &observed, &author, &memory_type, &turn_vec, &cs, &anchors_json],
+            )
             .await
             .map_err(de)?;
         let turn_id: i64 = row.get(0);
@@ -1026,6 +1102,29 @@ impl BrainStore {
             Some(s) => self.retire_constraints(&c, namespace, s, "turn", turn_id).await?,
             None => vec![],
         };
+
+        if async_extract {
+            let mut out = json!({
+                "ok": true,
+                "turn_id": turn_id,
+                "facts": Value::Null,
+                "facts_written": 0,
+                "fact_ids": [],
+                "redacted": n_red > 0,
+                "superseded": 0,
+                "facts_restated": 0,
+                "extraction": "queued",
+                "namespace": namespace,
+            });
+            if let Some(s) = &cs {
+                out["constraint_subject"] = json!(s);
+                out["constraint_subject_derived"] = json!(cs_derived);
+            }
+            if !retired.is_empty() {
+                out["constraints_retired"] = json!(retired);
+            }
+            return Ok(out);
+        }
 
         let spk: Option<String> = speaker.map(|x| x.chars().take(40).collect());
         let (mut ids, mut superseded, mut restated) = (Vec::new(), 0usize, 0usize);
@@ -1046,14 +1145,22 @@ impl BrainStore {
             }
         }
         let mut out = json!({
-            "ok": true, "turn_id": turn_id, "facts_written": ids.len(), "fact_ids": ids,
-            "redacted": n_red > 0, "superseded": superseded, "facts_restated": restated,
+            "ok": true,
+            "turn_id": turn_id,
+            "facts": ids.len(),
+            "facts_written": ids.len(),
+            "fact_ids": ids,
+            "redacted": n_red > 0,
+            "superseded": superseded,
+            "facts_restated": restated,
+            "namespace": namespace,
         });
         if let Some(e) = facts_error {
             out["facts_error"] = json!(e);
         }
         if let Some(s) = &cs {
             out["constraint_subject"] = json!(s);
+            out["constraint_subject_derived"] = json!(cs_derived);
         }
         if !retired.is_empty() {
             out["constraints_retired"] = json!(retired);
@@ -1107,6 +1214,20 @@ impl BrainStore {
             Some(c) => c.to_string(),
             None => std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {}", path, e))?,
         };
+        self.ingest_file_opts(namespace, path, &text, 1500, true, author).await
+    }
+
+    pub async fn ingest_file_opts(
+        &self,
+        namespace: &str,
+        filename: &str,
+        text: &str,
+        chunk_size: usize,
+        do_extract: bool,
+        author: Option<&str>,
+    ) -> Result<Value, String> {
+        let cap = chunk_size.clamp(200, 10_000);
+        let label = if filename.trim().is_empty() { "document" } else { filename.trim() };
         let mut chunks: Vec<String> = vec![];
         let mut cur = String::new();
         for para in text.split("\n\n") {
@@ -1114,7 +1235,7 @@ impl BrainStore {
             if p.is_empty() {
                 continue;
             }
-            if !cur.is_empty() && cur.len() + p.len() > 1500 {
+            if !cur.is_empty() && cur.len() + p.len() > cap {
                 chunks.push(std::mem::take(&mut cur));
             }
             if !cur.is_empty() {
@@ -1128,12 +1249,21 @@ impl BrainStore {
         chunks.truncate(500);
         let (mut turns, mut facts) = (Vec::new(), 0usize);
         for ch in &chunks {
-            let body = format!("[{}]\n{}", path, ch);
-            let r = self.remember(namespace, &body, Some("file"), None, None, author, None, None).await?;
+            let body = format!("[{}]\n{}", label, ch);
+            let r = self
+                .remember_ex(namespace, &body, Some("file"), None, None, None, author, None, None, do_extract, false)
+                .await?;
             turns.push(r["turn_id"].clone());
             facts += r["facts_written"].as_u64().unwrap_or(0) as usize;
         }
-        Ok(json!({"ok": true, "path": path, "chunks": chunks.len(), "facts_written": facts, "turn_ids": turns}))
+        Ok(json!({
+            "ok": true,
+            "filename": label,
+            "path": label,
+            "chunks": chunks.len(),
+            "facts_written": facts,
+            "turn_ids": turns,
+        }))
     }
 
     /// Register a first-seen namespace in the control-plane registry. Best effort: the turn is
@@ -1682,26 +1812,33 @@ fn adjust_score(kind: &str, r: &Value, score: f64, err_q: bool, verbatim: bool) 
     s * git_weight(r)
 }
 
-fn shape_row(kind: &str, r: &Value, score: f64, tag_ns: bool) -> Value {
+fn shape_row(kind: &str, r: &Value, score: f64, primary_ns: Option<&str>) -> Value {
     let mut o = Map::new();
     o.insert("id".into(), r["id"].clone());
     o.insert("kind".into(), json!(kind));
     o.insert("content".into(), r["content"].clone());
     o.insert("score".into(), json!(score));
-    let date = match kind {
-        "fact" => s_of(r, "valid_from"),
-        _ => "",
-    };
-    if date.len() >= 10 {
-        o.insert("date".into(), json!(&date[..10]));
+    if kind == "fact" {
+        if let Some(d) = utc_date_of(r, "valid_from") {
+            o.insert("date".into(), json!(d));
+        }
     }
     for (src, dst) in [("author", "author"), ("memory_type", "type"), ("speaker", "speaker")] {
         if !s_of(r, src).is_empty() {
             o.insert(dst.into(), r[src].clone());
         }
     }
-    if tag_ns && !s_of(r, "namespace").is_empty() {
-        o.insert("namespace".into(), r["namespace"].clone());
+    let row_ns = s_of(r, "namespace");
+    if !row_ns.is_empty() {
+        match primary_ns {
+            None => {
+                o.insert("namespace".into(), r["namespace"].clone());
+            }
+            Some(pns) if row_ns != pns => {
+                o.insert("namespace".into(), r["namespace"].clone());
+            }
+            _ => {}
+        }
     }
     if s_of(r, "memory_type") == "inferred" {
         if !s_of(r, "inference_confidence").is_empty() {
@@ -1727,11 +1864,11 @@ fn norm_content(s: &str) -> String {
     s.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn degrade(res: Result<Vec<Value>, String>, arm: &str, reasons: &mut Vec<Value>) -> Vec<Value> {
+fn degrade(res: Result<Vec<Value>, String>, ns: &str, arm: &str, reasons: &mut Vec<Value>) -> Vec<Value> {
     match res {
         Ok(r) => r,
         Err(e) => {
-            reasons.push(json!({"arm": arm, "error": e}));
+            reasons.push(json!({"namespace": ns, "arm": arm, "error": e}));
             vec![]
         }
     }
@@ -1741,6 +1878,7 @@ struct RecallOut {
     pins: Vec<Value>,
     ranked: Vec<Value>,
     reasons: Vec<Value>,
+    degraded: bool,
 }
 
 impl BrainStore {
@@ -1832,11 +1970,35 @@ impl BrainStore {
         let qt = fts_clamp(query);
         let k = opts.k.max(1) as i64;
         let ents: Vec<String> = temporal::query_entities(query).iter().map(|e| e.to_lowercase()).collect();
-        let mut pin_nss: Vec<String> = namespaces.to_vec();
-        if !wide {
-            pin_nss.extend(opts.ancestors.iter().cloned());
+        let pin_cap = opts.constraint_cap.unwrap_or(500);
+        let mut pin_nss: Vec<String> = if wide {
+            vec![primary.clone()]
+        } else {
+            let mut v = namespaces.to_vec();
+            for g in &opts.grounded_in {
+                if !v.contains(g) {
+                    v.push(g.clone());
+                }
+            }
+            for a in &opts.ancestors {
+                if !v.contains(a) {
+                    v.push(a.clone());
+                }
+            }
+            v
+        };
+        if pin_cap == 0 {
+            pin_nss.clear();
         }
-        let nss: Vec<String> = namespaces.to_vec();
+        let mut nss: Vec<String> = namespaces.to_vec();
+        if !wide {
+            for g in &opts.grounded_in {
+                if !nss.contains(g) {
+                    nss.push(g.clone());
+                }
+            }
+        }
+        let primary_opt = if wide { None } else { Some(primary.as_str()) };
 
         let ent_arm = async {
             if ents.is_empty() {
@@ -1866,7 +2028,7 @@ impl BrainStore {
         let epi_extra = String::new();
         let ((pins_res, sem), (raw, epi), ent, tl) = tokio::join!(
             async {
-                let p = self.pinned_constraints(&pin_nss, 10, &opts.overrides).await;
+                let p = self.pinned_constraints(&pin_nss, pin_cap, &opts.overrides).await;
                 let sem = self
                     .ann_fts("semantic", "s", SEM_COLS, valid, &nss, &qlit, &qt, k)
                     .await;
@@ -1884,14 +2046,26 @@ impl BrainStore {
         let (pins, suppressed) = match pins_res {
             Ok(x) => x,
             Err(e) => {
-                reasons.push(json!({"arm": "pinned_constraints", "error": e}));
+                reasons.push(json!({"namespace": primary, "arm": "pinned_constraints", "error": e}));
                 (vec![], vec![])
             }
         };
-        let (sem_v, sem_f) = (degrade(sem.0, "semantic_vec", &mut reasons), degrade(sem.1, "semantic_fts", &mut reasons));
-        let (raw_v, raw_f) = (degrade(raw.0, "raw_vec", &mut reasons), degrade(raw.1, "raw_fts", &mut reasons));
-        let (epi_v, epi_f) = (degrade(epi.0, "episodic_vec", &mut reasons), degrade(epi.1, "episodic_fts", &mut reasons));
-        let (ent, tl) = (degrade(ent, "entity_graph", &mut reasons), degrade(tl, "temporal", &mut reasons));
+        let (sem_v, sem_f) = (
+            degrade(sem.0, &primary, "semantic_vec", &mut reasons),
+            degrade(sem.1, &primary, "semantic_fts", &mut reasons),
+        );
+        let (raw_v, raw_f) = (
+            degrade(raw.0, &primary, "raw_vec", &mut reasons),
+            degrade(raw.1, &primary, "raw_fts", &mut reasons),
+        );
+        let (epi_v, epi_f) = (
+            degrade(epi.0, &primary, "episodic_vec", &mut reasons),
+            degrade(epi.1, &primary, "episodic_fts", &mut reasons),
+        );
+        let (ent, tl) = (
+            degrade(ent, &primary, "entity_graph", &mut reasons),
+            degrade(tl, &primary, "temporal", &mut reasons),
+        );
         let arm_counts = json!({
             "pinned": pins.len(), "semantic_vec": sem_v.len(), "semantic_fts": sem_f.len(), "raw_vec": raw_v.len(),
             "raw_fts": raw_f.len(), "episodic_vec": epi_v.len(), "episodic_fts": epi_f.len(),
@@ -1910,7 +2084,7 @@ impl BrainStore {
                     sl == &se || se.contains(sl.as_str()) || s_of(r, "content").to_lowercase().contains(sl.as_str())
                 }
             })
-            .map(|(r, sc)| shape_row("fact", &r, adjust_score("fact", &r, sc, err_q, verbatim), wide))
+            .map(|(r, sc)| shape_row("fact", &r, adjust_score("fact", &r, sc, err_q, verbatim), primary_opt))
             .collect();
         facts.sort_by(|a, b| f_of(b, "score").partial_cmp(&f_of(a, "score")).unwrap());
 
@@ -1927,25 +2101,33 @@ impl BrainStore {
                 continue;
             }
             seen_idx.insert(key, turns.len());
-            turns.push(shape_row("turn", &r, adjust_score("turn", &r, sc, err_q, verbatim), wide));
+            turns.push(shape_row("turn", &r, adjust_score("turn", &r, sc, err_q, verbatim), primary_opt));
         }
+        let mut past_deadline = opts.deadline.map_or(false, |dl| Instant::now() >= dl);
         let turn_ids: Vec<i64> = turns.iter().map(|t| i_of(t, "id")).collect();
-        if !turn_ids.is_empty() {
+        if !turn_ids.is_empty() && !past_deadline {
             let sql = format!(
                 "SELECT t.tid AS turn_id, max(s.valid_to) AS closed_at FROM unnest($1::bigint[]) AS t(tid) \
                  JOIN {s}.semantic s ON s.source_turn_ids @> ARRAY[t.tid] AND s.kind='fact' AND s.expired_at IS NULL \
                  GROUP BY t.tid HAVING bool_and(s.valid_to IS NOT NULL OR s.superseded_by IS NOT NULL)"
             );
-            let stale = degrade(self.q(&sql, &[&turn_ids]).await, "stale_turns", &mut reasons);
-            let stale: HashMap<i64, String> =
-                stale.iter().map(|r| (i_of(r, "turn_id"), s_of(r, "closed_at").to_string())).collect();
+            let stale = degrade(self.q(&sql, &[&turn_ids]).await, &primary, "stale_turns", &mut reasons);
+            let stale: HashMap<i64, String> = stale
+                .iter()
+                .map(|r| (i_of(r, "turn_id"), utc_date_of(r, "closed_at").unwrap_or_default()))
+                .collect();
             for t in turns.iter_mut() {
                 if let Some(at) = stale.get(&i_of(t, "id")) {
                     t["superseded"] = json!(true);
-                    if at.len() >= 10 {
-                        t["superseded_at"] = json!(&at[..10]);
+                    if !at.is_empty() {
+                        t["superseded_at"] = json!(at);
                     }
                 }
+            }
+        }
+        if let Some(dl) = opts.deadline {
+            if Instant::now() >= dl {
+                past_deadline = true;
             }
         }
         let is_stale = |t: &Value| t.get("superseded").and_then(|x| x.as_bool()).unwrap_or(false);
@@ -1956,7 +2138,7 @@ impl BrainStore {
         let mut episodes: Vec<Value> = fuse_rows(vec![epi_v, epi_f], "episode")
             .into_iter()
             .take(3)
-            .map(|(r, sc)| shape_row("episode", &r, sc, wide))
+            .map(|(r, sc)| shape_row("episode", &r, sc, primary_opt))
             .collect();
 
         // --- assembly -------------------------------------------------------------------------
@@ -1976,6 +2158,12 @@ impl BrainStore {
         }
         ranked.extend(episodes);
         ranked.extend(stale_turns);
+        if let Some(ref af) = opts.author_filter {
+            ranked.retain(|r| s_of(r, "author") == af.as_str());
+        }
+        if let Some(ref tf) = opts.type_filter {
+            ranked.retain(|r| s_of(r, "type") == tf.as_str());
+        }
         // A pinned constraint's own twin (fact/turn with identical text) must not render twice.
         let pinned_text: HashSet<&str> = pins.iter().map(|p| s_of(p, "content")).collect();
         ranked.retain(|r| !pinned_text.contains(s_of(r, "content")));
@@ -1987,12 +2175,24 @@ impl BrainStore {
         let pin_rows: Vec<Value> = pins
             .iter()
             .map(|p| {
-                let mut o = p.clone();
-                o["pinned"] = json!(true);
-                o
+                let mut o = Map::new();
+                o.insert("id".into(), p["id"].clone());
+                o.insert("kind".into(), p["kind"].clone());
+                o.insert("content".into(), p["content"].clone());
+                o.insert("type".into(), json!("constraint"));
+                o.insert("pinned".into(), json!(true));
+                if !s_of(p, "author").is_empty() {
+                    o.insert("author".into(), p["author"].clone());
+                }
+                let p_ns = s_of(p, "namespace");
+                if !p_ns.is_empty() && (wide || p_ns != primary.as_str()) {
+                    o.insert("namespace".into(), p["namespace"].clone());
+                }
+                Value::Object(o)
             })
             .collect();
 
+        let degraded = !reasons.is_empty() || past_deadline;
         let mut explain = json!({
             "ts": Utc::now().to_rfc3339(), "query": query, "namespace": primary, "namespaces": namespaces,
             "intent": qi, "temporal": {"temporal": intent.temporal, "current": intent.current, "historical": historical},
@@ -2004,7 +2204,7 @@ impl BrainStore {
             explain["degraded_reasons"] = json!(reasons);
         }
         self.push_explain(explain);
-        Ok(RecallOut { pins: pin_rows, ranked, reasons })
+        Ok(RecallOut { pins: pin_rows, ranked, reasons, degraded })
     }
 
     fn recall_json(&self, namespaces: &[String], query: &str, opts: &RecallOpts, out: RecallOut, t0: Instant, wide: bool) -> Value {
@@ -2012,22 +2212,39 @@ impl BrainStore {
         results.extend(out.ranked.iter().cloned());
         let context = render_context(&results, opts.max_chars, opts.viewer.as_deref(), Some(query));
         let mut v = json!({
-            "query": query, "namespace": namespaces.first(), "context": context, "results": results,
-            "count": results.len(), "pinned_constraints": out.pins, "latency_ms": t0.elapsed().as_millis() as u64,
+            "query": query,
+            "namespace": namespaces.first(),
+            "context": context,
+            "memories": results,
+            "results": results,
+            "count": results.len(),
+            "pinned_constraints": out.pins,
+            "latency_ms": t0.elapsed().as_millis() as u64,
         });
         if wide {
             v["namespaces"] = json!(namespaces);
+            v["namespaces_searched"] = json!(namespaces);
+        } else {
+            if !opts.grounded_in.is_empty() || !opts.links_skipped.is_empty() {
+                v["grounded_in"] = json!(opts.grounded_in);
+                v["links_skipped"] = json!(opts.links_skipped);
+            }
+            if !opts.ancestors.is_empty() || !opts.inherited_skipped.is_empty() {
+                v["inherited_in"] = json!(opts.ancestors);
+                v["inheritance_skipped"] = json!(opts.inherited_skipped);
+            }
+        }
+        if out.degraded {
+            v["degraded"] = json!(true);
         }
         if !out.reasons.is_empty() {
-            v["degraded"] = json!(true);
             v["degraded_reasons"] = json!(out.reasons);
         }
         v
     }
 
     /// `/recall`: pinned constraints + RRF over semantic facts, raw turns, entity graph, temporal
-    /// and episodic arms. Returns `{query, namespace, context, results, count, pinned_constraints,
-    /// latency_ms}`; a failing arm degrades the result (`degraded: true`) instead of failing it.
+    /// and episodic arms.
     pub async fn recall(&self, namespace: &str, query: &str, opts: &RecallOpts) -> Result<Value, String> {
         let t0 = Instant::now();
         let ns = vec![namespace.to_string()];
@@ -2047,8 +2264,25 @@ impl BrainStore {
         let t0 = Instant::now();
         let ns = vec![namespace.to_string()];
         let out = self.recall_core(&ns, query, opts, false).await?;
-        Ok(json!({"query": query, "namespace": namespace, "count": out.ranked.len(), "results": out.ranked,
-                  "latency_ms": t0.elapsed().as_millis() as u64}))
+        let mut v = json!({
+            "query": query,
+            "namespace": namespace,
+            "count": out.ranked.len(),
+            "memories": out.ranked,
+            "results": out.ranked,
+            "latency_ms": t0.elapsed().as_millis() as u64,
+        });
+        if !opts.grounded_in.is_empty() || !opts.links_skipped.is_empty() {
+            v["grounded_in"] = json!(opts.grounded_in);
+            v["links_skipped"] = json!(opts.links_skipped);
+        }
+        if out.degraded {
+            v["degraded"] = json!(true);
+        }
+        if !out.reasons.is_empty() {
+            v["degraded_reasons"] = json!(out.reasons);
+        }
+        Ok(v)
     }
 
     /// `/memory/context`: the paste-ready context block for a query.
@@ -2172,7 +2406,7 @@ impl BrainStore {
             .or_else(|| matches.iter().find(|m| s_of(m, "status") == "superseded"))
             .filter(|_| matches!(verdict, "stale" | "contradicted"))
             .map(val_of);
-        let cur_date = current.map(|m| s_of(m, "valid_from")).filter(|d| d.len() >= 10).map(|d| d[..10].to_string());
+        let cur_date = current.and_then(|m| utc_date_of(m, "valid_from"));
         Ok(json!({
             "claim": statement, "verdict": verdict, "stale": !conflicts.is_empty(),
             "current_value": current.map(val_of), "current_date": cur_date, "superseded_value": sup_val,
@@ -2563,7 +2797,7 @@ impl BrainStore {
                      "predicate": f["predicate"], "object": f["object"], "valid_from": f["valid_from"], "valid_to": f["valid_to"],
                      "created_at": f["created_at"], "expired_at": f["expired_at"], "superseded_by": f["superseded_by"],
                      "restatements": f["restatements"], "source_speaker": f["source_speaker"], "author": f["author"]},
-            "source_turn_ids": f["source_turn_ids"], "sources": sources, "episodes": episodes,
+            "source_turn_ids": src, "sources": sources, "episodes": episodes,
         })))
     }
 }
@@ -2704,11 +2938,29 @@ impl BrainStore {
             .await?;
         let Some(mut e) = ep.into_iter().next() else { return Ok(None) };
         let src: Vec<i64> = e["source_turn_ids"].as_array().map(|a| a.iter().filter_map(|x| x.as_i64()).collect()).unwrap_or_default();
-        e["turns"] = json!(if src.is_empty() { vec![] } else {
-            self.q(&format!("SELECT id, speaker, text AS content, observed_at FROM {s}.raw_turns WHERE id = ANY($1) AND namespace=$2 ORDER BY observed_at, id"), &[&src, &namespace]).await?
-        });
+        e["source_turn_ids"] = json!(src);
+        let turns = if src.is_empty() {
+            vec![]
+        } else {
+            self.q(
+                &format!("SELECT id, speaker, text AS content, observed_at FROM {s}.raw_turns WHERE id = ANY($1) AND namespace=$2 ORDER BY observed_at, id"),
+                &[&src, &namespace],
+            )
+            .await?
+        };
+        let facts = self
+            .q(
+                &format!("SELECT f.id, f.statement FROM {s}.provenance p JOIN {s}.semantic f ON f.id=p.semantic_id WHERE p.episodic_id=$1 AND f.namespace=$2 ORDER BY f.id"),
+                &[&id, &namespace],
+            )
+            .await?;
         self.touch_episodes(&[id]).await?;
-        Ok(Some(e))
+        e["access_count"] = json!(i_of(&e, "access_count") + 1);
+        Ok(Some(json!({
+            "episode": e,
+            "turns": turns,
+            "facts": facts,
+        })))
     }
 
     /// Recompute episodic salience as half-life recency plus an access boost; facts are untouched.
@@ -2883,6 +3135,123 @@ impl BrainStore {
             }
         }
         Ok(json!({"src": src_ns, "dst": dst_ns, "raw_turns": rt.len(), "facts": facts.len(), "memory_types": memory_types}))
+    }
+
+    /// `/namespace/copy`: copy or move memories (`raw_turns`, `semantic` facts, and `episodic`
+    /// summaries) from `src_ns` to `dst_ns`, optionally filtered by substring `like_filter`.
+    pub async fn namespace_copy(
+        &self,
+        src_ns: &str,
+        dst_ns: &str,
+        mode: &str,
+        like_filter: Option<&str>,
+        copied_by: Option<i64>,
+    ) -> Result<Value, String> {
+        if src_ns.trim().is_empty() || dst_ns.trim().is_empty() || src_ns == dst_ns {
+            return Err("src and dst must be two different non-empty namespaces".into());
+        }
+        let mode = mode.trim();
+        if mode != "copy" && mode != "move" {
+            return Err(format!("invalid mode {:?} (expected 'copy' or 'move')", mode));
+        }
+        let pat: Option<String> = like_filter
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("%{}%", s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
+        let s = &self.schema;
+        let c = self.conn().await?;
+        let rt = jq(
+            &c,
+            &format!(
+                "INSERT INTO {s}.raw_turns(namespace,session_id,speaker,text,observed_at,embedding,author_principal,memory_type,constraint_subject,code_anchors) \
+                 SELECT $2,session_id,speaker,text,observed_at,embedding,author_principal,memory_type,constraint_subject,code_anchors FROM {s}.raw_turns r \
+                 WHERE r.namespace=$1 AND ($3::text IS NULL OR r.text ILIKE $3 ESCAPE '\\') AND r.constraint_retired_at IS NULL \
+                 AND NOT EXISTS (SELECT 1 FROM {s}.raw_turns d WHERE d.namespace=$2 AND d.text=r.text AND d.observed_at=r.observed_at) RETURNING id"
+            ),
+            &[&src_ns, &dst_ns, &pat],
+        )
+        .await?;
+        let facts = jq(
+            &c,
+            &format!(
+                "INSERT INTO {s}.semantic(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,observed_at,confidence,salience,embedding,\
+                 source_speaker,author_principal,memory_type,constraint_subject,constraint_since,constraint_until,code_anchors) \
+                 SELECT $2,kind,statement,subject_entity,predicate,object,valid_from,valid_to,observed_at,confidence,salience,embedding,\
+                 source_speaker,author_principal,memory_type,constraint_subject,constraint_since,constraint_until,code_anchors FROM {s}.semantic f \
+                 WHERE f.namespace=$1 AND f.expired_at IS NULL AND f.constraint_retired_at IS NULL AND ($3::text IS NULL OR f.statement ILIKE $3 ESCAPE '\\') \
+                 AND NOT EXISTS (SELECT 1 FROM {s}.semantic d WHERE d.namespace=$2 AND d.statement=f.statement AND d.observed_at=f.observed_at) \
+                 RETURNING id, subject_entity, object"
+            ),
+            &[&src_ns, &dst_ns, &pat],
+        )
+        .await?;
+        let eps = jq(
+            &c,
+            &format!(
+                "INSERT INTO {s}.episodic(namespace,session_id,text,summary,t_start,t_end,observed_at,salience,embedding,author_principal,memory_type,constraint_subject) \
+                 SELECT $2,session_id,text,summary,t_start,t_end,observed_at,salience,embedding,author_principal,memory_type,constraint_subject FROM {s}.episodic e \
+                 WHERE e.namespace=$1 AND e.constraint_retired_at IS NULL AND ($3::text IS NULL OR e.text ILIKE $3 ESCAPE '\\') \
+                 AND NOT EXISTS (SELECT 1 FROM {s}.episodic d WHERE d.namespace=$2 AND d.text=e.text AND d.observed_at=e.observed_at) \
+                 RETURNING id"
+            ),
+            &[&src_ns, &dst_ns, &pat],
+        )
+        .await?;
+        if !rt.is_empty() || !facts.is_empty() || !eps.is_empty() {
+            self.register_namespace(&c, dst_ns).await;
+        }
+        for f in &facts {
+            let subj = canonicalize_entity_name(s_of(f, "subject_entity"), false);
+            if !is_valid_entity_name(&subj, false) {
+                continue;
+            }
+            let fid = i_of(f, "id");
+            let se = self.upsert_entity(&c, dst_ns, &subj, None).await?;
+            self.add_mention(&c, se, fid, "semantic").await?;
+            let obj = canonicalize_entity_name(&s_of(f, "object").chars().take(100).collect::<String>(), true);
+            if is_valid_entity_name(&obj, true) {
+                let oe = self.upsert_entity(&c, dst_ns, &obj, None).await?;
+                self.add_mention(&c, oe, fid, "semantic").await?;
+                self.bump_edge(&c, dst_ns, se, oe, 1.0).await?;
+            }
+        }
+        if mode == "move" {
+            let _ = c
+                .execute(
+                    format!("DELETE FROM {s}.raw_turns WHERE namespace=$1 AND ($2::text IS NULL OR text ILIKE $2 ESCAPE '\\')").as_str(),
+                    &[&src_ns, &pat],
+                )
+                .await;
+            let _ = c
+                .execute(
+                    format!("UPDATE {s}.semantic SET expired_at=now(), valid_to=COALESCE(valid_to, now()) WHERE namespace=$1 AND expired_at IS NULL AND ($2::text IS NULL OR statement ILIKE $2 ESCAPE '\\')").as_str(),
+                    &[&src_ns, &pat],
+                )
+                .await;
+            let _ = c
+                .execute(
+                    format!("DELETE FROM {s}.episodic WHERE namespace=$1 AND ($2::text IS NULL OR text ILIKE $2 ESCAPE '\\')").as_str(),
+                    &[&src_ns, &pat],
+                )
+                .await;
+        }
+        let n_rt = rt.len() as i32;
+        let n_f = facts.len() as i32;
+        let n_e = eps.len() as i32;
+        let _ = c
+            .execute(
+                "INSERT INTO memnos_control.namespace_copy_provenance(src_ns,dst_ns,mode,copied_by,raw_turns,facts,episodes) VALUES($1,$2,$3,$4,$5,$6,$7)",
+                &[&src_ns, &dst_ns, &mode, &copied_by, &n_rt, &n_f, &n_e],
+            )
+            .await;
+        Ok(json!({
+            "mode": mode,
+            "src": src_ns,
+            "dst": dst_ns,
+            "raw_turns": rt.len(),
+            "facts": facts.len(),
+            "episodes": eps.len(),
+        }))
     }
 }
 
@@ -3131,11 +3500,25 @@ impl BrainStore {
         Ok(rank_by_specificity(out, nss, k))
     }
 
+    pub async fn constraint_exists(&self, namespace: &str, id: i64) -> Result<bool, String> {
+        let s = &self.schema;
+        let rows = self
+            .q(
+                &format!("SELECT id FROM {s}.semantic WHERE id=$1 AND namespace=$2 AND kind='constraint' AND expired_at IS NULL LIMIT 1"),
+                &[&id, &namespace],
+            )
+            .await?;
+        Ok(!rows.is_empty())
+    }
+
     /// Constraints most relevant to a code snippet. `nss` is the ordered namespace search list,
     /// most specific first; each row carries its source `namespace`, version `status`
     /// (`active | expired | approved_deviation`) and its `since`/`until` window. A constraint not
     /// yet introduced at `version` is dropped.
     pub async fn corpus_check(&self, nss: &[String], snippet: &str, k: usize, version: Option<&str>) -> Result<Vec<Value>, String> {
+        if let Some(v) = version.map(str::trim).filter(|v| !v.is_empty()) {
+            parse_semver_key(v)?;
+        }
         let words = ordered_unique_words(snippet, 40);
         if words.is_empty() {
             return Ok(vec![]);
