@@ -1359,13 +1359,19 @@ pub fn rerank_candidates(query: &str, candidates: &[&str]) -> Result<Vec<(usize,
 }
 
 pub fn spawn_background_prewarm_for(embed_model: &str) {
+    spawn_background_prewarm_opts(embed_model, true);
+}
+
+pub fn spawn_background_prewarm_opts(embed_model: &str, warm_embedder: bool) {
     set_active_reranker_for_embed_model(embed_model);
     if PREWARM_STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
     let model_owned = embed_model.to_string();
     std::thread::spawn(move || {
-        let _ = global_local_embed(&model_owned, "warmup", true);
+        if warm_embedder {
+            let _ = global_local_embed(&model_owned, "warmup", true);
+        }
         if rerank_enabled() {
             let _ = score_with_active_reranker("warmup query", &["warmup candidate passage"]);
             // Self-calibrate rerank cap against MEMNOS_RERANK_BUDGET_MS (default 1500ms, 8..=100)

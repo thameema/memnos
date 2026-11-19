@@ -2,7 +2,7 @@ name: Cross-OS Binaries & Release Hygiene (macOS, Linux, Windows)
 
 on:
   push:
-    branches: ["*"]
+    branches: ["**"]
   pull_request:
     branches: [master]
   workflow_dispatch:
@@ -20,7 +20,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run engine unit tests
-        run: cargo test --lib
+        run: cargo test --lib --release
       - name: Build path-remapped single binary
         shell: bash
         run: bash scripts/build_release.sh

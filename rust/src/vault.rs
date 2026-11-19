@@ -196,6 +196,55 @@ impl Vault {
         }
     }
 
+    /// Resolve a provider key that may be a Vault reference (`secret://openai`) using a connection
+    /// pool, mirroring `memnos_server.py` startup resolution so existing Vault-backed installs
+    /// (`"openai": "secret://openai"` in `~/.memnos/config.json`) unlock seamlessly.
+    pub async fn resolve_provider_key_from_pool(
+        pool: &deadpool_postgres::Pool,
+        candidate: Option<String>,
+        log_resolved: bool,
+    ) -> Option<String> {
+        let raw = candidate?.trim().to_string();
+        if raw.is_empty() {
+            return None;
+        }
+        if !raw.starts_with(REF_PREFIX) {
+            return Some(raw);
+        }
+        match pool.get().await {
+            Ok(client) => match Self::resolve(&client, &raw).await {
+                Ok(Some(resolved)) if !resolved.trim().is_empty() => {
+                    env::set_var("OPENAI_API_KEY", &resolved);
+                    if log_resolved {
+                        println!("[memnos] OPENAI_API_KEY resolved from vault");
+                    }
+                    Some(resolved)
+                }
+                Ok(_) => {
+                    eprintln!(
+                        "[memnos] WARN: provider key reference '{}' not found in vault",
+                        raw
+                    );
+                    None
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[memnos] WARN: could not resolve provider key '{}' from vault: {}",
+                        raw, e
+                    );
+                    None
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "[memnos] WARN: could not acquire DB connection to resolve '{}': {}",
+                    raw, e
+                );
+                None
+            }
+        }
+    }
+
     pub async fn rotate_key(
         client: &Client,
         old_key_b64: &str,

@@ -46,8 +46,12 @@ from psycopg.rows import dict_row
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-LEGACY_REPO = os.environ.get("MEMNOS_LEGACY_REPO", ROOT)
-MEMNOS_BIN = os.environ.get("MEMNOS_BIN", os.path.join(ROOT, "target", "release", "memnos"))
+LEGACY_REPO = os.path.abspath(os.environ.get("MEMNOS_LEGACY_REPO", ROOT))
+MEMNOS_BIN = os.path.abspath(
+    os.environ.get("MEMNOS_BIN")
+    or os.environ.get("MEMNOS_CLI_BIN")
+    or os.path.join(ROOT, "target", "release", "memnos")
+)
 
 sys.path.insert(0, os.path.join(ROOT, "sdk"))
 sys.path.insert(0, LEGACY_REPO)
@@ -61,25 +65,55 @@ SPO_RE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9_.-]{1,63})\s+([a-z][a-z0-9_]{1,48}
 
 
 class _LocalExtractHandler(BaseHTTPRequestHandler):
-    """Minimal OpenAI-compatible `/v1/chat/completions` endpoint for deterministic $0 SPO extraction."""
+    """Minimal OpenAI-compatible `/v1/chat/completions` & `/v1/embeddings` endpoint for $0 tests."""
+
+    expected_bearer: str | None = None
 
     def do_POST(self) -> None:
+        if self.expected_bearer:
+            auth = self.headers.get("Authorization", "")
+            if auth != f"Bearer {self.expected_bearer}":
+                body = json.dumps({"error": f"unauthorized bearer: {auth}"}).encode()
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
         raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         req = json.loads(raw or b"{}")
-        user_txt = ""
-        for m in req.get("messages", []):
-            if m.get("role") == "user":
-                user_txt = m.get("content", "")
-        facts = []
-        for line in user_txt.splitlines():
-            m = SPO_RE.match(line)
-            if m:
-                s, p, o = m.group(1).strip(), m.group(2).strip(), m.group(3).strip().rstrip(".")
-                facts.append({"subject": s, "predicate": p, "object": o, "statement": f"{s} {p} is {o}"})
-        resp = {
-            "choices": [{"message": {"content": json.dumps({"facts": facts})}}],
-            "usage": {"prompt_tokens": 12, "completion_tokens": 8},
-        }
+        if self.path.endswith("/embeddings"):
+            import hashlib
+            import math
+
+            inp = str(req.get("input") or "")
+            vec = [0.0] * 1536
+            for tok in re.findall(r"[a-z0-9]+", inp.lower()):
+                h = hashlib.sha256(tok.encode()).digest()
+                idx = int.from_bytes(h[:4], "little") % 1536
+                vec[idx] += 1.0
+            norm = math.sqrt(sum(x * x for x in vec)) or 1.0
+            vec = [x / norm for x in vec]
+            resp = {
+                "data": [{"embedding": vec, "index": 0}],
+                "usage": {"prompt_tokens": 9, "total_tokens": 9},
+            }
+        else:
+            user_txt = ""
+            for m in req.get("messages", []):
+                if m.get("role") == "user":
+                    user_txt = m.get("content", "")
+            facts = []
+            for line in user_txt.splitlines():
+                m = SPO_RE.match(line)
+                if m:
+                    s, p, o = m.group(1).strip(), m.group(2).strip(), m.group(3).strip().rstrip(".")
+                    facts.append({"subject": s, "predicate": p, "object": o, "statement": f"{s} {p} is {o}"})
+            resp = {
+                "choices": [{"message": {"content": json.dumps({"facts": facts})}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 8},
+            }
         body = json.dumps(resp).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -607,13 +641,147 @@ def test_inplace_upgrade_migration(admin_dsn: str) -> None:
         drop_scratch_db(admin_dsn, db_name)
 
 
+def test_vault_resolved_openai_1536_upgrade(admin_dsn: str) -> None:
+    print("\n=== 4. Vault-Backed `secret://openai` 1536-d In-Place Upgrade Safety ===")
+    db_name = f"memnos_vault1536_{int(time.time())}"
+    dsn = make_scratch_db(admin_dsn, db_name)
+    home = tempfile.mkdtemp(prefix="memnos_vault1536_home_")
+    port = free_port()
+    url = f"http://127.0.0.1:{port}"
+    key_b64 = base64.b64encode(os.urandom(32)).decode("ascii")
+    vault_api_key = "sk-vault-resolved-1536-production-test"
+
+    class _AuthEmbedHandler(_LocalExtractHandler):
+        expected_bearer = vault_api_key
+
+    mock_port = free_port()
+    mock_srv = HTTPServer(("127.0.0.1", mock_port), _AuthEmbedHandler)
+    threading.Thread(target=mock_srv.serve_forever, daemon=True).start()
+    mock_base = f"http://127.0.0.1:{mock_port}"
+    try:
+        from core.control import Control as LegacyControl
+        from core.store import BrainStore as LegacyStore
+        from core.vault import Vault as LegacyVault
+
+        with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as conn:
+            LegacyControl.init(conn)
+            legacy_store = LegacyStore(conn=conn)
+            legacy_store.create_schema("memnos", dim=1536)
+            admin_pid = LegacyControl.create_principal(conn, "admin", kind="admin")
+            LegacyControl.grant(conn, admin_pid, "*", can_read=True, can_write=True)
+            admin_tok = LegacyControl.mint_token(conn, admin_pid, "admin")
+            dev_tok = LegacyControl.mint_token(conn, admin_pid, "claude-code")
+
+            prev_sk = os.environ.get("MEMNOS_SECRET_KEY")
+            os.environ["MEMNOS_SECRET_KEY"] = key_b64
+            try:
+                LegacyVault.set(conn, "openai", vault_api_key, description="provider key in vault")
+            finally:
+                if prev_sk is None:
+                    os.environ.pop("MEMNOS_SECRET_KEY", None)
+                else:
+                    os.environ["MEMNOS_SECRET_KEY"] = prev_sk
+
+            vtype = legacy_store.vtype
+            seed_vec = [0.0] * 1536
+            seed_vec[0] = 1.0
+            vlit = "[" + ",".join(f"{x:.6f}" for x in seed_vec) + "]"
+            conn.execute(
+                f"""
+                INSERT INTO tenant_memnos.raw_turns(namespace, speaker, text, embedding)
+                VALUES ('proj:vault1536', 'user', 'Pre-existing 1536-d memory stored before binary swap.', %s::{vtype})
+                """,
+                (vlit,),
+            )
+
+        cfg_dir = os.path.join(home, ".memnos")
+        os.makedirs(cfg_dir, exist_ok=True)
+        with open(os.path.join(cfg_dir, "config.json"), "w") as fh:
+            json.dump(
+                {
+                    "dsn": dsn,
+                    "port": port,
+                    "secret_key": key_b64,
+                    "openai": "secret://openai",
+                    "admin_token": admin_tok,
+                    "agent_tokens": {"claude-code": dev_tok},
+                },
+                fh,
+            )
+
+        # Verify that if vault is locked (wrong/empty MEMNOS_SECRET_KEY and no config secret_key),
+        # 1536-d schema refuses startup instead of corrupting vectors with 384-d embeddings.
+        locked_home = tempfile.mkdtemp(prefix="memnos_locked_home_")
+        try:
+            os.makedirs(os.path.join(locked_home, ".memnos"), exist_ok=True)
+            with open(os.path.join(locked_home, ".memnos", "config.json"), "w") as fh:
+                json.dump({"dsn": dsn, "port": free_port()}, fh)
+            clean_env = {k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "MEMNOS_SECRET_KEY")}
+            bad_1536 = subprocess.run(
+                [MEMNOS_BIN, "serve", "--port", str(free_port())],
+                env={**clean_env, "HOME": locked_home, "MEMNOS_DSN": dsn},
+                cwd=locked_home,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            check(
+                "1536-d DB started without OpenAI key fails loudly (zero vector corruption)",
+                bad_1536.returncode != 0 and "mismatch" in (bad_1536.stderr + bad_1536.stdout).lower(),
+                bad_1536.stderr + bad_1536.stdout,
+            )
+        finally:
+            shutil.rmtree(locked_home, ignore_errors=True)
+
+        # Now boot with `~/.memnos/config.json` containing `"openai": "secret://openai"`!
+        clean_env = {k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "MEMNOS_SECRET_KEY")}
+        srv = subprocess.Popen(
+            [MEMNOS_BIN, "serve", "--port", str(port)],
+            env={
+                **clean_env,
+                "HOME": home,
+                "MEMNOS_EMBED_BASE_URL": f"{mock_base}/v1",
+                "MEMNOS_EXTRACT_BASE_URL": f"{mock_base}/v1",
+            },
+            cwd=home,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            check("Vault-backed `secret://openai` 1536-d server reaches /readyz", wait_ready(url))
+            with MemnosClient(base_url=url, token=dev_tok, namespace="proj:vault1536") as mc:
+                w = mc.remember("Vault-decrypted 1536-d write succeeded cleanly.", extract=False)
+                check("1536-d /remember succeeds using Vault-resolved OpenAI key", bool(w.get("turn_id")), str(w))
+                rec = mc.recall("Vault-decrypted 1536-d write")
+                check(
+                    "1536-d /recall returns both newly written and pre-existing memories cleanly",
+                    "Vault-decrypted 1536-d write" in rec.get("context", ""),
+                    str(rec),
+                )
+        finally:
+            srv.terminate()
+            try:
+                out, err = srv.communicate(timeout=5)
+            except Exception:
+                srv.kill()
+                out, err = "", ""
+            check("Startup log confirms OPENAI_API_KEY resolved from vault", "OPENAI_API_KEY resolved from vault" in out, out + err)
+    finally:
+        mock_srv.shutdown()
+        shutil.rmtree(home, ignore_errors=True)
+        drop_scratch_db(admin_dsn, db_name)
+
+
 def main() -> int:
     admin_dsn = os.environ.get("MEMNOS_ADMIN_DSN") or os.environ.get("MEMNOS_DSN")
     if not admin_dsn:
         print("SKIP: MEMNOS_ADMIN_DSN not set")
         return 0
+    os.chdir(tempfile.gettempdir())
     test_sdk_and_spo_supersession(admin_dsn)
     test_inplace_upgrade_migration(admin_dsn)
+    test_vault_resolved_openai_1536_upgrade(admin_dsn)
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 

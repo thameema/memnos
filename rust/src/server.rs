@@ -2807,10 +2807,12 @@ pub async fn run_server(port_override: Option<u16>) -> Result<(), String> {
         .await
         .map_err(|e| format!("Control::init failed: {}", e))?;
 
-    let openai_key = env::var("OPENAI_API_KEY")
+    let raw_openai_key = env::var("OPENAI_API_KEY")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .or_else(|| cfg.openai.clone());
+    let openai_key =
+        crate::vault::Vault::resolve_provider_key_from_pool(&pool, raw_openai_key, true).await;
 
     let embedder = Arc::new(Embedder::from_env(openai_key.clone(), None));
     let extractor = Arc::new(Extractor::from_env(openai_key));
@@ -2872,13 +2874,10 @@ pub async fn run_server(port_override: Option<u16>) -> Result<(), String> {
         mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
         mcp_semaphore: Arc::new(Semaphore::new(24)),
     };
-    let prewarm_model = if state.embedder.is_openai() {
-        crate::rerank::BGE_REPO_ID.to_string()
+    if state.embedder.is_openai() {
+        crate::rerank::spawn_background_prewarm_opts(crate::rerank::BGE_REPO_ID, false);
     } else {
-        state.embedder.model_name()
-    };
-    if !state.embedder.is_openai() {
-        crate::rerank::spawn_background_prewarm_for(&prewarm_model);
+        crate::rerank::spawn_background_prewarm_opts(&state.embedder.model_name(), true);
     }
 
     let app = Router::new()

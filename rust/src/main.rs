@@ -1056,11 +1056,16 @@ async fn refresh_local_enforce_cache(
     Ok(rows.len())
 }
 
-fn build_store_from_cfg(cfg: &Config, pool: deadpool_postgres::Pool) -> Result<Arc<BrainStore>, String> {
-    let openai_key = env::var("OPENAI_API_KEY")
+async fn build_store_from_cfg(
+    cfg: &Config,
+    pool: deadpool_postgres::Pool,
+) -> Result<Arc<BrainStore>, String> {
+    let raw_openai_key = env::var("OPENAI_API_KEY")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .or_else(|| cfg.openai.clone());
+    let openai_key =
+        Vault::resolve_provider_key_from_pool(&pool, raw_openai_key, false).await;
     let emb = Arc::new(Embedder::from_env(openai_key.clone(), None));
     let ext = Arc::new(Extractor::from_env(openai_key));
     Ok(Arc::new(BrainStore::new(pool, None, emb, ext)?))
@@ -1479,7 +1484,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
 
             let pool = build_pool(&chosen_dsn, 8)?;
             Control::init(&pool).await.map_err(|e| e.to_string())?;
-            let store = build_store_from_cfg(&cfg, pool.clone())?;
+            let store = build_store_from_cfg(&cfg, pool.clone()).await?;
             store.init_schema().await?;
 
             let admin_pid = Control::create_principal(&pool, "admin", "user")
@@ -2419,7 +2424,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                     println!("deactivated constraint id={} (removed={})", id, ok);
                 }
                 ConstraintVerb::Pins { namespace } => {
-                    let store = build_store_from_cfg(&cfg, pool)?;
+                    let store = build_store_from_cfg(&cfg, pool).await?;
                     let ns = namespace.unwrap_or_else(|| resolve_ns_arg("auto"));
                     let pins = store.list_pinned_constraints(&ns).await?;
                     println!("{}", serde_json::to_string_pretty(&pins).unwrap());
@@ -2429,7 +2434,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                     subject,
                     namespace,
                 } => {
-                    let store = build_store_from_cfg(&cfg, pool)?;
+                    let store = build_store_from_cfg(&cfg, pool).await?;
                     let id_or_subj = target
                         .or(subject)
                         .ok_or_else(|| "target id or --subject required".to_string())?;
@@ -2550,7 +2555,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 "copy" | "move" => {
                     let s = name.ok_or("source namespace required")?;
                     let d = to.or(dst).ok_or("--to <dest> required")?;
-                    let store = build_store_from_cfg(&cfg, pool.clone())?;
+                    let store = build_store_from_cfg(&cfg, pool.clone()).await?;
                     let out = store.copy_memories_from(&s, &d, &[]).await?;
                     if action == "move" {
                         Control::delete_namespace(&pool, &s, true)
@@ -2560,7 +2565,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                     println!("{}", serde_json::to_string_pretty(&out).unwrap());
                 }
                 "cleanup-graph" => {
-                    let store = build_store_from_cfg(&cfg, pool)?;
+                    let store = build_store_from_cfg(&cfg, pool).await?;
                     let out = if let Some(n) = name {
                         store.cleanup_entity_graph(&n, dry_run).await?
                     } else {
@@ -2570,7 +2575,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 }
                 "reconcile" => {
                     let n = name.unwrap_or_else(|| resolve_ns_arg("auto"));
-                    let store = build_store_from_cfg(&cfg, pool)?;
+                    let store = build_store_from_cfg(&cfg, pool).await?;
                     let out = store.consolidate(&n).await?;
                     println!("{}", serde_json::to_string_pretty(&out).unwrap());
                 }
@@ -2890,7 +2895,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             println!("=== Platform Health ===");
             println!("{}", serde_json::to_string_pretty(&h).unwrap());
             if fix || fix_graph || dry_run {
-                let store = build_store_from_cfg(&cfg, pool)?;
+                let store = build_store_from_cfg(&cfg, pool).await?;
                 let g = if let Some(ns) = namespace {
                     store.cleanup_entity_graph(&ns, dry_run).await?
                 } else {
