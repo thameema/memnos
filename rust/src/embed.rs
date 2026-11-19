@@ -291,6 +291,88 @@ impl Embedder {
             self.dim
         ))
     }
+
+    /// Batched embedding forward pass for fast `memnos migrate-embeddings` (~1,200+ rows/s on short facts).
+    pub async fn try_embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+        let clamped: Vec<String> = texts.iter().map(|t| t.chars().take(16_000).collect()).collect();
+        let active_model = self.model_name();
+
+        if let Some(ref key) = self.openai_key {
+            if self.dim == 1536 {
+                let mut out = Vec::with_capacity(clamped.len());
+                for chunk in clamped.chunks(128) {
+                    let resp = self
+                        .http
+                        .post(format!("{}/embeddings", self.base_url))
+                        .bearer_auth(key)
+                        .json(&json!({
+                            "model": active_model,
+                            "input": chunk,
+                        }))
+                        .send()
+                        .await
+                        .map_err(|e| format!("OpenAI batch embeddings failed: {}", e))?;
+                    let status = resp.status();
+                    if !status.is_success() {
+                        let body = resp.text().await.unwrap_or_default();
+                        return Err(format!(
+                            "OpenAI batch embeddings returned HTTP {}: {}",
+                            status,
+                            body.chars().take(300).collect::<String>()
+                        ));
+                    }
+                    let val = resp
+                        .json::<Value>()
+                        .await
+                        .map_err(|e| format!("OpenAI batch JSON parse error: {}", e))?;
+                    let data = val
+                        .get("data")
+                        .and_then(|d| d.as_array())
+                        .ok_or_else(|| "OpenAI batch response missing data[]".to_string())?;
+                    for item in data {
+                        let arr = item
+                            .get("embedding")
+                            .and_then(|e| e.as_array())
+                            .ok_or_else(|| "OpenAI batch item missing embedding".to_string())?;
+                        let vec: Vec<f32> = arr.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect();
+                        if vec.len() != self.dim {
+                            return Err(format!(
+                                "OpenAI batch dimension mismatch: expected {}, got {}",
+                                self.dim,
+                                vec.len()
+                            ));
+                        }
+                        out.push(vec);
+                    }
+                }
+                return Ok(out);
+            }
+        }
+
+        if self.dim == 384 {
+            let model_for_task = active_model.clone();
+            let v = tokio::task::spawn_blocking(move || {
+                crate::rerank::global_local_embed_batch(&model_for_task, &clamped, false)
+            })
+            .await
+            .map_err(|e| format!("local batch embedding join error: {}", e))?
+            .map_err(|e| {
+                format!(
+                    "local batch embedding model '{}' failed: {} (run `memnos models pull` first)",
+                    active_model, e
+                )
+            })?;
+            return Ok(v);
+        }
+
+        Err(format!(
+            "no batch embedder configured for {}-d vectors",
+            self.dim
+        ))
+    }
 }
 
 pub fn vlit(vec: &[f32]) -> String {

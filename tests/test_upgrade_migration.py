@@ -767,6 +767,81 @@ def test_vault_resolved_openai_1536_upgrade(admin_dsn: str) -> None:
                 srv.kill()
                 out, err = "", ""
             check("Startup log confirms OPENAI_API_KEY resolved from vault", "OPENAI_API_KEY resolved from vault" in out, out + err)
+
+        # Verify mandatory pre-upgrade DB backup discipline in `memnos upgrade --no-restart`
+        upg_run = subprocess.run(
+            [MEMNOS_BIN, "upgrade", "--no-restart"],
+            env={**clean_env, "HOME": home},
+            cwd=home,
+            capture_output=True,
+            text=True,
+            timeout=25,
+        )
+        backups_dir = os.path.join(home, ".memnos", "backups")
+        pre_upg_files = [
+            f for f in (os.listdir(backups_dir) if os.path.isdir(backups_dir) else [])
+            if f.startswith("memnos-pre-upgrade-") and (f.endswith(".dump") or f.endswith(".jsonl"))
+        ]
+        check(
+            "`memnos upgrade` enforces mandatory verified pre-upgrade DB backup",
+            upg_run.returncode == 0
+            and len(pre_upg_files) >= 1
+            and os.path.getsize(os.path.join(backups_dir, pre_upg_files[0])) > 0,
+            upg_run.stdout + upg_run.stderr,
+        )
+
+        # Verify batched `memnos migrate-embeddings --to 384 --yes` (takes pre-migrate backup + migrates 1536-d -> 384-d)
+        mig_env = {
+            **clean_env,
+            "HOME": home,
+            "HF_HUB_CACHE": os.path.expanduser("~/.cache/huggingface/hub"),
+        }
+        mig_run = subprocess.run(
+            [MEMNOS_BIN, "migrate-embeddings", "--to", "384", "--yes"],
+            env=mig_env,
+            cwd=home,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        pre_mig_files = [
+            f for f in (os.listdir(backups_dir) if os.path.isdir(backups_dir) else [])
+            if f.startswith("memnos-pre-migrate-") and (f.endswith(".dump") or f.endswith(".jsonl"))
+        ]
+        check(
+            "`memnos migrate-embeddings --to 384` takes mandatory backup and migrates 1536-d -> 384-d",
+            mig_run.returncode == 0
+            and len(pre_mig_files) >= 1
+            and os.path.getsize(os.path.join(backups_dir, pre_mig_files[0])) > 0,
+            mig_run.stdout + mig_run.stderr,
+        )
+
+        # Boot migrated 384-d DB with ZERO OpenAI key / ZERO external AI and verify recall!
+        port_384 = free_port()
+        url_384 = f"http://127.0.0.1:{port_384}"
+        srv_384 = subprocess.Popen(
+            [MEMNOS_BIN, "serve", "--port", str(port_384)],
+            env=mig_env,
+            cwd=home,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            check("Migrated 384-d keyless server reaches /readyz", wait_ready(url_384))
+            with MemnosClient(base_url=url_384, token=dev_tok, namespace="proj:vault1536") as mc:
+                rec384 = mc.recall("memory stored before binary swap")
+                check(
+                    "Migrated 1536-d -> 384-d memories recall cleanly with local multilingual neural model",
+                    "before binary swap" in rec384.get("context", ""),
+                    str(rec384),
+                )
+        finally:
+            srv_384.terminate()
+            try:
+                srv_384.wait(timeout=5)
+            except Exception:
+                srv_384.kill()
     finally:
         mock_srv.shutdown()
         shutil.rmtree(home, ignore_errors=True)

@@ -948,6 +948,68 @@ impl E5MultilingualModel {
         }
         Ok(out)
     }
+
+    pub fn embed_batch(&self, prefixed_texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+        if prefixed_texts.is_empty() {
+            return Ok(vec![]);
+        }
+        let dev = Device::Cpu;
+        let pad_id = self.tokenizer.pad_id();
+        let mut encs = Vec::with_capacity(prefixed_texts.len());
+        let mut max_seq = 2usize;
+        for t in prefixed_texts {
+            let (ids, tids) = self.tokenizer.encode_single(t, self.max_len);
+            max_seq = max_seq.max(ids.len());
+            encs.push((ids, tids));
+        }
+        let bsz = encs.len();
+        let mut orig_lens = Vec::with_capacity(bsz);
+        let mut flat_ids = Vec::with_capacity(bsz * max_seq);
+        let mut flat_tids = Vec::with_capacity(bsz * max_seq);
+        let mut flat_mask = Vec::with_capacity(bsz * max_seq);
+        for (ids, tids) in encs {
+            let n = ids.len();
+            orig_lens.push(n);
+            flat_ids.extend_from_slice(&ids);
+            flat_tids.extend_from_slice(&tids);
+            flat_mask.extend(std::iter::repeat(1u32).take(n));
+            if n < max_seq {
+                let pad = max_seq - n;
+                flat_ids.extend(std::iter::repeat(pad_id).take(pad));
+                flat_tids.extend(std::iter::repeat(0u32).take(pad));
+                flat_mask.extend(std::iter::repeat(0u32).take(pad));
+            }
+        }
+        let input_ids =
+            Tensor::from_vec(flat_ids, (bsz, max_seq), &dev).map_err(|e| e.to_string())?;
+        let token_type_ids =
+            Tensor::from_vec(flat_tids, (bsz, max_seq), &dev).map_err(|e| e.to_string())?;
+        let attn_mask =
+            Tensor::from_vec(flat_mask, (bsz, max_seq), &dev).map_err(|e| e.to_string())?;
+        let hidden = {
+            let guard = self.bert.lock().map_err(|e| e.to_string())?;
+            guard
+                .forward(&input_ids, &token_type_ids, Some(&attn_mask))
+                .map_err(|e| format!("e5 batch forward: {}", e))?
+        };
+        let mut results = Vec::with_capacity(bsz);
+        for (i, &seq_n) in orig_lens.iter().enumerate() {
+            let pooled = hidden
+                .i((i, 0..seq_n, ..))
+                .and_then(|t| t.mean(0))
+                .and_then(|t| t.to_vec1::<f32>())
+                .map_err(|e| format!("e5 batch pool: {}", e))?;
+            let norm: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let mut out = pooled;
+            if norm > 1e-12 {
+                for x in &mut out {
+                    *x /= norm;
+                }
+            }
+            results.push(out);
+        }
+        Ok(results)
+    }
 }
 
 pub struct MmarcoCrossEncoder {
@@ -1112,6 +1174,64 @@ impl BgeEmbedModel {
             }
         }
         Ok(out)
+    }
+
+    pub fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+        let dev = Device::Cpu;
+        let mut encs = Vec::with_capacity(texts.len());
+        let mut max_seq = 2usize;
+        for t in texts {
+            let (ids, tids) = self.tokenizer.encode_single(t, self.max_len);
+            max_seq = max_seq.max(ids.len());
+            encs.push((ids, tids));
+        }
+        let bsz = encs.len();
+        let mut flat_ids = Vec::with_capacity(bsz * max_seq);
+        let mut flat_tids = Vec::with_capacity(bsz * max_seq);
+        let mut flat_mask = Vec::with_capacity(bsz * max_seq);
+        for (ids, tids) in encs {
+            let n = ids.len();
+            flat_ids.extend_from_slice(&ids);
+            flat_tids.extend_from_slice(&tids);
+            flat_mask.extend(std::iter::repeat(1u32).take(n));
+            if n < max_seq {
+                let pad = max_seq - n;
+                flat_ids.extend(std::iter::repeat(0u32).take(pad));
+                flat_tids.extend(std::iter::repeat(0u32).take(pad));
+                flat_mask.extend(std::iter::repeat(0u32).take(pad));
+            }
+        }
+        let input_ids =
+            Tensor::from_vec(flat_ids, (bsz, max_seq), &dev).map_err(|e| e.to_string())?;
+        let token_type_ids =
+            Tensor::from_vec(flat_tids, (bsz, max_seq), &dev).map_err(|e| e.to_string())?;
+        let attn_mask =
+            Tensor::from_vec(flat_mask, (bsz, max_seq), &dev).map_err(|e| e.to_string())?;
+        let hidden = {
+            let guard = self.bert.lock().map_err(|e| e.to_string())?;
+            guard
+                .forward(&input_ids, &token_type_ids, Some(&attn_mask))
+                .map_err(|e| format!("bert batch forward: {}", e))?
+        };
+        let mut results = Vec::with_capacity(bsz);
+        for i in 0..bsz {
+            let cls = hidden
+                .i((i, 0, ..))
+                .and_then(|t| t.to_vec1::<f32>())
+                .map_err(|e| format!("bert batch cls: {}", e))?;
+            let norm: f32 = cls.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let mut out = cls;
+            if norm > 1e-12 {
+                for x in &mut out {
+                    *x /= norm;
+                }
+            }
+            results.push(out);
+        }
+        Ok(results)
     }
 }
 
@@ -1294,6 +1414,39 @@ pub fn global_local_embed(model_id: &str, text: &str, is_query: bool) -> Result<
         global_bge_embed(text)
     } else {
         global_e5_embed(text, is_query)
+    }
+}
+
+pub fn global_local_embed_batch(
+    model_id: &str,
+    texts: &[String],
+    is_query: bool,
+) -> Result<Vec<Vec<f32>>, String> {
+    if model_id.eq_ignore_ascii_case(BGE_REPO_ID)
+        || model_id.eq_ignore_ascii_case("bge-small-en-v1.5")
+        || model_id.eq_ignore_ascii_case("local-384")
+    {
+        let res = BGE_INSTANCE.get_or_init(BgeEmbedModel::load);
+        match res {
+            Ok(m) => m.embed_batch(texts),
+            Err(e) => Err(e.clone()),
+        }
+    } else {
+        let prefixed: Vec<String> = texts
+            .iter()
+            .map(|t| {
+                if is_query {
+                    format!("query: {}", t)
+                } else {
+                    format!("passage: {}", t)
+                }
+            })
+            .collect();
+        let res = E5_INSTANCE.get_or_init(E5MultilingualModel::load);
+        match res {
+            Ok(m) => m.embed_batch(&prefixed),
+            Err(e) => Err(e.clone()),
+        }
     }
 }
 

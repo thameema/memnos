@@ -426,10 +426,19 @@ enum Commands {
     },
     /// mint a fresh admin token (direct DB, no server needed)
     Admin,
-    /// re-embed all memories to a different dimension (384 local <-> 1536 OpenAI)
+    /// take a verified backup of the PostgreSQL database + ~/.memnos/config.json
+    Backup {
+        #[arg(long)]
+        out: Option<String>,
+        #[arg(long, default_value_t = 10)]
+        keep: usize,
+    },
+    /// re-embed all memories to a different dimension or model (always takes a DB backup first)
     MigrateEmbeddings {
         #[arg(long)]
         to: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
         #[arg(short, long)]
         yes: bool,
     },
@@ -1071,6 +1080,238 @@ async fn build_store_from_cfg(
     Ok(Arc::new(BrainStore::new(pool, None, emb, ext)?))
 }
 
+fn find_pg_dump_bin() -> Option<PathBuf> {
+    if let Ok(explicit) = env::var("MEMNOS_PG_DUMP") {
+        let p = PathBuf::from(explicit.trim());
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let exe_name = if cfg!(windows) { "pg_dump.exe" } else { "pg_dump" };
+    if let Ok(path_var) = env::var("PATH") {
+        for dir in env::split_paths(&path_var) {
+            let cand = dir.join(exe_name);
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    let mut candidates: Vec<PathBuf> = vec![
+        config_dir().join("embedded_pg").join("bin").join(exe_name),
+        PathBuf::from("/opt/homebrew/opt/libpq/bin/pg_dump"),
+        PathBuf::from("/opt/homebrew/opt/postgresql@18/bin/pg_dump"),
+        PathBuf::from("/opt/homebrew/opt/postgresql@17/bin/pg_dump"),
+        PathBuf::from("/opt/homebrew/opt/postgresql@16/bin/pg_dump"),
+        PathBuf::from("/opt/homebrew/opt/postgresql@15/bin/pg_dump"),
+        PathBuf::from("/opt/homebrew/bin/pg_dump"),
+        PathBuf::from("/usr/local/opt/libpq/bin/pg_dump"),
+        PathBuf::from("/usr/local/opt/postgresql@17/bin/pg_dump"),
+        PathBuf::from("/usr/local/opt/postgresql@16/bin/pg_dump"),
+        PathBuf::from("/usr/local/bin/pg_dump"),
+        PathBuf::from("/Applications/Postgres.app/Contents/Versions/latest/bin/pg_dump"),
+        PathBuf::from("/usr/lib/postgresql/17/bin/pg_dump"),
+        PathBuf::from("/usr/lib/postgresql/16/bin/pg_dump"),
+        PathBuf::from("/usr/lib/postgresql/15/bin/pg_dump"),
+    ];
+    let emb_root = config_dir().join("embedded_pg");
+    if let Ok(entries) = fs::read_dir(&emb_root) {
+        for entry in entries.flatten() {
+            let sub = entry.path().join("bin").join(exe_name);
+            if sub.is_file() {
+                candidates.insert(0, sub);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        for v in ["18", "17", "16", "15"] {
+            candidates.push(PathBuf::from(format!(
+                r"C:\Program Files\PostgreSQL\{}\bin\pg_dump.exe",
+                v
+            )));
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+async fn write_sql_logical_snapshot(pg_dsn: &str, out_path: &Path) -> Result<(), String> {
+    use std::io::{BufWriter, Write};
+    let pool = build_pool(pg_dsn, 2)?;
+    let client = pool.get().await.map_err(|e| format!("DB connect failed for backup: {}", e))?;
+    let schemas_rows = client
+        .query(
+            "SELECT nspname FROM pg_namespace WHERE nspname = 'memnos_control' OR nspname LIKE 'tenant_%' ORDER BY nspname",
+            &[],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let file = fs::File::create(out_path).map_err(|e| e.to_string())?;
+    let mut w = BufWriter::new(file);
+    writeln!(
+        w,
+        "{}",
+        json!({
+            "format": "memnos-logical-backup-v1",
+            "created_at": chrono::Utc::now().to_rfc3339(),
+            "version": VERSION,
+        })
+    )
+    .map_err(|e| e.to_string())?;
+
+    for srow in schemas_rows {
+        let s: String = srow.get("nspname");
+        let tbl_rows = client
+            .query(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE' ORDER BY table_name",
+                &[&s],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        for trow in tbl_rows {
+            let t: String = trow.get("table_name");
+            let sql = format!(
+                "SELECT to_jsonb(r)::text AS row_json FROM \"{}\".\"{}\" r",
+                s.replace('"', "\"\""),
+                t.replace('"', "\"\"")
+            );
+            let rows = client.query(&sql, &[]).await.map_err(|e| e.to_string())?;
+            for r in rows {
+                let rj: String = r.get("row_json");
+                writeln!(
+                    w,
+                    "{}",
+                    json!({ "schema": s, "table": t, "row": serde_json::from_str::<Value>(&rj).unwrap_or(Value::Null) })
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    w.flush().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn set_private_perms(p: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(p, fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = p;
+    }
+}
+
+fn prune_old_backups(backups_dir: &Path, keep: usize) {
+    if keep == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(backups_dir) else {
+        return;
+    };
+    let mut dumps: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            name.starts_with("memnos-pre-") && (name.ends_with(".dump") || name.ends_with(".jsonl"))
+        })
+        .filter_map(|p| {
+            let mtime = fs::metadata(&p).and_then(|m| m.modified()).ok()?;
+            Some((mtime, p))
+        })
+        .collect();
+    dumps.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, old_path) in dumps.into_iter().skip(keep) {
+        let cfg_snap = old_path.with_extension("config.json");
+        let _ = fs::remove_file(&old_path);
+        let _ = fs::remove_file(&cfg_snap);
+    }
+}
+
+async fn take_verified_db_backup(
+    cfg: &Config,
+    reason: &str,
+    custom_out: Option<&str>,
+    keep: usize,
+) -> Result<PathBuf, String> {
+    let pg_dsn = dsn(cfg);
+    let backups_dir = config_dir().join("backups");
+    fs::create_dir_all(&backups_dir).map_err(|e| format!("create backups dir failed: {}", e))?;
+    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+
+    let pg_dump = find_pg_dump_bin();
+    let default_ext = if pg_dump.is_some() { "dump" } else { "jsonl" };
+    let target_path = match custom_out {
+        Some(raw) => PathBuf::from(raw),
+        None => backups_dir.join(format!("memnos-{}-{}.{}", reason, ts, default_ext)),
+    };
+    if let Some(parent) = target_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+    }
+
+    println!(
+        "[memnos] taking mandatory database backup ({}) -> {} ...",
+        reason,
+        target_path.display()
+    );
+
+    if let Some(pg_dump_bin) = pg_dump {
+        let out = Command::new(&pg_dump_bin)
+            .args([
+                "-Fc",
+                "--no-owner",
+                "--no-acl",
+                "-f",
+                &target_path.to_string_lossy(),
+                &pg_dsn,
+            ])
+            .output()
+            .map_err(|e| format!("failed to run {}: {}", pg_dump_bin.display(), e))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(format!(
+                "pre-upgrade database backup failed via pg_dump (aborting to protect data): {}",
+                stderr.trim()
+            ));
+        }
+    } else {
+        write_sql_logical_snapshot(&pg_dsn, &target_path).await?;
+    }
+
+    let meta = fs::metadata(&target_path)
+        .map_err(|e| format!("backup verification failed on {}: {}", target_path.display(), e))?;
+    if meta.len() == 0 {
+        return Err(format!(
+            "backup verification failed: {} is 0 bytes (aborting)",
+            target_path.display()
+        ));
+    }
+    set_private_perms(&target_path);
+
+    let src_cfg = config_dir().join("config.json");
+    if src_cfg.is_file() {
+        let cfg_snap = target_path.with_extension("config.json");
+        if fs::copy(&src_cfg, &cfg_snap).is_ok() {
+            set_private_perms(&cfg_snap);
+        }
+    }
+
+    if custom_out.is_none() {
+        prune_old_backups(&backups_dir, keep);
+    }
+
+    let mb = meta.len() as f64 / (1024.0 * 1024.0);
+    println!(
+        "[memnos] ✓ verified DB backup saved ({:.2} MB): {}",
+        mb,
+        target_path.display()
+    );
+    Ok(target_path)
+}
+
 fn kill_pid(pid: u32) {
     #[cfg(unix)]
     {
@@ -1400,6 +1641,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 return Ok(());
             }
             println!("[memnos] installed version: v{}", VERSION);
+            let mut latest_ver: Option<String> = None;
             if let Ok(r) = ureq::get("https://pypi.org/pypi/memnos/json")
                 .timeout(Duration::from_secs(4))
                 .call()
@@ -1411,11 +1653,21 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                         .and_then(|s| s.as_str())
                     {
                         println!("[memnos] latest published release: v{}", latest);
+                        latest_ver = Some(latest.to_string());
                     }
                 }
             }
-            if !check && !no_restart {
-                println!("[memnos] run `memnos restart` after replacing binary to trigger zero-downtime swap.");
+            if !check {
+                // Standing upgrade discipline: ALWAYS take and verify a full DB + config backup
+                // before applying any upgrade or restarting onto a new binary.
+                take_verified_db_backup(&cfg, "pre-upgrade", None, 10).await?;
+                if let Some(l) = latest_ver {
+                    cfg.latest_known = Some(l);
+                    let _ = save_config(&cfg);
+                }
+                if !no_restart {
+                    println!("[memnos] pre-upgrade backup verified. Run `memnos restart` after replacing binary to trigger zero-downtime swap.");
+                }
             }
             Ok(())
         }
@@ -2996,10 +3248,249 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             println!("{}", tok);
             Ok(())
         }
-        Commands::MigrateEmbeddings { to, yes: _ } => {
+        Commands::Backup { out, keep } => {
+            take_verified_db_backup(&cfg, "manual", out.as_deref(), keep).await?;
+            Ok(())
+        }
+        Commands::MigrateEmbeddings { to, model, yes } => {
+            let pool = build_pool(&dsn(&cfg), 4)?;
+            Control::init(&pool).await.map_err(|e| e.to_string())?;
+
+            let target_dim: usize = match to.as_deref() {
+                Some("1536") => 1536,
+                Some("384") => 384,
+                Some(other) => {
+                    return Err(format!(
+                        "--to must be 384 (local) or 1536 (OpenAI), got {:?}",
+                        other
+                    ));
+                }
+                None => {
+                    if has_configured_openai(&cfg) && model.is_none() {
+                        1536
+                    } else {
+                        384
+                    }
+                }
+            };
+
+            let raw_oa = env::var("OPENAI_API_KEY")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| cfg.openai.clone());
+            let oa_key = if target_dim == 1536 {
+                let k = Vault::resolve_provider_key_from_pool(&pool, raw_oa, false).await;
+                if k.is_none() {
+                    return Err(
+                        "migrating to 1536-d requires an OpenAI key (`memnos secret set openai` or OPENAI_API_KEY)"
+                            .to_string(),
+                    );
+                }
+                k
+            } else {
+                None
+            };
+
+            if target_dim == 384 {
+                if let Some(ref m) = model {
+                    env::set_var("MEMNOS_LOCAL_MODEL", m);
+                } else {
+                    env::remove_var("OPENAI_API_KEY");
+                }
+            }
+            let embedder = Embedder::from_env(oa_key, Some(target_dim));
+            let target_model = embedder.model_name();
+            if target_dim == 384 {
+                ensure_local_models_ready(&target_model)?;
+            }
+
+            let client = pool.get().await.map_err(|e| e.to_string())?;
+            let schema_rows = client
+                .query(
+                    "SELECT n.nspname FROM pg_namespace n \
+                     WHERE n.nspname LIKE 'tenant_%' \
+                       AND EXISTS (SELECT 1 FROM information_schema.tables t WHERE t.table_schema = n.nspname AND t.table_name = 'raw_turns') \
+                     ORDER BY n.nspname",
+                    &[],
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            if schema_rows.is_empty() {
+                println!("[memnos] no tenant schemas found — run `memnos setup` first.");
+                return Ok(());
+            }
+
+            let ver_rows = client
+                .query(
+                    "SELECT extversion FROM pg_extension WHERE extname = 'vector'",
+                    &[],
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            let vtype = ver_rows
+                .first()
+                .map(|r| r.get::<_, String>(0))
+                .map(|v| {
+                    let parts: Vec<u32> = v.split('.').map(|p| p.parse().unwrap_or(0)).collect();
+                    if parts.len() >= 2 && (parts[0], parts[1]) >= (0, 7) {
+                        "halfvec"
+                    } else {
+                        "vector"
+                    }
+                })
+                .unwrap_or("vector");
+            let vops = if vtype == "halfvec" {
+                "halfvec_cosine_ops"
+            } else {
+                "vector_cosine_ops"
+            };
+
+            let tables = [
+                ("raw_turns", "text", "raw_hnsw"),
+                ("semantic", "statement", "sem_hnsw"),
+                ("episodic", "text", "epi_hnsw"),
+                ("entities", "name", "ent_hnsw"),
+            ];
+
+            let mut total_rows: i64 = 0;
+            let mut schemas: Vec<String> = Vec::new();
+            for sr in schema_rows {
+                let s: String = sr.get("nspname");
+                for (tbl, _, _) in &tables {
+                    let crow = client
+                        .query_one(&format!("SELECT count(*) FROM \"{}\".\"{}\"", s, tbl), &[])
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    total_rows += crow.get::<_, i64>(0);
+                }
+                schemas.push(s);
+            }
+
             println!(
-                "[memnos] target embedding dimension: {} (BrainStore auto-detects and preserves existing column dimensions seamlessly).",
-                to.as_deref().unwrap_or("auto")
+                "[memnos] migrate embeddings -> {}-d ({}) across {} schema(s) ({} total rows)",
+                target_dim,
+                target_model,
+                schemas.len(),
+                total_rows
+            );
+            if !yes {
+                print!("  proceed (a verified DB backup will be taken first)? [y/N]: ");
+                let _ = io::stdout().flush();
+                let mut ans = String::new();
+                let _ = io::stdin().read_line(&mut ans);
+                if !matches!(ans.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                    println!("aborted.");
+                    return Ok(());
+                }
+            }
+
+            // Standing discipline: ALWAYS take and verify a full DB + config backup first!
+            take_verified_db_backup(&cfg, "pre-migrate", None, 10).await?;
+
+            let t0 = std::time::Instant::now();
+            let mut done_rows: usize = 0;
+            client
+                .batch_execute("SET statement_timeout = 0")
+                .await
+                .map_err(|e| e.to_string())?;
+
+            for s in &schemas {
+                for (tbl, txtcol, idx) in &tables {
+                    client
+                        .batch_execute(&format!(
+                            "DROP INDEX IF EXISTS \"{}\".\"{}\"; \
+                             ALTER TABLE \"{}\".\"{}\" ALTER COLUMN embedding TYPE {}({}) USING NULL;",
+                            s, idx, s, tbl, vtype, target_dim
+                        ))
+                        .await
+                        .map_err(|e| e.to_string())?;
+
+                    let rows = client
+                        .query(
+                            &format!(
+                                "SELECT id, {} AS txt FROM \"{}\".\"{}\" WHERE {} IS NOT NULL",
+                                txtcol, s, tbl, txtcol
+                            ),
+                            &[],
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let mut items: Vec<(i64, String)> = rows
+                        .into_iter()
+                        .map(|r| (r.get::<_, i64>("id"), r.get::<_, String>("txt")))
+                        .collect();
+                    // Sort by character length so padded transformer batches waste near-zero compute
+                    items.sort_by_key(|(_, txt)| txt.len());
+
+                    let mut pos = 0usize;
+                    while pos < items.len() {
+                        let bsz = if items[pos].1.len() <= 256 { 64 } else { 16 };
+                        let end = (pos + bsz).min(items.len());
+                        let slice = &items[pos..end];
+                        let texts: Vec<String> = slice.iter().map(|(_, t)| t.clone()).collect();
+                        let vecs = embedder.try_embed_batch(&texts).await?;
+                        let ids: Vec<i64> = slice.iter().map(|(id, _)| *id).collect();
+                        let vlits: Vec<String> =
+                            vecs.iter().map(|v| memnos_core::embed::vlit(v)).collect();
+                        let upd_sql = format!(
+                            "UPDATE \"{}\".\"{}\" AS dst \
+                             SET embedding = src.v::{}({}) \
+                             FROM UNNEST($1::bigint[], $2::text[]) AS src(id, v) \
+                             WHERE dst.id = src.id",
+                            s, tbl, vtype, target_dim
+                        );
+                        client
+                            .execute(&upd_sql, &[&ids, &vlits])
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        done_rows += slice.len();
+                        pos = end;
+                        let elapsed = t0.elapsed().as_secs_f64().max(0.01);
+                        let rate = done_rows as f64 / elapsed;
+                        eprint!(
+                            "\r  [{}/{}] {:.0} rows/s ({}.{})    ",
+                            done_rows, total_rows, rate, s, tbl
+                        );
+                        let _ = io::stderr().flush();
+                    }
+
+                    client
+                        .batch_execute(&format!(
+                            "CREATE INDEX IF NOT EXISTS \"{}\" ON \"{}\".\"{}\" USING hnsw (embedding {})",
+                            idx, s, tbl, vops
+                        ))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+
+                let meta = json!({
+                    "embed_model": target_model,
+                    "embed_dim": target_dim,
+                })
+                .to_string()
+                .replace('\'', "''");
+                client
+                    .batch_execute(&format!("COMMENT ON SCHEMA \"{}\" IS '{}'", s, meta))
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            eprintln!();
+
+            if target_dim == 1536 {
+                if cfg.openai.is_none() {
+                    cfg.openai = Some("secret://openai".to_string());
+                }
+            } else {
+                cfg.openai = None;
+            }
+            let _ = save_config(&cfg);
+            println!(
+                "[memnos] ✓ migrated {} rows across {} schema(s) to {}-d ({}) in {:.1}s. Restart server: `memnos restart`",
+                done_rows,
+                schemas.len(),
+                target_dim,
+                target_model,
+                t0.elapsed().as_secs_f64()
             );
             Ok(())
         }
