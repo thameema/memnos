@@ -51,6 +51,11 @@ jobs:
       - name: Run release hygiene gate on exact binary AND unpacked dist/ archive
         shell: bash
         run: bash scripts/release_hygiene.sh "./target/release/memnos${{ matrix.ext }}"
+      - name: Run negative + positive archive leak regression suite
+        shell: bash
+        run: |
+          PY="$(command -v python3 || command -v python)"
+          "$PY" tests/test_release_hygiene_gate.py
       - name: Smoke test built release binary (--version and tips)
         shell: bash
         run: |
