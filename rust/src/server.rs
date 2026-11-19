@@ -2929,7 +2929,12 @@ pub async fn run_server_opts(
     );
     println!("[memnos] target db: {}", db_target);
 
-    let pool = build_pool(&pg_dsn, 24)?;
+    let pool_max = env::var("MEMNOS_POOL_MAX")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(10)
+        .clamp(2, 64);
+    let pool = build_pool(&pg_dsn, pool_max)?;
     let must_be_empty = require_empty_db
         || matches!(
             env::var("MEMNOS_REQUIRE_EMPTY_DB")
@@ -3009,7 +3014,7 @@ pub async fn run_server_opts(
                 warm_flag.store(true, Ordering::Relaxed);
             });
             if embedder.is_openai() {
-                crate::rerank::spawn_background_prewarm_opts(crate::rerank::E5_MULTI_REPO_ID, false);
+                crate::rerank::spawn_background_prewarm_opts(&active_model, false);
             } else {
                 crate::rerank::spawn_background_prewarm_opts(&active_model, true);
             }

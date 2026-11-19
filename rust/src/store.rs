@@ -2162,7 +2162,18 @@ impl BrainStore {
         let qi = query_intent(query);
         let verbatim = qi == "verbatim";
         let err_q = is_error_query(query);
-        let qlit = self.embed_query_lit(query).await?;
+        let q_max_toks: usize = std::env::var("MEMNOS_QUERY_RERANK_MAX_TOKENS")
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(384)
+            .max(1);
+        let q_parts: Vec<&str> = query.split_whitespace().collect();
+        let q_clamped_cow: std::borrow::Cow<'_, str> = if q_parts.len() <= q_max_toks {
+            std::borrow::Cow::Borrowed(query)
+        } else {
+            std::borrow::Cow::Owned(q_parts[..q_max_toks].join(" "))
+        };
+        let qlit = self.embed_query_lit(&q_clamped_cow).await?;
         let qt = fts_clamp(query);
         let k = opts.k.max(1) as i64;
         let ents: Vec<String> = temporal::query_entities(query).iter().map(|e| e.to_lowercase()).collect();
@@ -2273,6 +2284,14 @@ impl BrainStore {
         let mut past_deadline = opts.deadline.map_or(false, |dl| Instant::now() >= dl);
         let warming = crate::rerank::rerank_should_degrade_warming();
         let use_rerank = crate::rerank::rerank_enabled() && !warming && !past_deadline;
+        let rerank_dl = {
+            let b = Instant::now() + crate::rerank::rerank_budget_duration();
+            match opts.deadline {
+                Some(dl) if dl < b => dl,
+                _ => b,
+            }
+        };
+        let mut rerank_timed_out = false;
 
         let subject_scope = opts.subject.as_ref().map(|x| x.trim().to_lowercase()).filter(|x| !x.is_empty());
         let mut raw_fact_cands: Vec<(Value, f64)> = fuse_rows(vec![sem_v, sem_f, tl, ent], "fact")
@@ -2285,19 +2304,18 @@ impl BrainStore {
                 }
             })
             .collect();
-        if use_rerank && !raw_fact_cands.is_empty() {
-            let q_owned = query.to_string();
+        if use_rerank && !raw_fact_cands.is_empty() && Instant::now() < rerank_dl {
             let texts: Vec<String> = raw_fact_cands.iter().map(|(r, _)| s_of(r, "content").to_string()).collect();
-            if let Ok(Ok(rr_scores)) = tokio::task::spawn_blocking(move || {
-                let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-                crate::rerank::rerank_candidates(&q_owned, &refs)
-            })
-            .await
-            {
-                for (orig_idx, sig) in rr_scores {
-                    if let Some(entry) = raw_fact_cands.get_mut(orig_idx) {
-                        entry.1 = sig;
+            match crate::rerank::rerank_async(q_clamped_cow.to_string(), texts, Some(rerank_dl)).await {
+                Ok(rr_scores) => {
+                    for (orig_idx, sig) in rr_scores {
+                        if let Some(entry) = raw_fact_cands.get_mut(orig_idx) {
+                            entry.1 = sig;
+                        }
                     }
+                }
+                Err(_) => {
+                    rerank_timed_out = true;
                 }
             }
         }
@@ -2326,15 +2344,9 @@ impl BrainStore {
                 past_deadline = true;
             }
         }
-        if use_rerank && !past_deadline && !dedup_turns.is_empty() {
-            let q_owned = query.to_string();
+        if use_rerank && !past_deadline && !rerank_timed_out && !dedup_turns.is_empty() && Instant::now() < rerank_dl {
             let texts: Vec<String> = dedup_turns.iter().map(|(r, _)| s_of(r, "content").to_string()).collect();
-            if let Ok(Ok(rr_scores)) = tokio::task::spawn_blocking(move || {
-                let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-                crate::rerank::rerank_candidates(&q_owned, &refs)
-            })
-            .await
-            {
+            if let Ok(rr_scores) = crate::rerank::rerank_async(q_clamped_cow.to_string(), texts, Some(rerank_dl)).await {
                 for (orig_idx, sig) in rr_scores {
                     if let Some(entry) = dedup_turns.get_mut(orig_idx) {
                         entry.1 = sig;

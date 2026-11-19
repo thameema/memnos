@@ -2005,8 +2005,39 @@ async fn start_background_server(cfg: &mut Config, port_override: Option<u16>) -
     ))
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // Bound BLAS / Accelerate / Rayon thread pools BEFORE any worker thread spawns so
+    // nested parallelism never multiplies per-thread GEMM scratch slabs across cores.
+    // Because neural inference runs exclusively on the single serialized `memnos-infer`
+    // worker thread, 4 threads give fast SIMD/AMX matrix multiplies with zero contention.
+    let rr_threads = env::var("MEMNOS_RERANK_THREADS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(2)
+        .clamp(1, 8);
+    let rr_str = rr_threads.to_string();
+    for k in [
+        "RAYON_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+    ] {
+        if env::var_os(k).is_none() {
+            env::set_var(k, &rr_str);
+        }
+    }
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .max_blocking_threads(8)
+        .enable_all()
+        .build()
+        .expect("failed to initialize async runtime");
+    rt.block_on(async_main());
+}
+
+async fn async_main() {
     let cfg = load_config();
     let norm_args = normalize_argv(env::args().collect());
 
