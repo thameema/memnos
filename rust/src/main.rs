@@ -1463,7 +1463,10 @@ async fn run_wake_sweep(
     };
     let Ok(rows) = client
         .query(
-            "SELECT namespace, name, principal_id, harness, cwd, metadata, machine_id, pid
+            "SELECT namespace, name, principal_id::bigint AS principal_id,
+                    COALESCE(harness, '') AS harness, COALESCE(cwd, '') AS cwd,
+                    COALESCE(metadata, '{}'::jsonb) AS metadata,
+                    COALESCE(machine_id, '') AS machine_id, pid::bigint AS pid
              FROM memnos_control.agent_sessions
              WHERE status = 'active' AND expires_at > now()
                AND ($1::text IS NULL OR namespace = $1)",
@@ -1476,20 +1479,20 @@ async fn run_wake_sweep(
 
     let mut pending_targets: Vec<(String, String, String, String, Value, i64, String)> = Vec::new();
     for r in rows {
-        let ns: String = r.get("namespace");
-        let name: String = r.get("name");
-        let principal_id: i64 = r.get("principal_id");
-        let harness: String = r.get("harness");
-        let cwd: String = r.get("cwd");
-        let meta: Value = r.get("metadata");
-        let mid: String = r.get("machine_id");
-        let pid: Option<i32> = r.get("pid");
+        let ns: String = r.try_get("namespace").unwrap_or_default();
+        let name: String = r.try_get("name").unwrap_or_default();
+        let principal_id: i64 = r.try_get("principal_id").unwrap_or(0);
+        let harness: String = r.try_get("harness").unwrap_or_default();
+        let cwd: String = r.try_get("cwd").unwrap_or_default();
+        let meta: Value = r.try_get("metadata").unwrap_or_else(|_| json!({}));
+        let mid: String = r.try_get("machine_id").unwrap_or_default();
+        let pid: Option<i64> = r.try_get("pid").ok().flatten();
 
         if !mid.is_empty() && mid != local_mid {
             continue;
         }
         if let Some(p) = pid {
-            if p > 1 && !is_local_pid_alive(p as u32) {
+            if p > 1 && p <= u32::MAX as i64 && !is_local_pid_alive(p as u32) {
                 continue;
             }
         }
