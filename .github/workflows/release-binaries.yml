@@ -14,12 +14,21 @@ permissions:
 
 jobs:
   test-cross-os:
-    name: Build, Unit Suite & Hygiene Gate (${{ matrix.os }})
+    name: Build, Archive & Hygiene Gate (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            target_label: linux-amd64
+            ext: ""
+          - os: macos-latest
+            target_label: darwin-arm64
+            ext: ""
+          - os: windows-latest
+            target_label: windows-amd64
+            ext: ".exe"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -29,19 +38,28 @@ jobs:
       - name: Build path-remapped single binary (scripts/build_release.sh)
         shell: bash
         run: bash scripts/build_release.sh
-      - name: Run release hygiene gate on exact release binary (all OSes incl. Windows)
+      - name: Package release archive into dist/ (exercised on every push)
         shell: bash
-        run: bash scripts/release_hygiene.sh ./target/release/memnos
+        run: |
+          rm -rf dist && mkdir -p dist
+          BIN="./target/release/memnos${{ matrix.ext }}"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            powershell -NoProfile -Command "Compress-Archive -Path '$BIN' -DestinationPath 'dist/memnos-${{ matrix.target_label }}.zip' -Force"
+          else
+            tar -czf "dist/memnos-${{ matrix.target_label }}.tar.gz" -C ./target/release memnos
+          fi
+      - name: Run release hygiene gate on exact binary AND unpacked dist/ archive
+        shell: bash
+        run: bash scripts/release_hygiene.sh "./target/release/memnos${{ matrix.ext }}"
       - name: Smoke test built release binary (--version and tips)
         shell: bash
         run: |
-          BIN="./target/release/memnos"
-          [[ -f "${BIN}.exe" ]] && BIN="${BIN}.exe"
+          BIN="./target/release/memnos${{ matrix.ext }}"
           "$BIN" --version
           "$BIN" tips
 
   publish-release-binaries:
-    name: Package & Upload Gated Release Binary (${{ matrix.target_label }})
+    name: Upload Verified Release Binary (${{ matrix.target_label }})
     if: github.event_name == 'release'
     needs: test-cross-os
     runs-on: ${{ matrix.os }}
@@ -70,14 +88,14 @@ jobs:
       - name: Package release archive into dist/
         shell: bash
         run: |
-          mkdir -p dist
+          rm -rf dist && mkdir -p dist
           BIN="./target/release/memnos${{ matrix.ext }}"
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
             powershell -NoProfile -Command "Compress-Archive -Path '$BIN' -DestinationPath 'dist/memnos-${{ matrix.target_label }}.zip' -Force"
           else
             tar -czf "dist/memnos-${{ matrix.target_label }}.tar.gz" -C ./target/release memnos
           fi
-      - name: Enforce release hygiene gate on exact binary + packaged archive
+      - name: Enforce release hygiene gate on exact binary AND unpacked dist/ archive
         shell: bash
         run: bash scripts/release_hygiene.sh "./target/release/memnos${{ matrix.ext }}"
       - name: Upload verified release archive to GitHub Release

@@ -208,22 +208,20 @@ fi
 # 5. Deep distribution check (inspects unpacked .whl / .zip / .tar.gz member contents)
 FOUND_DIST=0
 DIST_BAD=0
+SCANNED_NAMES=()
 for ddir in "${DIST_DIRS[@]}"; do
   if [[ -d "$ddir" ]]; then
     while IFS= read -r -d '' pkg; do
       FOUND_DIST=1
+      bname="$(basename "$pkg")"
+      SCANNED_NAMES+=("$bname")
       PKG_TMP="$(mktemp)"
       extract_pkg_strings "$pkg" > "$PKG_TMP"
-      if [[ -n "${HOME:-}" ]] && grep -F "$HOME" "$PKG_TMP" >/dev/null 2>&1; then
-        fail "Distribution artifact $(basename "$pkg") leaks POSIX HOME ($HOME)"
+      if ! check_path_leaks_in_stream "Distribution artifact $bname" "$PKG_TMP"; then
         DIST_BAD=1
       fi
-      if [[ -n "$WIN_HOME" ]] && grep -Fi "$WIN_HOME" "$PKG_TMP" >/dev/null 2>&1; then
-        fail "Distribution artifact $(basename "$pkg") leaks Windows HOME ($WIN_HOME)"
-        DIST_BAD=1
-      fi
-      if [[ -n "${USERPROFILE:-}" ]] && grep -Fi "$USERPROFILE" "$PKG_TMP" >/dev/null 2>&1; then
-        fail "Distribution artifact $(basename "$pkg") leaks USERPROFILE ($USERPROFILE)"
+      if grep -E 'FAKE_EXTRACT|EMBED_MODE|TEST_DSN|SIMULATE_WARMING|SKIP_MODEL_HASH|local-hash' "$PKG_TMP" >/dev/null 2>&1; then
+        fail "Distribution artifact $bname contains test-only switch or hash-tier strings"
         DIST_BAD=1
       fi
       rm -f "$PKG_TMP"
@@ -232,7 +230,7 @@ for ddir in "${DIST_DIRS[@]}"; do
 done
 
 if [[ "$FOUND_DIST" -eq 1 && "$DIST_BAD" -eq 0 ]]; then
-  pass "Unpacked distribution archives (.whl / .tar.gz / .zip) pass path-leak check"
+  pass "Unpacked distribution archives (${SCANNED_NAMES[*]}) pass full hygiene & path-leak checks"
 elif [[ "$DIST_ONLY" -eq 1 && "$FOUND_DIST" -eq 0 ]]; then
   fail "No distribution archives found in: ${DIST_DIRS[*]}"
 fi
