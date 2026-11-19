@@ -21,8 +21,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run engine unit tests
         run: cargo test --lib --release
-      - name: Build release single binary (plain cargo build --release)
-        run: cargo build --release
+      - name: Build path-remapped single binary (scripts/build_release.sh)
+        shell: bash
+        run: bash scripts/build_release.sh
       - name: Run release hygiene gate on exact release binary (all OSes incl. Windows)
         shell: bash
         run: bash scripts/release_hygiene.sh ./target/release/memnos

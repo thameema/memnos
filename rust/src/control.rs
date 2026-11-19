@@ -672,7 +672,11 @@ impl Control {
     /// one-time namespace-registry backfill (best-effort, never fatal).
     pub async fn init(pool: &Pool) -> CResult<()> {
         let c = conn(pool).await?;
-        c.batch_execute(CONTROL_DDL).await?;
+        let locked_ddl = format!(
+            "BEGIN;\nSELECT pg_advisory_xact_lock(7819204501);\n{}\nCOMMIT;",
+            CONTROL_DDL
+        );
+        c.batch_execute(&locked_ddl).await?;
         c.execute(
             "UPDATE memnos_control.channel_catalog SET global_topic = true
              WHERE kind = 'topic' AND channel LIKE '#%' AND channel <> '#general'

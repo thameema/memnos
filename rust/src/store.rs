@@ -885,7 +885,11 @@ impl BrainStore {
     /// `COMMENT ON SCHEMA` catalog metadata (zero extra tables or columns).
     pub async fn init_schema(&self) -> Result<(), String> {
         let c = self.conn().await?;
-        c.batch_execute("CREATE EXTENSION IF NOT EXISTS vector").await.map_err(de)?;
+        c.batch_execute(
+            "BEGIN; SELECT pg_advisory_xact_lock(7819204502); CREATE EXTENSION IF NOT EXISTS vector; COMMIT;",
+        )
+        .await
+        .map_err(de)?;
         let probe = jq(
             &c,
             "SELECT format_type(a.atttypid, a.atttypmod) AS t FROM pg_attribute a \
@@ -945,7 +949,11 @@ impl BrainStore {
             .replace("@S@", &self.schema)
             .replace("@COL@", &format!("{}({})", vtype, dim))
             .replace("@OPS@", ops);
-        c.batch_execute(&ddl).await.map_err(de)?;
+        let locked_ddl = format!(
+            "BEGIN;\nSELECT pg_advisory_xact_lock(7819204503);\n{}\nCOMMIT;",
+            ddl
+        );
+        c.batch_execute(&locked_ddl).await.map_err(de)?;
 
         // Check per-schema embedder model lineage stored in pg_description (`COMMENT ON SCHEMA`)
         let desc_rows = jq(

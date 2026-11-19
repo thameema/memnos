@@ -193,6 +193,8 @@ enum Commands {
     WakeDaemon {
         #[arg(long)]
         backend: Option<String>,
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// run the stdio MCP adapter (Claude Code / Antigravity / Cursor / Windsurf)
     Mcp {
@@ -1091,19 +1093,63 @@ async fn build_store_from_cfg(
 }
 
 fn find_pg_tool_bin(tool: &str) -> Option<PathBuf> {
-    if tool == "pg_dump" {
-        if let Ok(explicit) = env::var("MEMNOS_PG_DUMP") {
-            let p = PathBuf::from(explicit.trim());
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-    }
     let exe_name = if cfg!(windows) {
         format!("{}.exe", tool)
     } else {
         tool.to_string()
     };
+    let explicit_var = match tool {
+        "pg_dump" => Some("MEMNOS_PG_DUMP"),
+        "pg_restore" => Some("MEMNOS_PG_RESTORE"),
+        _ => None,
+    };
+    if let Some(var_name) = explicit_var {
+        if let Ok(explicit) = env::var(var_name) {
+            let trimmed = explicit.trim();
+            if !trimmed.is_empty() {
+                let p = PathBuf::from(trimmed);
+                return if p.is_file() { Some(p) } else { None };
+            }
+        }
+    }
+    if let Ok(pg_bin_dir) = env::var("MEMNOS_PG_BIN") {
+        let trimmed = pg_bin_dir.trim();
+        if !trimmed.is_empty() {
+            let cand = PathBuf::from(trimmed).join(&exe_name);
+            return if cand.is_file() { Some(cand) } else { None };
+        }
+    }
+
+    // 1. Embedded PostgreSQL bundle (`~/.memnos/embedded_pg/state.json` `pg_dir/bin/<tool>`)
+    let emb_root = config_dir().join("embedded_pg");
+    if let Ok(raw_state) = fs::read_to_string(emb_root.join("state.json")) {
+        if let Ok(st_json) = serde_json::from_str::<Value>(&raw_state) {
+            if let Some(pg_dir) = st_json.get("pg_dir").and_then(|v| v.as_str()) {
+                let cand = PathBuf::from(pg_dir).join("bin").join(&exe_name);
+                if cand.is_file() {
+                    return Some(cand);
+                }
+            }
+        }
+    }
+    if let Ok(entries) = fs::read_dir(&emb_root) {
+        for entry in entries.flatten() {
+            let p1 = entry.path().join("bin").join(&exe_name);
+            if p1.is_file() {
+                return Some(p1);
+            }
+            if let Ok(sub_entries) = fs::read_dir(entry.path()) {
+                for sub in sub_entries.flatten() {
+                    let p2 = sub.path().join("bin").join(&exe_name);
+                    if p2.is_file() {
+                        return Some(p2);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Active PATH
     if let Ok(path_var) = env::var("PATH") {
         for dir in env::split_paths(&path_var) {
             let cand = dir.join(&exe_name);
@@ -1112,8 +1158,11 @@ fn find_pg_tool_bin(tool: &str) -> Option<PathBuf> {
             }
         }
     }
+
+    // 3. Common OS PostgreSQL client install paths
+    #[allow(unused_mut)]
     let mut candidates: Vec<PathBuf> = vec![
-        config_dir().join("embedded_pg").join("bin").join(&exe_name),
+        emb_root.join("bin").join(&exe_name),
         PathBuf::from(format!("/opt/homebrew/opt/libpq/bin/{}", exe_name)),
         PathBuf::from(format!("/opt/homebrew/opt/postgresql@18/bin/{}", exe_name)),
         PathBuf::from(format!("/opt/homebrew/opt/postgresql@17/bin/{}", exe_name)),
@@ -1132,15 +1181,6 @@ fn find_pg_tool_bin(tool: &str) -> Option<PathBuf> {
         PathBuf::from(format!("/usr/lib/postgresql/16/bin/{}", exe_name)),
         PathBuf::from(format!("/usr/lib/postgresql/15/bin/{}", exe_name)),
     ];
-    let emb_root = config_dir().join("embedded_pg");
-    if let Ok(entries) = fs::read_dir(&emb_root) {
-        for entry in entries.flatten() {
-            let sub = entry.path().join("bin").join(&exe_name);
-            if sub.is_file() {
-                candidates.insert(0, sub);
-            }
-        }
-    }
     #[cfg(windows)]
     {
         for v in ["18", "17", "16", "15"] {
@@ -1151,6 +1191,20 @@ fn find_pg_tool_bin(tool: &str) -> Option<PathBuf> {
         }
     }
     candidates.into_iter().find(|p| p.is_file())
+}
+
+fn missing_pg_client_tools_message(missing_tool: &str) -> String {
+    let hint = if cfg!(target_os = "macos") {
+        "Install PostgreSQL client tools via `brew install libpq` (or set MEMNOS_PG_BIN=/path/to/pg/bin)."
+    } else if cfg!(windows) {
+        r#"Install PostgreSQL client tools via `winget install PostgreSQL.PostgreSQL` (or set MEMNOS_PG_BIN="C:\Program Files\PostgreSQL\17\bin"). Embedded PostgreSQL installs (`memnos setup`) bundle `pg_dump` and `pg_restore` automatically."#
+    } else {
+        "Install PostgreSQL client tools via `sudo apt-get install -y postgresql-client` (or set MEMNOS_PG_BIN=/path/to/pg/bin)."
+    };
+    format!(
+        "refusing operation without a verified PostgreSQL backup: `{}` was not found on PATH, in ~/.memnos/embedded_pg, or in MEMNOS_PG_BIN. {}",
+        missing_tool, hint
+    )
 }
 
 fn precreate_private_file(p: &Path) -> Result<fs::File, String> {
@@ -1200,6 +1254,370 @@ fn prune_old_backups(backups_dir: &Path, keep: usize) {
     }
 }
 
+fn find_orca_bin() -> Option<PathBuf> {
+    if let Ok(path_var) = env::var("PATH") {
+        for dir in env::split_paths(&path_var) {
+            let cand = dir.join(if cfg!(windows) { "orca.exe" } else { "orca" });
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    for cand in ["/usr/local/bin/orca", "/opt/homebrew/bin/orca"] {
+        let p = PathBuf::from(cand);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn fetch_orca_terminals(orca_bin: &Path) -> Vec<Value> {
+    let Ok(out) = Command::new(orca_bin)
+        .args(["terminal", "list", "--json"])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let Ok(parsed) = serde_json::from_slice::<Value>(&out.stdout) else {
+        return Vec::new();
+    };
+    if let Some(arr) = parsed.as_array() {
+        return arr.clone();
+    }
+    parsed
+        .get("result")
+        .and_then(|r| r.get("terminals"))
+        .and_then(|t| t.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn is_orca_terminal_idle(term: &Value) -> bool {
+    if !term.get("connected").and_then(|v| v.as_bool()).unwrap_or(true)
+        || !term.get("writable").and_then(|v| v.as_bool()).unwrap_or(true)
+    {
+        return false;
+    }
+    if let Some(st) = term
+        .get("state")
+        .or_else(|| term.get("status"))
+        .and_then(|v| v.as_str())
+    {
+        return matches!(st, "waiting" | "tui-idle" | "idle");
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let last_out = term.get("lastOutputAt").and_then(|v| v.as_u64()).unwrap_or(0);
+    if last_out > 0 && now_ms.saturating_sub(last_out) < 4500 {
+        return false;
+    }
+    let preview = term.get("preview").and_then(|v| v.as_str()).unwrap_or("");
+    let tail: String = preview
+        .lines()
+        .rev()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let low_tail = tail.to_ascii_lowercase();
+    if low_tail.contains("running")
+        || low_tail.contains("esc to interrupt")
+        || low_tail.contains("esc to cancel")
+        || tail
+            .chars()
+            .any(|ch| "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣽⣾⣷⣯⣟⡿⢿⣻".contains(ch))
+    {
+        return false;
+    }
+    true
+}
+
+fn match_orca_handle(
+    terms: &[Value],
+    sess_name: &str,
+    harness: &str,
+    cwd: &str,
+    meta: &Value,
+) -> Option<Value> {
+    if let Some(explicit) = meta
+        .get("orca_terminal_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if let Some(found) = terms.iter().find(|t| {
+            t.get("handle").and_then(|v| v.as_str()) == Some(explicit)
+                || t.get("id").and_then(|v| v.as_str()) == Some(explicit)
+                || t.get("terminal_id").and_then(|v| v.as_str()) == Some(explicit)
+        }) {
+            return Some(found.clone());
+        }
+    }
+    let expected_ident = match harness {
+        "claude-code" | "claude" => "claude",
+        "antigravity" | "agy" => "antigravity",
+        other => other,
+    };
+    let mut matches: Vec<&Value> = terms
+        .iter()
+        .filter(|t| {
+            let wt = t.get("worktreePath").and_then(|v| v.as_str()).unwrap_or("");
+            let ident = t
+                .get("agentIdentity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            !cwd.is_empty() && wt == cwd && !expected_ident.is_empty() && ident == expected_ident
+        })
+        .collect();
+    if matches.len() > 1 {
+        if let Some(exact_title) = matches.iter().find(|t| {
+            let title = t.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            memnos_core::nsresolve::sanitize_slug(title, 64) == sess_name
+        }) {
+            return Some((*exact_title).clone());
+        }
+    }
+    matches.pop().cloned()
+}
+
+fn send_orca_doorbell(orca_bin: &Path, handle: &str, doorbell: &str) -> bool {
+    Command::new(orca_bin)
+        .args([
+            "terminal",
+            "send",
+            "--terminal",
+            handle,
+            "--text",
+            doorbell,
+            "--enter",
+            "--wait-submit",
+            "5",
+            "--json",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn send_tmux_doorbell_if_idle(pane: &str, doorbell: &str) -> bool {
+    let Ok(out) = Command::new("tmux")
+        .args([
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_id} #{pane_in_mode} #{pane_current_command}",
+        ])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    if !out.status.success() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut idle = false;
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.first().copied() == Some(pane) {
+            let in_mode = parts.get(1).copied() == Some("1");
+            let cmd = parts.get(2).copied().unwrap_or("");
+            idle = !in_mode && matches!(cmd, "bash" | "zsh" | "sh" | "fish");
+            break;
+        }
+    }
+    if !idle {
+        return false;
+    }
+    Command::new("tmux")
+        .args(["send-keys", "-t", pane, doorbell, "Enter"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+async fn run_wake_sweep(
+    pool: &deadpool_postgres::Pool,
+    backend: &str,
+    ns_filter: Option<&str>,
+    local_mid: &str,
+    cooldowns: &mut std::collections::HashMap<String, std::time::Instant>,
+) {
+    if backend == "noop" {
+        return;
+    }
+    cooldowns.retain(|_, ts| ts.elapsed() < Duration::from_secs(300));
+
+    let Ok(client) = pool.get().await else {
+        return;
+    };
+    let Ok(rows) = client
+        .query(
+            "SELECT namespace, name, principal_id, harness, cwd, metadata, machine_id, pid
+             FROM memnos_control.agent_sessions
+             WHERE status = 'active' AND expires_at > now()
+               AND ($1::text IS NULL OR namespace = $1)",
+            &[&ns_filter],
+        )
+        .await
+    else {
+        return;
+    };
+
+    let mut pending_targets: Vec<(String, String, String, String, Value, i64, String)> = Vec::new();
+    for r in rows {
+        let ns: String = r.get("namespace");
+        let name: String = r.get("name");
+        let principal_id: i64 = r.get("principal_id");
+        let harness: String = r.get("harness");
+        let cwd: String = r.get("cwd");
+        let meta: Value = r.get("metadata");
+        let mid: String = r.get("machine_id");
+        let pid: Option<i32> = r.get("pid");
+
+        if !mid.is_empty() && mid != local_mid {
+            continue;
+        }
+        if let Some(p) = pid {
+            if p > 1 && !is_local_pid_alive(p as u32) {
+                continue;
+            }
+        }
+
+        let mut max_msg_id: i64 = 0;
+        if let Ok(polled) =
+            Control::channel_poll(pool, &ns, &name, principal_id, None, true, 15).await
+        {
+            if let Some(msgs) = polled.get("messages").and_then(|v| v.as_array()) {
+                for m in msgs {
+                    let sender = m
+                        .get("sender_session")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if sender != name {
+                        let id = m.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                        if id > max_msg_id {
+                            max_msg_id = id;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut max_inb_id: i64 = 0;
+        if let Ok(inb) = Control::inbox_list(
+            pool,
+            &ns,
+            &name,
+            principal_id,
+            "pending",
+            None,
+            false,
+            false,
+            15,
+        )
+        .await
+        {
+            if let Some(items) = inb.get("items").and_then(|v| v.as_array()) {
+                for it in items {
+                    let sender = it
+                        .get("from_session")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if sender != name {
+                        let id = it.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                        if id > max_inb_id {
+                            max_inb_id = id;
+                        }
+                    }
+                }
+            }
+        }
+
+        if max_msg_id == 0 && max_inb_id == 0 {
+            continue;
+        }
+        let lead_id = if max_inb_id > 0 { max_inb_id } else { max_msg_id };
+        let dedupe_key = format!("{}::{}::m{}:i{}", ns, name, max_msg_id, max_inb_id);
+        if cooldowns.contains_key(&dedupe_key) {
+            continue;
+        }
+        pending_targets.push((ns, name, harness, cwd, meta, lead_id, dedupe_key));
+    }
+
+    if pending_targets.is_empty() {
+        return;
+    }
+
+    let backend_owned = backend.to_string();
+    let delivered = tokio::task::spawn_blocking(move || {
+        let mut fired: Vec<String> = Vec::new();
+        if backend_owned == "orca" {
+            let Some(orca_bin) = find_orca_bin() else {
+                return fired;
+            };
+            let terms = fetch_orca_terminals(&orca_bin);
+            for (ns, name, harness, cwd, meta, lead_id, key) in pending_targets {
+                if let Some(term) = match_orca_handle(&terms, &name, &harness, &cwd, &meta) {
+                    if is_orca_terminal_idle(&term) {
+                        if let Some(handle) = term
+                            .get("handle")
+                            .or_else(|| term.get("id"))
+                            .and_then(|v| v.as_str())
+                        {
+                            let doorbell = format!(
+                                "New Memnos message (#{}) for @{} in {} — poll and process via memnos MCP.",
+                                lead_id, name, ns
+                            );
+                            if send_orca_doorbell(&orca_bin, handle, &doorbell) {
+                                println!(
+                                    "[memnos-wake] rang Orca doorbell ({}) for @{} in {} (#{})",
+                                    handle, name, ns, lead_id
+                                );
+                                fired.push(key);
+                            }
+                        }
+                    }
+                }
+            }
+        } else if backend_owned == "tmux" {
+            for (ns, name, _, _, meta, lead_id, key) in pending_targets {
+                if let Some(pane) = meta.get("tmux_pane").and_then(|v| v.as_str()) {
+                    let doorbell = format!(
+                        "New Memnos message (#{}) for @{} in {} — poll and process via memnos MCP.",
+                        lead_id, name, ns
+                    );
+                    if send_tmux_doorbell_if_idle(pane, &doorbell) {
+                        println!(
+                            "[memnos-wake] rang tmux doorbell ({}) for @{} in {} (#{})",
+                            pane, name, ns, lead_id
+                        );
+                        fired.push(key);
+                    }
+                }
+            }
+        }
+        fired
+    })
+    .await
+    .unwrap_or_default();
+
+    let now = std::time::Instant::now();
+    for k in delivered {
+        cooldowns.insert(k, now);
+    }
+}
+
 async fn take_verified_db_backup(
     cfg: &Config,
     reason: &str,
@@ -1209,12 +1627,10 @@ async fn take_verified_db_backup(
     let pg_dsn = dsn(cfg);
     let parsed_url = url::Url::parse(&pg_dsn)
         .map_err(|e| format!("invalid PostgreSQL DSN for backup: {}", e))?;
-    let pg_dump_bin = find_pg_tool_bin("pg_dump").ok_or_else(|| {
-        "cannot take verified database backup: `pg_dump` not found (install postgresql-client / libpq or set MEMNOS_PG_DUMP)".to_string()
-    })?;
-    let pg_restore_bin = find_pg_tool_bin("pg_restore").ok_or_else(|| {
-        "cannot verify database backup: `pg_restore` not found alongside `pg_dump`".to_string()
-    })?;
+    let pg_dump_bin = find_pg_tool_bin("pg_dump")
+        .ok_or_else(|| missing_pg_client_tools_message("pg_dump"))?;
+    let pg_restore_bin = find_pg_tool_bin("pg_restore")
+        .ok_or_else(|| missing_pg_client_tools_message("pg_restore"))?;
 
     let backups_dir = config_dir().join("backups");
     fs::create_dir_all(&backups_dir).map_err(|e| format!("create backups dir failed: {}", e))?;
@@ -1832,33 +2248,71 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             }
             Ok(())
         }
-        Commands::WakeDaemon { backend } => {
+        Commands::WakeDaemon { backend, namespace } => {
+            let chosen_backend = match backend
+                .as_deref()
+                .map(|s| s.trim().to_ascii_lowercase())
+                .as_deref()
+            {
+                Some("orca") => "orca",
+                Some("tmux") => "tmux",
+                Some("noop") => "noop",
+                _ => {
+                    if Path::new("/usr/local/bin/orca").is_file()
+                        || Command::new("orca")
+                            .arg("--version")
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status()
+                            .is_ok()
+                    {
+                        "orca"
+                    } else if Command::new("tmux")
+                        .arg("-V")
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status()
+                        .is_ok()
+                    {
+                        "tmux"
+                    } else {
+                        "noop"
+                    }
+                }
+            };
             println!(
-                "[memnos-wake] starting Postgres LISTEN/NOTIFY wake daemon (backend={}) ...",
-                backend.as_deref().unwrap_or("listen-notify")
+                "[memnos-wake] starting Postgres LISTEN/NOTIFY wake daemon (backend={}, namespace={}) ...",
+                chosen_backend,
+                namespace.as_deref().unwrap_or("*")
             );
             let pg_dsn = dsn(&cfg);
+            let pool = build_pool(&pg_dsn, 4).map_err(|e| e.to_string())?;
             let notify = Arc::new(tokio::sync::Notify::new());
             memnos_core::db::spawn_channel_listener(pg_dsn, notify.clone());
+            let mut cooldowns: std::collections::HashMap<String, std::time::Instant> =
+                std::collections::HashMap::new();
+            let local_mid = machine_id();
+
             loop {
+                run_wake_sweep(
+                    &pool,
+                    chosen_backend,
+                    namespace.as_deref(),
+                    &local_mid,
+                    &mut cooldowns,
+                )
+                .await;
+
                 let notified = notify.notified();
                 tokio::pin!(notified);
                 notified.as_mut().enable();
                 tokio::select! {
                     _ = tokio::signal::ctrl_c() => break Ok(()),
                     _ = notified => {
-                        let cfg_clone = cfg.clone();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            let ns = resolve_ns_arg("auto");
-                            let sn = resolve_sess_arg(None);
-                            if let Ok(v) = http_post_json(&cfg_clone, "/channel/poll", None, &json!({"namespace": ns, "session_name": sn, "peek": true}), 3) {
-                                let cnt = v.get("count").and_then(|x| x.as_u64()).unwrap_or(0);
-                                if cnt > 0 {
-                                    println!("[memnos-wake] {} unread message(s) pending for @{}", cnt, sn);
-                                }
-                            }
-                        }).await;
+                        // Brief settle delay so sender finishes publishing companion inbox/channel items
+                        tokio::time::sleep(Duration::from_millis(800)).await;
                     }
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
                 }
             }
         }
@@ -3436,6 +3890,10 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             Ok(())
         }
         Commands::MigrateEmbeddings { to, model, yes } => {
+            find_pg_tool_bin("pg_dump")
+                .ok_or_else(|| missing_pg_client_tools_message("pg_dump"))?;
+            find_pg_tool_bin("pg_restore")
+                .ok_or_else(|| missing_pg_client_tools_message("pg_restore"))?;
             let pool = build_pool(&dsn(&cfg), 4)?;
             Control::init(&pool).await.map_err(|e| e.to_string())?;
 

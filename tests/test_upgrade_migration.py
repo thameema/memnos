@@ -1063,11 +1063,133 @@ def test_first_run_model_choice_and_backup_security(admin_dsn: str) -> None:
                 and mode_oct == "0o600",
                 f"mode={mode_oct} out={bkp_run.stdout} err={bkp_run.stderr}",
             )
+
+            # 5f. Missing `pg_dump` / `pg_restore` refuses `upgrade` and `migrate-embeddings` with clear OS install instructions
+            empty_pg_bin = os.path.join(home, "empty-pg-bin")
+            os.makedirs(empty_pg_bin, exist_ok=True)
+            no_pg_upg = subprocess.run(
+                [MEMNOS_BIN, "upgrade", "--no-restart"],
+                env={**base_env, "MEMNOS_PG_BIN": empty_pg_bin},
+                cwd=home,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            no_pg_msg = (no_pg_upg.stderr + no_pg_upg.stdout)
+            check(
+                "Missing `pg_dump` blocks `memnos upgrade` with clear OS install / MEMNOS_PG_BIN guidance",
+                no_pg_upg.returncode != 0
+                and "pg_dump" in no_pg_msg
+                and "MEMNOS_PG_BIN" in no_pg_msg,
+                no_pg_msg,
+            )
+
+            no_pg_mig = subprocess.run(
+                [MEMNOS_BIN, "migrate-embeddings", "--to", "384", "--yes"],
+                env={**base_env, "MEMNOS_PG_BIN": empty_pg_bin},
+                cwd=home,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            no_pg_mig_msg = (no_pg_mig.stderr + no_pg_mig.stdout)
+            check(
+                "Missing `pg_dump` blocks `memnos migrate-embeddings` with clear OS install / MEMNOS_PG_BIN guidance",
+                no_pg_mig.returncode != 0
+                and "pg_dump" in no_pg_mig_msg
+                and "MEMNOS_PG_BIN" in no_pg_mig_msg,
+                no_pg_mig_msg,
+            )
+
+            # 5g. Embedded-PG `state.json` `pg_dir` auto-discovery works even when PATH is empty!
+            real_pg_dump = shutil.which("pg_dump") or "/opt/homebrew/bin/pg_dump"
+            real_pg_restore = shutil.which("pg_restore") or "/opt/homebrew/bin/pg_restore"
+            if os.path.isfile(real_pg_dump) and os.path.isfile(real_pg_restore):
+                fake_emb_pg = os.path.join(home, ".memnos", "embedded_pg", "runtime", "memnos-pg16")
+                os.makedirs(os.path.join(fake_emb_pg, "bin"), exist_ok=True)
+                os.symlink(real_pg_dump, os.path.join(fake_emb_pg, "bin", "pg_dump"))
+                os.symlink(real_pg_restore, os.path.join(fake_emb_pg, "bin", "pg_restore"))
+                with open(os.path.join(home, ".memnos", "embedded_pg", "state.json"), "w") as sf:
+                    json.dump({"pg_dir": fake_emb_pg, "port": 5432}, sf)
+                emb_bkp_out = os.path.join(home, "emb-discovered.dump")
+                emb_bkp = subprocess.run(
+                    [MEMNOS_BIN, "backup", "--out", emb_bkp_out],
+                    env={**base_env, "PATH": "/nonexistent"},
+                    cwd=home,
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                check(
+                    "Embedded-PG `state.json` `pg_dir` auto-discovers `pg_dump` & `pg_restore` with empty PATH",
+                    emb_bkp.returncode == 0 and os.path.isfile(emb_bkp_out),
+                    emb_bkp.stdout + emb_bkp.stderr,
+                )
         finally:
             oa_mock.shutdown()
     finally:
         shutil.rmtree(home, ignore_errors=True)
         drop_scratch_db(admin_dsn, db_name)
+
+    # 5h. Concurrent fresh-DB schema init race (`memnos serve` + `memnos principal ls` + `memnos admin principal ls` simultaneously)
+    race_db = f"memnos_init_race_{os.getpid()}"
+    race_dsn = make_scratch_db(admin_dsn, race_db)
+    race_home = tempfile.mkdtemp(prefix="memnos_race_home_")
+    try:
+        os.makedirs(os.path.join(race_home, ".memnos"), exist_ok=True)
+        with open(os.path.join(race_home, ".memnos", "config.json"), "w") as rf:
+            json.dump({"dsn": race_dsn, "embed_choice": "openai", "openai": "sk-race-test"}, rf)
+        race_port = free_port()
+        race_env = {
+            **{k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "MEMNOS_SECRET_KEY")},
+            "HOME": race_home,
+            "MEMNOS_DSN": race_dsn,
+        }
+        p_srv = subprocess.Popen(
+            [MEMNOS_BIN, "serve", "--port", str(race_port)],
+            env=race_env,
+            cwd=race_home,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        p_adm1 = subprocess.Popen(
+            [MEMNOS_BIN, "principal", "ls"],
+            env=race_env,
+            cwd=race_home,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        p_adm2 = subprocess.Popen(
+            [MEMNOS_BIN, "admin"],
+            env=race_env,
+            cwd=race_home,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            o1, e1 = p_adm1.communicate(timeout=15)
+            o2, e2 = p_adm2.communicate(timeout=15)
+            srv_ready = wait_ready(f"http://127.0.0.1:{race_port}")
+            check(
+                "Concurrent `memnos serve` + `memnos admin` on fresh DB completes with zero 23505 schema race",
+                srv_ready
+                and p_adm1.returncode == 0
+                and p_adm2.returncode == 0
+                and "23505" not in (e1 + e2),
+                f"adm1=({p_adm1.returncode}: {e1}) adm2=({p_adm2.returncode}: {e2})",
+            )
+        finally:
+            p_srv.terminate()
+            try:
+                p_srv.wait(timeout=5)
+            except Exception:
+                p_srv.kill()
+    finally:
+        shutil.rmtree(race_home, ignore_errors=True)
+        drop_scratch_db(admin_dsn, race_db)
 
 
 def main() -> int:

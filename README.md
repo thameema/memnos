@@ -123,8 +123,12 @@ state):
 
 For fact extraction without OpenAI, set `MEMNOS_EXTRACT_BASE_URL` to any OpenAI-compatible
 endpoint (Ollama / vLLM / LM Studio). You can switch between OpenAI and local embeddings
-anytime with `memnos migrate-embeddings`, which automatically takes and verifies a full
-PostgreSQL backup (`pg_dump` + `pg_restore --list`) first.
+anytime with `memnos migrate-embeddings`, which (like `memnos upgrade` and `memnos backup`)
+automatically takes and verifies a full `0600` PostgreSQL backup (`pg_dump` + `pg_restore --list`)
+before touching data. Embedded PostgreSQL installs (`memnos setup`) bundle `pg_dump` and
+`pg_restore` automatically under `~/.memnos/embedded_pg`; for Docker or external PostgreSQL
+hosts without client tools on `PATH`, install `libpq` / `postgresql-client` (or point
+`MEMNOS_PG_BIN` at your PostgreSQL `bin/` folder).
 
 Extraction depends on who is speaking. Every turn is stored verbatim and stays searchable.
 From your own messages, memnos extracts decisions, preferences, rules, plans and personal
