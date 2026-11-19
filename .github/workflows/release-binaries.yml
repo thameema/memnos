@@ -5,7 +5,12 @@ on:
     branches: ["**"]
   pull_request:
     branches: [master]
+  release:
+    types: [published]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test-cross-os:
@@ -34,3 +39,49 @@ jobs:
           [[ -f "${BIN}.exe" ]] && BIN="${BIN}.exe"
           "$BIN" --version
           "$BIN" tips
+
+  publish-release-binaries:
+    name: Package & Upload Gated Release Binary (${{ matrix.target_label }})
+    if: github.event_name == 'release'
+    needs: test-cross-os
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target_label: linux-amd64
+            ext: ""
+          - os: macos-latest
+            target_label: darwin-arm64
+            ext: ""
+          - os: windows-latest
+            target_label: windows-amd64
+            ext: ".exe"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build path-remapped release binary via scripts/build_release.sh
+        shell: bash
+        run: bash scripts/build_release.sh
+      - name: Package release archive into dist/
+        shell: bash
+        run: |
+          mkdir -p dist
+          BIN="./target/release/memnos${{ matrix.ext }}"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            powershell -NoProfile -Command "Compress-Archive -Path '$BIN' -DestinationPath 'dist/memnos-${{ matrix.target_label }}.zip' -Force"
+          else
+            tar -czf "dist/memnos-${{ matrix.target_label }}.tar.gz" -C ./target/release memnos
+          fi
+      - name: Enforce release hygiene gate on exact binary + packaged archive
+        shell: bash
+        run: bash scripts/release_hygiene.sh "./target/release/memnos${{ matrix.ext }}"
+      - name: Upload verified release archive to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber

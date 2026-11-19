@@ -58,6 +58,22 @@ CI (`.github/workflows/ci.yml`) runs the full suite against a real `pgvector/pgv
 container on every PR, plus CLI smoke tests on macOS/Linux/Windows and the SDK/Tommy
 orchestrator unit tests. A red CI run blocks merge.
 
+## Building & verifying release binaries
+
+Every shipped release binary **must** be built via `scripts/build_release.sh` and pass
+`scripts/release_hygiene.sh` before packaging or upload:
+
+```bash
+bash scripts/build_release.sh
+bash scripts/release_hygiene.sh ./target/release/memnos
+```
+
+Never ship or tag artifacts built from an unremapped ad-hoc build — `scripts/build_release.sh`
+applies cross-OS path remapping (`CARGO_ENCODED_RUSTFLAGS` covering POSIX `$HOME`, Windows
+`cygpath -w` / `$USERPROFILE`, `.cargo/registry`, `.rustup`, and workspace paths), and
+`scripts/release_hygiene.sh` fails the build if any builder path, test-only switch, or
+internal language branding appears in the binary or distribution archives.
+
 ## Code style
 
 - No comments explaining *what* code does — names should do that. A comment is only
