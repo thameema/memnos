@@ -1343,25 +1343,72 @@ fn is_orca_terminal_idle(term: &Value) -> bool {
     true
 }
 
+fn orca_handle_from_pid(pid: Option<i64>) -> Option<String> {
+    #[cfg(unix)]
+    {
+        let p = pid.filter(|&n| n > 1 && n <= u32::MAX as i64)?;
+        let out = Command::new("ps")
+            .args(["eww", "-o", "command=", "-p", &p.to_string()])
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        let line = String::from_utf8_lossy(&out.stdout);
+        for tok in line.split_whitespace() {
+            if let Some(val) = tok
+                .strip_prefix("ORCA_TERMINAL_HANDLE=")
+                .or_else(|| tok.strip_prefix("ORCA_TERMINAL_ID="))
+            {
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 fn match_orca_handle(
     terms: &[Value],
     sess_name: &str,
     harness: &str,
     cwd: &str,
     meta: &Value,
+    pid: Option<i64>,
 ) -> Option<Value> {
-    if let Some(explicit) = meta
+    let explicit_opt = meta
         .get("orca_terminal_id")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-    {
+        .map(str::to_string)
+        .or_else(|| orca_handle_from_pid(pid));
+    if let Some(ref explicit) = explicit_opt {
         if let Some(found) = terms.iter().find(|t| {
-            t.get("handle").and_then(|v| v.as_str()) == Some(explicit)
-                || t.get("id").and_then(|v| v.as_str()) == Some(explicit)
-                || t.get("terminal_id").and_then(|v| v.as_str()) == Some(explicit)
+            t.get("handle").and_then(|v| v.as_str()) == Some(explicit.as_str())
+                || t.get("id").and_then(|v| v.as_str()) == Some(explicit.as_str())
+                || t.get("terminal_id").and_then(|v| v.as_str()) == Some(explicit.as_str())
         }) {
             return Some(found.clone());
+        }
+    }
+    if let Some(pane_key) = meta
+        .get("orca_pane_key")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if let Some((tab_id, leaf_id)) = pane_key.split_once(':') {
+            if let Some(found) = terms.iter().find(|t| {
+                t.get("tabId").and_then(|v| v.as_str()) == Some(tab_id)
+                    && t.get("leafId").and_then(|v| v.as_str()) == Some(leaf_id)
+            }) {
+                return Some(found.clone());
+            }
         }
     }
     let expected_ident = match harness {
@@ -1369,15 +1416,22 @@ fn match_orca_handle(
         "antigravity" | "agy" => "antigravity",
         other => other,
     };
+    let meta_wt_id = meta
+        .get("orca_worktree_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let mut matches: Vec<&Value> = terms
         .iter()
         .filter(|t| {
             let wt = t.get("worktreePath").and_then(|v| v.as_str()).unwrap_or("");
+            let wt_id = t.get("worktreeId").and_then(|v| v.as_str()).unwrap_or("");
             let ident = t
                 .get("agentIdentity")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            !cwd.is_empty() && wt == cwd && !expected_ident.is_empty() && ident == expected_ident
+            let path_ok = (!cwd.is_empty() && wt == cwd)
+                || (!meta_wt_id.is_empty() && wt_id == meta_wt_id);
+            path_ok && !expected_ident.is_empty() && ident == expected_ident
         })
         .collect();
     if matches.len() > 1 {
@@ -1482,7 +1536,8 @@ async fn run_wake_sweep(
         return;
     };
 
-    let mut pending_targets: Vec<(String, String, String, String, Value, i64, String)> = Vec::new();
+    let mut pending_targets: Vec<(String, String, String, String, Value, Option<i64>, i64, String)> =
+        Vec::new();
     for r in rows {
         let ns: String = r.try_get("namespace").unwrap_or_default();
         let name: String = r.try_get("name").unwrap_or_default();
@@ -1560,7 +1615,7 @@ async fn run_wake_sweep(
         if cooldowns.contains_key(&dedupe_key) {
             continue;
         }
-        pending_targets.push((ns, name, harness, cwd, meta, lead_id, dedupe_key));
+        pending_targets.push((ns, name, harness, cwd, meta, pid, lead_id, dedupe_key));
     }
 
     if pending_targets.is_empty() {
@@ -1575,8 +1630,8 @@ async fn run_wake_sweep(
                 return fired;
             };
             let terms = fetch_orca_terminals(&orca_bin);
-            for (ns, name, harness, cwd, meta, lead_id, key) in pending_targets {
-                if let Some(term) = match_orca_handle(&terms, &name, &harness, &cwd, &meta) {
+            for (ns, name, harness, cwd, meta, pid, lead_id, key) in pending_targets {
+                if let Some(term) = match_orca_handle(&terms, &name, &harness, &cwd, &meta, pid) {
                     if is_orca_terminal_idle(&term) {
                         if let Some(handle) = term
                             .get("handle")
@@ -1599,7 +1654,7 @@ async fn run_wake_sweep(
                 }
             }
         } else if backend_owned == "tmux" {
-            for (ns, name, _, _, meta, lead_id, key) in pending_targets {
+            for (ns, name, _, _, meta, _, lead_id, key) in pending_targets {
                 if let Some(pane) = meta.get("tmux_pane").and_then(|v| v.as_str()) {
                     let doorbell = format!(
                         "New Memnos message (#{}) for @{} in {} — poll and process via memnos MCP.",
@@ -2854,6 +2909,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
+                let term_meta = term.session_metadata();
                 let mut body = json!({
                     "namespace": ns,
                     "name": name,
@@ -2868,6 +2924,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                     "machine_id": term.machine_id,
                     "pid": term.pid,
                     "tty": term.tty,
+                    "metadata": term_meta,
                 });
                 if let Some(wh) = webhook {
                     body["webhook"] = json!(wh);

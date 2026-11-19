@@ -793,6 +793,7 @@ pub fn dispatch_tool_call(ctx: &McpContext, name: &str, args: &Value) -> Result<
                 "machine_id": info.machine_id,
                 "pid": info.pid,
                 "tty": info.tty,
+                "metadata": info.session_metadata(),
             });
             if let Some(wh) = args.get("webhook").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
                 body["webhook"] = json!(wh);
@@ -877,6 +878,7 @@ pub fn dispatch_tool_call(ctx: &McpContext, name: &str, args: &Value) -> Result<
                 "machine_id": info.machine_id,
                 "pid": info.pid,
                 "tty": info.tty,
+                "metadata": info.session_metadata(),
             });
             ctx.post("/channel/registry", &body, 15)
                 .map(|o| serde_json::to_string(&o).unwrap_or_default())

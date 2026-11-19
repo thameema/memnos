@@ -770,6 +770,11 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
                 existing_sn.clone()
             };
             if !sn.is_empty() {
+                let init_chans: Vec<String> = if term.suggested_topic.is_empty() {
+                    vec![]
+                } else {
+                    vec![term.suggested_topic.clone()]
+                };
                 if let Ok(reg_out) = http_post(
                     &format!("{}/session/register", url),
                     &token,
@@ -782,21 +787,16 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
                         "machine_id": term.machine_id,
                         "pid": term.pid,
                         "tty": term.tty,
+                        "channels": init_chans,
                         "ttl_seconds": 1800,
-                        "metadata": {
-                            "auto_named": term.auto_named,
-                            "display_label": term.display_label,
-                            "suggested_topic": term.suggested_topic,
-                        }
+                        "metadata": term.session_metadata(),
                     }),
                     1500,
                 ) {
                     if let Some(assigned) = reg_out.get("name").and_then(|v| v.as_str()) {
                         sn = assigned.to_string();
                     }
-                    if existing_sn.is_empty() {
-                        nsresolve::save_active_session(&sn, Path::new(&term.cwd), &ns);
-                    }
+                    nsresolve::save_active_session(&sn, Path::new(&term.cwd), &ns);
                 }
             }
             let (drained, rejected) = offline_queue::drain(&memnos_dir(), &url, &token, 8);

@@ -23,6 +23,32 @@ pub struct TerminalSessionInfo {
     pub host: String,
     pub cwd: String,
     pub auto_named: bool,
+    pub orca_terminal_id: String,
+    pub orca_pane_key: String,
+    pub orca_worktree_id: String,
+    pub tmux_pane: String,
+}
+
+impl TerminalSessionInfo {
+    pub fn session_metadata(&self) -> Value {
+        let mut m = serde_json::Map::new();
+        m.insert("auto_named".into(), json!(self.auto_named));
+        m.insert("display_label".into(), json!(self.display_label));
+        m.insert("suggested_topic".into(), json!(self.suggested_topic));
+        if !self.orca_terminal_id.is_empty() {
+            m.insert("orca_terminal_id".into(), json!(self.orca_terminal_id));
+        }
+        if !self.orca_pane_key.is_empty() {
+            m.insert("orca_pane_key".into(), json!(self.orca_pane_key));
+        }
+        if !self.orca_worktree_id.is_empty() {
+            m.insert("orca_worktree_id".into(), json!(self.orca_worktree_id));
+        }
+        if !self.tmux_pane.is_empty() {
+            m.insert("tmux_pane".into(), json!(self.tmux_pane));
+        }
+        Value::Object(m)
+    }
 }
 
 pub fn sanitize_slug(s: &str, max_len: usize) -> String {
@@ -721,6 +747,26 @@ pub fn detect_terminal_session(cwd: &Path) -> TerminalSessionInfo {
         display_label.push_str(&format!(" [{}]", tty_str));
     }
 
+    let orca_terminal_id = env::var("ORCA_TERMINAL_HANDLE")
+        .or_else(|_| env::var("ORCA_TERMINAL_ID"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let orca_pane_key = env::var("ORCA_PANE_KEY")
+        .or_else(|_| env::var("ORCA_AGENT_PANE"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let orca_worktree_id = env::var("ORCA_WORKTREE_ID")
+        .or_else(|_| env::var("ORCA_WORKSPACE_ID"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let tmux_pane = env::var("TMUX_PANE")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
     let tty_slug = sanitize_slug(&tty_str.replace("ttys", "s").replace("pts", "p"), 12);
     TerminalSessionInfo {
         name,
@@ -738,5 +784,9 @@ pub fn detect_terminal_session(cwd: &Path) -> TerminalSessionInfo {
         host: hostname(),
         cwd: real_cwd.to_string_lossy().to_string(),
         auto_named,
+        orca_terminal_id,
+        orca_pane_key,
+        orca_worktree_id,
+        tmux_pane,
     }
 }
