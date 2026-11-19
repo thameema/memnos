@@ -1586,6 +1586,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac 0.12.1",
+ "memmap2",
  "once_cell",
  "rand 0.8.8",
  "regex",
