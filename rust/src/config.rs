@@ -57,6 +57,11 @@ pub fn home_dir() -> PathBuf {
 }
 
 pub fn config_dir() -> PathBuf {
+    if let Ok(d) = env::var("MEMNOS_CONFIG_DIR") {
+        if !d.trim().is_empty() {
+            return PathBuf::from(d.trim());
+        }
+    }
     home_dir().join(".memnos")
 }
 
@@ -64,7 +69,21 @@ pub fn config_path() -> PathBuf {
     config_dir().join("config.json")
 }
 
+fn env_truthy(name: &str) -> bool {
+    matches!(
+        env::var(name)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 pub fn load_dotenv(path: &Path) {
+    if env_truthy("MEMNOS_NO_DOTENV") {
+        return;
+    }
     let Ok(raw) = fs::read_to_string(path) else {
         return;
     };
@@ -121,6 +140,13 @@ pub fn load_config() -> Config {
 
 /// Returns `"openai"`, `"local"`, or `None` when no explicit embedding choice has been made yet.
 pub fn explicit_embed_choice(cfg: &Config) -> Option<String> {
+    if let Ok(raw_env) = env::var("MEMNOS_EMBED_CHOICE") {
+        match raw_env.trim().to_ascii_lowercase().as_str() {
+            "local" | "computer" | "offline" | "384" => return Some("local".to_string()),
+            "openai" | "cloud" | "1536" => return Some("openai".to_string()),
+            _ => {}
+        }
+    }
     if let Ok(oa) = env::var("OPENAI_API_KEY") {
         if !oa.trim().is_empty() {
             return Some("openai".to_string());
@@ -131,10 +157,7 @@ pub fn explicit_embed_choice(cfg: &Config) -> Option<String> {
             return Some("openai".to_string());
         }
     }
-    let raw = env::var("MEMNOS_EMBED_CHOICE")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| cfg.embed_choice.clone().filter(|s| !s.trim().is_empty()))?;
+    let raw = cfg.embed_choice.clone().filter(|s| !s.trim().is_empty())?;
     match raw.trim().to_ascii_lowercase().as_str() {
         "openai" | "cloud" | "1536" => Some("openai".to_string()),
         "local" | "computer" | "offline" | "384" => Some("local".to_string()),
@@ -164,6 +187,81 @@ pub fn dsn(cfg: &Config) -> String {
         .filter(|s| !s.trim().is_empty())
         .or_else(|| cfg.dsn.clone())
         .unwrap_or_else(|| "postgresql://memnos:memnos@localhost:5432/memnos".to_string())
+}
+
+/// Formats a PostgreSQL DSN as `host:port/dbname` with usernames, passwords, and query secrets stripped.
+pub fn redact_dsn_target(raw_dsn: &str) -> String {
+    let trimmed = raw_dsn.trim();
+    if let Some(rest) = trimmed
+        .strip_prefix("postgresql://")
+        .or_else(|| trimmed.strip_prefix("postgres://"))
+    {
+        let without_query = rest.split('?').next().unwrap_or(rest);
+        let (authority, db_part) = match without_query.split_once('/') {
+            Some((a, d)) => (a, d),
+            None => (without_query, ""),
+        };
+        let host_raw = match authority.rsplit_once('@') {
+            Some((_, hp)) => hp,
+            None => authority,
+        };
+        let host_port = if host_raw.is_empty() {
+            "localhost:5432".to_string()
+        } else if host_raw.starts_with('[') {
+            if host_raw.contains("]:") {
+                host_raw.to_string()
+            } else {
+                format!("{}:5432", host_raw)
+            }
+        } else if host_raw.contains(':') {
+            host_raw.to_string()
+        } else {
+            format!("{}:5432", host_raw)
+        };
+        let dbname = if db_part.trim().is_empty() {
+            "postgres"
+        } else {
+            db_part.trim()
+        };
+        return format!("{}/{}", host_port, dbname);
+    }
+
+    let mut host = "localhost".to_string();
+    let mut port = "5432".to_string();
+    let mut dbname = "postgres".to_string();
+    for tok in trimmed.split_whitespace() {
+        if let Some((k, v)) = tok.split_once('=') {
+            let val = v.trim_matches('\'').trim_matches('"');
+            match k.trim().to_ascii_lowercase().as_str() {
+                "host" | "hostaddr" => host = val.to_string(),
+                "port" => port = val.to_string(),
+                "dbname" => dbname = val.to_string(),
+                _ => {}
+            }
+        }
+    }
+    format!("{}:{}/{}", host, port, dbname)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_dsn_target;
+
+    #[test]
+    fn test_redact_dsn_strips_credentials() {
+        assert_eq!(
+            redact_dsn_target("postgresql://memnos:s3cr3t@p@ss@localhost:5434/memnos_trial?sslmode=disable"),
+            "localhost:5434/memnos_trial"
+        );
+        assert_eq!(
+            redact_dsn_target("postgres://admin@127.0.0.1/memnos"),
+            "127.0.0.1:5432/memnos"
+        );
+        assert_eq!(
+            redact_dsn_target("host=db.internal port=5433 user=memnos password=topsecret dbname=trial"),
+            "db.internal:5433/trial"
+        );
+    }
 }
 
 pub fn server_port(cfg: &Config) -> u16 {

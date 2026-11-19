@@ -74,6 +74,67 @@ applies cross-OS path remapping (`CARGO_ENCODED_RUSTFLAGS` covering POSIX `$HOME
 `scripts/release_hygiene.sh` fails the build if any builder path, test-only switch, or
 internal language branding appears in the binary or distribution archives.
 
+## Try it safely (isolated local trial — zero touch to a live install)
+
+To test a newly built binary end-to-end on a machine that already runs a live `memnos`
+instance (for example on `:8900` against `localhost:5432/memnos` and `~/.memnos`), isolate
+four things: **Postgres**, **`HOME`**, **port**, and **working directory** (`MEMNOS_NO_DOTENV=1`
+prevents any repo `.env` from overriding trial settings, and `--require-empty-db` aborts
+before any DDL if `MEMNOS_DSN` ever points at an existing database):
+
+```bash
+# 1. Build the candidate binary and move into a clean scratch directory + HOME
+BIN="$PWD/target/release/memnos"
+TRIAL_HOME="$(mktemp -d /tmp/memnos-trial.XXXXXX)"
+cd "$TRIAL_HOME"
+
+# 2. Start a disposable pgvector container on an unused port (:5434)
+docker run -d --name memnos-trial-pg \
+  -e POSTGRES_USER=memnos \
+  -e POSTGRES_PASSWORD=memnos \
+  -e POSTGRES_DB=memnos_trial \
+  -p 127.0.0.1:5434:5432 \
+  pgvector/pgvector:pg16
+
+# (Optional: reuse an existing HuggingFace cache read-only so you skip the ~930 MB model download
+#  without touching ~/.memnos; omit HF_HOME to test a cold download into $TRIAL_HOME/.memnos/models)
+export HOME="$TRIAL_HOME"
+export MEMNOS_NO_DOTENV=1
+export MEMNOS_DSN="postgresql://memnos:memnos@127.0.0.1:5434/memnos_trial"
+export MEMNOS_PORT=8920
+
+# 3. Initialize the empty trial DB + $TRIAL_HOME/.memnos/config.json (--require-empty-db refuses
+#    immediately if the target database already has memnos schemas)
+"$BIN" setup --dsn "$MEMNOS_DSN" --port "$MEMNOS_PORT" --local --require-empty-db --yes
+# (Or pass `--openai-key sk-...` instead of `--local`.)
+
+# 4. Run the server in the foreground and verify the startup banner shows ONLY $TRIAL_HOME and :5434
+"$BIN" serve --port "$MEMNOS_PORT" &
+TRIAL_PID=$!
+# Expected startup output:
+#   [memnos] config: /tmp/memnos-trial.XXXXXX/.memnos/config.json (present)
+#   [memnos] target db: 127.0.0.1:5434/memnos_trial
+#   [memnos] server v... listening on http://127.0.0.1:8920 (db=127.0.0.1:5434/memnos_trial, config=...)
+
+# 5. Exercise CLI, memory, recall, and coordination against :8920 (wait until ready=true)
+"$BIN" status
+"$BIN" remember "Isolated trial decision: keep staging isolated on port 8920" --namespace proj:trial --no-extract
+"$BIN" recall "staging isolated port" --namespace proj:trial
+"$BIN" session register trial-agent --namespace proj:trial
+"$BIN" inbox send trial-agent "Hello from isolated trial" --session trial-peer --subject "Smoke check" --namespace proj:trial
+"$BIN" inbox ls --session trial-agent --namespace proj:trial
+
+# 6. Teardown (leaves live :8900, localhost:5432/memnos, and real ~/.memnos untouched)
+kill "$TRIAL_PID" && wait "$TRIAL_PID" 2>/dev/null || true
+docker rm -f memnos-trial-pg
+rm -rf "$TRIAL_HOME"
+```
+
+> **Note on editor / CLI hooks:** Global Claude Code or editor hooks configured under your real
+> home directory (`~/.claude`, `~/.gemini`, etc.) continue talking to your live `:8900` server.
+> If you also want to test Claude Code hooks/MCP against the trial server without touching your
+> live setup, export `CLAUDE_CONFIG_DIR="$TRIAL_HOME/.claude"` before running `"$BIN" setup claude-code`.
+
 ## Code style
 
 - No comments explaining *what* code does — names should do that. A comment is only

@@ -2068,6 +2068,15 @@ components:
             every live constraint injects; 0 disables pinning entirely). Pinned
             constraints are never budgeted by size — they always render in full.
             Pinned rows are ADDED ahead of ranked results, never replace them.
+        limit:
+          type: integer
+          minimum: 0
+          description: >
+            optional hard cap on the number of items returned in `memories`. When omitted,
+            `memories` includes all active `pinned_constraints` plus ranked rows up to
+            `raw_quota` + `fact_quota`. When set, `memories` is truncated to at most `limit`
+            entries while `pinned_constraints` and rendered `context` retain all active
+            constraints (unless `constraint_cap` is also set).
         raw_quota: { type: integer, description: max verbatim turns returned }
         fact_quota: { type: integer, description: max facts returned }
         max_chars: { type: integer, description: context block size cap (default 9000) }

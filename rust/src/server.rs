@@ -1293,14 +1293,15 @@ async fn api_post_handler(
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
 
-    let scope_wide = matches!(
-        req.get("scope").and_then(|v| v.as_str()),
-        Some("all" | "wide")
-    );
+    let scope_wide = path == "/recall/wide"
+        || matches!(
+            req.get("scope").and_then(|v| v.as_str()),
+            Some("all" | "wide")
+        );
     let ns_optional = (scope_wide
         && matches!(
             path,
-            "/recall" | "/recall_v2" | "/memory/search" | "/memory/context"
+            "/recall" | "/recall/wide" | "/recall_v2" | "/memory/search" | "/memory/context"
         ))
         || path == "/recall/explain";
     let ns = match raw_ns {
@@ -1316,7 +1317,11 @@ async fn api_post_handler(
 
     let write = is_write_op(path);
 
-    if !(scope_wide && matches!(path, "/recall" | "/recall_v2" | "/memory/search" | "/memory/context"))
+    if !(scope_wide
+        && matches!(
+            path,
+            "/recall" | "/recall/wide" | "/recall_v2" | "/memory/search" | "/memory/context"
+        ))
         && path != "/recall/explain"
     {
         match Control::authorize(&st.pool, pid, &ns, write).await {
@@ -1411,7 +1416,7 @@ async fn api_post_handler(
                 Err(e) => Err(json_resp(StatusCode::BAD_REQUEST, json!({ "error": e }))),
             }
         }
-        "/recall" | "/recall_v2" | "/memory/search" | "/memory/context" => {
+        "/recall" | "/recall/wide" | "/recall_v2" | "/memory/search" | "/memory/context" => {
             let query = req
                 .get("query")
                 .and_then(|v| v.as_str())
@@ -1462,6 +1467,18 @@ async fn api_post_handler(
                         return json_resp(
                             StatusCode::BAD_REQUEST,
                             json!({ "error": "deadline_ms must be an integer" }),
+                        );
+                    }
+                },
+            };
+            let limit: Option<usize> = match req.get("limit") {
+                None | Some(Value::Null) => None,
+                Some(v) => match v.as_i64() {
+                    Some(n) => Some(n.max(0) as usize),
+                    None => {
+                        return json_resp(
+                            StatusCode::BAD_REQUEST,
+                            json!({ "error": "limit must be an integer" }),
                         );
                     }
                 },
@@ -1536,6 +1553,7 @@ async fn api_post_handler(
                     type_filter,
                     author_filter,
                     constraint_cap,
+                    limit,
                     deadline,
                     viewer: principal_name.clone(),
                     repo_root,
@@ -1600,6 +1618,7 @@ async fn api_post_handler(
                     type_filter,
                     author_filter,
                     constraint_cap,
+                    limit,
                     deadline,
                     viewer: principal_name.clone(),
                     repo_root,
@@ -2885,11 +2904,62 @@ async fn api_post_handler(
 }
 
 pub async fn run_server(port_override: Option<u16>) -> Result<(), String> {
+    run_server_opts(port_override, false).await
+}
+
+pub async fn run_server_opts(
+    port_override: Option<u16>,
+    require_empty_db: bool,
+) -> Result<(), String> {
     let cfg = load_config();
     let port = port_override.unwrap_or_else(|| server_port(&cfg));
     let pg_dsn = dsn(&cfg);
+    let cfg_file = crate::config::config_path();
+    let cfg_state = if cfg_file.is_file() {
+        "present"
+    } else {
+        "not found"
+    };
+    let db_target = crate::config::redact_dsn_target(&pg_dsn);
+
+    println!(
+        "[memnos] config: {} ({})",
+        cfg_file.display(),
+        cfg_state
+    );
+    println!("[memnos] target db: {}", db_target);
 
     let pool = build_pool(&pg_dsn, 24)?;
+    let must_be_empty = require_empty_db
+        || matches!(
+            env::var("MEMNOS_REQUIRE_EMPTY_DB")
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "1" | "true" | "yes" | "on"
+        );
+    if must_be_empty {
+        let probe_conn = pool
+            .get()
+            .await
+            .map_err(|e| format!("database connection failed ({}): {}", db_target, e))?;
+        let has_existing: bool = probe_conn
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname IN ('memnos_control', 'tenant_memnos'))",
+                &[],
+            )
+            .await
+            .map(|r| r.get(0))
+            .map_err(|e| format!("database schema probe failed ({}): {}", db_target, e))?;
+        if has_existing {
+            return Err(format!(
+                "refusing to start with --require-empty-db: target database '{}' already contains existing memnos schemas — point MEMNOS_DSN at a fresh database or omit --require-empty-db",
+                db_target
+            ));
+        }
+    }
+
     Control::init(&pool)
         .await
         .map_err(|e| format!("Control::init failed: {}", e))?;
@@ -3019,8 +3089,12 @@ pub async fn run_server(port_override: Option<u16>) -> Result<(), String> {
         .map_err(|e| format!("failed to bind {}:{}: {}", bind_host, port, e))?;
 
     println!(
-        "[memnos] server v{} listening on http://{}:{}",
-        VERSION, bind_host, port
+        "[memnos] server v{} listening on http://{}:{} (db={}, config={})",
+        VERSION,
+        bind_host,
+        port,
+        db_target,
+        cfg_file.display()
     );
 
     axum::serve(listener, app)

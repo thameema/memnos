@@ -707,6 +707,8 @@ pub struct RecallOpts {
     pub author_filter: Option<String>,
     /// Cap on injected pinned constraints (`None` = unbounded, `Some(0)` = disabled).
     pub constraint_cap: Option<usize>,
+    /// Optional cap on the number of items returned in `memories` (`None` = use quotas).
+    pub limit: Option<usize>,
     /// Optional wall-clock deadline (`Instant`); if expired, recall returns degraded best-available results.
     pub deadline: Option<Instant>,
     /// Name of the calling principal, so only other authors are attributed in the context.
@@ -731,6 +733,7 @@ impl Default for RecallOpts {
             type_filter: None,
             author_filter: None,
             constraint_cap: None,
+            limit: None,
             deadline: None,
             viewer: None,
             repo_root: None,
@@ -2375,6 +2378,11 @@ impl BrainStore {
                 past_deadline = true;
             }
         }
+        let raw_q = if has_tl { 5 } else { opts.raw_quota };
+        let fact_q = opts.fact_quota + if !ents.is_empty() { 10 } else { 0 } + if has_tl { 10 } else { 0 };
+        // Truncate raw turns BEFORE partitioning fresh vs superseded turns so total turns
+        // (`fresh + stale`) stay bounded by `raw_quota` (matches Python `rr(raw)[:raw_quota]`).
+        turns.truncate(raw_q);
         let is_stale = |t: &Value| t.get("superseded").and_then(|x| x.as_bool()).unwrap_or(false);
         let stale_turns: Vec<Value> = turns.iter().filter(|t| is_stale(t)).cloned().collect();
         turns.retain(|t| !is_stale(t));
@@ -2388,9 +2396,6 @@ impl BrainStore {
 
         // --- assembly -------------------------------------------------------------------------
         let broad = matches!(qi, "list" | "broad");
-        let raw_q = if has_tl { 5 } else { opts.raw_quota };
-        let fact_q = opts.fact_quota + if !ents.is_empty() { 10 } else { 0 } + if has_tl { 10 } else { 0 };
-        turns.truncate(raw_q);
         facts.truncate(fact_q);
         episodes.truncate(3);
         let mut ranked: Vec<Value> = vec![];
@@ -2453,9 +2458,19 @@ impl BrainStore {
     }
 
     fn recall_json(&self, namespaces: &[String], query: &str, opts: &RecallOpts, out: RecallOut, t0: Instant, wide: bool) -> Value {
+        let mut ctx_rows: Vec<Value> = out.pins.clone();
+        let ranked_for_ctx: &[Value] = match opts.limit {
+            Some(lim) => &out.ranked[..out.ranked.len().min(lim)],
+            None => &out.ranked,
+        };
+        ctx_rows.extend(ranked_for_ctx.iter().cloned());
+        let context = render_context(&ctx_rows, opts.max_chars, opts.viewer.as_deref(), Some(query));
+
         let mut results: Vec<Value> = out.pins.clone();
         results.extend(out.ranked.iter().cloned());
-        let context = render_context(&results, opts.max_chars, opts.viewer.as_deref(), Some(query));
+        if let Some(lim) = opts.limit {
+            results.truncate(lim);
+        }
         let mut v = json!({
             "query": query,
             "namespace": namespaces.first(),
@@ -2509,12 +2524,16 @@ impl BrainStore {
         let t0 = Instant::now();
         let ns = vec![namespace.to_string()];
         let out = self.recall_core(&ns, query, opts, false).await?;
+        let mut ranked = out.ranked;
+        if let Some(lim) = opts.limit {
+            ranked.truncate(lim);
+        }
         let mut v = json!({
             "query": query,
             "namespace": namespace,
-            "count": out.ranked.len(),
-            "memories": out.ranked,
-            "results": out.ranked,
+            "count": ranked.len(),
+            "memories": ranked,
+            "results": ranked,
             "latency_ms": t0.elapsed().as_millis() as u64,
         });
         if !opts.grounded_in.is_empty() || !opts.links_skipped.is_empty() {

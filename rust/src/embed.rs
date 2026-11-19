@@ -92,9 +92,21 @@ pub struct Embedder {
 
 impl Embedder {
     pub fn from_env(openai_key: Option<String>, force_dim: Option<usize>) -> Self {
-        let key = openai_key
-            .or_else(|| env::var("OPENAI_API_KEY").ok())
-            .filter(|s| !s.trim().is_empty() && !s.starts_with("secret://"));
+        let force_local = matches!(
+            env::var("MEMNOS_EMBED_CHOICE")
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "local" | "computer" | "offline" | "384"
+        );
+        let key = if force_local {
+            None
+        } else {
+            openai_key
+                .or_else(|| env::var("OPENAI_API_KEY").ok())
+                .filter(|s| !s.trim().is_empty() && !s.starts_with("secret://"))
+        };
         let dim = force_dim.unwrap_or(if key.is_some() { 1536 } else { 384 });
         let (local_default, explicit_local) = crate::rerank::default_local_embed_model_from_env();
         let model = if key.is_some() && dim == 1536 {

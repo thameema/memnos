@@ -5,8 +5,8 @@ use memnos_core::{
     agent_setup::{is_agent_target, run_agent_setup, run_autostart},
     code_anchors::extract_code_anchors,
     config::{
-        config_dir, dsn, load_config, save_config, server_port, server_url, session_token, Config,
-        VERSION,
+        config_dir, config_path, dsn, load_config, redact_dsn_target, save_config, server_port,
+        server_url, session_token, Config, VERSION,
     },
     control::Control,
     db::build_pool,
@@ -25,7 +25,7 @@ use memnos_core::{
         default_local_embed_model_from_env, ensure_local_models_ready, is_model_cached,
         print_local_models_status, specs_for_embed_model, BGE_REPO_ID,
     },
-    server::run_server,
+    server::run_server_opts,
     store::BrainStore,
     vault::Vault,
 };
@@ -155,6 +155,8 @@ enum Commands {
         local: bool,
         #[arg(long)]
         openai_key: Option<String>,
+        #[arg(long)]
+        require_empty_db: bool,
         #[arg(short, long)]
         yes: bool,
     },
@@ -183,6 +185,9 @@ enum Commands {
     Serve {
         #[arg(long)]
         port: Option<u16>,
+        /// refuse to start if the target database already contains memnos schemas
+        #[arg(long)]
+        require_empty_db: bool,
     },
     /// run the zero-downtime upgrade front door in the FOREGROUND
     Gateway {
@@ -1937,6 +1942,15 @@ async fn configure_embed_choice(
 
 async fn start_background_server(cfg: &mut Config, port_override: Option<u16>) -> Result<(), String> {
     let port = port_override.unwrap_or_else(|| server_port(cfg));
+    let pg_dsn = dsn(cfg);
+    let cfg_file = config_path();
+    println!(
+        "[memnos] config: {} ({})",
+        cfg_file.display(),
+        if cfg_file.is_file() { "present" } else { "not found" }
+    );
+    println!("[memnos] target db: {}", redact_dsn_target(&pg_dsn));
+
     let health_url = format!("http://127.0.0.1:{}/healthz", port);
     if let Ok(r) = ureq::get(&health_url).timeout(Duration::from_secs(1)).call() {
         if r.status() == 200 {
@@ -1945,7 +1959,7 @@ async fn start_background_server(cfg: &mut Config, port_override: Option<u16>) -
         }
     }
 
-    let pool = build_pool(&dsn(cfg), 4)?;
+    let pool = build_pool(&pg_dsn, 4)?;
     Control::init(&pool).await.map_err(|e| e.to_string())?;
     configure_embed_choice(cfg, &pool, false, false, None, false).await?;
 
@@ -2033,7 +2047,10 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             print_tips_showcase(&ns);
             Ok(())
         }
-        Commands::Serve { port } => run_server(port).await,
+        Commands::Serve {
+            port,
+            require_empty_db,
+        } => run_server_opts(port, require_empty_db).await,
         Commands::Gateway { port } => {
             let p = port.unwrap_or_else(|| server_port(&cfg));
             run_gateway(p).await
@@ -2328,6 +2345,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             port,
             local,
             openai_key,
+            require_empty_db,
             yes,
         } => {
             if let Some(ref sub) = target {
@@ -2380,6 +2398,42 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             }
 
             let pool = build_pool(&chosen_dsn, 8)?;
+            let db_target = redact_dsn_target(&chosen_dsn);
+            println!(
+                "[memnos] config: {} ({})",
+                config_path().display(),
+                if config_path().is_file() { "present" } else { "new" }
+            );
+            println!("[memnos] target db: {}", db_target);
+            if require_empty_db
+                || matches!(
+                    env::var("MEMNOS_REQUIRE_EMPTY_DB")
+                        .unwrap_or_default()
+                        .trim()
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            {
+                let probe_conn = pool
+                    .get()
+                    .await
+                    .map_err(|e| format!("database connection failed ({}): {}", db_target, e))?;
+                let has_existing: bool = probe_conn
+                    .query_one(
+                        "SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname IN ('memnos_control', 'tenant_memnos'))",
+                        &[],
+                    )
+                    .await
+                    .map(|r| r.get(0))
+                    .map_err(|e| format!("database schema probe failed ({}): {}", db_target, e))?;
+                if has_existing {
+                    return Err(format!(
+                        "refusing setup with --require-empty-db: target database '{}' already contains existing memnos schemas — point --dsn at a fresh database or omit --require-empty-db",
+                        db_target
+                    ));
+                }
+            }
             Control::init(&pool).await.map_err(|e| e.to_string())?;
 
             configure_embed_choice(&mut cfg, &pool, only_embeddings, local, openai_key, yes).await?;
@@ -2407,7 +2461,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             save_config(&cfg).map_err(|e| e.to_string())?;
 
             println!("[memnos] setup complete!");
-            println!("  DSN:         {}", chosen_dsn);
+            println!("  target db:   {}", db_target);
             println!("  config:      {}", config_dir().join("config.json").display());
             println!("  admin token: {}", admin_tok);
             Ok(())
