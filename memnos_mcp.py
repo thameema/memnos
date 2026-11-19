@@ -922,6 +922,7 @@ def lease_list() -> str:
 
 # --- named sessions + channel pub/sub (issue #231) ------------------------------------
 _SESSION_DEFAULT = ""   # set by session_register; falls back to $MEMNOS_SESSION
+_SESSION_EXPLICIT = False
 
 
 def _sess(name=""):
@@ -960,7 +961,7 @@ def session_register(name: str, role: str = "", harness: str = "", model: str = 
     webhook: optional http(s) URL to push this session's channel/inbox events to, for a
     headless subscriber with no interactive loop; leave blank to leave an existing webhook
     (and its secret) untouched on re-register."""
-    global _SESSION_DEFAULT
+    global _SESSION_DEFAULT, _SESSION_EXPLICIT
     body = {
         "name": name, "role": role, "harness": harness, "model": model,
         "current_task": current_task, "channels": channels or [], "channel_ads": channel_ads or {},
@@ -971,6 +972,7 @@ def session_register(name: str, role: str = "", harness: str = "", model: str = 
     out = _chan_call("/session/register", body, "session_register")
     if not out.startswith("(memnos"):
         _SESSION_DEFAULT = name.strip().lstrip("@")
+        _SESSION_EXPLICIT = True
         nsresolve and nsresolve.save_active_session(_SESSION_DEFAULT, cwd=os.getcwd(), namespace=_ns())
     return out
 
@@ -1328,6 +1330,13 @@ def _resolve_reexec_argv0(argv0: str):
     return candidate if os.path.exists(candidate) else None
 
 
+def _safe_stderr(msg: str):
+    try:
+        print(msg, file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
 def _do_reexec():
     """Replace this process image in place: same PID, same stdio fds already connected
     to the MCP host, so the host never sees an exit/restart. Called only from the
@@ -1347,9 +1356,9 @@ def _do_reexec():
     environment."""
     argv0 = _resolve_reexec_argv0(sys.argv[0])
     if argv0 is None:
-        print(f"memnos: adapter update detected but could not resolve '{sys.argv[0]}' "
-              f"to re-exec — leaving the old code running; restart this session "
-              f"manually to pick up the update", file=sys.stderr)
+        _safe_stderr(f"memnos: adapter update detected but could not resolve '{sys.argv[0]}' "
+                     f"to re-exec — leaving the old code running; restart this session "
+                     f"manually to pick up the update")
         return
     try:
         _drain_offline_queue()          # belt-and-suspenders — see module docstring
@@ -1360,22 +1369,18 @@ def _do_reexec():
     # set before execv, which inherits whatever this process's environment holds at
     # the moment of the call (there's no explicit env argument to pass).
     os.environ[_RESUMED_ENV] = "1"
-    print(f"memnos: re-exec'ing adapter (pid {os.getpid()}) to pick up the updated "
-          f"build — same MCP connection, no session restart needed", file=sys.stderr)
+    _safe_stderr(f"memnos: re-exec'ing adapter (pid {os.getpid()}) to pick up the updated "
+                 f"build — same MCP connection, no session restart needed")
     try:
         sys.stdout.flush()
-    except Exception:
-        pass
-    try:
-        sys.stderr.flush()
     except Exception:
         pass
     try:
         os.execv(sys.executable, new_argv)
     except Exception as e:
         # os.execv only ever returns on failure — a successful call never reaches here.
-        print(f"memnos: re-exec failed ({type(e).__name__}: {e}) — leaving the old "
-              f"code running", file=sys.stderr)
+        _safe_stderr(f"memnos: re-exec failed ({type(e).__name__}: {e}) — leaving the old "
+                     f"code running")
 
 
 def _wait_idle_and_reexec():
@@ -1498,9 +1503,9 @@ def _reexec_watch_loop():
             # check (still being written) — keep watching, don't act yet.
             prev_sig = cur_sig
             continue
-        print(f"memnos: detected an updated memnos build on disk (stable across two "
-              f"checks) — will re-exec this adapter once idle (checked every "
-              f"{interval:.0f}s)", file=sys.stderr)
+        _safe_stderr(f"memnos: detected an updated memnos build on disk (stable across two "
+                     f"checks) — will re-exec this adapter once idle (checked every "
+                     f"{interval:.0f}s)")
         _wait_idle_and_reexec()
         return
 
@@ -1573,10 +1578,33 @@ def _start_session_lifecycle_watcher():
                 _cleanup_on_exit()
                 return
             try:
+                cur_ns = _ns()
+                if not _SESSION_EXPLICIT:
+                    bound = nsresolve.resolve_active_session(cwd=info.get("cwd"))
+                    if bound and bound != (_SESSION_DEFAULT or registered_name):
+                        resp = _post("/session/register", {
+                            "namespace": cur_ns,
+                            "name": bound,
+                            "harness": info.get("harness", ""),
+                            "host": info.get("host", ""),
+                            "cwd": info.get("cwd", os.getcwd()),
+                            "machine_id": info.get("machine_id", ""),
+                            "pid": parent_pid,
+                            "tty": info.get("tty", ""),
+                            "ttl_seconds": 120,
+                            "metadata": {
+                                "auto_named": False,
+                                "display_label": info.get("display_label", ""),
+                                "suggested_topic": info.get("suggested_topic", ""),
+                            },
+                        })
+                        registered_name = resp.get("name") or bound
+                        _SESSION_DEFAULT = registered_name
                 cur_sess = _SESSION_DEFAULT or registered_name
                 _post("/session/heartbeat", {
-                    "namespace": _ns(),
+                    "namespace": cur_ns,
                     "name": cur_sess,
+                    "status": "active",
                     "machine_id": info.get("machine_id", ""),
                     "pid": parent_pid,
                     "tty": info.get("tty", ""),

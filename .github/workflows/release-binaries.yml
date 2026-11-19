@@ -21,14 +21,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run engine unit tests
         run: cargo test --lib --release
-      - name: Build path-remapped single binary
-        shell: bash
-        run: bash scripts/build_release.sh
-      - name: Run release hygiene gate
-        if: runner.os != 'Windows'
+      - name: Build release single binary (plain cargo build --release)
+        run: cargo build --release
+      - name: Run release hygiene gate on exact release binary (all OSes incl. Windows)
         shell: bash
         run: bash scripts/release_hygiene.sh ./target/release/memnos
-      - name: Smoke test CLI (--version and tips)
+      - name: Smoke test built release binary (--version and tips)
+        shell: bash
         run: |
-          cargo run --release -- --version
-          cargo run --release -- tips
+          BIN="./target/release/memnos"
+          [[ -f "${BIN}.exe" ]] && BIN="${BIN}.exe"
+          "$BIN" --version
+          "$BIN" tips

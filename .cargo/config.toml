@@ -1,2 +1,3 @@
 [build]
-rustflags = ["--remap-path-prefix=rust/src=src"]
+rustc-wrapper = "scripts/rustc-remap.cmd"
+rustflags = ["--remap-path-prefix=rust/src=src", "--remap-path-prefix=rust\\src=src"]

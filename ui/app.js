@@ -280,7 +280,7 @@ function syncBindForm() {
   const hostScoped = $("#bind-scope").value !== "repo";
   $("#bind-keytype").hidden = !hostScoped;
   $("#bind-key").placeholder = hostScoped && $("#bind-keytype").value === "host_path"
-    ? "absolute path (e.g. /Users/me/work/app)"
+    ? "absolute path (e.g. /srv/acme/payments-sync)"
     : "repo (e.g. github.com/acme/payments-sync)";
 }
 $("#bind-scope").onchange = syncBindForm;

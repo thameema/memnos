@@ -36,6 +36,10 @@ jobs:
           python -m build --outdir dist/root .       # the memnos package (repo root)
           python -m build --outdir dist/sdk  sdk      # the memnos-sdk package
 
+      - name: Run release hygiene gate on built distributions
+        shell: bash
+        run: bash scripts/release_hygiene.sh --dist-only dist/root dist/sdk
+
       - name: Publish memnos
         uses: pypa/gh-action-pypi-publish@release/v1
         with:

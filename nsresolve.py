@@ -61,18 +61,27 @@ def machine_id():
 
 
 def repo_key(cwd=None):
-    """Portable repo key = normalized git remote origin URL: strip scheme (https://, or
-    git@host: -> host/), trailing '.git', lowercase. So git@github.com:thameema/memnos.git
-    and https://github.com/thameema/memnos both -> github.com/thameema/memnos. Returns
-    None if there's no remote (caller falls back to a host-scoped path binding)."""
-    try:
-        url = subprocess.run(["git", "remote", "get-url", "origin"], cwd=cwd or os.getcwd(),
-                             capture_output=True, text=True, timeout=3).stdout.strip()
-    except Exception:
-        return None
-    if not url:
-        return None
-    return _normalize_remote(url)
+    """Portable repo key = normalized git remote URL (checks origin, github, upstream): strip
+    scheme (https://, or git@host: -> host/), trailing '.git', lowercase. So
+    git@github.com:thameema/memnos.git and https://github.com/thameema/memnos both ->
+    github.com/thameema/memnos. Returns None if there's no remote."""
+    target_cwd = cwd or os.getcwd()
+    for remote in ("origin", "github", "upstream"):
+        try:
+            url = subprocess.run(
+                ["git", "remote", "get-url", remote],
+                cwd=target_cwd,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            ).stdout.strip()
+        except Exception:
+            url = ""
+        if url:
+            norm = _normalize_remote(url)
+            if norm:
+                return norm
+    return None
 
 
 def _normalize_remote(url):
@@ -280,22 +289,118 @@ def _write_active(m):
     os.replace(tmp, p)
 
 
+def _parent_tty_and_harness():
+    """Walk the parent PID chain (up to 6 hops) to discover `(tty, harness, agent_pid, cmd_name)`
+    even when invoked inside a non-TTY hook or tool subprocess."""
+    harness = ""
+    agent_pid = os.getppid()
+    tty_str = ""
+    cmd_name = ""
+    if os.environ.get("ANTIGRAVITY_CLI") or os.environ.get("AGY_SESSION_ID"):
+        harness = "antigravity"
+    elif os.environ.get("CLAUDE_CODE") or os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.environ.get("CLAUDE_PROJECT_DIR"):
+        harness = "claude-code"
+    elif os.environ.get("CURSOR_VERSION") or os.environ.get("CURSOR_TRACE_ID"):
+        harness = "cursor"
+    elif os.environ.get("GEMINI_CLI"):
+        harness = "gemini"
+    if os.name == "nt":
+        tty_str = f"win-{agent_pid}"
+    else:
+        cur = os.getppid()
+        for _ in range(6):
+            if not cur or cur <= 1:
+                break
+            try:
+                out = subprocess.run(
+                    ["ps", "-o", "pid=,ppid=,tty=,comm=,args=", "-p", str(cur)],
+                    capture_output=True, text=True, timeout=2,
+                ).stdout.strip()
+            except Exception:
+                break
+            if not out:
+                break
+            parts = out.split(None, 4)
+            if len(parts) < 4:
+                break
+            p_pid = int(parts[0])
+            p_ppid = int(parts[1])
+            p_tty = parts[2] if parts[2] not in ("??", "?", "-") else ""
+            p_comm = parts[3].lower()
+            p_base = os.path.basename(p_comm)
+            p_args = parts[4] if len(parts) > 4 else parts[3]
+            if p_tty and not tty_str:
+                tty_str = p_tty
+            low_args = p_args.lower()
+            if not harness:
+                if "claude.app" in low_args and "disclaimer" not in p_base:
+                    harness = "claude-desktop"
+                    agent_pid = p_pid
+                elif p_base == "claude" or re.match(r"^(?:\S+/)?claude(?:\s|$)", low_args):
+                    harness = "claude-code"
+                    agent_pid = p_pid
+                    m = re.search(r"--name\s+(.+?)(?:\s+--|\s*$)", p_args)
+                    if m:
+                        cmd_name = _slugify_session_title(m.group(1).strip("\"' "))
+                elif p_base in ("agy", "antigravity") or re.match(r"^(?:\S+/)?(?:agy|antigravity)(?:\s|$)", low_args):
+                    harness = "antigravity"
+                    agent_pid = p_pid
+                elif p_base == "gemini" or re.match(r"^(?:\S+/)?gemini(?:\s|$)", low_args):
+                    harness = "gemini"
+                    agent_pid = p_pid
+                elif p_base == "cursor":
+                    harness = "cursor"
+                    agent_pid = p_pid
+            elif harness == "claude-code" and (p_base == "claude" or re.match(r"^(?:\S+/)?claude(?:\s|$)", low_args)):
+                agent_pid = p_pid
+                m = re.search(r"--name\s+(.+?)(?:\s+--|\s*$)", p_args)
+                if m and not cmd_name:
+                    cmd_name = _slugify_session_title(m.group(1).strip("\"' "))
+            elif harness == "antigravity" and (p_base in ("agy", "antigravity") or re.match(r"^(?:\S+/)?(?:agy|antigravity)(?:\s|$)", low_args)):
+                agent_pid = p_pid
+            cur = p_ppid
+    if not harness:
+        if os.environ.get("CLAUDE_PLUGIN_ROOT") or os.environ.get("CLAUDE_PROJECT_DIR"):
+            harness = "claude-code"
+        elif os.environ.get("ANTIGRAVITY_CLI") or os.environ.get("AGY_SESSION_ID"):
+            harness = "antigravity"
+        elif os.environ.get("CURSOR_VERSION"):
+            harness = "cursor"
+    if not tty_str and os.name != "nt":
+        try:
+            if os.isatty(0):
+                tty_str = os.path.basename(os.ttyname(0))
+        except Exception:
+            pass
+    return tty_str, harness, agent_pid, cmd_name
+
+
 def save_active_session(name, cwd=None, namespace=None):
-    """Bind a session name to this workspace so hooks/MCP/CLI find it without $MEMNOS_SESSION.
-    shortcut: read-modify-write without a lock, last writer wins; fine for a per-user file."""
+    """Bind a session name to this workspace scoped by TTY and harness so two agents
+    (e.g. Claude Code and Antigravity) working in the same repo never collide."""
     m = _load(_active_path()) or {}
-    m[os.path.realpath(cwd or os.getcwd())] = {"name": name.strip().lstrip("@"),
-                                               "namespace": namespace or "", "updated_at": time.time()}
+    key = os.path.realpath(cwd or os.getcwd())
+    clean = name.strip().lstrip("@")
+    tty_str, harness, _, _ = _parent_tty_and_harness()
+    entry = {"name": clean, "namespace": namespace or "", "tty": tty_str, "harness": harness, "updated_at": time.time()}
+    if tty_str:
+        m[f"{key}::{tty_str}"] = entry
+    if harness:
+        m[f"{key}::harness:{harness}"] = entry
+    else:
+        m[key] = entry
     _write_active(m)
 
 
 def clear_active_session(name=None, cwd=None):
-    """Drop the binding for this cwd (and/or any binding with this name)."""
+    """Drop the binding for this cwd/tty/harness (and/or any binding with this name)."""
     m = _load(_active_path()) or {}
     key = os.path.realpath(cwd or os.getcwd())
+    tty_str, harness, _, _ = _parent_tty_and_harness()
     name = (name or "").strip().lstrip("@")
+    target_keys = {key, f"{key}::{tty_str}", f"{key}::harness:{harness}"}
     keep = {k: v for k, v in m.items()
-            if not ((k == key and (not name or v.get("name") == name)) or (name and not cwd and v.get("name") == name))}
+            if not ((k in target_keys and (not name or v.get("name") == name)) or (name and not cwd and v.get("name") == name))}
     if keep != m:
         _write_active(keep)
 
@@ -330,17 +435,38 @@ def _transcript_session_name(transcript_path):
 
 
 def resolve_active_session(cwd=None, data=None):
-    """$MEMNOS_SESSION, else the name bound to this cwd (hook payload cwd wins),
-    else Claude/Tommy transcript agentName/customTitle (e.g. 'Tommy | MEMNOS' -> 'tommy-memnos'), else ''."""
+    """Priority: (1) $MEMNOS_SESSION, (2) Claude transcript agentName/customTitle,
+    (3) <cwd>::<tty>, (4) <cwd>::harness:<harness>, (5) matching-harness bare <cwd>."""
     env = os.environ.get("MEMNOS_SESSION", "").strip().lstrip("@")
     if env:
         return env
-    key = os.path.realpath((data or {}).get("cwd") or cwd or os.getcwd())
-    bound = ((_load(_active_path()) or {}).get(key) or {}).get("name", "")
-    if bound:
-        return bound
     tp = (data or {}).get("transcript_path") or (data or {}).get("transcriptPath") or ""
-    return _transcript_session_name(tp)
+    from_tp = _transcript_session_name(tp)
+    if from_tp:
+        return from_tp
+    key = os.path.realpath((data or {}).get("cwd") or cwd or os.getcwd())
+    tty_str, harness, _, cmd_name = _parent_tty_and_harness()
+    if cmd_name:
+        return cmd_name
+    m = _load(_active_path()) or {}
+    if tty_str:
+        b_tty = (m.get(f"{key}::{tty_str}") or {}).get("name", "")
+        if b_tty:
+            return b_tty
+    if harness:
+        b_h = (m.get(f"{key}::harness:{harness}") or {}).get("name", "")
+        if b_h:
+            return b_h
+    bare = m.get(key) or {}
+    bare_name = bare.get("name", "")
+    bare_h = bare.get("harness", "")
+    if bare_name:
+        if (not bare_h or not harness or bare_h == harness) and not (
+            (harness == "claude-code" and bare_name.startswith("agy-"))
+            or (harness == "antigravity" and bare_name.startswith("tommy-"))
+        ):
+            return bare_name
+    return ""
 
 
 def _git_branch(cwd=None) -> str:

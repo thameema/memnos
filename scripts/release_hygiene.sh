@@ -1,86 +1,240 @@
 #!/usr/bin/env bash
 # Release hygiene gate (`scripts/release_hygiene.sh`):
-# Fails non-zero if the release binary, CLI/MCP/HTTP surfaces, or built distributions leak:
-#   1. Internal implementation language branding ("rust") in `--help`, `--version`, `status`,
-#      `/healthz`, or MCP `initialize` / `tools/list` output, or in shipped test/workflow filenames.
-#   2. Test-only environment switches (`FAKE_EXTRACT`, `EMBED_MODE`, `TEST_DSN`, `MOCK`,
-#      `SIMULATE_WARMING`, `SKIP_MODEL_HASH`) inside the release binary.
-#   3. Builder privacy leaks (`$HOME`, `$USER`, or internal `rust/src/` source prefixes) in `strings`.
+# Fails non-zero if the shipped binary, CLI/MCP/HTTP surfaces, or built distributions
+# (wheels, sdists, archives) leak:
+#   1. Internal implementation language branding ("rust") in `--help`, `--version`, bare CLI,
+#      or MCP `initialize` / `tools/list` output.
+#   2. Test-only environment switches (`FAKE_EXTRACT`, `EMBED_MODE`, `TEST_DSN`,
+#      `SIMULATE_WARMING`, `SKIP_MODEL_HASH`, `local-hash`) inside the release binary.
+#   3. Builder privacy leaks (`$HOME`, Windows native `cygpath -w $HOME`, `$USERPROFILE`,
+#      or generic `/Users/`, `/home/`, `C:\Users\`, `.cargo/registry`, `.rustup`, `rust/src/`).
+#   4. Unpacked wheel (`.whl` / `.zip`) and sdist (`.tar.gz` / `.tgz`) member contents.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN="${1:-$REPO_ROOT/target/release/memnos}"
+DIST_ONLY=0
+DIST_DIRS=()
+BIN_ARG=""
 
-if [[ ! -x "$BIN" ]]; then
-  echo "FAIL: release binary not found or not executable: $BIN" >&2
-  exit 1
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dist-only)
+      DIST_ONLY=1
+      shift
+      while [[ $# -gt 0 ]]; do
+        DIST_DIRS+=("$1")
+        shift
+      done
+      ;;
+    *)
+      BIN_ARG="$1"
+      shift
+      ;;
+  esac
+done
+
+if [[ ${#DIST_DIRS[@]} -eq 0 ]]; then
+  DIST_DIRS=("$REPO_ROOT/dist")
 fi
 
 FAILS=0
 pass() { echo "  PASS  $1"; }
 fail() { echo "  FAIL  $1" >&2; FAILS=$((FAILS + 1)); }
 
-echo "=== Release Hygiene Gate: $BIN ==="
-
-# 1. CLI --help / --version / bare invocation must not mention implementation language
-HELP_OUT="$("$BIN" --help 2>&1)"
-VER_OUT="$("$BIN" --version 2>&1)"
-BARE_OUT="$("$BIN" 2>&1 || true)"
-
-if echo "$HELP_OUT $VER_OUT $BARE_OUT" | grep -qi "rust"; then
-  fail "CLI help/version output mentions 'rust'"
-else
-  pass "CLI --help / --version / bare output is language-neutral"
-fi
-
-# 2. MCP initialize + tools/list must not mention implementation language
-MCP_OUT="$(printf '%s\n%s\n%s\n' \
-  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"gate","version":"1.0"}}}' \
-  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
-  | MEMNOS_MCP_AUTO_REGISTER=0 "$BIN" mcp 2>/dev/null || true)"
-
-if echo "$MCP_OUT" | grep -qi "rust"; then
-  fail "MCP initialize/tools/list mentions 'rust'"
-else
-  pass "MCP initialize + 55-tool definitions are language-neutral"
-fi
-
-# 3. Binary strings: no test-only environment switches or synthetic hash embedder
-if strings "$BIN" | grep -E 'FAKE_EXTRACT|EMBED_MODE|TEST_DSN|SIMULATE_WARMING|SKIP_MODEL_HASH|local-hash' >/dev/null 2>&1; then
-  fail "Release binary contains test-only switch or hash-tier strings"
-  strings "$BIN" | grep -E 'FAKE_EXTRACT|EMBED_MODE|TEST_DSN|SIMULATE_WARMING|SKIP_MODEL_HASH|local-hash' | head -n 10 >&2
-else
-  pass "Zero test-only switches or hash-tier strings in release binary"
-fi
-
-# 4. Binary strings: no builder $HOME or `rust/src/` source path prefixes
-if [[ -n "${HOME:-}" ]] && strings "$BIN" | grep -F "$HOME" >/dev/null 2>&1; then
-  CNT="$(strings "$BIN" | grep -Fc "$HOME" || true)"
-  fail "Release binary leaks builder HOME path ($HOME) in $CNT string(s)"
-else
-  pass "Zero builder \$HOME path strings in release binary"
-fi
-
-if strings "$BIN" | grep -F "rust/src/" >/dev/null 2>&1; then
-  CNT="$(strings "$BIN" | grep -Fc "rust/src/" || true)"
-  fail "Release binary contains $CNT unremapped 'rust/src/' source path string(s)"
-else
-  pass "Zero 'rust/src/' source path strings in release binary"
-fi
-
-# 5. Optional dist/ wheel & sdist check when built artifacts exist
-if [[ -d "$REPO_ROOT/dist" ]] && compgen -G "$REPO_ROOT/dist/*" >/dev/null; then
-  DIST_BAD=0
-  for pkg in "$REPO_ROOT"/dist/*; do
-    if [[ -n "${HOME:-}" ]] && strings "$pkg" 2>/dev/null | grep -F "$HOME" >/dev/null 2>&1; then
-      fail "Distribution artifact $(basename "$pkg") leaks builder HOME"
-      DIST_BAD=1
-    fi
-  done
-  if [[ "$DIST_BAD" -eq 0 ]]; then
-    pass "Distribution artifacts in dist/ pass path-leak check"
+PY_BIN=""
+for cand in python3 python; do
+  if command -v "$cand" >/dev/null 2>&1; then
+    PY_BIN="$cand"
+    break
   fi
+done
+
+extract_strings() {
+  local target="$1"
+  if command -v strings >/dev/null 2>&1; then
+    strings "$target" 2>/dev/null || true
+  elif [[ -n "$PY_BIN" ]]; then
+    "$PY_BIN" - "$target" <<'PYEOF'
+import re, sys
+with open(sys.argv[1], "rb") as f:
+    data = f.read()
+for m in re.finditer(rb"[\x20-\x7e]{4,}", data):
+    sys.stdout.write(m.group(0).decode("ascii", "ignore") + "\n")
+PYEOF
+  else
+    echo "FAIL: neither 'strings' nor 'python' available to inspect binary" >&2
+    return 1
+  fi
+}
+
+extract_pkg_strings() {
+  local pkg="$1"
+  case "$pkg" in
+    *.whl|*.zip)
+      if command -v unzip >/dev/null 2>&1 && command -v strings >/dev/null 2>&1; then
+        unzip -p "$pkg" 2>/dev/null | strings 2>/dev/null || true
+      elif [[ -n "$PY_BIN" ]]; then
+        "$PY_BIN" - "$pkg" <<'PYEOF'
+import re, sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "r") as zf:
+    for info in zf.infolist():
+        if info.is_dir():
+            continue
+        data = zf.read(info.filename)
+        for m in re.finditer(rb"[\x20-\x7e]{4,}", data):
+            sys.stdout.write(m.group(0).decode("ascii", "ignore") + "\n")
+PYEOF
+      fi
+      ;;
+    *.tar.gz|*.tgz)
+      if command -v tar >/dev/null 2>&1 && command -v strings >/dev/null 2>&1; then
+        tar -xOzf "$pkg" 2>/dev/null | strings 2>/dev/null || true
+      elif [[ -n "$PY_BIN" ]]; then
+        "$PY_BIN" - "$pkg" <<'PYEOF'
+import re, sys, tarfile
+with tarfile.open(sys.argv[1], "r:gz") as tf:
+    for m_info in tf.getmembers():
+        if not m_info.isfile():
+            continue
+        fh = tf.extractfile(m_info)
+        if fh is None:
+            continue
+        data = fh.read()
+        for m in re.finditer(rb"[\x20-\x7e]{4,}", data):
+            sys.stdout.write(m.group(0).decode("ascii", "ignore") + "\n")
+PYEOF
+      fi
+      ;;
+    *)
+      extract_strings "$pkg"
+      ;;
+  esac
+}
+
+WIN_HOME=""
+if [[ -n "${HOME:-}" ]] && command -v cygpath >/dev/null 2>&1; then
+  WIN_HOME="$(cygpath -w "$HOME" 2>/dev/null || true)"
+fi
+
+check_path_leaks_in_stream() {
+  local label="$1"
+  local tmpf="$2"
+  local bad=0
+
+  if [[ -n "${HOME:-}" ]] && grep -F "$HOME" "$tmpf" >/dev/null 2>&1; then
+    local cnt
+    cnt="$(grep -Fc "$HOME" "$tmpf" || true)"
+    fail "$label leaks POSIX HOME ($HOME) in $cnt string(s)"
+    bad=1
+  fi
+  if [[ -n "$WIN_HOME" ]] && grep -Fi "$WIN_HOME" "$tmpf" >/dev/null 2>&1; then
+    local cnt
+    cnt="$(grep -Fic "$WIN_HOME" "$tmpf" || true)"
+    fail "$label leaks Windows native HOME ($WIN_HOME) in $cnt string(s)"
+    bad=1
+  fi
+  if [[ -n "${USERPROFILE:-}" ]] && grep -Fi "$USERPROFILE" "$tmpf" >/dev/null 2>&1; then
+    local cnt
+    cnt="$(grep -Fic "$USERPROFILE" "$tmpf" || true)"
+    fail "$label leaks USERPROFILE ($USERPROFILE) in $cnt string(s)"
+    bad=1
+  fi
+  if grep -E '(/Users/|/home/|[A-Za-z]:\\Users\\|\.cargo[/\\]registry|\.rustup[/\\]|rust[/\\]src[/\\])' "$tmpf" >/dev/null 2>&1; then
+    local cnt
+    cnt="$(grep -Ec '(/Users/|/home/|[A-Za-z]:\\Users\\|\.cargo[/\\]registry|\.rustup[/\\]|rust[/\\]src[/\\])' "$tmpf" || true)"
+    fail "$label contains $cnt unremapped host/cargo/rustup/source path string(s)"
+    grep -E '(/Users/|/home/|[A-Za-z]:\\Users\\|\.cargo[/\\]registry|\.rustup[/\\]|rust[/\\]src[/\\])' "$tmpf" | head -n 10 >&2
+    bad=1
+  fi
+  return "$bad"
+}
+
+if [[ "$DIST_ONLY" -eq 0 ]]; then
+  BIN="${BIN_ARG:-$REPO_ROOT/target/release/memnos}"
+  if [[ ! -f "$BIN" && -f "${BIN}.exe" ]]; then
+    BIN="${BIN}.exe"
+  fi
+  if [[ ! -f "$BIN" ]]; then
+    echo "FAIL: release binary not found: $BIN" >&2
+    exit 1
+  fi
+
+  echo "=== Release Hygiene Gate: $BIN ==="
+
+  # 1. CLI --help / --version / bare invocation must not mention implementation language
+  HELP_OUT="$("$BIN" --help 2>&1)"
+  VER_OUT="$("$BIN" --version 2>&1)"
+  BARE_OUT="$("$BIN" 2>&1 || true)"
+
+  if echo "$HELP_OUT $VER_OUT $BARE_OUT" | grep -qi "rust"; then
+    fail "CLI help/version output mentions 'rust'"
+  else
+    pass "CLI --help / --version / bare output is language-neutral"
+  fi
+
+  # 2. MCP initialize + tools/list must not mention implementation language
+  MCP_OUT="$(printf '%s\n%s\n%s\n' \
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"gate","version":"1.0"}}}' \
+    '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+    '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+    | MEMNOS_MCP_AUTO_REGISTER=0 "$BIN" mcp 2>/dev/null || true)"
+
+  if echo "$MCP_OUT" | grep -qi "rust"; then
+    fail "MCP initialize/tools/list mentions 'rust'"
+  else
+    pass "MCP initialize + 55-tool definitions are language-neutral"
+  fi
+
+  STR_TMP="$(mktemp)"
+  trap 'rm -f "$STR_TMP"' EXIT
+  extract_strings "$BIN" > "$STR_TMP"
+
+  # 3. Binary strings: no test-only environment switches or synthetic hash embedder
+  if grep -E 'FAKE_EXTRACT|EMBED_MODE|TEST_DSN|SIMULATE_WARMING|SKIP_MODEL_HASH|local-hash' "$STR_TMP" >/dev/null 2>&1; then
+    fail "Release binary contains test-only switch or hash-tier strings"
+    grep -E 'FAKE_EXTRACT|EMBED_MODE|TEST_DSN|SIMULATE_WARMING|SKIP_MODEL_HASH|local-hash' "$STR_TMP" | head -n 10 >&2
+  else
+    pass "Zero test-only switches or hash-tier strings in release binary"
+  fi
+
+  # 4. Binary strings: no POSIX/Windows HOME, USERPROFILE, /Users/, /home/, C:\Users\, .cargo/registry, .rustup, or rust/src/
+  if check_path_leaks_in_stream "Release binary" "$STR_TMP"; then
+    pass "Zero builder HOME/USERPROFILE, .cargo/registry, .rustup, or 'rust/src/' path strings in release binary"
+  fi
+else
+  echo "=== Release Hygiene Gate (Distribution Artifacts Only) ==="
+fi
+
+# 5. Deep distribution check (inspects unpacked .whl / .zip / .tar.gz member contents)
+FOUND_DIST=0
+DIST_BAD=0
+for ddir in "${DIST_DIRS[@]}"; do
+  if [[ -d "$ddir" ]]; then
+    while IFS= read -r -d '' pkg; do
+      FOUND_DIST=1
+      PKG_TMP="$(mktemp)"
+      extract_pkg_strings "$pkg" > "$PKG_TMP"
+      if [[ -n "${HOME:-}" ]] && grep -F "$HOME" "$PKG_TMP" >/dev/null 2>&1; then
+        fail "Distribution artifact $(basename "$pkg") leaks POSIX HOME ($HOME)"
+        DIST_BAD=1
+      fi
+      if [[ -n "$WIN_HOME" ]] && grep -Fi "$WIN_HOME" "$PKG_TMP" >/dev/null 2>&1; then
+        fail "Distribution artifact $(basename "$pkg") leaks Windows HOME ($WIN_HOME)"
+        DIST_BAD=1
+      fi
+      if [[ -n "${USERPROFILE:-}" ]] && grep -Fi "$USERPROFILE" "$PKG_TMP" >/dev/null 2>&1; then
+        fail "Distribution artifact $(basename "$pkg") leaks USERPROFILE ($USERPROFILE)"
+        DIST_BAD=1
+      fi
+      rm -f "$PKG_TMP"
+    done < <(find "$ddir" -maxdepth 2 -type f \( -name "*.whl" -o -name "*.tar.gz" -o -name "*.tgz" -o -name "*.zip" \) -print0)
+  fi
+done
+
+if [[ "$FOUND_DIST" -eq 1 && "$DIST_BAD" -eq 0 ]]; then
+  pass "Unpacked distribution archives (.whl / .tar.gz / .zip) pass path-leak check"
+elif [[ "$DIST_ONLY" -eq 1 && "$FOUND_DIST" -eq 0 ]]; then
+  fail "No distribution archives found in: ${DIST_DIRS[*]}"
 fi
 
 if [[ "$FAILS" -gt 0 ]]; then

@@ -53,6 +53,7 @@ candle-transformers = { version = "0.8", default-features = false, features = ["
 [profile.release]
 opt-level = 3
 lto = "thin"
+debug = false
 strip = true
 codegen-units = 1
 panic = "abort"

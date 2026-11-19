@@ -324,6 +324,20 @@ fn parent_tty_and_harness() -> (String, String, u32) {
     let mut agent_pid = std::process::id();
     let mut tty_str = String::new();
 
+    if env::var("ANTIGRAVITY_CLI").is_ok() || env::var("AGY_SESSION_ID").is_ok() {
+        harness = "antigravity".to_string();
+    } else if env::var("CLAUDE_CODE").is_ok()
+        || env::var("CLAUDECODE").is_ok()
+        || env::var("CLAUDE_PLUGIN_ROOT").is_ok()
+        || env::var("CLAUDE_PROJECT_DIR").is_ok()
+    {
+        harness = "claude-code".to_string();
+    } else if env::var("CURSOR_VERSION").is_ok() || env::var("CURSOR_TRACE_ID").is_ok() {
+        harness = "cursor".to_string();
+    } else if env::var("GEMINI_CLI").is_ok() {
+        harness = "gemini".to_string();
+    }
+
     #[cfg(unix)]
     {
         let mut cur = unsafe { libc_getppid() };
@@ -352,40 +366,39 @@ fn parent_tty_and_harness() -> (String, String, u32) {
             let p_pid: u32 = parts[0].parse().unwrap_or(cur as u32);
             let p_ppid: i32 = parts[1].parse().unwrap_or(0);
             let p_tty = parts[2];
+            let p_comm = parts[3].to_ascii_lowercase();
+            let p_base = Path::new(&p_comm)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&p_comm);
             let p_args = if parts.len() > 4 { parts[4] } else { parts[3] };
             if tty_str.is_empty() && p_tty != "??" && p_tty != "?" && p_tty != "-" {
                 tty_str = p_tty.to_string();
             }
             let low = p_args.to_ascii_lowercase();
             if harness.is_empty() {
-                if low.contains("claude.app") {
+                if low.contains("claude.app") && !p_base.contains("disclaimer") {
                     harness = "claude-desktop".to_string();
                     agent_pid = p_pid;
-                } else if low.contains("claude") && !low.contains("disclaimer") {
+                } else if p_base == "claude" {
                     harness = "claude-code".to_string();
                     agent_pid = p_pid;
-                } else if low.contains("agy") || low.contains("antigravity") {
+                } else if p_base == "agy" || p_base == "antigravity" {
                     harness = "antigravity".to_string();
                     agent_pid = p_pid;
-                } else if low.contains("gemini") {
+                } else if p_base == "gemini" {
                     harness = "gemini".to_string();
                     agent_pid = p_pid;
-                } else if low.contains("cursor") {
+                } else if p_base == "cursor" {
                     harness = "cursor".to_string();
                     agent_pid = p_pid;
                 }
+            } else if (harness == "claude-code" && p_base == "claude")
+                || (harness == "antigravity" && (p_base == "agy" || p_base == "antigravity"))
+            {
+                agent_pid = p_pid;
             }
             cur = p_ppid;
-        }
-    }
-
-    if harness.is_empty() {
-        if env::var("CLAUDE_PLUGIN_ROOT").is_ok() || env::var("CLAUDE_PROJECT_DIR").is_ok() {
-            harness = "claude-code".to_string();
-        } else if env::var("ANTIGRAVITY_CLI").is_ok() {
-            harness = "antigravity".to_string();
-        } else if env::var("CURSOR_VERSION").is_ok() {
-            harness = "cursor".to_string();
         }
     }
 
