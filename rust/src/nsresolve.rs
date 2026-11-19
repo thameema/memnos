@@ -319,42 +319,149 @@ pub fn infer_topic_channel(cwd: &Path, topic_or_task: &str) -> String {
     format!("#{}", repo_slug)
 }
 
-fn current_tty() -> String {
+fn parent_tty_and_harness() -> (String, String, u32) {
+    let mut harness = String::new();
+    let mut agent_pid = std::process::id();
+    let mut tty_str = String::new();
+
     #[cfg(unix)]
     {
-        let ppid = unsafe { libc_getppid() };
-        if ppid > 1 {
-            if let Ok(o) = Command::new("ps")
-                .args(["-o", "tty=", "-p", &ppid.to_string()])
-                .output()
-            {
-                let t = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if !t.is_empty() && t != "??" && t != "?" && t != "-" {
-                    return t;
+        let mut cur = unsafe { libc_getppid() };
+        if cur > 1 {
+            agent_pid = cur as u32;
+        }
+        for _ in 0..6 {
+            if cur <= 1 {
+                break;
+            }
+            let out = Command::new("ps")
+                .args(["-o", "pid=,ppid=,tty=,comm=,args=", "-p", &cur.to_string()])
+                .output();
+            let Ok(o) = out else { break };
+            let line = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if line.is_empty() {
+                break;
+            }
+            let parts: Vec<&str> = line
+                .splitn(5, char::is_whitespace)
+                .filter(|s| !s.is_empty())
+                .collect();
+            if parts.len() < 4 {
+                break;
+            }
+            let p_pid: u32 = parts[0].parse().unwrap_or(cur as u32);
+            let p_ppid: i32 = parts[1].parse().unwrap_or(0);
+            let p_tty = parts[2];
+            let p_args = if parts.len() > 4 { parts[4] } else { parts[3] };
+            if tty_str.is_empty() && p_tty != "??" && p_tty != "?" && p_tty != "-" {
+                tty_str = p_tty.to_string();
+            }
+            let low = p_args.to_ascii_lowercase();
+            if harness.is_empty() {
+                if low.contains("claude.app") {
+                    harness = "claude-desktop".to_string();
+                    agent_pid = p_pid;
+                } else if low.contains("claude") && !low.contains("disclaimer") {
+                    harness = "claude-code".to_string();
+                    agent_pid = p_pid;
+                } else if low.contains("agy") || low.contains("antigravity") {
+                    harness = "antigravity".to_string();
+                    agent_pid = p_pid;
+                } else if low.contains("gemini") {
+                    harness = "gemini".to_string();
+                    agent_pid = p_pid;
+                } else if low.contains("cursor") {
+                    harness = "cursor".to_string();
+                    agent_pid = p_pid;
                 }
+            }
+            cur = p_ppid;
+        }
+    }
+
+    if harness.is_empty() {
+        if env::var("CLAUDE_PLUGIN_ROOT").is_ok() || env::var("CLAUDE_PROJECT_DIR").is_ok() {
+            harness = "claude-code".to_string();
+        } else if env::var("ANTIGRAVITY_CLI").is_ok() {
+            harness = "antigravity".to_string();
+        } else if env::var("CURSOR_VERSION").is_ok() {
+            harness = "cursor".to_string();
+        }
+    }
+
+    (tty_str, harness, agent_pid)
+}
+
+fn slugify_session_title(title: &str) -> String {
+    use once_cell::sync::Lazy;
+    static HEX_TAIL_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)\|\s*[0-9a-f]{8}\s*$").unwrap());
+    static NON_SLUG_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"[^a-z0-9_.:-]+").unwrap());
+    let stripped = HEX_TAIL_RE.replace(title.trim(), "").to_ascii_lowercase();
+    let slug = NON_SLUG_RE
+        .replace_all(&stripped, "-")
+        .trim_matches(|c| matches!(c, '-' | '.' | '_' | ':'))
+        .to_string();
+    slug.chars().take(64).collect()
+}
+
+pub fn transcript_session_name(transcript_path: &str) -> String {
+    if transcript_path.is_empty() {
+        return String::new();
+    }
+    let Ok(raw) = fs::read_to_string(transcript_path) else {
+        return String::new();
+    };
+    let mut title = String::new();
+    for (i, line) in raw.lines().enumerate() {
+        if i > 64 {
+            break;
+        }
+        if !line.contains("agentName") && !line.contains("customTitle") {
+            continue;
+        }
+        if let Ok(obj) = serde_json::from_str::<Value>(line) {
+            let t = obj
+                .get("agentName")
+                .or_else(|| obj.get("customTitle"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !t.is_empty() {
+                title = t.to_string();
             }
         }
     }
-    String::new()
+    if title.is_empty() {
+        String::new()
+    } else {
+        slugify_session_title(&title)
+    }
 }
 
 pub fn save_active_session(name: &str, cwd: &Path, namespace: &str) {
     let real_cwd = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let cwd_key = real_cwd.to_string_lossy().to_string();
-    let tty = current_tty();
+    let (tty, harness, _) = parent_tty_and_harness();
     let p = config_dir().join("active_sessions.json");
     let mut map: serde_json::Map<String, Value> = fs::read_to_string(&p)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
+    let entry = json!({
+        "name": name,
+        "namespace": namespace,
+        "tty": tty,
+        "harness": harness,
+    });
     if !tty.is_empty() {
-        map.insert(
-            format!("{}::{}", cwd_key, tty),
-            json!({"name": name, "namespace": namespace, "tty": tty}),
-        );
+        map.insert(format!("{}::{}", cwd_key, tty), entry.clone());
     }
-    map.entry(cwd_key)
-        .or_insert_with(|| json!({"name": name, "namespace": namespace}));
+    if !harness.is_empty() {
+        map.insert(format!("{}::harness:{}", cwd_key, harness), entry.clone());
+    } else {
+        map.entry(cwd_key).or_insert(entry);
+    }
     if fs::create_dir_all(config_dir()).is_ok() {
         let _ = fs::write(&p, serde_json::to_string_pretty(&map).unwrap_or_default());
     }
@@ -368,9 +475,13 @@ pub fn clear_active_session(name: &str, cwd: &Path) {
         return;
     };
     let cwd_key = real_cwd.to_string_lossy().to_string();
-    let tty = current_tty();
+    let (tty, harness, _) = parent_tty_and_harness();
     let mut changed = false;
-    for k in [format!("{}::{}", cwd_key, tty), cwd_key] {
+    for k in [
+        format!("{}::{}", cwd_key, tty),
+        format!("{}::harness:{}", cwd_key, harness),
+        cwd_key,
+    ] {
         if let Some(cur) = map.get(&k) {
             if name.is_empty() || cur.get("name").and_then(|v| v.as_str()) == Some(name) {
                 map.remove(&k);
@@ -384,15 +495,30 @@ pub fn clear_active_session(name: &str, cwd: &Path) {
 }
 
 pub fn resolve_active_session(cwd: &Path) -> String {
+    resolve_active_session_with_data(cwd, None)
+}
+
+pub fn resolve_active_session_with_data(cwd: &Path, data: Option<&Value>) -> String {
     if let Ok(env_s) = env::var("MEMNOS_SESSION") {
         let clean = env_s.trim().trim_start_matches('@');
         if !clean.is_empty() {
             return clean.to_string();
         }
     }
+    if let Some(d) = data {
+        let tp = d
+            .get("transcript_path")
+            .or_else(|| d.get("transcriptPath"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let from_tp = transcript_session_name(tp);
+        if !from_tp.is_empty() {
+            return from_tp;
+        }
+    }
     let real_cwd = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let cwd_key = real_cwd.to_string_lossy().to_string();
-    let tty = current_tty();
+    let (tty, harness, _) = parent_tty_and_harness();
     if let Ok(raw) = fs::read_to_string(config_dir().join("active_sessions.json")) {
         if let Ok(map) = serde_json::from_str::<Value>(&raw) {
             if !tty.is_empty() {
@@ -405,12 +531,39 @@ pub fn resolve_active_session(cwd: &Path) -> String {
                     return n.to_string();
                 }
             }
-            if let Some(n) = map
-                .get(&cwd_key)
-                .and_then(|v| v.get("name"))
-                .and_then(|v| v.as_str())
-            {
-                return n.to_string();
+            if !harness.is_empty() {
+                let h_key = format!("{}::harness:{}", cwd_key, harness);
+                if let Some(n) = map
+                    .get(&h_key)
+                    .and_then(|v| v.get("name"))
+                    .and_then(|v| v.as_str())
+                {
+                    return n.to_string();
+                }
+            }
+            if let Some(bare) = map.get(&cwd_key) {
+                let bare_h = bare
+                    .get("harness")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if (bare_h.is_empty() || harness.is_empty() || bare_h == harness)
+                    && (harness.is_empty()
+                        || !bare
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .starts_with(if harness == "claude-code" {
+                                "agy-"
+                            } else if harness == "antigravity" {
+                                "tommy-"
+                            } else {
+                                "\0"
+                            }))
+                {
+                    if let Some(n) = bare.get("name").and_then(|v| v.as_str()) {
+                        return n.to_string();
+                    }
+                }
             }
         }
     }

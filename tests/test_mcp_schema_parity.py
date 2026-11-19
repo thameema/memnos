@@ -17,7 +17,18 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CANDIDATE_BIN = os.environ.get("MEMNOS_BIN", os.path.join(ROOT, "target", "release", "memnos"))
-REF_MCP_CMD = os.environ.get("MEMNOS_REF_MCP_CMD", "")
+# Intentional optional backward-compatible alias/override parameters accepted by `memnos mcp`
+# in addition to the reference parameters (`namespace` is accepted on all tools for multi-ns callers).
+ALLOWED_OPTIONAL_EXTRAS: dict[str, set[str]] = {
+    "corpus_check_diff": {"version"},
+    "get_context": {"budget_chars"},
+    "memory_search": {"scope", "top_k"},
+    "memory_write": {"memory_type"},
+    "namespace_feed": {"limit"},
+    "recall": {"memory_type", "top_k"},
+    "recall_wide": {"memory_type"},
+    "remember": {"extract"},
+}
 
 
 def _list_tools(cmd: list[str]) -> dict[str, dict]:
@@ -75,7 +86,8 @@ def _types_of(prop_schema: dict) -> set[str]:
 
 
 def main() -> int:
-    ref_cmd = REF_MCP_CMD.split() if REF_MCP_CMD else [sys.executable, os.path.join(ROOT, "memnos_mcp.py")]
+    ref_env_cmd = os.environ.get("MEMNOS_REF_MCP_CMD", "")
+    ref_cmd = ref_env_cmd.split() if ref_env_cmd else [sys.executable, os.path.join(ROOT, "memnos_mcp.py")]
     if not os.path.isfile(ref_cmd[-1]):
         which_memnos = shutil.which("memnos")
         if which_memnos and os.path.abspath(which_memnos) != os.path.abspath(CANDIDATE_BIN):
@@ -105,6 +117,10 @@ def main() -> int:
             ct = _types_of(c_props[pname])
             if pt and not pt.issubset(ct):
                 failures.append(f"{name}.{pname}: type mismatch ref={sorted(pt)} candidate={sorted(ct)}")
+        allowed_extra = {"namespace"} | ALLOWED_OPTIONAL_EXTRAS.get(name, set())
+        unexpected_extra = sorted(set(c_props) - set(p_props) - allowed_extra)
+        if unexpected_extra:
+            failures.append(f"{name}: undocumented extra candidate properties {unexpected_extra}")
 
     total = len(ref_tools)
     if failures:

@@ -222,6 +222,7 @@ def test_sdk_and_spo_supersession(admin_dsn: str) -> None:
         "HF_HUB_CACHE": os.path.expanduser("~/.cache/huggingface/hub"),
         "MEMNOS_DSN": dsn,
         "MEMNOS_PORT": str(port),
+        "MEMNOS_EMBED_CHOICE": "local",
         "MEMNOS_EXTRACT_BASE_URL": f"http://127.0.0.1:{llm_port}/v1",
     }
     env.pop("OPENAI_API_KEY", None)
@@ -237,8 +238,8 @@ def test_sdk_and_spo_supersession(admin_dsn: str) -> None:
     )
     r_asetup = subprocess.run([MEMNOS_BIN, "agent-setup", "cursor"], env=empty_cache_env, capture_output=True, text=True, timeout=15)
     check(
-        "`memnos agent-setup` notifies user about required one-time local model download",
-        "without external AI" in r_asetup.stdout and "memnos models pull" in r_asetup.stdout,
+        "`memnos agent-setup` notifies user about required embedding setup (`memnos setup embeddings`)",
+        "memnos setup embeddings" in r_asetup.stdout and "memnos models pull" in r_asetup.stdout,
         r_asetup.stdout,
     )
 
@@ -848,6 +849,227 @@ def test_vault_resolved_openai_1536_upgrade(admin_dsn: str) -> None:
         drop_scratch_db(admin_dsn, db_name)
 
 
+def test_first_run_model_choice_and_backup_security(admin_dsn: str) -> None:
+    print("\n=== 5. First-Run Explicit Model Choice Gate + Backup 0600/pg_restore Verification ===")
+    db_name = f"memnos_firstrun_{int(time.time())}"
+    dsn = make_scratch_db(admin_dsn, db_name)
+    home = tempfile.mkdtemp(prefix="memnos_firstrun_home_")
+    empty_hf = os.path.join(home, "empty_hf")
+    os.makedirs(empty_hf, exist_ok=True)
+    port = free_port()
+    url = f"http://127.0.0.1:{port}"
+
+    clean_env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("OPENAI_API_KEY", "MEMNOS_SECRET_KEY", "MEMNOS_EMBED_CHOICE", "MEMNOS_LOCAL_MODEL")
+    }
+    base_env = {
+        **clean_env,
+        "HOME": home,
+        "HF_HUB_CACHE": empty_hf,
+        "MEMNOS_DSN": dsn,
+    }
+
+    try:
+        # 5a. Non-interactive `memnos setup` without flags must NOT auto-download or silently pick a mode
+        headless_setup = subprocess.run(
+            [MEMNOS_BIN, "setup"],
+            env=base_env,
+            cwd=home,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        check(
+            "Headless `memnos setup` without explicit choice refuses instead of silently downloading",
+            headless_setup.returncode != 0 and "not set up yet" in (headless_setup.stderr + headless_setup.stdout),
+            headless_setup.stderr + headless_setup.stdout,
+        )
+
+        # Mint a token via CLI so we can test /recall and /remember against an unconfigured server
+        subprocess.run([MEMNOS_BIN, "principal", "create", "first-user"], env=base_env, cwd=home, check=True, capture_output=True)
+        subprocess.run([MEMNOS_BIN, "grant", "add", "first-user", "proj:first"], env=base_env, cwd=home, check=True, capture_output=True)
+        tok_out = subprocess.run([MEMNOS_BIN, "token", "mint", "first-user"], env=base_env, cwd=home, check=True, capture_output=True, text=True)
+        tok = next(w.strip() for w in (tok_out.stdout + " " + tok_out.stderr).split() if w.startswith("mnk_"))
+
+        # 5b. Fresh HOME, no key, no choice -> /readyz 503 ready:false, /recall & /remember & hooks refuse!
+        srv_unconf = subprocess.Popen(
+            [MEMNOS_BIN, "serve", "--port", str(port)],
+            env=base_env,
+            cwd=home,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.time() + 10.0
+            while time.time() < deadline:
+                try:
+                    if httpx.get(f"{url}/healthz", timeout=1.0).status_code == 200:
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.1)
+
+            rz = httpx.get(f"{url}/readyz", timeout=3.0)
+            rz_body = rz.json()
+            check(
+                "Fresh HOME with no embed choice -> /readyz returns 503 ready:false with plain setup reason",
+                rz.status_code == 503
+                and rz_body.get("ready") is False
+                and "memnos setup embeddings" in rz_body.get("reason", ""),
+                f"status={rz.status_code} body={rz_body}",
+            )
+
+            ui_html = httpx.get(f"{url}/admin", timeout=3.0).text
+            check(
+                "Admin UI uses generic repo placeholder (no personal GitHub path)",
+                "github.com/acme/payments-sync" in ui_html and "thameema/memnos" not in ui_html,
+                "admin html check",
+            )
+
+            rec_resp = httpx.post(
+                f"{url}/recall",
+                headers={"Authorization": f"Bearer {tok}"},
+                json={"namespace": "proj:first", "query": "anything"},
+                timeout=3.0,
+            )
+            check(
+                "Unconfigured /recall refuses with 503 'not set up yet' (no degraded keyword answers)",
+                rec_resp.status_code == 503 and "memnos setup embeddings" in rec_resp.json().get("error", ""),
+                f"{rec_resp.status_code} {rec_resp.text}",
+            )
+
+            rem_resp = httpx.post(
+                f"{url}/remember",
+                headers={"Authorization": f"Bearer {tok}"},
+                json={"namespace": "proj:first", "text": "Should not write un-embedded turn."},
+                timeout=3.0,
+            )
+            check(
+                "Unconfigured /remember refuses with 503 'not set up yet' (no silent turn writes)",
+                rem_resp.status_code == 503 and "memnos setup embeddings" in rem_resp.json().get("error", ""),
+                f"{rem_resp.status_code} {rem_resp.text}",
+            )
+
+            hk_run = subprocess.run(
+                [MEMNOS_BIN, "hook", "recall"],
+                input=json.dumps({"prompt": "How is auth configured in this service?"}),
+                env={**base_env, "MEMNOS_URL": url, "MEMNOS_TOKEN": tok, "MEMNOS_NS": "proj:first"},
+                cwd=home,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            check(
+                "Unconfigured `memnos hook recall` surfaces clear setup message",
+                "memnos setup embeddings" in (hk_run.stdout + hk_run.stderr),
+                hk_run.stdout + hk_run.stderr,
+            )
+        finally:
+            srv_unconf.terminate()
+            try:
+                srv_unconf.wait(timeout=5)
+            except Exception:
+                srv_unconf.kill()
+
+        # 5c. Choose local with MEMNOS_OFFLINE_MODELS=1 and empty cache -> clear failure, zero download
+        offline_pull = subprocess.run(
+            [MEMNOS_BIN, "setup", "embeddings", "--local", "--yes"],
+            env={**base_env, "MEMNOS_OFFLINE_MODELS": "1"},
+            cwd=home,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        check(
+            "Local choice with MEMNOS_OFFLINE_MODELS=1 and empty cache fails clearly without network access",
+            offline_pull.returncode != 0 and "MEMNOS_OFFLINE_MODELS=1" in (offline_pull.stderr + offline_pull.stdout),
+            offline_pull.stderr + offline_pull.stdout,
+        )
+
+        # 5d. Choose OpenAI path (`memnos setup embeddings --openai-key ...`) in fresh HOME -> ready immediately with zero download!
+        oa_key = "sk-first-run-openai-choice-test"
+
+        class _FirstRunOaHandler(_LocalExtractHandler):
+            expected_bearer = oa_key
+
+        oa_mock_port = free_port()
+        oa_mock = HTTPServer(("127.0.0.1", oa_mock_port), _FirstRunOaHandler)
+        threading.Thread(target=oa_mock.serve_forever, daemon=True).start()
+        try:
+            setup_oa = subprocess.run(
+                [MEMNOS_BIN, "setup", "embeddings", "--openai-key", oa_key],
+                env=base_env,
+                cwd=home,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            check(
+                "`memnos setup embeddings --openai-key` configures Vault & OpenAI choice with zero download",
+                setup_oa.returncode == 0 and "nothing to download" in setup_oa.stdout,
+                setup_oa.stdout + setup_oa.stderr,
+            )
+
+            port_oa = free_port()
+            url_oa = f"http://127.0.0.1:{port_oa}"
+            srv_oa = subprocess.Popen(
+                [MEMNOS_BIN, "serve", "--port", str(port_oa)],
+                env={
+                    **base_env,
+                    "MEMNOS_EMBED_BASE_URL": f"http://127.0.0.1:{oa_mock_port}/v1",
+                    "MEMNOS_EXTRACT_BASE_URL": f"http://127.0.0.1:{oa_mock_port}/v1",
+                },
+                cwd=home,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                check("OpenAI choice in fresh HOME (empty model cache) reaches /readyz 200", wait_ready(url_oa))
+                with MemnosClient(base_url=url_oa, token=tok, namespace="proj:first") as mc:
+                    mc.remember("First-run OpenAI choice stored cleanly.", extract=False)
+                    r_oa = mc.recall("First-run OpenAI choice")
+                    check(
+                        "OpenAI choice in fresh HOME serves /remember and /recall with zero local downloads",
+                        "First-run OpenAI choice" in r_oa.get("context", ""),
+                        str(r_oa),
+                    )
+            finally:
+                srv_oa.terminate()
+                try:
+                    srv_oa.wait(timeout=5)
+                except Exception:
+                    srv_oa.kill()
+
+            # 5e. Verify `memnos backup` creates 0600 permissions & passes `pg_restore --list`
+            bkp_path = os.path.join(home, "verified-test.dump")
+            bkp_run = subprocess.run(
+                [MEMNOS_BIN, "backup", "--out", bkp_path],
+                env=base_env,
+                cwd=home,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            mode_oct = oct(os.stat(bkp_path).st_mode & 0o777) if os.path.isfile(bkp_path) else ""
+            check(
+                "`memnos backup` verifies archive via `pg_restore` and enforces 0600 permissions",
+                bkp_run.returncode == 0
+                and "verified via pg_restore" in bkp_run.stdout
+                and mode_oct == "0o600",
+                f"mode={mode_oct} out={bkp_run.stdout} err={bkp_run.stderr}",
+            )
+        finally:
+            oa_mock.shutdown()
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+        drop_scratch_db(admin_dsn, db_name)
+
+
 def main() -> int:
     admin_dsn = os.environ.get("MEMNOS_ADMIN_DSN") or os.environ.get("MEMNOS_DSN")
     if not admin_dsn:
@@ -857,6 +1079,7 @@ def main() -> int:
     test_sdk_and_spo_supersession(admin_dsn)
     test_inplace_upgrade_migration(admin_dsn)
     test_vault_resolved_openai_1536_upgrade(admin_dsn)
+    test_first_run_model_choice_and_backup_security(admin_dsn)
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 

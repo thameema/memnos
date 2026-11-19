@@ -23,7 +23,7 @@ use memnos_core::{
     repo_init::hydrate_repo,
     rerank::{
         default_local_embed_model_from_env, ensure_local_models_ready, is_model_cached,
-        print_local_models_status, specs_for_embed_model, BGE_REPO_ID, E5_MULTI_REPO_ID,
+        print_local_models_status, specs_for_embed_model, BGE_REPO_ID,
     },
     server::run_server,
     store::BrainStore,
@@ -137,8 +137,10 @@ enum Commands {
     },
     /// show the MEMNOS feature showcase and rotating workflow tips
     Tips,
-    /// connect to Postgres, create schema + admin token
+    /// connect to Postgres, choose OpenAI vs local embeddings, create schema + admin token
     Setup {
+        /// optional subtarget (`embeddings`) to configure or change embedding choice
+        target: Option<String>,
         #[arg(long)]
         dsn: Option<String>,
         #[arg(long)]
@@ -149,6 +151,12 @@ enum Commands {
         external: bool,
         #[arg(long)]
         port: Option<u16>,
+        #[arg(long)]
+        local: bool,
+        #[arg(long)]
+        openai_key: Option<String>,
+        #[arg(short, long)]
+        yes: bool,
     },
     /// start the memory server in the background (via zero-downtime gateway)
     Start {
@@ -442,12 +450,14 @@ enum Commands {
         #[arg(short, long)]
         yes: bool,
     },
-    /// inspect or download local neural models (status | pull) so memnos runs without external AI
+    /// inspect or download local neural models (status | pull)
     Models {
         #[arg(default_value = "status")]
         action: String,
         #[arg(long)]
         english_only: bool,
+        #[arg(short, long)]
+        yes: bool,
     },
     #[command(hide = true)]
     DocsGen {
@@ -1080,43 +1090,52 @@ async fn build_store_from_cfg(
     Ok(Arc::new(BrainStore::new(pool, None, emb, ext)?))
 }
 
-fn find_pg_dump_bin() -> Option<PathBuf> {
-    if let Ok(explicit) = env::var("MEMNOS_PG_DUMP") {
-        let p = PathBuf::from(explicit.trim());
-        if p.is_file() {
-            return Some(p);
+fn find_pg_tool_bin(tool: &str) -> Option<PathBuf> {
+    if tool == "pg_dump" {
+        if let Ok(explicit) = env::var("MEMNOS_PG_DUMP") {
+            let p = PathBuf::from(explicit.trim());
+            if p.is_file() {
+                return Some(p);
+            }
         }
     }
-    let exe_name = if cfg!(windows) { "pg_dump.exe" } else { "pg_dump" };
+    let exe_name = if cfg!(windows) {
+        format!("{}.exe", tool)
+    } else {
+        tool.to_string()
+    };
     if let Ok(path_var) = env::var("PATH") {
         for dir in env::split_paths(&path_var) {
-            let cand = dir.join(exe_name);
+            let cand = dir.join(&exe_name);
             if cand.is_file() {
                 return Some(cand);
             }
         }
     }
     let mut candidates: Vec<PathBuf> = vec![
-        config_dir().join("embedded_pg").join("bin").join(exe_name),
-        PathBuf::from("/opt/homebrew/opt/libpq/bin/pg_dump"),
-        PathBuf::from("/opt/homebrew/opt/postgresql@18/bin/pg_dump"),
-        PathBuf::from("/opt/homebrew/opt/postgresql@17/bin/pg_dump"),
-        PathBuf::from("/opt/homebrew/opt/postgresql@16/bin/pg_dump"),
-        PathBuf::from("/opt/homebrew/opt/postgresql@15/bin/pg_dump"),
-        PathBuf::from("/opt/homebrew/bin/pg_dump"),
-        PathBuf::from("/usr/local/opt/libpq/bin/pg_dump"),
-        PathBuf::from("/usr/local/opt/postgresql@17/bin/pg_dump"),
-        PathBuf::from("/usr/local/opt/postgresql@16/bin/pg_dump"),
-        PathBuf::from("/usr/local/bin/pg_dump"),
-        PathBuf::from("/Applications/Postgres.app/Contents/Versions/latest/bin/pg_dump"),
-        PathBuf::from("/usr/lib/postgresql/17/bin/pg_dump"),
-        PathBuf::from("/usr/lib/postgresql/16/bin/pg_dump"),
-        PathBuf::from("/usr/lib/postgresql/15/bin/pg_dump"),
+        config_dir().join("embedded_pg").join("bin").join(&exe_name),
+        PathBuf::from(format!("/opt/homebrew/opt/libpq/bin/{}", exe_name)),
+        PathBuf::from(format!("/opt/homebrew/opt/postgresql@18/bin/{}", exe_name)),
+        PathBuf::from(format!("/opt/homebrew/opt/postgresql@17/bin/{}", exe_name)),
+        PathBuf::from(format!("/opt/homebrew/opt/postgresql@16/bin/{}", exe_name)),
+        PathBuf::from(format!("/opt/homebrew/opt/postgresql@15/bin/{}", exe_name)),
+        PathBuf::from(format!("/opt/homebrew/bin/{}", exe_name)),
+        PathBuf::from(format!("/usr/local/opt/libpq/bin/{}", exe_name)),
+        PathBuf::from(format!("/usr/local/opt/postgresql@17/bin/{}", exe_name)),
+        PathBuf::from(format!("/usr/local/opt/postgresql@16/bin/{}", exe_name)),
+        PathBuf::from(format!("/usr/local/bin/{}", exe_name)),
+        PathBuf::from(format!(
+            "/Applications/Postgres.app/Contents/Versions/latest/bin/{}",
+            exe_name
+        )),
+        PathBuf::from(format!("/usr/lib/postgresql/17/bin/{}", exe_name)),
+        PathBuf::from(format!("/usr/lib/postgresql/16/bin/{}", exe_name)),
+        PathBuf::from(format!("/usr/lib/postgresql/15/bin/{}", exe_name)),
     ];
     let emb_root = config_dir().join("embedded_pg");
     if let Ok(entries) = fs::read_dir(&emb_root) {
         for entry in entries.flatten() {
-            let sub = entry.path().join("bin").join(exe_name);
+            let sub = entry.path().join("bin").join(&exe_name);
             if sub.is_file() {
                 candidates.insert(0, sub);
             }
@@ -1126,80 +1145,32 @@ fn find_pg_dump_bin() -> Option<PathBuf> {
     {
         for v in ["18", "17", "16", "15"] {
             candidates.push(PathBuf::from(format!(
-                r"C:\Program Files\PostgreSQL\{}\bin\pg_dump.exe",
-                v
+                r"C:\Program Files\PostgreSQL\{}\bin\{}",
+                v, exe_name
             )));
         }
     }
     candidates.into_iter().find(|p| p.is_file())
 }
 
-async fn write_sql_logical_snapshot(pg_dsn: &str, out_path: &Path) -> Result<(), String> {
-    use std::io::{BufWriter, Write};
-    let pool = build_pool(pg_dsn, 2)?;
-    let client = pool.get().await.map_err(|e| format!("DB connect failed for backup: {}", e))?;
-    let schemas_rows = client
-        .query(
-            "SELECT nspname FROM pg_namespace WHERE nspname = 'memnos_control' OR nspname LIKE 'tenant_%' ORDER BY nspname",
-            &[],
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    let file = fs::File::create(out_path).map_err(|e| e.to_string())?;
-    let mut w = BufWriter::new(file);
-    writeln!(
-        w,
-        "{}",
-        json!({
-            "format": "memnos-logical-backup-v1",
-            "created_at": chrono::Utc::now().to_rfc3339(),
-            "version": VERSION,
-        })
-    )
-    .map_err(|e| e.to_string())?;
-
-    for srow in schemas_rows {
-        let s: String = srow.get("nspname");
-        let tbl_rows = client
-            .query(
-                "SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE' ORDER BY table_name",
-                &[&s],
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-        for trow in tbl_rows {
-            let t: String = trow.get("table_name");
-            let sql = format!(
-                "SELECT to_jsonb(r)::text AS row_json FROM \"{}\".\"{}\" r",
-                s.replace('"', "\"\""),
-                t.replace('"', "\"\"")
-            );
-            let rows = client.query(&sql, &[]).await.map_err(|e| e.to_string())?;
-            for r in rows {
-                let rj: String = r.get("row_json");
-                writeln!(
-                    w,
-                    "{}",
-                    json!({ "schema": s, "table": t, "row": serde_json::from_str::<Value>(&rj).unwrap_or(Value::Null) })
-                )
-                .map_err(|e| e.to_string())?;
-            }
-        }
-    }
-    w.flush().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-fn set_private_perms(p: &Path) {
+fn precreate_private_file(p: &Path) -> Result<fs::File, String> {
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(p, fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
     }
-    #[cfg(not(unix))]
-    {
-        let _ = p;
-    }
+    opts.open(p)
+        .map_err(|e| format!("failed to pre-create private file {}: {}", p.display(), e))
+}
+
+fn copy_private_file(src: &Path, dst: &Path) -> Result<(), String> {
+    let mut in_f = fs::File::open(src).map_err(|e| e.to_string())?;
+    let mut out_f = precreate_private_file(dst)?;
+    io::copy(&mut in_f, &mut out_f).map_err(|e| e.to_string())?;
+    out_f.sync_all().ok();
+    Ok(())
 }
 
 fn prune_old_backups(backups_dir: &Path, keep: usize) {
@@ -1214,7 +1185,7 @@ fn prune_old_backups(backups_dir: &Path, keep: usize) {
         .map(|e| e.path())
         .filter(|p| {
             let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            name.starts_with("memnos-pre-") && (name.ends_with(".dump") || name.ends_with(".jsonl"))
+            name.starts_with("memnos-pre-") && name.ends_with(".dump")
         })
         .filter_map(|p| {
             let mtime = fs::metadata(&p).and_then(|m| m.modified()).ok()?;
@@ -1236,15 +1207,22 @@ async fn take_verified_db_backup(
     keep: usize,
 ) -> Result<PathBuf, String> {
     let pg_dsn = dsn(cfg);
+    let parsed_url = url::Url::parse(&pg_dsn)
+        .map_err(|e| format!("invalid PostgreSQL DSN for backup: {}", e))?;
+    let pg_dump_bin = find_pg_tool_bin("pg_dump").ok_or_else(|| {
+        "cannot take verified database backup: `pg_dump` not found (install postgresql-client / libpq or set MEMNOS_PG_DUMP)".to_string()
+    })?;
+    let pg_restore_bin = find_pg_tool_bin("pg_restore").ok_or_else(|| {
+        "cannot verify database backup: `pg_restore` not found alongside `pg_dump`".to_string()
+    })?;
+
     let backups_dir = config_dir().join("backups");
     fs::create_dir_all(&backups_dir).map_err(|e| format!("create backups dir failed: {}", e))?;
     let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
 
-    let pg_dump = find_pg_dump_bin();
-    let default_ext = if pg_dump.is_some() { "dump" } else { "jsonl" };
     let target_path = match custom_out {
         Some(raw) => PathBuf::from(raw),
-        None => backups_dir.join(format!("memnos-{}-{}.{}", reason, ts, default_ext)),
+        None => backups_dir.join(format!("memnos-{}-{}.dump", reason, ts)),
     };
     if let Some(parent) = target_path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -1252,51 +1230,87 @@ async fn take_verified_db_backup(
         }
     }
 
+    // Pre-create with 0600 permissions BEFORE pg_dump writes a single byte (zero world-readable window)
+    drop(precreate_private_file(&target_path)?);
+
     println!(
         "[memnos] taking mandatory database backup ({}) -> {} ...",
         reason,
         target_path.display()
     );
 
-    if let Some(pg_dump_bin) = pg_dump {
-        let out = Command::new(&pg_dump_bin)
-            .args([
-                "-Fc",
-                "--no-owner",
-                "--no-acl",
-                "-f",
-                &target_path.to_string_lossy(),
-                &pg_dsn,
-            ])
-            .output()
-            .map_err(|e| format!("failed to run {}: {}", pg_dump_bin.display(), e))?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(format!(
-                "pre-upgrade database backup failed via pg_dump (aborting to protect data): {}",
-                stderr.trim()
-            ));
-        }
-    } else {
-        write_sql_logical_snapshot(&pg_dsn, &target_path).await?;
+    // Pass connection parameters & password via PG* environment variables (never in `ps` argv)
+    let mut cmd = Command::new(&pg_dump_bin);
+    cmd.args([
+        "-Fc",
+        "--no-owner",
+        "--no-acl",
+        "-f",
+        &target_path.to_string_lossy(),
+    ]);
+    if let Some(host) = parsed_url.host_str() {
+        cmd.env("PGHOST", host);
+    }
+    if let Some(port) = parsed_url.port() {
+        cmd.env("PGPORT", port.to_string());
+    }
+    let user = parsed_url.username();
+    if !user.is_empty() {
+        cmd.env("PGUSER", user);
+    }
+    if let Some(pw) = parsed_url.password() {
+        cmd.env("PGPASSWORD", pw);
+    }
+    let dbname = parsed_url.path().trim_start_matches('/');
+    if !dbname.is_empty() {
+        cmd.env("PGDATABASE", dbname);
+    }
+
+    let out = cmd
+        .output()
+        .map_err(|e| format!("failed to run {}: {}", pg_dump_bin.display(), e))?;
+    if !out.status.success() {
+        let _ = fs::remove_file(&target_path);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "pre-upgrade database backup failed via pg_dump (aborting to protect data): {}",
+            stderr.trim()
+        ));
     }
 
     let meta = fs::metadata(&target_path)
         .map_err(|e| format!("backup verification failed on {}: {}", target_path.display(), e))?;
     if meta.len() == 0 {
+        let _ = fs::remove_file(&target_path);
         return Err(format!(
             "backup verification failed: {} is 0 bytes (aborting)",
             target_path.display()
         ));
     }
-    set_private_perms(&target_path);
+
+    // Verify archive integrity and table-of-contents via `pg_restore --list`
+    let verify_out = Command::new(&pg_restore_bin)
+        .args(["--list", &target_path.to_string_lossy()])
+        .output()
+        .map_err(|e| format!("failed running pg_restore --list: {}", e))?;
+    let toc_lines = String::from_utf8_lossy(&verify_out.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with(';'))
+        .count();
+    if !verify_out.status.success() || toc_lines == 0 {
+        let _ = fs::remove_file(&target_path);
+        let stderr = String::from_utf8_lossy(&verify_out.stderr);
+        return Err(format!(
+            "backup archive verification (`pg_restore --list`) failed on {}: {}",
+            target_path.display(),
+            stderr.trim()
+        ));
+    }
 
     let src_cfg = config_dir().join("config.json");
     if src_cfg.is_file() {
         let cfg_snap = target_path.with_extension("config.json");
-        if fs::copy(&src_cfg, &cfg_snap).is_ok() {
-            set_private_perms(&cfg_snap);
-        }
+        let _ = copy_private_file(&src_cfg, &cfg_snap);
     }
 
     if custom_out.is_none() {
@@ -1305,8 +1319,9 @@ async fn take_verified_db_backup(
 
     let mb = meta.len() as f64 / (1024.0 * 1024.0);
     println!(
-        "[memnos] ✓ verified DB backup saved ({:.2} MB): {}",
+        "[memnos] ✓ verified DB backup saved ({:.2} MB, {} archive objects verified via pg_restore): {}",
         mb,
+        toc_lines,
         target_path.display()
     );
     Ok(target_path)
@@ -1364,7 +1379,144 @@ fn has_configured_openai(cfg: &Config) -> bool {
         .is_some()
 }
 
-fn start_background_server(cfg: &Config, port_override: Option<u16>) -> Result<(), String> {
+async fn configure_embed_choice(
+    cfg: &mut Config,
+    pool: &deadpool_postgres::Pool,
+    force_prompt: bool,
+    flag_local: bool,
+    flag_openai_key: Option<String>,
+    yes: bool,
+) -> Result<(), String> {
+    use std::io::IsTerminal;
+
+    if let Some(key_val) = flag_openai_key.filter(|s| !s.trim().is_empty()) {
+        if cfg.secret_key.is_none() {
+            let sk = Vault::keygen();
+            env::set_var("MEMNOS_SECRET_KEY", &sk);
+            cfg.secret_key = Some(sk);
+        } else if let Some(ref sk) = cfg.secret_key {
+            env::set_var("MEMNOS_SECRET_KEY", sk);
+        }
+        let client = pool.get().await.map_err(|e| e.to_string())?;
+        Vault::set(&client, "openai", key_val.trim(), Some("OpenAI provider key"))
+            .await
+            .map_err(|e| e.to_string())?;
+        env::set_var("OPENAI_API_KEY", key_val.trim());
+        cfg.openai = Some("secret://openai".to_string());
+        cfg.embed_choice = Some("openai".to_string());
+        save_config(cfg).map_err(|e| e.to_string())?;
+        println!("[memnos] OpenAI embedding key saved encrypted in Vault (1536-d, nothing to download).");
+        return Ok(());
+    }
+
+    if flag_local {
+        if !yes && !io::stdin().is_terminal() {
+            return Err(
+                "non-interactive local model setup requires `--yes` (e.g. `memnos setup embeddings --local --yes` or `memnos models pull --yes`)"
+                    .to_string(),
+            );
+        }
+        let (local_model, _) = default_local_embed_model_from_env();
+        ensure_local_models_ready(&local_model)?;
+        cfg.openai = None;
+        cfg.embed_choice = Some("local".to_string());
+        save_config(cfg).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    if !force_prompt {
+        if let Some(choice) = memnos_core::config::explicit_embed_choice(cfg) {
+            if choice == "local" {
+                let (local_model, _) = default_local_embed_model_from_env();
+                let (emb_spec, rerank_spec) = specs_for_embed_model(&local_model);
+                if !is_model_cached(emb_spec)
+                    || (memnos_core::rerank::rerank_enabled() && !is_model_cached(rerank_spec))
+                {
+                    if yes || io::stdin().is_terminal() {
+                        ensure_local_models_ready(&local_model)?;
+                    } else {
+                        return Err(
+                            "local embeddings selected, but neural models (~930 MB) are not downloaded yet — run `memnos models pull --yes`"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        let probe_store = build_store_from_cfg(cfg, pool.clone()).await?;
+        if probe_store.has_existing_embed_lineage().await? {
+            return Ok(());
+        }
+    }
+
+    if !io::stdin().is_terminal() {
+        return Err(
+            "memnos is not set up yet: choose an embedding mode explicitly (`memnos setup embeddings --local --yes`, `memnos models pull --yes`, or set `OPENAI_API_KEY`)"
+                .to_string(),
+        );
+    }
+
+    println!("\nmemnos needs an embedding setup before it can store or search memories.");
+    println!("Please pick one option:\n");
+    println!("  1. Use my own OpenAI key");
+    println!("     - Fastest setup, nothing to download.");
+    println!("     - Memory and search text leaves this computer and goes to OpenAI for embedding.");
+    println!();
+    println!("  2. Run it on this computer");
+    println!("     - Private and free — nothing leaves this computer.");
+    println!("     - One-time download of about 1 GB (~930 MB: multilingual embedding + reranker models),");
+    println!("       takes a few minutes depending on your connection.");
+    println!();
+    println!("  (You can change this choice anytime later with `memnos migrate-embeddings`,");
+    println!("   which automatically backs up your database first.)\n");
+    print!("Enter 1 or 2: ");
+    let _ = io::stdout().flush();
+
+    let mut line = String::new();
+    io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+    match line.trim() {
+        "1" => {
+            print!("Paste your OpenAI API key (sk-...): ");
+            let _ = io::stdout().flush();
+            let mut k = String::new();
+            io::stdin().read_line(&mut k).map_err(|e| e.to_string())?;
+            let k_trim = k.trim().to_string();
+            if k_trim.is_empty() {
+                return Err("no OpenAI key entered — setup cancelled".to_string());
+            }
+            if cfg.secret_key.is_none() {
+                let sk = Vault::keygen();
+                env::set_var("MEMNOS_SECRET_KEY", &sk);
+                cfg.secret_key = Some(sk);
+            } else if let Some(ref sk) = cfg.secret_key {
+                env::set_var("MEMNOS_SECRET_KEY", sk);
+            }
+            let client = pool.get().await.map_err(|e| e.to_string())?;
+            Vault::set(&client, "openai", &k_trim, Some("OpenAI provider key"))
+                .await
+                .map_err(|e| e.to_string())?;
+            env::set_var("OPENAI_API_KEY", &k_trim);
+            cfg.openai = Some("secret://openai".to_string());
+            cfg.embed_choice = Some("openai".to_string());
+            save_config(cfg).map_err(|e| e.to_string())?;
+            println!("[memnos] ✓ OpenAI key encrypted in Vault. Embeddings ready (nothing to download).");
+            Ok(())
+        }
+        "2" => {
+            let (local_model, _) = default_local_embed_model_from_env();
+            ensure_local_models_ready(&local_model)?;
+            cfg.openai = None;
+            cfg.embed_choice = Some("local".to_string());
+            save_config(cfg).map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        _ => Err("no embedding option chosen (expected 1 or 2) — memnos remains not set up".to_string()),
+    }
+}
+
+async fn start_background_server(cfg: &mut Config, port_override: Option<u16>) -> Result<(), String> {
     let port = port_override.unwrap_or_else(|| server_port(cfg));
     let health_url = format!("http://127.0.0.1:{}/healthz", port);
     if let Ok(r) = ureq::get(&health_url).timeout(Duration::from_secs(1)).call() {
@@ -1374,12 +1526,9 @@ fn start_background_server(cfg: &Config, port_override: Option<u16>) -> Result<(
         }
     }
 
-    // If no external AI key is configured, notify the user in the foreground terminal and
-    // download required local neural weights BEFORE daemonizing the background gateway.
-    if !has_configured_openai(cfg) {
-        let (local_model, _) = default_local_embed_model_from_env();
-        ensure_local_models_ready(&local_model)?;
-    }
+    let pool = build_pool(&dsn(cfg), 4)?;
+    Control::init(&pool).await.map_err(|e| e.to_string())?;
+    configure_embed_choice(cfg, &pool, false, false, None, false).await?;
 
     let dir = config_dir();
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -1485,7 +1634,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             }
             run_proxy(port).await
         }
-        Commands::Start { port } => start_background_server(&cfg, port),
+        Commands::Start { port } => start_background_server(&mut cfg, port).await,
         Commands::Stop => {
             if stop_background_server() {
                 println!("[memnos] background server stopped.");
@@ -1551,14 +1700,16 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             if !upgraded {
                 stop_background_server();
                 std::thread::sleep(Duration::from_millis(400));
-                start_background_server(&cfg, port)?;
+                start_background_server(&mut cfg, port).await?;
             }
             Ok(())
         }
         Commands::Models {
             action,
             english_only,
+            yes,
         } => {
+            use std::io::IsTerminal;
             let model_id = if english_only {
                 BGE_REPO_ID.to_string()
             } else {
@@ -1573,7 +1724,17 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 "pull" | "download" => {
                     let (emb_spec, rerank_spec) = specs_for_embed_model(&model_id);
                     let already = is_model_cached(emb_spec) && is_model_cached(rerank_spec);
+                    if !already && !yes && !io::stdin().is_terminal() {
+                        return Err(
+                            "non-interactive `memnos models pull` requires `--yes` to confirm the ~930 MB (~1 GB) local model download"
+                                .to_string(),
+                        );
+                    }
                     ensure_local_models_ready(&model_id)?;
+                    if cfg.openai.is_none() {
+                        cfg.embed_choice = Some("local".to_string());
+                        let _ = save_config(&cfg);
+                    }
                     if already {
                         println!(
                             "[memnos] local neural models already cached & verified ({}, {}).",
@@ -1702,12 +1863,29 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             }
         }
         Commands::Setup {
+            target,
             dsn: dsn_opt,
             embedded: _,
             docker,
             external: _,
             port,
+            local,
+            openai_key,
+            yes,
         } => {
+            if let Some(ref sub) = target {
+                if !sub.eq_ignore_ascii_case("embeddings") && !sub.eq_ignore_ascii_case("models") {
+                    return Err(format!(
+                        "unknown setup target {:?} (use `memnos setup` or `memnos setup embeddings`)",
+                        sub
+                    ));
+                }
+            }
+            let only_embeddings = target
+                .as_deref()
+                .map(|s| s.eq_ignore_ascii_case("embeddings") || s.eq_ignore_ascii_case("models"))
+                .unwrap_or(false);
+
             let chosen_dsn = if docker {
                 let _ = Command::new("docker")
                     .args([
@@ -1734,10 +1912,29 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 dsn_opt.unwrap_or_else(|| dsn(&cfg))
             };
 
+            cfg.dsn = Some(chosen_dsn.clone());
+            if let Some(p) = port {
+                cfg.port = Some(p);
+            }
+            if cfg.secret_key.is_none() {
+                let sk = Vault::keygen();
+                env::set_var("MEMNOS_SECRET_KEY", &sk);
+                cfg.secret_key = Some(sk);
+            }
+
             let pool = build_pool(&chosen_dsn, 8)?;
             Control::init(&pool).await.map_err(|e| e.to_string())?;
+
+            configure_embed_choice(&mut cfg, &pool, only_embeddings, local, openai_key, yes).await?;
+
             let store = build_store_from_cfg(&cfg, pool.clone()).await?;
             store.init_schema().await?;
+
+            if only_embeddings && cfg.admin_token.is_some() {
+                save_config(&cfg).map_err(|e| e.to_string())?;
+                println!("[memnos] embedding setup complete! Restart or start server with `memnos restart` / `memnos start`.");
+                return Ok(());
+            }
 
             let admin_pid = Control::create_principal(&pool, "admin", "user")
                 .await
@@ -1749,13 +1946,6 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 .await
                 .map_err(|e| e.to_string())?;
 
-            cfg.dsn = Some(chosen_dsn.clone());
-            if let Some(p) = port {
-                cfg.port = Some(p);
-            }
-            if cfg.secret_key.is_none() {
-                cfg.secret_key = Some(Vault::keygen());
-            }
             cfg.admin_token = Some(admin_tok.clone());
             save_config(&cfg).map_err(|e| e.to_string())?;
 
@@ -1763,13 +1953,6 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             println!("  DSN:         {}", chosen_dsn);
             println!("  config:      {}", config_dir().join("config.json").display());
             println!("  admin token: {}", admin_tok);
-
-            // Post-install local neural model download: notify user clearly and pull weights
-            // so memnos works out of the box without any external AI key.
-            if !has_configured_openai(&cfg) {
-                let active_model = E5_MULTI_REPO_ID;
-                ensure_local_models_ready(active_model)?;
-            }
             Ok(())
         }
         Commands::Remember {

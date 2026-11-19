@@ -149,10 +149,41 @@ static BGE_INSTANCE: OnceCell<Result<BgeEmbedModel, String>> = OnceCell::new();
 static MMARCO_RERANK_INSTANCE: OnceCell<Result<MmarcoCrossEncoder, String>> = OnceCell::new();
 static MINILM_RERANK_INSTANCE: OnceCell<Result<MiniLmCrossEncoder, String>> = OnceCell::new();
 
+static EMBED_READY: AtomicBool = AtomicBool::new(false);
 static RERANK_READY: AtomicBool = AtomicBool::new(false);
+static OPENAI_SKIP_UNCACHED_RERANK: AtomicBool = AtomicBool::new(false);
+static ALLOW_MODEL_DOWNLOAD: AtomicBool = AtomicBool::new(false);
 static PREWARM_STARTED: AtomicBool = AtomicBool::new(false);
 static NOTICE_PRINTED: AtomicBool = AtomicBool::new(false);
 static ACTIVE_RERANK_MULTILINGUAL: AtomicBool = AtomicBool::new(true);
+static PREWARM_ERR: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+
+pub fn set_allow_model_download(allow: bool) {
+    ALLOW_MODEL_DOWNLOAD.store(allow, Ordering::Release);
+}
+
+pub fn offline_models_only() -> bool {
+    matches!(
+        env::var("MEMNOS_OFFLINE_MODELS")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+pub fn prewarm_error() -> Option<String> {
+    PREWARM_ERR.lock().ok().and_then(|g| g.clone())
+}
+
+pub fn models_ready_for_server(is_openai: bool) -> bool {
+    let emb_ok = is_openai || EMBED_READY.load(Ordering::Acquire);
+    let rerank_ok = !rerank_enabled()
+        || RERANK_READY.load(Ordering::Acquire)
+        || (is_openai && OPENAI_SKIP_UNCACHED_RERANK.load(Ordering::Acquire));
+    emb_ok && rerank_ok
+}
 static CALIBRATED_RERANK_CAP: AtomicUsize = AtomicUsize::new(100);
 static DOWNLOAD_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
@@ -302,16 +333,15 @@ pub fn resolve_or_download_model(spec: &PinnedModelSpec) -> Result<PathBuf, Stri
         verify_spec_dir(&found, spec)?;
         return Ok(found);
     }
-    if matches!(
-        env::var("MEMNOS_OFFLINE_MODELS")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    ) {
+    if offline_models_only() {
         return Err(format!(
-            "local model '{}' is not yet downloaded and MEMNOS_OFFLINE_MODELS=1 — run `memnos models pull` while online (or configure OPENAI_API_KEY)",
+            "local model '{}' is not cached locally and MEMNOS_OFFLINE_MODELS=1 — run `memnos models pull --yes` while online or configure OPENAI_API_KEY",
+            spec.repo_id
+        ));
+    }
+    if !ALLOW_MODEL_DOWNLOAD.load(Ordering::Acquire) {
+        return Err(format!(
+            "local model '{}' is not downloaded yet — run `memnos setup embeddings` or `memnos models pull --yes`",
             spec.repo_id
         ));
     }
@@ -417,17 +447,31 @@ pub fn resolve_or_download_model(spec: &PinnedModelSpec) -> Result<PathBuf, Stri
 /// Ensure the required local neural models (embedder + reranker) are downloaded and verified,
 /// notifying the user upfront when a download is needed so `memnos` works without external AI.
 pub fn ensure_local_models_ready(embed_model: &str) -> Result<(), String> {
-    let (emb_spec, rerank_spec) = specs_for_embed_model(embed_model);
-    let needed_download = !is_model_cached(emb_spec)
-        || (rerank_enabled() && !is_model_cached(rerank_spec));
-    resolve_or_download_model(emb_spec)?;
-    if rerank_enabled() {
-        resolve_or_download_model(rerank_spec)?;
+    if offline_models_only() {
+        let (emb_spec, rerank_spec) = specs_for_embed_model(embed_model);
+        if !is_model_cached(emb_spec) || (rerank_enabled() && !is_model_cached(rerank_spec)) {
+            return Err(format!(
+                "local models for '{}' are not cached locally and MEMNOS_OFFLINE_MODELS=1 — disable MEMNOS_OFFLINE_MODELS to download (~930 MB) or configure OPENAI_API_KEY",
+                embed_model
+            ));
+        }
     }
-    if needed_download {
-        eprintln!("  ✓ Local neural models ready — memnos now runs embeddings & recall without external AI.\n");
-    }
-    Ok(())
+    let prev = ALLOW_MODEL_DOWNLOAD.swap(true, Ordering::AcqRel);
+    let res = (|| {
+        let (emb_spec, rerank_spec) = specs_for_embed_model(embed_model);
+        let needed_download = !is_model_cached(emb_spec)
+            || (rerank_enabled() && !is_model_cached(rerank_spec));
+        resolve_or_download_model(emb_spec)?;
+        if rerank_enabled() {
+            resolve_or_download_model(rerank_spec)?;
+        }
+        if needed_download {
+            eprintln!("  ✓ Local neural models ready — memnos now runs embeddings & recall on this computer.\n");
+        }
+        Ok(())
+    })();
+    ALLOW_MODEL_DOWNLOAD.store(prev, Ordering::Release);
+    res
 }
 
 pub fn print_local_models_status(has_openai_key: bool, embed_model: &str) {
@@ -1359,6 +1403,9 @@ impl MiniLmCrossEncoder {
 // ---------------------------------------------------------------------------------------------
 
 pub fn rerank_enabled() -> bool {
+    if OPENAI_SKIP_UNCACHED_RERANK.load(Ordering::Acquire) {
+        return false;
+    }
     !matches!(
         env::var("MEMNOS_RERANK")
             .unwrap_or_else(|_| "1".to_string())
@@ -1520,30 +1567,64 @@ pub fn spawn_background_prewarm_opts(embed_model: &str, warm_embedder: bool) {
     if PREWARM_STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
+    if !warm_embedder {
+        // OpenAI 1536-d mode: nothing required to download! Only warm local reranker if cached.
+        EMBED_READY.store(true, Ordering::Release);
+        let (_, r_spec) = specs_for_embed_model(embed_model);
+        if !is_model_cached(r_spec) {
+            OPENAI_SKIP_UNCACHED_RERANK.store(true, Ordering::Release);
+            return;
+        }
+    }
     let model_owned = embed_model.to_string();
     std::thread::spawn(move || {
         if warm_embedder {
-            let _ = global_local_embed(&model_owned, "warmup", true);
+            match global_local_embed(&model_owned, "warmup", true) {
+                Ok(_) => {
+                    EMBED_READY.store(true, Ordering::Release);
+                }
+                Err(e) => {
+                    if let Ok(mut g) = PREWARM_ERR.lock() {
+                        *g = Some(e);
+                    }
+                    return;
+                }
+            }
         }
         if rerank_enabled() {
-            let _ = score_with_active_reranker("warmup query", &["warmup candidate passage"]);
-            // Self-calibrate rerank cap against MEMNOS_RERANK_BUDGET_MS (default 1500ms, 8..=100)
-            let sample = [
-                "Service alpha deployed version 2.1.0 with PostgreSQL pgvector storage.",
-                "Edge gateway enforces token-bucket rate limiting at 500 requests per second.",
-                "Nightly WAL backups stream to encrypted object storage in us-east-2.",
-                "Ada moved to Lisbon in May 2026 to lead the platform engineering team.",
-            ];
-            let t0 = Instant::now();
-            if score_with_active_reranker("where are backups stored and which version is deployed?", &sample).is_ok() {
-                let ms_per_pair = (t0.elapsed().as_secs_f64() * 1000.0 / sample.len() as f64).max(0.5);
-                let budget_ms: f64 = env::var("MEMNOS_RERANK_BUDGET_MS")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(1500.0);
-                let derived = ((budget_ms / ms_per_pair).floor() as usize).clamp(8, 100);
-                CALIBRATED_RERANK_CAP.store(derived, Ordering::Release);
+            match score_with_active_reranker("warmup query", &["warmup candidate passage"]) {
+                Ok(_) => {
+                    let sample = [
+                        "Service alpha deployed version 2.1.0 with PostgreSQL pgvector storage.",
+                        "Edge gateway enforces token-bucket rate limiting at 500 requests per second.",
+                        "Nightly WAL backups stream to encrypted object storage in us-east-2.",
+                        "Ada moved to Lisbon in May 2026 to lead the platform engineering team.",
+                    ];
+                    let t0 = Instant::now();
+                    if score_with_active_reranker(
+                        "where are backups stored and which version is deployed?",
+                        &sample,
+                    )
+                    .is_ok()
+                    {
+                        let ms_per_pair =
+                            (t0.elapsed().as_secs_f64() * 1000.0 / sample.len() as f64).max(0.5);
+                        let budget_ms: f64 = env::var("MEMNOS_RERANK_BUDGET_MS")
+                            .ok()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(1500.0);
+                        let derived = ((budget_ms / ms_per_pair).floor() as usize).clamp(8, 100);
+                        CALIBRATED_RERANK_CAP.store(derived, Ordering::Release);
+                    }
+                    RERANK_READY.store(true, Ordering::Release);
+                }
+                Err(e) => {
+                    if let Ok(mut g) = PREWARM_ERR.lock() {
+                        *g = Some(e);
+                    }
+                }
             }
+        } else {
             RERANK_READY.store(true, Ordering::Release);
         }
     });

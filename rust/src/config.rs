@@ -26,6 +26,8 @@ pub struct Config {
     pub secret_key: Option<String>,
     #[serde(default)]
     pub openai: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_choice: Option<String>,
     #[serde(default)]
     pub admin_token: Option<String>,
     #[serde(default)]
@@ -109,7 +111,35 @@ pub fn load_config() -> Config {
             env::set_var("OPENAI_API_KEY", oa);
         }
     }
+    if let Some(ref ec) = cfg.embed_choice {
+        if env::var_os("MEMNOS_EMBED_CHOICE").is_none() {
+            env::set_var("MEMNOS_EMBED_CHOICE", ec);
+        }
+    }
     cfg
+}
+
+/// Returns `"openai"`, `"local"`, or `None` when no explicit embedding choice has been made yet.
+pub fn explicit_embed_choice(cfg: &Config) -> Option<String> {
+    if let Ok(oa) = env::var("OPENAI_API_KEY") {
+        if !oa.trim().is_empty() {
+            return Some("openai".to_string());
+        }
+    }
+    if let Some(ref oa) = cfg.openai {
+        if !oa.trim().is_empty() {
+            return Some("openai".to_string());
+        }
+    }
+    let raw = env::var("MEMNOS_EMBED_CHOICE")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| cfg.embed_choice.clone().filter(|s| !s.trim().is_empty()))?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "openai" | "cloud" | "1536" => Some("openai".to_string()),
+        "local" | "computer" | "offline" | "384" => Some("local".to_string()),
+        _ => None,
+    }
 }
 
 pub fn save_config(cfg: &Config) -> std::io::Result<()> {

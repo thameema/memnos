@@ -58,6 +58,8 @@ pub struct AppState {
     pub extractor: Arc<Extractor>,
     pub channel_notify: Arc<Notify>,
     pub warm_proven: Arc<AtomicBool>,
+    pub embed_configured: Arc<AtomicBool>,
+    pub setup_reason: Arc<Mutex<String>>,
     pub ns_cache: Arc<Mutex<Option<(Instant, Vec<Value>)>>>,
     pub mcp_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<String>>>>>,
     pub mcp_semaphore: Arc<Semaphore>,
@@ -131,6 +133,40 @@ fn is_write_op(path: &str) -> bool {
     )
 }
 
+fn requires_embedding_setup(path: &str) -> bool {
+    matches!(
+        path,
+        "/recall"
+            | "/recall_v2"
+            | "/recall/wide"
+            | "/context"
+            | "/remember"
+            | "/memory/write"
+            | "/memory/search"
+            | "/memory/by_type"
+            | "/memory/delete"
+            | "/reconcile"
+            | "/consolidate"
+            | "/corpus/ingest"
+            | "/corpus/check"
+            | "/corpus/deviation"
+            | "/corpus/diff"
+            | "/corpus/list"
+            | "/ingest/file"
+            | "/episode/segment"
+            | "/episode/recall"
+            | "/episode/get"
+            | "/episode/decay"
+            | "/entity"
+            | "/entity/related"
+            | "/entity/dossier"
+            | "/graph/query"
+            | "/community/search"
+            | "/contradictions"
+            | "/provenance"
+    )
+}
+
 async fn healthz_handler() -> Response {
     json_resp(
         StatusCode::OK,
@@ -146,22 +182,50 @@ async fn readyz_handler(State(st): State<AppState>) -> Response {
         Ok(c) => c.query_one("SELECT 1", &[]).await.is_ok(),
         Err(_) => false,
     };
-    let warm = st.warm_proven.load(Ordering::Relaxed);
+    let configured = st.embed_configured.load(Ordering::Acquire);
+    let models_ready = configured
+        && crate::rerank::models_ready_for_server(st.embedder.is_openai());
+    let warm = st.warm_proven.load(Ordering::Relaxed) && models_ready;
     let ready = db_ok && warm;
-    let code = if ready {
-        StatusCode::OK
+    if ready {
+        json_resp(
+            StatusCode::OK,
+            json!({
+                "ready": true,
+                "db": true,
+                "warm": true,
+                "version": VERSION
+            }),
+        )
     } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    };
-    json_resp(
-        code,
-        json!({
-            "ready": ready,
-            "db": db_ok,
-            "warm": warm,
-            "version": VERSION
-        }),
-    )
+        let reason = if !db_ok {
+            "database unreachable".to_string()
+        } else if !configured {
+            st.setup_reason
+                .lock()
+                .ok()
+                .map(|g| g.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    "memnos is not set up yet, run `memnos setup embeddings`".to_string()
+                })
+        } else if let Some(err) = crate::rerank::prewarm_error() {
+            err
+        } else {
+            "loading neural models and warming indexes".to_string()
+        };
+        json_resp(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({
+                "ready": false,
+                "db": db_ok,
+                "warm": false,
+                "reason": reason,
+                "error": reason,
+                "version": VERSION
+            }),
+        )
+    }
 }
 
 async fn metrics_handler(
@@ -1188,6 +1252,29 @@ async fn api_post_handler(
         Ok(None) => return json_resp(StatusCode::UNAUTHORIZED, json!({ "error": "unauthorized" })),
         Err(e) => return ctrl_err_resp(e),
     };
+
+    if requires_embedding_setup(path) {
+        let configured = st.embed_configured.load(Ordering::Acquire);
+        let models_ready = configured
+            && crate::rerank::models_ready_for_server(st.embedder.is_openai());
+        if !models_ready {
+            let reason = if !configured {
+                st.setup_reason
+                    .lock()
+                    .ok()
+                    .map(|g| g.clone())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| {
+                        "memnos is not set up yet, run `memnos setup embeddings`".to_string()
+                    })
+            } else if let Some(err) = crate::rerank::prewarm_error() {
+                err
+            } else {
+                "memnos models are still loading — wait for /readyz before querying".to_string()
+            };
+            return json_resp(StatusCode::SERVICE_UNAVAILABLE, json!({ "error": reason }));
+        }
+    }
 
     let principal_name = Control::principal_info(&st.pool, pid)
         .await
@@ -2823,15 +2910,45 @@ pub async fn run_server(port_override: Option<u16>) -> Result<(), String> {
         extractor.clone(),
     )?);
 
-    store.init_schema().await?;
-
+    let explicit_choice = crate::config::explicit_embed_choice(&cfg);
+    let existing_lineage = store.has_existing_embed_lineage().await?;
     let warm_proven = Arc::new(AtomicBool::new(false));
-    let warm_store = store.clone();
-    let warm_flag = warm_proven.clone();
-    tokio::spawn(async move {
-        let _ = warm_store.warm_indexes().await;
-        warm_flag.store(true, Ordering::Relaxed);
-    });
+    let embed_configured = Arc::new(AtomicBool::new(false));
+    let setup_reason = Arc::new(Mutex::new(String::new()));
+
+    if embedder.is_openai() || explicit_choice.as_deref() == Some("local") || existing_lineage {
+        store.init_schema().await?;
+        let active_model = embedder.model_name();
+        let (emb_spec, rerank_spec) = crate::rerank::specs_for_embed_model(&active_model);
+        let local_ready = embedder.is_openai()
+            || (crate::rerank::is_model_cached(emb_spec)
+                && (!crate::rerank::rerank_enabled()
+                    || crate::rerank::is_model_cached(rerank_spec)));
+        if !embedder.is_openai() && !local_ready && crate::rerank::offline_models_only() {
+            return Err(format!(
+                "local neural models for '{}' are not cached locally and MEMNOS_OFFLINE_MODELS=1 — run `memnos models pull --yes` while online or configure OPENAI_API_KEY",
+                active_model
+            ));
+        }
+        if local_ready {
+            embed_configured.store(true, Ordering::Release);
+            let warm_store = store.clone();
+            let warm_flag = warm_proven.clone();
+            tokio::spawn(async move {
+                let _ = warm_store.warm_indexes().await;
+                warm_flag.store(true, Ordering::Relaxed);
+            });
+            if embedder.is_openai() {
+                crate::rerank::spawn_background_prewarm_opts(crate::rerank::E5_MULTI_REPO_ID, false);
+            } else {
+                crate::rerank::spawn_background_prewarm_opts(&active_model, true);
+            }
+        } else if let Ok(mut r) = setup_reason.lock() {
+            *r = "memnos is not set up yet: local neural models (~930 MB) are not downloaded — run `memnos setup embeddings` or `memnos models pull --yes`".to_string();
+        }
+    } else if let Ok(mut r) = setup_reason.lock() {
+        *r = "memnos is not set up yet, run `memnos setup embeddings`".to_string();
+    }
 
     let channel_notify = Arc::new(Notify::new());
     spawn_channel_listener(pg_dsn.clone(), channel_notify.clone());
@@ -2870,15 +2987,12 @@ pub async fn run_server(port_override: Option<u16>) -> Result<(), String> {
         extractor,
         channel_notify,
         warm_proven,
+        embed_configured,
+        setup_reason,
         ns_cache: Arc::new(Mutex::new(None)),
         mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
         mcp_semaphore: Arc::new(Semaphore::new(24)),
     };
-    if state.embedder.is_openai() {
-        crate::rerank::spawn_background_prewarm_opts(crate::rerank::BGE_REPO_ID, false);
-    } else {
-        crate::rerank::spawn_background_prewarm_opts(&state.embedder.model_name(), true);
-    }
 
     let app = Router::new()
         .route("/healthz", get(healthz_handler))

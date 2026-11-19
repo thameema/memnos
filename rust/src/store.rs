@@ -828,6 +828,58 @@ impl BrainStore {
 
     // --- schema ----------------------------------------------------------------------------
 
+    /// Returns `true` if this database already has an established embedding configuration
+    /// (recorded `COMMENT ON SCHEMA` model metadata, existing embedded rows, or a 1536-d column),
+    /// so upgrades on existing installations proceed automatically without prompting.
+    pub async fn has_existing_embed_lineage(&self) -> Result<bool, String> {
+        let c = self.conn().await?;
+        let ns_probe = jq(
+            &c,
+            "SELECT obj_description(oid, 'pg_namespace') AS d FROM pg_namespace WHERE nspname = $1",
+            &[&self.schema],
+        )
+        .await?;
+        let Some(ns_row) = ns_probe.first() else {
+            return Ok(false);
+        };
+        if let Some(desc) = ns_row.get("d").and_then(|v| v.as_str()) {
+            if let Ok(j) = serde_json::from_str::<Value>(desc) {
+                if j.get("embed_model").and_then(|m| m.as_str()).is_some() {
+                    return Ok(true);
+                }
+            }
+        }
+        let col_probe = jq(
+            &c,
+            "SELECT format_type(a.atttypid, a.atttypmod) AS t FROM pg_attribute a \
+             JOIN pg_class k ON k.oid=a.attrelid JOIN pg_namespace n ON n.oid=k.relnamespace \
+             WHERE n.nspname=$1 AND k.relname='raw_turns' AND a.attname='embedding' AND NOT a.attisdropped",
+            &[&self.schema],
+        )
+        .await?;
+        let Some(col_row) = col_probe.first() else {
+            return Ok(false);
+        };
+        if s_of(col_row, "t").contains("(1536)") {
+            return Ok(true);
+        }
+        let pop = jq(
+            &c,
+            &format!(
+                "SELECT (EXISTS(SELECT 1 FROM {s}.raw_turns WHERE embedding IS NOT NULL LIMIT 1) \
+                 OR EXISTS(SELECT 1 FROM {s}.semantic WHERE embedding IS NOT NULL LIMIT 1)) AS p",
+                s = self.schema
+            ),
+            &[],
+        )
+        .await?;
+        Ok(pop
+            .first()
+            .and_then(|r| r.get("p"))
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false))
+    }
+
     /// Create the extension, schema, tables and indexes. Probes an existing `raw_turns.embedding`
     /// column for its type/dimension and enforces `(model, dim)` compatibility via PostgreSQL
     /// `COMMENT ON SCHEMA` catalog metadata (zero extra tables or columns).

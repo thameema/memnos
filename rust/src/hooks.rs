@@ -498,7 +498,7 @@ fn session_first_time(session_id: Option<&str>, key: &str, kind: &str) -> bool {
     }
 }
 
-fn http_post(url: &str, token: &str, body: &Value, timeout_ms: u64) -> Result<Value, u16> {
+fn http_post_detail(url: &str, token: &str, body: &Value, timeout_ms: u64) -> Result<Value, (u16, String)> {
     let mut req = ureq::post(url)
         .timeout(Duration::from_millis(timeout_ms))
         .set("Content-Type", "application/json");
@@ -506,10 +506,23 @@ fn http_post(url: &str, token: &str, body: &Value, timeout_ms: u64) -> Result<Va
         req = req.set("Authorization", &format!("Bearer {}", token));
     }
     match req.send_json(body.clone()) {
-        Ok(r) => r.into_json::<Value>().map_err(|_| 500u16),
-        Err(ureq::Error::Status(code, _)) => Err(code),
-        Err(_) => Err(0),
+        Ok(r) => r
+            .into_json::<Value>()
+            .map_err(|e| (500u16, e.to_string())),
+        Err(ureq::Error::Status(code, resp)) => {
+            let msg = resp
+                .into_json::<Value>()
+                .ok()
+                .and_then(|j| j.get("error").and_then(|v| v.as_str()).map(String::from))
+                .unwrap_or_default();
+            Err((code, msg))
+        }
+        Err(e) => Err((0, e.to_string())),
     }
+}
+
+fn http_post(url: &str, token: &str, body: &Value, timeout_ms: u64) -> Result<Value, u16> {
+    http_post_detail(url, token, body, timeout_ms).map_err(|(code, _)| code)
 }
 
 fn http_get(url: &str, token: &str, timeout_ms: u64) -> Option<Value> {
@@ -750,7 +763,7 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
 
         if server_alive {
             let mut active_part = format!("memory ACTIVE -> {}", ns);
-            let existing_sn = nsresolve::resolve_active_session(&cwd_path);
+            let existing_sn = nsresolve::resolve_active_session_with_data(&cwd_path, Some(&data));
             let mut sn = if existing_sn.is_empty() {
                 term.name.clone()
             } else {
@@ -974,8 +987,9 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
         let mut is_stale = false;
         let mut stale_saved_at = String::new();
         let mut recall_failed_err: Option<u16> = None;
+        let mut recall_not_setup_msg: Option<String> = None;
 
-        match http_post(
+        match http_post_detail(
             &format!("{}/recall", url),
             &token,
             &json!({
@@ -999,14 +1013,18 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
                     .unwrap_or(0);
                 offline_queue::save_snapshot(&memnos_dir(), &ns, &ctx, mem_count);
             }
-            Err(code) => {
-                recall_failed_err = Some(code);
+            Err((code, msg)) => {
+                if code == 503 && msg.contains("not set up yet") {
+                    recall_not_setup_msg = Some(msg);
+                } else {
+                    recall_failed_err = Some(code);
+                }
             }
         }
 
         // Poll unread channel & inbox messages (2s cap)
         let mut inbox_block = String::new();
-        let mut sn = nsresolve::resolve_active_session(&cwd_path);
+        let mut sn = nsresolve::resolve_active_session_with_data(&cwd_path, Some(&data));
         if let Ok(pr) = http_post(
             &format!("{}/channel/poll", url),
             &token,
@@ -1105,6 +1123,16 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
                     }
                 }
             }
+        }
+
+        if let Some(setup_msg) = recall_not_setup_msg {
+            eprintln!("memnos: {}", setup_msg);
+            if agy {
+                println!("{}", agy_inject(&[format!("memnos: {}", setup_msg)], true));
+            } else {
+                println!("{}", json!({ "systemMessage": format!("memnos: {}", setup_msg) }));
+            }
+            return;
         }
 
         if let Some(err_code) = recall_failed_err {
@@ -1342,8 +1370,8 @@ fn hook_remember(data: &Value, ns: &str, url: &str, token: &str, agy: bool) {
         }
     }
 
-    let save_turn = |t: &str, speaker: &str| {
-        let res = http_post(
+    let save_turn = |t: &str, speaker: &str| -> bool {
+        match http_post_detail(
             &format!("{}/remember", url),
             token,
             &json!({
@@ -1353,9 +1381,16 @@ fn hook_remember(data: &Value, ns: &str, url: &str, token: &str, agy: bool) {
                 "async": true,
             }),
             12000,
-        );
-        if res.is_err() {
-            offline_queue::enqueue(&memnos_dir(), ns, t, speaker, token);
+        ) {
+            Ok(_) => true,
+            Err((503, ref msg)) if msg.contains("not set up yet") => {
+                eprintln!("memnos: {}", msg);
+                false
+            }
+            Err(_) => {
+                offline_queue::enqueue(&memnos_dir(), ns, t, speaker, token);
+                true
+            }
         }
     };
 
@@ -1389,8 +1424,7 @@ fn hook_remember(data: &Value, ns: &str, url: &str, token: &str, agy: bool) {
 
     if let Some(r) = noise_reason {
         record_capture("skipped_user", Some(r));
-    } else {
-        save_turn(trimmed, "user");
+    } else if save_turn(trimmed, "user") {
         record_capture("saved_user", None);
     }
 
@@ -1414,8 +1448,9 @@ fn hook_remember(data: &Value, ns: &str, url: &str, token: &str, agy: bool) {
             } else {
                 a_trimmed.to_string()
             };
-            save_turn(&clipped, "assistant");
-            record_capture("saved_assistant", None);
+            if save_turn(&clipped, "assistant") {
+                record_capture("saved_assistant", None);
+            }
         }
     }
 
@@ -1433,7 +1468,7 @@ fn hook_remember(data: &Value, ns: &str, url: &str, token: &str, agy: bool) {
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default()
             });
-        let sn = nsresolve::resolve_active_session(Path::new(&cwd_str));
+        let sn = nsresolve::resolve_active_session_with_data(Path::new(&cwd_str), Some(data));
         if !sn.is_empty() {
             if let Ok(pr) = http_post(
                 &format!("{}/channel/poll", url),

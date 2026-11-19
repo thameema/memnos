@@ -551,7 +551,7 @@ pub fn run_agent_setup(
             || !crate::rerank::is_model_cached(rerank_spec)
         {
             println!(
-                "[memnos] note: no external AI key detected — a one-time local neural model download (~{} MB) is required so embeddings and semantic recall run locally without external AI. Run `memnos models pull` (or `memnos start`) to download now.",
+                "[memnos] note: embeddings are not set up yet — run `memnos setup embeddings` to choose between your OpenAI key (no download) or running locally on this computer (~{} MB one-time download, private & free, `memnos models pull --yes`).",
                 emb_spec.approx_mb + rerank_spec.approx_mb
             );
         }

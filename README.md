@@ -109,13 +109,22 @@ Operate it like any daemon: `memnos status` / `stop` / `restart`; `memnos serve`
 the foreground for systemd/launchd/Docker; `memnos upgrade` updates in place;
 `memnos autostart` installs a login service so the server survives reboots.
 
-During setup you're asked for an **optional OpenAI key** (stored AES-256-GCM encrypted,
-never in plaintext): with one, you get 1536-d embeddings + bi-temporal fact extraction;
-without one, memnos runs in free **local 384-d mode** — nothing leaves your machine.
-For extraction without OpenAI, set `MEMNOS_EXTRACT_BASE_URL` to any OpenAI-compatible
-endpoint (Ollama / vLLM / LM Studio) — embeddings stay local-384 and free, only fact
-extraction calls that local LLM. `memnos migrate-embeddings` converts between embedding
-modes losslessly if you change your mind.
+During first-time setup (`memnos setup`), `memnos` asks you in plain English to choose one
+embedding mode before answering any queries (no silent background downloads or half-working
+state):
+
+1. **Use my own OpenAI key** — fastest setup, nothing to download; memory and query text is
+   sent to OpenAI (`text-embedding-3-small`, 1536-d, key stored AES-256-GCM encrypted in Vault).
+2. **Run it on this computer** — private and free (nothing leaves your machine); requires a
+   one-time download of **~1 GB (~930 MB)** for the local multilingual neural embedding
+   (`intfloat/multilingual-e5-small`, 384-d) and cross-encoder reranker
+   (`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`) models (in CI/headless mode, confirm
+   explicitly via `memnos setup embeddings --local --yes` or `memnos models pull --yes`).
+
+For fact extraction without OpenAI, set `MEMNOS_EXTRACT_BASE_URL` to any OpenAI-compatible
+endpoint (Ollama / vLLM / LM Studio). You can switch between OpenAI and local embeddings
+anytime with `memnos migrate-embeddings`, which automatically takes and verifies a full
+PostgreSQL backup (`pg_dump` + `pg_restore --list`) first.
 
 Extraction depends on who is speaking. Every turn is stored verbatim and stays searchable.
 From your own messages, memnos extracts decisions, preferences, rules, plans and personal

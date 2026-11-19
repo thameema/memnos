@@ -281,7 +281,7 @@ function syncBindForm() {
   $("#bind-keytype").hidden = !hostScoped;
   $("#bind-key").placeholder = hostScoped && $("#bind-keytype").value === "host_path"
     ? "absolute path (e.g. /Users/me/work/app)"
-    : "repo (e.g. github.com/thameema/memnos)";
+    : "repo (e.g. github.com/acme/payments-sync)";
 }
 $("#bind-scope").onchange = syncBindForm;
 $("#bind-keytype").onchange = syncBindForm;
