@@ -43,26 +43,46 @@ fail() { echo "  FAIL  $1" >&2; FAILS=$((FAILS + 1)); }
 
 PY_BIN=""
 for cand in python3 python; do
-  if command -v "$cand" >/dev/null 2>&1; then
+  if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "import sys" >/dev/null 2>&1; then
     PY_BIN="$cand"
     break
   fi
 done
 
+to_py_path() {
+  local p="$1"
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$p" 2>/dev/null || printf '%s' "$p"
+  else
+    printf '%s' "$p"
+  fi
+}
+
+to_posix_path() {
+  local p="$1"
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -u "$p" 2>/dev/null || printf '%s' "$p"
+  else
+    printf '%s' "$p"
+  fi
+}
+
 extract_strings() {
   local target="$1"
-  if command -v strings >/dev/null 2>&1; then
-    strings "$target" 2>/dev/null || true
-  elif [[ -n "$PY_BIN" ]]; then
-    "$PY_BIN" - "$target" <<'PYEOF'
+  if [[ -n "$PY_BIN" ]]; then
+    local py_target
+    py_target="$(to_py_path "$target")"
+    "$PY_BIN" - "$py_target" <<'PYEOF'
 import re, sys
 with open(sys.argv[1], "rb") as f:
     data = f.read()
 for m in re.finditer(rb"[\x20-\x7e]{4,}", data):
     sys.stdout.write(m.group(0).decode("ascii", "ignore") + "\n")
 PYEOF
+  elif command -v strings >/dev/null 2>&1; then
+    strings "$(to_posix_path "$target")"
   else
-    echo "FAIL: neither 'strings' nor 'python' available to inspect binary" >&2
+    echo "FAIL: neither 'python' nor 'strings' available to inspect binary" >&2
     return 1
   fi
 }
@@ -71,10 +91,10 @@ extract_pkg_strings() {
   local pkg="$1"
   case "$pkg" in
     *.whl|*.zip)
-      if command -v unzip >/dev/null 2>&1 && command -v strings >/dev/null 2>&1; then
-        unzip -p "$pkg" 2>/dev/null | strings 2>/dev/null || true
-      elif [[ -n "$PY_BIN" ]]; then
-        "$PY_BIN" - "$pkg" <<'PYEOF'
+      if [[ -n "$PY_BIN" ]]; then
+        local py_pkg
+        py_pkg="$(to_py_path "$pkg")"
+        "$PY_BIN" - "$py_pkg" <<'PYEOF'
 import re, sys, zipfile
 with zipfile.ZipFile(sys.argv[1], "r") as zf:
     for info in zf.infolist():
@@ -84,13 +104,18 @@ with zipfile.ZipFile(sys.argv[1], "r") as zf:
         for m in re.finditer(rb"[\x20-\x7e]{4,}", data):
             sys.stdout.write(m.group(0).decode("ascii", "ignore") + "\n")
 PYEOF
+      elif command -v unzip >/dev/null 2>&1 && command -v strings >/dev/null 2>&1; then
+        unzip -p "$(to_posix_path "$pkg")" | strings
+      else
+        echo "FAIL: neither 'python' nor 'unzip'+'strings' available to inspect $pkg" >&2
+        return 1
       fi
       ;;
     *.tar.gz|*.tgz)
-      if command -v tar >/dev/null 2>&1 && command -v strings >/dev/null 2>&1; then
-        tar -xOzf "$pkg" 2>/dev/null | strings 2>/dev/null || true
-      elif [[ -n "$PY_BIN" ]]; then
-        "$PY_BIN" - "$pkg" <<'PYEOF'
+      if [[ -n "$PY_BIN" ]]; then
+        local py_pkg
+        py_pkg="$(to_py_path "$pkg")"
+        "$PY_BIN" - "$py_pkg" <<'PYEOF'
 import re, sys, tarfile
 with tarfile.open(sys.argv[1], "r:gz") as tf:
     for m_info in tf.getmembers():
@@ -103,6 +128,11 @@ with tarfile.open(sys.argv[1], "r:gz") as tf:
         for m in re.finditer(rb"[\x20-\x7e]{4,}", data):
             sys.stdout.write(m.group(0).decode("ascii", "ignore") + "\n")
 PYEOF
+      elif command -v tar >/dev/null 2>&1 && command -v strings >/dev/null 2>&1; then
+        tar -xOzf "$(to_posix_path "$pkg")" | strings
+      else
+        echo "FAIL: neither 'python' nor 'tar'+'strings' available to inspect $pkg" >&2
+        return 1
       fi
       ;;
     *)
@@ -205,6 +235,11 @@ else
   echo "=== Release Hygiene Gate (Distribution Artifacts Only) ==="
 fi
 
+FIND_BIN="find"
+if [[ -x /usr/bin/find ]]; then
+  FIND_BIN="/usr/bin/find"
+fi
+
 # 5. Deep distribution check (inspects unpacked .whl / .zip / .tar.gz member contents)
 FOUND_DIST=0
 DIST_BAD=0
@@ -216,7 +251,12 @@ for ddir in "${DIST_DIRS[@]}"; do
       bname="$(basename "$pkg")"
       SCANNED_NAMES+=("$bname")
       PKG_TMP="$(mktemp)"
-      extract_pkg_strings "$pkg" > "$PKG_TMP"
+      if ! extract_pkg_strings "$pkg" > "$PKG_TMP" 2>/dev/null; then
+        fail "Distribution artifact $bname could not be unpacked or inspected"
+        DIST_BAD=1
+        rm -f "$PKG_TMP"
+        continue
+      fi
       if ! check_path_leaks_in_stream "Distribution artifact $bname" "$PKG_TMP"; then
         DIST_BAD=1
       fi
@@ -225,7 +265,7 @@ for ddir in "${DIST_DIRS[@]}"; do
         DIST_BAD=1
       fi
       rm -f "$PKG_TMP"
-    done < <(find "$ddir" -maxdepth 2 -type f \( -name "*.whl" -o -name "*.tar.gz" -o -name "*.tgz" -o -name "*.zip" \) -print0)
+    done < <("$FIND_BIN" "$ddir" -maxdepth 2 -type f \( -name "*.whl" -o -name "*.tar.gz" -o -name "*.tgz" -o -name "*.zip" \) -print0)
   fi
 done
 

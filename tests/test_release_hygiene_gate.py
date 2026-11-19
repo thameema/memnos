@@ -7,6 +7,7 @@ Windows `C:\\Users\\...`, `.cargo/registry`, `rust/src/`) and test-only switches
 """
 import io
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -42,10 +43,42 @@ def make_whl(path: str, member_name: str, payload: bytes) -> None:
         zf.writestr(member_name, payload)
 
 
+def find_bash() -> str:
+    env_bash = os.environ.get("BASH_BIN", "").strip()
+    if env_bash and os.path.isfile(env_bash):
+        return env_bash
+    if os.name == "nt":
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        pf64 = os.environ.get("ProgramW6432", r"C:\Program Files")
+        pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        for root in (pf, pf64, pf86):
+            for rel in (("Git", "bin", "bash.exe"), ("Git", "usr", "bin", "bash.exe")):
+                cand = os.path.join(root, *rel)
+                if os.path.isfile(cand):
+                    return cand
+        for d in os.environ.get("PATH", "").split(os.pathsep):
+            if not d:
+                continue
+            cand = os.path.join(d, "bash.exe")
+            norm = os.path.normcase(os.path.abspath(cand))
+            if (
+                os.path.isfile(cand)
+                and r"\system32\bash.exe" not in norm
+                and r"\sysnative\bash.exe" not in norm
+                and r"\windowsapps\bash.exe" not in norm
+            ):
+                return cand
+    return shutil.which("bash") or "bash"
+
+
+BASH_EXE = find_bash()
+
+
 def run_gate_dist(dist_dir: str) -> subprocess.CompletedProcess:
-    bash_bin = "bash"
+    gate_arg = GATE_SH.replace("\\", "/") if os.name == "nt" else GATE_SH
+    dist_arg = dist_dir.replace("\\", "/") if os.name == "nt" else dist_dir
     return subprocess.run(
-        [bash_bin, GATE_SH, "--dist-only", dist_dir],
+        [BASH_EXE, gate_arg, "--dist-only", dist_arg],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -111,6 +144,17 @@ def main() -> int:
         check(
             "Empty dist directory with --dist-only FAILS release_hygiene.sh (no silent vacuous pass)",
             r.returncode != 0,
+            r.stdout + r.stderr,
+        )
+
+    # 6. Corrupt / unreadable .tar.gz -> MUST FAIL (no silent pipe error swallow)
+    with tempfile.TemporaryDirectory(prefix="hygiene_corrupt_") as d:
+        with open(os.path.join(d, "memnos-corrupt.tar.gz"), "wb") as fh:
+            fh.write(b"not-a-valid-gzip-stream")
+        r = run_gate_dist(d)
+        check(
+            "Corrupt .tar.gz FAILS release_hygiene.sh (no silent unpack error swallow)",
+            r.returncode != 0 and "FAILED" in (r.stderr + r.stdout),
             r.stdout + r.stderr,
         )
 

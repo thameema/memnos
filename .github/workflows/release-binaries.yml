@@ -54,7 +54,13 @@ jobs:
       - name: Run negative + positive archive leak regression suite
         shell: bash
         run: |
-          PY="$(command -v python3 || command -v python)"
+          PY=""
+          for cand in python3 python; do
+            if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "import sys" >/dev/null 2>&1; then
+              PY="$cand"
+              break
+            fi
+          done
           "$PY" tests/test_release_hygiene_gate.py
       - name: Smoke test built release binary (--version and tips)
         shell: bash
