@@ -344,15 +344,25 @@ function setLiveStatus(online, label) {
 function renderTopbarPillText() {
   const pill = $("#live-op-pill");
   const txt = $("#live-op-text");
-  if (!pill || !txt || !lastTopbarEvent) return;
-  const ev = lastTopbarEvent;
-  const actor = ev.actor ? ("@" + String(ev.actor).replace(/^@/, "")) : "@client";
-  const agoSec = ev.ts ? Math.max(0, Math.floor((Date.now() - new Date(ev.ts).getTime()) / 1000)) : 0;
-  const agoLbl = agoSec < 3 ? "just now" : (age(ev.ts) + " ago");
-  const rawDet = String(ev.detail || "").trim();
-  const shortDet = rawDet ? (" · " + (rawDet.length > 26 ? rawDet.slice(0, 26) + "…" : rawDet)) : "";
-  txt.textContent = `⚡ ${actor} · ${ev.op}${shortDet} · ${agoLbl}`;
-  pill.title = `Live: ${actor} · ${ev.op} (${ev.namespace || "*"}) · ${rawDet || "—"} · ${ev.latency_ms ?? 0}ms — click to open Live stream`;
+  if (!pill || !txt) return;
+  const recent = liveEvents.length ? liveEvents.slice(0, 3) : (lastTopbarEvent ? [lastTopbarEvent] : []);
+  if (!recent.length) return;
+  txt.innerHTML = recent.map((ev, idx) => {
+    const actor = ev.actor ? ("@" + String(ev.actor).replace(/^@/, "")) : "@client";
+    const agoLbl = fmtAgoCompact(ev.ts);
+    const rawDet = String(ev.detail || "").trim();
+    const maxLen = idx === 0 ? 64 : 28;
+    const shortDet = rawDet ? (rawDet.length > maxLen ? rawDet.slice(0, maxLen) + "…" : rawDet) : "";
+    const nsPart = ev.namespace ? ` <span class="muted">(${esc(ev.namespace)})</span>` : "";
+    const detPart = shortDet ? ` · <span class="${idx === 0 ? "" : "muted"}">${esc(shortDet)}</span>` : "";
+    const msPart = (idx === 0 && ev.latency_ms != null) ? ` · <span class="muted">${ev.latency_ms}ms</span>` : "";
+    return `<span class="ticker-item ${idx === 0 ? "primary" : ""}">` +
+      `${idx === 0 ? "⚡ " : ""}<b>${esc(actor)}</b> <code>${esc(ev.op || "op")}</code>${idx === 0 ? nsPart : ""}${detPart}${msPart} · <span class="muted">${esc(agoLbl)}</span>` +
+      `</span>`;
+  }).join(`<span class="ticker-sep">│</span>`);
+  const lead = recent[0];
+  const leadActor = lead.actor ? ("@" + String(lead.actor).replace(/^@/, "")) : "@client";
+  pill.title = `Latest: ${leadActor} · ${lead.op} (${lead.namespace || "*"}) · ${lead.detail || "—"} · ${lead.latency_ms ?? 0}ms — click to open full Live stream`;
 }
 
 function updateLiveTopbarPill(ev, animate = true) {
@@ -421,10 +431,19 @@ function handleLiveActivity(ev) {
     lastActivityId = Number(ev.id);
   }
   recordActorLive(ev);
+  if (!livePaused) {
+    const k = eventDedupKey(ev);
+    if (!liveEvents.slice(0, 8).some(x => eventDedupKey(x) === k)) {
+      ev._fresh = true;
+      liveEvents.unshift(ev);
+      if (liveEvents.length > 250) liveEvents.length = 250;
+      if (activeSection === "live") renderLiveTable();
+    }
+  }
   updateLiveTopbarPill(ev, true);
   if (wsData) {
-    if (activeSection === "channels") renderChannelList();
-    if (activeSection === "handles") {
+    if (activeSection === "channels" && !draggedChKey) renderChannelList();
+    if (activeSection === "handles" && !draggedHdKey) {
       renderHandleList();
       if (selectedHandle && String(ev.actor || "").replace(/^@/, "") === selectedHandle.name) {
         loadHandleMessages(false);
@@ -437,15 +456,6 @@ function handleLiveActivity(ev) {
     if (badge) {
       badge.hidden = false;
       badge.textContent = liveNewCount > 99 ? "99+" : String(liveNewCount);
-    }
-  }
-  if (!livePaused) {
-    const k = eventDedupKey(ev);
-    if (!liveEvents.slice(0, 8).some(x => eventDedupKey(x) === k)) {
-      ev._fresh = true;
-      liveEvents.unshift(ev);
-      if (liveEvents.length > 250) liveEvents.length = 250;
-      if (activeSection === "live") renderLiveTable();
     }
   }
   const op = String(ev.op || "");
