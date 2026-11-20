@@ -78,7 +78,8 @@ def main():
         check("/app defaults to Slack Aubergine + M brand SVG + admin-only Settings + Local/Remote onboarding",
               'data-theme="aubergine"' in app_html
               and "M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8" in app_html
-              and 'data-section="console" title="Admin Server Settings" hidden' in app_html
+              and 'class="rail-btn admin-only" data-section="console"' in app_html
+              and '<section id="sec-console" class="page-stage" hidden>' in app_html
               and "Local MEMNOS (Default)" in app_html
               and "Remote MEMNOS Server" in app_html)
         check("/admin preserves generic repo placeholder", "github.com/acme/payments-sync" in adm_html)

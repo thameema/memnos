@@ -532,6 +532,10 @@ async function refreshOverview(pickDefaults = false) {
   if (!data.is_admin && activeSection === "console") {
     switchSection("channels");
   }
+  ["channels", "handles", "live", "memories", "telemetry", "console"].forEach(k => {
+    const el = $("#sec-" + k);
+    if (el) el.hidden = (k !== activeSection);
+  });
 
   const v = data.vitals || {};
   const memStr = v.footprint_mb != null ? `${v.footprint_mb} MB` : (v.rss_mb != null ? `${v.rss_mb} MB` : "—");
