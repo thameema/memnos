@@ -5601,6 +5601,7 @@ impl Control {
             return bad("channel required");
         }
         let mut c = conn(pool).await?;
+        let is_admin = Self::is_admin(pool, principal_id).await.unwrap_or(false);
         let ns_trim = namespace.trim();
         let writable_ns: Vec<String> = if ns_trim.is_empty() || ns_trim == "*" {
             Self::workspace_authorized_ns_map(&**c, principal_id)
@@ -5625,30 +5626,53 @@ impl Control {
                 vec![ns_trim.to_string()]
             }
         };
-        if writable_ns.is_empty() {
+        if writable_ns.is_empty() && !is_admin {
             return Err(ControlError::Forbidden(
                 "no writable namespaces authorized to delete channel".to_string(),
             ));
         }
         let tx = c.transaction().await?;
-        let del_subs = tx
-            .execute(
-                "DELETE FROM memnos_control.channel_subscriptions WHERE namespace = ANY($1) AND channel = $2",
-                params![writable_ns, ch],
-            )
-            .await?;
-        let del_msgs = tx
-            .execute(
-                "DELETE FROM memnos_control.channel_messages WHERE namespace = ANY($1) AND channel = $2",
-                params![writable_ns, ch],
-            )
-            .await?;
-        let del_cat = tx
-            .execute(
-                "DELETE FROM memnos_control.channel_catalog WHERE namespace = ANY($1) AND channel = $2",
-                params![writable_ns, ch],
-            )
-            .await?;
+        let (del_subs, del_msgs, del_cat) = if is_admin && ch.starts_with('#') && ch != "#general" {
+            let ds = tx
+                .execute(
+                    "DELETE FROM memnos_control.channel_subscriptions WHERE channel = $1",
+                    params![ch],
+                )
+                .await?;
+            let dm = tx
+                .execute(
+                    "DELETE FROM memnos_control.channel_messages WHERE channel = $1",
+                    params![ch],
+                )
+                .await?;
+            let dc = tx
+                .execute(
+                    "DELETE FROM memnos_control.channel_catalog WHERE channel = $1",
+                    params![ch],
+                )
+                .await?;
+            (ds, dm, dc)
+        } else {
+            let ds = tx
+                .execute(
+                    "DELETE FROM memnos_control.channel_subscriptions WHERE namespace = ANY($1) AND channel = $2",
+                    params![writable_ns, ch],
+                )
+                .await?;
+            let dm = tx
+                .execute(
+                    "DELETE FROM memnos_control.channel_messages WHERE namespace = ANY($1) AND channel = $2",
+                    params![writable_ns, ch],
+                )
+                .await?;
+            let dc = tx
+                .execute(
+                    "DELETE FROM memnos_control.channel_catalog WHERE namespace = ANY($1) AND channel = $2",
+                    params![writable_ns, ch],
+                )
+                .await?;
+            (ds, dm, dc)
+        };
         for n in &writable_ns {
             tx.execute("SELECT pg_notify('memnos_channel', $1::text)", params![n])
                 .await?;

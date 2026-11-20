@@ -40,6 +40,56 @@ function serverBase() {
 const API_TIMEOUT_MS = 30000;
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[c]));
 const fmt = (t) => t ? new Date(t).toLocaleString() : "—";
+
+// ---- In-App Confirm & Toast (macOS WKWebView suppresses window.confirm / window.alert) ----
+let toastTimer = null;
+function showToast(msg, isError = false) {
+  const el = $("#app-toast");
+  if (!el) return;
+  el.textContent = String(msg || "");
+  el.className = "app-toast" + (isError ? " err-toast" : "");
+  el.hidden = false;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, isError ? 4500 : 2800);
+}
+
+function askConfirm({ title = "Confirm Action", message = "", confirmLabel = "Delete", checkboxLabel = "", defaultChecked = false }) {
+  return new Promise(resolve => {
+    const modal = $("#confirm-modal");
+    const okBtn = $("#confirm-ok");
+    const cancelBtn = $("#confirm-cancel");
+    const chkWrap = $("#confirm-extra-wrap");
+    const chk = $("#confirm-extra-chk");
+    const chkLbl = $("#confirm-extra-lbl");
+    if (!modal || !okBtn || !cancelBtn) { resolve({ ok: true, checked: defaultChecked }); return; }
+    $("#confirm-title").textContent = title;
+    $("#confirm-body").textContent = message;
+    okBtn.textContent = confirmLabel;
+    if (checkboxLabel) {
+      chkWrap.hidden = false;
+      chk.checked = !!defaultChecked;
+      chkLbl.textContent = checkboxLabel;
+    } else {
+      chkWrap.hidden = true;
+      chk.checked = false;
+    }
+    modal.hidden = false;
+    const finish = (ok) => {
+      modal.hidden = true;
+      document.removeEventListener("keydown", onKey);
+      resolve({ ok, checked: !!chk.checked });
+    };
+    const onKey = (ev) => {
+      if (ev.key === "Escape") { ev.preventDefault(); finish(false); }
+      else if (ev.key === "Enter") { ev.preventDefault(); finish(true); }
+    };
+    okBtn.onclick = () => finish(true);
+    cancelBtn.onclick = () => finish(false);
+    modal.onclick = (ev) => { if (ev.target === modal) finish(false); };
+    document.addEventListener("keydown", onKey);
+    okBtn.focus();
+  });
+}
 const age = (t) => {
   if (!t) return "—";
   const s = Math.max(0, (Date.now() - new Date(t).getTime()) / 1000);
@@ -1083,7 +1133,7 @@ $("#new-ch-save").onclick = async () => {
     await refreshOverview(false);
     renderChannelHeaderAndInspector();
     await loadChannelMessages(true);
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message, true); }
 };
 
 $("#toggle-ch-inspector").onclick = () => {
@@ -1094,12 +1144,18 @@ $("#toggle-ch-inspector").onclick = () => {
 $("#delete-channel-btn").onclick = async () => {
   if (!selectedChannel) return;
   const { namespace, channel } = selectedChannel;
-  if (!confirm(`Delete channel "${channel}" from namespace "${namespace}"?\n\nThis removes the channel, all handle subscriptions on ${channel}, and its message history.`)) return;
+  const { ok } = await askConfirm({
+    title: `Delete ${channel}?`,
+    message: `Permanently delete channel "${channel}" across authorized namespaces?\n\nThis removes the channel, all handle subscriptions on ${channel}, and its message history.`,
+    confirmLabel: "Delete Channel",
+  });
+  if (!ok) return;
   try {
     await wapi("DELETE", `channel?namespace=${encodeURIComponent(namespace)}&channel=${encodeURIComponent(channel)}`);
     selectedChannel = null;
+    showToast(`Deleted ${channel}`);
     await refreshOverview(true);
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message, true); }
 };
 
 function renderChannelHeaderAndInspector() {
@@ -1180,7 +1236,7 @@ function renderChannelHeaderAndInspector() {
       try {
         await wapi("POST", "channel/unsubscribe", { namespace, channel, session_name: btn.dataset.unsub });
         await refreshOverview(false);
-      } catch (e) { alert(e.message); }
+      } catch (e) { showToast(e.message, true); }
     };
   });
   $$("#ch-inspector-body [data-jump-handle]").forEach(el => {
@@ -1196,7 +1252,7 @@ function renderChannelHeaderAndInspector() {
       try {
         await wapi("POST", "channel/subscribe", { namespace, channel, session_name: target });
         await refreshOverview(false);
-      } catch (e) { alert(e.message); }
+      } catch (e) { showToast(e.message, true); }
     };
   }
 }
@@ -1527,7 +1583,7 @@ function renderHandleHero() {
       try {
         await wapi("POST", "channel/unsubscribe", { namespace, channel: btn.dataset.leaveCh, session_name: name });
         await refreshOverview(false);
-      } catch (e) { alert(e.message); }
+      } catch (e) { showToast(e.message, true); }
     };
   });
   const joinBtn = $("#hd-join-btn");
@@ -1539,18 +1595,24 @@ function renderHandleHero() {
       try {
         await wapi("POST", "channel/subscribe", { namespace, channel: ch, session_name: name });
         await refreshOverview(false);
-      } catch (e) { alert(e.message); }
+      } catch (e) { showToast(e.message, true); }
     };
   }
   const unregBtn = $("#unreg-handle-btn");
   if (unregBtn) {
     unregBtn.onclick = async () => {
-      if (!confirm(`Unregister handle "@${name}" in "${namespace}" and remove all of its channel subscriptions?`)) return;
+      const { ok } = await askConfirm({
+        title: `Unregister @${name}?`,
+        message: `Unregister handle "@${name}" in "${namespace}" and remove all of its channel subscriptions?`,
+        confirmLabel: "Unregister Handle",
+      });
+      if (!ok) return;
       try {
         await wapi("DELETE", `session?namespace=${encodeURIComponent(namespace)}&session=${encodeURIComponent(name)}`);
         selectedHandle = null;
+        showToast(`Unregistered @${name}`);
         await refreshOverview(true);
-      } catch (e) { alert(e.message); }
+      } catch (e) { showToast(e.message, true); }
     };
   }
 }
@@ -1726,23 +1788,35 @@ async function loadWorkspaceConstraints() {
 
     $$("#cs-enf-table [data-del-enf]").forEach(btn => {
       btn.onclick = async () => {
-        if (!confirm("Deactivate this PreToolUse guardrail rule?")) return;
+        const { ok } = await askConfirm({
+          title: "Deactivate Guardrail?",
+          message: "Deactivate this PreToolUse guardrail rule?",
+          confirmLabel: "Deactivate",
+        });
+        if (!ok) return;
         try {
           await wapi("DELETE", "constraints/enforcement?id=" + btn.dataset.delEnf);
+          showToast("Guardrail deactivated");
           await loadWorkspaceConstraints();
           refreshOverview(false);
-        } catch (e) { alert(e.message); }
+        } catch (e) { showToast(e.message, true); }
       };
     });
 
     $$("#cs-pin-table [data-retire-pin]").forEach(btn => {
       btn.onclick = async () => {
-        if (!confirm("Retire this pinned constraint?")) return;
+        const { ok } = await askConfirm({
+          title: "Retire Pinned Constraint?",
+          message: "Retire this pinned constraint from active recall?",
+          confirmLabel: "Retire",
+        });
+        if (!ok) return;
         try {
           await wapi("DELETE", `constraints/pin?id=${btn.dataset.retirePin}&namespace=${encodeURIComponent(btn.dataset.retireNs)}`);
+          showToast("Pinned constraint retired");
           await loadWorkspaceConstraints();
           refreshOverview(false);
-        } catch (e) { alert(e.message); }
+        } catch (e) { showToast(e.message, true); }
       };
     });
   } catch (e) {
@@ -1824,14 +1898,15 @@ if ($("#cs-add-enf-btn")) {
     const lvl = $("#cs-add-enf-lvl")?.value || "block";
     const matcher = ($("#cs-add-enf-matcher")?.value || "").trim();
     const text = ($("#cs-add-enf-text")?.value || "").trim();
-    if (!ns || !matcher || !text) { alert("Namespace, Tool Matcher, and Rule Reason are required."); return; }
+    if (!ns || !matcher || !text) { showToast("Namespace, Tool Matcher, and Rule Reason are required.", true); return; }
     try {
       await wapi("POST", "constraints/enforcement", { namespace: ns, enforce_level: lvl, tool_matcher: matcher, rule_text: text });
       $("#cs-add-enf-matcher").value = "";
       $("#cs-add-enf-text").value = "";
+      showToast("Guardrail added");
       await loadWorkspaceConstraints();
       refreshOverview(false);
-    } catch (e) { alert(e.message); }
+    } catch (e) { showToast(e.message, true); }
   };
 }
 
@@ -1840,14 +1915,15 @@ if ($("#cs-add-pin-btn")) {
     const ns = ($("#cs-add-pin-ns")?.value || "").trim();
     const subj = ($("#cs-add-pin-subj")?.value || "").trim();
     const text = ($("#cs-add-pin-text")?.value || "").trim();
-    if (!ns || !text) { alert("Namespace and Constraint Text are required."); return; }
+    if (!ns || !text) { showToast("Namespace and Constraint Text are required.", true); return; }
     try {
       await wapi("POST", "constraints/pin", { namespace: ns, subject: subj || undefined, text });
       $("#cs-add-pin-subj").value = "";
       $("#cs-add-pin-text").value = "";
+      showToast("Constraint pinned");
       await loadWorkspaceConstraints();
       refreshOverview(false);
-    } catch (e) { alert(e.message); }
+    } catch (e) { showToast(e.message, true); }
   };
 }
 
@@ -1935,13 +2011,20 @@ async function loadNamespaces() {
       <td><button class="danger" data-del="${esc(n.name)}">delete</button></td></tr>`).join("")
       || emptyRow(6, `No namespaces yet.`);
     $$("#ns-table [data-del]").forEach(b => b.onclick = async () => {
-      if (!confirm(`Delete namespace "${b.dataset.del}"? Also purge its stored memory?\n\nOK = delete + purge data · Cancel = keep`)) {
-        if (!confirm(`Delete namespace "${b.dataset.del}" but KEEP its data?`)) return;
-        await api("DELETE", "namespaces?name=" + encodeURIComponent(b.dataset.del));
-      } else {
-        await api("DELETE", "namespaces?purge=1&name=" + encodeURIComponent(b.dataset.del));
-      }
-      loadNamespaces(); refreshOverview(false);
+      const nsName = b.dataset.del;
+      const { ok, checked } = await askConfirm({
+        title: `Delete namespace "${nsName}"?`,
+        message: `Remove "${nsName}" from registered namespaces?`,
+        confirmLabel: "Delete Namespace",
+        checkboxLabel: "Also purge all stored memory turns & facts in this namespace",
+        defaultChecked: false,
+      });
+      if (!ok) return;
+      try {
+        await api("DELETE", (checked ? "namespaces?purge=1&name=" : "namespaces?name=") + encodeURIComponent(nsName));
+        showToast(`Deleted namespace ${nsName}`);
+        loadNamespaces(); refreshOverview(false);
+      } catch (e) { showToast(e.message, true); }
     });
   }, loadNamespaces);
 }
@@ -1951,7 +2034,7 @@ $("#ns-create").onclick = async () => {
     await api("POST", "namespaces", { name, description: $("#ns-desc").value.trim() });
     $("#ns-name").value = ""; $("#ns-desc").value = "";
     loadNamespaces(); refreshOverview(false);
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message, true); }
 };
 
 // ---- Principals, Grants & Tokens ----
@@ -1974,16 +2057,22 @@ function renderPrincipalsRows() {
     pruneBtn.hidden = staleTests.length === 0;
     pruneBtn.textContent = `Prune 0-token test-* (${staleTests.length})`;
     pruneBtn.onclick = async () => {
-      if (!confirm(`Delete ${staleTests.length} stale "test-*" principals that have 0 active tokens?`)) return;
+      const { ok } = await askConfirm({
+        title: "Prune Stale Test Principals?",
+        message: `Delete ${staleTests.length} stale "test-*" principals that have 0 active tokens?`,
+        confirmLabel: `Prune ${staleTests.length} Principals`,
+      });
+      if (!ok) return;
       pruneBtn.disabled = true;
       try {
         for (const tp of staleTests) {
           await api("DELETE", "principals?id=" + tp.id);
         }
+        showToast(`Pruned ${staleTests.length} test-* principals`);
         await loadPrincipals();
         refreshOverview(false);
       } catch (e) {
-        alert(e.message);
+        showToast(e.message, true);
       } finally {
         pruneBtn.disabled = false;
       }
@@ -2020,13 +2109,19 @@ function renderPrincipalsRows() {
     b.onclick = async () => {
       const id = +b.dataset.delPr;
       const nm = b.dataset.delName || String(id);
-      if (!confirm(`Delete principal "${nm}" (ID ${id})?\n\nThis permanently revokes and deletes all grants, tokens, and sessions belonging to "${nm}".`)) return;
+      const { ok } = await askConfirm({
+        title: `Delete Principal "${nm}"?`,
+        message: `Permanently delete principal "${nm}" (ID ${id})?\n\nThis revokes and deletes all grants, tokens, and sessions belonging to "${nm}".`,
+        confirmLabel: "Delete Principal",
+      });
+      if (!ok) return;
       try {
         await api("DELETE", "principals?id=" + id);
+        showToast(`Deleted principal "${nm}"`);
         await loadPrincipals();
         refreshOverview(false);
       } catch (e) {
-        alert(e.message);
+        showToast(e.message, true);
       }
     };
   });
@@ -2072,7 +2167,7 @@ async function loadPrincipals() {
 $("#pr-create").onclick = async () => {
   const name = $("#pr-name").value.trim(); if (!name) return;
   try { await api("POST", "principals", { name, kind: $("#pr-kind").value }); $("#pr-name").value = ""; loadPrincipals(); }
-  catch (e) { alert(e.message); }
+  catch (e) { showToast(e.message, true); }
 };
 
 function renderTokensRows() {
@@ -2128,10 +2223,10 @@ function renderTokensRows() {
           const r = await api("GET", "tokens/reveal?id=" + id);
           revealedTokenMap[id] = r.token;
         }
-        try { await navigator.clipboard.writeText(revealedTokenMap[id]); } catch (_) {}
+        try { await navigator.clipboard.writeText(revealedTokenMap[id]); showToast("Token copied to clipboard"); } catch (_) {}
         renderTokensRows();
       } catch (e) {
-        alert(e.message);
+        showToast(e.message, true);
       }
     };
   });
@@ -2146,18 +2241,27 @@ function renderTokensRows() {
         const b = $("#tok-show");
         b.hidden = false;
         b.innerHTML = `Minted &amp; copied recoverable token:<br><code>${esc(token)}</code>`;
+        showToast("Minted & copied token");
         await loadTokens();
         loadPrincipals();
-      } catch (e) { alert(e.message); }
+      } catch (e) { showToast(e.message, true); }
     };
   });
 
   $$("#tok-table [data-rv]").forEach(b => {
     b.onclick = async () => {
-      if (!confirm(`Revoke token #${b.dataset.rv}? Any agent using this token will immediately lose access.`)) return;
-      await api("POST", "tokens/revoke", { id: +b.dataset.rv });
-      loadTokens();
-      loadPrincipals();
+      const { ok } = await askConfirm({
+        title: `Revoke Token #${b.dataset.rv}?`,
+        message: `Revoke token #${b.dataset.rv}? Any agent using this token will immediately lose access.`,
+        confirmLabel: "Revoke Token",
+      });
+      if (!ok) return;
+      try {
+        await api("POST", "tokens/revoke", { id: +b.dataset.rv });
+        showToast(`Revoked token #${b.dataset.rv}`);
+        loadTokens();
+        loadPrincipals();
+      } catch (e) { showToast(e.message, true); }
     };
   });
 }
@@ -2183,8 +2287,9 @@ $("#tok-mint").onclick = async () => {
     try { await navigator.clipboard.writeText(token); } catch (_) {}
     const b = $("#tok-show"); b.hidden = false;
     b.innerHTML = `Minted &amp; copied to clipboard (also recoverable anytime via <b>Reveal &amp; Copy</b> below):<br><code>${esc(token)}</code>`;
+    showToast("Minted & copied token");
     $("#tok-label").value = ""; $("#tok-ttl").value = ""; loadTokens(); loadPrincipals();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message, true); }
 };
 async function loadGrants() {
   const tbody = $("#gr-table tbody");
@@ -2200,8 +2305,9 @@ async function loadGrants() {
     $$("#gr-table [data-rg]").forEach(b => b.onclick = async () => {
       try {
         await api("DELETE", "grants?principal=" + pid + "&namespace=" + encodeURIComponent(b.dataset.rg));
+        showToast(`Revoked grant ${b.dataset.rg}`);
         loadGrants();
-      } catch (e) { alert(e.message); }
+      } catch (e) { showToast(e.message, true); }
     });
   }, loadGrants);
 }
@@ -2211,7 +2317,7 @@ $("#gr-add").onclick = async () => {
     await api("POST", "grants", { principal_id: +$("#gr-principal").value, namespace: $("#gr-namespace").value.trim(),
       can_read: $("#gr-read").checked, can_write: $("#gr-write").checked });
     $("#gr-namespace").value = ""; loadGrants();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message, true); }
 };
 
 // ---- Routing ----
@@ -2288,7 +2394,12 @@ function renderBindings(bindings, hosts) {
     } catch (e) { $("#bind-err").textContent = e.message; }
   });
   $$(".bind-del").forEach(b => b.onclick = async () => {
-    if (!confirm(`Remove binding for "${b.dataset.key}"?`)) return;
+    const { ok } = await askConfirm({
+      title: "Remove Repo Binding?",
+      message: `Remove binding for "${b.dataset.key}"?`,
+      confirmLabel: "Remove Binding",
+    });
+    if (!ok) return;
     try { await uapi("DELETE", "/bindings/" + b.dataset.id); loadRouting(); }
     catch (e) { $("#bind-err").textContent = e.message; }
   });
@@ -2376,8 +2487,17 @@ async function loadSecrets() {
       <td><code>${esc(s.name)}</code></td><td>${esc(s.description || "")}</td><td>${fmt(s.updated_at)}</td>
       <td><button class="danger" data-ds="${esc(s.name)}">delete</button></td></tr>`).join("") || emptyRow(4, `No secrets stored.`);
     $$("#sec-table [data-ds]").forEach(b => b.onclick = async () => {
-      if (!confirm(`Delete secret "${b.dataset.ds}"?`)) return;
-      await api("DELETE", "secrets?name=" + encodeURIComponent(b.dataset.ds)); loadSecrets();
+      const { ok } = await askConfirm({
+        title: `Delete Secret "${b.dataset.ds}"?`,
+        message: `Permanently delete secret "${b.dataset.ds}" from the encrypted vault?`,
+        confirmLabel: "Delete Secret",
+      });
+      if (!ok) return;
+      try {
+        await api("DELETE", "secrets?name=" + encodeURIComponent(b.dataset.ds));
+        showToast(`Deleted secret ${b.dataset.ds}`);
+        loadSecrets();
+      } catch (e) { showToast(e.message, true); }
     });
   }, loadSecrets);
 }
