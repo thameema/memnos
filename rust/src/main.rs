@@ -2106,7 +2106,19 @@ fn main() {
     }
 
     let cfg = load_config();
-    let norm_args = normalize_argv(env::args().collect());
+    let is_desktop_bin = env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n == "memnos-desktop"))
+        .unwrap_or(false);
+    let mut raw_args: Vec<String> = env::args()
+        .enumerate()
+        .filter(|(i, a)| *i == 0 || !a.starts_with("-psn_"))
+        .map(|(_, a)| a)
+        .collect();
+    if is_desktop_bin && (raw_args.len() == 1 || raw_args[1].starts_with('-')) {
+        raw_args.insert(1, "app".to_string());
+    }
+    let norm_args = normalize_argv(raw_args);
     if norm_args.len() == 2 && norm_args[1] == "help" {
         let _ = Cli::command().print_help();
         println!();

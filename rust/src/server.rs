@@ -63,6 +63,7 @@ pub struct AppState {
     pub embedder: Arc<Embedder>,
     pub extractor: Arc<Extractor>,
     pub channel_notify: Arc<Notify>,
+    pub event_tx: tokio::sync::broadcast::Sender<Value>,
     pub warm_proven: Arc<AtomicBool>,
     pub embed_configured: Arc<AtomicBool>,
     pub setup_reason: Arc<Mutex<String>>,
@@ -963,7 +964,7 @@ async fn admin_api_handler(
             }
         }
         ("principals", Method::GET) => match Control::list_principals(&st.pool).await {
-            Ok(p) => json_resp(StatusCode::OK, json!({ "principals": p })),
+            Ok(p) => json_resp(StatusCode::OK, json!({ "principals": p, "caller_id": pid })),
             Err(e) => ctrl_err_resp(e),
         },
         ("principals", Method::POST) => {
@@ -974,6 +975,20 @@ async fn admin_api_handler(
             }
             match Control::create_principal(&st.pool, name, kind).await {
                 Ok(id) => json_resp(StatusCode::OK, json!({ "ok": true, "id": id })),
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("principals", Method::DELETE) => {
+            let id = qs
+                .get("id")
+                .and_then(|s| s.parse::<i64>().ok())
+                .or_else(|| b.get("id").and_then(|v| v.as_i64()))
+                .unwrap_or(0);
+            if id <= 0 {
+                return json_resp(StatusCode::BAD_REQUEST, json!({ "error": "id required" }));
+            }
+            match Control::delete_principal(&st.pool, id, pid).await {
+                Ok(v) => json_resp(StatusCode::OK, v),
                 Err(e) => ctrl_err_resp(e),
             }
         }
@@ -1290,39 +1305,71 @@ async fn workspace_events_handler(
     let tok = bearer_token(&headers)
         .or_else(|| qs.get("token").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
         .unwrap_or_default();
-    match Control::authenticate(&st.pool, &tok).await {
-        Ok(Some(_)) => {}
+    let pid = match Control::authenticate(&st.pool, &tok).await {
+        Ok(Some(p)) => p,
         Ok(None) => return json_resp(StatusCode::UNAUTHORIZED, json!({ "error": "unauthorized" })),
         Err(e) => return ctrl_err_resp(e),
-    }
+    };
+    let is_admin = Control::is_admin(&st.pool, pid).await.unwrap_or(false);
+    let auth_ns: HashSet<String> = if is_admin {
+        HashSet::new()
+    } else {
+        Control::readable_namespaces(&st.pool, pid, None, None)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    };
 
-    let notify = st.channel_notify.clone();
-    let s = stream::unfold((notify, 0u64), |(notify, seq)| async move {
-        if seq == 0 {
-            let ev = Event::default().data(
-                json!({ "type": "connected", "seq": 0, "version": VERSION }).to_string(),
-            );
-            return Some((Ok::<Event, Infallible>(ev), (notify, 1)));
-        }
-        let kind = {
-            let notified = notify.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            tokio::select! {
-                _ = notified => "refresh",
-                _ = tokio::time::sleep(Duration::from_secs(15)) => "heartbeat",
+    let event_rx = st.event_tx.subscribe();
+    let s = stream::unfold(
+        (event_rx, auth_ns, is_admin, 0u64),
+        |(mut event_rx, auth_ns, is_admin, seq)| async move {
+            if seq == 0 {
+                let ev = Event::default().data(
+                    json!({ "type": "connected", "seq": 0, "version": VERSION }).to_string(),
+                );
+                return Some((Ok::<Event, Infallible>(ev), (event_rx, auth_ns, is_admin, 1)));
             }
-        };
-        let ev = Event::default().data(
-            json!({
-                "type": kind,
-                "seq": seq,
-                "ts": chrono::Utc::now().to_rfc3339(),
-            })
-            .to_string(),
-        );
-        Some((Ok::<Event, Infallible>(ev), (notify, seq + 1)))
-    });
+            let payload = loop {
+                tokio::select! {
+                    res = event_rx.recv() => {
+                        match res {
+                            Ok(mut v) => {
+                                let ev_ns = v.get("namespace").and_then(|x| x.as_str()).unwrap_or("");
+                                if is_admin || ev_ns.is_empty() || ev_ns == "*" || auth_ns.contains(ev_ns) {
+                                    if let Some(obj) = v.as_object_mut() {
+                                        obj.insert("seq".to_string(), json!(seq));
+                                    }
+                                    break v;
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                break json!({
+                                    "type": "refresh",
+                                    "seq": seq,
+                                    "ts": chrono::Utc::now().to_rfc3339(),
+                                });
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_secs(15)) => {
+                        break json!({
+                            "type": "heartbeat",
+                            "seq": seq,
+                            "ts": chrono::Utc::now().to_rfc3339(),
+                        });
+                    }
+                }
+            };
+            let ev = Event::default().data(payload.to_string());
+            Some((
+                Ok::<Event, Infallible>(ev),
+                (event_rx, auth_ns, is_admin, seq + 1),
+            ))
+        },
+    );
 
     Sse::new(s)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(20)).text("keepalive"))
@@ -1545,6 +1592,17 @@ async fn workspace_api_handler(
             match Control::channel_publish(&st.pool, ns, ch, sender, pid, content, &opts).await {
                 Ok(v) => {
                     st.channel_notify.notify_waiters();
+                    let _ = st.event_tx.send(json!({
+                        "type": "activity",
+                        "op": "channel/publish",
+                        "namespace": ns,
+                        "actor": sender,
+                        "detail": ch,
+                        "ok": true,
+                        "status": 200,
+                        "latency_ms": 1,
+                        "ts": chrono::Utc::now().to_rfc3339(),
+                    }));
                     json_resp(StatusCode::OK, v)
                 }
                 Err(e) => ctrl_err_resp(e),
@@ -1699,6 +1757,16 @@ async fn workspace_api_handler(
                 Err(e) => ctrl_err_resp(e),
             }
         }
+        ("activity", Method::GET) => {
+            let limit = qs
+                .get("limit")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(60);
+            match Control::workspace_recent_activity(&st.pool, pid, limit).await {
+                Ok(events) => json_resp(StatusCode::OK, json!({ "events": events })),
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
         _ => json_resp(
             StatusCode::NOT_FOUND,
             json!({ "error": "unknown workspace route" }),
@@ -1764,6 +1832,27 @@ async fn api_post_handler(
         .ok()
         .flatten()
         .and_then(|v| v.get("name").and_then(|s| s.as_str()).map(|s| s.to_string()));
+
+    let actor_hint = req
+        .get("session_name")
+        .or_else(|| req.get("name"))
+        .or_else(|| req.get("sender_session"))
+        .or_else(|| req.get("from_session"))
+        .or_else(|| req.get("agent"))
+        .or_else(|| req.get("author"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let op_detail = req
+        .get("query")
+        .or_else(|| req.get("channel"))
+        .or_else(|| req.get("statement"))
+        .or_else(|| req.get("subject"))
+        .or_else(|| req.get("to_session"))
+        .or_else(|| req.get("content"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().chars().take(72).collect::<String>())
+        .unwrap_or_default();
 
     let raw_ns = req
         .get("namespace")
@@ -3368,6 +3457,7 @@ async fn api_post_handler(
 
     match result {
         Ok((code, payload)) => {
+            let elapsed_ms = t0.elapsed().as_millis() as i32;
             let _ = Control::audit(
                 &st.pool,
                 Some(pid),
@@ -3375,11 +3465,28 @@ async fn api_post_handler(
                 Some(&ns),
                 code.is_success(),
                 None,
-                Some(t0.elapsed().as_millis() as i32),
+                Some(elapsed_ms),
                 None,
                 Some(code.as_u16() as i32),
             )
             .await;
+            if action != "session/heartbeat" {
+                let actor = actor_hint
+                    .or_else(|| principal_name.clone())
+                    .unwrap_or_else(|| format!("p:{}", pid));
+                let _ = st.event_tx.send(json!({
+                    "type": "activity",
+                    "op": action,
+                    "namespace": if scope_wide { "*" } else { ns.as_str() },
+                    "actor": actor,
+                    "principal": principal_name.unwrap_or_default(),
+                    "detail": op_detail,
+                    "ok": code.is_success(),
+                    "status": code.as_u16(),
+                    "latency_ms": elapsed_ms,
+                    "ts": chrono::Utc::now().to_rfc3339(),
+                }));
+            }
             json_resp(code, payload)
         }
         Err(resp) => resp,
@@ -3510,6 +3617,20 @@ pub async fn run_server_opts(
 
     let channel_notify = Arc::new(Notify::new());
     spawn_channel_listener(pg_dsn.clone(), channel_notify.clone());
+    let (event_tx, _) = tokio::sync::broadcast::channel::<Value>(512);
+    {
+        let cn = channel_notify.clone();
+        let tx = event_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                cn.notified().await;
+                let _ = tx.send(json!({
+                    "type": "refresh",
+                    "ts": chrono::Utc::now().to_rfc3339(),
+                }));
+            }
+        });
+    }
 
     // Background webhook pusher (every 5s)
     let wh_pool = pool.clone();
@@ -3544,6 +3665,7 @@ pub async fn run_server_opts(
         embedder,
         extractor,
         channel_notify,
+        event_tx,
         warm_proven,
         embed_configured,
         setup_reason,

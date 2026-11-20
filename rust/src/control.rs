@@ -679,10 +679,7 @@ impl Control {
         c.batch_execute(&locked_ddl).await?;
         c.execute(
             "UPDATE memnos_control.channel_catalog SET global_topic = true
-             WHERE kind = 'topic' AND channel LIKE '#%' AND channel <> '#general'
-               AND channel IN (SELECT channel FROM memnos_control.channel_catalog
-                               WHERE channel LIKE '#%' AND channel <> '#general'
-                               GROUP BY channel HAVING count(DISTINCT namespace) > 1)",
+             WHERE kind = 'topic' AND channel LIKE '#%' AND channel <> '#general' AND NOT global_topic",
             &[],
         )
         .await?;
@@ -2841,10 +2838,13 @@ impl Control {
     ) -> CResult<()> {
         for ch in channels.iter().filter(|c| *c != "*" && *c != "status:*") {
             let (kind, d, w, i) = default_channel_ad(ch, "", "");
+            let is_global = ch.starts_with('#') && ch != "#general";
             c.execute(
-                "INSERT INTO memnos_control.channel_catalog(namespace,channel,kind,description,what_you_get,intents,principal_id)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING",
-                params![namespace, ch, kind, d, w, i, principal_id],
+                "INSERT INTO memnos_control.channel_catalog(namespace,channel,kind,description,what_you_get,intents,principal_id,global_topic)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                 ON CONFLICT (namespace, channel) DO UPDATE
+                 SET global_topic = memnos_control.channel_catalog.global_topic OR EXCLUDED.global_topic",
+                params![namespace, ch, kind, d, w, i, principal_id, is_global],
             )
             .await?;
         }
@@ -2903,19 +2903,21 @@ impl Control {
         } else {
             intents.clone()
         };
+        let is_global = ch.starts_with('#') && ch != "#general";
         let row = c
             .query_one(
-                "INSERT INTO memnos_control.channel_catalog(namespace,channel,kind,description,what_you_get,intents,owner_session,principal_id,metadata)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                "INSERT INTO memnos_control.channel_catalog(namespace,channel,kind,description,what_you_get,intents,owner_session,principal_id,metadata,global_topic)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$15)
                  ON CONFLICT (namespace,channel) DO UPDATE SET
                    description  = CASE WHEN $10::text <> '' THEN EXCLUDED.description  ELSE memnos_control.channel_catalog.description END,
                    what_you_get = CASE WHEN $11::text <> '' THEN EXCLUDED.what_you_get ELSE memnos_control.channel_catalog.what_you_get END,
                    intents      = CASE WHEN cardinality($12::text[]) > 0 THEN EXCLUDED.intents ELSE memnos_control.channel_catalog.intents END,
                    owner_session= CASE WHEN $13::text <> '' THEN EXCLUDED.owner_session ELSE memnos_control.channel_catalog.owner_session END,
                    metadata     = CASE WHEN $14::jsonb <> '{}'::jsonb THEN EXCLUDED.metadata ELSE memnos_control.channel_catalog.metadata END,
+                   global_topic = memnos_control.channel_catalog.global_topic OR EXCLUDED.global_topic,
                    updated_at   = now()
                  RETURNING *",
-                params![namespace, ch, kind, desc, wyg, ints, owner, principal_id, meta, ad.description, ad.what_you_get, intents, owner, meta],
+                params![namespace, ch, kind, desc, wyg, ints, owner, principal_id, meta, ad.description, ad.what_you_get, intents, owner, meta, is_global],
             )
             .await?;
         let mut out = obj(row_to_json(&row));
@@ -5097,42 +5099,70 @@ impl Control {
         let channels_json: Vec<Value> = if selected_ns.is_empty() {
             vec![]
         } else {
+            // Unify every `#channel` uniquely across `selected_ns` so a channel like `#abillz`
+            // never appears duplicated under multiple namespaces.
             let ch_rows = c
                 .query(
                     "WITH u AS (
                         SELECT namespace, channel FROM memnos_control.channel_catalog WHERE namespace = ANY($1)
                         UNION SELECT namespace, channel FROM memnos_control.channel_messages WHERE namespace = ANY($1) AND recalled_at IS NULL
                         UNION SELECT namespace, channel FROM memnos_control.channel_subscriptions WHERE namespace = ANY($1)
+                     ),
+                     ns_agg AS (
+                        SELECT channel,
+                               array_agg(DISTINCT namespace ORDER BY namespace) AS namespaces
+                        FROM u
+                        WHERE channel LIKE '#%'
+                        GROUP BY channel
+                     ),
+                     cat_agg AS (
+                        SELECT channel,
+                               COALESCE(max(description) FILTER (WHERE description <> ''), '') AS description,
+                               bool_or(global_topic) AS global_topic
+                        FROM memnos_control.channel_catalog
+                        WHERE namespace = ANY($1) AND channel LIKE '#%'
+                        GROUP BY channel
+                     ),
+                     msg_agg AS (
+                        SELECT channel,
+                               count(*) AS n,
+                               count(*) FILTER (WHERE claimable AND claim_status IN ('pending', 'unclaimed', 'claimed')) AS open_tasks,
+                               max(created_at) AS last_at,
+                               array_agg(DISTINCT sender_session ORDER BY sender_session) AS pubs,
+                               (array_agg(namespace ORDER BY created_at DESC))[1] AS latest_msg_ns
+                        FROM memnos_control.channel_messages
+                        WHERE namespace = ANY($1) AND recalled_at IS NULL AND channel LIKE '#%'
+                        GROUP BY channel
+                     ),
+                     sub_agg AS (
+                        SELECT s.channel,
+                               array_agg(DISTINCT s.session_name ORDER BY s.session_name) AS subs,
+                               array_agg(DISTINCT s.session_name ORDER BY s.session_name)
+                                   FILTER (WHERE a.expires_at > now() AND a.status <> 'offline') AS live_subs,
+                               (array_agg(s.namespace ORDER BY (a.expires_at > now() AND a.status <> 'offline') DESC NULLS LAST, s.id DESC))[1] AS pref_sub_ns
+                        FROM memnos_control.channel_subscriptions s
+                        LEFT JOIN memnos_control.agent_sessions a
+                          ON a.namespace = s.namespace AND a.name = s.session_name
+                        WHERE s.namespace = ANY($1) AND s.channel LIKE '#%'
+                        GROUP BY s.channel
                      )
-                     SELECT u.namespace, u.channel,
-                            COALESCE(cc.kind, 'topic') AS kind,
-                            COALESCE(cc.description, '') AS description,
-                            COALESCE(cc.global_topic, false) AS global_topic,
-                            COALESCE(mc.n, 0) AS message_count,
-                            COALESCE(mc.open_tasks, 0) AS open_tasks,
-                            mc.last_at AS last_message_at,
-                            COALESCE(sc.subs, '{}') AS subscribers,
-                            COALESCE(mc.pubs, '{}') AS publishers
-                     FROM u
-                     LEFT JOIN memnos_control.channel_catalog cc ON cc.namespace = u.namespace AND cc.channel = u.channel
-                     LEFT JOIN (
-                         SELECT namespace, channel,
-                                count(*) AS n,
-                                count(*) FILTER (WHERE claimable AND claim_status IN ('pending', 'unclaimed', 'claimed')) AS open_tasks,
-                                max(created_at) AS last_at,
-                                array_agg(DISTINCT sender_session ORDER BY sender_session) AS pubs
-                         FROM memnos_control.channel_messages
-                         WHERE namespace = ANY($1) AND recalled_at IS NULL
-                         GROUP BY namespace, channel
-                     ) mc ON mc.namespace = u.namespace AND mc.channel = u.channel
-                     LEFT JOIN (
-                         SELECT namespace, channel, array_agg(session_name ORDER BY session_name) AS subs
-                         FROM memnos_control.channel_subscriptions
-                         WHERE namespace = ANY($1)
-                         GROUP BY namespace, channel
-                     ) sc ON sc.namespace = u.namespace AND sc.channel = u.channel
-                     WHERE u.channel LIKE '#%'
-                     ORDER BY mc.last_at DESC NULLS LAST, u.namespace, u.channel",
+                     SELECT na.channel,
+                            COALESCE(sa.pref_sub_ns, ma.latest_msg_ns, na.namespaces[1]) AS namespace,
+                            na.namespaces,
+                            'topic' AS kind,
+                            COALESCE(ca.description, '') AS description,
+                            COALESCE(ca.global_topic, na.channel <> '#general') AS global_topic,
+                            COALESCE(ma.n, 0) AS message_count,
+                            COALESCE(ma.open_tasks, 0) AS open_tasks,
+                            ma.last_at AS last_message_at,
+                            COALESCE(sa.subs, '{}') AS subscribers,
+                            COALESCE(sa.live_subs, '{}') AS live_subscribers,
+                            COALESCE(ma.pubs, '{}') AS publishers
+                     FROM ns_agg na
+                     LEFT JOIN cat_agg ca ON ca.channel = na.channel
+                     LEFT JOIN msg_agg ma ON ma.channel = na.channel
+                     LEFT JOIN sub_agg sa ON sa.channel = na.channel
+                     ORDER BY ma.last_at DESC NULLS LAST, COALESCE(cardinality(sa.live_subs), 0) DESC, na.channel",
                     params![selected_ns],
                 )
                 .await?;
@@ -5248,11 +5278,32 @@ impl Control {
         before_id: Option<i64>,
     ) -> CResult<Vec<Value>> {
         let c = conn(pool).await?;
-        if !Self::authorize_on(&**c, principal_id, namespace, false).await? {
-            return Err(ControlError::Forbidden(format!(
-                "no read grant for namespace '{}'",
-                namespace
-            )));
+        let ns_trim = namespace.trim();
+        let target_ns: Vec<String> = if ns_trim.is_empty() || ns_trim == "*" {
+            Self::workspace_authorized_ns_map(&**c, principal_id)
+                .await?
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect()
+        } else {
+            if !Self::authorize_on(&**c, principal_id, ns_trim, false).await? {
+                return Err(ControlError::Forbidden(format!(
+                    "no read grant for namespace '{}'",
+                    ns_trim
+                )));
+            }
+            if channel.starts_with('#') && channel != "#general" {
+                Self::workspace_authorized_ns_map(&**c, principal_id)
+                    .await?
+                    .into_iter()
+                    .map(|(n, _)| n)
+                    .collect()
+            } else {
+                vec![ns_trim.to_string()]
+            }
+        };
+        if target_ns.is_empty() {
+            return Ok(vec![]);
         }
         let lim = limit.clamp(1, 300);
         let rows = c
@@ -5262,12 +5313,12 @@ impl Control {
                            claimable, claim_status, claimed_by, claimed_by_ns,
                            resolution, metadata, created_at
                     FROM memnos_control.channel_messages
-                    WHERE namespace = $1 AND channel = $2 AND recalled_at IS NULL
+                    WHERE namespace = ANY($1) AND channel = $2 AND recalled_at IS NULL
                       AND ($3::bigint IS NULL OR id < $3)
                     ORDER BY id DESC
                     LIMIT $4
                  ) sub ORDER BY id ASC",
-                params![namespace, channel, before_id, lim],
+                params![target_ns, channel, before_id, lim],
             )
             .await?;
         Ok(rows_json(&rows))
@@ -5316,36 +5367,58 @@ impl Control {
             return bad("channel required");
         }
         let mut c = conn(pool).await?;
-        if !Self::authorize_on(&**c, principal_id, namespace, true).await? {
-            return Err(ControlError::Forbidden(format!(
-                "write grant required on namespace '{}' to delete channel",
-                namespace
-            )));
+        let ns_trim = namespace.trim();
+        let writable_ns: Vec<String> = if ns_trim.is_empty() || ns_trim == "*" {
+            Self::workspace_authorized_ns_map(&**c, principal_id)
+                .await?
+                .into_iter()
+                .filter_map(|(n, w)| w.then_some(n))
+                .collect()
+        } else {
+            if !Self::authorize_on(&**c, principal_id, ns_trim, true).await? {
+                return Err(ControlError::Forbidden(format!(
+                    "write grant required on namespace '{}' to delete channel",
+                    ns_trim
+                )));
+            }
+            if ch.starts_with('#') && ch != "#general" {
+                Self::workspace_authorized_ns_map(&**c, principal_id)
+                    .await?
+                    .into_iter()
+                    .filter_map(|(n, w)| w.then_some(n))
+                    .collect()
+            } else {
+                vec![ns_trim.to_string()]
+            }
+        };
+        if writable_ns.is_empty() {
+            return Err(ControlError::Forbidden(
+                "no writable namespaces authorized to delete channel".to_string(),
+            ));
         }
         let tx = c.transaction().await?;
         let del_subs = tx
             .execute(
-                "DELETE FROM memnos_control.channel_subscriptions WHERE namespace = $1 AND channel = $2",
-                params![namespace, ch],
+                "DELETE FROM memnos_control.channel_subscriptions WHERE namespace = ANY($1) AND channel = $2",
+                params![writable_ns, ch],
             )
             .await?;
         let del_msgs = tx
             .execute(
-                "DELETE FROM memnos_control.channel_messages WHERE namespace = $1 AND channel = $2",
-                params![namespace, ch],
+                "DELETE FROM memnos_control.channel_messages WHERE namespace = ANY($1) AND channel = $2",
+                params![writable_ns, ch],
             )
             .await?;
         let del_cat = tx
             .execute(
-                "DELETE FROM memnos_control.channel_catalog WHERE namespace = $1 AND channel = $2",
-                params![namespace, ch],
+                "DELETE FROM memnos_control.channel_catalog WHERE namespace = ANY($1) AND channel = $2",
+                params![writable_ns, ch],
             )
             .await?;
-        tx.execute(
-            "SELECT pg_notify('memnos_channel', $1::text)",
-            params![namespace],
-        )
-        .await?;
+        for n in &writable_ns {
+            tx.execute("SELECT pg_notify('memnos_channel', $1::text)", params![n])
+                .await?;
+        }
         tx.commit().await?;
         Ok(json!({
             "ok": true,
@@ -5377,12 +5450,17 @@ impl Control {
                 namespace
             )));
         }
+        let writable_ns: Vec<String> = Self::workspace_authorized_ns_map(&**c, principal_id)
+            .await?
+            .into_iter()
+            .filter_map(|(n, w)| w.then_some(n))
+            .collect();
         let tx = c.transaction().await?;
         let changed = if subscribe {
             let max_id: i64 = tx
                 .query_one(
-                    "SELECT COALESCE(max(id), 0) FROM memnos_control.channel_messages WHERE namespace = $1 AND channel = $2",
-                    params![namespace, ch],
+                    "SELECT COALESCE(max(id), 0) FROM memnos_control.channel_messages WHERE namespace = ANY($1) AND channel = $2",
+                    params![writable_ns, ch],
                 )
                 .await?
                 .get(0);
@@ -5391,6 +5469,13 @@ impl Control {
                  VALUES ($1, $2, $3, $4, $5)
                  ON CONFLICT (namespace, session_name, channel) DO NOTHING",
                 params![namespace, sess, principal_id, ch, max_id],
+            )
+            .await?
+        } else if ch.starts_with('#') && ch != "#general" {
+            tx.execute(
+                "DELETE FROM memnos_control.channel_subscriptions
+                 WHERE namespace = ANY($1) AND session_name = $2 AND channel = $3",
+                params![writable_ns, sess, ch],
             )
             .await?
         } else {
@@ -5519,6 +5604,125 @@ impl Control {
                  ORDER BY id DESC
                  LIMIT $4 OFFSET $5",
                 params![ns_list, memory_type, q_pat, lim, off],
+            )
+            .await?;
+        Ok(rows_json(&rows))
+    }
+
+    pub async fn delete_principal(
+        pool: &Pool,
+        target_id: i64,
+        caller_id: i64,
+    ) -> CResult<Value> {
+        if target_id == caller_id {
+            return bad("cannot delete your own currently authenticated principal");
+        }
+        let mut c = conn(pool).await?;
+        let tx = c.transaction().await?;
+        let existing = tx
+            .query_opt(
+                "SELECT id, name, kind FROM memnos_control.principals WHERE id = $1",
+                params![target_id],
+            )
+            .await?;
+        let Some(p_row) = existing else {
+            return Err(ControlError::NotFound(format!(
+                "principal {} not found",
+                target_id
+            )));
+        };
+        let p_name: String = p_row.get("name");
+
+        for stmt in [
+            "UPDATE memnos_control.roles SET created_by = NULL WHERE created_by = $1",
+            "UPDATE memnos_control.namespaces SET created_by = NULL WHERE created_by = $1",
+            "UPDATE memnos_control.namespace_links SET created_by = NULL WHERE created_by = $1",
+            "UPDATE memnos_control.namespace_copy_provenance SET copied_by = NULL WHERE copied_by = $1",
+            "UPDATE memnos_control.constraint_enforcement SET created_by = NULL WHERE created_by = $1",
+            "UPDATE memnos_control.constraint_overrides SET created_by = NULL WHERE created_by = $1",
+            "UPDATE memnos_control.corpus_deviations SET created_by = NULL WHERE created_by = $1",
+            "UPDATE memnos_control.leases SET principal_id = NULL WHERE principal_id = $1",
+            "UPDATE memnos_control.channel_catalog SET principal_id = NULL WHERE principal_id = $1",
+        ] {
+            tx.execute(stmt, params![target_id]).await?;
+        }
+
+        let inbox_ids: Vec<i64> = tx
+            .query(
+                "SELECT id FROM memnos_control.agent_inbox WHERE principal_id = $1",
+                params![target_id],
+            )
+            .await?
+            .iter()
+            .map(|r| r.get(0))
+            .collect();
+        if !inbox_ids.is_empty() {
+            tx.execute(
+                "UPDATE memnos_control.agent_inbox SET
+                   replaces_id = CASE WHEN replaces_id = ANY($1) THEN NULL ELSE replaces_id END,
+                   superseded_by_id = CASE WHEN superseded_by_id = ANY($1) THEN NULL ELSE superseded_by_id END,
+                   in_reply_to = CASE WHEN in_reply_to = ANY($1) THEN NULL ELSE in_reply_to END
+                 WHERE replaces_id = ANY($1) OR superseded_by_id = ANY($1) OR in_reply_to = ANY($1)",
+                params![inbox_ids],
+            )
+            .await?;
+            tx.execute(
+                "DELETE FROM memnos_control.agent_inbox WHERE id = ANY($1)",
+                params![inbox_ids],
+            )
+            .await?;
+        }
+
+        for stmt in [
+            "DELETE FROM memnos_control.channel_subscriptions WHERE principal_id = $1",
+            "DELETE FROM memnos_control.channel_messages WHERE principal_id = $1",
+            "DELETE FROM memnos_control.agent_sessions WHERE principal_id = $1",
+            "DELETE FROM memnos_control.subscriptions WHERE principal_id = $1",
+            "DELETE FROM memnos_control.bindings WHERE principal_id = $1",
+            "DELETE FROM memnos_control.hosts WHERE principal_id = $1",
+            "DELETE FROM memnos_control.ns_nudges WHERE principal_id = $1",
+            "DELETE FROM memnos_control.role_members WHERE principal_id = $1",
+            "DELETE FROM memnos_control.grants WHERE principal_id = $1",
+            "DELETE FROM memnos_control.api_tokens WHERE principal_id = $1",
+            "DELETE FROM memnos_control.principals WHERE id = $1",
+        ] {
+            tx.execute(stmt, params![target_id]).await?;
+        }
+
+        tx.commit().await?;
+        Ok(json!({ "ok": true, "deleted_id": target_id, "name": p_name }))
+    }
+
+    pub async fn workspace_recent_activity(
+        pool: &Pool,
+        principal_id: i64,
+        limit: i64,
+    ) -> CResult<Vec<Value>> {
+        let c = conn(pool).await?;
+        let is_admin = Self::is_admin(pool, principal_id).await.unwrap_or(false);
+        let ns_list: Vec<String> = Self::workspace_authorized_ns_map(&**c, principal_id)
+            .await?
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        if ns_list.is_empty() && !is_admin {
+            return Ok(vec![]);
+        }
+        let lim = limit.clamp(1, 200);
+        let rows = c
+            .query(
+                "SELECT a.id, a.ts, a.action AS op, COALESCE(a.namespace, '') AS namespace,
+                        COALESCE(p.name, 'system') AS actor,
+                        COALESCE(a.status, CASE WHEN a.ok THEN 200 ELSE 500 END) AS status,
+                        COALESCE(a.latency_ms, 0) AS latency_ms,
+                        COALESCE(a.result_count, 0) AS result_count
+                 FROM memnos_control.audit_log a
+                 LEFT JOIN memnos_control.principals p ON p.id = a.principal_id
+                 WHERE a.action <> 'session/heartbeat'
+                   AND ($1::bool OR a.namespace = ANY($2))
+                 ORDER BY a.id DESC
+                 LIMIT $3",
+                params![is_admin, ns_list, lim],
             )
             .await?;
         Ok(rows_json(&rows))

@@ -5,13 +5,23 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
 // ---- Bootstrap Auth & Theme ----
+const THEME_KEY = "memnos_ui_theme_v2";
+const BOOT_INFO = window.__MEMNOS_BOOT__ || null;
+const DEFAULT_LOCAL_URL = (BOOT_INFO && BOOT_INFO.local_url) || "http://127.0.0.1:8900";
+const DEFAULT_LOCAL_TOKEN = (BOOT_INFO && BOOT_INFO.local_token) || "";
+
+function isLoopbackUrl(u) {
+  const l = String(u || "").toLowerCase();
+  return l.includes("://127.0.0.1") || l.includes("://localhost") || l.includes("://[::1]");
+}
+
 (function bootstrap() {
-  const savedTheme = localStorage.getItem("memnos_theme") || "nebula";
+  const savedTheme = localStorage.getItem(THEME_KEY) || "aubergine";
   document.documentElement.setAttribute("data-theme", savedTheme);
 
-  if (window.__MEMNOS_BOOT__) {
-    if (window.__MEMNOS_BOOT__.token) localStorage.setItem("memnos_admin_token", window.__MEMNOS_BOOT__.token);
-    if (window.__MEMNOS_BOOT__.url) localStorage.setItem("memnos_server_url", window.__MEMNOS_BOOT__.url);
+  if (BOOT_INFO) {
+    if (BOOT_INFO.token) localStorage.setItem("memnos_admin_token", BOOT_INFO.token);
+    if (BOOT_INFO.url) localStorage.setItem("memnos_server_url", BOOT_INFO.url);
   }
   if (location.hash && location.hash.length > 1) {
     const hp = new URLSearchParams(location.hash.slice(1));
@@ -100,7 +110,7 @@ const uapi = (m, p, b) => rawFetch(m, p, b);
 
 // ---- App State ----
 let wsData = null;
-let activeSection = "channels"; // "channels" | "handles" | "memories" | "telemetry" | "console"
+let activeSection = "channels"; // "channels" | "handles" | "live" | "memories" | "telemetry" | "console"
 let chFilterMode = "active";    // "active" | "history" | "all"
 let hdFilterMode = "online";    // "online" | "all"
 let selectedChannel = null;     // { namespace, channel }
@@ -110,16 +120,24 @@ let wmemType = "";
 let wmemOffset = 0;
 const WMEM_PAGE = 50;
 
+let liveEvents = [];
+let livePaused = false;
+let liveNewCount = 0;
+let liveFlashTimer = null;
+
+let allPrincipals = [];
+let callerPrincipalId = 0;
+
 let sseSource = null;
 let sseRefreshTimer = null;
 let pollFallbackTimer = null;
 
-// ---- Theme Switcher ----
+// ---- Theme Switcher (Slack Aubergine default) ----
 const themeSel = $("#theme-select");
-themeSel.value = localStorage.getItem("memnos_theme") || "nebula";
+themeSel.value = localStorage.getItem(THEME_KEY) || "aubergine";
 themeSel.onchange = () => {
   document.documentElement.setAttribute("data-theme", themeSel.value);
-  localStorage.setItem("memnos_theme", themeSel.value);
+  localStorage.setItem(THEME_KEY, themeSel.value);
 };
 
 // ---- Table Helpers ----
@@ -145,13 +163,41 @@ async function loadTable(tbody, fetcher, render, self) {
   finally { clearTimeout(t); }
 }
 
-// ---- Auth & Server Connection ----
+// ---- Auth, Local vs Remote Onboarding, & Server Switcher ----
+function setLoginMode(mode) {
+  const isLocal = mode !== "remote";
+  $$("#login-mode-tabs button").forEach(b => b.classList.toggle("active", (b.dataset.cmode === "local") === isLocal));
+  $("#login-local-banner").hidden = !isLocal;
+  $("#login-remote-banner").hidden = isLocal;
+  const autoBox = $("#login-local-autodetect");
+  if (autoBox) autoBox.hidden = !(isLocal && DEFAULT_LOCAL_TOKEN);
+  const urlInp = $("#server-url");
+  if (isLocal) {
+    if (!urlInp.value || !isLoopbackUrl(urlInp.value)) urlInp.value = DEFAULT_LOCAL_URL;
+    urlInp.placeholder = DEFAULT_LOCAL_URL;
+  } else {
+    if (isLoopbackUrl(urlInp.value)) urlInp.value = "";
+    urlInp.placeholder = "https://memnos.your-org.com";
+  }
+}
+
+$$("#login-mode-tabs button").forEach(btn => {
+  btn.onclick = () => setLoginMode(btn.dataset.cmode);
+});
+const autoLocalBtn = $("#btn-connect-local-auto");
+if (autoLocalBtn) {
+  autoLocalBtn.onclick = () => connectWorkspace(DEFAULT_LOCAL_TOKEN, DEFAULT_LOCAL_URL);
+}
+
 function disconnectToLogin(errMsg = "") {
   stopRealtime();
   localStorage.removeItem("memnos_admin_token");
   $("#app").hidden = true;
+  $("#server-modal").hidden = true;
   $("#login").hidden = false;
-  $("#server-url").value = serverBase();
+  const cur = serverBase();
+  $("#server-url").value = cur;
+  setLoginMode(isLoopbackUrl(cur) ? "local" : "remote");
   $("#loginerr").textContent = errMsg;
 }
 
@@ -162,41 +208,184 @@ async function connectWorkspace(tokenVal, urlVal) {
   try {
     await refreshOverview(true);
     $("#login").hidden = true;
+    $("#server-modal").hidden = true;
     $("#app").hidden = false;
+    loadInitialActivity();
     startRealtime();
   } catch (e) {
     localStorage.removeItem("memnos_admin_token");
     $("#app").hidden = true;
     $("#login").hidden = false;
+    setLoginMode(isLoopbackUrl(serverBase()) ? "local" : "remote");
     $("#loginerr").textContent = e.message;
   }
 }
 
 $("#signin").onclick = () => {
-  const t = $("#token").value.trim();
-  const u = $("#server-url").value.trim();
+  const u = ($("#server-url").value || "").trim() || DEFAULT_LOCAL_URL;
+  let t = ($("#token").value || "").trim();
+  if (!t && isLoopbackUrl(u) && DEFAULT_LOCAL_TOKEN) t = DEFAULT_LOCAL_TOKEN;
   if (!t) { $("#loginerr").textContent = "Paste an admin or role-scoped token (mnk_...)"; return; }
-  connectWorkspace(t, u || location.origin);
+  connectWorkspace(t, u);
 };
 $("#token").addEventListener("keydown", e => { if (e.key === "Enter") $("#signin").click(); });
 $("#logout").onclick = () => disconnectToLogin();
+
+// Server Connection Modal (Local vs Remote while inside the workspace)
+function setModalMode(mode) {
+  const isLocal = mode !== "remote";
+  $$("#modal-mode-tabs button").forEach(b => b.classList.toggle("active", (b.dataset.mmode === "local") === isLocal));
+  $("#modal-local-guide").hidden = !isLocal;
+  $("#modal-remote-guide").hidden = isLocal;
+  const u = $("#modal-url");
+  if (isLocal) {
+    if (!u.value || !isLoopbackUrl(u.value)) u.value = DEFAULT_LOCAL_URL;
+    u.placeholder = DEFAULT_LOCAL_URL;
+  } else {
+    if (isLoopbackUrl(u.value)) u.value = "";
+    u.placeholder = "https://memnos.your-org.com";
+  }
+  $("#modal-use-local").hidden = !DEFAULT_LOCAL_TOKEN;
+}
+
+$$("#modal-mode-tabs button").forEach(btn => {
+  btn.onclick = () => setModalMode(btn.dataset.mmode);
+});
+
 $("#switch-server").onclick = () => {
-  const next = prompt("Enter MEMNOS Server URL (local or remote):", serverBase());
-  if (!next || !next.trim()) return;
-  localStorage.setItem("memnos_server_url", next.trim().replace(/\/+$/, ""));
-  const nextTok = prompt("Enter token for " + next.trim() + " (leave blank to keep current token):", "");
-  connectWorkspace(nextTok ? nextTok.trim() : tok(), next.trim());
+  const cur = serverBase();
+  $("#modal-url").value = cur;
+  $("#modal-token").value = "";
+  $("#modal-err").textContent = "";
+  setModalMode(isLoopbackUrl(cur) ? "local" : "remote");
+  $("#server-modal").hidden = false;
 };
+$("#modal-close").onclick = () => { $("#server-modal").hidden = true; };
+$("#modal-cancel").onclick = () => { $("#server-modal").hidden = true; };
+$("#modal-use-local").onclick = async () => {
+  if (!DEFAULT_LOCAL_TOKEN) return;
+  await connectWorkspace(DEFAULT_LOCAL_TOKEN, DEFAULT_LOCAL_URL);
+};
+$("#modal-connect").onclick = async () => {
+  const nextUrl = ($("#modal-url").value || "").trim().replace(/\/+$/, "");
+  if (!nextUrl) { $("#modal-err").textContent = "Enter a MEMNOS server URL."; return; }
+  let nextTok = ($("#modal-token").value || "").trim();
+  if (!nextTok) {
+    nextTok = (isLoopbackUrl(nextUrl) && DEFAULT_LOCAL_TOKEN) ? DEFAULT_LOCAL_TOKEN : tok();
+  }
+  if (!nextTok) { $("#modal-err").textContent = "Enter an access token (mnk_...) for this server."; return; }
+  $("#modal-err").textContent = "";
+  try {
+    localStorage.setItem("memnos_server_url", nextUrl);
+    localStorage.setItem("memnos_admin_token", nextTok);
+    await refreshOverview(true);
+    $("#server-modal").hidden = true;
+    loadInitialActivity();
+    startRealtime();
+  } catch (e) {
+    $("#modal-err").textContent = e.message;
+  }
+};
+
+$("#live-op-pill").onclick = () => switchSection("live");
+
 $("#refresh-now").onclick = () => {
   refreshOverview(false);
   if (activeSection === "channels" && selectedChannel) loadChannelMessages(false);
   if (activeSection === "handles" && selectedHandle) loadHandleMessages(false);
+  if (activeSection === "live") loadInitialActivity();
 };
 
-// ---- Real-Time SSE ----
+// ---- Real-Time SSE & Live Activity Stream ----
 function setLiveStatus(online, label) {
   $("#sse-badge").className = "status-chip " + (online ? "online" : "offline");
   $("#sse-text").textContent = label;
+}
+
+function updateLiveTopbarPill(ev, animate = true) {
+  const pill = $("#live-op-pill");
+  const txt = $("#live-op-text");
+  if (!pill || !txt || !ev) return;
+  const actor = ev.actor ? (String(ev.actor).startsWith("@") ? ev.actor : "@" + ev.actor) : "client";
+  const ns = ev.namespace && ev.namespace !== "*" ? ` · ${ev.namespace}` : "";
+  const ms = ev.latency_ms != null ? ` · ${ev.latency_ms}ms` : "";
+  txt.textContent = `${actor} · ${ev.op}${ns}${ms}`;
+  if (animate) {
+    pill.classList.add("flash");
+    if (liveFlashTimer) clearTimeout(liveFlashTimer);
+    liveFlashTimer = setTimeout(() => pill.classList.remove("flash"), 1400);
+  }
+}
+
+async function loadInitialActivity() {
+  try {
+    const { events } = await wapi("GET", "activity?limit=80");
+    if (Array.isArray(events)) {
+      liveEvents = events;
+      if (events.length > 0) updateLiveTopbarPill(events[0], false);
+      renderLiveTable();
+    }
+  } catch (_) {}
+}
+
+function handleLiveActivity(ev) {
+  updateLiveTopbarPill(ev, true);
+  if (activeSection !== "live") {
+    liveNewCount += 1;
+    const badge = $("#rail-live-count");
+    if (badge) {
+      badge.hidden = false;
+      badge.textContent = liveNewCount > 99 ? "99+" : String(liveNewCount);
+    }
+  }
+  if (!livePaused) {
+    ev._fresh = true;
+    liveEvents.unshift(ev);
+    if (liveEvents.length > 250) liveEvents.length = 250;
+    if (activeSection === "live") renderLiveTable();
+  }
+  const op = String(ev.op || "");
+  if (
+    op.includes("remember") ||
+    op.startsWith("memory/") ||
+    op === "consolidate" ||
+    op.startsWith("session/") ||
+    op.startsWith("channel/") ||
+    op.startsWith("inbox/")
+  ) {
+    scheduleRealtimeRefresh();
+    if (activeSection === "memories" && wmemOffset === 0 && (op.includes("remember") || op.startsWith("memory/"))) {
+      loadWorkspaceMemories();
+    }
+  }
+}
+
+function renderLiveTable() {
+  const tbody = $("#live-table tbody");
+  if (!tbody) return;
+  const q = ($("#live-filter")?.value || "").trim().toLowerCase();
+  const rows = liveEvents.filter(e => {
+    if (!q) return true;
+    const hay = `${e.actor || ""} ${e.principal || ""} ${e.op || ""} ${e.namespace || ""} ${e.detail || ""}`.toLowerCase();
+    return hay.includes(q);
+  });
+  const sum = $("#live-summary");
+  if (sum) sum.textContent = `${rows.length} event${rows.length === 1 ? "" : "s"}${livePaused ? " · PAUSED" : " · streaming live"}`;
+  tbody.innerHTML = rows.map(e => {
+    const ok = e.ok !== false && (e.status == null || e.status < 400);
+    const actor = e.actor || e.principal || "—";
+    const rowCls = e._fresh ? ' class="live-row-new"' : "";
+    e._fresh = false;
+    return `<tr${rowCls}>
+      <td title="${esc(e.ts || "")}">${esc(age(e.ts))} ago</td>
+      <td><code>@${esc(String(actor).replace(/^@/, ""))}</code></td>
+      <td><b><code>${esc(e.op || "—")}</code></b></td>
+      <td><code>${esc(e.namespace || "—")}</code></td>
+      <td class="muted" style="word-break:break-word">${esc(e.detail || "—")}</td>
+      <td>${e.latency_ms != null ? `${e.latency_ms} ms` : "—"}</td>
+      <td><span class="pill ${ok ? "ok" : "no"}">${e.status ?? (ok ? 200 : "ERR")}</span></td>
+    </tr>`;
+  }).join("") || emptyRow(7, "Waiting for live memnos calls (recall, remember, channel/publish, MCP)…");
 }
 
 function scheduleRealtimeRefresh() {
@@ -221,6 +410,7 @@ function startRealtime() {
       try {
         const d = JSON.parse(ev.data || "{}");
         if (d.type === "refresh") scheduleRealtimeRefresh();
+        else if (d.type === "activity") handleLiveActivity(d);
       } catch (_) {}
     };
     sseSource.onerror = () => setLiveStatus(false, "RECONNECTING");
@@ -241,9 +431,12 @@ function stopRealtime() {
 
 // ---- Primary Far-Left Rail Navigation ----
 function switchSection(sec) {
+  if (sec === "console" && wsData && !wsData.is_admin) {
+    sec = "channels";
+  }
   activeSection = sec;
   $$(".rail-btn").forEach(b => b.classList.toggle("active", b.dataset.section === sec));
-  ["channels", "handles", "memories", "telemetry", "console"].forEach(k => {
+  ["channels", "handles", "live", "memories", "telemetry", "console"].forEach(k => {
     const el = $("#sec-" + k);
     if (el) el.hidden = (k !== sec);
   });
@@ -254,13 +447,18 @@ function switchSection(sec) {
   } else if (sec === "handles") {
     renderHandleList();
     if (selectedHandle) { renderHandleHero(); loadHandleMessages(false); }
+  } else if (sec === "live") {
+    liveNewCount = 0;
+    const badge = $("#rail-live-count");
+    if (badge) badge.hidden = true;
+    renderLiveTable();
   } else if (sec === "memories") {
     wmemOffset = 0;
     loadWorkspaceMemories();
   } else if (sec === "telemetry") {
     renderTelemetry();
   } else if (sec === "console") {
-    const activeTab = $("#console-tabs button.active")?.dataset.ctab || "routing";
+    const activeTab = $("#console-tabs button.active")?.dataset.ctab || "access";
     switchConsoleTab(activeTab);
   }
 }
@@ -268,6 +466,21 @@ function switchSection(sec) {
 $$(".rail-btn").forEach(b => {
   b.onclick = () => switchSection(b.dataset.section);
 });
+
+if ($("#live-filter")) $("#live-filter").oninput = renderLiveTable;
+if ($("#live-pause-btn")) {
+  $("#live-pause-btn").onclick = () => {
+    livePaused = !livePaused;
+    $("#live-pause-btn").textContent = livePaused ? "Resume Stream" : "Pause Stream";
+    renderLiveTable();
+  };
+}
+if ($("#live-clear-btn")) {
+  $("#live-clear-btn").onclick = () => {
+    liveEvents = [];
+    renderLiveTable();
+  };
+}
 
 // ---- Active / Alive Helpers ----
 function aliveSessionSet() {
@@ -279,13 +492,15 @@ function aliveSessionSet() {
 }
 
 function liveSubscribersFor(ch) {
-  const alive = aliveSessionSet();
-  return (ch.subscribers || []).filter(h => alive.has(ch.namespace + "::" + h));
+  if (Array.isArray(ch.live_subscribers)) return ch.live_subscribers;
+  const aliveNames = new Set((wsData?.sessions || []).filter(x => x.alive).map(x => x.name));
+  return (ch.subscribers || []).filter(h => aliveNames.has(h));
 }
 
 function isChannelActive(ch) {
   if (!ch.channel || !ch.channel.startsWith("#")) return false;
-  if (ch.namespace.startsWith("test:")) return false;
+  const nss = ch.namespaces || (ch.namespace ? [ch.namespace] : []);
+  if (nss.length > 0 && nss.every(n => String(n).startsWith("test:"))) return false;
   const liveSubs = liveSubscribersFor(ch);
   if (liveSubs.length > 0) return true;
   if ((ch.open_tasks || 0) > 0) return true;
@@ -309,11 +524,14 @@ async function refreshOverview(pickDefaults = false) {
   data.channels = (data.channels || []).filter(c => String(c.channel || "").startsWith("#"));
   wsData = data;
 
-  // Topbar pills
+  // Topbar pills & Admin-only Settings visibility
   $("#switch-server").textContent = serverBase().replace(/^https?:\/\//, "");
   const pName = data.principal?.name || "user";
   $("#who-badge").textContent = `@${pName} · ${data.is_admin ? "ADMIN" : "SCOPED"}`;
   $$(".admin-only").forEach(el => { el.hidden = !data.is_admin; });
+  if (!data.is_admin && activeSection === "console") {
+    switchSection("channels");
+  }
 
   const v = data.vitals || {};
   const memStr = v.footprint_mb != null ? `${v.footprint_mb} MB` : (v.rss_mb != null ? `${v.rss_mb} MB` : "—");
@@ -424,35 +642,24 @@ function renderChannelList() {
     return;
   }
 
-  // Group by namespace when viewing "*"
-  const showNsGroups = ($("#ws-ns-filter").value || "*") === "*";
-  const byNs = new Map();
-  for (const c of list) {
-    const k = showNsGroups ? c.namespace : "";
-    if (!byNs.has(k)) byNs.set(k, []);
-    byNs.get(k).push(c);
-  }
-
+  // Flat Slack-style list of unique #channels across the server
   let html = "";
-  for (const [ns, items] of byNs.entries()) {
-    if (ns) html += `<div class="ns-group-label"><span>${esc(ns)}</span><span>${items.length}</span></div>`;
-    for (const c of items) {
-      const isSel = selectedChannel && selectedChannel.namespace === c.namespace && selectedChannel.channel === c.channel;
-      const liveSubs = liveSubscribersFor(c);
-      const tasks = c.open_tasks || 0;
-      html += `<button class="list-card ${isSel ? "active" : ""}" data-ns="${esc(c.namespace)}" data-ch="${esc(c.channel)}">
-        <div class="list-card-top">
-          <span class="list-card-name">${esc(c.channel)}</span>
-          ${tasks > 0
-            ? `<span class="tiny-pill warn">${tasks} task${tasks > 1 ? "s" : ""}</span>`
-            : (liveSubs.length > 0 ? `<span class="tiny-pill live">● ${liveSubs.length} live</span>` : `<span class="tiny-pill">${c.message_count || 0} msgs</span>`)}
-        </div>
-        <div class="list-card-sub">
-          <span>${c.message_count || 0} msgs · ${(c.subscribers || []).length} subs</span>
-          <span>${c.last_message_at ? age(c.last_message_at) + " ago" : "new"}</span>
-        </div>
-      </button>`;
-    }
+  for (const c of list) {
+    const isSel = selectedChannel && selectedChannel.channel === c.channel;
+    const liveSubs = liveSubscribersFor(c);
+    const tasks = c.open_tasks || 0;
+    html += `<button class="list-card ${isSel ? "active" : ""}" data-ns="${esc(c.namespace)}" data-ch="${esc(c.channel)}">
+      <div class="list-card-top">
+        <span class="list-card-name">${esc(c.channel)}</span>
+        ${tasks > 0
+          ? `<span class="tiny-pill warn">${tasks} task${tasks > 1 ? "s" : ""}</span>`
+          : (liveSubs.length > 0 ? `<span class="tiny-pill live">● ${liveSubs.length} live</span>` : `<span class="tiny-pill">${c.message_count || 0} msgs</span>`)}
+      </div>
+      <div class="list-card-sub">
+        <span>${c.message_count || 0} msgs · ${(c.subscribers || []).length} subs</span>
+        <span>${c.last_message_at ? age(c.last_message_at) + " ago" : "new"}</span>
+      </div>
+    </button>`;
   }
   box.innerHTML = html;
 
@@ -513,19 +720,22 @@ $("#delete-channel-btn").onclick = async () => {
 
 function renderChannelHeaderAndInspector() {
   if (!selectedChannel || !wsData) return;
+  const chObj = (wsData.channels || []).find(c => c.channel === selectedChannel.channel)
+    || { namespace: selectedChannel.namespace, namespaces: [selectedChannel.namespace], subscribers: [], publishers: [], message_count: 0, open_tasks: 0, description: "" };
+  selectedChannel.namespace = chObj.namespace || selectedChannel.namespace;
   const { namespace, channel } = selectedChannel;
-  const writable = canWriteNs(namespace);
-  const chObj = (wsData.channels || []).find(c => c.namespace === namespace && c.channel === channel)
-    || { subscribers: [], publishers: [], message_count: 0, open_tasks: 0, description: "" };
+  const nss = chObj.namespaces || [namespace];
+  const writable = nss.some(canWriteNs) || canWriteNs(namespace);
   const liveSubs = liveSubscribersFor(chObj);
   const allSubs = chObj.subscribers || [];
 
   $("#ch-stage-title").textContent = channel.replace(/^#/, "");
-  $("#ch-stage-ns").textContent = namespace;
+  $("#ch-stage-ns").textContent = nss.length > 1 ? `${nss.length} namespaces` : namespace;
+  $("#ch-stage-ns").title = nss.join(", ");
   $("#ch-stage-meta").textContent =
     `${liveSubs.length} online / ${allSubs.length} subscribed · ${chObj.message_count || 0} messages` +
     (chObj.description ? ` · ${chObj.description}` : "");
-  $("#ch-comp-input").placeholder = `Message ${channel} in ${namespace}… (Enter to send, Shift+Enter for newline)`;
+  $("#ch-comp-input").placeholder = `Message ${channel}… (Enter to send, Shift+Enter for newline)`;
   $("#delete-channel-btn").hidden = !writable;
 
   // Stacked live avatars
@@ -535,13 +745,19 @@ function renderChannelHeaderAndInspector() {
 
   // Right Inspector: separate Online vs Offline subscribers + Subscribe control
   const offlineSubs = allSubs.filter(h => !liveSubs.includes(h));
-  const candidateHandles = (wsData.sessions || [])
-    .filter(s => s.namespace === namespace && s.alive && !allSubs.includes(s.name))
-    .map(s => s.name);
+  const candidateHandles = [...new Set((wsData.sessions || [])
+    .filter(s => s.alive && !allSubs.includes(s.name))
+    .map(s => s.name))];
+
+  const findHandleNs = (h) => {
+    const s = (wsData.sessions || []).find(x => x.name === h && x.alive)
+      || (wsData.sessions || []).find(x => x.name === h);
+    return s ? s.namespace : namespace;
+  };
 
   const renderMemberRow = (h, isLive) => `
     <div class="member-row">
-      <div class="member-row-left" data-jump-handle="${esc(h)}" data-jump-ns="${esc(namespace)}" title="Open @${esc(h)} in Handles">
+      <div class="member-row-left" data-jump-handle="${esc(h)}" data-jump-ns="${esc(findHandleNs(h))}" title="Open @${esc(h)} in Handles">
         <span class="dot ${isLive ? "alive" : "idle"}"></span>
         <code>@${esc(h)}</code>
       </div>
@@ -634,8 +850,9 @@ async function loadChannelMessages(forceScrollBottom = false) {
         <div class="msg-av" style="background:${avatarColor(sender)}">${esc(initials)}</div>
         <div class="msg-content">
           <div class="msg-meta">
-            <span class="msg-author" data-author="${esc(sender)}" data-ns="${esc(namespace)}">@${esc(sender)}</span>
+            <span class="msg-author" data-author="${esc(sender)}" data-ns="${esc(m.namespace || namespace)}">@${esc(sender)}</span>
             <span class="tiny-pill">${esc(m.intent || "message")}</span>
+            ${m.namespace ? `<span class="tiny-pill tag">${esc(m.namespace)}</span>` : ""}
             <span class="msg-ts" title="${esc(m.created_at)}">${fmt(m.created_at)} (${age(m.created_at)} ago) · #${m.id}</span>
           </div>
           <div class="msg-body-text">${formatRichText(m.content)}</div>
@@ -1068,15 +1285,104 @@ $("#ns-create").onclick = async () => {
 };
 
 // ---- Principals, Grants & Tokens ----
+function renderPrincipalsRows() {
+  const tbody = $("#pr-table tbody");
+  if (!tbody) return;
+  const q = ($("#pr-filter")?.value || "").trim().toLowerCase();
+  const filtered = allPrincipals.filter(p => {
+    if (!q) return true;
+    return `${p.id} ${p.name} ${p.kind}`.toLowerCase().includes(q);
+  });
+
+  const staleTests = allPrincipals.filter(p =>
+    p.id !== callerPrincipalId &&
+    (p.active_tokens || 0) === 0 &&
+    String(p.name || "").toLowerCase().startsWith("test-")
+  );
+  const pruneBtn = $("#pr-prune-test");
+  if (pruneBtn) {
+    pruneBtn.hidden = staleTests.length === 0;
+    pruneBtn.textContent = `Prune 0-token test-* (${staleTests.length})`;
+    pruneBtn.onclick = async () => {
+      if (!confirm(`Delete ${staleTests.length} stale "test-*" principals that have 0 active tokens?`)) return;
+      pruneBtn.disabled = true;
+      try {
+        for (const tp of staleTests) {
+          await api("DELETE", "principals?id=" + tp.id);
+        }
+        await loadPrincipals();
+        refreshOverview(false);
+      } catch (e) {
+        alert(e.message);
+      } finally {
+        pruneBtn.disabled = false;
+      }
+    };
+  }
+
+  tbody.innerHTML = filtered.map(p => {
+    const isSelf = p.id === callerPrincipalId;
+    return `<tr>
+      <td>${p.id}</td>
+      <td><code>${esc(p.name)}</code></td>
+      <td><span class="pill ${p.kind === "service" ? "warn" : "ok"}">${esc(p.kind)}</span></td>
+      <td>${p.active_tokens}</td>
+      <td>
+        <div class="row" style="gap:6px">
+          <button class="ghost sm" data-manage-gr="${p.id}">Grants</button>
+          ${isSelf
+            ? `<span class="pill ok" title="Currently signed-in principal">current</span>`
+            : `<button class="danger sm" data-del-pr="${p.id}" data-del-name="${esc(p.name)}">Delete</button>`}
+        </div>
+      </td>
+    </tr>`;
+  }).join("") || emptyRow(5, "No matching principals.");
+
+  $$("#pr-table [data-manage-gr]").forEach(b => {
+    b.onclick = () => {
+      $("#gr-principal").value = b.dataset.manageGr;
+      loadGrants();
+      $("#grants-card")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    };
+  });
+
+  $$("#pr-table [data-del-pr]").forEach(b => {
+    b.onclick = async () => {
+      const id = +b.dataset.delPr;
+      const nm = b.dataset.delName || String(id);
+      if (!confirm(`Delete principal "${nm}" (ID ${id})?\n\nThis permanently revokes and deletes all grants, tokens, and sessions belonging to "${nm}".`)) return;
+      try {
+        await api("DELETE", "principals?id=" + id);
+        await loadPrincipals();
+        refreshOverview(false);
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+  });
+}
+
+if ($("#pr-filter")) $("#pr-filter").oninput = renderPrincipalsRows;
+
 async function loadPrincipals() {
   const tbody = $("#pr-table tbody");
-  await loadTable(tbody, () => api("GET", "principals"), ({ principals }) => {
-    tbody.innerHTML = principals.map(p => `<tr>
-      <td>${p.id}</td><td>${esc(p.name)}</td><td>${esc(p.kind)}</td><td>${p.active_tokens}</td></tr>`).join("")
-      || emptyRow(4, `No principals yet.`);
-    const opts = principals.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
-    $("#tok-principal").innerHTML = opts; $("#gr-principal").innerHTML = opts;
-    loadTokens(); loadGrants();
+  const prevTokP = $("#tok-principal").value;
+  const prevGrP = $("#gr-principal").value;
+  await loadTable(tbody, () => api("GET", "principals"), ({ principals, caller_id }) => {
+    allPrincipals = principals || [];
+    callerPrincipalId = caller_id || wsData?.principal?.id || 0;
+    renderPrincipalsRows();
+    const opts = allPrincipals.map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.kind)})</option>`).join("");
+    $("#tok-principal").innerHTML = opts;
+    $("#gr-principal").innerHTML = opts;
+    if (prevTokP && [...$("#tok-principal").options].some(o => o.value === prevTokP)) {
+      $("#tok-principal").value = prevTokP;
+    }
+    if (prevGrP && [...$("#gr-principal").options].some(o => o.value === prevGrP)) {
+      $("#gr-principal").value = prevGrP;
+    }
+    loadTokens();
+    loadGrants();
   }, loadPrincipals);
 }
 $("#pr-create").onclick = async () => {
@@ -1093,10 +1399,10 @@ async function loadTokens() {
     tbody.innerHTML = tokens.map(t => `<tr>
       <td>${t.id}</td><td><code>${esc(t.hint || "—")}</code></td><td>${esc(t.label || "")}</td><td>${fmt(t.created_at)}</td><td>${fmt(t.expires_at)}</td>
       <td><span class="pill ${t.revoked ? "no" : "ok"}">${t.revoked ? "revoked" : "active"}</span></td>
-      <td>${t.revoked ? "" : `<button class="danger" data-rv="${t.id}">revoke</button>`}</td></tr>`).join("")
+      <td>${t.revoked ? "" : `<button class="danger sm" data-rv="${t.id}">Revoke</button>`}</td></tr>`).join("")
       || emptyRow(7, `No tokens for this principal.`);
     $$("#tok-table [data-rv]").forEach(b => b.onclick = async () => {
-      await api("POST", "tokens/revoke", { id: +b.dataset.rv }); loadTokens();
+      await api("POST", "tokens/revoke", { id: +b.dataset.rv }); loadTokens(); loadPrincipals();
     });
   }, loadTokens);
 }
@@ -1116,14 +1422,18 @@ async function loadGrants() {
   const tbody = $("#gr-table tbody");
   const pid = $("#gr-principal").value;
   if (!pid) { tbody.innerHTML = emptyRow(4, `Create a principal first.`); return; }
+  if ($("#gr-who")) $("#gr-who").textContent = $("#gr-principal").selectedOptions[0]?.textContent || "";
   await loadTable(tbody, () => api("GET", "grants?principal=" + pid), ({ grants }) => {
     tbody.innerHTML = grants.map(g => `<tr>
       <td><code>${esc(g.namespace)}</code></td>
-      <td>${g.can_read ? "✓" : ""}</td><td>${g.can_write ? "✓" : ""}</td>
-      <td><button class="danger" data-rg="${esc(g.namespace)}">revoke</button></td></tr>`).join("")
-      || emptyRow(4, `No grants.`);
+      <td>${g.can_read ? "✓" : "—"}</td><td>${g.can_write ? "✓" : "—"}</td>
+      <td><button class="danger sm" data-rg="${esc(g.namespace)}">Revoke</button></td></tr>`).join("")
+      || emptyRow(4, `No grants configured for this principal.`);
     $$("#gr-table [data-rg]").forEach(b => b.onclick = async () => {
-      await api("DELETE", "grants?principal=" + pid + "&namespace=" + encodeURIComponent(b.dataset.rg)); loadGrants();
+      try {
+        await api("DELETE", "grants?principal=" + pid + "&namespace=" + encodeURIComponent(b.dataset.rg));
+        loadGrants();
+      } catch (e) { alert(e.message); }
     });
   }, loadGrants);
 }

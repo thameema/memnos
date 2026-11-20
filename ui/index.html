@@ -1,45 +1,147 @@
 <!doctype html>
-<html lang="en" data-theme="nebula">
+<html lang="en" data-theme="aubergine">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MEMNOS · Workspace</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='8' fill='url(%23g)'/%3E%3Cpath d='M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8' stroke='%23fff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='2' y1='2' x2='30' y2='30' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='%237C5CFF'/%3E%3Cstop offset='.52' stop-color='%23B832E5'/%3E%3Cstop offset='1' stop-color='%23EC4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E">
   <link rel="stylesheet" href="/admin/app.css">
 </head>
 <body>
-  <!-- Connect / Sign-In Screen -->
+  <!-- Connect / Server Onboarding Screen -->
   <section id="login" class="login-shell">
     <div class="login-card">
       <div class="login-brand">
-        <div class="brand-logo">M</div>
+        <svg class="m-logo-svg lg" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <rect x="1.5" y="1.5" width="29" height="29" rx="8" fill="url(#mBrandLogin)"/>
+          <path d="M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+          <defs>
+            <linearGradient id="mBrandLogin" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#7C5CFF"/><stop offset="0.52" stop-color="#B832E5"/><stop offset="1" stop-color="#EC4899"/>
+            </linearGradient>
+          </defs>
+        </svg>
         <div>
           <div class="brand-title">MEMNOS</div>
-          <div class="muted">Real-Time Agent Mesh · Memory · Telemetry</div>
+          <div class="muted">Real-Time Agent Mesh · Memory · Live Telemetry</div>
         </div>
       </div>
+
+      <!-- Local (Default) vs Remote Server Mode Selector -->
+      <div class="seg-control conn-tabs" id="login-mode-tabs">
+        <button type="button" data-cmode="local" class="active">● Local MEMNOS (Default)</button>
+        <button type="button" data-cmode="remote">🌐 Remote MEMNOS Server</button>
+      </div>
+
+      <div id="login-local-banner" class="conn-guide">
+        <div class="conn-guide-hdr">Local Engine on <code>http://127.0.0.1:8900</code></div>
+        <div id="login-local-autodetect" class="muted" hidden>
+          Local credentials detected from <code>~/.memnos/config.json</code>.
+          <button type="button" id="btn-connect-local-auto" class="btn-primary sm" style="margin-left:6px">Connect Local Now</button>
+        </div>
+        <div id="login-local-cli" class="muted">
+          1. Start local engine: <code>memnos start</code><br>
+          2. Mint/print token: <code>memnos token mint admin --label desktop</code>
+        </div>
+      </div>
+
+      <div id="login-remote-banner" class="conn-guide" hidden>
+        <div class="conn-guide-hdr">Connect to an Existing Remote MEMNOS Instance</div>
+        <div class="muted">
+          Enter your team or cloud server URL (<code>https://...</code>) and token:<br>
+          • <b>Admin token</b> (full Settings &amp; all namespaces): <code>memnos token mint admin</code><br>
+          • <b>Role-scoped token</b> (granted namespaces only): <code>memnos principal create alice &amp;&amp; memnos grant add alice proj:app --write &amp;&amp; memnos token mint alice</code>
+        </div>
+      </div>
+
       <label class="field-lbl" for="server-url">MEMNOS Server URL</label>
-      <input id="server-url" type="url" placeholder="http://127.0.0.1:8900 or https://memnos.acme.dev" autocomplete="url">
+      <input id="server-url" type="url" placeholder="http://127.0.0.1:8900" autocomplete="url">
       <label class="field-lbl" for="token">Access Token</label>
       <div class="row">
         <input id="token" type="password" placeholder="mnk_..." autocomplete="off">
         <button id="signin" class="btn-primary">Connect</button>
       </div>
-      <p class="muted login-hint">Sign in with an <b>admin token</b> for full governance, or any <b>role-scoped token</b> to inspect and manage the channels, handles, memories, and telemetry in your scope.</p>
       <p id="loginerr" class="err"></p>
     </div>
   </section>
+
+  <!-- Switch Server Modal (Local vs Remote while inside the app) -->
+  <div id="server-modal" class="modal-backdrop" hidden>
+    <div class="login-card modal-card">
+      <div class="row" style="justify-content:space-between;margin-bottom:14px">
+        <div class="row" style="gap:10px">
+          <svg class="m-logo-svg sm" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <rect x="1.5" y="1.5" width="29" height="29" rx="8" fill="url(#mBrandModal)"/>
+            <path d="M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+            <defs>
+              <linearGradient id="mBrandModal" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#7C5CFF"/><stop offset="0.52" stop-color="#B832E5"/><stop offset="1" stop-color="#EC4899"/>
+              </linearGradient>
+            </defs>
+          </svg>
+          <h3 style="margin:0">MEMNOS Server Connection</h3>
+        </div>
+        <button type="button" id="modal-close" class="ghost sm">✕</button>
+      </div>
+
+      <div class="seg-control conn-tabs" id="modal-mode-tabs">
+        <button type="button" data-mmode="local" class="active">● Local MEMNOS (Default)</button>
+        <button type="button" data-mmode="remote">🌐 Remote MEMNOS Server</button>
+      </div>
+
+      <div id="modal-local-guide" class="conn-guide">
+        <div class="conn-guide-hdr">Local MEMNOS (<code>http://127.0.0.1:8900</code>)</div>
+        <div class="muted">
+          Connects directly to the MEMNOS server running on this machine.<br>
+          Start if offline: <code>memnos start</code> · Mint token: <code>memnos token mint admin</code>
+        </div>
+      </div>
+
+      <div id="modal-remote-guide" class="conn-guide" hidden>
+        <div class="conn-guide-hdr">Remote / Team MEMNOS Server</div>
+        <div class="muted">
+          Point the app at any self-hosted or cloud MEMNOS URL (e.g. <code>https://memnos.acme.dev</code>).<br>
+          • <b>Admin</b> sees <code>⚙ Settings</code> + all namespaces.<br>
+          • <b>Scoped user/agent</b> sees only authorized <code>#channels</code>, <code>@handles</code>, and <code>Memories</code>.
+        </div>
+      </div>
+
+      <label class="field-lbl" for="modal-url">Server URL</label>
+      <input id="modal-url" type="url" placeholder="http://127.0.0.1:8900 or https://memnos.acme.dev">
+      <label class="field-lbl" for="modal-token">Access Token <span class="muted">(leave blank to keep current token)</span></label>
+      <input id="modal-token" type="password" placeholder="mnk_...">
+      <p id="modal-err" class="err"></p>
+      <div class="row" style="justify-content:flex-end;margin-top:14px">
+        <button type="button" id="modal-use-local" class="ghost sm" hidden>Use Local Default</button>
+        <button type="button" id="modal-cancel" class="ghost sm">Cancel</button>
+        <button type="button" id="modal-connect" class="btn-primary sm">Connect Server</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Main Workspace Shell -->
   <div id="app" class="app-shell" hidden>
     <!-- Top Header Bar -->
     <header class="topbar">
       <div class="topbar-left">
-        <div class="brand-logo sm">M</div>
+        <svg class="m-logo-svg sm" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <rect x="1.5" y="1.5" width="29" height="29" rx="8" fill="url(#mBrandTop)"/>
+          <path d="M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+          <defs>
+            <linearGradient id="mBrandTop" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#7C5CFF"/><stop offset="0.52" stop-color="#B832E5"/><stop offset="1" stop-color="#EC4899"/>
+            </linearGradient>
+          </defs>
+        </svg>
         <span class="topbar-title">MEMNOS</span>
-        <span id="sse-badge" class="status-chip offline" title="Postgres LISTEN/NOTIFY real-time stream">
+        <span id="sse-badge" class="status-chip offline" title="Real-time SSE event stream">
           <span class="pulse-dot"></span><span id="sse-text">CONNECTING</span>
         </span>
-        <button id="switch-server" class="chip-btn" title="Switch local or remote MEMNOS server"></button>
+        <button id="switch-server" class="chip-btn" title="Switch between Local MEMNOS and Remote Server"></button>
+        <button id="live-op-pill" class="live-op-pill" title="Click to open Live Activity stream">
+          <span class="live-op-dot"></span>
+          <span id="live-op-text">Listening for live memnos calls…</span>
+        </button>
       </div>
 
       <div id="vitals-strip" class="vitals-strip"></div>
@@ -54,8 +156,8 @@
 
         <div class="theme-picker" title="Switch theme">
           <select id="theme-select" aria-label="Theme">
-            <option value="nebula">✦ Nebula Dark</option>
             <option value="aubergine">◈ Slack Aubergine</option>
+            <option value="nebula">✦ Nebula Dark</option>
             <option value="daylight">☀ Daylight Frost</option>
             <option value="emerald">⚡ Cyber Emerald</option>
             <option value="copper">◐ Warm Copper</option>
@@ -69,7 +171,7 @@
     </header>
 
     <div class="app-body">
-      <!-- Primary Far-Left Icon Rail (Splits Channels & Handles cleanly!) -->
+      <!-- Primary Far-Left Icon Rail -->
       <nav class="rail" aria-label="Primary sections">
         <button class="rail-btn active" data-section="channels" title="Channels (#)">
           <span class="rail-glyph">#</span>
@@ -81,6 +183,12 @@
           <span class="rail-glyph">@</span>
           <span class="rail-lbl">Handles</span>
           <span id="rail-hd-count" class="rail-badge ok">0</span>
+        </button>
+
+        <button class="rail-btn" data-section="live" title="Live MEMNOS Activity Stream">
+          <span class="rail-glyph">◉</span>
+          <span class="rail-lbl">Live</span>
+          <span id="rail-live-count" class="rail-badge" hidden>0</span>
         </button>
 
         <button class="rail-btn" data-section="memories" title="Memory Explorer">
@@ -95,21 +203,21 @@
 
         <div class="rail-spacer"></div>
 
-        <button class="rail-btn" data-section="console" title="Governance, Routing &amp; CLI Console">
+        <button class="rail-btn admin-only" data-section="console" title="Admin Server Settings" hidden>
           <span class="rail-glyph">⚙</span>
-          <span class="rail-lbl">Console</span>
+          <span class="rail-lbl">Settings</span>
         </button>
       </nav>
 
       <!-- ============================================================ -->
-      <!-- SECTION 1: CHANNELS WORKSPACE (Strictly #channels only!)     -->
+      <!-- SECTION 1: CHANNELS WORKSPACE (Unique #channels across server)-->
       <!-- ============================================================ -->
       <section id="sec-channels" class="workspace-split">
         <aside class="list-pane">
           <div class="pane-hdr">
             <div>
               <div class="pane-title">Channels</div>
-              <div id="ch-pane-sub" class="pane-sub">Real-time pub/sub topics</div>
+              <div id="ch-pane-sub" class="pane-sub">Unique pub/sub topics</div>
             </div>
             <button id="btn-new-channel" class="btn-primary sm" title="Create #channel">+ New</button>
           </div>
@@ -127,7 +235,7 @@
           <div class="pane-controls">
             <div class="search-box">
               <span class="search-ico">⌕</span>
-              <input id="ch-search" type="search" placeholder="Filter #channels or namespace…">
+              <input id="ch-search" type="search" placeholder="Filter #channels or subscriber…">
             </div>
             <div class="seg-control" id="ch-mode-tabs">
               <button data-mode="active" class="active" title="Channels with online @handles or recent messages">Active</button>
@@ -241,6 +349,48 @@
       </section>
 
       <!-- ============================================================ -->
+      <!-- SECTION 2B: REAL-TIME LIVE ACTIVITY STREAM                   -->
+      <!-- ============================================================ -->
+      <section id="sec-live" class="page-stage" hidden>
+        <div class="page-inner">
+          <div class="page-hdr">
+            <div>
+              <h2>Live MEMNOS Activity Stream</h2>
+              <p class="muted">Real-time SSE feed of every <code>recall</code>, <code>remember</code>, <code>reconcile</code>, <code>channel/*</code>, <code>session/*</code>, and MCP call hitting this server.</p>
+            </div>
+            <div class="row">
+              <button id="live-pause-btn" class="ghost sm">Pause Stream</button>
+              <button id="live-clear-btn" class="ghost sm">Clear</button>
+            </div>
+          </div>
+
+          <div class="surface-card">
+            <div class="row" style="margin-bottom:14px">
+              <div class="search-box" style="flex:1">
+                <span class="search-ico">⌕</span>
+                <input id="live-filter" placeholder="Filter live calls by @handle, operation (recall, remember, channel/publish), namespace, or query…">
+              </div>
+              <span id="live-summary" class="muted"></span>
+            </div>
+            <table id="live-table">
+              <thead>
+                <tr>
+                  <th style="width:110px">Time</th>
+                  <th style="width:160px">Actor / Handle</th>
+                  <th style="width:170px">Operation</th>
+                  <th style="width:170px">Namespace</th>
+                  <th>Detail / Query</th>
+                  <th style="width:90px">Latency</th>
+                  <th style="width:80px">Status</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
       <!-- SECTION 3: MEMORY EXPLORER                                   -->
       <!-- ============================================================ -->
       <section id="sec-memories" class="page-stage" hidden>
@@ -305,9 +455,9 @@
             <div class="surface-card">
               <div class="row" style="justify-content:space-between;margin-bottom:10px">
                 <h3 style="margin:0">Namespace Storage Breakdown</h3>
-                <input id="tel-ns-search" placeholder="Filter namespaces…" style="max-width:200px;padding:5px 10px;font-size:12px">
+                <input id="tel-ns-search" placeholder="Filter namespaces…" style="max-width:220px;padding:5px 10px;font-size:12px">
               </div>
-              <div style="max-height:420px;overflow-y:auto">
+              <div style="max-height:460px;overflow-y:auto">
                 <table id="tel-ns-table">
                   <thead><tr><th>Namespace</th><th>Facts</th><th>Turns</th><th>Entities</th><th>Access</th></tr></thead>
                   <tbody></tbody>
@@ -319,31 +469,31 @@
       </section>
 
       <!-- ============================================================ -->
-      <!-- SECTION 5: GOVERNANCE, ROUTING & CLI CONSOLE                 -->
+      <!-- SECTION 5: ADMIN SERVER SETTINGS                             -->
       <!-- ============================================================ -->
-      <section id="sec-console" class="page-stage" hidden>
+      <section id="sec-console" class="page-stage admin-only" hidden>
         <div class="page-inner">
           <div class="page-hdr">
             <div>
-              <h2>Governance &amp; Configuration Console</h2>
-              <p class="muted">Repo bindings, access control grants, API tokens, encrypted secret vault, and CLI reference.</p>
+              <h2>MEMNOS Server Settings</h2>
+              <p class="muted">Admin governance: principals &amp; role grants, API tokens, namespaces, repo routing, encrypted secret vault, and audit logs.</p>
             </div>
           </div>
 
           <div class="subtabs" id="console-tabs">
-            <button data-ctab="routing" class="active">Repo Routing</button>
+            <button data-ctab="access" class="active">Principals &amp; Grants</button>
+            <button data-ctab="tokens">API Tokens</button>
+            <button data-ctab="namespaces">Namespaces</button>
+            <button data-ctab="routing">Repo Routing</button>
+            <button data-ctab="usage">Cost &amp; Budgets</button>
+            <button data-ctab="secrets">Secret Vault</button>
+            <button data-ctab="dashboard">Audit &amp; Health</button>
+            <button data-ctab="settings">LLM Provider</button>
             <button data-ctab="cli">CLI Reference</button>
-            <button data-ctab="namespaces" class="admin-only">Namespaces</button>
-            <button data-ctab="access" class="admin-only">Principals &amp; Grants</button>
-            <button data-ctab="tokens" class="admin-only">API Tokens</button>
-            <button data-ctab="usage" class="admin-only">Cost &amp; Budgets</button>
-            <button data-ctab="secrets" class="admin-only">Secret Vault</button>
-            <button data-ctab="dashboard" class="admin-only">Audit &amp; Health</button>
-            <button data-ctab="settings" class="admin-only">LLM Provider</button>
           </div>
 
           <!-- Routing -->
-          <div id="ctab-routing" class="ctab-pane">
+          <div id="ctab-routing" class="ctab-pane" hidden>
             <div class="surface-card">
               <h3>Add repo or folder binding</h3>
               <p class="muted">Bind a repository or folder to a namespace so agents route automatically across machines.</p>
@@ -392,7 +542,7 @@
           </div>
 
           <!-- Admin: Principals & Grants -->
-          <div id="ctab-access" class="ctab-pane" hidden>
+          <div id="ctab-access" class="ctab-pane">
             <div class="surface-card">
               <h3>Create principal</h3>
               <div class="row">
@@ -401,17 +551,31 @@
                 <button id="pr-create" class="btn-primary">Create</button>
               </div>
             </div>
-            <div class="surface-card"><table id="pr-table"><thead><tr><th>ID</th><th>Name</th><th>Kind</th><th>Active tokens</th></tr></thead><tbody></tbody></table></div>
+
             <div class="surface-card">
-              <h3>Grant access</h3>
+              <div class="row" style="justify-content:space-between;margin-bottom:12px">
+                <div class="row" style="flex:1;max-width:440px">
+                  <h3 style="margin:0 10px 0 0">Principals</h3>
+                  <input id="pr-filter" placeholder="Filter principals by name or kind…" style="padding:6px 10px;font-size:12.5px">
+                </div>
+                <button id="pr-prune-test" class="danger sm" title="Delete stale test-* principals that have 0 active tokens" hidden>Prune 0-token test-*</button>
+              </div>
+              <table id="pr-table">
+                <thead><tr><th style="width:80px">ID</th><th>Name</th><th style="width:120px">Kind</th><th style="width:130px">Active tokens</th><th style="width:200px">Actions</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+
+            <div class="surface-card" id="grants-card">
+              <h3>Namespace Grants for <span id="gr-who" class="muted"></span></h3>
               <div class="row">
-                <select id="gr-principal"></select>
+                <select id="gr-principal" style="max-width:260px"></select>
                 <input id="gr-namespace" placeholder="namespace (or team:eng:*  or  *)">
                 <label class="chk"><input type="checkbox" id="gr-read" checked> read</label>
                 <label class="chk"><input type="checkbox" id="gr-write" checked> write</label>
                 <button id="gr-add" class="btn-primary">Grant</button>
               </div>
-              <table id="gr-table" style="margin-top:12px"><thead><tr><th>Namespace</th><th>Read</th><th>Write</th><th></th></tr></thead><tbody></tbody></table>
+              <table id="gr-table" style="margin-top:12px"><thead><tr><th>Namespace</th><th style="width:100px">Read</th><th style="width:100px">Write</th><th style="width:120px">Actions</th></tr></thead><tbody></tbody></table>
             </div>
           </div>
 
