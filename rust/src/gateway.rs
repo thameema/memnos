@@ -507,6 +507,9 @@ async fn gateway_handler(
 
     let target_url = format!("http://127.0.0.1:{}{}", port, path_and_q);
     let mut req_builder = st.http.request(method, &target_url).body(body.to_vec());
+    if path == "/workspace/events" {
+        req_builder = req_builder.timeout(Duration::from_secs(3600));
+    }
     for (k, v) in &headers {
         let name = k.as_str().to_ascii_lowercase();
         if matches!(name.as_str(), "host" | "content-length" | "connection") {
@@ -537,8 +540,17 @@ async fn gateway_handler(
                 }
                 out_headers.insert(k.clone(), v.clone());
             }
-            let bytes = r.bytes().await.unwrap_or_default();
-            let mut resp = Response::new(Body::from(bytes));
+            let is_sse = out_headers
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.starts_with("text/event-stream"))
+                .unwrap_or(false);
+            let body_out = if is_sse {
+                Body::from_stream(r.bytes_stream())
+            } else {
+                Body::from(r.bytes().await.unwrap_or_default())
+            };
+            let mut resp = Response::new(body_out);
             *resp.status_mut() = status;
             *resp.headers_mut() = out_headers;
             resp

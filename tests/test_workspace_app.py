@@ -161,6 +161,8 @@ def main():
         for ns in (NS_RW, NS_RO, NS_HIDDEN):
             call("DELETE", f"/admin/api/namespaces?name={ns}&purge=1", admin_tok)
         with conn.cursor() as cur:
+            cur.execute("DELETE FROM memnos_control.channel_subscriptions WHERE principal_id = ANY(%s)", ([admin_id, scoped_id],))
+            cur.execute("DELETE FROM memnos_control.agent_sessions WHERE principal_id = ANY(%s)", ([admin_id, scoped_id],))
             cur.execute("DELETE FROM memnos_control.api_tokens WHERE principal_id = ANY(%s)", ([admin_id, scoped_id],))
             cur.execute("DELETE FROM memnos_control.grants WHERE principal_id = ANY(%s)", ([admin_id, scoped_id],))
             cur.execute("DELETE FROM memnos_control.audit_log WHERE principal_id = ANY(%s)", ([admin_id, scoped_id],))
