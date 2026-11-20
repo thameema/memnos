@@ -13,7 +13,9 @@ use memnos_core::{
     embed::Embedder,
     extract::Extractor,
     gateway::run_gateway,
-    hooks::{enforce_cache_path, print_tips_showcase, run_hook},
+    hooks::{
+        enforce_cache_path, format_memnos_badge, load_cached_badge, print_tips_showcase, run_hook,
+    },
     mcp::run_stdio,
     nsresolve::{
         clear_active_session, detect_terminal_session, hostname, is_local_pid_alive, machine_id,
@@ -174,6 +176,9 @@ enum Commands {
     },
     /// show server + config + embedding mode + active session
     Status,
+    /// show this terminal's [MEMNOS @handle · #channels] identity badge
+    #[command(visible_alias = "identity")]
+    Id,
     /// install a login service (launchd/systemd/schtasks) so the server always runs
     Autostart {
         #[arg(long)]
@@ -2271,17 +2276,88 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 )),
             }
         }
+        Commands::Id => {
+            let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let term = detect_terminal_session(&cwd);
+            let (ns, _) = resolve_with_source(&cwd, None);
+            let mut handle = resolve_active_session(&cwd);
+            if handle.is_empty() {
+                handle = term.name.clone();
+            }
+            let mut channels: Vec<String> = Vec::new();
+            if let Ok(polled) = http_post_json(
+                &cfg,
+                "/channel/poll",
+                None,
+                &json!({
+                    "namespace": ns,
+                    "session_name": handle,
+                    "peek": true,
+                    "limit": 1,
+                }),
+                2,
+            ) {
+                if let Some(sn) = polled.get("session_name").and_then(|v| v.as_str()) {
+                    if !sn.is_empty() {
+                        handle = sn.to_string();
+                    }
+                }
+                if let Some(arr) = polled.get("channels").and_then(|v| v.as_array()) {
+                    channels = arr
+                        .iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect();
+                }
+            }
+            if channels.is_empty() {
+                if let Some((_, chs, _)) = load_cached_badge(&cwd, None, &term.tty) {
+                    channels = chs;
+                } else if !term.suggested_topic.is_empty() {
+                    channels.push(term.suggested_topic);
+                }
+            }
+            println!("{}", format_memnos_badge(&handle, &channels, Some(&ns)));
+            Ok(())
+        }
         Commands::Status => {
             let url = server_url(&cfg);
             let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let term = detect_terminal_session(&cwd);
             let (ns, src) = resolve_with_source(&cwd, None);
-            let sess = resolve_active_session(&cwd);
+            let mut sess = resolve_active_session(&cwd);
+            if sess.is_empty() {
+                sess = term.name.clone();
+            }
+            let mut chans: Vec<String> = Vec::new();
+            if let Ok(polled) = http_post_json(
+                &cfg,
+                "/channel/poll",
+                None,
+                &json!({
+                    "namespace": ns,
+                    "session_name": sess,
+                    "peek": true,
+                    "limit": 1,
+                }),
+                2,
+            ) {
+                if let Some(arr) = polled.get("channels").and_then(|v| v.as_array()) {
+                    chans = arr
+                        .iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect();
+                }
+            }
             println!("memnos v{}", VERSION);
+            println!("  identity:   {}", format_memnos_badge(&sess, &chans, Some(&ns)));
             println!("  server url: {}", url);
             println!("  config:     {}", config_dir().join("config.json").display());
             println!("  namespace:  {} (source: {})", ns, src);
             if !sess.is_empty() {
                 println!("  session:    @{}", sess);
+            }
+            if !chans.is_empty() {
+                println!("  channels:   {}", chans.join(" "));
             }
             if has_configured_openai(&cfg) {
                 println!("  embeddings: OpenAI 1536-d (OPENAI_API_KEY configured)");
@@ -3956,9 +4032,32 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             let grants = Control::authorized_namespaces(&pool, pid)
                 .await
                 .map_err(|e| e.to_string())?;
+            let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let term = detect_terminal_session(&cwd);
+            let (ns, _) = resolve_with_source(&cwd, None);
+            let mut handle = resolve_active_session(&cwd);
+            if handle.is_empty() {
+                handle = term.name.clone();
+            }
+            let channels = Control::channel_poll(&pool, &ns, &handle, pid, None, true, 1)
+                .await
+                .ok()
+                .and_then(|v| {
+                    v.get("channels").and_then(|a| a.as_array()).map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect::<Vec<String>>()
+                    })
+                })
+                .unwrap_or_default();
+            let badge = format_memnos_badge(&handle, &channels, Some(&ns));
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
+                    "badge": badge,
+                    "session": format!("@{}", handle),
+                    "channels": channels,
+                    "namespace": ns,
                     "principal": info,
                     "grants": grants,
                     "is_admin": Control::is_admin(&pool, pid).await.unwrap_or(false),

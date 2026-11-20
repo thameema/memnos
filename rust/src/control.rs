@@ -3853,9 +3853,22 @@ impl Control {
             }
             rows
         };
-        Ok(
-            json!({"session_name": session, "count": msgs.len(), "messages": msgs, "inbox_items": inbox_items}),
-        )
+        let sub_rows = c
+            .query(
+                "SELECT channel FROM memnos_control.channel_subscriptions
+                 WHERE namespace=$1 AND session_name=$2 AND principal_id=$3 AND channel LIKE '#%'
+                 ORDER BY channel",
+                params![namespace, session, principal_id],
+            )
+            .await?;
+        let topic_channels: Vec<String> = sub_rows.iter().map(|r| r.get::<_, String>(0)).collect();
+        Ok(json!({
+            "session_name": session,
+            "channels": topic_channels,
+            "count": msgs.len(),
+            "messages": msgs,
+            "inbox_items": inbox_items
+        }))
     }
 
     pub async fn channel_poll(

@@ -35,10 +35,11 @@ description: >-
 
 Use either the `memnos` MCP tools (`recall`, `recall_wide`, `remember`, `channel_registry`, `channel_publish`, `channel_poll`, `channel_ack`, `inbox_send`, `inbox_list`, `inbox_retract`) or the `memnos` CLI:
 
+- **Show this session's identity & subscribed channels:** `memnos id` (displays `[MEMNOS @<handle> · #<channels>]`)
 - **Join or create a global cross-namespace topic channel:** `memnos registry <topic>` (or `channel_registry(topic=...)`)
 - **List active terminal sessions (same-laptop vs remote) & topic channels:** `memnos registry`
 - **Post a competing-consumer task (claimed by 1 listener, no duplicate work):** `memnos registry <topic> --task "..."`
-- **Hands-free LISTEN/NOTIFY wakeup watcher:** `memnos watch --timeout 300`
+- **Hands-free wakeups (no background polling loops):** Do NOT spawn `memnos channel wait` or `memnos watch` background tasks — `memnos wake-daemon` watches Postgres `LISTEN/NOTIFY` in the background and automatically wakes your session when idle. Subscribe, publish, and end your turn.
 - **Pin a permanent project rule:** `memnos remember "<rule>" --type constraint`
 - **Platform doctor & entity-graph cleanup:** `memnos doctor --fix`
 - **Feature showcase & workflow tips:** `memnos tips`
@@ -330,6 +331,12 @@ pub fn run_agent_setup(
             }]
         }]);
         settings["hooks"]["PreToolUse"] = mk_hook("enforce", 10);
+        if settings.get("statusLine").is_none() {
+            settings["statusLine"] = json!({
+                "type": "command",
+                "command": format!("{} hook statusline", qexe),
+            });
+        }
         write_json_pretty(&settings_path, &settings)?;
 
         println!(
@@ -565,6 +572,7 @@ pub fn run_autostart(remove: bool, include_proxy: bool) -> Result<(), String> {
     let _ = fs::create_dir_all(&log_dir);
     let server_log = log_dir.join("server.log");
     let proxy_log = log_dir.join("proxy.log");
+    let wake_log = log_dir.join("wake-daemon.log");
 
     #[cfg(target_os = "macos")]
     {
@@ -572,9 +580,10 @@ pub fn run_autostart(remove: bool, include_proxy: bool) -> Result<(), String> {
         fs::create_dir_all(&agents_dir).map_err(|e| e.to_string())?;
         let srv_plist = agents_dir.join("ai.memnos.server.plist");
         let prx_plist = agents_dir.join("ai.memnos.proxy.plist");
+        let wake_plist = agents_dir.join("ai.memnos.wake-daemon.plist");
 
         if remove {
-            for p in [&srv_plist, &prx_plist] {
+            for p in [&srv_plist, &prx_plist, &wake_plist] {
                 if p.exists() {
                     let _ = Command::new("launchctl")
                         .args(["unload", &p.to_string_lossy()])
@@ -625,6 +634,45 @@ pub fn run_autostart(remove: bool, include_proxy: bool) -> Result<(), String> {
             srv_plist.display()
         );
 
+        let wake_xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.memnos.wake-daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{}</string>
+        <string>wake-daemon</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{}</string>
+    <key>StandardErrorPath</key>
+    <string>{}</string>
+</dict>
+</plist>
+"#,
+            exe,
+            wake_log.display(),
+            wake_log.display()
+        );
+        fs::write(&wake_plist, wake_xml).map_err(|e| e.to_string())?;
+        let _ = Command::new("launchctl")
+            .args(["unload", &wake_plist.to_string_lossy()])
+            .status();
+        let _ = Command::new("launchctl")
+            .args(["load", &wake_plist.to_string_lossy()])
+            .status();
+        println!(
+            "[memnos] installed macOS launchd wake-daemon -> {}",
+            wake_plist.display()
+        );
+
         if include_proxy {
             let pxml = format!(
                 r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -670,10 +718,13 @@ pub fn run_autostart(remove: bool, include_proxy: bool) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        let _ = (server_log, proxy_log);
+        let _ = (server_log, proxy_log, wake_log);
         if remove {
             let _ = Command::new("schtasks")
                 .args(["/Delete", "/TN", "MemnosServer", "/F"])
+                .status();
+            let _ = Command::new("schtasks")
+                .args(["/Delete", "/TN", "MemnosWakeDaemon", "/F"])
                 .status();
             let _ = Command::new("schtasks")
                 .args(["/Delete", "/TN", "MemnosProxy", "/F"])
@@ -698,6 +749,19 @@ pub fn run_autostart(remove: bool, include_proxy: bool) -> Result<(), String> {
         if !status.success() {
             return Err("schtasks failed to create MemnosServer task".to_string());
         }
+        let wtr = format!("\"{}\" wake-daemon", exe);
+        let _ = Command::new("schtasks")
+            .args([
+                "/Create",
+                "/SC",
+                "ONLOGON",
+                "/TN",
+                "MemnosWakeDaemon",
+                "/TR",
+                &wtr,
+                "/F",
+            ])
+            .status();
         if include_proxy {
             let ptr = format!("\"{}\" proxy", exe);
             let _ = Command::new("schtasks")
@@ -713,16 +777,17 @@ pub fn run_autostart(remove: bool, include_proxy: bool) -> Result<(), String> {
                 ])
                 .status();
         }
-        println!("[memnos] installed Windows Task Scheduler autostart (`MemnosServer`).");
+        println!("[memnos] installed Windows Task Scheduler autostart (`MemnosServer` + `MemnosWakeDaemon`).");
         return Ok(());
     }
 
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
-        let _ = (server_log, proxy_log);
+        let _ = (server_log, proxy_log, wake_log);
         let unit_dir = home_dir().join(".config").join("systemd").join("user");
         fs::create_dir_all(&unit_dir).map_err(|e| e.to_string())?;
         let srv_unit = unit_dir.join("memnos.service");
+        let wake_unit = unit_dir.join("memnos-wake-daemon.service");
         let prx_unit = unit_dir.join("memnos-proxy.service");
 
         if remove {
@@ -730,9 +795,13 @@ pub fn run_autostart(remove: bool, include_proxy: bool) -> Result<(), String> {
                 .args(["--user", "disable", "--now", "memnos.service"])
                 .status();
             let _ = Command::new("systemctl")
+                .args(["--user", "disable", "--now", "memnos-wake-daemon.service"])
+                .status();
+            let _ = Command::new("systemctl")
                 .args(["--user", "disable", "--now", "memnos-proxy.service"])
                 .status();
             let _ = fs::remove_file(&srv_unit);
+            let _ = fs::remove_file(&wake_unit);
             let _ = fs::remove_file(&prx_unit);
             println!("[memnos] removed systemd user autostart units.");
             return Ok(());
@@ -743,15 +812,24 @@ pub fn run_autostart(remove: bool, include_proxy: bool) -> Result<(), String> {
             exe
         );
         fs::write(&srv_unit, unit).map_err(|e| e.to_string())?;
+        let wunit = format!(
+            "[Unit]\nDescription=memnos LISTEN/NOTIFY wake daemon\nAfter=memnos.service\n\n[Service]\nExecStart={} wake-daemon\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n",
+            exe
+        );
+        fs::write(&wake_unit, wunit).map_err(|e| e.to_string())?;
         let _ = Command::new("systemctl")
             .args(["--user", "daemon-reload"])
             .status();
         let _ = Command::new("systemctl")
             .args(["--user", "enable", "--now", "memnos.service"])
             .status();
+        let _ = Command::new("systemctl")
+            .args(["--user", "enable", "--now", "memnos-wake-daemon.service"])
+            .status();
         println!(
-            "[memnos] installed systemd user unit -> {}",
-            srv_unit.display()
+            "[memnos] installed systemd user units -> {}, {}",
+            srv_unit.display(),
+            wake_unit.display()
         );
         if include_proxy {
             let punit = format!(
