@@ -438,13 +438,39 @@ pub fn run_agent_setup(
         fs::create_dir_all(&sk_dir).map_err(|e| e.to_string())?;
         fs::write(sk_dir.join("SKILL.md"), AGY_SKILL_MD).map_err(|e| e.to_string())?;
 
+        // 5. Antigravity CLI persistent statusLine (~/.gemini/antigravity-cli/settings.json)
+        let agy_cli_dir = home.join(".gemini").join("antigravity-cli");
+        fs::create_dir_all(&agy_cli_dir).map_err(|e| e.to_string())?;
+        let agy_settings_path = agy_cli_dir.join("settings.json");
+        if agy_settings_path.is_file() {
+            backup_file(&agy_settings_path);
+        }
+        let mut agy_settings = read_json_obj(&agy_settings_path);
+        let sl_cmd = format!("{} hook statusline", qexe);
+        let existing_sl = agy_settings
+            .get("statusLine")
+            .and_then(|v| v.get("command"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if existing_sl.is_empty() || existing_sl.contains("memnos") {
+            agy_settings["statusLine"] = json!({
+                "type": "command",
+                "command": sl_cmd,
+                "enabled": true,
+                "stack_with_default": true
+            });
+            write_json_pretty(&agy_settings_path, &agy_settings)?;
+        }
+
         println!(
-            "[memnos] antigravity wired -> {} (MCP {}, hooks, GEMINI.md, skill; ns={}).",
+            "[memnos] antigravity wired -> {} (MCP {}, hooks, statusLine, GEMINI.md, skill; ns={}).",
             cfg_dir.display(),
             transport,
             ns
         );
-        println!("          Restart agy / the Antigravity IDE to activate memory.");
+        println!("          In a running `agy` CLI session, run `/statusline enable` (or restart `agy`) to display the MEMNOS status line.");
         return Ok(());
     }
 

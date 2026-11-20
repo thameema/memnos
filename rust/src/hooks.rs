@@ -62,16 +62,13 @@ fn is_codex_hook() -> bool {
         || env::var_os("CODEX_MANAGED_BY_NPM").is_some()
 }
 
-pub fn agy_inject(msgs: &[String], markdown: bool) -> String {
+pub fn agy_inject(msgs: &[String], _markdown: bool) -> String {
+    // Note: Antigravity 1.5.x `proto_utils.go:ScrubInternalFields` panics if
+    // `HookSystemMessage.metadata` is non-empty (`cannot convert string to message`),
+    // so never populate `metadata` on injected `HookSystemMessage` objects.
     let steps: Vec<Value> = msgs
         .iter()
-        .map(|m| {
-            let mut sm = json!({ "systemMessage": m });
-            if markdown {
-                sm["metadata"] = json!({ "user_markdown": m });
-            }
-            json!({ "systemMessage": sm })
-        })
+        .map(|m| json!({ "systemMessage": { "systemMessage": m } }))
         .collect();
     serde_json::to_string(&json!({ "injectSteps": steps })).unwrap_or_else(|_| "{}".to_string())
 }
@@ -701,11 +698,12 @@ pub fn load_cached_badge(cwd: &Path, session_id: Option<&str>, tty: &str) -> Opt
     None
 }
 
-fn run_hook_statusline(raw_stdin: &str) {
+fn run_hook_statusline(raw_stdin: &str, cfg: &Config) {
     let data: Value = serde_json::from_str(raw_stdin).unwrap_or_else(|_| json!({}));
     let cwd_str = data
         .get("cwd")
         .or_else(|| data.get("workspace").and_then(|w| w.get("current_dir")))
+        .or_else(|| data.get("workspace").and_then(|w| w.get("project_dir")))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| {
@@ -716,20 +714,72 @@ fn run_hook_statusline(raw_stdin: &str) {
     let session_id = data
         .get("session_id")
         .or_else(|| data.get("sessionId"))
-        .and_then(|v| v.as_str());
+        .or_else(|| data.get("conversation_id"))
+        .or_else(|| data.get("conversationId"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
     let cwd_path = PathBuf::from(&cwd_str);
     let term = nsresolve::detect_terminal_session(&cwd_path);
-    let (handle, channels, _ns) = if let Some(found) = load_cached_badge(&cwd_path, session_id, &term.tty) {
+
+    let cached_fresh = badge_key_candidates(&cwd_path, session_id, &term.tty)
+        .into_iter()
+        .find_map(|k| {
+            let p = badge_file_for_key(&k);
+            let age_ok = fs::metadata(&p)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .map(|d| d.as_secs() < 15)
+                .unwrap_or(false);
+            if age_ok {
+                load_cached_badge(&cwd_path, session_id, &term.tty)
+            } else {
+                None
+            }
+        });
+
+    let (handle, channels, _ns) = if let Some(found) = cached_fresh {
         found
     } else {
         let sn = nsresolve::resolve_active_session_with_data(&cwd_path, Some(&data));
-        let eff = if sn.is_empty() { term.name } else { sn };
-        let chs = if term.suggested_topic.is_empty() {
-            vec![]
-        } else {
-            vec![term.suggested_topic]
-        };
+        let eff = if sn.is_empty() { term.name.clone() } else { sn };
         let (ns, _) = nsresolve::resolve_with_source(&cwd_path, Some(&data));
+        let url = server_url(cfg);
+        let token = session_token(cfg);
+        let mut live_chs: Option<Vec<String>> = None;
+        if !eff.is_empty() {
+            if let Ok(resp) = http_post(
+                &format!("{}/channel/list", url),
+                &token,
+                &json!({ "namespace": ns }),
+                280,
+            ) {
+                if let Some(arr) = resp.get("active_sessions").and_then(|v| v.as_array()) {
+                    if let Some(me) = arr
+                        .iter()
+                        .find(|s| s.get("name").and_then(|v| v.as_str()) == Some(eff.as_str()))
+                    {
+                        if let Some(ca) = me.get("channels").and_then(|v| v.as_array()) {
+                            live_chs = Some(
+                                ca.iter()
+                                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                    .collect(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        let chs = live_chs
+            .or_else(|| load_cached_badge(&cwd_path, session_id, &term.tty).map(|(_, c, _)| c))
+            .unwrap_or_else(|| {
+                if term.suggested_topic.is_empty() {
+                    vec![]
+                } else {
+                    vec![term.suggested_topic.clone()]
+                }
+            });
+        let _ = record_session_badge(&cwd_path, session_id, &term.tty, &eff, &chs, &ns, false);
         (eff, chs, ns)
     };
     let badge = format_memnos_badge(&handle, &channels, None);
@@ -745,7 +795,7 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
     if which == "statusline" {
         let mut raw_stdin = String::new();
         let _ = io::stdin().read_to_string(&mut raw_stdin);
-        run_hook_statusline(&raw_stdin);
+        run_hook_statusline(&raw_stdin, cfg);
         return;
     }
 
@@ -1490,23 +1540,21 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
 
         if agy {
             let mut steps: Vec<Value> = Vec::new();
+            let ui_badge = format_memnos_badge(&eff_sn, &eff_chans, None);
             if let Some(ac) = out
                 .get("hookSpecificOutput")
                 .and_then(|h| h.get("additionalContext"))
                 .and_then(|v| v.as_str())
             {
-                steps.push(json!({ "systemMessage": { "systemMessage": ac } }));
+                let full_sm = format!("{}\n<memnos:badge>{}</memnos:badge>", ac, esc_xml(&ui_badge));
+                steps.push(json!({ "systemMessage": { "systemMessage": full_sm } }));
+            } else {
+                steps.push(json!({
+                    "systemMessage": {
+                        "systemMessage": format!("<memnos:badge>{}</memnos:badge>", esc_xml(&ui_badge))
+                    }
+                }));
             }
-            // Render inline `[MEMNOS @handle · #channels]` directly in Antigravity's UI on every
-            // prompt (empty `systemMessage` sends 0 extra tokens to the model while
-            // `metadata.user_markdown` renders inline instead of hiding in a collapsed row).
-            let ui_badge = format!("`{}`", format_memnos_badge(&eff_sn, &eff_chans, None));
-            steps.push(json!({
-                "systemMessage": {
-                    "systemMessage": "",
-                    "metadata": { "user_markdown": ui_badge }
-                }
-            }));
             println!(
                 "{}",
                 serde_json::to_string(&json!({ "injectSteps": steps }))
