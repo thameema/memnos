@@ -678,6 +678,11 @@ impl Control {
         );
         c.batch_execute(&locked_ddl).await?;
         c.execute(
+            "ALTER TABLE memnos_control.api_tokens ADD COLUMN IF NOT EXISTS token_enc BYTEA",
+            &[],
+        )
+        .await?;
+        c.execute(
             "UPDATE memnos_control.channel_catalog SET global_topic = true
              WHERE kind = 'topic' AND channel LIKE '#%' AND channel <> '#general' AND NOT global_topic",
             &[],
@@ -793,8 +798,8 @@ impl Control {
         Ok(r.as_ref().map(row_to_json))
     }
 
-    /// Mint a token (`mnk_` + 32 random bytes, url-safe base64). Plaintext is returned ONCE;
-    /// only its SHA-256 hash and a non-secret hint are stored.
+    /// Mint a token (`mnk_` + 32 random bytes, url-safe base64).
+    /// Stores SHA-256 hash for auth + AES-256-GCM encrypted copy (`token_enc`) for explicit admin reveal.
     pub async fn mint_token(
         pool: &Pool,
         principal_id: i64,
@@ -810,44 +815,181 @@ impl Control {
             chars[..8].iter().collect::<String>(),
             chars[chars.len() - 4..].iter().collect::<String>()
         );
+        let enc = Self::encrypt_token_blob(principal_id, &token);
         let c = conn(pool).await?;
         c.execute(
-            "INSERT INTO memnos_control.api_tokens(principal_id,token_hash,label,hint,expires_at)
+            "INSERT INTO memnos_control.api_tokens(principal_id,token_hash,label,hint,expires_at,token_enc)
              VALUES($1,$2,$3,$4, CASE WHEN $5::int IS NULL THEN NULL
-                                      ELSE now() + ($5::int * interval '1 day') END)",
-            params![principal_id, hash_token(&token), label, hint, ttl_days],
+                                      ELSE now() + ($5::int * interval '1 day') END, $6)",
+            params![principal_id, hash_token(&token), label, hint, ttl_days, enc],
         )
         .await?;
         Ok(token)
     }
 
+    fn token_vault_key() -> Option<[u8; 32]> {
+        let path = crate::config::config_dir().join("token_vault.key");
+        if let Ok(raw) = std::fs::read(&path) {
+            if raw.len() == 32 {
+                let mut k = [0u8; 32];
+                k.copy_from_slice(&raw);
+                return Some(k);
+            }
+        }
+        let _ = std::fs::create_dir_all(crate::config::config_dir());
+        let mut k = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut k);
+        if std::fs::write(&path, k).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
+            return Some(k);
+        }
+        None
+    }
+
+    fn encrypt_token_blob(principal_id: i64, token: &str) -> Option<Vec<u8>> {
+        use aes_gcm::{
+            aead::{Aead, KeyInit, Payload},
+            Aes256Gcm, Nonce,
+        };
+        let key = Self::token_vault_key()?;
+        let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
+        let mut nonce = [0u8; 12];
+        rand::thread_rng().fill_bytes(&mut nonce);
+        let aad = format!("memnos-token:{}", principal_id);
+        let ct = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: token.as_bytes(),
+                    aad: aad.as_bytes(),
+                },
+            )
+            .ok()?;
+        let mut out = Vec::with_capacity(12 + ct.len());
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ct);
+        Some(out)
+    }
+
+    fn decrypt_token_blob(principal_id: i64, blob: &[u8]) -> Option<String> {
+        use aes_gcm::{
+            aead::{Aead, KeyInit, Payload},
+            Aes256Gcm, Nonce,
+        };
+        if blob.len() < 28 {
+            return None;
+        }
+        let key = Self::token_vault_key()?;
+        let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
+        let aad = format!("memnos-token:{}", principal_id);
+        let pt = cipher
+            .decrypt(
+                Nonce::from_slice(&blob[..12]),
+                Payload {
+                    msg: &blob[12..],
+                    aad: aad.as_bytes(),
+                },
+            )
+            .ok()?;
+        String::from_utf8(pt).ok()
+    }
+
     /// Bearer token -> principal id (None if unknown, revoked or expired).
+    /// Also transparently backfills `token_enc` on legacy active tokens the first time they authenticate.
     pub async fn authenticate(pool: &Pool, token: &str) -> CResult<Option<i64>> {
         if token.is_empty() {
             return Ok(None);
         }
+        let th = hash_token(token);
         let c = conn(pool).await?;
         let r = c
             .query_opt(
-                "SELECT principal_id FROM memnos_control.api_tokens
+                "SELECT id, principal_id, (token_enc IS NOT NULL) AS has_enc
+                 FROM memnos_control.api_tokens
                  WHERE token_hash=$1 AND NOT revoked AND (expires_at IS NULL OR expires_at>now())",
-                params![hash_token(token)],
+                params![th],
             )
             .await?;
-        Ok(r.map(|r| r.get(0)))
+        if let Some(row) = r {
+            let tid: i64 = row.get(0);
+            let pid: i64 = row.get(1);
+            let has_enc: bool = row.get(2);
+            if !has_enc {
+                if let Some(enc) = Self::encrypt_token_blob(pid, token) {
+                    let _ = c
+                        .execute(
+                            "UPDATE memnos_control.api_tokens SET token_enc = $1 WHERE id = $2 AND token_enc IS NULL",
+                            params![enc, tid],
+                        )
+                        .await;
+                }
+            }
+            Ok(Some(pid))
+        } else {
+            Ok(None)
+        }
     }
 
-    /// Token METADATA only; the secret is not retrievable.
+    /// Token METADATA only (`token` plaintext is never included in list output; use `reveal_token` per ID).
+    /// When `principal_id <= 0`, returns tokens across ALL principals ordered active-first.
     pub async fn list_tokens(pool: &Pool, principal_id: i64) -> CResult<Vec<Value>> {
         let c = conn(pool).await?;
-        let rows = c
-            .query(
-                "SELECT id, label, hint, created_at, expires_at, revoked FROM memnos_control.api_tokens
-                 WHERE principal_id=$1 ORDER BY created_at DESC LIMIT 500",
+        let rows = if principal_id > 0 {
+            c.query(
+                "SELECT t.id, t.principal_id, p.name AS principal_name, p.kind AS principal_kind,
+                        t.label, t.hint, t.created_at, t.expires_at, t.revoked,
+                        (t.token_enc IS NOT NULL) AS recoverable
+                 FROM memnos_control.api_tokens t
+                 JOIN memnos_control.principals p ON p.id = t.principal_id
+                 WHERE t.principal_id = $1
+                 ORDER BY NOT t.revoked DESC, t.created_at DESC
+                 LIMIT 500",
                 params![principal_id],
             )
-            .await?;
+            .await?
+        } else {
+            c.query(
+                "SELECT t.id, t.principal_id, p.name AS principal_name, p.kind AS principal_kind,
+                        t.label, t.hint, t.created_at, t.expires_at, t.revoked,
+                        (t.token_enc IS NOT NULL) AS recoverable
+                 FROM memnos_control.api_tokens t
+                 JOIN memnos_control.principals p ON p.id = t.principal_id
+                 ORDER BY NOT t.revoked DESC, (p.name NOT LIKE 'test-%') DESC, t.id DESC
+                 LIMIT 500",
+                &[],
+            )
+            .await?
+        };
         Ok(rows_json(&rows))
+    }
+
+    pub async fn reveal_token(pool: &Pool, token_id: i64) -> CResult<Value> {
+        let c = conn(pool).await?;
+        let row = c
+            .query_opt(
+                "SELECT id, principal_id, hint, token_enc FROM memnos_control.api_tokens WHERE id = $1",
+                params![token_id],
+            )
+            .await?
+            .ok_or_else(|| ControlError::NotFound("token not found".to_string()))?;
+        let pid: i64 = row.get(1);
+        let hint: Option<String> = row.get(2);
+        let enc_opt: Option<Vec<u8>> = row.get(3);
+        let Some(enc) = enc_opt else {
+            return Err(ControlError::NotFound(
+                "legacy token stores SHA-256 hash only until used once — click Rotate to mint a recoverable replacement".to_string(),
+            ));
+        };
+        let Some(plain) = Self::decrypt_token_blob(pid, &enc) else {
+            return Err(ControlError::NotFound(
+                "token vault key changed since this token was encrypted — click Rotate to mint a new token".to_string(),
+            ));
+        };
+        Ok(json!({ "id": token_id, "principal_id": pid, "hint": hint, "token": plain }))
     }
 
     pub async fn revoke_token(pool: &Pool, token: &str) -> CResult<()> {
@@ -5198,7 +5340,9 @@ impl Control {
         } else {
             let s_rows = c
                 .query(
-                    "SELECT a.namespace, a.name, a.status, a.run_state, a.cwd, a.host,
+                    "SELECT a.namespace, a.name, COALESCE(a.harness, '') AS harness,
+                            COALESCE(a.model, '') AS model, COALESCE(a.role, '') AS role,
+                            a.metadata, a.status, a.run_state, a.cwd, a.host,
                             a.pid, a.tty, a.current_task, a.registered_at, a.last_heartbeat_at,
                             a.expires_at, (a.expires_at > now() AND a.status <> 'offline') AS alive,
                             COALESCE(sc.chs, '{}') AS channels,
@@ -5222,6 +5366,31 @@ impl Control {
                 )
                 .await?;
             rows_json(&s_rows)
+        };
+
+        let total_constraints: i64 = if selected_ns.is_empty() {
+            0
+        } else {
+            let enf_n: i64 = c
+                .query_one(
+                    "SELECT count(*) FROM memnos_control.constraint_enforcement WHERE active AND namespace = ANY($1)",
+                    params![selected_ns],
+                )
+                .await
+                .map(|r| r.get(0))
+                .unwrap_or(0);
+            let pin_n: i64 = c
+                .query_one(
+                    "SELECT CASE WHEN to_regclass('tenant_memnos.raw_turns') IS NOT NULL
+                                 THEN (SELECT count(*) FROM tenant_memnos.raw_turns
+                                       WHERE namespace = ANY($1) AND memory_type = 'constraint' AND constraint_retired_at IS NULL)
+                                 ELSE 0 END",
+                    params![selected_ns],
+                )
+                .await
+                .map(|r| r.get(0))
+                .unwrap_or(0);
+            enf_n + pin_n
         };
 
         let db_size_bytes: Option<i64> = if is_admin {
@@ -5287,6 +5456,7 @@ impl Control {
                 "total_turns": total_turns,
                 "total_facts": total_facts,
                 "total_entities": total_entities,
+                "total_constraints": total_constraints,
                 "ops_24h": ops_24h,
                 "usage_30d": usage_row,
             }
@@ -5779,6 +5949,284 @@ impl Control {
             )
             .await?;
         Ok(rows_json(&rows))
+    }
+
+    pub async fn workspace_constraints(
+        pool: &Pool,
+        principal_id: i64,
+        ns_filter: Option<&str>,
+    ) -> CResult<Value> {
+        let c = conn(pool).await?;
+        let auth_map: HashMap<String, bool> = Self::workspace_authorized_ns_map(&**c, principal_id)
+            .await?
+            .into_iter()
+            .collect();
+        let (target_nss, primary_ns): (Vec<String>, Option<String>) = match ns_filter
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty() && *s != "*")
+        {
+            Some(ns) => {
+                if !Self::authorize_on(&**c, principal_id, ns, false).await? {
+                    return Err(ControlError::Forbidden(format!(
+                        "no read grant for namespace '{}'",
+                        ns
+                    )));
+                }
+                let mut srcs = vec![ns.to_string()];
+                for anc in Self::effective_ancestors_on(&**c, ns).await? {
+                    if auth_map.contains_key(&anc) && !srcs.contains(&anc) {
+                        srcs.push(anc);
+                    }
+                }
+                for lnk in Self::linked_namespaces_on(&**c, ns).await? {
+                    if auth_map.contains_key(&lnk) && !srcs.contains(&lnk) {
+                        srcs.push(lnk);
+                    }
+                }
+                (srcs, Some(ns.to_string()))
+            }
+            None => (auth_map.keys().cloned().collect(), None),
+        };
+
+        if target_nss.is_empty() {
+            return Ok(json!({
+                "enforcement_rules": [],
+                "pinned_constraints": [],
+                "recent_blocks": []
+            }));
+        }
+
+        let enf_rows = c
+            .query(
+                "SELECT id, namespace, rule_text, enforce_level, tool_matcher, created_at, active
+                 FROM memnos_control.constraint_enforcement
+                 WHERE active AND namespace = ANY($1)
+                 ORDER BY namespace, id DESC",
+                params![target_nss],
+            )
+            .await?;
+        let enforcement_rules: Vec<Value> = rows_json(&enf_rows)
+            .into_iter()
+            .map(|mut v| {
+                let rns = v
+                    .get("namespace")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let inherited = primary_ns.as_ref().map(|p| p != &rns).unwrap_or(false);
+                let cw = auth_map.get(&rns).copied().unwrap_or(false);
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("inherited".to_string(), json!(inherited));
+                    obj.insert("can_write".to_string(), json!(cw));
+                }
+                v
+            })
+            .collect();
+
+        let has_tenant: bool = c
+            .query_one(
+                "SELECT to_regclass('tenant_memnos.raw_turns') IS NOT NULL",
+                &[],
+            )
+            .await
+            .map(|r| r.get(0))
+            .unwrap_or(false);
+
+        let pinned_constraints: Vec<Value> = if has_tenant {
+            let p_rows = c
+                .query(
+                    "SELECT id, namespace, COALESCE(constraint_subject, '') AS subject,
+                            text AS content, COALESCE(author_principal, speaker, '') AS author,
+                            observed_at
+                     FROM tenant_memnos.raw_turns
+                     WHERE namespace = ANY($1)
+                       AND memory_type = 'constraint'
+                       AND constraint_retired_at IS NULL
+                     ORDER BY id DESC
+                     LIMIT 250",
+                    params![target_nss],
+                )
+                .await?;
+            rows_json(&p_rows)
+                .into_iter()
+                .map(|mut v| {
+                    let rns = v
+                        .get("namespace")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let inherited = primary_ns.as_ref().map(|p| p != &rns).unwrap_or(false);
+                    let cw = auth_map.get(&rns).copied().unwrap_or(false);
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.insert("inherited".to_string(), json!(inherited));
+                        obj.insert("can_write".to_string(), json!(cw));
+                    }
+                    v
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        let blk_rows = c
+            .query(
+                "SELECT id, ts, COALESCE(namespace, '') AS namespace, detail
+                 FROM memnos_control.audit_log
+                 WHERE action = 'constraint.enforce'
+                   AND namespace = ANY($1)
+                 ORDER BY id DESC
+                 LIMIT 25",
+                params![target_nss],
+            )
+            .await?;
+
+        Ok(json!({
+            "target_namespaces": target_nss,
+            "enforcement_rules": enforcement_rules,
+            "pinned_constraints": pinned_constraints,
+            "recent_blocks": rows_json(&blk_rows),
+        }))
+    }
+
+    pub async fn workspace_validate_tool(
+        pool: &Pool,
+        principal_id: i64,
+        ns_filter: Option<&str>,
+        tool_subject: &str,
+    ) -> CResult<Value> {
+        let subj = tool_subject.trim();
+        if subj.is_empty() {
+            return bad("tool_subject required");
+        }
+        let data = Self::workspace_constraints(pool, principal_id, ns_filter).await?;
+        let rules = data
+            .get("enforcement_rules")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        // Build alias subjects (`Bash(...)` <-> `run_command(...)`) identical to `hooks.rs`
+        let mut subjects = vec![subj.to_string()];
+        if let Some(inner) = subj.strip_prefix("Bash(") {
+            subjects.push(format!("run_command({}", inner));
+        } else if let Some(inner) = subj.strip_prefix("run_command(") {
+            subjects.push(format!("Bash({}", inner));
+        }
+
+        let mut matched = Vec::new();
+        let mut decision = "allow";
+        for r in &rules {
+            let pat = r
+                .get("tool_matcher")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if pat.is_empty() {
+                continue;
+            }
+            if subjects.iter().any(|s| crate::hooks::fnmatch(pat, s)) {
+                let lvl = r
+                    .get("enforce_level")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("ask");
+                if lvl == "block" {
+                    decision = "block";
+                } else if decision != "block" && lvl == "ask" {
+                    decision = "ask";
+                }
+                matched.push(r.clone());
+            }
+        }
+
+        Ok(json!({
+            "decision": decision,
+            "tool_subject": subj,
+            "checked_rules": rules.len(),
+            "matched_rules": matched,
+        }))
+    }
+
+    pub async fn workspace_add_enforcement(
+        pool: &Pool,
+        principal_id: i64,
+        namespace: &str,
+        rule_text: &str,
+        enforce_level: &str,
+        tool_matcher: &str,
+    ) -> CResult<i64> {
+        let ns = namespace.trim();
+        if ns.is_empty() {
+            return bad("namespace required");
+        }
+        if !Self::authorize(pool, principal_id, ns, true).await? {
+            return Err(ControlError::Forbidden(format!(
+                "write grant required on namespace '{}'",
+                ns
+            )));
+        }
+        Self::add_constraint_enforcement(
+            pool,
+            ns,
+            rule_text.trim(),
+            enforce_level.trim(),
+            tool_matcher.trim(),
+            Some(principal_id),
+        )
+        .await
+    }
+
+    pub async fn workspace_remove_enforcement(
+        pool: &Pool,
+        principal_id: i64,
+        row_id: i64,
+    ) -> CResult<bool> {
+        let c = conn(pool).await?;
+        let ns_opt: Option<String> = c
+            .query_opt(
+                "SELECT namespace FROM memnos_control.constraint_enforcement WHERE id = $1",
+                params![row_id],
+            )
+            .await?
+            .map(|r| r.get(0));
+        let Some(ns) = ns_opt else {
+            return Err(ControlError::NotFound("rule not found".to_string()));
+        };
+        if !Self::authorize_on(&**c, principal_id, &ns, true).await? {
+            return Err(ControlError::Forbidden(format!(
+                "write grant required on namespace '{}'",
+                ns
+            )));
+        }
+        drop(c);
+        Self::remove_constraint_enforcement(pool, row_id).await
+    }
+
+    pub async fn workspace_retire_pinned_constraint(
+        pool: &Pool,
+        principal_id: i64,
+        namespace: &str,
+        turn_id: i64,
+    ) -> CResult<bool> {
+        let ns = namespace.trim();
+        if !Self::authorize(pool, principal_id, ns, true).await? {
+            return Err(ControlError::Forbidden(format!(
+                "write grant required on namespace '{}'",
+                ns
+            )));
+        }
+        let p_name = Self::principal_info(pool, principal_id)
+            .await?
+            .and_then(|v| v.get("name").and_then(|s| s.as_str()).map(|s| s.to_string()))
+            .unwrap_or_else(|| format!("p:{}", principal_id));
+        let c = conn(pool).await?;
+        let n = c
+            .execute(
+                "UPDATE tenant_memnos.raw_turns
+                 SET constraint_retired_at = now(), constraint_retired_by = $3
+                 WHERE id = $1 AND namespace = $2 AND memory_type = 'constraint' AND constraint_retired_at IS NULL",
+                params![turn_id, ns, p_name],
+            )
+            .await?;
+        Ok(n > 0)
     }
 }
 

@@ -8,12 +8,15 @@ Verifies:
    channel deletion through `/workspace/api/*`.
 4. Real-time Server-Sent Events (`/workspace/events`) wake immediately on `NOTIFY`.
 """
+import base64
 import json
 import os
+import socket
 import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -216,7 +219,7 @@ def main():
         tl.start()
         time.sleep(0.25)
         sr, _ = call("POST", "/session/register", scoped_tok,
-                     {"namespace": NS_RW, "name": "live-probe", "channels": ["#general"]})
+                     {"namespace": NS_RW, "name": "live-probe", "harness": "antigravity", "channels": ["#general"]})
         tl.join(timeout=3.0)
         check("regular /session/register call streams live activity SSE in real time",
               sr == 200 and "session/register" in live_ops, str(live_ops))
@@ -245,11 +248,112 @@ def main():
               s_del == 200 and del_body.get("ok") is True and del_pid not in remaining_ids,
               str(del_body))
 
+        print("=== 7. Harness metadata, Constraints validator, All-principals tokens + reveal, and two-way WebSocket ===")
+        _, ov_h = call("GET", f"/workspace/api/overview?namespace={NS_RW}", scoped_tok)
+        probe_sess = next((s for s in ov_h.get("sessions", []) if s["name"] == "live-probe"), {})
+        check("session overview exposes attached harness ('antigravity')",
+              probe_sess.get("harness") == "antigravity", str(probe_sess))
+
+        # Constraints creation, validation, and scope isolation
+        sc_add, enf_res = call("POST", "/workspace/api/constraints/enforcement", scoped_tok, {
+            "namespace": NS_RW,
+            "enforce_level": "block",
+            "tool_matcher": "Bash(rm -rf*)",
+            "rule_text": "Never run recursive rm without confirmation",
+        })
+        enf_id = enf_res.get("id")
+        call("POST", "/workspace/api/constraints/enforcement", admin_tok, {
+            "namespace": NS_HIDDEN,
+            "enforce_level": "block",
+            "tool_matcher": "Bash(secret*)",
+            "rule_text": "Hidden secret rule",
+        })
+        _, cs_list = call("GET", "/workspace/api/constraints?namespace=*", scoped_tok)
+        cs_nss = {r["namespace"] for r in cs_list.get("enforcement_rules", [])}
+        check("GET /workspace/api/constraints returns authorized guardrails without leaking hidden",
+              sc_add == 200 and NS_RW in cs_nss and NS_HIDDEN not in cs_nss, str(cs_nss))
+
+        _, val_blk = call("POST", "/workspace/api/constraints/validate", scoped_tok,
+                          {"namespace": NS_RW, "tool_subject": "Bash(rm -rf /tmp/x)"})
+        _, val_ok = call("POST", "/workspace/api/constraints/validate", scoped_tok,
+                         {"namespace": NS_RW, "tool_subject": "Bash(ls -la)"})
+        check("POST /workspace/api/constraints/validate evaluates block vs allow accurately",
+              val_blk.get("tool_validation", {}).get("decision") == "block"
+              and val_ok.get("tool_validation", {}).get("decision") == "allow",
+              f"blk={val_blk} ok={val_ok}")
+        call("DELETE", f"/workspace/api/constraints/enforcement?id={enf_id}", scoped_tok)
+
+        # Admin all-principals token listing + AES-256-GCM reveal
+        _, m_rev = call("POST", "/admin/api/tokens", admin_tok, {"principal_id": scoped_id, "label": "recoverable-tok"})
+        plain_tok = m_rev.get("token", "")
+        _, all_toks = call("GET", "/admin/api/tokens?principal=0", admin_tok)
+        tok_row = next((t for t in all_toks.get("tokens", []) if t.get("label") == "recoverable-tok"), {})
+        check("GET /admin/api/tokens?principal=0 lists across all principals with principal_name + recoverable=True (no raw secret)",
+              tok_row.get("principal_name") == "ws-test-scoped"
+              and tok_row.get("recoverable") is True
+              and "token" not in tok_row,
+              str(tok_row))
+        s_rev_forbid, _ = call("GET", f"/admin/api/tokens/reveal?id={tok_row.get('id', 0)}", scoped_tok)
+        s_rev_ok, rev_body = call("GET", f"/admin/api/tokens/reveal?id={tok_row.get('id', 0)}", admin_tok)
+        check("GET /admin/api/tokens/reveal decrypts token for admin and forbids non-admin",
+              s_rev_forbid == 403 and s_rev_ok == 200 and rev_body.get("token") == plain_tok,
+              str(rev_body))
+
+        # Two-way WebSocket (/workspace/ws) RFC 6455 handshake + ping/pong
+        u = urllib.parse.urlparse(URL)
+        sock = socket.create_connection((u.hostname or "127.0.0.1", u.port or 8900), timeout=5)
+        ws_key = base64.b64encode(os.urandom(16)).decode()
+        hs = (
+            f"GET /workspace/ws?token={scoped_tok} HTTP/1.1\r\n"
+            f"Host: {u.netloc}\r\n"
+            f"Upgrade: websocket\r\n"
+            f"Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {ws_key}\r\n"
+            f"Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        sock.sendall(hs.encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            buf += sock.recv(4096)
+        hdr_part, rest = buf.split(b"\r\n\r\n", 1)
+
+        def read_ws_text(sk, initial):
+            data = initial
+            while len(data) < 2:
+                data += sk.recv(4096)
+            plen = data[1] & 0x7F
+            idx = 2
+            if plen == 126:
+                while len(data) < 4:
+                    data += sk.recv(4096)
+                plen = int.from_bytes(data[2:4], "big")
+                idx = 4
+            while len(data) < idx + plen:
+                data += sk.recv(4096)
+            return json.loads(data[idx:idx + plen].decode()), data[idx + plen:]
+
+        ws_hello, rest = read_ws_text(sock, rest)
+        # Send masked client text frame: {"type":"ping","req_id":77}
+        ping_bytes = json.dumps({"type": "ping", "req_id": 77}).encode()
+        mask = os.urandom(4)
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(ping_bytes))
+        sock.sendall(bytes([0x81, 0x80 | len(ping_bytes)]) + mask + masked)
+        ws_pong, _ = read_ws_text(sock, rest)
+        sock.close()
+        check("Two-way WebSocket /workspace/ws upgrades (101) and handles full-duplex ping/pong",
+              b"101" in hdr_part.splitlines()[0]
+              and ws_hello.get("type") == "connected"
+              and ws_hello.get("transport") == "websocket"
+              and ws_pong.get("type") == "pong"
+              and ws_pong.get("req_id") == 77,
+              f"hello={ws_hello} pong={ws_pong}")
+
     finally:
         for ns in (NS_RW, NS_RO, NS_HIDDEN):
             call("DELETE", f"/admin/api/namespaces?name={ns}&purge=1", admin_tok)
         call("DELETE", f"/admin/api/principals?id={scoped_id}", admin_tok)
         with conn.cursor() as cur:
+            cur.execute("DELETE FROM memnos_control.constraint_enforcement WHERE namespace = ANY(%s)", ([NS_RW, NS_RO, NS_HIDDEN],))
             cur.execute("UPDATE memnos_control.channel_catalog SET principal_id = NULL WHERE principal_id = %s", (admin_id,))
             cur.execute("DELETE FROM memnos_control.channel_subscriptions WHERE principal_id = %s", (admin_id,))
             cur.execute("DELETE FROM memnos_control.agent_sessions WHERE principal_id = %s", (admin_id,))

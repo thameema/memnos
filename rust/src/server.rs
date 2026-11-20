@@ -18,7 +18,10 @@ use crate::store::{BrainStore, RecallOpts};
 use crate::vault::{Vault, VaultError};
 use axum::{
     body::Bytes,
-    extract::{Path as AxumPath, Query, State},
+    extract::{
+        ws::{Message as WsMessage, WebSocketUpgrade},
+        Path as AxumPath, Query, State,
+    },
     http::{header, HeaderMap, Method, StatusCode, Uri},
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -28,7 +31,7 @@ use axum::{
     Json, Router,
 };
 use deadpool_postgres::Pool;
-use futures_util::stream;
+use futures_util::{stream, SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
@@ -1021,6 +1024,33 @@ async fn admin_api_handler(
                 Err(e) => ctrl_err_resp(e),
             }
         }
+        ("tokens/reveal", Method::GET) => {
+            let id = qs
+                .get("id")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            if id <= 0 {
+                return json_resp(StatusCode::BAD_REQUEST, json!({ "error": "id required" }));
+            }
+            match Control::reveal_token(&st.pool, id).await {
+                Ok(v) => {
+                    let _ = Control::audit(
+                        &st.pool,
+                        Some(pid),
+                        "token.reveal",
+                        None,
+                        true,
+                        Some(json!({ "token_id": id })),
+                        Some(1),
+                        None,
+                        Some(200),
+                    )
+                    .await;
+                    json_resp(StatusCode::OK, v)
+                }
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
         ("grants", Method::GET) => {
             let p = qs
                 .get("principal")
@@ -1295,6 +1325,220 @@ async fn admin_api_handler(
             json!({ "error": "unknown admin route" }),
         ),
     }
+}
+
+async fn workspace_ws_handler(
+    State(st): State<AppState>,
+    Query(qs): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let tok = bearer_token(&headers)
+        .or_else(|| {
+            qs.get("token")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_default();
+    let pid = match Control::authenticate(&st.pool, &tok).await {
+        Ok(Some(p)) => p,
+        Ok(None) => return json_resp(StatusCode::UNAUTHORIZED, json!({ "error": "unauthorized" })),
+        Err(e) => return ctrl_err_resp(e),
+    };
+    let is_admin = Control::is_admin(&st.pool, pid).await.unwrap_or(false);
+    let auth_ns: HashSet<String> = if is_admin {
+        HashSet::new()
+    } else {
+        Control::readable_namespaces(&st.pool, pid, None, None)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    };
+
+    ws.on_upgrade(move |socket| async move {
+        let (mut tx, mut rx) = socket.split();
+        let mut event_rx = st.event_tx.subscribe();
+        let mut seq: u64 = 1;
+
+        let hello = json!({
+            "type": "connected",
+            "transport": "websocket",
+            "seq": 0,
+            "version": VERSION,
+        });
+        if tx.send(WsMessage::Text(hello.to_string())).await.is_err() {
+            return;
+        }
+
+        let mut hb = tokio::time::interval(Duration::from_secs(15));
+        hb.tick().await;
+
+        loop {
+            tokio::select! {
+                res = event_rx.recv() => {
+                    match res {
+                        Ok(mut v) => {
+                            let ev_ns = v.get("namespace").and_then(|x| x.as_str()).unwrap_or("");
+                            if is_admin || ev_ns.is_empty() || ev_ns == "*" || auth_ns.contains(ev_ns) {
+                                if let Some(obj) = v.as_object_mut() {
+                                    obj.insert("seq".to_string(), json!(seq));
+                                }
+                                seq += 1;
+                                if tx.send(WsMessage::Text(v.to_string())).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            let msg = json!({
+                                "type": "refresh",
+                                "seq": seq,
+                                "ts": chrono::Utc::now().to_rfc3339(),
+                            });
+                            seq += 1;
+                            if tx.send(WsMessage::Text(msg.to_string())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+                incoming = rx.next() => {
+                    let Some(Ok(msg)) = incoming else { break; };
+                    match msg {
+                        WsMessage::Text(txt) => {
+                            let Ok(cmd) = serde_json::from_str::<Value>(&txt) else { continue; };
+                            let kind = cmd.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            let req_id = cmd.get("req_id").cloned().unwrap_or(Value::Null);
+                            match kind {
+                                "ping" => {
+                                    let pong = json!({
+                                        "type": "pong",
+                                        "req_id": req_id,
+                                        "ts": chrono::Utc::now().to_rfc3339(),
+                                    });
+                                    if tx.send(WsMessage::Text(pong.to_string())).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                "publish_channel" => {
+                                    let ns = cmd.get("namespace").and_then(|v| v.as_str()).unwrap_or("").trim();
+                                    let ch = cmd.get("channel").and_then(|v| v.as_str()).unwrap_or("").trim();
+                                    let sender = cmd
+                                        .get("sender_session")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.trim().trim_start_matches('@'))
+                                        .filter(|s| !s.is_empty())
+                                        .unwrap_or("owner");
+                                    let content = cmd.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                                    let claimable = cmd.get("claimable").and_then(|v| v.as_bool()).unwrap_or(false);
+                                    let reply = if ns.is_empty() || ch.is_empty() || content.trim().is_empty() {
+                                        json!({ "type": "ack", "req_id": req_id, "ok": false, "error": "namespace, channel, and content required" })
+                                    } else if !Control::authorize(&st.pool, pid, ns, true).await.unwrap_or(false) {
+                                        json!({ "type": "ack", "req_id": req_id, "ok": false, "error": format!("write grant required on '{}'", ns) })
+                                    } else {
+                                        let opts = PublishOpts {
+                                            intent: if claimable { "task".to_string() } else { "message".to_string() },
+                                            metadata: json!({}),
+                                            description: String::new(),
+                                            what_you_get: String::new(),
+                                            claimable,
+                                            reply_to: None,
+                                        };
+                                        match Control::channel_publish(&st.pool, ns, ch, sender, pid, content, &opts).await {
+                                            Ok(v) => {
+                                                st.channel_notify.notify_waiters();
+                                                let _ = st.event_tx.send(json!({
+                                                    "type": "activity",
+                                                    "op": "channel/publish",
+                                                    "namespace": ns,
+                                                    "actor": sender,
+                                                    "detail": ch,
+                                                    "ok": true,
+                                                    "status": 200,
+                                                    "latency_ms": 1,
+                                                    "ts": chrono::Utc::now().to_rfc3339(),
+                                                }));
+                                                json!({ "type": "ack", "req_id": req_id, "ok": true, "result": v })
+                                            }
+                                            Err(e) => json!({ "type": "ack", "req_id": req_id, "ok": false, "error": format!("{:?}", e) }),
+                                        }
+                                    };
+                                    if tx.send(WsMessage::Text(reply.to_string())).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                "send_dm" => {
+                                    let ns = cmd.get("namespace").and_then(|v| v.as_str()).unwrap_or("").trim();
+                                    let to_s = cmd.get("to_session").and_then(|v| v.as_str()).map(|s| s.trim().trim_start_matches('@')).unwrap_or("");
+                                    let from_s = cmd.get("from_session").and_then(|v| v.as_str()).map(|s| s.trim().trim_start_matches('@')).filter(|s| !s.is_empty()).unwrap_or("owner");
+                                    let content = cmd.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                                    let intent = cmd.get("intent").and_then(|v| v.as_str()).unwrap_or("message").to_string();
+                                    let reply = if ns.is_empty() || to_s.is_empty() || content.trim().is_empty() {
+                                        json!({ "type": "ack", "req_id": req_id, "ok": false, "error": "namespace, to_session, and content required" })
+                                    } else if !Control::authorize(&st.pool, pid, ns, true).await.unwrap_or(false) {
+                                        json!({ "type": "ack", "req_id": req_id, "ok": false, "error": format!("write grant required on '{}'", ns) })
+                                    } else {
+                                        let opts = SendOpts {
+                                            subject: String::new(),
+                                            intent,
+                                            priority: "normal".to_string(),
+                                            thread_key: String::new(),
+                                            replaces_id: None,
+                                            replace_pending: false,
+                                            in_reply_to: None,
+                                            metadata: json!({}),
+                                        };
+                                        match Control::inbox_send(&st.pool, ns, to_s, from_s, pid, content, &opts).await {
+                                            Ok(v) => {
+                                                st.channel_notify.notify_waiters();
+                                                let _ = st.event_tx.send(json!({
+                                                    "type": "activity",
+                                                    "op": "inbox/send",
+                                                    "namespace": ns,
+                                                    "actor": from_s,
+                                                    "detail": format!("@{}", to_s),
+                                                    "ok": true,
+                                                    "status": 200,
+                                                    "latency_ms": 1,
+                                                    "ts": chrono::Utc::now().to_rfc3339(),
+                                                }));
+                                                json!({ "type": "ack", "req_id": req_id, "ok": true, "result": v })
+                                            }
+                                            Err(e) => json!({ "type": "ack", "req_id": req_id, "ok": false, "error": format!("{:?}", e) }),
+                                        }
+                                    };
+                                    if tx.send(WsMessage::Text(reply.to_string())).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        WsMessage::Ping(p) => {
+                            if tx.send(WsMessage::Pong(p)).await.is_err() {
+                                break;
+                            }
+                        }
+                        WsMessage::Close(_) => break,
+                        _ => {}
+                    }
+                }
+                _ = hb.tick() => {
+                    let beat = json!({
+                        "type": "heartbeat",
+                        "seq": seq,
+                        "ts": chrono::Utc::now().to_rfc3339(),
+                    });
+                    seq += 1;
+                    if tx.send(WsMessage::Text(beat.to_string())).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    })
 }
 
 async fn workspace_events_handler(
@@ -1775,6 +2019,234 @@ async fn workspace_api_handler(
             let after_id = qs.get("after_id").and_then(|s| s.parse::<i64>().ok());
             match Control::workspace_recent_activity(&st.pool, pid, limit, after_id).await {
                 Ok(events) => json_resp(StatusCode::OK, json!({ "events": events })),
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("constraints", Method::GET) => {
+            let ns = qs.get("namespace").map(|s| s.as_str());
+            match Control::workspace_constraints(&st.pool, pid, ns).await {
+                Ok(v) => json_resp(StatusCode::OK, v),
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("constraints/validate", Method::POST) => {
+            let ns = b
+                .get("namespace")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+            let tool_subj = b
+                .get("tool_subject")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let statement = b
+                .get("statement")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+
+            let mut out = serde_json::Map::new();
+            out.insert("ok".to_string(), json!(true));
+
+            if !tool_subj.is_empty() {
+                match Control::workspace_validate_tool(&st.pool, pid, ns, tool_subj).await {
+                    Ok(tv) => {
+                        out.insert("tool_validation".to_string(), tv);
+                    }
+                    Err(e) => return ctrl_err_resp(e),
+                }
+            }
+
+            if !statement.is_empty() {
+                let cs_data = match Control::workspace_constraints(&st.pool, pid, ns).await {
+                    Ok(d) => d,
+                    Err(e) => return ctrl_err_resp(e),
+                };
+                let target_nss: Vec<String> = cs_data
+                    .get("target_namespaces")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let corpus_hits = if !target_nss.is_empty() {
+                    st.store
+                        .corpus_check(&target_nss, statement, 10, None)
+                        .await
+                        .unwrap_or_default()
+                } else {
+                    vec![]
+                };
+
+                // Also rank pinned constraints by token/substring overlap so prose constraints match deterministically even before corpus ingest
+                let pinned = cs_data
+                    .get("pinned_constraints")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let words: Vec<String> = statement
+                    .to_lowercase()
+                    .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+                    .filter(|w| w.len() >= 3)
+                    .map(|w| w.to_string())
+                    .collect();
+                let mut pinned_matches: Vec<Value> = pinned
+                    .into_iter()
+                    .filter_map(|mut p| {
+                        let txt = p
+                            .get("content")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        let subj = p
+                            .get("subject")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        let hits = words
+                            .iter()
+                            .filter(|w| txt.contains(w.as_str()) || subj.contains(w.as_str()))
+                            .count();
+                        if hits > 0 || words.is_empty() {
+                            if let Some(obj) = p.as_object_mut() {
+                                obj.insert("matched_terms".to_string(), json!(hits));
+                            }
+                            Some((hits, p))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .map(|(_, p)| p)
+                    .collect();
+                pinned_matches.sort_by(|a, b| {
+                    let ha = a.get("matched_terms").and_then(|x| x.as_u64()).unwrap_or(0);
+                    let hb = b.get("matched_terms").and_then(|x| x.as_u64()).unwrap_or(0);
+                    hb.cmp(&ha)
+                });
+                pinned_matches.truncate(12);
+
+                let reconcile = if let Some(single_ns) = ns.filter(|s| *s != "*") {
+                    st.store
+                        .reconcile_claim(single_ns, statement, None, None)
+                        .await
+                        .ok()
+                } else {
+                    None
+                };
+
+                out.insert(
+                    "statement_validation".to_string(),
+                    json!({
+                        "statement": statement,
+                        "pinned_matches": pinned_matches,
+                        "corpus_matches": corpus_hits,
+                        "reconcile": reconcile,
+                    }),
+                );
+            }
+
+            json_resp(StatusCode::OK, Value::Object(out))
+        }
+        ("constraints/enforcement", Method::POST) => {
+            let ns = b.get("namespace").and_then(|v| v.as_str()).unwrap_or("");
+            let rule_text = b.get("rule_text").and_then(|v| v.as_str()).unwrap_or("");
+            let level = b
+                .get("enforce_level")
+                .and_then(|v| v.as_str())
+                .unwrap_or("block");
+            let matcher = b.get("tool_matcher").and_then(|v| v.as_str()).unwrap_or("");
+            match Control::workspace_add_enforcement(&st.pool, pid, ns, rule_text, level, matcher)
+                .await
+            {
+                Ok(id) => json_resp(StatusCode::OK, json!({ "ok": true, "id": id })),
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("constraints/enforcement", Method::DELETE) => {
+            let id = qs
+                .get("id")
+                .and_then(|s| s.parse::<i64>().ok())
+                .or_else(|| b.get("id").and_then(|v| v.as_i64()))
+                .unwrap_or(0);
+            if id <= 0 {
+                return json_resp(StatusCode::BAD_REQUEST, json!({ "error": "id required" }));
+            }
+            match Control::workspace_remove_enforcement(&st.pool, pid, id).await {
+                Ok(removed) => json_resp(StatusCode::OK, json!({ "ok": true, "removed": removed })),
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("constraints/pin", Method::POST) => {
+            let ns = b.get("namespace").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let text = b.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let subject = b
+                .get("subject")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+            if ns.is_empty() || text.is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "namespace and text required" }),
+                );
+            }
+            match Control::authorize(&st.pool, pid, ns, true).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return json_resp(
+                        StatusCode::FORBIDDEN,
+                        json!({ "error": format!("write grant required on namespace '{}'", ns) }),
+                    )
+                }
+                Err(e) => return ctrl_err_resp(e),
+            }
+            let p_name = Control::principal_info(&st.pool, pid)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|v| v.get("name").and_then(|s| s.as_str()).map(|s| s.to_string()));
+            let _ = Control::create_namespace(&st.pool, ns, Some(pid), None).await;
+            match st
+                .store
+                .remember_ex(
+                    ns,
+                    text,
+                    Some("user"),
+                    None,
+                    Some("constraint"),
+                    subject,
+                    p_name.as_deref(),
+                    None,
+                    None,
+                    true,
+                    false,
+                )
+                .await
+            {
+                Ok(v) => json_resp(StatusCode::OK, v),
+                Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
+            }
+        }
+        ("constraints/pin", Method::DELETE) => {
+            let id = qs
+                .get("id")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            let ns = qs.get("namespace").map(|s| s.as_str()).unwrap_or("");
+            if id <= 0 || ns.trim().is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "id and namespace required" }),
+                );
+            }
+            match Control::workspace_retire_pinned_constraint(&st.pool, pid, ns, id).await {
+                Ok(retired) => json_resp(StatusCode::OK, json!({ "ok": true, "retired": retired })),
                 Err(e) => ctrl_err_resp(e),
             }
         }
@@ -3707,7 +4179,15 @@ pub async fn run_server_opts(
         started_at: Instant::now(),
     };
 
+    // Best-effort backfill of local config tokens into `token_enc` on boot
+    for maybe_tok in [cfg.admin_token.clone(), Some(crate::config::session_token(&cfg))] {
+        if let Some(t) = maybe_tok.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+            let _ = Control::authenticate(&state.pool, &t).await;
+        }
+    }
+
     let cors_routes = Router::new()
+        .route("/workspace/ws", get(workspace_ws_handler))
         .route("/workspace/events", get(workspace_events_handler))
         .route("/workspace/api/*sub", any(workspace_api_handler))
         .route("/admin/api/*sub", any(admin_api_handler))

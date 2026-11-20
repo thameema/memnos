@@ -7,12 +7,17 @@
 use crate::config::config_dir as memnos_dir;
 use axum::{
     body::{Body, Bytes},
-    extract::State,
+    extract::{
+        ws::{Message as AxumWsMsg, WebSocketUpgrade},
+        State,
+    },
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::any,
+    routing::{any, get},
     Json, Router,
 };
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::Message as TungMsg;
 use rand::RngCore;
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -445,6 +450,80 @@ fn spawn_rolling_upgrade(st: GatewayState) -> bool {
     true
 }
 
+async fn gateway_ws_handler(
+    State(st): State<GatewayState>,
+    uri: Uri,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let port_opt = {
+        let g = st.inner.lock().unwrap();
+        g.current.as_ref().map(|b| b.port)
+    };
+    let Some(port) = port_opt else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "memnos gateway: no backend ready yet"})),
+        )
+            .into_response();
+    };
+    let pq = uri
+        .path_and_query()
+        .map(|x| x.as_str())
+        .unwrap_or("/workspace/ws")
+        .to_string();
+    let backend_ws_url = format!("ws://127.0.0.1:{}{}", port, pq);
+
+    ws.on_upgrade(move |client_ws| async move {
+        let Ok((backend_ws, _)) = tokio_tungstenite::connect_async(&backend_ws_url).await else {
+            return;
+        };
+        let (mut c_tx, mut c_rx) = client_ws.split();
+        let (mut b_tx, mut b_rx) = backend_ws.split();
+
+        let client_to_backend = async {
+            while let Some(Ok(msg)) = c_rx.next().await {
+                let out = match msg {
+                    AxumWsMsg::Text(t) => TungMsg::Text(t),
+                    AxumWsMsg::Binary(b) => TungMsg::Binary(b),
+                    AxumWsMsg::Ping(p) => TungMsg::Ping(p),
+                    AxumWsMsg::Pong(p) => TungMsg::Pong(p),
+                    AxumWsMsg::Close(_) => {
+                        let _ = b_tx.close().await;
+                        break;
+                    }
+                };
+                if b_tx.send(out).await.is_err() {
+                    break;
+                }
+            }
+        };
+
+        let backend_to_client = async {
+            while let Some(Ok(msg)) = b_rx.next().await {
+                let out = match msg {
+                    TungMsg::Text(t) => AxumWsMsg::Text(t),
+                    TungMsg::Binary(b) => AxumWsMsg::Binary(b),
+                    TungMsg::Ping(p) => AxumWsMsg::Ping(p),
+                    TungMsg::Pong(p) => AxumWsMsg::Pong(p),
+                    TungMsg::Close(_) => {
+                        let _ = c_tx.close().await;
+                        break;
+                    }
+                    TungMsg::Frame(_) => continue,
+                };
+                if c_tx.send(out).await.is_err() {
+                    break;
+                }
+            }
+        };
+
+        tokio::select! {
+            _ = client_to_backend => {}
+            _ = backend_to_client => {}
+        }
+    })
+}
+
 async fn gateway_handler(
     State(st): State<GatewayState>,
     method: Method,
@@ -620,6 +699,7 @@ pub async fn run_gateway(public_port: u16) -> Result<(), String> {
     write_gateway_state_file(public_port, &control_token);
 
     let app = Router::new()
+        .route("/workspace/ws", get(gateway_ws_handler))
         .fallback(any(gateway_handler))
         .with_state(state.clone());
 

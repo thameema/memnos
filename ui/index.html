@@ -196,6 +196,12 @@
           <span class="rail-lbl">Memories</span>
         </button>
 
+        <button class="rail-btn" data-section="constraints" title="Constraints &amp; Guardrail Validator">
+          <span class="rail-glyph">🛡</span>
+          <span class="rail-lbl">Rules</span>
+          <span id="rail-cs-count" class="rail-badge">0</span>
+        </button>
+
         <button class="rail-btn" data-section="telemetry" title="Engine &amp; DB Telemetry">
           <span class="rail-glyph">⚡</span>
           <span class="rail-lbl">Telemetry</span>
@@ -307,11 +313,16 @@
           <div class="pane-controls">
             <div class="search-box">
               <span class="search-ico">⌕</span>
-              <input id="hd-search" type="search" placeholder="Filter @handle, #channel, or path…">
+              <input id="hd-search" type="search" placeholder="Filter @handle, harness, #channel, or path…">
             </div>
-            <div class="seg-control" id="hd-mode-tabs">
-              <button data-mode="online" class="active" title="Currently online &amp; heartbeating handles">Online</button>
-              <button data-mode="all" title="Include expired or offline handles">All</button>
+            <div class="row" style="gap:6px">
+              <div class="seg-control" id="hd-mode-tabs" style="flex:1">
+                <button data-mode="online" class="active" title="Currently online &amp; heartbeating handles">Online</button>
+                <button data-mode="all" title="Include expired or offline handles">All</button>
+              </div>
+              <select id="hd-harness-filter" title="Filter handles by attached harness" style="max-width:132px;padding:5px 8px;font-size:11.5px">
+                <option value="">All harnesses</option>
+              </select>
             </div>
           </div>
 
@@ -426,6 +437,93 @@
               <span id="wmem-info" class="muted"></span>
               <button id="wmem-next" class="ghost sm">Older &#8250;</button>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- SECTION 3B: CONSTRAINTS & CROSS-NAMESPACE VALIDATOR          -->
+      <!-- ============================================================ -->
+      <section id="sec-constraints" class="page-stage" hidden>
+        <div class="page-inner">
+          <div class="page-hdr">
+            <div>
+              <h2>Constraints &amp; Guardrail Validator</h2>
+              <p class="muted">Inspect, pin, enforce, and dry-run validate tool guardrails and semantic constraints on any namespace (including inherited ancestor &amp; linked namespaces) or across your entire scope.</p>
+            </div>
+            <div class="row">
+              <span class="muted">Inspecting:</span>
+              <select id="cs-ns-select" style="max-width:260px;padding:6px 10px;font-size:12.5px">
+                <option value="*">All authorized namespaces (*)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Interactive Validator -->
+          <div class="surface-card">
+            <h3>Validate Against Constraints <span class="muted">· deterministic PreToolUse + semantic reconcile</span></h3>
+            <div class="two-col-grid" style="margin-top:10px">
+              <div>
+                <label class="field-lbl" style="margin-top:0" for="cs-val-tool">1. Tool / Command Dry-Run (PreToolUse)</label>
+                <div class="row">
+                  <input id="cs-val-tool" placeholder="e.g. Bash(rm -rf /tmp/foo) or write_file(/app/.env)">
+                  <button id="cs-val-tool-btn" class="btn-primary sm">Test Tool</button>
+                </div>
+                <div id="cs-val-tool-out" style="margin-top:10px"></div>
+              </div>
+              <div>
+                <label class="field-lbl" style="margin-top:0" for="cs-val-stmt">2. Statement / Plan / Code Validation</label>
+                <div class="row">
+                  <input id="cs-val-stmt" placeholder="e.g. Upgrade live binary without running pg_dump first">
+                  <button id="cs-val-stmt-btn" class="btn-primary sm">Validate Claim</button>
+                </div>
+                <div id="cs-val-stmt-out" style="margin-top:10px"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- PreToolUse Hard Guardrails -->
+          <div class="surface-card">
+            <div class="row" style="justify-content:space-between;margin-bottom:10px">
+              <div>
+                <h3 style="margin:0">Active PreToolUse Tool Guardrails (<span id="cs-enf-cnt">0</span>)</h3>
+                <div class="muted">Deterministic LLM-free rules enforced before tool execution (<code>block</code> or <code>ask</code>).</div>
+              </div>
+            </div>
+            <div class="row" style="margin-bottom:12px">
+              <input id="cs-add-enf-ns" placeholder="namespace (e.g. proj:payments)" style="max-width:190px">
+              <select id="cs-add-enf-lvl" style="max-width:120px">
+                <option value="block">block</option>
+                <option value="ask">ask</option>
+              </select>
+              <input id="cs-add-enf-matcher" placeholder="matcher (e.g. Bash(git push --force*) or write_file(*.env))" style="max-width:280px">
+              <input id="cs-add-enf-text" placeholder="rule reason shown when triggered…">
+              <button id="cs-add-enf-btn" class="btn-primary sm">+ Add Guardrail</button>
+            </div>
+            <table id="cs-enf-table">
+              <thead><tr><th style="width:170px">Namespace</th><th style="width:90px">Level</th><th style="width:240px">Tool Matcher</th><th>Rule Reason</th><th style="width:90px">Age</th><th style="width:100px"></th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <!-- Pinned Semantic Constraints -->
+          <div class="surface-card">
+            <div class="row" style="justify-content:space-between;margin-bottom:10px">
+              <div>
+                <h3 style="margin:0">Pinned Semantic Constraints (<span id="cs-pin-cnt">0</span>)</h3>
+                <div class="muted">Always-injected architectural invariants, safety rules, and project policies across namespaces.</div>
+              </div>
+            </div>
+            <div class="row" style="margin-bottom:12px">
+              <input id="cs-add-pin-ns" placeholder="namespace (e.g. proj:payments)" style="max-width:190px">
+              <input id="cs-add-pin-subj" placeholder="subject (optional, e.g. db-backups)" style="max-width:210px">
+              <input id="cs-add-pin-text" placeholder="Self-contained constraint statement to pin…">
+              <button id="cs-add-pin-btn" class="btn-primary sm">+ Pin Constraint</button>
+            </div>
+            <table id="cs-pin-table">
+              <thead><tr><th style="width:170px">Namespace</th><th style="width:150px">Subject</th><th>Pinned Constraint</th><th style="width:110px">Author</th><th style="width:80px">Age</th><th style="width:95px"></th></tr></thead>
+              <tbody></tbody>
+            </table>
           </div>
         </div>
       </section>
@@ -582,17 +680,35 @@
           <!-- Admin: Tokens -->
           <div id="ctab-tokens" class="ctab-pane" hidden>
             <div class="surface-card">
-              <h3>Mint token</h3>
+              <h3>Mint new token</h3>
               <div class="row">
-                <select id="tok-principal"></select>
-                <input id="tok-label" placeholder="label (optional)">
-                <input id="tok-ttl" type="number" placeholder="ttl days (optional)" style="max-width:140px">
-                <button id="tok-mint" class="btn-primary">Mint</button>
+                <select id="tok-principal" style="max-width:240px"></select>
+                <input id="tok-label" placeholder="label (e.g. laptop, ci, remote-app)">
+                <input id="tok-ttl" type="number" placeholder="ttl days (optional)" style="max-width:150px">
+                <button id="tok-mint" class="btn-primary">Mint Token</button>
               </div>
               <div id="tok-show" class="banner" hidden></div>
             </div>
-            <div class="surface-card"><h3>Tokens for <span id="tok-who" class="muted"></span></h3>
-              <table id="tok-table"><thead><tr><th>ID</th><th>Token</th><th>Label</th><th>Created</th><th>Expires</th><th>Status</th><th></th></tr></thead><tbody></tbody></table>
+            <div class="surface-card">
+              <div class="row" style="justify-content:space-between;margin-bottom:12px">
+                <h3 style="margin:0">Minted Tokens <span id="tok-who" class="muted"></span></h3>
+                <div class="row">
+                  <select id="tok-view-principal" style="max-width:220px;padding:6px 10px;font-size:12.5px">
+                    <option value="0">All principals</option>
+                  </select>
+                  <select id="tok-status-filter" style="max-width:150px;padding:6px 10px;font-size:12.5px">
+                    <option value="active">Active only</option>
+                    <option value="all">Active + Revoked</option>
+                    <option value="revoked">Revoked only</option>
+                  </select>
+                  <input id="tok-search" placeholder="Filter label, principal, or hint…" style="max-width:230px;padding:6px 10px;font-size:12.5px">
+                  <label class="chk"><input type="checkbox" id="tok-hide-test" checked> Hide test-*</label>
+                </div>
+              </div>
+              <table id="tok-table">
+                <thead><tr><th style="width:65px">ID</th><th style="width:155px">Principal</th><th style="width:220px">Token</th><th>Label</th><th style="width:155px">Created</th><th style="width:120px">Expires</th><th style="width:85px">Status</th><th style="width:210px">Actions</th></tr></thead>
+                <tbody></tbody>
+              </table>
             </div>
           </div>
 

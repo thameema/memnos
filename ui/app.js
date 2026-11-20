@@ -131,7 +131,13 @@ let liveClockTimer = null;
 
 let allPrincipals = [];
 let callerPrincipalId = 0;
+let allTokens = [];
+let revealedTokenMap = {};
 
+let wsSocket = null;
+let wsReconnectTimer = null;
+let wsReqSeq = 1;
+const wsPending = new Map();
 let sseSource = null;
 let sseRefreshTimer = null;
 let pollFallbackTimer = null;
@@ -452,27 +458,112 @@ function scheduleRealtimeRefresh() {
   }, 220);
 }
 
-function startRealtime() {
-  stopRealtime();
+function wsServerBase() {
+  const b = serverBase();
+  if (b.startsWith("https://")) return "wss://" + b.slice(8);
+  if (b.startsWith("http://")) return "ws://" + b.slice(7);
+  const proto = location.protocol === "https:" ? "wss://" : "ws://";
+  return proto + location.host;
+}
+
+function wsCall(type, payload) {
+  return new Promise((resolve, reject) => {
+    if (!wsSocket || wsSocket.readyState !== WebSocket.OPEN) {
+      return reject(new Error("ws_not_open"));
+    }
+    const req_id = wsReqSeq++;
+    const timer = setTimeout(() => {
+      wsPending.delete(req_id);
+      reject(new Error("ws_timeout"));
+    }, 6000);
+    wsPending.set(req_id, { resolve, reject, timer });
+    wsSocket.send(JSON.stringify({ type, req_id, ...payload }));
+  });
+}
+
+function startSseFallback() {
+  if (sseSource) return;
   try {
     sseSource = new EventSource(serverBase() + "/workspace/events?token=" + encodeURIComponent(tok()));
-    sseSource.onopen = () => setLiveStatus(true, "LIVE");
+    sseSource.onopen = () => {
+      if (!wsSocket || wsSocket.readyState !== WebSocket.OPEN) setLiveStatus(true, "SSE LIVE");
+    };
     sseSource.onmessage = (ev) => {
-      setLiveStatus(true, "LIVE");
       try {
         const d = JSON.parse(ev.data || "{}");
         if (d.type === "refresh") scheduleRealtimeRefresh();
         else if (d.type === "activity") handleLiveActivity(d);
       } catch (_) {}
     };
-    sseSource.onerror = () => setLiveStatus(false, "SYNCING");
-  } catch (_) {
-    setLiveStatus(true, "LIVE");
+    sseSource.onerror = () => {
+      if (!wsSocket || wsSocket.readyState !== WebSocket.OPEN) setLiveStatus(false, "SYNCING");
+    };
+  } catch (_) {}
+}
+
+function connectWebSocket() {
+  if (!tok()) return;
+  if (wsSocket) {
+    try { wsSocket.onclose = null; wsSocket.close(); } catch (_) {}
+    wsSocket = null;
   }
-  // Belt-and-suspenders 2.5s delta sync guarantees zero missed live ops across WKWebView & gateway reloads
+  try {
+    const wsUrl = wsServerBase() + "/workspace/ws?token=" + encodeURIComponent(tok());
+    wsSocket = new WebSocket(wsUrl);
+    wsSocket.onopen = () => {
+      setLiveStatus(true, "WS LIVE");
+      if (sseSource) { sseSource.close(); sseSource = null; }
+    };
+    wsSocket.onmessage = (ev) => {
+      setLiveStatus(true, "WS LIVE");
+      try {
+        const d = JSON.parse(ev.data || "{}");
+        if (d.type === "ack" && d.req_id != null && wsPending.has(d.req_id)) {
+          const p = wsPending.get(d.req_id);
+          wsPending.delete(d.req_id);
+          clearTimeout(p.timer);
+          if (d.ok) p.resolve(d.result);
+          else p.reject(new Error(d.error || "WebSocket command failed"));
+          return;
+        }
+        if (d.type === "refresh") scheduleRealtimeRefresh();
+        else if (d.type === "activity") handleLiveActivity(d);
+      } catch (_) {}
+    };
+    wsSocket.onerror = () => {
+      startSseFallback();
+    };
+    wsSocket.onclose = () => {
+      wsSocket = null;
+      for (const [, p] of wsPending) {
+        clearTimeout(p.timer);
+        p.reject(new Error("ws_closed"));
+      }
+      wsPending.clear();
+      if (!tok()) return;
+      startSseFallback();
+      if (!wsReconnectTimer) {
+        wsReconnectTimer = setTimeout(() => {
+          wsReconnectTimer = null;
+          if (tok()) connectWebSocket();
+        }, 1800);
+      }
+    };
+  } catch (_) {
+    startSseFallback();
+  }
+}
+
+function startRealtime() {
+  stopRealtime();
+  // Default: Persistent two-way WebSocket (/workspace/ws), with automatic SSE fallback
+  connectWebSocket();
   liveDeltaTimer = setInterval(() => {
     pollActivityDelta();
-  }, 2500);
+    if (wsSocket && wsSocket.readyState === WebSocket.OPEN) {
+      try { wsSocket.send(JSON.stringify({ type: "ping" })); } catch (_) {}
+    }
+  }, 3000);
   liveClockTimer = setInterval(() => {
     renderTopbarPillText();
     if (activeSection === "live" && !livePaused && liveEvents.length) renderLiveTable();
@@ -481,10 +572,15 @@ function startRealtime() {
     refreshOverview(false).catch(() => {});
     if (activeSection === "channels" && selectedChannel) loadChannelMessages(false).catch(() => {});
     if (activeSection === "handles" && selectedHandle) loadHandleMessages(false).catch(() => {});
-  }, 4500);
+  }, 5000);
 }
 
 function stopRealtime() {
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  if (wsSocket) {
+    try { wsSocket.onclose = null; wsSocket.close(); } catch (_) {}
+    wsSocket = null;
+  }
   if (sseSource) { sseSource.close(); sseSource = null; }
   if (liveDeltaTimer) { clearInterval(liveDeltaTimer); liveDeltaTimer = null; }
   if (liveClockTimer) { clearInterval(liveClockTimer); liveClockTimer = null; }
@@ -498,7 +594,7 @@ function switchSection(sec) {
   }
   activeSection = sec;
   $$(".rail-btn").forEach(b => b.classList.toggle("active", b.dataset.section === sec));
-  ["channels", "handles", "live", "memories", "telemetry", "console"].forEach(k => {
+  ["channels", "handles", "live", "memories", "constraints", "telemetry", "console"].forEach(k => {
     const el = $("#sec-" + k);
     if (el) el.hidden = (k !== sec);
   });
@@ -517,6 +613,8 @@ function switchSection(sec) {
   } else if (sec === "memories") {
     wmemOffset = 0;
     loadWorkspaceMemories();
+  } else if (sec === "constraints") {
+    loadWorkspaceConstraints();
   } else if (sec === "telemetry") {
     renderTelemetry();
   } else if (sec === "console") {
@@ -542,6 +640,39 @@ if ($("#live-clear-btn")) {
     liveEvents = [];
     renderLiveTable();
   };
+}
+
+// ---- Harness Identity Helpers ----
+function normalizeHarness(raw, meta) {
+  let h = String(raw || "").trim().toLowerCase();
+  if (!h && meta && typeof meta.display_label === "string") {
+    const dl = meta.display_label.toLowerCase();
+    if (dl.includes("claude")) h = "claude-code";
+    else if (dl.includes("antigravity")) h = "antigravity";
+    else if (dl.includes("cursor")) h = "cursor";
+    else if (dl.includes("codex")) h = "codex";
+    else if (dl.includes("gemini")) h = "gemini-cli";
+  }
+  if (!h) return null;
+  if (h.includes("claude")) return { key: "claude-code", label: "Claude Code", cls: "claude" };
+  if (h.includes("antigravity") || h === "agy") return { key: "antigravity", label: "Antigravity", cls: "agy" };
+  if (h.includes("cursor")) return { key: "cursor", label: "Cursor", cls: "cursor" };
+  if (h.includes("codex")) return { key: "codex", label: "Codex", cls: "codex" };
+  if (h.includes("gemini")) return { key: "gemini-cli", label: "Gemini CLI", cls: "gemini" };
+  return { key: h, label: raw, cls: "mcp" };
+}
+
+function harnessBadgeForSession(s) {
+  const info = normalizeHarness(s?.harness, s?.metadata);
+  if (!info) return "";
+  return `<span class="harness-pill ${info.cls}" title="Attached harness: ${esc(info.label)}">${esc(info.label)}</span>`;
+}
+
+function harnessBadgeByName(handleName) {
+  const clean = String(handleName || "").replace(/^@/, "");
+  const s = (wsData?.sessions || []).find(x => x.name === clean && x.alive)
+    || (wsData?.sessions || []).find(x => x.name === clean);
+  return s ? harnessBadgeForSession(s) : "";
 }
 
 // ---- Active / Alive Helpers ----
@@ -594,7 +725,7 @@ async function refreshOverview(pickDefaults = false) {
   if (!data.is_admin && activeSection === "console") {
     switchSection("channels");
   }
-  ["channels", "handles", "live", "memories", "telemetry", "console"].forEach(k => {
+  ["channels", "handles", "live", "memories", "constraints", "telemetry", "console"].forEach(k => {
     const el = $("#sec-" + k);
     if (el) el.hidden = (k !== activeSection);
   });
@@ -623,11 +754,35 @@ async function refreshOverview(pickDefaults = false) {
     $("#ws-ns-filter").value = prevNs;
   }
 
-  // Rail badges ( strictly active #channels and online @handles )
+  // Sync Constraints namespace selector
+  const csSel = $("#cs-ns-select");
+  if (csSel) {
+    const prevCs = csSel.value || "*";
+    csSel.innerHTML = `<option value="*">All authorized namespaces (*)</option>`
+      + allNs.map(n => `<option value="${esc(n.name)}">${esc(n.name)} (+ inherited)</option>`).join("");
+    if ([...csSel.options].some(o => o.value === prevCs)) csSel.value = prevCs;
+  }
+
+  // Sync Harness filter dropdown in @Handles
+  const hfSel = $("#hd-harness-filter");
+  if (hfSel) {
+    const prevHf = hfSel.value || "";
+    const seenH = new Map();
+    for (const s of (data.sessions || [])) {
+      const info = normalizeHarness(s.harness, s.metadata);
+      if (info && !seenH.has(info.key)) seenH.set(info.key, info.label);
+    }
+    hfSel.innerHTML = `<option value="">All harnesses</option>`
+      + [...seenH.entries()].map(([k, lbl]) => `<option value="${esc(k)}">${esc(lbl)}</option>`).join("");
+    if ([...hfSel.options].some(o => o.value === prevHf)) hfSel.value = prevHf;
+  }
+
+  // Rail badges
   const activeChs = (data.channels || []).filter(isChannelActive);
   const onlineHds = (data.sessions || []).filter(s => s.alive && !s.namespace.startsWith("test:"));
   $("#rail-ch-count").textContent = activeChs.length;
   $("#rail-hd-count").textContent = onlineHds.length;
+  if ($("#rail-cs-count")) $("#rail-cs-count").textContent = v.total_constraints ?? 0;
 
   // Pick sensible initial selections
   if (pickDefaults || !selectedChannel) {
@@ -826,6 +981,7 @@ function renderChannelHeaderAndInspector() {
       <div class="member-row-left" data-jump-handle="${esc(h)}" data-jump-ns="${esc(findHandleNs(h))}" title="Open @${esc(h)} in Handles">
         <span class="dot ${isLive ? "alive" : "idle"}"></span>
         <code>@${esc(h)}</code>
+        ${harnessBadgeByName(h)}
       </div>
       ${writable ? `<button class="danger sm" style="padding:2px 8px;font-size:11px" data-unsub="${esc(h)}">Unregister</button>` : ""}
     </div>`;
@@ -918,6 +1074,7 @@ async function loadChannelMessages(forceScrollBottom = false) {
         <div class="msg-content">
           <div class="msg-meta">
             <span class="msg-author" data-author="${esc(sender)}" data-ns="${esc(m.namespace || namespace)}">@${esc(sender)}${isPeerDm ? ` → @${esc(m.to_session)}` : ""}</span>
+            ${harnessBadgeByName(sender)}
             ${isPeerDm ? `<span class="tiny-pill warn" title="Direct peer message between subscribed handles of this channel">peer dm</span>` : ""}
             <span class="tiny-pill">${esc(m.intent || "message")}</span>
             ${m.namespace ? `<span class="tiny-pill tag">${esc(m.namespace)}</span>` : ""}
@@ -946,14 +1103,19 @@ async function sendChannelMessage() {
   $("#ch-comp-err").textContent = "";
   $("#ch-comp-send").disabled = true;
   try {
-    await wapi("POST", "channel/publish", {
+    const payload = {
       namespace: selectedChannel.namespace,
       channel: selectedChannel.channel,
       sender_session: sender,
       content: text,
       claimable,
       intent: claimable ? "task" : "message",
-    });
+    };
+    try {
+      await wsCall("publish_channel", payload);
+    } catch (_) {
+      await wapi("POST", "channel/publish", payload);
+    }
     $("#ch-comp-input").value = "";
     $("#ch-comp-claimable").checked = false;
     await loadChannelMessages(true);
@@ -981,6 +1143,7 @@ $$("#hd-mode-tabs button").forEach(btn => {
   };
 });
 $("#hd-search").oninput = renderHandleList;
+if ($("#hd-harness-filter")) $("#hd-harness-filter").onchange = renderHandleList;
 
 function jumpToHandle(namespace, name) {
   selectedHandle = { namespace, name: name.replace(/^@/, "") };
@@ -995,10 +1158,13 @@ function jumpToChannel(namespace, channel) {
 function filteredHandles() {
   const all = (wsData?.sessions || []).filter(s => !s.namespace.startsWith("test:"));
   const q = ($("#hd-search").value || "").trim().toLowerCase();
+  const hf = ($("#hd-harness-filter")?.value || "").trim();
   return all.filter(s => {
     if (hdFilterMode === "online" && !s.alive) return false;
+    const hInfo = normalizeHarness(s.harness, s.metadata);
+    if (hf && hInfo?.key !== hf) return false;
     if (q) {
-      const hay = `@${s.name} ${s.namespace} ${s.cwd || ""} ${s.host || ""} ${(s.channels || []).join(" ")}`.toLowerCase();
+      const hay = `@${s.name} ${hInfo?.label || ""} ${s.harness || ""} ${s.namespace} ${s.cwd || ""} ${s.host || ""} ${(s.channels || []).join(" ")}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -1039,10 +1205,10 @@ function renderHandleList() {
         ${unread > 0 ? `<span class="tiny-pill warn">${unread} unread</span>` : `<span class="tiny-pill">${age(s.last_heartbeat_at)}</span>`}
       </div>
       <div class="list-card-sub">
-        <span>${esc(s.namespace)}</span>
+        <span>${harnessBadgeForSession(s) || esc(s.namespace)}</span>
         <span title="${esc(s.cwd || "")}">${esc(shortCwd)}</span>
       </div>
-      ${chs.length ? `<div class="list-tags">${chs.slice(0, 3).map(c => `<span class="tiny-pill tag">${esc(c)}</span>`).join("")}${chs.length > 3 ? `<span class="tiny-pill">+${chs.length - 3}</span>` : ""}</div>` : ""}
+      ${chs.length ? `<div class="list-tags"><span class="tiny-pill">${esc(s.namespace)}</span>${chs.slice(0, 2).map(c => `<span class="tiny-pill tag">${esc(c)}</span>`).join("")}${chs.length > 2 ? `<span class="tiny-pill">+${chs.length - 2}</span>` : ""}</div>` : `<div class="list-tags"><span class="tiny-pill">${esc(s.namespace)}</span></div>`}
     </button>`;
   }).join("");
 
@@ -1074,12 +1240,14 @@ function renderHandleHero() {
         <div>
           <div class="chat-title-row">
             <h2 style="margin:0;font-size:17px">@${esc(name)}</h2>
+            ${sObj ? harnessBadgeForSession(sObj) : ""}
             <span class="ns-badge">${esc(namespace)}</span>
             ${sObj
               ? `<span class="pill ${sObj.alive ? "ok" : "no"}">${sObj.alive ? "ONLINE · " + esc(sObj.run_state || "idle") : "OFFLINE"}</span>`
               : `<span class="pill warn">UNREGISTERED HANDLE</span>`}
           </div>
           ${sObj ? `<div class="hero-meta-grid" style="margin-top:5px">
+            ${sObj.harness || sObj.metadata?.display_label ? `<span>Harness: <b>${esc(normalizeHarness(sObj.harness, sObj.metadata)?.label || sObj.harness)}</b></span>` : ""}
             <span>Heartbeat: <b>${age(sObj.last_heartbeat_at)} ago</b></span>
             ${sObj.pid ? `<span>PID: <code>${sObj.pid}</code> ${esc(sObj.tty || "")}</span>` : ""}
             ${sObj.cwd ? `<span>Folder: <code>${esc(sObj.cwd)}</code></span>` : ""}
@@ -1190,13 +1358,18 @@ async function sendHandleMessage() {
   $("#hd-comp-err").textContent = "";
   $("#hd-comp-send").disabled = true;
   try {
-    await wapi("POST", "session/send", {
+    const payload = {
       namespace: selectedHandle.namespace,
       to_session: selectedHandle.name,
       from_session: sender,
       content: text,
       intent,
-    });
+    };
+    try {
+      await wsCall("send_dm", payload);
+    } catch (_) {
+      await wapi("POST", "session/send", payload);
+    }
     $("#hd-comp-input").value = "";
     await loadHandleMessages(true);
     await refreshOverview(false);
@@ -1248,6 +1421,177 @@ $("#wmem-search").onclick = () => { wmemOffset = 0; loadWorkspaceMemories(); };
 $("#wmem-q").addEventListener("keydown", e => { if (e.key === "Enter") { wmemOffset = 0; loadWorkspaceMemories(); } });
 $("#wmem-prev").onclick = () => { wmemOffset = Math.max(0, wmemOffset - WMEM_PAGE); loadWorkspaceMemories(); };
 $("#wmem-next").onclick = () => { wmemOffset += WMEM_PAGE; loadWorkspaceMemories(); };
+
+// ============================================================================
+// SECTION 3B: CONSTRAINTS & CROSS-NAMESPACE VALIDATOR
+// ============================================================================
+
+async function loadWorkspaceConstraints() {
+  const nsSel = $("#cs-ns-select")?.value || $("#ws-ns-filter")?.value || "*";
+  const defaultWriteNs = (nsSel && nsSel !== "*")
+    ? nsSel
+    : ((wsData?.namespaces || []).find(n => n.can_write && !n.name.startsWith("test:"))?.name || "");
+  if ($("#cs-add-enf-ns") && !$("#cs-add-enf-ns").value) $("#cs-add-enf-ns").value = defaultWriteNs;
+  if ($("#cs-add-pin-ns") && !$("#cs-add-pin-ns").value) $("#cs-add-pin-ns").value = defaultWriteNs;
+
+  const enfTbody = $("#cs-enf-table tbody");
+  const pinTbody = $("#cs-pin-table tbody");
+  if (!enfTbody || !pinTbody) return;
+
+  enfTbody.innerHTML = `<tr class="state"><td colspan="6"><span class="spinner"></span> loading…</td></tr>`;
+  pinTbody.innerHTML = `<tr class="state"><td colspan="6"><span class="spinner"></span> loading…</td></tr>`;
+
+  try {
+    const data = await wapi("GET", "constraints?namespace=" + encodeURIComponent(nsSel));
+    const enf = data.enforcement_rules || [];
+    const pin = data.pinned_constraints || [];
+    $("#cs-enf-cnt").textContent = enf.length;
+    $("#cs-pin-cnt").textContent = pin.length;
+
+    enfTbody.innerHTML = enf.map(r => `<tr>
+      <td><code>${esc(r.namespace)}</code>${r.inherited ? ` <span class="tiny-pill tag">inherited</span>` : ""}</td>
+      <td><span class="pill ${r.enforce_level === "block" ? "no" : "warn"}">${esc((r.enforce_level || "ask").toUpperCase())}</span></td>
+      <td><code>${esc(r.tool_matcher)}</code></td>
+      <td>${formatRichText(r.rule_text)}</td>
+      <td title="${esc(r.created_at || "")}">${age(r.created_at)}</td>
+      <td>${r.can_write ? `<button class="danger sm" data-del-enf="${r.id}">Remove</button>` : ""}</td>
+    </tr>`).join("") || emptyRow(6, "No active PreToolUse tool guardrails in this scope.");
+
+    pinTbody.innerHTML = pin.map(p => `<tr>
+      <td><code>${esc(p.namespace)}</code>${p.inherited ? ` <span class="tiny-pill tag">inherited</span>` : ""}</td>
+      <td>${p.subject ? `<code>${esc(p.subject)}</code>` : `<span class="muted">—</span>`}</td>
+      <td style="white-space:pre-wrap;word-break:break-word">${formatRichText(p.content)}</td>
+      <td>${esc(p.author || "—")}</td>
+      <td title="${esc(p.observed_at || "")}">${age(p.observed_at)}</td>
+      <td>${p.can_write ? `<button class="danger sm" data-retire-pin="${p.id}" data-retire-ns="${esc(p.namespace)}">Retire</button>` : ""}</td>
+    </tr>`).join("") || emptyRow(6, "No pinned semantic constraints in this scope.");
+
+    $$("#cs-enf-table [data-del-enf]").forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm("Deactivate this PreToolUse guardrail rule?")) return;
+        try {
+          await wapi("DELETE", "constraints/enforcement?id=" + btn.dataset.delEnf);
+          await loadWorkspaceConstraints();
+          refreshOverview(false);
+        } catch (e) { alert(e.message); }
+      };
+    });
+
+    $$("#cs-pin-table [data-retire-pin]").forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm("Retire this pinned constraint?")) return;
+        try {
+          await wapi("DELETE", `constraints/pin?id=${btn.dataset.retirePin}&namespace=${encodeURIComponent(btn.dataset.retireNs)}`);
+          await loadWorkspaceConstraints();
+          refreshOverview(false);
+        } catch (e) { alert(e.message); }
+      };
+    });
+  } catch (e) {
+    enfTbody.innerHTML = emptyRow(6, e.message);
+    pinTbody.innerHTML = emptyRow(6, e.message);
+  }
+}
+
+if ($("#cs-ns-select")) {
+  $("#cs-ns-select").onchange = () => {
+    const v = $("#cs-ns-select").value;
+    if (v && v !== "*") {
+      if ($("#cs-add-enf-ns")) $("#cs-add-enf-ns").value = v;
+      if ($("#cs-add-pin-ns")) $("#cs-add-pin-ns").value = v;
+    }
+    loadWorkspaceConstraints();
+  };
+}
+
+if ($("#cs-val-tool-btn")) {
+  $("#cs-val-tool-btn").onclick = async () => {
+    const subj = ($("#cs-val-tool")?.value || "").trim();
+    const out = $("#cs-val-tool-out");
+    if (!subj) { out.innerHTML = `<span class="err">Enter a tool call subject, e.g. <code>Bash(rm -rf /tmp/x)</code></span>`; return; }
+    out.innerHTML = `<span class="muted"><span class="spinner"></span> evaluating guardrails…</span>`;
+    try {
+      const ns = $("#cs-ns-select")?.value || "*";
+      const res = await wapi("POST", "constraints/validate", { namespace: ns, tool_subject: subj });
+      const tv = res.tool_validation || {};
+      const dec = (tv.decision || "allow").toUpperCase();
+      const cls = dec === "BLOCK" ? "no" : (dec === "ASK" ? "warn" : "ok");
+      const matches = tv.matched_rules || [];
+      out.innerHTML = `<div class="val-box">
+        <div class="row" style="justify-content:space-between;margin-bottom:${matches.length ? 8 : 0}px">
+          <span>Verdict: <span class="pill ${cls}">${esc(dec)}</span></span>
+          <span class="muted">Checked ${tv.checked_rules ?? 0} active guardrail(s) in <code>${esc(ns)}</code></span>
+        </div>
+        ${matches.map(m => `<div style="padding-top:6px;border-top:1px solid var(--border)">
+          <code>${esc(m.namespace)}</code> · <code>${esc(m.tool_matcher)}</code> — ${esc(m.rule_text)}
+        </div>`).join("")}
+      </div>`;
+    } catch (e) {
+      out.innerHTML = `<span class="err">${esc(e.message)}</span>`;
+    }
+  };
+}
+
+if ($("#cs-val-stmt-btn")) {
+  $("#cs-val-stmt-btn").onclick = async () => {
+    const stmt = ($("#cs-val-stmt")?.value || "").trim();
+    const out = $("#cs-val-stmt-out");
+    if (!stmt) { out.innerHTML = `<span class="err">Enter a statement, plan, or snippet to validate.</span>`; return; }
+    out.innerHTML = `<span class="muted"><span class="spinner"></span> checking pinned constraints &amp; reconcile…</span>`;
+    try {
+      const ns = $("#cs-ns-select")?.value || "*";
+      const res = await wapi("POST", "constraints/validate", { namespace: ns, statement: stmt });
+      const sv = res.statement_validation || {};
+      const pm = sv.pinned_matches || [];
+      const rec = sv.reconcile;
+      const recStatus = rec?.status ? `<span class="pill ${rec.status === "stale" ? "no" : "ok"}">reconcile: ${esc(rec.status)}</span>` : "";
+      out.innerHTML = `<div class="val-box">
+        <div class="row" style="justify-content:space-between;margin-bottom:6px">
+          <span><b>${pm.length}</b> relevant pinned constraint(s) matched</span>
+          ${recStatus}
+        </div>
+        ${pm.slice(0, 5).map(p => `<div style="padding-top:6px;border-top:1px solid var(--border)">
+          <code>${esc(p.namespace)}</code>${p.subject ? ` · <b>${esc(p.subject)}</b>` : ""}: ${esc(String(p.content || "").slice(0, 220))}${String(p.content || "").length > 220 ? "…" : ""}
+        </div>`).join("") || `<div class="muted">No conflicting or matching pinned constraints found for these terms.</div>`}
+      </div>`;
+    } catch (e) {
+      out.innerHTML = `<span class="err">${esc(e.message)}</span>`;
+    }
+  };
+}
+
+if ($("#cs-add-enf-btn")) {
+  $("#cs-add-enf-btn").onclick = async () => {
+    const ns = ($("#cs-add-enf-ns")?.value || "").trim();
+    const lvl = $("#cs-add-enf-lvl")?.value || "block";
+    const matcher = ($("#cs-add-enf-matcher")?.value || "").trim();
+    const text = ($("#cs-add-enf-text")?.value || "").trim();
+    if (!ns || !matcher || !text) { alert("Namespace, Tool Matcher, and Rule Reason are required."); return; }
+    try {
+      await wapi("POST", "constraints/enforcement", { namespace: ns, enforce_level: lvl, tool_matcher: matcher, rule_text: text });
+      $("#cs-add-enf-matcher").value = "";
+      $("#cs-add-enf-text").value = "";
+      await loadWorkspaceConstraints();
+      refreshOverview(false);
+    } catch (e) { alert(e.message); }
+  };
+}
+
+if ($("#cs-add-pin-btn")) {
+  $("#cs-add-pin-btn").onclick = async () => {
+    const ns = ($("#cs-add-pin-ns")?.value || "").trim();
+    const subj = ($("#cs-add-pin-subj")?.value || "").trim();
+    const text = ($("#cs-add-pin-text")?.value || "").trim();
+    if (!ns || !text) { alert("Namespace and Constraint Text are required."); return; }
+    try {
+      await wapi("POST", "constraints/pin", { namespace: ns, subject: subj || undefined, text });
+      $("#cs-add-pin-subj").value = "";
+      $("#cs-add-pin-text").value = "";
+      await loadWorkspaceConstraints();
+      refreshOverview(false);
+    } catch (e) { alert(e.message); }
+  };
+}
 
 // ============================================================================
 // SECTION 4: ENGINE & DB TELEMETRY
@@ -1435,14 +1779,28 @@ if ($("#pr-filter")) $("#pr-filter").oninput = renderPrincipalsRows;
 async function loadPrincipals() {
   const tbody = $("#pr-table tbody");
   const prevTokP = $("#tok-principal").value;
+  const prevViewP = $("#tok-view-principal")?.value || "0";
   const prevGrP = $("#gr-principal").value;
   await loadTable(tbody, () => api("GET", "principals"), ({ principals, caller_id }) => {
     allPrincipals = principals || [];
     callerPrincipalId = caller_id || wsData?.principal?.id || 0;
     renderPrincipalsRows();
-    const opts = allPrincipals.map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.kind)})</option>`).join("");
+    // Order non-test principals with active tokens first in mint dropdown
+    const sortedForMint = [...allPrincipals].sort((a, b) => {
+      const aTest = String(a.name).startsWith("test-") ? 1 : 0;
+      const bTest = String(b.name).startsWith("test-") ? 1 : 0;
+      if (aTest !== bTest) return aTest - bTest;
+      return (b.active_tokens || 0) - (a.active_tokens || 0);
+    });
+    const opts = sortedForMint.map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.kind)})</option>`).join("");
     $("#tok-principal").innerHTML = opts;
     $("#gr-principal").innerHTML = opts;
+    if ($("#tok-view-principal")) {
+      $("#tok-view-principal").innerHTML = `<option value="0">All principals</option>` + opts;
+      if ([...$("#tok-view-principal").options].some(o => o.value === prevViewP)) {
+        $("#tok-view-principal").value = prevViewP;
+      }
+    }
     if (prevTokP && [...$("#tok-principal").options].some(o => o.value === prevTokP)) {
       $("#tok-principal").value = prevTokP;
     }
@@ -1458,31 +1816,115 @@ $("#pr-create").onclick = async () => {
   try { await api("POST", "principals", { name, kind: $("#pr-kind").value }); $("#pr-name").value = ""; loadPrincipals(); }
   catch (e) { alert(e.message); }
 };
+
+function renderTokensRows() {
+  const tbody = $("#tok-table tbody");
+  if (!tbody) return;
+  const stMode = $("#tok-status-filter")?.value || "active";
+  const hideTest = $("#tok-hide-test") ? $("#tok-hide-test").checked : true;
+  const q = ($("#tok-search")?.value || "").trim().toLowerCase();
+
+  const rows = allTokens.filter(t => {
+    if (stMode === "active" && t.revoked) return false;
+    if (stMode === "revoked" && !t.revoked) return false;
+    if (hideTest && String(t.principal_name || "").toLowerCase().startsWith("test-")) return false;
+    if (q) {
+      const hay = `${t.id} ${t.principal_name || ""} ${t.principal_kind || ""} ${t.label || ""} ${t.hint || ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  if ($("#tok-who")) {
+    const viewLbl = $("#tok-view-principal")?.selectedOptions[0]?.textContent || "All principals";
+    $("#tok-who").textContent = `· ${rows.length} shown (${viewLbl})`;
+  }
+
+  tbody.innerHTML = rows.map(t => {
+    const plain = revealedTokenMap[t.id];
+    const pName = t.principal_name || ("#" + t.principal_id);
+    return `<tr>
+      <td>${t.id}</td>
+      <td><code>${esc(pName)}</code>${t.principal_kind ? ` <span class="tiny-pill">${esc(t.principal_kind)}</span>` : ""}</td>
+      <td><code style="word-break:break-all">${esc(plain || t.hint || "mnk_…")}</code></td>
+      <td>${esc(t.label || "—")}</td>
+      <td>${fmt(t.created_at)}</td>
+      <td>${fmt(t.expires_at)}</td>
+      <td><span class="pill ${t.revoked ? "no" : "ok"}">${t.revoked ? "revoked" : "active"}</span></td>
+      <td>
+        <div class="row" style="gap:5px">
+          ${t.recoverable
+            ? `<button class="ghost sm" data-reveal-tok="${t.id}">${plain ? "Copy" : "Reveal &amp; Copy"}</button>`
+            : `<button class="ghost sm" data-rot-pid="${t.principal_id}" data-rot-lbl="${esc(t.label || "")}" title="Legacy pre-vault token stores SHA-256 hash only; click to mint &amp; copy a fresh token">Mint Copy</button>`}
+          ${t.revoked ? "" : `<button class="danger sm" data-rv="${t.id}">Revoke</button>`}
+        </div>
+      </td>
+    </tr>`;
+  }).join("") || emptyRow(8, "No matching minted tokens.");
+
+  $$("#tok-table [data-reveal-tok]").forEach(btn => {
+    btn.onclick = async () => {
+      const id = +btn.dataset.revealTok;
+      try {
+        if (!revealedTokenMap[id]) {
+          const r = await api("GET", "tokens/reveal?id=" + id);
+          revealedTokenMap[id] = r.token;
+        }
+        try { await navigator.clipboard.writeText(revealedTokenMap[id]); } catch (_) {}
+        renderTokensRows();
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+  });
+
+  $$("#tok-table [data-rot-pid]").forEach(btn => {
+    btn.onclick = async () => {
+      const pid = +btn.dataset.rotPid;
+      const lbl = btn.dataset.rotLbl || "desktop-mint";
+      try {
+        const { token } = await api("POST", "tokens", { principal_id: pid, label: lbl, ttl_days: null });
+        try { await navigator.clipboard.writeText(token); } catch (_) {}
+        const b = $("#tok-show");
+        b.hidden = false;
+        b.innerHTML = `Minted &amp; copied recoverable token:<br><code>${esc(token)}</code>`;
+        await loadTokens();
+        loadPrincipals();
+      } catch (e) { alert(e.message); }
+    };
+  });
+
+  $$("#tok-table [data-rv]").forEach(b => {
+    b.onclick = async () => {
+      if (!confirm(`Revoke token #${b.dataset.rv}? Any agent using this token will immediately lose access.`)) return;
+      await api("POST", "tokens/revoke", { id: +b.dataset.rv });
+      loadTokens();
+      loadPrincipals();
+    };
+  });
+}
+
 async function loadTokens() {
   const tbody = $("#tok-table tbody");
-  const pid = $("#tok-principal").value;
-  if (!pid) { tbody.innerHTML = emptyRow(7, `Create a principal first.`); return; }
-  $("#tok-who").textContent = $("#tok-principal").selectedOptions[0]?.textContent || "";
-  await loadTable(tbody, () => api("GET", "tokens?principal=" + pid), ({ tokens }) => {
-    tbody.innerHTML = tokens.map(t => `<tr>
-      <td>${t.id}</td><td><code>${esc(t.hint || "—")}</code></td><td>${esc(t.label || "")}</td><td>${fmt(t.created_at)}</td><td>${fmt(t.expires_at)}</td>
-      <td><span class="pill ${t.revoked ? "no" : "ok"}">${t.revoked ? "revoked" : "active"}</span></td>
-      <td>${t.revoked ? "" : `<button class="danger sm" data-rv="${t.id}">Revoke</button>`}</td></tr>`).join("")
-      || emptyRow(7, `No tokens for this principal.`);
-    $$("#tok-table [data-rv]").forEach(b => b.onclick = async () => {
-      await api("POST", "tokens/revoke", { id: +b.dataset.rv }); loadTokens(); loadPrincipals();
-    });
+  const viewPid = +($("#tok-view-principal")?.value || 0);
+  await loadTable(tbody, () => api("GET", "tokens?principal=" + viewPid), ({ tokens }) => {
+    allTokens = tokens || [];
+    renderTokensRows();
   }, loadTokens);
 }
-$("#tok-principal").onchange = loadTokens;
+if ($("#tok-view-principal")) $("#tok-view-principal").onchange = loadTokens;
+if ($("#tok-status-filter")) $("#tok-status-filter").onchange = renderTokensRows;
+if ($("#tok-search")) $("#tok-search").oninput = renderTokensRows;
+if ($("#tok-hide-test")) $("#tok-hide-test").onchange = renderTokensRows;
 $("#tok-mint").onclick = async () => {
   const ttl = $("#tok-ttl").value;
   try {
     const { token } = await api("POST", "tokens", {
       principal_id: +$("#tok-principal").value, label: $("#tok-label").value.trim() || null,
       ttl_days: ttl ? +ttl : null });
+    try { await navigator.clipboard.writeText(token); } catch (_) {}
     const b = $("#tok-show"); b.hidden = false;
-    b.innerHTML = `Copy this token now — shown <b>once</b>:<br><code>${esc(token)}</code>`;
+    b.innerHTML = `Minted &amp; copied to clipboard (also recoverable anytime via <b>Reveal &amp; Copy</b> below):<br><code>${esc(token)}</code>`;
     $("#tok-label").value = ""; $("#tok-ttl").value = ""; loadTokens(); loadPrincipals();
   } catch (e) { alert(e.message); }
 };
