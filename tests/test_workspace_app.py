@@ -150,6 +150,20 @@ def main():
         check("channel/messages returns published claimable task",
               sm == 200 and len(msgs) == 1 and msgs[0]["claimable"] is True)
 
+        # Peer-to-peer inbox_send between @worker-alpha and @worker-beta (both subscribed to #arch-sync)
+        call("POST", "/inbox/send", scoped_tok, {
+            "namespace": NS_RW,
+            "from_session": "worker-alpha",
+            "to_session": "worker-beta",
+            "intent": "review_request",
+            "content": "Please review PR #42",
+        })
+        _, mdata_peer = call("GET", f"/workspace/api/channel/messages?namespace={NS_RW}&channel=%23arch-sync", scoped_tok)
+        peer_msgs = mdata_peer.get("messages", [])
+        check("channel/messages includes peer_dm tasks between subscribed handles of #arch-sync",
+              len(peer_msgs) == 2 and any(m.get("source") == "peer_dm" and m.get("to_session") == "worker-beta" for m in peer_msgs),
+              str(peer_msgs))
+
         su, _ = call("POST", "/workspace/api/channel/unsubscribe", scoped_tok,
                      {"namespace": NS_RW, "channel": "#arch-sync", "session_name": "worker-beta"})
         _, ov2 = call("GET", f"/workspace/api/overview?namespace={NS_RW}", scoped_tok)

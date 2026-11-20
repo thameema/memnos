@@ -1326,9 +1326,10 @@ async fn workspace_events_handler(
         (event_rx, auth_ns, is_admin, 0u64),
         |(mut event_rx, auth_ns, is_admin, seq)| async move {
             if seq == 0 {
-                let ev = Event::default().data(
-                    json!({ "type": "connected", "seq": 0, "version": VERSION }).to_string(),
-                );
+                // 2 KB comment preamble flushes macOS WKWebView / CFNetwork's initial chunk buffer immediately
+                let ev = Event::default()
+                    .comment(" ".repeat(2048))
+                    .data(json!({ "type": "connected", "seq": 0, "version": VERSION }).to_string());
                 return Some((Ok::<Event, Infallible>(ev), (event_rx, auth_ns, is_admin, 1)));
             }
             let payload = loop {
@@ -1354,7 +1355,7 @@ async fn workspace_events_handler(
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
                         }
                     }
-                    _ = tokio::time::sleep(Duration::from_secs(15)) => {
+                    _ = tokio::time::sleep(Duration::from_secs(10)) => {
                         break json!({
                             "type": "heartbeat",
                             "seq": seq,
@@ -1371,9 +1372,18 @@ async fn workspace_events_handler(
         },
     );
 
-    Sse::new(s)
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(20)).text("keepalive"))
-        .into_response()
+    let mut resp = Sse::new(s)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("keepalive"))
+        .into_response();
+    resp.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-cache, no-transform"),
+    );
+    resp.headers_mut().insert(
+        header::HeaderName::from_static("x-accel-buffering"),
+        header::HeaderValue::from_static("no"),
+    );
+    resp
 }
 
 async fn workspace_api_handler(
@@ -1762,7 +1772,8 @@ async fn workspace_api_handler(
                 .get("limit")
                 .and_then(|s| s.parse::<i64>().ok())
                 .unwrap_or(60);
-            match Control::workspace_recent_activity(&st.pool, pid, limit).await {
+            let after_id = qs.get("after_id").and_then(|s| s.parse::<i64>().ok());
+            match Control::workspace_recent_activity(&st.pool, pid, limit, after_id).await {
                 Ok(events) => json_resp(StatusCode::OK, json!({ "events": events })),
                 Err(e) => ctrl_err_resp(e),
             }
@@ -3458,22 +3469,27 @@ async fn api_post_handler(
     match result {
         Ok((code, payload)) => {
             let elapsed_ms = t0.elapsed().as_millis() as i32;
+            let actor = actor_hint
+                .or_else(|| principal_name.clone())
+                .unwrap_or_else(|| format!("p:{}", pid));
+            let audit_detail = if action != "session/heartbeat" {
+                Some(json!({ "actor": actor, "detail": op_detail }))
+            } else {
+                None
+            };
             let _ = Control::audit(
                 &st.pool,
                 Some(pid),
                 action,
                 Some(&ns),
                 code.is_success(),
-                None,
+                audit_detail,
                 Some(elapsed_ms),
                 None,
                 Some(code.as_u16() as i32),
             )
             .await;
-            if action != "session/heartbeat" {
-                let actor = actor_hint
-                    .or_else(|| principal_name.clone())
-                    .unwrap_or_else(|| format!("p:{}", pid));
+            if !matches!(action, "session/heartbeat" | "channel/list") {
                 let _ = st.event_tx.send(json!({
                     "type": "activity",
                     "op": action,
@@ -3486,6 +3502,22 @@ async fn api_post_handler(
                     "latency_ms": elapsed_ms,
                     "ts": chrono::Utc::now().to_rfc3339(),
                 }));
+            }
+            if matches!(
+                action,
+                "channel/ack"
+                    | "channel/subscribe"
+                    | "channel/unsubscribe"
+                    | "channel/advertise"
+                    | "channel/cleanup"
+                    | "inbox/send"
+                    | "inbox/act"
+                    | "inbox/retract"
+                    | "inbox/recall"
+                    | "session/register"
+                    | "session/unregister"
+            ) {
+                st.channel_notify.notify_waiters();
             }
             json_resp(code, payload)
         }

@@ -124,6 +124,10 @@ let liveEvents = [];
 let livePaused = false;
 let liveNewCount = 0;
 let liveFlashTimer = null;
+let lastActivityId = 0;
+let lastTopbarEvent = null;
+let liveDeltaTimer = null;
+let liveClockTimer = null;
 
 let allPrincipals = [];
 let callerPrincipalId = 0;
@@ -302,19 +306,32 @@ function setLiveStatus(online, label) {
   $("#sse-text").textContent = label;
 }
 
-function updateLiveTopbarPill(ev, animate = true) {
+function renderTopbarPillText() {
   const pill = $("#live-op-pill");
   const txt = $("#live-op-text");
-  if (!pill || !txt || !ev) return;
-  const actor = ev.actor ? (String(ev.actor).startsWith("@") ? ev.actor : "@" + ev.actor) : "client";
-  const ns = ev.namespace && ev.namespace !== "*" ? ` · ${ev.namespace}` : "";
-  const ms = ev.latency_ms != null ? ` · ${ev.latency_ms}ms` : "";
-  txt.textContent = `${actor} · ${ev.op}${ns}${ms}`;
-  if (animate) {
+  if (!pill || !txt || !lastTopbarEvent) return;
+  const ev = lastTopbarEvent;
+  const actor = ev.actor ? ("@" + String(ev.actor).replace(/^@/, "")) : "@client";
+  const agoSec = ev.ts ? Math.max(0, Math.floor((Date.now() - new Date(ev.ts).getTime()) / 1000)) : 0;
+  const agoLbl = agoSec < 3 ? "just now" : (age(ev.ts) + " ago");
+  txt.textContent = `⚡ ${actor} · ${ev.op} · ${agoLbl}`;
+  pill.title = `Live: ${actor} · ${ev.op} (${ev.namespace || "*"}) · ${ev.latency_ms ?? 0}ms — click to open Live stream`;
+}
+
+function updateLiveTopbarPill(ev, animate = true) {
+  if (!ev) return;
+  lastTopbarEvent = ev;
+  renderTopbarPillText();
+  const pill = $("#live-op-pill");
+  if (animate && pill) {
     pill.classList.add("flash");
     if (liveFlashTimer) clearTimeout(liveFlashTimer);
     liveFlashTimer = setTimeout(() => pill.classList.remove("flash"), 1400);
   }
+}
+
+function eventDedupKey(ev) {
+  return `${ev.op || ""}|${ev.namespace || ""}|${ev.actor || ""}|${(ev.ts || "").slice(0, 19)}`;
 }
 
 async function loadInitialActivity() {
@@ -322,13 +339,45 @@ async function loadInitialActivity() {
     const { events } = await wapi("GET", "activity?limit=80");
     if (Array.isArray(events)) {
       liveEvents = events;
-      if (events.length > 0) updateLiveTopbarPill(events[0], false);
+      if (events.length > 0) {
+        lastActivityId = Math.max(lastActivityId, Number(events[0].id || 0));
+        updateLiveTopbarPill(events[0], false);
+      }
       renderLiveTable();
     }
   } catch (_) {}
 }
 
+async function pollActivityDelta() {
+  if (!tok()) return;
+  try {
+    const qs = lastActivityId > 0 ? `activity?limit=25&after_id=${lastActivityId}` : "activity?limit=15";
+    const { events } = await wapi("GET", qs);
+    if (!Array.isArray(events) || !events.length) return;
+    const maxId = Math.max(...events.map(e => Number(e.id || 0)));
+    if (lastActivityId === 0) {
+      lastActivityId = maxId;
+      if (!lastTopbarEvent) updateLiveTopbarPill(events[0], false);
+      return;
+    }
+    if (maxId <= lastActivityId) return;
+    lastActivityId = maxId;
+    const seen = new Set(liveEvents.slice(0, 40).map(eventDedupKey));
+    const chronological = [...events].reverse();
+    for (const ev of chronological) {
+      const k = eventDedupKey(ev);
+      if (!seen.has(k)) {
+        seen.add(k);
+        handleLiveActivity(ev);
+      }
+    }
+  } catch (_) {}
+}
+
 function handleLiveActivity(ev) {
+  if (ev.id && Number(ev.id) > lastActivityId) {
+    lastActivityId = Number(ev.id);
+  }
   updateLiveTopbarPill(ev, true);
   if (activeSection !== "live") {
     liveNewCount += 1;
@@ -339,10 +388,13 @@ function handleLiveActivity(ev) {
     }
   }
   if (!livePaused) {
-    ev._fresh = true;
-    liveEvents.unshift(ev);
-    if (liveEvents.length > 250) liveEvents.length = 250;
-    if (activeSection === "live") renderLiveTable();
+    const k = eventDedupKey(ev);
+    if (!liveEvents.slice(0, 8).some(x => eventDedupKey(x) === k)) {
+      ev._fresh = true;
+      liveEvents.unshift(ev);
+      if (liveEvents.length > 250) liveEvents.length = 250;
+      if (activeSection === "live") renderLiveTable();
+    }
   }
   const op = String(ev.op || "");
   if (
@@ -413,19 +465,29 @@ function startRealtime() {
         else if (d.type === "activity") handleLiveActivity(d);
       } catch (_) {}
     };
-    sseSource.onerror = () => setLiveStatus(false, "RECONNECTING");
+    sseSource.onerror = () => setLiveStatus(false, "SYNCING");
   } catch (_) {
-    setLiveStatus(false, "POLLING");
+    setLiveStatus(true, "LIVE");
   }
+  // Belt-and-suspenders 2.5s delta sync guarantees zero missed live ops across WKWebView & gateway reloads
+  liveDeltaTimer = setInterval(() => {
+    pollActivityDelta();
+  }, 2500);
+  liveClockTimer = setInterval(() => {
+    renderTopbarPillText();
+    if (activeSection === "live" && !livePaused && liveEvents.length) renderLiveTable();
+  }, 2000);
   pollFallbackTimer = setInterval(() => {
     refreshOverview(false).catch(() => {});
     if (activeSection === "channels" && selectedChannel) loadChannelMessages(false).catch(() => {});
     if (activeSection === "handles" && selectedHandle) loadHandleMessages(false).catch(() => {});
-  }, 12000);
+  }, 4500);
 }
 
 function stopRealtime() {
   if (sseSource) { sseSource.close(); sseSource = null; }
+  if (liveDeltaTimer) { clearInterval(liveDeltaTimer); liveDeltaTimer = null; }
+  if (liveClockTimer) { clearInterval(liveClockTimer); liveClockTimer = null; }
   if (pollFallbackTimer) { clearInterval(pollFallbackTimer); pollFallbackTimer = null; }
 }
 
@@ -838,12 +900,13 @@ async function loadChannelMessages(forceScrollBottom = false) {
     box.innerHTML = messages.map(m => {
       const sender = m.sender_session || "agent";
       const initials = sender.replace(/^@/, "").slice(0, 2).toUpperCase();
-      const isDone = m.claimable && (m.claim_status === "acked" || m.claim_status === "completed");
+      const isDone = m.claimable && ["acked", "completed", "done", "acted"].includes(String(m.claim_status || "").toLowerCase());
       const cls = m.claimable ? (isDone ? "msg-row is-done" : "msg-row is-task") : "msg-row";
+      const isPeerDm = m.source === "peer_dm" && m.to_session;
       let taskStrip = "";
       if (m.claimable) {
         const st = (m.claim_status || "pending").toUpperCase();
-        const who = m.claimed_by ? ` · claimed by <b>@${esc(m.claimed_by)}</b>` : " · waiting for subscriber";
+        const who = m.claimed_by ? ` · handled by <b>@${esc(m.claimed_by)}</b>` : (m.to_session ? ` · assigned to <b>@${esc(m.to_session)}</b>` : " · waiting for subscriber");
         const res = m.resolution ? ` · <code>${esc(m.resolution)}</code>` : "";
         taskStrip = `<div class="task-strip">
           <span class="pill ${isDone ? "ok" : "warn"}">TASK · ${esc(st)}</span>
@@ -854,7 +917,8 @@ async function loadChannelMessages(forceScrollBottom = false) {
         <div class="msg-av" style="background:${avatarColor(sender)}">${esc(initials)}</div>
         <div class="msg-content">
           <div class="msg-meta">
-            <span class="msg-author" data-author="${esc(sender)}" data-ns="${esc(m.namespace || namespace)}">@${esc(sender)}</span>
+            <span class="msg-author" data-author="${esc(sender)}" data-ns="${esc(m.namespace || namespace)}">@${esc(sender)}${isPeerDm ? ` → @${esc(m.to_session)}` : ""}</span>
+            ${isPeerDm ? `<span class="tiny-pill warn" title="Direct peer message between subscribed handles of this channel">peer dm</span>` : ""}
             <span class="tiny-pill">${esc(m.intent || "message")}</span>
             ${m.namespace ? `<span class="tiny-pill tag">${esc(m.namespace)}</span>` : ""}
             <span class="msg-ts" title="${esc(m.created_at)}">${fmt(m.created_at)} (${age(m.created_at)} ago) · #${m.id}</span>

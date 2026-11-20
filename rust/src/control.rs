@@ -5145,6 +5145,29 @@ impl Control {
                           ON a.namespace = s.namespace AND a.name = s.session_name
                         WHERE s.namespace = ANY($1) AND s.channel LIKE '#%'
                         GROUP BY s.channel
+                     ),
+                     peer_inbox_agg AS (
+                        SELECT ch_pair.channel,
+                               count(*) AS n,
+                               count(*) FILTER (WHERE ai.intent IN ('task', 'review_request', 'handoff') AND ai.status IN ('pending', 'read')) AS open_tasks,
+                               max(ai.created_at) AS last_at
+                        FROM (
+                            SELECT DISTINCT s1.channel, s1.session_name AS s_from, s2.session_name AS s_to
+                            FROM memnos_control.channel_subscriptions s1
+                            JOIN memnos_control.channel_subscriptions s2
+                              ON s2.channel = s1.channel
+                            WHERE s1.namespace = ANY($1)
+                              AND s2.namespace = ANY($1)
+                              AND s1.channel LIKE '#%'
+                              AND s1.channel <> '#general'
+                              AND s1.session_name <> s2.session_name
+                        ) ch_pair
+                        JOIN memnos_control.agent_inbox ai
+                          ON ai.namespace = ANY($1)
+                         AND ai.recalled_at IS NULL
+                         AND ai.from_session = ch_pair.s_from
+                         AND ai.to_session = ch_pair.s_to
+                        GROUP BY ch_pair.channel
                      )
                      SELECT na.channel,
                             COALESCE(sa.pref_sub_ns, ma.latest_msg_ns, na.namespaces[1]) AS namespace,
@@ -5152,9 +5175,9 @@ impl Control {
                             'topic' AS kind,
                             COALESCE(ca.description, '') AS description,
                             COALESCE(ca.global_topic, na.channel <> '#general') AS global_topic,
-                            COALESCE(ma.n, 0) AS message_count,
-                            COALESCE(ma.open_tasks, 0) AS open_tasks,
-                            ma.last_at AS last_message_at,
+                            (COALESCE(ma.n, 0) + COALESCE(pa.n, 0))::bigint AS message_count,
+                            (COALESCE(ma.open_tasks, 0) + COALESCE(pa.open_tasks, 0))::bigint AS open_tasks,
+                            GREATEST(ma.last_at, pa.last_at) AS last_message_at,
                             COALESCE(sa.subs, '{}') AS subscribers,
                             COALESCE(sa.live_subs, '{}') AS live_subscribers,
                             COALESCE(ma.pubs, '{}') AS publishers
@@ -5162,7 +5185,8 @@ impl Control {
                      LEFT JOIN cat_agg ca ON ca.channel = na.channel
                      LEFT JOIN msg_agg ma ON ma.channel = na.channel
                      LEFT JOIN sub_agg sa ON sa.channel = na.channel
-                     ORDER BY ma.last_at DESC NULLS LAST, COALESCE(cardinality(sa.live_subs), 0) DESC, na.channel",
+                     LEFT JOIN peer_inbox_agg pa ON pa.channel = na.channel
+                     ORDER BY GREATEST(ma.last_at, pa.last_at) DESC NULLS LAST, COALESCE(cardinality(sa.live_subs), 0) DESC, na.channel",
                     params![selected_ns],
                 )
                 .await?;
@@ -5306,19 +5330,43 @@ impl Control {
             return Ok(vec![]);
         }
         let lim = limit.clamp(1, 300);
+        let include_peer_dms = channel.starts_with('#') && channel != "#general" && before_id.is_none();
         let rows = c
             .query(
                 "SELECT * FROM (
-                    SELECT id, namespace, channel, sender_session, intent, content,
+                    SELECT id, namespace, channel, sender_session, NULL::text AS to_session,
+                           'channel'::text AS source, intent, content,
                            claimable, claim_status, claimed_by, claimed_by_ns,
                            resolution, metadata, created_at
                     FROM memnos_control.channel_messages
                     WHERE namespace = ANY($1) AND channel = $2 AND recalled_at IS NULL
                       AND ($3::bigint IS NULL OR id < $3)
-                    ORDER BY id DESC
+                    UNION ALL
+                    SELECT ai.id, ai.namespace, $2::text AS channel, ai.from_session AS sender_session,
+                           ai.to_session, 'peer_dm'::text AS source, ai.intent,
+                           CASE WHEN ai.subject <> '' THEN '**' || ai.subject || '**\n' || ai.content ELSE ai.content END AS content,
+                           (ai.intent IN ('task', 'review_request', 'handoff')) AS claimable,
+                           ai.status AS claim_status,
+                           CASE WHEN ai.status IN ('read', 'acted') THEN ai.to_session ELSE NULL END AS claimed_by,
+                           CASE WHEN ai.status IN ('read', 'acted') THEN ai.namespace ELSE NULL END AS claimed_by_ns,
+                           ai.resolution, ai.metadata, ai.created_at
+                    FROM memnos_control.agent_inbox ai
+                    WHERE $5::bool
+                      AND ai.namespace = ANY($1)
+                      AND ai.recalled_at IS NULL
+                      AND ai.from_session <> ai.to_session
+                      AND EXISTS (
+                          SELECT 1 FROM memnos_control.channel_subscriptions s1
+                          WHERE s1.namespace = ANY($1) AND s1.channel = $2 AND s1.session_name = ai.from_session
+                      )
+                      AND EXISTS (
+                          SELECT 1 FROM memnos_control.channel_subscriptions s2
+                          WHERE s2.namespace = ANY($1) AND s2.channel = $2 AND s2.session_name = ai.to_session
+                      )
+                    ORDER BY created_at DESC, id DESC
                     LIMIT $4
-                 ) sub ORDER BY id ASC",
-                params![target_ns, channel, before_id, lim],
+                 ) sub ORDER BY created_at ASC, id ASC",
+                params![target_ns, channel, before_id, lim, include_peer_dms],
             )
             .await?;
         Ok(rows_json(&rows))
@@ -5697,6 +5745,7 @@ impl Control {
         pool: &Pool,
         principal_id: i64,
         limit: i64,
+        after_id: Option<i64>,
     ) -> CResult<Vec<Value>> {
         let c = conn(pool).await?;
         let is_admin = Self::is_admin(pool, principal_id).await.unwrap_or(false);
@@ -5712,17 +5761,21 @@ impl Control {
         let rows = c
             .query(
                 "SELECT a.id, a.ts, a.action AS op, COALESCE(a.namespace, '') AS namespace,
-                        COALESCE(p.name, 'system') AS actor,
+                        COALESCE(NULLIF(a.detail->>'actor', ''), p.name, 'system') AS actor,
+                        COALESCE(p.name, '') AS principal,
+                        COALESCE(a.detail->>'detail', '') AS detail,
+                        a.ok,
                         COALESCE(a.status, CASE WHEN a.ok THEN 200 ELSE 500 END) AS status,
                         COALESCE(a.latency_ms, 0) AS latency_ms,
                         COALESCE(a.result_count, 0) AS result_count
                  FROM memnos_control.audit_log a
                  LEFT JOIN memnos_control.principals p ON p.id = a.principal_id
-                 WHERE a.action <> 'session/heartbeat'
+                 WHERE a.action NOT IN ('session/heartbeat', 'channel/list')
                    AND ($1::bool OR a.namespace = ANY($2))
+                   AND ($4::bigint IS NULL OR a.id > $4)
                  ORDER BY a.id DESC
                  LIMIT $3",
-                params![is_admin, ns_list, lim],
+                params![is_admin, ns_list, lim, after_id],
             )
             .await?;
         Ok(rows_json(&rows))
