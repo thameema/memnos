@@ -1,11 +1,14 @@
 "use strict";
-// MEMNOS Workspace & Console — zero-build vanilla JS (browser + native Rust desktop app).
+// MEMNOS Studio Workspace — Split #Channels & @Handles, Active Filtering, 5 Themes, Real-Time SSE.
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-// Boot injection from `memnos app` native WebView or `#token=...&url=...` hash
-(function bootstrapAuth() {
+// ---- Bootstrap Auth & Theme ----
+(function bootstrap() {
+  const savedTheme = localStorage.getItem("memnos_theme") || "nebula";
+  document.documentElement.setAttribute("data-theme", savedTheme);
+
   if (window.__MEMNOS_BOOT__) {
     if (window.__MEMNOS_BOOT__.token) localStorage.setItem("memnos_admin_token", window.__MEMNOS_BOOT__.token);
     if (window.__MEMNOS_BOOT__.url) localStorage.setItem("memnos_server_url", window.__MEMNOS_BOOT__.url);
@@ -21,8 +24,7 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const tok = () => localStorage.getItem("memnos_admin_token") || "";
 function serverBase() {
   const saved = (localStorage.getItem("memnos_server_url") || "").trim().replace(/\/+$/, "");
-  if (saved) return saved;
-  return location.origin;
+  return saved || location.origin;
 }
 
 const API_TIMEOUT_MS = 30000;
@@ -43,14 +45,29 @@ const fmtBytes = (b) => {
   return (b / (1024 * 1024 * 1024)).toFixed(2) + " GB";
 };
 const avatarColor = (name) => {
-  const palette = ["#5c6cff", "#2ca58d", "#e06d53", "#845ec2", "#0089ba", "#d65db1", "#ff9671", "#3a86ff"];
+  const palette = ["#6366f1", "#0ea5e9", "#10b981", "#8b5cf6", "#ec4899", "#f59e0b", "#14b8a6", "#f43f5e"];
   let h = 0;
   const s = String(name || "m");
   for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
   return palette[Math.abs(h) % palette.length];
 };
 
-async function rawFetch(method, fullPath, body, dropOn403 = false) {
+// Lightweight rich text formatter (fenced code blocks, inline `code`, @handles, #channels)
+function formatRichText(raw) {
+  const blocks = [];
+  let safe = String(raw ?? "").replace(/```([\w-]*)\n?([\s\S]*?)```/g, (_, _lang, code) => {
+    const idx = blocks.length;
+    blocks.push(`<pre><code>${esc(code.replace(/\n$/, ""))}</code></pre>`);
+    return `\u0000BLOCK_${idx}\u0000`;
+  });
+  safe = esc(safe);
+  safe = safe.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  safe = safe.replace(/(^|\s)(@[a-zA-Z0-9_.-]+|#[a-zA-Z0-9_.-]+)/g, '$1<span class="mention-hl">$2</span>');
+  safe = safe.replace(/\u0000BLOCK_(\d+)\u0000/g, (_, idx) => blocks[+idx] || "");
+  return safe;
+}
+
+async function rawFetch(method, fullPath, body) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), API_TIMEOUT_MS);
   let r;
@@ -69,35 +86,50 @@ async function rawFetch(method, fullPath, body, dropOn403 = false) {
     clearTimeout(timer);
   }
   const j = await r.json().catch(() => ({}));
-  if (r.status === 401 || (dropOn403 && r.status === 403)) {
-    disconnectToLogin("Token invalid, expired, or unauthorized for " + serverBase());
+  if (r.status === 401) {
+    disconnectToLogin("Token invalid or expired for " + serverBase());
     throw new Error("unauthorized");
   }
   if (!r.ok) throw new Error((j.error || ("HTTP " + r.status)) + (j.msg ? ": " + j.msg : ""));
   return j;
 }
 
-const wapi = (m, p, b) => rawFetch(m, "/workspace/api/" + p, b, false);
-const api  = (m, p, b) => rawFetch(m, "/admin/api/" + p, b, false);
-const uapi = (m, p, b) => rawFetch(m, p, b, false);
+const wapi = (m, p, b) => rawFetch(m, "/workspace/api/" + p, b);
+const api  = (m, p, b) => rawFetch(m, "/admin/api/" + p, b);
+const uapi = (m, p, b) => rawFetch(m, p, b);
 
-// ---- Workspace State ----
-let wsData = null; // latest /workspace/api/overview payload
-let activeView = "stream";
-let activeTarget = null; // { kind: "channel"|"session", namespace, name }
+// ---- App State ----
+let wsData = null;
+let activeSection = "channels"; // "channels" | "handles" | "memories" | "telemetry" | "console"
+let chFilterMode = "active";    // "active" | "history" | "all"
+let hdFilterMode = "online";    // "online" | "all"
+let selectedChannel = null;     // { namespace, channel }
+let selectedHandle = null;      // { namespace, name }
+let inspectorOpen = true;
+let wmemType = "";
+let wmemOffset = 0;
+const WMEM_PAGE = 50;
+
 let sseSource = null;
 let sseRefreshTimer = null;
 let pollFallbackTimer = null;
-let inspectorOpen = true;
 
-// ---- Table helpers ----
+// ---- Theme Switcher ----
+const themeSel = $("#theme-select");
+themeSel.value = localStorage.getItem("memnos_theme") || "nebula";
+themeSel.onchange = () => {
+  document.documentElement.setAttribute("data-theme", themeSel.value);
+  localStorage.setItem("memnos_theme", themeSel.value);
+};
+
+// ---- Table Helpers ----
 function cols(tbody) { return $$("th", tbody.closest("table")).length || 1; }
 function showLoading(tbody) {
   const n = cols(tbody);
   tbody.innerHTML = `<tr class="state"><td colspan="${n}"><span class="spinner"></span> loading…</td></tr>`;
   return setTimeout(() => {
     const td = $("tr.state td", tbody);
-    if (td) td.innerHTML = `<span class="spinner"></span> still loading… dataset is large`;
+    if (td) td.innerHTML = `<span class="spinner"></span> still loading…`;
   }, 3000);
 }
 function showError(tbody, msg, retry) {
@@ -113,7 +145,7 @@ async function loadTable(tbody, fetcher, render, self) {
   finally { clearTimeout(t); }
 }
 
-// ---- Auth & Connection ----
+// ---- Auth & Server Connection ----
 function disconnectToLogin(errMsg = "") {
   stopRealtime();
   localStorage.removeItem("memnos_admin_token");
@@ -157,14 +189,14 @@ $("#switch-server").onclick = () => {
 };
 $("#refresh-now").onclick = () => {
   refreshOverview(false);
-  if (activeView === "stream" && activeTarget) loadStreamMessages(false);
+  if (activeSection === "channels" && selectedChannel) loadChannelMessages(false);
+  if (activeSection === "handles" && selectedHandle) loadHandleMessages(false);
 };
 
-// ---- Real-time SSE (LISTEN/NOTIFY) ----
+// ---- Real-Time SSE ----
 function setLiveStatus(online, label) {
-  const b = $("#sse-badge");
-  b.className = "live-pill " + (online ? "online" : "offline");
-  b.textContent = "● " + label;
+  $("#sse-badge").className = "status-chip " + (online ? "online" : "offline");
+  $("#sse-text").textContent = label;
 }
 
 function scheduleRealtimeRefresh() {
@@ -173,7 +205,8 @@ function scheduleRealtimeRefresh() {
     sseRefreshTimer = null;
     try {
       await refreshOverview(false);
-      if (activeView === "stream" && activeTarget) await loadStreamMessages(false);
+      if (activeSection === "channels" && selectedChannel) await loadChannelMessages(false);
+      if (activeSection === "handles" && selectedHandle) await loadHandleMessages(false);
     } catch (_) {}
   }, 220);
 }
@@ -181,8 +214,7 @@ function scheduleRealtimeRefresh() {
 function startRealtime() {
   stopRealtime();
   try {
-    const evUrl = serverBase() + "/workspace/events?token=" + encodeURIComponent(tok());
-    sseSource = new EventSource(evUrl);
+    sseSource = new EventSource(serverBase() + "/workspace/events?token=" + encodeURIComponent(tok()));
     sseSource.onopen = () => setLiveStatus(true, "LIVE");
     sseSource.onmessage = (ev) => {
       setLiveStatus(true, "LIVE");
@@ -197,7 +229,8 @@ function startRealtime() {
   }
   pollFallbackTimer = setInterval(() => {
     refreshOverview(false).catch(() => {});
-    if (activeView === "stream" && activeTarget) loadStreamMessages(false).catch(() => {});
+    if (activeSection === "channels" && selectedChannel) loadChannelMessages(false).catch(() => {});
+    if (activeSection === "handles" && selectedHandle) loadHandleMessages(false).catch(() => {});
   }, 12000);
 }
 
@@ -206,126 +239,240 @@ function stopRealtime() {
   if (pollFallbackTimer) { clearInterval(pollFallbackTimer); pollFallbackTimer = null; }
 }
 
-// ---- Workspace Overview, Sidebar & Topbar ----
-async function refreshOverview(pickInitialTarget = false) {
+// ---- Primary Far-Left Rail Navigation ----
+function switchSection(sec) {
+  activeSection = sec;
+  $$(".rail-btn").forEach(b => b.classList.toggle("active", b.dataset.section === sec));
+  ["channels", "handles", "memories", "telemetry", "console"].forEach(k => {
+    const el = $("#sec-" + k);
+    if (el) el.hidden = (k !== sec);
+  });
+
+  if (sec === "channels") {
+    renderChannelList();
+    if (selectedChannel) { renderChannelHeaderAndInspector(); loadChannelMessages(false); }
+  } else if (sec === "handles") {
+    renderHandleList();
+    if (selectedHandle) { renderHandleHero(); loadHandleMessages(false); }
+  } else if (sec === "memories") {
+    wmemOffset = 0;
+    loadWorkspaceMemories();
+  } else if (sec === "telemetry") {
+    renderTelemetry();
+  } else if (sec === "console") {
+    const activeTab = $("#console-tabs button.active")?.dataset.ctab || "routing";
+    switchConsoleTab(activeTab);
+  }
+}
+
+$$(".rail-btn").forEach(b => {
+  b.onclick = () => switchSection(b.dataset.section);
+});
+
+// ---- Active / Alive Helpers ----
+function aliveSessionSet() {
+  const s = new Set();
+  for (const x of (wsData?.sessions || [])) {
+    if (x.alive) s.add(x.namespace + "::" + x.name);
+  }
+  return s;
+}
+
+function liveSubscribersFor(ch) {
+  const alive = aliveSessionSet();
+  return (ch.subscribers || []).filter(h => alive.has(ch.namespace + "::" + h));
+}
+
+function isChannelActive(ch) {
+  if (!ch.channel || !ch.channel.startsWith("#")) return false;
+  if (ch.namespace.startsWith("test:")) return false;
+  const liveSubs = liveSubscribersFor(ch);
+  if (liveSubs.length > 0) return true;
+  if ((ch.open_tasks || 0) > 0) return true;
+  if (ch.last_message_at) {
+    const hrs = (Date.now() - new Date(ch.last_message_at).getTime()) / 3600000;
+    if (hrs <= 48) return true;
+  }
+  return false;
+}
+
+function canWriteNs(ns) {
+  const found = (wsData?.namespaces || []).find(n => n.name === ns);
+  return found ? !!found.can_write : !!wsData?.is_admin;
+}
+
+// ---- Overview Refresh ----
+async function refreshOverview(pickDefaults = false) {
   const nsSel = $("#ws-ns-filter").value || "*";
   const data = await wapi("GET", "overview?namespace=" + encodeURIComponent(nsSel));
+  // Strictly ensure channels only carry `#...`
+  data.channels = (data.channels || []).filter(c => String(c.channel || "").startsWith("#"));
   wsData = data;
 
-  // Header pills
-  const hostShort = serverBase().replace(/^https?:\/\//, "");
-  $("#switch-server").textContent = hostShort;
-  const pName = data.principal?.name || "token";
-  const roleLabel = data.is_admin ? "ADMIN (*)" : `SCOPED (${(data.namespaces || []).length} ns)`;
-  $("#who-badge").textContent = `@${pName} · ${roleLabel}`;
-  $("#admin-nav-group").hidden = !data.is_admin;
+  // Topbar pills
+  $("#switch-server").textContent = serverBase().replace(/^https?:\/\//, "");
+  const pName = data.principal?.name || "user";
+  $("#who-badge").textContent = `@${pName} · ${data.is_admin ? "ADMIN" : "SCOPED"}`;
+  $$(".admin-only").forEach(el => { el.hidden = !data.is_admin; });
 
-  // Vitals strip
   const v = data.vitals || {};
   const memStr = v.footprint_mb != null ? `${v.footprint_mb} MB` : (v.rss_mb != null ? `${v.rss_mb} MB` : "—");
-  const dbStr = v.db_size_bytes != null ? fmtBytes(v.db_size_bytes) : "role-scoped";
+  const dbStr = v.db_size_bytes != null ? fmtBytes(v.db_size_bytes) : "scoped";
   $("#vitals-strip").innerHTML =
     `<span>RAM <b>${esc(memStr)}</b></span>` +
     `<span>DB <b>${esc(dbStr)}</b></span>` +
     `<span>Facts <b>${(v.total_facts || 0).toLocaleString()}</b></span>` +
-    `<span>Turns <b>${(v.total_turns || 0).toLocaleString()}</b></span>` +
-    `<span>Mode <b>${esc(v.embedding_mode || "—")}</b></span>`;
+    `<span>Turns <b>${(v.total_turns || 0).toLocaleString()}</b></span>`;
 
-  // Namespace dropdown (preserve selection)
+  // Smart Namespace Selector (prioritize namespaces that actually have data/sessions/channels, exclude test:* noise at bottom)
   const prevNs = $("#ws-ns-filter").value || "*";
-  const nsOpts = [`<option value="*">All authorized (${(data.namespaces || []).length})</option>`]
-    .concat((data.namespaces || []).map(n =>
-      `<option value="${esc(n.name)}">${esc(n.name)} (${n.facts} facts)</option>`
+  const allNs = (data.namespaces || []).filter(n => !n.name.startsWith("test:"));
+  const activeNs = allNs.filter(n => (n.facts || 0) > 0 || (n.turns || 0) > 0
+    || (data.sessions || []).some(s => s.namespace === n.name && s.alive)
+    || (data.channels || []).some(c => c.namespace === n.name && (c.message_count || 0) > 0));
+  const opts = [`<option value="*">All namespaces (${activeNs.length} active)</option>`]
+    .concat((activeNs.length ? activeNs : allNs).map(n =>
+      `<option value="${esc(n.name)}">${esc(n.name)} · ${(n.facts || 0).toLocaleString()} facts</option>`
     ));
-  $("#ws-ns-filter").innerHTML = nsOpts.join("");
+  $("#ws-ns-filter").innerHTML = opts.join("");
   if ([...$("#ws-ns-filter").options].some(o => o.value === prevNs)) {
     $("#ws-ns-filter").value = prevNs;
   }
 
-  renderSidebarChannels(data.channels || []);
-  renderSidebarSessions(data.sessions || []);
+  // Rail badges ( strictly active #channels and online @handles )
+  const activeChs = (data.channels || []).filter(isChannelActive);
+  const onlineHds = (data.sessions || []).filter(s => s.alive && !s.namespace.startsWith("test:"));
+  $("#rail-ch-count").textContent = activeChs.length;
+  $("#rail-hd-count").textContent = onlineHds.length;
 
-  if (pickInitialTarget || !activeTarget) {
-    const chs = data.channels || [];
-    const sss = data.sessions || [];
-    if (chs.length) {
-      selectStreamTarget("channel", chs[0].namespace, chs[0].channel);
-    } else if (sss.length) {
-      selectStreamTarget("session", sss[0].namespace, sss[0].name);
-    } else {
-      const defNs = (data.namespaces && data.namespaces[0]?.name) || "default";
-      selectStreamTarget("channel", defNs, "#general");
-    }
-  } else if (activeView === "stream" && activeTarget) {
-    renderInspector();
+  // Pick sensible initial selections
+  if (pickDefaults || !selectedChannel) {
+    // Prefer a channel that has BOTH messages and live subscribers, else first active channel, else first channel
+    const bestCh = activeChs.find(c => (c.message_count || 0) > 0 && liveSubscribersFor(c).length > 0)
+      || activeChs[0]
+      || (data.channels || [])[0];
+    if (bestCh) selectedChannel = { namespace: bestCh.namespace, channel: bestCh.channel };
   }
-  if (activeView === "telemetry") renderTelemetry();
+  if (pickDefaults || !selectedHandle) {
+    const bestHd = onlineHds[0] || (data.sessions || [])[0];
+    if (bestHd) selectedHandle = { namespace: bestHd.namespace, name: bestHd.name };
+  }
+
+  renderChannelList();
+  renderHandleList();
+  if (activeSection === "channels" && selectedChannel) {
+    renderChannelHeaderAndInspector();
+    if (pickDefaults) await loadChannelMessages(true);
+  }
+  if (activeSection === "handles" && selectedHandle) {
+    renderHandleHero();
+    if (pickDefaults) await loadHandleMessages(true);
+  }
+  if (activeSection === "telemetry") renderTelemetry();
 }
 
 $("#ws-ns-filter").onchange = () => refreshOverview(true);
 
-function renderSidebarChannels(channels) {
-  const multiNs = ($("#ws-ns-filter").value || "*") === "*";
-  const box = $("#sidebar-channels");
-  if (!channels.length) {
-    box.innerHTML = `<div class="muted" style="padding:6px 10px">No channels yet — click <b>+</b> above.</div>`;
-    return;
-  }
-  box.innerHTML = channels.map(c => {
-    const isAct = activeView === "stream" && activeTarget?.kind === "channel"
-      && activeTarget.namespace === c.namespace && activeTarget.name === c.channel;
-    const tasks = c.open_tasks || 0;
-    const badge = tasks > 0
-      ? `<span class="mini-badge warn" title="Open claimable tasks">${tasks} task${tasks > 1 ? "s" : ""}</span>`
-      : `<span class="mini-badge">${c.message_count || 0}</span>`;
-    return `<button class="nav-item ${isAct ? "active" : ""}" data-ch="${esc(c.channel)}" data-ns="${esc(c.namespace)}">
-      <span class="nav-item-main">
-        <span>${esc(c.channel)}</span>
-        ${multiNs ? `<span class="nav-sub-ns">${esc(c.namespace)}</span>` : ""}
-      </span>
-      ${badge}
-    </button>`;
-  }).join("");
-  $$("#sidebar-channels .nav-item").forEach(btn => {
-    btn.onclick = () => selectStreamTarget("channel", btn.dataset.ns, btn.dataset.ch);
+// ============================================================================
+// SECTION 1: CHANNELS (#) — Active Filtering, Search, Stream & Management
+// ============================================================================
+
+$$("#ch-mode-tabs button").forEach(btn => {
+  btn.onclick = () => {
+    chFilterMode = btn.dataset.mode;
+    $$("#ch-mode-tabs button").forEach(x => x.classList.toggle("active", x === btn));
+    renderChannelList();
+  };
+});
+$("#ch-search").oninput = renderChannelList;
+
+function filteredChannels() {
+  const all = wsData?.channels || [];
+  const q = ($("#ch-search").value || "").trim().toLowerCase();
+  return all.filter(c => {
+    if (chFilterMode === "active" && !isChannelActive(c)) return false;
+    if (chFilterMode === "history" && (c.message_count || 0) === 0) return false;
+    if (q) {
+      const hay = `${c.channel} ${c.namespace} ${c.description || ""} ${(c.subscribers || []).join(" ")}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
   });
 }
 
-function renderSidebarSessions(sessions) {
-  const multiNs = ($("#ws-ns-filter").value || "*") === "*";
-  const aliveCount = sessions.filter(s => s.alive).length;
-  $("#sessions-count").textContent = `${aliveCount}/${sessions.length}`;
-  const box = $("#sidebar-sessions");
-  if (!sessions.length) {
-    box.innerHTML = `<div class="muted" style="padding:6px 10px">No registered @handles yet.</div>`;
+function renderChannelList() {
+  if (!wsData) return;
+  const all = wsData.channels || [];
+  const actCnt = all.filter(isChannelActive).length;
+  const histCnt = all.filter(c => (c.message_count || 0) > 0).length;
+  const tabs = $$("#ch-mode-tabs button");
+  if (tabs[0]) tabs[0].textContent = `Active (${actCnt})`;
+  if (tabs[1]) tabs[1].textContent = `With Msgs (${histCnt})`;
+  if (tabs[2]) tabs[2].textContent = `All (${all.length})`;
+
+  const list = filteredChannels();
+  $("#ch-pane-sub").textContent = `${list.length} shown · ${actCnt} active`;
+  const box = $("#channel-list");
+
+  if (!list.length) {
+    box.innerHTML = `<div class="empty-state" style="padding:28px 12px">
+      <div class="muted">No channels match this filter.</div>
+      ${chFilterMode !== "all" ? `<button class="ghost sm" id="ch-show-all-btn" style="margin-top:8px">Show all (${all.length})</button>` : ""}
+    </div>`;
+    const btn = $("#ch-show-all-btn");
+    if (btn) btn.onclick = () => { $$("#ch-mode-tabs button")[2].click(); };
     return;
   }
-  box.innerHTML = sessions.map(s => {
-    const isAct = activeView === "stream" && activeTarget?.kind === "session"
-      && activeTarget.namespace === s.namespace && activeTarget.name === s.name;
-    const dotCls = !s.alive ? "idle" : (s.run_state === "running" || s.run_state === "busy" ? "busy" : "alive");
-    const unread = s.unread_inbox || 0;
-    return `<button class="nav-item ${isAct ? "active" : ""}" data-sess="${esc(s.name)}" data-ns="${esc(s.namespace)}">
-      <span class="nav-item-main">
-        <span class="dot ${dotCls}"></span>
-        <span>@${esc(s.name)}</span>
-        ${multiNs ? `<span class="nav-sub-ns">${esc(s.namespace)}</span>` : ""}
-      </span>
-      ${unread > 0 ? `<span class="mini-badge warn">${unread}</span>` : `<span class="mini-badge">${(s.channels || []).length}#</span>`}
-    </button>`;
-  }).join("");
-  $$("#sidebar-sessions .nav-item").forEach(btn => {
-    btn.onclick = () => selectStreamTarget("session", btn.dataset.ns, btn.dataset.sess);
+
+  // Group by namespace when viewing "*"
+  const showNsGroups = ($("#ws-ns-filter").value || "*") === "*";
+  const byNs = new Map();
+  for (const c of list) {
+    const k = showNsGroups ? c.namespace : "";
+    if (!byNs.has(k)) byNs.set(k, []);
+    byNs.get(k).push(c);
+  }
+
+  let html = "";
+  for (const [ns, items] of byNs.entries()) {
+    if (ns) html += `<div class="ns-group-label"><span>${esc(ns)}</span><span>${items.length}</span></div>`;
+    for (const c of items) {
+      const isSel = selectedChannel && selectedChannel.namespace === c.namespace && selectedChannel.channel === c.channel;
+      const liveSubs = liveSubscribersFor(c);
+      const tasks = c.open_tasks || 0;
+      html += `<button class="list-card ${isSel ? "active" : ""}" data-ns="${esc(c.namespace)}" data-ch="${esc(c.channel)}">
+        <div class="list-card-top">
+          <span class="list-card-name">${esc(c.channel)}</span>
+          ${tasks > 0
+            ? `<span class="tiny-pill warn">${tasks} task${tasks > 1 ? "s" : ""}</span>`
+            : (liveSubs.length > 0 ? `<span class="tiny-pill live">● ${liveSubs.length} live</span>` : `<span class="tiny-pill">${c.message_count || 0} msgs</span>`)}
+        </div>
+        <div class="list-card-sub">
+          <span>${c.message_count || 0} msgs · ${(c.subscribers || []).length} subs</span>
+          <span>${c.last_message_at ? age(c.last_message_at) + " ago" : "new"}</span>
+        </div>
+      </button>`;
+    }
+  }
+  box.innerHTML = html;
+
+  $$("#channel-list .list-card").forEach(card => {
+    card.onclick = async () => {
+      selectedChannel = { namespace: card.dataset.ns, channel: card.dataset.ch };
+      renderChannelList();
+      renderChannelHeaderAndInspector();
+      await loadChannelMessages(true);
+    };
   });
 }
 
-// ---- Create Channel ----
+// Create Channel
 $("#btn-new-channel").onclick = () => {
   const box = $("#new-channel-box");
   box.hidden = !box.hidden;
   if (!box.hidden) {
     const curNs = $("#ws-ns-filter").value;
-    $("#new-ch-ns").value = (curNs && curNs !== "*") ? curNs : (wsData?.namespaces?.[0]?.name || "");
+    $("#new-ch-ns").value = (curNs && curNs !== "*") ? curNs : (selectedChannel?.namespace || wsData?.namespaces?.[0]?.name || "");
     $("#new-ch-name").focus();
   }
 };
@@ -336,397 +483,476 @@ $("#new-ch-save").onclick = async () => {
   if (!ns || !rawName) return;
   const ch = rawName.startsWith("#") ? rawName : "#" + rawName;
   try {
-    await wapi("POST", "channel/create", {
-      namespace: ns,
-      channel: ch,
-      description: $("#new-ch-desc").value.trim(),
-    });
+    await wapi("POST", "channel/create", { namespace: ns, channel: ch, description: $("#new-ch-desc").value.trim() });
     $("#new-ch-name").value = "";
     $("#new-ch-desc").value = "";
     $("#new-channel-box").hidden = true;
+    selectedChannel = { namespace: ns, channel: ch };
+    if (chFilterMode === "active") chFilterMode = "all";
     await refreshOverview(false);
-    selectStreamTarget("channel", ns, ch);
+    renderChannelHeaderAndInspector();
+    await loadChannelMessages(true);
   } catch (e) { alert(e.message); }
 };
 
-// ---- View Switching ----
-function switchStageView(viewName) {
-  activeView = viewName;
-  $$(".stage-view").forEach(sec => sec.hidden = true);
-  const targetSec = $("#view-" + viewName);
-  if (targetSec) targetSec.hidden = false;
-
-  $$(".sidebar [data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === viewName));
-  if (viewName !== "stream") {
-    $$("#sidebar-channels .nav-item, #sidebar-sessions .nav-item").forEach(b => b.classList.remove("active"));
-  }
-
-  if (viewName === "memories") { wmemOffset = 0; loadWorkspaceMemories(); }
-  if (viewName === "telemetry") renderTelemetry();
-  if (viewName === "routing") loadRouting();
-  if (viewName === "namespaces") loadNamespaces();
-  if (viewName === "access") loadPrincipals();
-  if (viewName === "tokens") loadPrincipals();
-  if (viewName === "usage") loadUsagePanel();
-  if (viewName === "secrets") loadSecrets();
-  if (viewName === "dashboard") loadDashboard();
-  if (viewName === "cli") loadCliRef();
-  if (viewName === "settings") loadSettings();
-}
-
-$$(".sidebar [data-view]").forEach(btn => {
-  btn.onclick = () => switchStageView(btn.dataset.view);
-});
-
-// ---- Stream Target Selection, Messages & Inspector ----
-function canWriteNs(ns) {
-  const found = (wsData?.namespaces || []).find(n => n.name === ns);
-  return found ? !!found.can_write : !!wsData?.is_admin;
-}
-
-async function selectStreamTarget(kind, namespace, name) {
-  activeTarget = { kind, namespace, name };
-  switchStageView("stream");
-  renderSidebarChannels(wsData?.channels || []);
-  renderSidebarSessions(wsData?.sessions || []);
-
-  const writable = canWriteNs(namespace);
-  $("#stream-ns").textContent = namespace;
-  if (kind === "channel") {
-    const chObj = (wsData?.channels || []).find(c => c.namespace === namespace && c.channel === name);
-    $("#stream-title").textContent = name;
-    const subCnt = (chObj?.subscribers || []).length;
-    $("#stream-sub").textContent = `${subCnt} subscribed handle${subCnt === 1 ? "" : "s"}` + (chObj?.description ? ` · ${chObj.description}` : "");
-    $("#comp-claim-wrap").hidden = false;
-    $("#comp-input").placeholder = `Message ${name} in ${namespace}… (Enter to send, Shift+Enter for newline)`;
-    const delBtn = $("#delete-target-btn");
-    delBtn.hidden = !writable;
-    delBtn.textContent = "Delete Channel";
-  } else {
-    const sObj = (wsData?.sessions || []).find(s => s.namespace === namespace && s.name === name);
-    $("#stream-title").textContent = "@" + name;
-    $("#stream-sub").textContent = sObj
-      ? `${sObj.alive ? "online" : "offline"} · last heartbeat ${age(sObj.last_heartbeat_at)} ago`
-      : "direct @inbox";
-    $("#comp-claim-wrap").hidden = true;
-    $("#comp-input").placeholder = `Send direct @inbox message to @${name}…`;
-    const delBtn = $("#delete-target-btn");
-    delBtn.hidden = !writable;
-    delBtn.textContent = "Unregister Handle";
-  }
-
-  renderInspector();
-  await loadStreamMessages(true);
-}
-
-$("#toggle-inspector").onclick = () => {
+$("#toggle-ch-inspector").onclick = () => {
   inspectorOpen = !inspectorOpen;
-  $("#stream-inspector").hidden = !inspectorOpen;
+  $("#ch-inspector").hidden = !inspectorOpen;
 };
 
-$("#delete-target-btn").onclick = async () => {
-  if (!activeTarget) return;
-  const { kind, namespace, name } = activeTarget;
-  if (kind === "channel") {
-    if (!confirm(`Delete channel "${name}" in namespace "${namespace}"?\n\nThis removes the channel catalog entry, all handle subscriptions on ${name}, and its message history.`)) return;
-    try {
-      await wapi("DELETE", `channel?namespace=${encodeURIComponent(namespace)}&channel=${encodeURIComponent(name)}`);
-      activeTarget = null;
-      await refreshOverview(true);
-    } catch (e) { alert(e.message); }
-  } else {
-    if (!confirm(`Unregister handle "@${name}" from namespace "${namespace}" and remove all of its channel subscriptions?`)) return;
-    try {
-      await wapi("DELETE", `session?namespace=${encodeURIComponent(namespace)}&session=${encodeURIComponent(name)}`);
-      activeTarget = null;
-      await refreshOverview(true);
-    } catch (e) { alert(e.message); }
-  }
-};
-
-async function loadStreamMessages(forceScrollBottom = false) {
-  if (!activeTarget) return;
-  const box = $("#stream-messages");
-  const nearBottom = forceScrollBottom || (box.scrollHeight - box.scrollTop - box.clientHeight < 90);
-  const { kind, namespace, name } = activeTarget;
-
+$("#delete-channel-btn").onclick = async () => {
+  if (!selectedChannel) return;
+  const { namespace, channel } = selectedChannel;
+  if (!confirm(`Delete channel "${channel}" from namespace "${namespace}"?\n\nThis removes the channel, all handle subscriptions on ${channel}, and its message history.`)) return;
   try {
-    if (kind === "channel") {
-      const { messages } = await wapi("GET", `channel/messages?namespace=${encodeURIComponent(namespace)}&channel=${encodeURIComponent(name)}&limit=150`);
-      if (!messages || !messages.length) {
-        box.innerHTML = `<div class="empty-stream">
-          <h3>${esc(name)}</h3>
-          <p>No messages in <code>${esc(namespace)}</code> · <b>${esc(name)}</b> yet.<br>Send a message below or have your agents publish to <code>${esc(name)}</code>.</p>
-        </div>`;
-        return;
-      }
-      box.innerHTML = messages.map(renderChannelMessage).join("");
-    } else {
-      const { messages } = await wapi("GET", `session/messages?namespace=${encodeURIComponent(namespace)}&session=${encodeURIComponent(name)}&limit=150`);
-      if (!messages || !messages.length) {
-        box.innerHTML = `<div class="empty-stream">
-          <h3>@${esc(name)}</h3>
-          <p>No direct <code>@inbox</code> messages for <b>@${esc(name)}</b> in <code>${esc(namespace)}</code> yet.</p>
-        </div>`;
-        return;
-      }
-      box.innerHTML = messages.map(renderSessionMessage).join("");
+    await wapi("DELETE", `channel?namespace=${encodeURIComponent(namespace)}&channel=${encodeURIComponent(channel)}`);
+    selectedChannel = null;
+    await refreshOverview(true);
+  } catch (e) { alert(e.message); }
+};
+
+function renderChannelHeaderAndInspector() {
+  if (!selectedChannel || !wsData) return;
+  const { namespace, channel } = selectedChannel;
+  const writable = canWriteNs(namespace);
+  const chObj = (wsData.channels || []).find(c => c.namespace === namespace && c.channel === channel)
+    || { subscribers: [], publishers: [], message_count: 0, open_tasks: 0, description: "" };
+  const liveSubs = liveSubscribersFor(chObj);
+  const allSubs = chObj.subscribers || [];
+
+  $("#ch-stage-title").textContent = channel.replace(/^#/, "");
+  $("#ch-stage-ns").textContent = namespace;
+  $("#ch-stage-meta").textContent =
+    `${liveSubs.length} online / ${allSubs.length} subscribed · ${chObj.message_count || 0} messages` +
+    (chObj.description ? ` · ${chObj.description}` : "");
+  $("#ch-comp-input").placeholder = `Message ${channel} in ${namespace}… (Enter to send, Shift+Enter for newline)`;
+  $("#delete-channel-btn").hidden = !writable;
+
+  // Stacked live avatars
+  $("#ch-live-avatars").innerHTML = liveSubs.slice(0, 5).map(h =>
+    `<span class="mini-av" style="background:${avatarColor(h)}" title="@${esc(h)} (online)">${esc(h.slice(0, 2).toUpperCase())}</span>`
+  ).join("");
+
+  // Right Inspector: separate Online vs Offline subscribers + Subscribe control
+  const offlineSubs = allSubs.filter(h => !liveSubs.includes(h));
+  const candidateHandles = (wsData.sessions || [])
+    .filter(s => s.namespace === namespace && s.alive && !allSubs.includes(s.name))
+    .map(s => s.name);
+
+  const renderMemberRow = (h, isLive) => `
+    <div class="member-row">
+      <div class="member-row-left" data-jump-handle="${esc(h)}" data-jump-ns="${esc(namespace)}" title="Open @${esc(h)} in Handles">
+        <span class="dot ${isLive ? "alive" : "idle"}"></span>
+        <code>@${esc(h)}</code>
+      </div>
+      ${writable ? `<button class="danger sm" style="padding:2px 8px;font-size:11px" data-unsub="${esc(h)}">Unregister</button>` : ""}
+    </div>`;
+
+  $("#ch-inspector-body").innerHTML = `
+    <div class="insp-block">
+      <div class="insp-hdr">Online Subscribers (${liveSubs.length})</div>
+      ${liveSubs.length ? liveSubs.map(h => renderMemberRow(h, true)).join("") : `<div class="muted">No online handles subscribed right now.</div>`}
+    </div>
+
+    ${offlineSubs.length ? `
+    <div class="insp-block">
+      <div class="insp-hdr">Inactive / Offline Subscribers (${offlineSubs.length})</div>
+      ${offlineSubs.map(h => renderMemberRow(h, false)).join("")}
+    </div>` : ""}
+
+    ${writable ? `
+    <div class="insp-block">
+      <div class="insp-hdr">Attach @Handle to ${esc(channel)}</div>
+      <div style="display:flex;flex-direction:column;gap:7px">
+        ${candidateHandles.length ? `<select id="ch-insp-pick">
+          <option value="">Choose online @handle…</option>
+          ${candidateHandles.map(h => `<option value="${esc(h)}">@${esc(h)}</option>`).join("")}
+        </select>` : ""}
+        <input id="ch-insp-custom" placeholder="or type @handle…">
+        <button id="ch-insp-add" class="btn-primary sm">Subscribe Handle</button>
+      </div>
+    </div>` : ""}
+  `;
+
+  $$("#ch-inspector-body [data-unsub]").forEach(btn => {
+    btn.onclick = async () => {
+      try {
+        await wapi("POST", "channel/unsubscribe", { namespace, channel, session_name: btn.dataset.unsub });
+        await refreshOverview(false);
+      } catch (e) { alert(e.message); }
+    };
+  });
+  $$("#ch-inspector-body [data-jump-handle]").forEach(el => {
+    el.onclick = () => jumpToHandle(el.dataset.jumpNs, el.dataset.jumpHandle);
+  });
+  const addBtn = $("#ch-insp-add");
+  if (addBtn) {
+    addBtn.onclick = async () => {
+      const picked = $("#ch-insp-pick")?.value || "";
+      const typed = ($("#ch-insp-custom")?.value || "").trim().replace(/^@/, "");
+      const target = typed || picked;
+      if (!target) return;
+      try {
+        await wapi("POST", "channel/subscribe", { namespace, channel, session_name: target });
+        await refreshOverview(false);
+      } catch (e) { alert(e.message); }
+    };
+  }
+}
+
+async function loadChannelMessages(forceScrollBottom = false) {
+  if (!selectedChannel) return;
+  const box = $("#ch-messages");
+  const nearBottom = forceScrollBottom || (box.scrollHeight - box.scrollTop - box.clientHeight < 100);
+  const { namespace, channel } = selectedChannel;
+  try {
+    const { messages } = await wapi("GET", `channel/messages?namespace=${encodeURIComponent(namespace)}&channel=${encodeURIComponent(channel)}&limit=150`);
+    if (!messages || !messages.length) {
+      box.innerHTML = `<div class="empty-state">
+        <div class="empty-ico">#</div>
+        <h3 style="margin:0 0 6px;color:var(--fg)">${esc(channel)}</h3>
+        <p>No messages in <code>${esc(namespace)}</code> · <b>${esc(channel)}</b> yet.<br>Post below to broadcast and wake subscribed handles.</p>
+      </div>`;
+      return;
     }
+    box.innerHTML = messages.map(m => {
+      const sender = m.sender_session || "agent";
+      const initials = sender.replace(/^@/, "").slice(0, 2).toUpperCase();
+      const isDone = m.claimable && (m.claim_status === "acked" || m.claim_status === "completed");
+      const cls = m.claimable ? (isDone ? "msg-row is-done" : "msg-row is-task") : "msg-row";
+      let taskStrip = "";
+      if (m.claimable) {
+        const st = (m.claim_status || "pending").toUpperCase();
+        const who = m.claimed_by ? ` · claimed by <b>@${esc(m.claimed_by)}</b>` : " · waiting for subscriber";
+        const res = m.resolution ? ` · <code>${esc(m.resolution)}</code>` : "";
+        taskStrip = `<div class="task-strip">
+          <span class="pill ${isDone ? "ok" : "warn"}">TASK · ${esc(st)}</span>
+          <span class="muted">#${m.id}${who}${res}</span>
+        </div>`;
+      }
+      return `<div class="${cls}">
+        <div class="msg-av" style="background:${avatarColor(sender)}">${esc(initials)}</div>
+        <div class="msg-content">
+          <div class="msg-meta">
+            <span class="msg-author" data-author="${esc(sender)}" data-ns="${esc(namespace)}">@${esc(sender)}</span>
+            <span class="tiny-pill">${esc(m.intent || "message")}</span>
+            <span class="msg-ts" title="${esc(m.created_at)}">${fmt(m.created_at)} (${age(m.created_at)} ago) · #${m.id}</span>
+          </div>
+          <div class="msg-body-text">${formatRichText(m.content)}</div>
+          ${taskStrip}
+        </div>
+      </div>`;
+    }).join("");
+    $$("#ch-messages [data-author]").forEach(el => {
+      el.onclick = () => jumpToHandle(el.dataset.ns, el.dataset.author);
+    });
     if (nearBottom) box.scrollTop = box.scrollHeight;
   } catch (e) {
-    box.innerHTML = `<div class="empty-stream"><span class="err">${esc(e.message)}</span></div>`;
+    box.innerHTML = `<div class="empty-state"><span class="err">${esc(e.message)}</span></div>`;
   }
 }
 
-function renderChannelMessage(m) {
-  const sender = m.sender_session || "agent";
-  const initials = sender.replace(/^@/, "").slice(0, 2).toUpperCase();
-  const isDone = m.claimable && (m.claim_status === "acked" || m.claim_status === "completed");
-  const cardCls = m.claimable ? (isDone ? "msg-card is-done" : "msg-card is-task") : "msg-card";
-  let taskHtml = "";
-  if (m.claimable) {
-    const st = m.claim_status || "pending";
-    const who = m.claimed_by ? ` · claimed by <b>@${esc(m.claimed_by)}</b>` : " · waiting for subscriber to claim";
-    const res = m.resolution ? ` · resolution: <code>${esc(m.resolution)}</code>` : "";
-    taskHtml = `<div class="task-banner">
-      <span class="pill ${isDone ? "ok" : "no"}">TASK · ${esc(st.toUpperCase())}</span>
-      <span class="muted">#${m.id}${who}${res}</span>
-    </div>`;
-  }
-  return `<div class="${cardCls}">
-    <div class="avatar" style="background:${avatarColor(sender)}">${esc(initials)}</div>
-    <div class="msg-body">
-      <div class="msg-hdr">
-        <span class="msg-sender">@${esc(sender)}</span>
-        <span class="intent-pill">${esc(m.intent || "message")}</span>
-        <span class="msg-time" title="${esc(m.created_at)}">${fmt(m.created_at)} (${age(m.created_at)} ago) · #${m.id}</span>
-      </div>
-      <div class="msg-text">${esc(m.content)}</div>
-      ${taskHtml}
-    </div>
-  </div>`;
-}
-
-function renderSessionMessage(m) {
-  const sender = m.from_session || "agent";
-  const initials = sender.replace(/^@/, "").slice(0, 2).toUpperCase();
-  const isActed = m.status === "acted";
-  return `<div class="msg-card ${isActed ? "is-done" : ""}">
-    <div class="avatar" style="background:${avatarColor(sender)}">${esc(initials)}</div>
-    <div class="msg-body">
-      <div class="msg-hdr">
-        <span class="msg-sender">@${esc(sender)} → @${esc(m.to_session)}</span>
-        <span class="intent-pill">${esc(m.intent || "message")} · ${esc(m.status || "pending")}</span>
-        <span class="msg-time">${fmt(m.created_at)} · #${m.id}</span>
-      </div>
-      ${m.subject ? `<div style="font-weight:600;margin-bottom:3px">${esc(m.subject)}</div>` : ""}
-      <div class="msg-text">${esc(m.content)}</div>
-      ${m.resolution ? `<div class="task-banner"><span class="pill ok">ACTED</span> <span>${esc(m.resolution)}</span></div>` : ""}
-    </div>
-  </div>`;
-}
-
-// ---- Composer Send ----
-async function sendComposerMessage() {
-  if (!activeTarget) return;
-  const text = $("#comp-input").value.trim();
+async function sendChannelMessage() {
+  if (!selectedChannel) return;
+  const text = $("#ch-comp-input").value.trim();
   if (!text) return;
-  const sender = ($("#comp-sender").value.trim().replace(/^@/, "")) || "owner";
-  $("#comp-err").textContent = "";
-  $("#comp-send").disabled = true;
+  const sender = ($("#ch-comp-sender").value.trim().replace(/^@/, "")) || "owner";
+  const claimable = $("#ch-comp-claimable").checked;
+  $("#ch-comp-err").textContent = "";
+  $("#ch-comp-send").disabled = true;
   try {
-    if (activeTarget.kind === "channel") {
-      const claimable = $("#comp-claimable").checked;
-      await wapi("POST", "channel/publish", {
-        namespace: activeTarget.namespace,
-        channel: activeTarget.name,
-        sender_session: sender,
-        content: text,
-        claimable,
-        intent: claimable ? "task" : "message",
-      });
-      $("#comp-claimable").checked = false;
-    } else {
-      await wapi("POST", "session/send", {
-        namespace: activeTarget.namespace,
-        to_session: activeTarget.name,
-        from_session: sender,
-        content: text,
-        intent: "message",
-      });
-    }
-    $("#comp-input").value = "";
-    await loadStreamMessages(true);
+    await wapi("POST", "channel/publish", {
+      namespace: selectedChannel.namespace,
+      channel: selectedChannel.channel,
+      sender_session: sender,
+      content: text,
+      claimable,
+      intent: claimable ? "task" : "message",
+    });
+    $("#ch-comp-input").value = "";
+    $("#ch-comp-claimable").checked = false;
+    await loadChannelMessages(true);
     await refreshOverview(false);
   } catch (e) {
-    $("#comp-err").textContent = e.message;
+    $("#ch-comp-err").textContent = e.message;
   } finally {
-    $("#comp-send").disabled = false;
+    $("#ch-comp-send").disabled = false;
   }
 }
-
-$("#comp-send").onclick = sendComposerMessage;
-$("#comp-input").addEventListener("keydown", e => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    sendComposerMessage();
-  }
+$("#ch-comp-send").onclick = sendChannelMessage;
+$("#ch-comp-input").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChannelMessage(); }
 });
 
-// ---- Right Inspector: Subscribe / Unregister Handles & Channel Info ----
-function renderInspector() {
-  const box = $("#inspector-content");
-  if (!activeTarget || !wsData) { box.innerHTML = ""; return; }
-  const { kind, namespace, name } = activeTarget;
-  const writable = canWriteNs(namespace);
+// ============================================================================
+// SECTION 2: HANDLES (@) — Online-Only Default, Filter, Hero & Direct Inbox
+// ============================================================================
 
-  if (kind === "channel") {
-    const chObj = (wsData.channels || []).find(c => c.namespace === namespace && c.channel === name) || {
-      subscribers: [], publishers: [], message_count: 0, open_tasks: 0, description: ""
+$$("#hd-mode-tabs button").forEach(btn => {
+  btn.onclick = () => {
+    hdFilterMode = btn.dataset.mode;
+    $$("#hd-mode-tabs button").forEach(x => x.classList.toggle("active", x === btn));
+    renderHandleList();
+  };
+});
+$("#hd-search").oninput = renderHandleList;
+
+function jumpToHandle(namespace, name) {
+  selectedHandle = { namespace, name: name.replace(/^@/, "") };
+  switchSection("handles");
+}
+
+function jumpToChannel(namespace, channel) {
+  selectedChannel = { namespace, channel };
+  switchSection("channels");
+}
+
+function filteredHandles() {
+  const all = (wsData?.sessions || []).filter(s => !s.namespace.startsWith("test:"));
+  const q = ($("#hd-search").value || "").trim().toLowerCase();
+  return all.filter(s => {
+    if (hdFilterMode === "online" && !s.alive) return false;
+    if (q) {
+      const hay = `@${s.name} ${s.namespace} ${s.cwd || ""} ${s.host || ""} ${(s.channels || []).join(" ")}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function renderHandleList() {
+  if (!wsData) return;
+  const all = (wsData.sessions || []).filter(s => !s.namespace.startsWith("test:"));
+  const onlineCnt = all.filter(s => s.alive).length;
+  const tabs = $$("#hd-mode-tabs button");
+  if (tabs[0]) tabs[0].textContent = `Online (${onlineCnt})`;
+  if (tabs[1]) tabs[1].textContent = `All (${all.length})`;
+
+  const list = filteredHandles();
+  $("#hd-pane-sub").textContent = `${onlineCnt} online · ${list.length} shown`;
+  const box = $("#handle-list");
+
+  if (!list.length) {
+    box.innerHTML = `<div class="empty-state" style="padding:28px 12px">
+      <div class="muted">No handles match this filter.</div>
+      ${hdFilterMode !== "all" ? `<button class="ghost sm" id="hd-show-all-btn" style="margin-top:8px">Show offline (${all.length})</button>` : ""}
+    </div>`;
+    const btn = $("#hd-show-all-btn");
+    if (btn) btn.onclick = () => { $$("#hd-mode-tabs button")[1].click(); };
+    return;
+  }
+
+  box.innerHTML = list.map(s => {
+    const isSel = selectedHandle && selectedHandle.namespace === s.namespace && selectedHandle.name === s.name;
+    const dotCls = !s.alive ? "idle" : (s.run_state === "running" || s.run_state === "busy" ? "busy" : "alive");
+    const chs = s.channels || [];
+    const unread = s.unread_inbox || 0;
+    const shortCwd = s.cwd ? s.cwd.split("/").slice(-2).join("/") : s.namespace;
+    return `<button class="list-card ${isSel ? "active" : ""}" data-ns="${esc(s.namespace)}" data-hd="${esc(s.name)}">
+      <div class="list-card-top">
+        <span class="list-card-name"><span class="dot ${dotCls}"></span> @${esc(s.name)}</span>
+        ${unread > 0 ? `<span class="tiny-pill warn">${unread} unread</span>` : `<span class="tiny-pill">${age(s.last_heartbeat_at)}</span>`}
+      </div>
+      <div class="list-card-sub">
+        <span>${esc(s.namespace)}</span>
+        <span title="${esc(s.cwd || "")}">${esc(shortCwd)}</span>
+      </div>
+      ${chs.length ? `<div class="list-tags">${chs.slice(0, 3).map(c => `<span class="tiny-pill tag">${esc(c)}</span>`).join("")}${chs.length > 3 ? `<span class="tiny-pill">+${chs.length - 3}</span>` : ""}</div>` : ""}
+    </button>`;
+  }).join("");
+
+  $$("#handle-list .list-card").forEach(card => {
+    card.onclick = async () => {
+      selectedHandle = { namespace: card.dataset.ns, name: card.dataset.hd };
+      renderHandleList();
+      renderHandleHero();
+      await loadHandleMessages(true);
     };
-    const subs = chObj.subscribers || [];
-    const nsSessions = (wsData.sessions || [])
-      .filter(s => s.namespace === namespace && !subs.includes(s.name))
-      .map(s => s.name);
+  });
+}
 
-    box.innerHTML = `
-      <div class="insp-section">
-        <h4>Channel Details</h4>
-        <div class="kv-list">
-          <span>Channel</span><span>${esc(name)}</span>
-          <span>Namespace</span><span>${esc(namespace)}</span>
-          <span>Messages</span><span>${chObj.message_count || 0}</span>
-          <span>Open Tasks</span><span>${chObj.open_tasks || 0}</span>
+function renderHandleHero() {
+  const box = $("#hd-hero");
+  if (!selectedHandle || !wsData) { box.innerHTML = ""; return; }
+  const { namespace, name } = selectedHandle;
+  const writable = canWriteNs(namespace);
+  const sObj = (wsData.sessions || []).find(s => s.namespace === namespace && s.name === name);
+  const chs = sObj?.channels || [];
+  const initials = name.slice(0, 2).toUpperCase();
+
+  $("#hd-comp-input").placeholder = `Send direct @inbox message or task to @${name}… (Enter to send)`;
+
+  box.innerHTML = `
+    <div class="hero-top">
+      <div class="hero-id">
+        <div class="hero-av" style="background:${avatarColor(name)}">${esc(initials)}</div>
+        <div>
+          <div class="chat-title-row">
+            <h2 style="margin:0;font-size:17px">@${esc(name)}</h2>
+            <span class="ns-badge">${esc(namespace)}</span>
+            ${sObj
+              ? `<span class="pill ${sObj.alive ? "ok" : "no"}">${sObj.alive ? "ONLINE · " + esc(sObj.run_state || "idle") : "OFFLINE"}</span>`
+              : `<span class="pill warn">UNREGISTERED HANDLE</span>`}
+          </div>
+          ${sObj ? `<div class="hero-meta-grid" style="margin-top:5px">
+            <span>Heartbeat: <b>${age(sObj.last_heartbeat_at)} ago</b></span>
+            ${sObj.pid ? `<span>PID: <code>${sObj.pid}</code> ${esc(sObj.tty || "")}</span>` : ""}
+            ${sObj.cwd ? `<span>Folder: <code>${esc(sObj.cwd)}</code></span>` : ""}
+            ${sObj.host ? `<span>Host: <code>${esc(sObj.host)}</code></span>` : ""}
+          </div>` : ""}
         </div>
       </div>
 
-      <div class="insp-section">
-        <h4>Subscribed Handles (${subs.length})</h4>
-        <div class="chip-list">
-          ${subs.length ? subs.map(h => `
-            <div class="handle-chip">
-              <code>@${esc(h)}</code>
-              ${writable ? `<button class="unsub-btn" data-unsub="${esc(h)}" title="Unregister @${esc(h)} from ${esc(name)}">Unregister</button>` : ""}
-            </div>
-          `).join("") : `<div class="muted">No handles subscribed yet.</div>`}
-        </div>
-      </div>
+      ${writable && sObj ? `<button id="unreg-handle-btn" class="danger sm">Unregister Handle</button>` : ""}
+    </div>
 
+    <div class="hero-ch-bar">
+      <span class="muted" style="font-weight:600;margin-right:4px">Channels:</span>
+      ${chs.length ? chs.map(c => `
+        <span class="ch-chip">
+          <span style="cursor:pointer" data-open-ch="${esc(c)}">${esc(c)}</span>
+          ${writable ? `<button data-leave-ch="${esc(c)}" title="Unregister @${esc(name)} from ${esc(c)}">×</button>` : ""}
+        </span>
+      `).join("") : `<span class="muted">None</span>`}
       ${writable ? `
-      <div class="insp-section">
-        <h4>Register @Handle to Channel</h4>
-        <div class="inline-form" style="margin:0">
-          ${nsSessions.length ? `<select id="insp-pick-handle">
-            <option value="">Pick active @handle…</option>
-            ${nsSessions.map(h => `<option value="${esc(h)}">@${esc(h)}</option>`).join("")}
-          </select>` : ""}
-          <input id="insp-custom-handle" placeholder="or type @handle (e.g. @architect)">
-          <button id="insp-add-sub" class="sm">Subscribe Handle</button>
-        </div>
-      </div>` : ""}
-    `;
+        <input id="hd-join-input" placeholder="+ #channel" style="max-width:140px;padding:3px 9px;font-size:12px;border-radius:99px">
+        <button id="hd-join-btn" class="ghost sm" style="border-radius:99px">Subscribe</button>
+      ` : ""}
+    </div>
+  `;
 
-    $$("#inspector-content [data-unsub]").forEach(btn => {
-      btn.onclick = async () => {
-        const h = btn.dataset.unsub;
-        try {
-          await wapi("POST", "channel/unsubscribe", { namespace, channel: name, session_name: h });
-          await refreshOverview(false);
-        } catch (e) { alert(e.message); }
-      };
-    });
-    const addBtn = $("#insp-add-sub");
-    if (addBtn) {
-      addBtn.onclick = async () => {
-        const picked = $("#insp-pick-handle")?.value || "";
-        const typed = ($("#insp-custom-handle")?.value || "").trim().replace(/^@/, "");
-        const handle = typed || picked;
-        if (!handle) return;
-        try {
-          await wapi("POST", "channel/subscribe", { namespace, channel: name, session_name: handle });
-          await refreshOverview(false);
-        } catch (e) { alert(e.message); }
-      };
-    }
-  } else {
-    const sObj = (wsData.sessions || []).find(s => s.namespace === namespace && s.name === name);
-    const chs = sObj?.channels || [];
-    box.innerHTML = `
-      <div class="insp-section">
-        <h4>Session @${esc(name)}</h4>
-        ${sObj ? `<div class="kv-list">
-          <span>Status</span><span>${sObj.alive ? "ONLINE" : "OFFLINE"} (${esc(sObj.run_state || "idle")})</span>
-          <span>Namespace</span><span>${esc(namespace)}</span>
-          <span>Host</span><span>${esc(sObj.host || "—")}</span>
-          <span>PID / TTY</span><span>${sObj.pid || "—"} ${esc(sObj.tty || "")}</span>
-          <span>Workspace</span><span>${esc(sObj.cwd || "—")}</span>
-          <span>Heartbeat</span><span>${age(sObj.last_heartbeat_at)} ago</span>
-        </div>` : `<div class="muted">Handle not currently registered as a live process.</div>`}
-      </div>
-
-      <div class="insp-section">
-        <h4>Subscribed Channels (${chs.length})</h4>
-        <div class="chip-list">
-          ${chs.length ? chs.map(c => `
-            <div class="handle-chip">
-              <code>${esc(c)}</code>
-              ${writable ? `<button class="unsub-btn" data-leave="${esc(c)}">Leave</button>` : ""}
-            </div>
-          `).join("") : `<div class="muted">Not subscribed to any #channels.</div>`}
-        </div>
-      </div>
-
-      ${writable ? `
-      <div class="insp-section">
-        <h4>Join #Channel</h4>
-        <div class="inline-form" style="margin:0">
-          <input id="insp-join-ch" placeholder="#channel (e.g. #arch-review)">
-          <button id="insp-join-btn" class="sm">Subscribe @${esc(name)}</button>
-        </div>
-      </div>` : ""}
-    `;
-
-    $$("#inspector-content [data-leave]").forEach(btn => {
-      btn.onclick = async () => {
-        try {
-          await wapi("POST", "channel/unsubscribe", { namespace, channel: btn.dataset.leave, session_name: name });
-          await refreshOverview(false);
-        } catch (e) { alert(e.message); }
-      };
-    });
-    const joinBtn = $("#insp-join-btn");
-    if (joinBtn) {
-      joinBtn.onclick = async () => {
-        const raw = ($("#insp-join-ch")?.value || "").trim();
-        if (!raw) return;
-        const ch = raw.startsWith("#") ? raw : "#" + raw;
-        try {
-          await wapi("POST", "channel/subscribe", { namespace, channel: ch, session_name: name });
-          await refreshOverview(false);
-        } catch (e) { alert(e.message); }
-      };
-    }
+  $$("#hd-hero [data-open-ch]").forEach(el => {
+    el.onclick = () => jumpToChannel(namespace, el.dataset.openCh);
+  });
+  $$("#hd-hero [data-leave-ch]").forEach(btn => {
+    btn.onclick = async () => {
+      try {
+        await wapi("POST", "channel/unsubscribe", { namespace, channel: btn.dataset.leaveCh, session_name: name });
+        await refreshOverview(false);
+      } catch (e) { alert(e.message); }
+    };
+  });
+  const joinBtn = $("#hd-join-btn");
+  if (joinBtn) {
+    joinBtn.onclick = async () => {
+      const raw = ($("#hd-join-input")?.value || "").trim();
+      if (!raw) return;
+      const ch = raw.startsWith("#") ? raw : "#" + raw;
+      try {
+        await wapi("POST", "channel/subscribe", { namespace, channel: ch, session_name: name });
+        await refreshOverview(false);
+      } catch (e) { alert(e.message); }
+    };
+  }
+  const unregBtn = $("#unreg-handle-btn");
+  if (unregBtn) {
+    unregBtn.onclick = async () => {
+      if (!confirm(`Unregister handle "@${name}" in "${namespace}" and remove all of its channel subscriptions?`)) return;
+      try {
+        await wapi("DELETE", `session?namespace=${encodeURIComponent(namespace)}&session=${encodeURIComponent(name)}`);
+        selectedHandle = null;
+        await refreshOverview(true);
+      } catch (e) { alert(e.message); }
+    };
   }
 }
 
-// ---- Role-Scoped Memory Explorer ----
-const WMEM_PAGE = 50;
-let wmemOffset = 0;
+async function loadHandleMessages(forceScrollBottom = false) {
+  if (!selectedHandle) return;
+  const box = $("#hd-messages");
+  const nearBottom = forceScrollBottom || (box.scrollHeight - box.scrollTop - box.clientHeight < 100);
+  const { namespace, name } = selectedHandle;
+  try {
+    const { messages } = await wapi("GET", `session/messages?namespace=${encodeURIComponent(namespace)}&session=${encodeURIComponent(name)}&limit=150`);
+    if (!messages || !messages.length) {
+      box.innerHTML = `<div class="empty-state">
+        <div class="empty-ico">@</div>
+        <h3 style="margin:0 0 6px;color:var(--fg)">@${esc(name)}</h3>
+        <p>No direct <code>@inbox</code> messages for <b>@${esc(name)}</b> in <code>${esc(namespace)}</code>.<br>Send a DM below to wake this handle directly.</p>
+      </div>`;
+      return;
+    }
+    box.innerHTML = messages.map(m => {
+      const sender = m.from_session || "agent";
+      const initials = sender.slice(0, 2).toUpperCase();
+      const isActed = m.status === "acted";
+      return `<div class="msg-row ${isActed ? "is-done" : ""}">
+        <div class="msg-av" style="background:${avatarColor(sender)}">${esc(initials)}</div>
+        <div class="msg-content">
+          <div class="msg-meta">
+            <span class="msg-author">@${esc(sender)} → @${esc(m.to_session)}</span>
+            <span class="tiny-pill">${esc(m.intent || "message")} · ${esc(m.status || "pending")}</span>
+            <span class="msg-ts">${fmt(m.created_at)} (${age(m.created_at)} ago) · #${m.id}</span>
+          </div>
+          ${m.subject ? `<div style="font-weight:700;margin-bottom:4px">${esc(m.subject)}</div>` : ""}
+          <div class="msg-body-text">${formatRichText(m.content)}</div>
+          ${m.resolution ? `<div class="task-strip"><span class="pill ok">ACTED</span> <span>${esc(m.resolution)}</span></div>` : ""}
+        </div>
+      </div>`;
+    }).join("");
+    if (nearBottom) box.scrollTop = box.scrollHeight;
+  } catch (e) {
+    box.innerHTML = `<div class="empty-state"><span class="err">${esc(e.message)}</span></div>`;
+  }
+}
+
+async function sendHandleMessage() {
+  if (!selectedHandle) return;
+  const text = $("#hd-comp-input").value.trim();
+  if (!text) return;
+  const sender = ($("#hd-comp-sender").value.trim().replace(/^@/, "")) || "owner";
+  const intent = $("#hd-comp-intent").value || "message";
+  $("#hd-comp-err").textContent = "";
+  $("#hd-comp-send").disabled = true;
+  try {
+    await wapi("POST", "session/send", {
+      namespace: selectedHandle.namespace,
+      to_session: selectedHandle.name,
+      from_session: sender,
+      content: text,
+      intent,
+    });
+    $("#hd-comp-input").value = "";
+    await loadHandleMessages(true);
+    await refreshOverview(false);
+  } catch (e) {
+    $("#hd-comp-err").textContent = e.message;
+  } finally {
+    $("#hd-comp-send").disabled = false;
+  }
+}
+$("#hd-comp-send").onclick = sendHandleMessage;
+$("#hd-comp-input").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendHandleMessage(); }
+});
+
+// ============================================================================
+// SECTION 3: MEMORY EXPLORER
+// ============================================================================
+
+$$("#wmem-type-pills button").forEach(btn => {
+  btn.onclick = () => {
+    wmemType = btn.dataset.type;
+    $$("#wmem-type-pills button").forEach(x => x.classList.toggle("active", x === btn));
+    wmemOffset = 0;
+    loadWorkspaceMemories();
+  };
+});
+
 async function loadWorkspaceMemories() {
   const tbody = $("#wmem-table tbody");
   const ns = $("#ws-ns-filter").value || "*";
-  const ty = $("#wmem-type").value;
   const q = $("#wmem-q").value.trim();
   const qs = `memories?limit=${WMEM_PAGE}&offset=${wmemOffset}&namespace=${encodeURIComponent(ns)}`
-    + (ty ? `&type=${encodeURIComponent(ty)}` : "")
+    + (wmemType ? `&type=${encodeURIComponent(wmemType)}` : "")
     + (q ? `&q=${encodeURIComponent(q)}` : "");
   await loadTable(tbody, () => wapi("GET", qs), ({ memories }) => {
     tbody.innerHTML = (memories || []).map(m => `<tr>
       <td title="${esc(m.observed_at || "")}">${age(m.observed_at)}</td>
       <td><code>${esc(m.namespace)}</code></td>
-      <td>${m.type ? `<span class="pill ${m.type === "constraint" ? "no" : "ok"}">${esc(m.type)}</span>` : ""}</td>
+      <td>${m.type ? `<span class="pill ${m.type === "constraint" ? "no" : (m.type === "decision" ? "warn" : "ok")}">${esc(m.type)}</span>` : ""}</td>
       <td>${esc(m.author || m.speaker || "—")}</td>
-      <td style="white-space:pre-wrap;word-break:break-word">${esc(m.content)}</td>
+      <td style="white-space:pre-wrap;word-break:break-word">${formatRichText(m.content)}</td>
     </tr>`).join("") || emptyRow(5, "No matching memories in your authorized scope.");
     $("#wmem-info").textContent = `page ${Math.floor(wmemOffset / WMEM_PAGE) + 1}`;
     $("#wmem-prev").disabled = wmemOffset === 0;
@@ -734,60 +960,93 @@ async function loadWorkspaceMemories() {
   }, loadWorkspaceMemories);
 }
 $("#wmem-search").onclick = () => { wmemOffset = 0; loadWorkspaceMemories(); };
-$("#wmem-type").onchange = () => { wmemOffset = 0; loadWorkspaceMemories(); };
 $("#wmem-q").addEventListener("keydown", e => { if (e.key === "Enter") { wmemOffset = 0; loadWorkspaceMemories(); } });
 $("#wmem-prev").onclick = () => { wmemOffset = Math.max(0, wmemOffset - WMEM_PAGE); loadWorkspaceMemories(); };
 $("#wmem-next").onclick = () => { wmemOffset += WMEM_PAGE; loadWorkspaceMemories(); };
 
-// ---- Telemetry & DB Overview ----
+// ============================================================================
+// SECTION 4: ENGINE & DB TELEMETRY
+// ============================================================================
+
 function renderTelemetry() {
   if (!wsData) return;
   const v = wsData.vitals || {};
   const u = v.usage_30d || {};
-  const aliveSess = (wsData.sessions || []).filter(s => s.alive).length;
-  const upMin = v.uptime_secs != null ? Math.floor(v.uptime_secs / 60) + "m" : "—";
+  const onlineHds = (wsData.sessions || []).filter(s => s.alive && !s.namespace.startsWith("test:")).length;
+  const activeChs = (wsData.channels || []).filter(isChannelActive).length;
+  const upHrs = v.uptime_secs != null ? (v.uptime_secs / 3600).toFixed(1) + "h" : "—";
   const ramVal = v.footprint_mb != null ? `${v.footprint_mb} MB` : (v.rss_mb != null ? `${v.rss_mb} MB` : "remote");
-  const ramSub = (v.rss_mb != null && v.footprint_mb != null) ? `RSS ${v.rss_mb} MB · v${v.version || ""} · up ${upMin}` : `v${v.version || ""} · up ${upMin}`;
+  const ramSub = (v.rss_mb != null && v.footprint_mb != null) ? `RSS ${v.rss_mb} MB · v${v.version || ""} · up ${upHrs}` : `v${v.version || ""} · up ${upHrs}`;
 
   $("#tel-cards").innerHTML = `
-    <div class="kpi-card"><div class="kpi-lbl">Server Footprint</div><div class="kpi-val">${esc(ramVal)}</div><div class="kpi-sub">${esc(ramSub)}</div></div>
-    <div class="kpi-card"><div class="kpi-lbl">Database Size</div><div class="kpi-val">${esc(fmtBytes(v.db_size_bytes))}</div><div class="kpi-sub">${esc(v.embedding_mode || "—")}</div></div>
+    <div class="kpi-card"><div class="kpi-lbl">Rust Engine Footprint</div><div class="kpi-val">${esc(ramVal)}</div><div class="kpi-sub">${esc(ramSub)}</div></div>
+    <div class="kpi-card"><div class="kpi-lbl">PostgreSQL Storage</div><div class="kpi-val">${esc(fmtBytes(v.db_size_bytes))}</div><div class="kpi-sub">${esc(v.embedding_mode || "—")}</div></div>
     <div class="kpi-card"><div class="kpi-lbl">Semantic Facts</div><div class="kpi-val">${(v.total_facts || 0).toLocaleString()}</div><div class="kpi-sub">${(v.total_entities || 0).toLocaleString()} graph entities</div></div>
-    <div class="kpi-card"><div class="kpi-lbl">Raw Turns</div><div class="kpi-val">${(v.total_turns || 0).toLocaleString()}</div><div class="kpi-sub">across ${(wsData.namespaces || []).length} authorized ns</div></div>
-    <div class="kpi-card"><div class="kpi-lbl">Active Mesh</div><div class="kpi-val">${aliveSess} @ / ${(wsData.channels || []).length} #</div><div class="kpi-sub">live sessions &amp; channels</div></div>
-    <div class="kpi-card"><div class="kpi-lbl">30d Usage</div><div class="kpi-val">$${Number(u.cost_usd || 0).toFixed(4)}</div><div class="kpi-sub">${Number((u.tokens_in || 0) + (u.tokens_out || 0)).toLocaleString()} tokens</div></div>
+    <div class="kpi-card"><div class="kpi-lbl">Raw Turns</div><div class="kpi-val">${(v.total_turns || 0).toLocaleString()}</div><div class="kpi-sub">across authorized scope</div></div>
+    <div class="kpi-card"><div class="kpi-lbl">Active Mesh</div><div class="kpi-val">${onlineHds} @ · ${activeChs} #</div><div class="kpi-sub">online handles &amp; active channels</div></div>
+    <div class="kpi-card"><div class="kpi-lbl">30d Ledger</div><div class="kpi-val">$${Number(u.cost_usd || 0).toFixed(4)}</div><div class="kpi-sub">${Number((u.tokens_in || 0) + (u.tokens_out || 0)).toLocaleString()} tokens</div></div>
   `;
-
-  $("#tel-ns-table tbody").innerHTML = (wsData.namespaces || []).map(n => `<tr>
-    <td><code>${esc(n.name)}</code>${n.registered ? "" : ' <span class="pill no">discovered</span>'}</td>
-    <td><span class="pill ok">${n.can_write ? "read + write" : "read-only"}</span></td>
-    <td><b>${(n.facts || 0).toLocaleString()}</b></td>
-    <td>${(n.turns || 0).toLocaleString()}</td>
-    <td>${(n.entities || 0).toLocaleString()}</td>
-    <td class="muted">${esc(n.description || "—")}</td>
-  </tr>`).join("") || emptyRow(6, "No authorized namespaces.");
 
   $("#tel-ops-table tbody").innerHTML = (v.ops_24h || []).map(o => `<tr>
     <td><code>${esc(o.op)}</code></td>
     <td>${(o.calls || 0).toLocaleString()}</td>
     <td><b>${Math.round(o.p50_ms || 0)} ms</b></td>
     <td>${Math.round(o.p95_ms || 0)} ms</td>
-    <td>${o.err_pct || 0}%</td>
+    <td><span class="pill ${(o.err_pct || 0) > 0 ? "no" : "ok"}">${o.err_pct || 0}%</span></td>
   </tr>`).join("") || emptyRow(5, "No operations recorded in the last 24h.");
+
+  renderTelemetryNamespaces();
 }
 
-// ================================================================ Existing Admin & Routing Panels
+function renderTelemetryNamespaces() {
+  if (!wsData) return;
+  const q = ($("#tel-ns-search")?.value || "").trim().toLowerCase();
+  const rows = (wsData.namespaces || [])
+    .filter(n => !n.name.startsWith("test:"))
+    .filter(n => !q || n.name.toLowerCase().includes(q) || (n.description || "").toLowerCase().includes(q))
+    .filter(n => q || (n.facts || 0) > 0 || (n.turns || 0) > 0 || n.registered);
 
-// ---- namespaces ----
+  $("#tel-ns-table tbody").innerHTML = rows.map(n => `<tr>
+    <td><code>${esc(n.name)}</code></td>
+    <td><b>${(n.facts || 0).toLocaleString()}</b></td>
+    <td>${(n.turns || 0).toLocaleString()}</td>
+    <td>${(n.entities || 0).toLocaleString()}</td>
+    <td><span class="pill ok">${n.can_write ? "RW" : "RO"}</span></td>
+  </tr>`).join("") || emptyRow(5, "No matching namespaces with data.");
+}
+$("#tel-ns-search").oninput = renderTelemetryNamespaces;
+
+// ============================================================================
+// SECTION 5: GOVERNANCE & CONSOLE SUBTABS
+// ============================================================================
+
+function switchConsoleTab(ctab) {
+  $$("#console-tabs button").forEach(b => b.classList.toggle("active", b.dataset.ctab === ctab));
+  $$(".ctab-pane").forEach(p => { p.hidden = (p.id !== "ctab-" + ctab); });
+  if (ctab === "routing") loadRouting();
+  if (ctab === "cli") loadCliRef();
+  if (ctab === "namespaces") loadNamespaces();
+  if (ctab === "access") loadPrincipals();
+  if (ctab === "tokens") loadPrincipals();
+  if (ctab === "usage") loadUsagePanel();
+  if (ctab === "secrets") loadSecrets();
+  if (ctab === "dashboard") loadDashboard();
+  if (ctab === "settings") loadSettings();
+}
+$$("#console-tabs button").forEach(b => {
+  b.onclick = () => switchConsoleTab(b.dataset.ctab);
+});
+
+// ---- Namespaces ----
 async function loadNamespaces() {
   const tbody = $("#ns-table tbody");
   await loadTable(tbody, () => api("GET", "namespaces"), ({ namespaces }) => {
     tbody.innerHTML = namespaces.map(n => `<tr>
-      <td><code>${esc(n.name)}</code>${n.registered ? "" : ' <span class="pill no">discovered</span>'}</td>
+      <td><code>${esc(n.name)}</code>${n.registered ? "" : ' <span class="pill warn">discovered</span>'}</td>
       <td>${esc(n.description || "")}</td>
       <td>${n.turns}</td><td>${n.facts}</td><td>${fmt(n.created_at)}</td>
       <td><button class="danger" data-del="${esc(n.name)}">delete</button></td></tr>`).join("")
-      || emptyRow(6, `No namespaces yet — create one above or run: <code>memnos namespace add &lt;name&gt;</code>`);
+      || emptyRow(6, `No namespaces yet.`);
     $$("#ns-table [data-del]").forEach(b => b.onclick = async () => {
       if (!confirm(`Delete namespace "${b.dataset.del}"? Also purge its stored memory?\n\nOK = delete + purge data · Cancel = keep`)) {
         if (!confirm(`Delete namespace "${b.dataset.del}" but KEEP its data?`)) return;
@@ -808,7 +1067,7 @@ $("#ns-create").onclick = async () => {
   } catch (e) { alert(e.message); }
 };
 
-// ---- principals + grants + tokens ----
+// ---- Principals, Grants & Tokens ----
 async function loadPrincipals() {
   const tbody = $("#pr-table tbody");
   await loadTable(tbody, () => api("GET", "principals"), ({ principals }) => {
@@ -849,7 +1108,7 @@ $("#tok-mint").onclick = async () => {
       principal_id: +$("#tok-principal").value, label: $("#tok-label").value.trim() || null,
       ttl_days: ttl ? +ttl : null });
     const b = $("#tok-show"); b.hidden = false;
-    b.innerHTML = `Copy this token now — it is shown <b>once</b>:<br><code>${esc(token)}</code>`;
+    b.innerHTML = `Copy this token now — shown <b>once</b>:<br><code>${esc(token)}</code>`;
     $("#tok-label").value = ""; $("#tok-ttl").value = ""; loadTokens(); loadPrincipals();
   } catch (e) { alert(e.message); }
 };
@@ -877,7 +1136,7 @@ $("#gr-add").onclick = async () => {
   } catch (e) { alert(e.message); }
 };
 
-// ---- routing ----
+// ---- Routing ----
 const KEY_LABEL = { repo: "repo", host_repo: "repo", host_path: "path" };
 async function loadRouting() {
   const groups = $("#bind-groups");
@@ -917,7 +1176,7 @@ function bindingRow(b) {
     <td><input class="bind-ns-edit" data-id="${b.id}" value="${esc(b.namespace)}"
          data-keytype="${esc(b.key_type)}" data-key="${esc(b.key)}" data-host="${esc(b.host_id ?? "")}"></td>
     <td>
-      <button class="bind-save" data-id="${b.id}">save</button>
+      <button class="bind-save sm" data-id="${b.id}">save</button>
       <button class="danger bind-del" data-id="${b.id}" data-key="${esc(b.key)}">remove</button>
     </td></tr>`;
 }
@@ -937,8 +1196,7 @@ function renderBindings(bindings, hosts) {
   const tbl = (rows) => `<table><thead><tr><th>Key</th><th>Namespace</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   let html = `<div class="bind-group"><h4>All hosts <span class="muted">· follow-the-repo</span></h4>`
     + (allHost.length ? tbl(allHost.map(bindingRow).join("")) : `<p class="muted">No host-agnostic bindings yet.</p>`) + `</div>`;
-  const hostIds = Object.keys(byHost);
-  for (const mid of hostIds) {
+  for (const mid of Object.keys(byHost)) {
     html += `<div class="bind-group"><h4>${esc(hostName(mid))} <span class="muted">· ${esc(mid)}</span></h4>`
       + (byHost[mid].length ? tbl(byHost[mid].map(bindingRow).join("")) : `<p class="muted">No bindings for this host.</p>`) + `</div>`;
   }
@@ -963,7 +1221,7 @@ function renderHosts(hosts) {
     <td><input class="host-name-edit" data-mid="${esc(h.machine_id)}" value="${esc(h.friendly_name || "")}" placeholder="(unnamed)"></td>
     <td><code>${esc(h.machine_id)}</code></td>
     <td title="${esc(h.last_seen || "")}">${age(h.last_seen)}</td>
-    <td><button class="host-save" data-mid="${esc(h.machine_id)}">rename</button></td></tr>`).join("")
+    <td><button class="host-save sm" data-mid="${esc(h.machine_id)}">rename</button></td></tr>`).join("")
     || emptyRow(4, `No machines registered yet.`);
   $$(".host-save").forEach(b => b.onclick = async () => {
     const inp = $(`.host-name-edit[data-mid="${CSS.escape(b.dataset.mid)}"]`);
@@ -987,7 +1245,7 @@ $("#bind-add").onclick = async () => {
   } catch (e) { $("#bind-err").textContent = e.message; }
 };
 
-// ---- audit, health, secrets, usage, cli, settings ----
+// ---- Audit, Health, Secrets, Usage, CLI, Settings ----
 async function loadHealth() {
   const box = $("#dash-health");
   box.innerHTML = `<span class="muted"><span class="spinner"></span> loading…</span>`;
@@ -1074,8 +1332,7 @@ async function loadCliRef() {
     const r = await fetch("/admin/cli-reference.json");
     if (!r.ok) throw new Error("HTTP " + r.status);
     const j = await r.json();
-    const groups = j.groups || [];
-    box.innerHTML = groups.map(g => `
+    box.innerHTML = (j.groups || []).map(g => `
       <h4>${esc(g.title)}</h4>
       ${g.commands.map(c => `
         <details class="cli-cmd">
@@ -1120,7 +1377,7 @@ async function loadUsagePanel() {
     if (!budgetData.monthly_ok) msgs.push(`Monthly budget exceeded ($${(budgetData.monthly_spend_usd ?? 0).toFixed(4)} / $${budgetData.monthly_limit_usd})`);
     banner.textContent = msgs.join(" | ");
     banner.hidden = false;
-    banner.style.cssText = "background:#2a1f0d;border:1px solid var(--warn);padding:8px 12px;border-radius:8px;margin-bottom:12px;";
+    banner.style.cssText = "background:var(--warn-bg);border:1px solid var(--warn);padding:8px 12px;border-radius:8px;margin-bottom:12px;";
   }
 }
 $("#usage-refresh").addEventListener("click", loadUsagePanel);

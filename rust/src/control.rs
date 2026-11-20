@@ -5131,7 +5131,7 @@ impl Control {
                          WHERE namespace = ANY($1)
                          GROUP BY namespace, channel
                      ) sc ON sc.namespace = u.namespace AND sc.channel = u.channel
-                     WHERE u.channel NOT IN ('*', 'status:*') AND u.channel NOT LIKE 'status:%'
+                     WHERE u.channel LIKE '#%'
                      ORDER BY mc.last_at DESC NULLS LAST, u.namespace, u.channel",
                     params![selected_ns],
                 )
