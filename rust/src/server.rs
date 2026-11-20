@@ -180,6 +180,7 @@ fn is_write_op(path: &str) -> bool {
             | "/lease/heartbeat"
             | "/lease/release"
             | "/session/register"
+            | "/session/rename"
             | "/session/heartbeat"
             | "/session/unregister"
             | "/channel/publish"
@@ -194,6 +195,62 @@ fn is_write_op(path: &str) -> bool {
             | "/inbox/retract"
             | "/inbox/act"
     )
+}
+
+fn sync_local_session_rename(info: &Value) {
+    let host = info.get("host").and_then(|v| v.as_str()).unwrap_or("");
+    let local_host = crate::nsresolve::hostname();
+    if !host.is_empty() && host != local_host {
+        return;
+    }
+    let new_s = info.get("new_name").and_then(|v| v.as_str()).unwrap_or("");
+    let old_s = info.get("old_name").and_then(|v| v.as_str()).unwrap_or("");
+    let ns = info.get("namespace").and_then(|v| v.as_str()).unwrap_or("");
+    let cwd = info.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+    let tty = info.get("tty").and_then(|v| v.as_str()).unwrap_or("");
+    let harness = info.get("harness").and_then(|v| v.as_str()).unwrap_or("");
+    if new_s.is_empty() {
+        return;
+    }
+    // 1. Update any active_sessions.json keys matching old_name or this TTY
+    let p = crate::config::config_dir().join("active_sessions.json");
+    if let Ok(raw) = std::fs::read_to_string(&p) {
+        if let Ok(mut map) = serde_json::from_str::<serde_json::Map<String, Value>>(&raw) {
+            let mut changed = false;
+            for (_, v) in map.iter_mut() {
+                let matches_old = !old_s.is_empty()
+                    && v.get("name").and_then(|x| x.as_str()) == Some(old_s);
+                let matches_tty = !tty.is_empty()
+                    && v.get("tty").and_then(|x| x.as_str()) == Some(tty);
+                if matches_old || matches_tty {
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.insert("name".to_string(), json!(new_s));
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                let _ = std::fs::write(&p, serde_json::to_string_pretty(&map).unwrap_or_default());
+            }
+        }
+    }
+    if !cwd.is_empty() || !tty.is_empty() {
+        crate::nsresolve::save_active_session_for_tty(new_s, cwd, ns, tty, harness);
+    }
+    // 2. Bust local statusline badge cache files that still hold old_name so statusline updates immediately!
+    let sm_dir = crate::config::config_dir().join("sessmark");
+    if let Ok(entries) = std::fs::read_dir(&sm_dir) {
+        for ent in entries.flatten() {
+            let fname = ent.file_name();
+            if fname.to_string_lossy().starts_with("badge_") {
+                if let Ok(raw_b) = std::fs::read_to_string(ent.path()) {
+                    if !old_s.is_empty() && raw_b.contains(old_s) {
+                        let _ = std::fs::remove_file(ent.path());
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn requires_embedding_setup(path: &str) -> bool {
@@ -1954,6 +2011,25 @@ async fn workspace_api_handler(
                 Err(e) => ctrl_err_resp(e),
             }
         }
+        ("session/rename", Method::POST) => {
+            let ns = b.get("namespace").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let old_s = b.get("old_name").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let new_s = b.get("new_name").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if ns.is_empty() || old_s.is_empty() || new_s.is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "namespace, old_name, and new_name required" }),
+                );
+            }
+            match Control::workspace_rename_session(&st.pool, pid, ns, old_s, new_s).await {
+                Ok(v) => {
+                    sync_local_session_rename(&v);
+                    st.channel_notify.notify_waiters();
+                    json_resp(StatusCode::OK, v)
+                }
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
         ("session", Method::DELETE) => {
             let ns = qs
                 .get("namespace")
@@ -3427,6 +3503,17 @@ async fn api_post_handler(
                 .map(|v| (StatusCode::OK, v))
                 .map_err(ctrl_err_resp)
         }
+        "/session/rename" => {
+            let old_s = req.get("old_name").and_then(|v| v.as_str()).unwrap_or("");
+            let new_s = req.get("new_name").and_then(|v| v.as_str()).unwrap_or("");
+            match Control::workspace_rename_session(&st.pool, pid, &ns, old_s, new_s).await {
+                Ok(v) => {
+                    sync_local_session_rename(&v);
+                    Ok((StatusCode::OK, v))
+                }
+                Err(e) => Err(ctrl_err_resp(e)),
+            }
+        }
         "/session/heartbeat" => {
             let name = req.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let opts = HeartbeatOpts {
@@ -4058,6 +4145,7 @@ async fn api_post_handler(
                     | "inbox/retract"
                     | "inbox/recall"
                     | "session/register"
+                    | "session/rename"
                     | "session/unregister"
             ) {
                 st.channel_notify.notify_waiters();

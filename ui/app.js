@@ -53,6 +53,34 @@ function showToast(msg, isError = false) {
   toastTimer = setTimeout(() => { el.hidden = true; }, isError ? 4500 : 2800);
 }
 
+function askRenameHandle(currentName) {
+  return new Promise(resolve => {
+    const modal = $("#rename-modal");
+    const inp = $("#rename-input");
+    const okBtn = $("#rename-save");
+    const cancelBtn = $("#rename-cancel");
+    if (!modal || !inp || !okBtn || !cancelBtn) { resolve(""); return; }
+    $("#rename-title").textContent = `Rename @${currentName}`;
+    inp.value = currentName;
+    modal.hidden = false;
+    const finish = (val) => {
+      modal.hidden = true;
+      document.removeEventListener("keydown", onKey);
+      resolve(val);
+    };
+    const onKey = (ev) => {
+      if (ev.key === "Escape") { ev.preventDefault(); finish(""); }
+      else if (ev.key === "Enter") { ev.preventDefault(); finish(inp.value.trim().replace(/^@/, "")); }
+    };
+    okBtn.onclick = () => finish(inp.value.trim().replace(/^@/, ""));
+    cancelBtn.onclick = () => finish("");
+    modal.onclick = (ev) => { if (ev.target === modal) finish(""); };
+    document.addEventListener("keydown", onKey);
+    inp.focus();
+    inp.select();
+  });
+}
+
 function askConfirm({ title = "Confirm Action", message = "", confirmLabel = "Delete", checkboxLabel = "", defaultChecked = false }) {
   return new Promise(resolve => {
     const modal = $("#confirm-modal");
@@ -1577,7 +1605,10 @@ function renderHandleHero() {
         </div>
       </div>
 
-      ${writable && sObj ? `<button id="unreg-handle-btn" class="danger sm">Unregister Handle</button>` : ""}
+      ${writable && sObj ? `<div class="row" style="gap:6px">
+        <button id="rename-handle-btn" class="ghost sm">Rename</button>
+        <button id="unreg-handle-btn" class="danger sm">Unregister Handle</button>
+      </div>` : ""}
     </div>
 
     <div class="hero-ch-bar">
@@ -1615,6 +1646,22 @@ function renderHandleHero() {
       try {
         await wapi("POST", "channel/subscribe", { namespace, channel: ch, session_name: name });
         await refreshOverview(false);
+      } catch (e) { showToast(e.message, true); }
+    };
+  }
+  const renameBtn = $("#rename-handle-btn");
+  if (renameBtn) {
+    renameBtn.onclick = async () => {
+      const nextName = await askRenameHandle(name);
+      if (!nextName || nextName === name) return;
+      try {
+        const res = await wapi("POST", "session/rename", { namespace, old_name: name, new_name: nextName });
+        const finalName = res.new_name || nextName;
+        selectedHandle = { namespace, name: finalName };
+        showToast(`Renamed @${name} → @${finalName}`);
+        await refreshOverview(false);
+        renderHandleHero();
+        await loadHandleMessages(true);
       } catch (e) { showToast(e.message, true); }
     };
   }

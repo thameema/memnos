@@ -5829,6 +5829,163 @@ impl Control {
         }))
     }
 
+    pub async fn workspace_rename_session(
+        pool: &Pool,
+        principal_id: i64,
+        namespace: &str,
+        old_name: &str,
+        new_name: &str,
+    ) -> CResult<Value> {
+        let old_s = slug(old_name.trim().trim_start_matches('@'), "old_name")?;
+        let new_s = slug(new_name.trim().trim_start_matches('@'), "new_name")?;
+        if old_s == new_s {
+            return Ok(json!({ "ok": true, "namespace": namespace, "old_name": old_s, "new_name": new_s, "merged": false }));
+        }
+        let mut c = conn(pool).await?;
+        if !Self::authorize_on(&**c, principal_id, namespace, true).await? {
+            return Err(ControlError::Forbidden(format!(
+                "write grant required on namespace '{}'",
+                namespace
+            )));
+        }
+        let tx = c.transaction().await?;
+        let old_row = tx
+            .query_opt(
+                "SELECT id, principal_id, COALESCE(host, '') AS host, COALESCE(cwd, '') AS cwd,
+                        COALESCE(tty, '') AS tty, COALESCE(harness, '') AS harness,
+                        COALESCE(model, '') AS model, pid, metadata
+                 FROM memnos_control.agent_sessions
+                 WHERE namespace = $1 AND name = $2",
+                params![namespace, old_s],
+            )
+            .await?;
+
+        let target_exists = tx
+            .query_opt(
+                "SELECT id FROM memnos_control.agent_sessions WHERE namespace = $1 AND name = $2",
+                params![namespace, new_s],
+            )
+            .await?
+            .is_some();
+
+        let (mut out_host, mut out_cwd, mut out_tty, mut out_harness) =
+            (String::new(), String::new(), String::new(), String::new());
+        let mut owner_pid = principal_id;
+
+        if let Some(r) = &old_row {
+            owner_pid = r.get("principal_id");
+            out_host = r.get("host");
+            out_cwd = r.get("cwd");
+            out_tty = r.get("tty");
+            out_harness = r.get("harness");
+        }
+
+        if target_exists {
+            if let Some(r) = &old_row {
+                let old_model: String = r.get("model");
+                let old_pid: Option<i64> = r.get("pid");
+                let old_meta: Value = r.get("metadata");
+                tx.execute(
+                    "UPDATE memnos_control.agent_sessions
+                     SET last_heartbeat_at = now(),
+                         expires_at = GREATEST(expires_at, now() + interval '30 minutes'),
+                         status = 'active',
+                         host = CASE WHEN $3 <> '' THEN $3 ELSE host END,
+                         cwd = CASE WHEN $4 <> '' THEN $4 ELSE cwd END,
+                         tty = CASE WHEN $5 <> '' THEN $5 ELSE tty END,
+                         harness = CASE WHEN $6 <> '' THEN $6 ELSE harness END,
+                         model = CASE WHEN $7 <> '' THEN $7 ELSE model END,
+                         pid = COALESCE($8, pid),
+                         metadata = metadata || $9::jsonb
+                     WHERE namespace = $1 AND name = $2",
+                    params![
+                        namespace,
+                        new_s,
+                        out_host,
+                        out_cwd,
+                        out_tty,
+                        out_harness,
+                        old_model,
+                        old_pid,
+                        old_meta
+                    ],
+                )
+                .await?;
+                tx.execute(
+                    "DELETE FROM memnos_control.agent_sessions WHERE namespace = $1 AND name = $2",
+                    params![namespace, old_s],
+                )
+                .await?;
+            }
+        } else if old_row.is_some() {
+            tx.execute(
+                "UPDATE memnos_control.agent_sessions
+                 SET name = $3,
+                     last_heartbeat_at = now(),
+                     expires_at = GREATEST(expires_at, now() + interval '30 minutes'),
+                     status = 'active'
+                 WHERE namespace = $1 AND name = $2",
+                params![namespace, old_s, new_s],
+            )
+            .await?;
+        }
+
+        // Carry over all #channel subscriptions (taking GREATEST cursor on conflict)
+        tx.execute(
+            "INSERT INTO memnos_control.channel_subscriptions (namespace, session_name, principal_id, channel, cursor)
+             SELECT namespace, $3, principal_id, channel, cursor
+             FROM memnos_control.channel_subscriptions
+             WHERE namespace = $1 AND session_name = $2 AND channel LIKE '#%'
+             ON CONFLICT (namespace, session_name, channel)
+             DO UPDATE SET cursor = GREATEST(memnos_control.channel_subscriptions.cursor, EXCLUDED.cursor)",
+            params![namespace, old_s, new_s],
+        )
+        .await?;
+        tx.execute(
+            "DELETE FROM memnos_control.channel_subscriptions WHERE namespace = $1 AND session_name = $2",
+            params![namespace, old_s],
+        )
+        .await?;
+        let direct_ch = format!("@{}", new_s);
+        tx.execute(
+            "INSERT INTO memnos_control.channel_subscriptions (namespace, session_name, principal_id, channel, cursor)
+             VALUES ($1, $2, $3, $4, 0)
+             ON CONFLICT (namespace, session_name, channel) DO NOTHING",
+            params![namespace, new_s, owner_pid, direct_ch],
+        )
+        .await?;
+
+        // Reassign pending/unread inbox DMs addressed to old_s
+        let moved_inbox = tx
+            .execute(
+                "UPDATE memnos_control.agent_inbox
+                 SET to_session = $3
+                 WHERE namespace = $1 AND to_session = $2
+                   AND status IN ('pending', 'read') AND recalled_at IS NULL",
+                params![namespace, old_s, new_s],
+            )
+            .await?;
+
+        tx.execute(
+            "SELECT pg_notify('memnos_channel', $1::text)",
+            params![namespace],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(json!({
+            "ok": true,
+            "namespace": namespace,
+            "old_name": old_s,
+            "new_name": new_s,
+            "merged": target_exists,
+            "moved_inbox": moved_inbox,
+            "host": out_host,
+            "cwd": out_cwd,
+            "tty": out_tty,
+            "harness": out_harness,
+        }))
+    }
+
     pub async fn workspace_memories(
         pool: &Pool,
         principal_id: i64,

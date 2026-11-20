@@ -792,6 +792,13 @@ fn run_hook_statusline(raw_stdin: &str, cfg: &Config) {
     let cwd_path = PathBuf::from(&cwd_str);
     let term = nsresolve::detect_terminal_session(&cwd_path);
 
+    let sn_live = nsresolve::resolve_active_session_with_data(&cwd_path, Some(&data));
+    let expected_eff = if sn_live.is_empty() {
+        term.name.clone()
+    } else {
+        sn_live
+    };
+    let prev_cached = load_cached_badge(&cwd_path, session_id, &term.tty);
     let cached_fresh = badge_key_candidates(&cwd_path, session_id, &term.tty)
         .into_iter()
         .find_map(|k| {
@@ -803,7 +810,9 @@ fn run_hook_statusline(raw_stdin: &str, cfg: &Config) {
                 .map(|d| d.as_secs() < 15)
                 .unwrap_or(false);
             if age_ok {
-                load_cached_badge(&cwd_path, session_id, &term.tty)
+                prev_cached
+                    .clone()
+                    .filter(|(cached_h, _, _)| cached_h == &expected_eff)
             } else {
                 None
             }
@@ -812,12 +821,29 @@ fn run_hook_statusline(raw_stdin: &str, cfg: &Config) {
     let (handle, channels, _ns) = if let Some(found) = cached_fresh {
         found
     } else {
-        let sn = nsresolve::resolve_active_session_with_data(&cwd_path, Some(&data));
-        let eff = if sn.is_empty() { term.name.clone() } else { sn };
+        let mut eff = expected_eff;
         let (ns, _) = nsresolve::resolve_with_source(&cwd_path, Some(&data));
         let url = server_url(cfg);
         let token = session_token(cfg);
         let detected_model = extract_hook_model(&data);
+
+        // If user ran `/rename` in Claude Code (changing handle from prev_cached -> eff), sync rename to server!
+        if let Some((ref old_h, _, _)) = prev_cached {
+            if !old_h.is_empty() && !eff.is_empty() && old_h != &eff {
+                let _ = http_post(
+                    &format!("{}/session/rename", url),
+                    &token,
+                    &json!({
+                        "namespace": ns,
+                        "old_name": old_h,
+                        "new_name": eff,
+                    }),
+                    450,
+                );
+                nsresolve::save_active_session(&eff, &cwd_path, &ns);
+            }
+        }
+
         let mut live_chs: Option<Vec<String>> = None;
         if !eff.is_empty() {
             if let Ok(resp) = http_post(
@@ -831,10 +857,26 @@ fn run_hook_statusline(raw_stdin: &str, cfg: &Config) {
                 280,
             ) {
                 if let Some(arr) = resp.get("active_sessions").and_then(|v| v.as_array()) {
-                    if let Some(me) = arr
+                    let me_opt = arr
                         .iter()
                         .find(|s| s.get("name").and_then(|v| v.as_str()) == Some(eff.as_str()))
-                    {
+                        .or_else(|| {
+                            // Also honor server-side UI rename matching this exact (pid, tty)!
+                            if term.pid > 1 && !term.tty.is_empty() {
+                                arr.iter().find(|s| {
+                                    s.get("pid").and_then(|v| v.as_u64()) == Some(term.pid as u64)
+                                        && s.get("tty").and_then(|v| v.as_str()) == Some(term.tty.as_str())
+                                })
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some(me) = me_opt {
+                        if let Some(srv_name) = me.get("name").and_then(|v| v.as_str()) {
+                            if !srv_name.is_empty() && prev_cached.is_none() {
+                                eff = srv_name.to_string();
+                            }
+                        }
                         if let Some(ca) = me.get("channels").and_then(|v| v.as_array()) {
                             live_chs = Some(
                                 ca.iter()

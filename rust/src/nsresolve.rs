@@ -449,39 +449,77 @@ pub fn transcript_session_name(transcript_path: &str) -> String {
     if transcript_path.is_empty() {
         return String::new();
     }
-    let Ok(raw) = fs::read_to_string(transcript_path) else {
+    let Ok(mut f) = fs::File::open(transcript_path) else {
         return String::new();
     };
-    let mut title = String::new();
-    for (i, line) in raw.lines().enumerate() {
-        if i > 64 {
-            break;
+    use std::io::{Read, Seek, SeekFrom};
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    if len == 0 {
+        return String::new();
+    }
+
+    let extract_from_chunk = |chunk: &str| -> String {
+        for line in chunk.lines().rev() {
+            if !line.contains("agentName") && !line.contains("customTitle") {
+                continue;
+            }
+            if let Ok(obj) = serde_json::from_str::<Value>(line) {
+                let t = obj
+                    .get("agentName")
+                    .or_else(|| obj.get("customTitle"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if !t.is_empty() {
+                    let s = slugify_session_title(t);
+                    if !s.is_empty() {
+                        return s;
+                    }
+                }
+            }
         }
-        if !line.contains("agentName") && !line.contains("customTitle") {
-            continue;
-        }
-        if let Ok(obj) = serde_json::from_str::<Value>(line) {
-            let t = obj
-                .get("agentName")
-                .or_else(|| obj.get("customTitle"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if !t.is_empty() {
-                title = t.to_string();
+        String::new()
+    };
+
+    // 1. Scan the tail (last 128 KB) in reverse so mid-session `/rename` wins immediately!
+    let tail_start = len.saturating_sub(131_072);
+    if f.seek(SeekFrom::Start(tail_start)).is_ok() {
+        let mut tail = String::new();
+        if f.read_to_string(&mut tail).is_ok() {
+            let found = extract_from_chunk(&tail);
+            if !found.is_empty() {
+                return found;
             }
         }
     }
-    if title.is_empty() {
-        String::new()
-    } else {
-        slugify_session_title(&title)
+
+    // 2. Fallback: if transcript > 128 KB and title was only written near line 0, check head (32 KB)
+    if tail_start > 0 && f.seek(SeekFrom::Start(0)).is_ok() {
+        let mut head_buf = vec![0u8; 32_768.min(len as usize)];
+        if let Ok(n) = f.read(&mut head_buf) {
+            let head = String::from_utf8_lossy(&head_buf[..n]);
+            let found = extract_from_chunk(&head);
+            if !found.is_empty() {
+                return found;
+            }
+        }
     }
+    String::new()
 }
 
 pub fn save_active_session(name: &str, cwd: &Path, namespace: &str) {
     let real_cwd = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let cwd_key = real_cwd.to_string_lossy().to_string();
     let (tty, harness, _) = parent_tty_and_harness();
+    save_active_session_for_tty(name, &cwd_key, namespace, &tty, &harness);
+}
+
+pub fn save_active_session_for_tty(
+    name: &str,
+    cwd_key: &str,
+    namespace: &str,
+    tty: &str,
+    harness: &str,
+) {
     let p = config_dir().join("active_sessions.json");
     let mut map: serde_json::Map<String, Value> = fs::read_to_string(&p)
         .ok()
@@ -494,12 +532,24 @@ pub fn save_active_session(name: &str, cwd: &Path, namespace: &str) {
         "harness": harness,
     });
     if !tty.is_empty() {
+        let suffix = format!("::{}", tty);
+        // Update any stale subdirectory entries belonging to this exact interactive TTY!
+        let stale_tty_keys: Vec<String> = map
+            .keys()
+            .filter(|k| k.ends_with(&suffix))
+            .cloned()
+            .collect();
+        for k in stale_tty_keys {
+            if let Some(obj) = map.get_mut(&k).and_then(|v| v.as_object_mut()) {
+                obj.insert("name".to_string(), json!(name));
+            }
+        }
         map.insert(format!("{}::{}", cwd_key, tty), entry.clone());
     }
     if !harness.is_empty() {
         map.insert(format!("{}::harness:{}", cwd_key, harness), entry.clone());
-    } else {
-        map.entry(cwd_key).or_insert(entry);
+    } else if !cwd_key.is_empty() {
+        map.entry(cwd_key.to_string()).or_insert(entry);
     }
     if fs::create_dir_all(config_dir()).is_ok() {
         let _ = fs::write(&p, serde_json::to_string_pretty(&map).unwrap_or_default());
@@ -545,6 +595,18 @@ pub fn resolve_active_session_with_data(cwd: &Path, data: Option<&Value>) -> Str
         }
     }
     if let Some(d) = data {
+        if let Some(sn) = d
+            .get("session_name")
+            .or_else(|| d.get("sessionName"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let slug = slugify_session_title(sn);
+            if !slug.is_empty() {
+                return slug;
+            }
+        }
         let tp = d
             .get("transcript_path")
             .or_else(|| d.get("transcriptPath"))
