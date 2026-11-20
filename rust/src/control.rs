@@ -5276,15 +5276,32 @@ impl Control {
                         WHERE namespace = ANY($1) AND recalled_at IS NULL AND channel LIKE '#%'
                         GROUP BY channel
                      ),
+                     actor_ops AS (
+                        SELECT ltrim(COALESCE(detail->>'actor', ''), '@') AS actor,
+                               max(ts) AS last_op_at,
+                               (array_agg(action ORDER BY id DESC))[1] AS last_op
+                        FROM memnos_control.audit_log
+                        WHERE ts >= now() - interval '7 days'
+                          AND namespace = ANY($1)
+                          AND action NOT IN ('session/heartbeat', 'channel/list')
+                          AND NOT (action = 'channel/poll' AND COALESCE(detail->>'detail', '') = '')
+                          AND COALESCE(detail->>'actor', '') <> ''
+                        GROUP BY 1
+                     ),
                      sub_agg AS (
                         SELECT s.channel,
                                array_agg(DISTINCT s.session_name ORDER BY s.session_name) AS subs,
                                array_agg(DISTINCT s.session_name ORDER BY s.session_name)
-                                   FILTER (WHERE a.expires_at > now() AND a.status <> 'offline') AS live_subs,
-                               (array_agg(s.namespace ORDER BY (a.expires_at > now() AND a.status <> 'offline') DESC NULLS LAST, s.id DESC))[1] AS pref_sub_ns
+                                   FILTER (WHERE (a.expires_at > now() AND a.status <> 'offline') OR ao.last_op_at > now() - interval '30 minutes') AS live_subs,
+                               (array_agg(s.namespace ORDER BY (a.expires_at > now() AND a.status <> 'offline') DESC NULLS LAST, s.id DESC))[1] AS pref_sub_ns,
+                               max(GREATEST(a.last_heartbeat_at, ao.last_op_at)) AS last_sub_at,
+                               (array_agg(s.session_name ORDER BY GREATEST(a.last_heartbeat_at, ao.last_op_at) DESC NULLS LAST))[1] AS last_active_handle,
+                               (array_agg(ao.last_op ORDER BY ao.last_op_at DESC NULLS LAST))[1] AS last_active_op
                         FROM memnos_control.channel_subscriptions s
                         LEFT JOIN memnos_control.agent_sessions a
                           ON a.namespace = s.namespace AND a.name = s.session_name
+                        LEFT JOIN actor_ops ao
+                          ON ao.actor = s.session_name
                         WHERE s.namespace = ANY($1) AND s.channel LIKE '#%'
                         GROUP BY s.channel
                      ),
@@ -5320,6 +5337,9 @@ impl Control {
                             (COALESCE(ma.n, 0) + COALESCE(pa.n, 0))::bigint AS message_count,
                             (COALESCE(ma.open_tasks, 0) + COALESCE(pa.open_tasks, 0))::bigint AS open_tasks,
                             GREATEST(ma.last_at, pa.last_at) AS last_message_at,
+                            GREATEST(ma.last_at, pa.last_at, sa.last_sub_at) AS last_active_at,
+                            sa.last_active_handle,
+                            sa.last_active_op,
                             COALESCE(sa.subs, '{}') AS subscribers,
                             COALESCE(sa.live_subs, '{}') AS live_subscribers,
                             COALESCE(ma.pubs, '{}') AS publishers
@@ -5328,7 +5348,7 @@ impl Control {
                      LEFT JOIN msg_agg ma ON ma.channel = na.channel
                      LEFT JOIN sub_agg sa ON sa.channel = na.channel
                      LEFT JOIN peer_inbox_agg pa ON pa.channel = na.channel
-                     ORDER BY GREATEST(ma.last_at, pa.last_at) DESC NULLS LAST, COALESCE(cardinality(sa.live_subs), 0) DESC, na.channel",
+                     ORDER BY GREATEST(ma.last_at, pa.last_at, sa.last_sub_at) DESC NULLS LAST, COALESCE(cardinality(sa.live_subs), 0) DESC, na.channel",
                     params![selected_ns],
                 )
                 .await?;
@@ -5343,11 +5363,26 @@ impl Control {
                     "SELECT a.namespace, a.name, COALESCE(a.harness, '') AS harness,
                             COALESCE(a.model, '') AS model, COALESCE(a.role, '') AS role,
                             a.metadata, a.status, a.run_state, a.cwd, a.host,
-                            a.pid, a.tty, a.current_task, a.registered_at, a.last_heartbeat_at,
-                            a.expires_at, (a.expires_at > now() AND a.status <> 'offline') AS alive,
+                            a.pid, a.tty, a.current_task, a.registered_at,
+                            GREATEST(a.last_heartbeat_at, ao.last_op_at) AS last_heartbeat_at,
+                            ao.last_op_at, ao.last_op,
+                            a.expires_at,
+                            ((a.expires_at > now() AND a.status <> 'offline') OR ao.last_op_at > now() - interval '30 minutes') AS alive,
                             COALESCE(sc.chs, '{}') AS channels,
                             COALESCE(ib.unread, 0) AS unread_inbox
                      FROM memnos_control.agent_sessions a
+                     LEFT JOIN (
+                         SELECT ltrim(COALESCE(detail->>'actor', ''), '@') AS actor,
+                                max(ts) AS last_op_at,
+                                (array_agg(action ORDER BY id DESC))[1] AS last_op
+                         FROM memnos_control.audit_log
+                         WHERE ts >= now() - interval '7 days'
+                           AND namespace = ANY($1)
+                           AND action NOT IN ('session/heartbeat', 'channel/list')
+                           AND NOT (action = 'channel/poll' AND COALESCE(detail->>'detail', '') = '')
+                           AND COALESCE(detail->>'actor', '') <> ''
+                         GROUP BY 1
+                     ) ao ON ao.actor = a.name
                      LEFT JOIN (
                          SELECT namespace, session_name, array_agg(channel ORDER BY channel) AS chs
                          FROM memnos_control.channel_subscriptions
@@ -5361,7 +5396,8 @@ impl Control {
                          GROUP BY namespace, to_session
                      ) ib ON ib.namespace = a.namespace AND ib.to_session = a.name
                      WHERE a.namespace = ANY($1)
-                     ORDER BY (a.expires_at > now() AND a.status <> 'offline') DESC, a.last_heartbeat_at DESC",
+                     ORDER BY (((a.expires_at > now() AND a.status <> 'offline') OR ao.last_op_at > now() - interval '30 minutes')) DESC,
+                              GREATEST(a.last_heartbeat_at, ao.last_op_at) DESC",
                     params![selected_ns],
                 )
                 .await?;
@@ -5941,6 +5977,7 @@ impl Control {
                  FROM memnos_control.audit_log a
                  LEFT JOIN memnos_control.principals p ON p.id = a.principal_id
                  WHERE a.action NOT IN ('session/heartbeat', 'channel/list')
+                   AND NOT (a.action = 'channel/poll' AND COALESCE(a.detail->>'detail', '') = '')
                    AND ($1::bool OR a.namespace = ANY($2))
                    AND ($4::bigint IS NULL OR a.id > $4)
                  ORDER BY a.id DESC

@@ -306,10 +306,39 @@ $("#refresh-now").onclick = () => {
   if (activeSection === "live") loadInitialActivity();
 };
 
-// ---- Real-Time SSE & Live Activity Stream ----
+// ---- Real-Time WebSocket (Default) & Live Activity Stream ----
+const actorLiveMap = new Map(); // handle -> { ts, ms, op, detail }
+
+function recordActorLive(ev) {
+  if (!ev || !ev.actor || !ev.ts) return;
+  const clean = String(ev.actor).replace(/^@/, "");
+  if (!clean) return;
+  const ms = new Date(ev.ts).getTime();
+  if (!Number.isFinite(ms)) return;
+  const prev = actorLiveMap.get(clean);
+  if (!prev || ms >= prev.ms) {
+    actorLiveMap.set(clean, { ts: ev.ts, ms, op: ev.op || "", detail: ev.detail || "" });
+  }
+}
+
+function fmtAgoCompact(iso) {
+  if (!iso) return "new";
+  const sec = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (sec < 5) return "just now";
+  return age(iso) + " ago";
+}
+
 function setLiveStatus(online, label) {
-  $("#sse-badge").className = "status-chip " + (online ? "online" : "offline");
-  $("#sse-text").textContent = label;
+  const badge = $("#sse-badge");
+  if (!badge) return;
+  // Two-way WebSocket is the product default — hide badge when healthy, show only if offline/reconnecting
+  if (online) {
+    badge.hidden = true;
+  } else {
+    badge.hidden = false;
+    badge.className = "status-chip offline";
+    $("#sse-text").textContent = label || "RECONNECTING";
+  }
 }
 
 function renderTopbarPillText() {
@@ -320,8 +349,10 @@ function renderTopbarPillText() {
   const actor = ev.actor ? ("@" + String(ev.actor).replace(/^@/, "")) : "@client";
   const agoSec = ev.ts ? Math.max(0, Math.floor((Date.now() - new Date(ev.ts).getTime()) / 1000)) : 0;
   const agoLbl = agoSec < 3 ? "just now" : (age(ev.ts) + " ago");
-  txt.textContent = `⚡ ${actor} · ${ev.op} · ${agoLbl}`;
-  pill.title = `Live: ${actor} · ${ev.op} (${ev.namespace || "*"}) · ${ev.latency_ms ?? 0}ms — click to open Live stream`;
+  const rawDet = String(ev.detail || "").trim();
+  const shortDet = rawDet ? (" · " + (rawDet.length > 26 ? rawDet.slice(0, 26) + "…" : rawDet)) : "";
+  txt.textContent = `⚡ ${actor} · ${ev.op}${shortDet} · ${agoLbl}`;
+  pill.title = `Live: ${actor} · ${ev.op} (${ev.namespace || "*"}) · ${rawDet || "—"} · ${ev.latency_ms ?? 0}ms — click to open Live stream`;
 }
 
 function updateLiveTopbarPill(ev, animate = true) {
@@ -345,11 +376,16 @@ async function loadInitialActivity() {
     const { events } = await wapi("GET", "activity?limit=80");
     if (Array.isArray(events)) {
       liveEvents = events;
+      for (const ev of events) recordActorLive(ev);
       if (events.length > 0) {
         lastActivityId = Math.max(lastActivityId, Number(events[0].id || 0));
         updateLiveTopbarPill(events[0], false);
       }
       renderLiveTable();
+      if (wsData) {
+        renderChannelList();
+        renderHandleList();
+      }
     }
   } catch (_) {}
 }
@@ -384,7 +420,17 @@ function handleLiveActivity(ev) {
   if (ev.id && Number(ev.id) > lastActivityId) {
     lastActivityId = Number(ev.id);
   }
+  recordActorLive(ev);
   updateLiveTopbarPill(ev, true);
+  if (wsData) {
+    if (activeSection === "channels") renderChannelList();
+    if (activeSection === "handles") {
+      renderHandleList();
+      if (selectedHandle && String(ev.actor || "").replace(/^@/, "") === selectedHandle.name) {
+        loadHandleMessages(false);
+      }
+    }
+  }
   if (activeSection !== "live") {
     liveNewCount += 1;
     const badge = $("#rail-live-count");
@@ -567,6 +613,8 @@ function startRealtime() {
   liveClockTimer = setInterval(() => {
     renderTopbarPillText();
     if (activeSection === "live" && !livePaused && liveEvents.length) renderLiveTable();
+    if (activeSection === "channels" && wsData) renderChannelList();
+    if (activeSection === "handles" && wsData) renderHandleList();
   }, 2000);
   pollFallbackTimer = setInterval(() => {
     refreshOverview(false).catch(() => {});
@@ -863,12 +911,34 @@ function renderChannelList() {
     return;
   }
 
-  // Flat Slack-style list of unique #channels across the server
+  // Flat Slack-style list of unique #channels across the server (sorted by freshest activity)
+  const enriched = list.map(c => {
+    let bestTs = c.last_active_at || c.last_message_at || null;
+    let bestMs = bestTs ? new Date(bestTs).getTime() : 0;
+    let liveHandle = c.last_active_handle || "";
+    let liveOp = c.last_active_op || "";
+    for (const sub of (c.subscribers || [])) {
+      const a = actorLiveMap.get(sub);
+      if (a && a.ms > bestMs) {
+        bestMs = a.ms;
+        bestTs = a.ts;
+        liveHandle = sub;
+        liveOp = a.op;
+      }
+    }
+    const msgMs = c.last_message_at ? new Date(c.last_message_at).getTime() : 0;
+    const isSubOpNewer = bestMs > msgMs && liveHandle;
+    return { c, bestTs, bestMs, liveHandle, liveOp, isSubOpNewer };
+  }).sort((a, b) => b.bestMs - a.bestMs);
+
   let html = "";
-  for (const c of list) {
+  for (const { c, bestTs, liveHandle, liveOp, isSubOpNewer } of enriched) {
     const isSel = selectedChannel && selectedChannel.channel === c.channel;
     const liveSubs = liveSubscribersFor(c);
     const tasks = c.open_tasks || 0;
+    const rightTime = isSubOpNewer
+      ? `<span title="Latest memnos op on @${esc(liveHandle)}: ${esc(liveOp || "active")}" style="color:var(--ok);font-weight:600">⚡ @${esc(liveHandle)} · ${esc(fmtAgoCompact(bestTs))}</span>`
+      : `<span>${c.last_message_at ? esc(fmtAgoCompact(c.last_message_at)) : (bestTs ? esc(fmtAgoCompact(bestTs)) : "new")}</span>`;
     html += `<button class="list-card ${isSel ? "active" : ""}" data-ns="${esc(c.namespace)}" data-ch="${esc(c.channel)}">
       <div class="list-card-top">
         <span class="list-card-name">${esc(c.channel)}</span>
@@ -878,7 +948,7 @@ function renderChannelList() {
       </div>
       <div class="list-card-sub">
         <span>${c.message_count || 0} msgs · ${(c.subscribers || []).length} subs</span>
-        <span>${c.last_message_at ? age(c.last_message_at) + " ago" : "new"}</span>
+        ${rightTime}
       </div>
     </button>`;
   }
@@ -1195,6 +1265,9 @@ function renderHandleList() {
 
   box.innerHTML = list.map(s => {
     const isSel = selectedHandle && selectedHandle.namespace === s.namespace && selectedHandle.name === s.name;
+    const liveAct = actorLiveMap.get(s.name);
+    const hbMs = s.last_heartbeat_at ? new Date(s.last_heartbeat_at).getTime() : 0;
+    const bestIso = (liveAct && liveAct.ms > hbMs) ? liveAct.ts : s.last_heartbeat_at;
     const dotCls = !s.alive ? "idle" : (s.run_state === "running" || s.run_state === "busy" ? "busy" : "alive");
     const chs = s.channels || [];
     const unread = s.unread_inbox || 0;
@@ -1202,7 +1275,7 @@ function renderHandleList() {
     return `<button class="list-card ${isSel ? "active" : ""}" data-ns="${esc(s.namespace)}" data-hd="${esc(s.name)}">
       <div class="list-card-top">
         <span class="list-card-name"><span class="dot ${dotCls}"></span> @${esc(s.name)}</span>
-        ${unread > 0 ? `<span class="tiny-pill warn">${unread} unread</span>` : `<span class="tiny-pill">${age(s.last_heartbeat_at)}</span>`}
+        ${unread > 0 ? `<span class="tiny-pill warn">${unread} unread</span>` : `<span class="tiny-pill">${esc(fmtAgoCompact(bestIso))}</span>`}
       </div>
       <div class="list-card-sub">
         <span>${harnessBadgeForSession(s) || esc(s.namespace)}</span>
@@ -1317,15 +1390,28 @@ async function loadHandleMessages(forceScrollBottom = false) {
   const { namespace, name } = selectedHandle;
   try {
     const { messages } = await wapi("GET", `session/messages?namespace=${encodeURIComponent(namespace)}&session=${encodeURIComponent(name)}&limit=150`);
+    const handleOps = liveEvents.filter(e => String(e.actor || "").replace(/^@/, "") === name).slice(0, 12);
+    const opsStrip = handleOps.length ? `<div class="surface-card" style="margin:8px 0 14px;padding:12px 14px">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <b style="font-size:12.5px">⚡ Recent MEMNOS Calls by @${esc(name)}</b>
+        <span class="muted" style="font-size:11.5px">${handleOps.length} recent</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:5px;font-size:12px">
+        ${handleOps.map(e => `<div class="row" style="justify-content:space-between;gap:10px">
+          <span><code><b>${esc(e.op)}</b></code> <span class="muted">${esc(e.detail || "—")}</span></span>
+          <span class="muted" style="white-space:nowrap">${esc(fmtAgoCompact(e.ts))} · ${e.latency_ms ?? 0}ms</span>
+        </div>`).join("")}
+      </div>
+    </div>` : "";
     if (!messages || !messages.length) {
-      box.innerHTML = `<div class="empty-state">
+      box.innerHTML = opsStrip + `<div class="empty-state">
         <div class="empty-ico">@</div>
         <h3 style="margin:0 0 6px;color:var(--fg)">@${esc(name)}</h3>
         <p>No direct <code>@inbox</code> messages for <b>@${esc(name)}</b> in <code>${esc(namespace)}</code>.<br>Send a DM below to wake this handle directly.</p>
       </div>`;
       return;
     }
-    box.innerHTML = messages.map(m => {
+    box.innerHTML = opsStrip + messages.map(m => {
       const sender = m.from_session || "agent";
       const initials = sender.slice(0, 2).toUpperCase();
       const isActed = m.status === "acted";

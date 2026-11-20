@@ -1259,6 +1259,14 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
             return;
         }
 
+        let term_info = nsresolve::detect_terminal_session(&cwd_path);
+        let mut sn = nsresolve::resolve_active_session_with_data(&cwd_path, Some(&data));
+        let actor_sn_init = if sn.is_empty() {
+            term_info.name.clone()
+        } else {
+            sn.clone()
+        };
+
         let mut ctx = String::new();
         let mut mem_count = 0usize;
         let mut is_stale = false;
@@ -1273,6 +1281,7 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
                 "namespace": ns,
                 "query": prompt,
                 "session_id": session_id,
+                "actor_session": actor_sn_init,
             }),
             8000,
         ) {
@@ -1301,8 +1310,6 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
 
         // Poll unread channel & inbox messages (2s cap)
         let mut inbox_block = String::new();
-        let term_info = nsresolve::detect_terminal_session(&cwd_path);
-        let mut sn = nsresolve::resolve_active_session_with_data(&cwd_path, Some(&data));
         let mut active_channels: Vec<String> = Vec::new();
         if let Ok(pr) = http_post(
             &format!("{}/channel/poll", url),
@@ -1731,6 +1738,23 @@ fn hook_remember(data: &Value, ns: &str, url: &str, token: &str, agy: bool) {
         }
     }
 
+    let rem_cwd_str = data
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string())
+        });
+    let rem_cwd = Path::new(&rem_cwd_str);
+    let rem_sn_saved = nsresolve::resolve_active_session_with_data(rem_cwd, Some(data));
+    let rem_actor_sn = if rem_sn_saved.is_empty() {
+        nsresolve::detect_terminal_session(rem_cwd).name
+    } else {
+        rem_sn_saved
+    };
+
     let save_turn = |t: &str, speaker: &str| -> bool {
         match http_post_detail(
             &format!("{}/remember", url),
@@ -1739,6 +1763,7 @@ fn hook_remember(data: &Value, ns: &str, url: &str, token: &str, agy: bool) {
                 "namespace": ns,
                 "text": t,
                 "speaker": speaker,
+                "actor_session": rem_actor_sn,
                 "async": true,
             }),
             12000,

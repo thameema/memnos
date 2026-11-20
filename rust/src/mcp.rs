@@ -70,6 +70,10 @@ impl McpContext {
             }
         }
         let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let from_file = crate::nsresolve::resolve_active_session_with_data(&cwd, None);
+        if !from_file.is_empty() {
+            return from_file;
+        }
         detect_terminal_session(&cwd).name
     }
 
@@ -81,7 +85,16 @@ impl McpContext {
         if !self.token.is_empty() {
             req = req.set("Authorization", &format!("Bearer {}", self.token));
         }
-        match req.send_json(body.clone()) {
+        let mut payload = body.clone();
+        if let Some(obj) = payload.as_object_mut() {
+            if !obj.contains_key("actor_session") {
+                let sess = self.resolve_sess(None);
+                if !sess.is_empty() {
+                    obj.insert("actor_session".to_string(), json!(sess));
+                }
+            }
+        }
+        match req.send_json(payload) {
             Ok(resp) => resp.into_json::<Value>().map_err(|e| e.to_string()),
             Err(ureq::Error::Status(code, resp)) => {
                 let raw = resp.into_string().unwrap_or_default();

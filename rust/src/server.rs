@@ -374,13 +374,24 @@ fn serve_ui_asset(file_name: &str) -> Response {
         let disk_path = PathBuf::from(ui_dir).join(canonical);
         if disk_path.is_file() {
             if let Ok(bytes) = std::fs::read(&disk_path) {
-                return (StatusCode::OK, [(header::CONTENT_TYPE, ctype)], bytes).into_response();
+                return (
+                    StatusCode::OK,
+                    [
+                        (header::CONTENT_TYPE, ctype),
+                        (header::CACHE_CONTROL, "no-cache, no-store, must-revalidate"),
+                    ],
+                    bytes,
+                )
+                    .into_response();
             }
         }
     }
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, ctype)],
+        [
+            (header::CONTENT_TYPE, ctype),
+            (header::CACHE_CONTROL, "no-cache, no-store, must-revalidate"),
+        ],
         embedded.to_vec(),
     )
         .into_response()
@@ -2317,7 +2328,8 @@ async fn api_post_handler(
         .and_then(|v| v.get("name").and_then(|s| s.as_str()).map(|s| s.to_string()));
 
     let actor_hint = req
-        .get("session_name")
+        .get("actor_session")
+        .or_else(|| req.get("session_name"))
         .or_else(|| req.get("name"))
         .or_else(|| req.get("sender_session"))
         .or_else(|| req.get("from_session"))
@@ -2326,6 +2338,13 @@ async fn api_post_handler(
         .and_then(|v| v.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    let speaker_prefix = req
+        .get("speaker")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("[{}] ", s))
+        .unwrap_or_default();
     let op_detail = req
         .get("query")
         .or_else(|| req.get("channel"))
@@ -2333,8 +2352,15 @@ async fn api_post_handler(
         .or_else(|| req.get("subject"))
         .or_else(|| req.get("to_session"))
         .or_else(|| req.get("content"))
+        .or_else(|| req.get("text"))
         .and_then(|v| v.as_str())
-        .map(|s| s.trim().chars().take(72).collect::<String>())
+        .map(|s| {
+            let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+            format!("{}{}", speaker_prefix, flat)
+                .chars()
+                .take(84)
+                .collect::<String>()
+        })
         .unwrap_or_default();
 
     let raw_ns = req
@@ -3942,10 +3968,47 @@ async fn api_post_handler(
         Ok((code, payload)) => {
             let elapsed_ms = t0.elapsed().as_millis() as i32;
             let actor = actor_hint
+                .clone()
                 .or_else(|| principal_name.clone())
                 .unwrap_or_else(|| format!("p:{}", pid));
+            if let Some(ref sess_name) = actor_hint {
+                let clean_sn = sess_name.trim_start_matches('@');
+                if !clean_sn.is_empty() && !ns.is_empty() {
+                    if let Ok(c) = st.pool.get().await {
+                        let _ = c
+                            .execute(
+                                "UPDATE memnos_control.agent_sessions
+                                 SET last_heartbeat_at = now(),
+                                     expires_at = GREATEST(expires_at, now() + interval '30 minutes'),
+                                     status = CASE WHEN status = 'offline' THEN 'online' ELSE status END
+                                 WHERE namespace = $1 AND name = $2",
+                                &[&ns, &clean_sn],
+                            )
+                            .await;
+                    }
+                }
+            }
+            let mut final_detail = op_detail.clone();
+            let mut is_empty_poll = false;
+            if action == "channel/poll" {
+                let mc = payload
+                    .get("messages")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                let ic = payload
+                    .get("inbox_items")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                if mc + ic == 0 {
+                    is_empty_poll = true;
+                } else if final_detail.is_empty() {
+                    final_detail = format!("{} unread delivered", mc + ic);
+                }
+            }
             let audit_detail = if action != "session/heartbeat" {
-                Some(json!({ "actor": actor, "detail": op_detail }))
+                Some(json!({ "actor": actor, "detail": final_detail }))
             } else {
                 None
             };
@@ -3961,14 +4024,14 @@ async fn api_post_handler(
                 Some(code.as_u16() as i32),
             )
             .await;
-            if !matches!(action, "session/heartbeat" | "channel/list") {
+            if !matches!(action, "session/heartbeat" | "channel/list") && !is_empty_poll {
                 let _ = st.event_tx.send(json!({
                     "type": "activity",
                     "op": action,
                     "namespace": if scope_wide { "*" } else { ns.as_str() },
                     "actor": actor,
                     "principal": principal_name.unwrap_or_default(),
-                    "detail": op_detail,
+                    "detail": final_detail,
                     "ok": code.is_success(),
                     "status": code.as_u16(),
                     "latency_ms": elapsed_ms,
