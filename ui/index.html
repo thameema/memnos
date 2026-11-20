@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MEMNOS · Workspace</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='8' fill='url(%23g)'/%3E%3Cpath d='M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8' stroke='%23fff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='2' y1='2' x2='30' y2='30' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='%237C5CFF'/%3E%3Cstop offset='.52' stop-color='%23B832E5'/%3E%3Cstop offset='1' stop-color='%23EC4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/admin/app.css?v=4">
+  <link rel="stylesheet" href="/admin/app.css?v=5">
 </head>
 <body>
   <!-- Connect / Server Onboarding Screen -->
@@ -248,6 +248,14 @@
               <button data-mode="history" title="All channels with message history">With Msgs</button>
               <button data-mode="all" title="Every registered channel including empty ones">All</button>
             </div>
+            <div class="sort-row">
+              <span class="sort-lbl">Sort</span>
+              <select id="ch-sort-mode" title="Channel sort order (Name A–Z prevents sidebar jumping)">
+                <option value="name">Name (A–Z)</option>
+                <option value="activity">Activity (Latest msg)</option>
+                <option value="custom">Custom (Drag / ↑↓)</option>
+              </select>
+            </div>
           </div>
 
           <div id="channel-list" class="item-list"></div>
@@ -322,6 +330,14 @@
               </div>
               <select id="hd-harness-filter" title="Filter handles by attached harness" style="max-width:132px;padding:5px 8px;font-size:11.5px">
                 <option value="">All harnesses</option>
+              </select>
+            </div>
+            <div class="sort-row">
+              <span class="sort-lbl">Sort</span>
+              <select id="hd-sort-mode" title="Handle sort order (Name A–Z prevents sidebar jumping)">
+                <option value="name">Name (A–Z)</option>
+                <option value="activity">Activity (Latest call)</option>
+                <option value="custom">Custom (Drag / ↑↓)</option>
               </select>
             </div>
           </div>
@@ -773,6 +789,6 @@
       </section>
     </div>
   </div>
-  <script src="/admin/app.js?v=4"></script>
+  <script src="/admin/app.js?v=5"></script>
 </body>
 </html>

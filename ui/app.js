@@ -613,8 +613,8 @@ function startRealtime() {
   liveClockTimer = setInterval(() => {
     renderTopbarPillText();
     if (activeSection === "live" && !livePaused && liveEvents.length) renderLiveTable();
-    if (activeSection === "channels" && wsData) renderChannelList();
-    if (activeSection === "handles" && wsData) renderHandleList();
+    if (activeSection === "channels" && wsData && !draggedChKey) renderChannelList();
+    if (activeSection === "handles" && wsData && !draggedHdKey) renderHandleList();
   }, 2000);
   pollFallbackTimer = setInterval(() => {
     refreshOverview(false).catch(() => {});
@@ -864,6 +864,53 @@ $("#ws-ns-filter").onchange = () => refreshOverview(true);
 // SECTION 1: CHANNELS (#) — Active Filtering, Search, Stream & Management
 // ============================================================================
 
+// ---- Sidebar Sort & Custom Order Helpers (Name A-Z default — zero jumping!) ----
+let chSortMode = localStorage.getItem("memnos_ch_sort_v1") || "name";
+let hdSortMode = localStorage.getItem("memnos_hd_sort_v1") || "name";
+let draggedChKey = null;
+let draggedHdKey = null;
+
+function loadCustomOrder(storageKey) {
+  try {
+    const raw = JSON.parse(localStorage.getItem(storageKey) || "[]");
+    return Array.isArray(raw) ? raw : [];
+  } catch (_) { return []; }
+}
+function saveCustomOrder(storageKey, arr) {
+  localStorage.setItem(storageKey, JSON.stringify(arr));
+}
+function reorderArrayItem(order, keysPresent, targetKey, deltaOrDestKey, isDropBefore = false) {
+  const merged = [...order.filter(k => keysPresent.includes(k)), ...keysPresent.filter(k => !order.includes(k))];
+  const fromIdx = merged.indexOf(targetKey);
+  if (fromIdx < 0) return merged;
+  if (typeof deltaOrDestKey === "number") {
+    const toIdx = Math.max(0, Math.min(merged.length - 1, fromIdx + deltaOrDestKey));
+    if (toIdx === fromIdx) return merged;
+    merged.splice(fromIdx, 1);
+    merged.splice(toIdx, 0, targetKey);
+    return merged;
+  }
+  const destIdx = merged.indexOf(deltaOrDestKey);
+  if (destIdx < 0 || destIdx === fromIdx) return merged;
+  merged.splice(fromIdx, 1);
+  const newDest = merged.indexOf(deltaOrDestKey);
+  merged.splice(isDropBefore ? newDest : newDest + 1, 0, targetKey);
+  return merged;
+}
+
+if ($("#ch-sort-mode")) {
+  $("#ch-sort-mode").value = chSortMode;
+  $("#ch-sort-mode").onchange = (e) => {
+    const next = e.target.value || "name";
+    if (next === "custom" && loadCustomOrder("memnos_ch_custom_order").length === 0 && wsData?.channels) {
+      saveCustomOrder("memnos_ch_custom_order", sortedChannels(filteredChannels()).map(c => c.channel));
+    }
+    chSortMode = next;
+    localStorage.setItem("memnos_ch_sort_v1", chSortMode);
+    renderChannelList();
+  };
+}
+
 $$("#ch-mode-tabs button").forEach(btn => {
   btn.onclick = () => {
     chFilterMode = btn.dataset.mode;
@@ -887,6 +934,30 @@ function filteredChannels() {
   });
 }
 
+function sortedChannels(list) {
+  const arr = [...list];
+  if (chSortMode === "activity") {
+    return arr.sort((a, b) => {
+      const am = a.last_message_at ? new Date(a.last_message_at).getTime() : 0;
+      const bm = b.last_message_at ? new Date(b.last_message_at).getTime() : 0;
+      if (bm !== am) return bm - am;
+      return String(a.channel).localeCompare(String(b.channel));
+    });
+  }
+  if (chSortMode === "custom") {
+    const custom = loadCustomOrder("memnos_ch_custom_order");
+    const rank = new Map(custom.map((k, i) => [k, i]));
+    return arr.sort((a, b) => {
+      const ra = rank.has(a.channel) ? rank.get(a.channel) : 999999;
+      const rb = rank.has(b.channel) ? rank.get(b.channel) : 999999;
+      if (ra !== rb) return ra - rb;
+      return String(a.channel).localeCompare(String(b.channel));
+    });
+  }
+  // Default: Name (A–Z) — rock-solid sidebar, zero jumping on live traffic
+  return arr.sort((a, b) => String(a.channel).localeCompare(String(b.channel)));
+}
+
 function renderChannelList() {
   if (!wsData) return;
   const all = wsData.channels || [];
@@ -897,7 +968,7 @@ function renderChannelList() {
   if (tabs[1]) tabs[1].textContent = `With Msgs (${histCnt})`;
   if (tabs[2]) tabs[2].textContent = `All (${all.length})`;
 
-  const list = filteredChannels();
+  const list = sortedChannels(filteredChannels());
   $("#ch-pane-sub").textContent = `${list.length} shown · ${actCnt} active`;
   const box = $("#channel-list");
 
@@ -911,56 +982,68 @@ function renderChannelList() {
     return;
   }
 
-  // Flat Slack-style list of unique #channels across the server (sorted by freshest activity)
-  const enriched = list.map(c => {
-    let bestTs = c.last_active_at || c.last_message_at || null;
-    let bestMs = bestTs ? new Date(bestTs).getTime() : 0;
-    let liveHandle = c.last_active_handle || "";
-    let liveOp = c.last_active_op || "";
-    for (const sub of (c.subscribers || [])) {
-      const a = actorLiveMap.get(sub);
-      if (a && a.ms > bestMs) {
-        bestMs = a.ms;
-        bestTs = a.ts;
-        liveHandle = sub;
-        liveOp = a.op;
-      }
-    }
-    const msgMs = c.last_message_at ? new Date(c.last_message_at).getTime() : 0;
-    const isSubOpNewer = bestMs > msgMs && liveHandle;
-    return { c, bestTs, bestMs, liveHandle, liveOp, isSubOpNewer };
-  }).sort((a, b) => b.bestMs - a.bestMs);
-
+  const isCustom = chSortMode === "custom";
   let html = "";
-  for (const { c, bestTs, liveHandle, liveOp, isSubOpNewer } of enriched) {
+  for (const c of list) {
     const isSel = selectedChannel && selectedChannel.channel === c.channel;
     const liveSubs = liveSubscribersFor(c);
     const tasks = c.open_tasks || 0;
-    const rightTime = isSubOpNewer
-      ? `<span title="Latest memnos op on @${esc(liveHandle)}: ${esc(liveOp || "active")}" style="color:var(--ok);font-weight:600">⚡ @${esc(liveHandle)} · ${esc(fmtAgoCompact(bestTs))}</span>`
-      : `<span>${c.last_message_at ? esc(fmtAgoCompact(c.last_message_at)) : (bestTs ? esc(fmtAgoCompact(bestTs)) : "new")}</span>`;
-    html += `<button class="list-card ${isSel ? "active" : ""}" data-ns="${esc(c.namespace)}" data-ch="${esc(c.channel)}">
+    // Honest channel timer: ONLY actual messages/tasks posted on this channel!
+    const msgTimeLbl = c.last_message_at
+      ? fmtAgoCompact(c.last_message_at)
+      : ((c.message_count || 0) > 0 ? "recent" : "no msgs");
+    html += `<button class="list-card ${isSel ? "active" : ""}" data-ns="${esc(c.namespace)}" data-ch="${esc(c.channel)}" ${isCustom ? 'draggable="true"' : ""}>
       <div class="list-card-top">
-        <span class="list-card-name">${esc(c.channel)}</span>
-        ${tasks > 0
-          ? `<span class="tiny-pill warn">${tasks} task${tasks > 1 ? "s" : ""}</span>`
-          : (liveSubs.length > 0 ? `<span class="tiny-pill live">● ${liveSubs.length} live</span>` : `<span class="tiny-pill">${c.message_count || 0} msgs</span>`)}
+        <span class="list-card-name">${isCustom ? '<span class="drag-grip" title="Drag to reorder">⠿</span>' : ""}${esc(c.channel)}</span>
+        <span style="display:inline-flex;align-items:center;gap:4px;flex-shrink:0">
+          ${tasks > 0
+            ? `<span class="tiny-pill warn">${tasks} task${tasks > 1 ? "s" : ""}</span>`
+            : (liveSubs.length > 0 ? `<span class="tiny-pill live">● ${liveSubs.length} live</span>` : `<span class="tiny-pill">${c.message_count || 0} msgs</span>`)}
+          ${isCustom ? `<span class="reorder-btns"><span class="reorder-btn" data-ch-move="-1" title="Move up">↑</span><span class="reorder-btn" data-ch-move="1" title="Move down">↓</span></span>` : ""}
+        </span>
       </div>
       <div class="list-card-sub">
         <span>${c.message_count || 0} msgs · ${(c.subscribers || []).length} subs</span>
-        ${rightTime}
+        <span>${esc(msgTimeLbl)}</span>
       </div>
     </button>`;
   }
   box.innerHTML = html;
 
+  const visibleKeys = list.map(x => x.channel);
   $$("#channel-list .list-card").forEach(card => {
-    card.onclick = async () => {
+    card.onclick = async (ev) => {
+      const mv = ev.target.closest("[data-ch-move]");
+      if (mv) {
+        ev.stopPropagation();
+        const nextOrder = reorderArrayItem(loadCustomOrder("memnos_ch_custom_order"), visibleKeys, card.dataset.ch, Number(mv.dataset.chMove));
+        saveCustomOrder("memnos_ch_custom_order", nextOrder);
+        renderChannelList();
+        return;
+      }
       selectedChannel = { namespace: card.dataset.ns, channel: card.dataset.ch };
       renderChannelList();
       renderChannelHeaderAndInspector();
       await loadChannelMessages(true);
     };
+    if (isCustom) {
+      card.ondragstart = (ev) => { draggedChKey = card.dataset.ch; ev.dataTransfer.effectAllowed = "move"; };
+      card.ondragend = () => { draggedChKey = null; card.classList.remove("drag-over"); };
+      card.ondragover = (ev) => { ev.preventDefault(); card.classList.add("drag-over"); };
+      card.ondragleave = () => card.classList.remove("drag-over");
+      card.ondrop = (ev) => {
+        ev.preventDefault();
+        card.classList.remove("drag-over");
+        if (draggedChKey && draggedChKey !== card.dataset.ch) {
+          const rect = card.getBoundingClientRect();
+          const before = (ev.clientY - rect.top) < rect.height / 2;
+          const nextOrder = reorderArrayItem(loadCustomOrder("memnos_ch_custom_order"), visibleKeys, draggedChKey, card.dataset.ch, before);
+          saveCustomOrder("memnos_ch_custom_order", nextOrder);
+          renderChannelList();
+        }
+        draggedChKey = null;
+      };
+    }
   });
 }
 
@@ -1214,6 +1297,18 @@ $$("#hd-mode-tabs button").forEach(btn => {
 });
 $("#hd-search").oninput = renderHandleList;
 if ($("#hd-harness-filter")) $("#hd-harness-filter").onchange = renderHandleList;
+if ($("#hd-sort-mode")) {
+  $("#hd-sort-mode").value = hdSortMode;
+  $("#hd-sort-mode").onchange = (e) => {
+    const next = e.target.value || "name";
+    if (next === "custom" && loadCustomOrder("memnos_hd_custom_order").length === 0 && wsData?.sessions) {
+      saveCustomOrder("memnos_hd_custom_order", sortedHandles(filteredHandles()).map(s => `${s.namespace}::${s.name}`));
+    }
+    hdSortMode = next;
+    localStorage.setItem("memnos_hd_sort_v1", hdSortMode);
+    renderHandleList();
+  };
+}
 
 function jumpToHandle(namespace, name) {
   selectedHandle = { namespace, name: name.replace(/^@/, "") };
@@ -1241,6 +1336,41 @@ function filteredHandles() {
   });
 }
 
+function handleBestMs(s) {
+  const liveAct = actorLiveMap.get(s.name);
+  const hbMs = s.last_heartbeat_at ? new Date(s.last_heartbeat_at).getTime() : 0;
+  return (liveAct && liveAct.ms > hbMs) ? liveAct.ms : hbMs;
+}
+
+function sortedHandles(list) {
+  const arr = [...list];
+  if (hdSortMode === "activity") {
+    return arr.sort((a, b) => {
+      if (!!b.alive !== !!a.alive) return (b.alive ? 1 : 0) - (a.alive ? 1 : 0);
+      const d = handleBestMs(b) - handleBestMs(a);
+      if (d !== 0) return d;
+      return String(a.name).localeCompare(String(b.name));
+    });
+  }
+  if (hdSortMode === "custom") {
+    const custom = loadCustomOrder("memnos_hd_custom_order");
+    const rank = new Map(custom.map((k, i) => [k, i]));
+    return arr.sort((a, b) => {
+      const ka = `${a.namespace}::${a.name}`;
+      const kb = `${b.namespace}::${b.name}`;
+      const ra = rank.has(ka) ? rank.get(ka) : 999999;
+      const rb = rank.has(kb) ? rank.get(kb) : 999999;
+      if (ra !== rb) return ra - rb;
+      return String(a.name).localeCompare(String(b.name));
+    });
+  }
+  // Default: Name (A–Z) — prevents sidebar jumping
+  return arr.sort((a, b) => {
+    const c = String(a.name).localeCompare(String(b.name));
+    return c !== 0 ? c : String(a.namespace).localeCompare(String(b.namespace));
+  });
+}
+
 function renderHandleList() {
   if (!wsData) return;
   const all = (wsData.sessions || []).filter(s => !s.namespace.startsWith("test:"));
@@ -1249,7 +1379,7 @@ function renderHandleList() {
   if (tabs[0]) tabs[0].textContent = `Online (${onlineCnt})`;
   if (tabs[1]) tabs[1].textContent = `All (${all.length})`;
 
-  const list = filteredHandles();
+  const list = sortedHandles(filteredHandles());
   $("#hd-pane-sub").textContent = `${onlineCnt} online · ${list.length} shown`;
   const box = $("#handle-list");
 
@@ -1263,6 +1393,7 @@ function renderHandleList() {
     return;
   }
 
+  const isCustom = hdSortMode === "custom";
   box.innerHTML = list.map(s => {
     const isSel = selectedHandle && selectedHandle.namespace === s.namespace && selectedHandle.name === s.name;
     const liveAct = actorLiveMap.get(s.name);
@@ -1272,10 +1403,14 @@ function renderHandleList() {
     const chs = s.channels || [];
     const unread = s.unread_inbox || 0;
     const shortCwd = s.cwd ? s.cwd.split("/").slice(-2).join("/") : s.namespace;
-    return `<button class="list-card ${isSel ? "active" : ""}" data-ns="${esc(s.namespace)}" data-hd="${esc(s.name)}">
+    const hKey = `${s.namespace}::${s.name}`;
+    return `<button class="list-card ${isSel ? "active" : ""}" data-ns="${esc(s.namespace)}" data-hd="${esc(s.name)}" data-hkey="${esc(hKey)}" ${isCustom ? 'draggable="true"' : ""}>
       <div class="list-card-top">
-        <span class="list-card-name"><span class="dot ${dotCls}"></span> @${esc(s.name)}</span>
-        ${unread > 0 ? `<span class="tiny-pill warn">${unread} unread</span>` : `<span class="tiny-pill">${esc(fmtAgoCompact(bestIso))}</span>`}
+        <span class="list-card-name">${isCustom ? '<span class="drag-grip" title="Drag to reorder">⠿</span>' : ""}<span class="dot ${dotCls}"></span> @${esc(s.name)}</span>
+        <span style="display:inline-flex;align-items:center;gap:4px;flex-shrink:0">
+          ${unread > 0 ? `<span class="tiny-pill warn">${unread} unread</span>` : `<span class="tiny-pill">${esc(fmtAgoCompact(bestIso))}</span>`}
+          ${isCustom ? `<span class="reorder-btns"><span class="reorder-btn" data-hd-move="-1" title="Move up">↑</span><span class="reorder-btn" data-hd-move="1" title="Move down">↓</span></span>` : ""}
+        </span>
       </div>
       <div class="list-card-sub">
         <span>${harnessBadgeForSession(s) || esc(s.namespace)}</span>
@@ -1285,13 +1420,40 @@ function renderHandleList() {
     </button>`;
   }).join("");
 
+  const visibleKeys = list.map(s => `${s.namespace}::${s.name}`);
   $$("#handle-list .list-card").forEach(card => {
-    card.onclick = async () => {
+    card.onclick = async (ev) => {
+      const mv = ev.target.closest("[data-hd-move]");
+      if (mv) {
+        ev.stopPropagation();
+        const nextOrder = reorderArrayItem(loadCustomOrder("memnos_hd_custom_order"), visibleKeys, card.dataset.hkey, Number(mv.dataset.hdMove));
+        saveCustomOrder("memnos_hd_custom_order", nextOrder);
+        renderHandleList();
+        return;
+      }
       selectedHandle = { namespace: card.dataset.ns, name: card.dataset.hd };
       renderHandleList();
       renderHandleHero();
       await loadHandleMessages(true);
     };
+    if (isCustom) {
+      card.ondragstart = (ev) => { draggedHdKey = card.dataset.hkey; ev.dataTransfer.effectAllowed = "move"; };
+      card.ondragend = () => { draggedHdKey = null; card.classList.remove("drag-over"); };
+      card.ondragover = (ev) => { ev.preventDefault(); card.classList.add("drag-over"); };
+      card.ondragleave = () => card.classList.remove("drag-over");
+      card.ondrop = (ev) => {
+        ev.preventDefault();
+        card.classList.remove("drag-over");
+        if (draggedHdKey && draggedHdKey !== card.dataset.hkey) {
+          const rect = card.getBoundingClientRect();
+          const before = (ev.clientY - rect.top) < rect.height / 2;
+          const nextOrder = reorderArrayItem(loadCustomOrder("memnos_hd_custom_order"), visibleKeys, draggedHdKey, card.dataset.hkey, before);
+          saveCustomOrder("memnos_hd_custom_order", nextOrder);
+          renderHandleList();
+        }
+        draggedHdKey = null;
+      };
+    }
   });
 }
 
