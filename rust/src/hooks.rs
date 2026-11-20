@@ -698,6 +698,77 @@ pub fn load_cached_badge(cwd: &Path, session_id: Option<&str>, tty: &str) -> Opt
     None
 }
 
+fn extract_hook_model(data: &Value) -> String {
+    if let Some(m) = data.get("model") {
+        if let Some(s) = m.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            return s.to_string();
+        }
+        if let Some(obj) = m.as_object() {
+            if let Some(id) = obj
+                .get("id")
+                .or_else(|| obj.get("display_name"))
+                .or_else(|| obj.get("name"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                return id.to_string();
+            }
+        }
+    }
+    if let Some(mn) = data
+        .get("modelName")
+        .or_else(|| data.get("model_name"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return mn.to_string();
+    }
+    if let Some(tp) = data
+        .get("transcript_path")
+        .or_else(|| data.get("transcriptPath"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        if let Ok(mut f) = fs::File::open(tp) {
+            use std::io::{Read, Seek, SeekFrom};
+            let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+            let start = len.saturating_sub(24_576);
+            let _ = f.seek(SeekFrom::Start(start));
+            let mut tail = String::new();
+            if f.read_to_string(&mut tail).is_ok() {
+                for line in tail.lines().rev() {
+                    if !line.contains("\"model\"") {
+                        continue;
+                    }
+                    if let Ok(ev) = serde_json::from_str::<Value>(line) {
+                        if let Some(found) = ev
+                            .get("message")
+                            .and_then(|m| m.get("model"))
+                            .or_else(|| ev.get("model"))
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty() && *s != "<synthetic>")
+                        {
+                            return found.to_string();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for k in ["ANTHROPIC_MODEL", "CLAUDE_MODEL", "GEMINI_MODEL", "OPENAI_MODEL"] {
+        if let Ok(v) = env::var(k) {
+            let t = v.trim();
+            if !t.is_empty() {
+                return t.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
 fn run_hook_statusline(raw_stdin: &str, cfg: &Config) {
     let data: Value = serde_json::from_str(raw_stdin).unwrap_or_else(|_| json!({}));
     let cwd_str = data
@@ -746,12 +817,17 @@ fn run_hook_statusline(raw_stdin: &str, cfg: &Config) {
         let (ns, _) = nsresolve::resolve_with_source(&cwd_path, Some(&data));
         let url = server_url(cfg);
         let token = session_token(cfg);
+        let detected_model = extract_hook_model(&data);
         let mut live_chs: Option<Vec<String>> = None;
         if !eff.is_empty() {
             if let Ok(resp) = http_post(
                 &format!("{}/channel/list", url),
                 &token,
-                &json!({ "namespace": ns }),
+                &json!({
+                    "namespace": ns,
+                    "actor_session": eff,
+                    "actor_model": detected_model,
+                }),
                 280,
             ) {
                 if let Some(arr) = resp.get("active_sessions").and_then(|v| v.as_array()) {
@@ -1010,7 +1086,10 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
             } else {
                 existing_sn.clone()
             };
-            if !sn.is_empty() {
+            let detected_model = extract_hook_model(&data);
+            let is_ghost_root_probe =
+                term.cwd == "/" && term.tty.is_empty() && existing_sn.is_empty();
+            if !sn.is_empty() && !is_ghost_root_probe {
                 let init_chans: Vec<String> = if term.suggested_topic.is_empty() {
                     vec![]
                 } else {
@@ -1023,6 +1102,7 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
                         "namespace": ns,
                         "name": sn,
                         "harness": term.harness,
+                        "model": detected_model,
                         "host": term.host,
                         "cwd": term.cwd,
                         "machine_id": term.machine_id,
@@ -1274,6 +1354,8 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
         let mut recall_failed_err: Option<u16> = None;
         let mut recall_not_setup_msg: Option<String> = None;
 
+        let recall_model = extract_hook_model(&data);
+
         match http_post_detail(
             &format!("{}/recall", url),
             &token,
@@ -1282,6 +1364,7 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
                 "query": prompt,
                 "session_id": session_id,
                 "actor_session": actor_sn_init,
+                "actor_model": recall_model,
             }),
             8000,
         ) {
@@ -1755,6 +1838,8 @@ fn hook_remember(data: &Value, ns: &str, url: &str, token: &str, agy: bool) {
         rem_sn_saved
     };
 
+    let rem_actor_model = extract_hook_model(data);
+
     let save_turn = |t: &str, speaker: &str| -> bool {
         match http_post_detail(
             &format!("{}/remember", url),
@@ -1764,6 +1849,7 @@ fn hook_remember(data: &Value, ns: &str, url: &str, token: &str, agy: bool) {
                 "text": t,
                 "speaker": speaker,
                 "actor_session": rem_actor_sn,
+                "actor_model": rem_actor_model,
                 "async": true,
             }),
             12000,

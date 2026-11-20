@@ -5381,7 +5381,31 @@ impl Control {
                     params![selected_ns],
                 )
                 .await?;
-            rows_json(&s_rows)
+            let mut out = rows_json(&s_rows);
+            #[cfg(unix)]
+            {
+                let local_host = crate::nsresolve::hostname();
+                for row in &mut out {
+                    let ns_s = row.get("namespace").and_then(|v| v.as_str()).unwrap_or("");
+                    let host_s = row.get("host").and_then(|v| v.as_str()).unwrap_or("");
+                    let pid_opt = row.get("pid").and_then(|v| v.as_i64());
+                    let is_alive = row.get("alive").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if is_alive && !ns_s.starts_with("test:") && host_s == local_host {
+                        if let Some(p) = pid_opt.filter(|&p| p > 1) {
+                            let rc = unsafe { libc::kill(p as i32, 0) };
+                            let proc_exists = rc == 0
+                                || std::io::Error::last_os_error().raw_os_error()
+                                    == Some(libc::EPERM);
+                            if !proc_exists {
+                                if let Some(obj) = row.as_object_mut() {
+                                    obj.insert("alive".to_string(), json!(false));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            out
         };
 
         let total_constraints: i64 = if selected_ns.is_empty() {

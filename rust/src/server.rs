@@ -2327,6 +2327,12 @@ async fn api_post_handler(
         .flatten()
         .and_then(|v| v.get("name").and_then(|s| s.as_str()).map(|s| s.to_string()));
 
+    let actor_model_hint = req
+        .get("actor_model")
+        .or_else(|| req.get("model"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let actor_hint = req
         .get("actor_session")
         .or_else(|| req.get("session_name"))
@@ -3973,6 +3979,7 @@ async fn api_post_handler(
                 .unwrap_or_else(|| format!("p:{}", pid));
             if let Some(ref sess_name) = actor_hint {
                 let clean_sn = sess_name.trim_start_matches('@');
+                let model_up = actor_model_hint.as_deref().unwrap_or("");
                 if !clean_sn.is_empty() && !ns.is_empty() {
                     if let Ok(c) = st.pool.get().await {
                         let _ = c
@@ -3980,9 +3987,10 @@ async fn api_post_handler(
                                 "UPDATE memnos_control.agent_sessions
                                  SET last_heartbeat_at = now(),
                                      expires_at = GREATEST(expires_at, now() + interval '30 minutes'),
-                                     status = CASE WHEN status = 'offline' THEN 'online' ELSE status END
+                                     status = CASE WHEN status = 'offline' THEN 'online' ELSE status END,
+                                     model = CASE WHEN $3 <> '' THEN $3 ELSE model END
                                  WHERE namespace = $1 AND name = $2",
-                                &[&ns, &clean_sn],
+                                &[&ns, &clean_sn, &model_up],
                             )
                             .await;
                     }

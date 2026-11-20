@@ -750,30 +750,49 @@ if ($("#live-clear-btn")) {
   };
 }
 
-// ---- Harness Identity Helpers ----
+// ---- Harness & Attached Model Identity Helpers ----
 function normalizeHarness(raw, meta) {
   let h = String(raw || "").trim().toLowerCase();
   if (!h && meta && typeof meta.display_label === "string") {
     const dl = meta.display_label.toLowerCase();
-    if (dl.includes("claude")) h = "claude-code";
+    if (dl.includes("claude desktop")) h = "claude-desktop";
+    else if (dl.includes("claude")) h = "claude-code";
     else if (dl.includes("antigravity")) h = "antigravity";
     else if (dl.includes("cursor")) h = "cursor";
+    else if (dl.includes("windsurf")) h = "windsurf";
     else if (dl.includes("codex")) h = "codex";
-    else if (dl.includes("gemini")) h = "gemini-cli";
+    else if (dl.includes("gemini")) h = "gemini";
   }
   if (!h) return null;
+  if (h === "claude-desktop" || h.includes("claude desktop")) return { key: "claude-desktop", label: "Claude Desktop", cls: "claude" };
   if (h.includes("claude")) return { key: "claude-code", label: "Claude Code", cls: "claude" };
   if (h.includes("antigravity") || h === "agy") return { key: "antigravity", label: "Antigravity", cls: "agy" };
   if (h.includes("cursor")) return { key: "cursor", label: "Cursor", cls: "cursor" };
+  if (h.includes("windsurf")) return { key: "windsurf", label: "Windsurf", cls: "cursor" };
   if (h.includes("codex")) return { key: "codex", label: "Codex", cls: "codex" };
-  if (h.includes("gemini")) return { key: "gemini-cli", label: "Gemini CLI", cls: "gemini" };
+  if (h.includes("gemini")) return { key: "gemini", label: "Gemini", cls: "gemini" };
   return { key: h, label: raw, cls: "mcp" };
 }
 
-function harnessBadgeForSession(s) {
+function formatModelShort(raw) {
+  const m = String(raw || "").trim();
+  if (!m || m === "<synthetic>") return "";
+  // Trim trailing date suffixes like -20250929 while keeping clean family+version
+  return m.replace(/-\d{8}$/, "");
+}
+
+function modelBadgeForSession(s) {
+  const m = formatModelShort(s?.model);
+  if (!m) return "";
+  return `<span class="model-pill" title="Currently attached model: ${esc(s.model)}">${esc(m)}</span>`;
+}
+
+function harnessBadgeForSession(s, includeModel = true) {
   const info = normalizeHarness(s?.harness, s?.metadata);
-  if (!info) return "";
-  return `<span class="harness-pill ${info.cls}" title="Attached harness: ${esc(info.label)}">${esc(info.label)}</span>`;
+  const hPill = info ? `<span class="harness-pill ${info.cls}" title="Attached harness: ${esc(info.label)}">${esc(info.label)}</span>` : "";
+  const mPill = includeModel ? modelBadgeForSession(s) : "";
+  if (hPill && mPill) return `<span style="display:inline-flex;align-items:center;gap:4px;min-width:0">${hPill}${mPill}</span>`;
+  return hPill || mPill;
 }
 
 function harnessBadgeByName(handleName) {
@@ -1395,7 +1414,7 @@ function filteredHandles() {
     const hInfo = normalizeHarness(s.harness, s.metadata);
     if (hf && hInfo?.key !== hf) return false;
     if (q) {
-      const hay = `@${s.name} ${hInfo?.label || ""} ${s.harness || ""} ${s.namespace} ${s.cwd || ""} ${s.host || ""} ${(s.channels || []).join(" ")}`.toLowerCase();
+      const hay = `@${s.name} ${hInfo?.label || ""} ${s.harness || ""} ${s.model || ""} ${s.namespace} ${s.cwd || ""} ${s.host || ""} ${(s.channels || []).join(" ")}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -1549,6 +1568,7 @@ function renderHandleHero() {
           </div>
           ${sObj ? `<div class="hero-meta-grid" style="margin-top:5px">
             ${sObj.harness || sObj.metadata?.display_label ? `<span>Harness: <b>${esc(normalizeHarness(sObj.harness, sObj.metadata)?.label || sObj.harness)}</b></span>` : ""}
+            ${sObj.model ? `<span>Model: <code>${esc(sObj.model)}</code></span>` : ""}
             <span>Heartbeat: <b>${age(sObj.last_heartbeat_at)} ago</b></span>
             ${sObj.pid ? `<span>PID: <code>${sObj.pid}</code> ${esc(sObj.tty || "")}</span>` : ""}
             ${sObj.cwd ? `<span>Folder: <code>${esc(sObj.cwd)}</code></span>` : ""}
