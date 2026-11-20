@@ -3,220 +3,368 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>memnos · console</title>
+  <title>MEMNOS · Workspace</title>
   <link rel="stylesheet" href="/admin/app.css">
 </head>
 <body>
-  <header>
-    <div class="brand">memnos <span>console</span></div>
-    <div class="who"><span id="who"></span> <button id="logout" class="ghost" hidden>sign out</button></div>
-  </header>
-
-  <!-- login -->
-  <section id="login" class="card">
-    <h2>Sign in</h2>
-    <p class="muted">Paste your <b>admin token</b> (create one with <code>python memnos_admin.py admin</code>).</p>
-    <div class="row">
-      <input id="token" type="password" placeholder="mnk_..." autocomplete="off">
-      <button id="signin">Sign in</button>
+  <!-- Sign-in / Remote Server Connect -->
+  <section id="login" class="login-shell">
+    <div class="login-card">
+      <div class="login-brand">
+        <span class="brand-mark">M</span>
+        <div>
+          <div class="brand-title">MEMNOS</div>
+          <div class="muted">Real-Time Agent Channels, Memory &amp; Telemetry</div>
+        </div>
+      </div>
+      <label class="field-lbl" for="server-url">MEMNOS Server URL <span class="muted">(local or remote)</span></label>
+      <input id="server-url" type="url" placeholder="http://127.0.0.1:8900 or https://memnos.acme.dev" autocomplete="url">
+      <label class="field-lbl" for="token">Access Token <span class="muted">(admin or role-scoped token)</span></label>
+      <div class="row">
+        <input id="token" type="password" placeholder="mnk_..." autocomplete="off">
+        <button id="signin">Connect</button>
+      </div>
+      <p class="muted login-hint">Connect with an <b>admin token</b> for full governance, or any <b>role-scoped token</b> to view and manage the channels, sessions, memories, and stats authorized for your role.</p>
+      <p id="loginerr" class="err"></p>
     </div>
-    <p id="loginerr" class="err"></p>
   </section>
 
-  <!-- app -->
-  <main id="app" hidden>
-    <nav class="tabs">
-      <button data-tab="namespaces" class="active">Namespaces</button>
-      <button data-tab="routing">Routing</button>
-      <button data-tab="feed">Memory feed</button>
-      <button data-tab="tokens">Tokens</button>
-      <button data-tab="access">Principals &amp; Grants</button>
-      <button data-tab="dashboard">Dashboard</button>
-      <button data-tab="usage">Usage</button>
-      <button data-tab="secrets">Secrets</button>
-      <button data-tab="cli">CLI Reference</button>
-      <button data-tab="settings">Settings</button>
-    </nav>
-
-    <section id="tab-namespaces" class="tab">
-      <div class="card">
-        <h3>Create namespace</h3>
-        <div class="row">
-          <input id="ns-name" placeholder="e.g. proj:myapp  or  team:eng:notes">
-          <input id="ns-desc" placeholder="description (optional)">
-          <button id="ns-create">Create</button>
-        </div>
-        <p class="muted">A namespace isolates memory. You create them here — nothing is auto-created.</p>
+  <!-- Main Slack-style Workspace App -->
+  <div id="app" class="workspace-shell" hidden>
+    <!-- Top Bar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="brand-mark sm">M</span>
+        <span class="topbar-brand">MEMNOS</span>
+        <span id="sse-badge" class="live-pill offline" title="Real-time LISTEN/NOTIFY stream">● CONNECTING</span>
+        <button id="switch-server" class="server-pill" title="Switch local or remote MEMNOS server"></button>
       </div>
-      <div class="card"><table id="ns-table"><thead><tr><th>Namespace</th><th>Description</th><th>Turns</th><th>Facts</th><th>Created</th><th></th></tr></thead><tbody></tbody></table></div>
-    </section>
+      <div id="vitals-strip" class="vitals-strip"></div>
+      <div class="topbar-right">
+        <span id="who-badge" class="role-pill"></span>
+        <button id="refresh-now" class="ghost sm" title="Refresh workspace">↻</button>
+        <button id="logout" class="ghost sm">Disconnect</button>
+      </div>
+    </header>
 
-    <section id="tab-routing" class="tab" hidden>
-      <div class="card">
-        <h3>Add binding</h3>
-        <p class="muted">Bind a repo or directory to a namespace so your agents always write to the
-          right place — these live in memnos (not a local file) and follow you across machines.</p>
-        <div class="row">
-          <select id="bind-scope">
-            <option value="repo">All hosts (follow the repo)</option>
+    <div class="workspace-body">
+      <!-- Left Sidebar -->
+      <aside class="sidebar">
+        <div class="ns-picker-wrap">
+          <label class="sidebar-cap" for="ws-ns-filter">NAMESPACE SCOPE</label>
+          <select id="ws-ns-filter">
+            <option value="*">All authorized (*)</option>
           </select>
-          <select id="bind-keytype" hidden>
-            <option value="host_repo">repo on this host</option>
-            <option value="host_path">path on this host</option>
-          </select>
-          <input id="bind-key" placeholder="repo (e.g. github.com/acme/payments-sync) or path">
-          <input id="bind-ns" placeholder="namespace (e.g. proj:memnos)">
-          <button id="bind-add">Bind</button>
         </div>
-        <p id="bind-err" class="err"></p>
-      </div>
-      <div class="card">
-        <h3>Bindings <span class="muted">· grouped by host</span></h3>
-        <div id="bind-groups"></div>
-      </div>
-      <div class="card">
-        <h3>Hosts <span class="muted">· your machines</span></h3>
-        <table id="host-table"><thead><tr><th>Friendly name</th><th>Machine ID</th><th>Last seen</th><th></th></tr></thead><tbody></tbody></table>
-      </div>
-    </section>
 
-    <section id="tab-feed" class="tab" hidden>
-      <div class="card">
-        <h3>Memory feed <span class="muted">· newest first, across all namespaces</span></h3>
-        <div class="row">
-          <input id="feed-ns" placeholder="filter by namespace (optional)">
-          <select id="feed-type">
-            <option value="">all types</option>
-            <option>decision</option><option>incident</option><option>constraint</option>
-            <option>skill</option><option>fact</option>
-          </select>
-          <button id="feed-refresh">Refresh</button>
-        </div>
-        <table id="feed-table"><thead><tr><th>Age</th><th>Namespace</th><th>Type</th><th>Author</th><th>Memory</th></tr></thead><tbody></tbody></table>
-        <div class="pager">
-          <button id="feed-prev" class="ghost">&#8249; newer</button>
-          <span id="feed-info" class="muted"></span>
-          <button id="feed-next" class="ghost">older &#8250;</button>
-        </div>
-      </div>
-    </section>
+        <div class="sidebar-scroll">
+          <!-- Channels -->
+          <div class="nav-group">
+            <div class="nav-group-hdr">
+              <span>CHANNELS</span>
+              <button id="btn-new-channel" class="icon-btn" title="Create #channel">+</button>
+            </div>
+            <div id="new-channel-box" class="inline-form" hidden>
+              <input id="new-ch-ns" placeholder="namespace (e.g. proj:payments)">
+              <input id="new-ch-name" placeholder="#channel (e.g. #arch-review)">
+              <input id="new-ch-desc" placeholder="topic description (optional)">
+              <div class="row">
+                <button id="new-ch-save" class="sm">Create</button>
+                <button id="new-ch-cancel" class="ghost sm">Cancel</button>
+              </div>
+            </div>
+            <div id="sidebar-channels" class="nav-list"></div>
+          </div>
 
-    <section id="tab-tokens" class="tab" hidden>
-      <div class="card">
-        <h3>Mint token</h3>
-        <div class="row">
-          <select id="tok-principal"></select>
-          <input id="tok-label" placeholder="label (optional)">
-          <input id="tok-ttl" type="number" placeholder="ttl days (optional)" style="max-width:140px">
-          <button id="tok-mint">Mint</button>
-        </div>
-        <div id="tok-show" class="banner" hidden></div>
-      </div>
-      <div class="card"><h3>Tokens for <span id="tok-who" class="muted"></span></h3>
-        <table id="tok-table"><thead><tr><th>ID</th><th>Token</th><th>Label</th><th>Created</th><th>Expires</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>
-    </section>
+          <!-- Active Sessions / Handles -->
+          <div class="nav-group">
+            <div class="nav-group-hdr">
+              <span>HANDLES (@SESSIONS)</span>
+              <span id="sessions-count" class="count-badge">0</span>
+            </div>
+            <div id="sidebar-sessions" class="nav-list"></div>
+          </div>
 
-    <section id="tab-access" class="tab" hidden>
-      <div class="card">
-        <h3>Create principal</h3>
-        <div class="row">
-          <input id="pr-name" placeholder="name (user / agent / service)">
-          <select id="pr-kind"><option>user</option><option>agent</option><option>service</option></select>
-          <button id="pr-create">Create</button>
-        </div>
-      </div>
-      <div class="card"><table id="pr-table"><thead><tr><th>ID</th><th>Name</th><th>Kind</th><th>Active tokens</th></tr></thead><tbody></tbody></table></div>
-      <div class="card">
-        <h3>Grant access</h3>
-        <div class="row">
-          <select id="gr-principal"></select>
-          <input id="gr-namespace" placeholder="namespace (or team:eng:*  or  *)">
-          <label class="chk"><input type="checkbox" id="gr-read" checked> read</label>
-          <label class="chk"><input type="checkbox" id="gr-write" checked> write</label>
-          <button id="gr-add">Grant</button>
-        </div>
-        <table id="gr-table"><thead><tr><th>Namespace</th><th>Read</th><th>Write</th><th></th></tr></thead><tbody></tbody></table>
-      </div>
-    </section>
+          <!-- Workspace Views (All Roles) -->
+          <div class="nav-group">
+            <div class="nav-group-hdr"><span>WORKSPACE</span></div>
+            <div class="nav-list">
+              <button class="nav-item" data-view="memories"># Memory Explorer</button>
+              <button class="nav-item" data-view="telemetry">◈ Telemetry &amp; DB</button>
+              <button class="nav-item" data-view="routing">⇄ Repo Routing</button>
+              <button class="nav-item" data-view="cli">⌘ CLI Reference</button>
+            </div>
+          </div>
 
-    <section id="tab-dashboard" class="tab" hidden>
-      <div class="card"><h3>Health <span class="muted">· last 24h</span></h3><div id="dash-health"></div></div>
-      <div class="card"><h3>Reliability <span class="muted">· last 24h</span></h3><table id="dash-stats"><thead><tr><th>op</th><th>calls</th><th>err%</th><th>p50ms</th><th>p95ms</th><th>recall-empty%</th></tr></thead><tbody></tbody></table></div>
-      <div class="card"><h3>Usage / cost <span class="muted">· last 30 days</span></h3><table id="dash-usage"><thead><tr><th>op</th><th>calls</th><th>tokens in</th><th>tokens out</th><th>cost $</th></tr></thead><tbody></tbody></table></div>
-      <div class="card"><h3>Recent activity</h3>
-        <table id="dash-audit"><thead><tr><th>time</th><th>principal</th><th>action</th><th>namespace</th><th>status</th><th>ms</th></tr></thead><tbody></tbody></table>
-        <div class="pager">
-          <button id="audit-prev" class="ghost">&#8249; newer</button>
-          <span id="audit-info" class="muted"></span>
-          <button id="audit-next" class="ghost">older &#8250;</button>
+          <!-- Admin Governance Views (Admin Token Only) -->
+          <div id="admin-nav-group" class="nav-group" hidden>
+            <div class="nav-group-hdr"><span>ADMINISTRATION</span></div>
+            <div class="nav-list">
+              <button class="nav-item" data-view="namespaces">Namespaces</button>
+              <button class="nav-item" data-view="access">Principals &amp; Grants</button>
+              <button class="nav-item" data-view="tokens">API Tokens</button>
+              <button class="nav-item" data-view="usage">Cost &amp; Budgets</button>
+              <button class="nav-item" data-view="secrets">Secret Vault</button>
+              <button class="nav-item" data-view="dashboard">Audit &amp; Health</button>
+              <button class="nav-item" data-view="settings">LLM Provider</button>
+            </div>
+          </div>
         </div>
-      </div>
-    </section>
+      </aside>
 
-    <section id="tab-usage" class="tab" hidden>
-      <div id="usage-budget-banner" hidden></div>
-      <div class="card">
-        <h3>Usage &amp; cost</h3>
-        <div class="row">
-          <select id="usage-days">
-            <option value="7">last 7 days</option>
-            <option value="30" selected>last 30 days</option>
-            <option value="90">last 90 days</option>
-            <option value="365">last 365 days</option>
-          </select>
-          <input id="usage-ns" placeholder="namespace filter (optional)">
-          <button id="usage-refresh">Refresh</button>
-        </div>
-        <div id="usage-totals" class="muted" style="margin-top:10px"></div>
-      </div>
-      <div class="card">
-        <h3>By operation</h3>
-        <table id="usage-op-table"><thead><tr><th>op</th><th>calls</th><th>tokens in</th><th>tokens out</th><th>cost $</th></tr></thead><tbody></tbody></table>
-      </div>
-      <div class="card">
-        <h3>By namespace</h3>
-        <table id="usage-ns-table"><thead><tr><th>namespace</th><th>calls</th><th>tokens</th><th>cost $</th></tr></thead><tbody></tbody></table>
-      </div>
-      <div class="card">
-        <h3>Day-by-day trend <span class="muted">· last 7 days</span></h3>
-        <table id="usage-day-table"><thead><tr><th>date</th><th>tokens</th><th>cost $</th></tr></thead><tbody></tbody></table>
-      </div>
-    </section>
+      <!-- Center Stage -->
+      <main class="stage">
+        <!-- 1. Slack-Style Channel / Session Stream View -->
+        <section id="view-stream" class="stage-view stream-layout">
+          <div class="stream-main">
+            <div class="stream-header">
+              <div class="stream-title-wrap">
+                <h2 id="stream-title">#general</h2>
+                <span id="stream-ns" class="ns-tag"></span>
+                <span id="stream-sub" class="muted"></span>
+              </div>
+              <div class="stream-actions">
+                <button id="toggle-inspector" class="ghost sm">Inspector</button>
+                <button id="delete-target-btn" class="danger sm" hidden>Delete</button>
+              </div>
+            </div>
 
-    <section id="tab-secrets" class="tab" hidden>
-      <div class="card">
-        <h3>Secret vault <span id="vault-state" class="muted"></span></h3>
-        <p class="muted">Encrypted at rest (AES-256-GCM). Plaintext is never stored, listed, or returned --
-          reference a secret anywhere as <code>secret://name</code>. memnos also auto-redacts secret-looking
-          text from remembered messages so credentials can't leak into recall.</p>
-        <div class="row">
-          <input id="sec-name" placeholder="name (e.g. openai)">
-          <input id="sec-value" type="password" placeholder="value (stored encrypted)">
-          <input id="sec-desc" placeholder="description (optional)">
-          <button id="sec-set">Store</button>
-        </div>
-        <p id="sec-err" class="err"></p>
-      </div>
-      <div class="card"><table id="sec-table"><thead><tr><th>Name</th><th>Description</th><th>Updated</th><th></th></tr></thead><tbody></tbody></table></div>
-    </section>
+            <div id="stream-messages" class="stream-messages"></div>
 
-    <section id="tab-cli" class="tab" hidden>
-      <div class="card">
-        <h3>CLI reference</h3>
-        <p class="muted">Generated from the <code>memnos</code> CLI itself (<code>memnos docs-gen</code>) --
-          always in sync with the installed version. Remote use: set <code>MEMNOS_URL</code> and
-          <code>MEMNOS_TOKEN</code> to point <code>memnos remember/recall</code> at this server from
-          another machine.</p>
-        <div id="cli-ref"></div>
-      </div>
-    </section>
+            <div class="composer">
+              <div class="composer-meta">
+                <label class="muted">From handle:</label>
+                <input id="comp-sender" value="owner" class="comp-handle" title="Sender @handle">
+                <label id="comp-claim-wrap" class="chk"><input type="checkbox" id="comp-claimable"> Claimable task (single winner)</label>
+                <span id="comp-err" class="err"></span>
+              </div>
+              <div class="composer-row">
+                <textarea id="comp-input" rows="2" placeholder="Message channel or @handle… (Enter to send, Shift+Enter for newline)"></textarea>
+                <button id="comp-send">Send</button>
+              </div>
+            </div>
+          </div>
 
-    <section id="tab-settings" class="tab" hidden>
-      <div class="card"><h3>LLM provider</h3><div id="set-provider"></div>
-        <p class="muted">memnos never stores your LLM key. It lives in <code>.env</code> (<code>OPENAI_API_KEY</code>). SSO, RBAC, encrypted secret vault and multi-tenant are enterprise features.</p>
-      </div>
-    </section>
-  </main>
+          <!-- Right Inspector Drawer (Channel Members / Handle Subscriptions) -->
+          <aside id="stream-inspector" class="inspector">
+            <div id="inspector-content"></div>
+          </aside>
+        </section>
+
+        <!-- 2. Role-Scoped Memory Explorer -->
+        <section id="view-memories" class="stage-view pad-view" hidden>
+          <div class="card full">
+            <h3>Memory Explorer <span class="muted">· real-time facts, decisions &amp; constraints in your authorized scope</span></h3>
+            <div class="row">
+              <input id="wmem-q" placeholder="Search memories (e.g. architecture, migration, auth)…">
+              <select id="wmem-type" style="max-width:170px">
+                <option value="">All types</option>
+                <option>constraint</option>
+                <option>decision</option>
+                <option>incident</option>
+                <option>fact</option>
+                <option>fix</option>
+                <option>handoff</option>
+                <option>skill</option>
+              </select>
+              <button id="wmem-search">Search</button>
+            </div>
+            <table id="wmem-table" style="margin-top:12px">
+              <thead><tr><th>Age</th><th>Namespace</th><th>Type</th><th>Speaker / Author</th><th>Memory</th></tr></thead>
+              <tbody></tbody>
+            </table>
+            <div class="pager">
+              <button id="wmem-prev" class="ghost sm">&#8249; Newer</button>
+              <span id="wmem-info" class="muted"></span>
+              <button id="wmem-next" class="ghost sm">Older &#8250;</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 3. Live Telemetry, Resources & Database Overview -->
+        <section id="view-telemetry" class="stage-view pad-view" hidden>
+          <div id="tel-cards" class="kpi-grid"></div>
+          <div class="card full">
+            <h3>Database &amp; Memory Breakdown by Namespace <span class="muted">· scoped to your token's grants</span></h3>
+            <table id="tel-ns-table">
+              <thead><tr><th>Namespace</th><th>Access</th><th>Facts (Semantic)</th><th>Turns (Raw)</th><th>Entities</th><th>Description</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="card full">
+            <h3>Operation Latency &amp; Reliability <span class="muted">· last 24h</span></h3>
+            <table id="tel-ops-table">
+              <thead><tr><th>Operation</th><th>Calls (24h)</th><th>p50 Latency</th><th>p95 Latency</th><th>Error %</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 4. Repo Routing (User-Scoped) -->
+        <section id="view-routing" class="stage-view pad-view" hidden>
+          <div class="card full">
+            <h3>Add binding</h3>
+            <p class="muted">Bind a repo or directory to a namespace so your agents always write to the
+              right place — these live in memnos (not a local file) and follow you across machines.</p>
+            <div class="row">
+              <select id="bind-scope">
+                <option value="repo">All hosts (follow the repo)</option>
+              </select>
+              <select id="bind-keytype" hidden>
+                <option value="host_repo">repo on this host</option>
+                <option value="host_path">path on this host</option>
+              </select>
+              <input id="bind-key" placeholder="repo (e.g. github.com/acme/payments-sync) or path">
+              <input id="bind-ns" placeholder="namespace (e.g. proj:payments)">
+              <button id="bind-add">Bind</button>
+            </div>
+            <p id="bind-err" class="err"></p>
+          </div>
+          <div class="card full">
+            <h3>Bindings <span class="muted">· grouped by host</span></h3>
+            <div id="bind-groups"></div>
+          </div>
+          <div class="card full">
+            <h3>Hosts <span class="muted">· your machines</span></h3>
+            <table id="host-table"><thead><tr><th>Friendly name</th><th>Machine ID</th><th>Last seen</th><th></th></tr></thead><tbody></tbody></table>
+          </div>
+        </section>
+
+        <!-- 5. Admin: Namespaces -->
+        <section id="view-namespaces" class="stage-view pad-view" hidden>
+          <div class="card full">
+            <h3>Create namespace</h3>
+            <div class="row">
+              <input id="ns-name" placeholder="e.g. proj:myapp  or  team:eng:notes">
+              <input id="ns-desc" placeholder="description (optional)">
+              <button id="ns-create">Create</button>
+            </div>
+            <p class="muted">A namespace isolates memory and coordination channels.</p>
+          </div>
+          <div class="card full"><table id="ns-table"><thead><tr><th>Namespace</th><th>Description</th><th>Turns</th><th>Facts</th><th>Created</th><th></th></tr></thead><tbody></tbody></table></div>
+        </section>
+
+        <!-- 6. Admin: Principals & Grants -->
+        <section id="view-access" class="stage-view pad-view" hidden>
+          <div class="card full">
+            <h3>Create principal</h3>
+            <div class="row">
+              <input id="pr-name" placeholder="name (user / agent / service)">
+              <select id="pr-kind"><option>user</option><option>agent</option><option>service</option></select>
+              <button id="pr-create">Create</button>
+            </div>
+          </div>
+          <div class="card full"><table id="pr-table"><thead><tr><th>ID</th><th>Name</th><th>Kind</th><th>Active tokens</th></tr></thead><tbody></tbody></table></div>
+          <div class="card full">
+            <h3>Grant access</h3>
+            <div class="row">
+              <select id="gr-principal"></select>
+              <input id="gr-namespace" placeholder="namespace (or team:eng:*  or  *)">
+              <label class="chk"><input type="checkbox" id="gr-read" checked> read</label>
+              <label class="chk"><input type="checkbox" id="gr-write" checked> write</label>
+              <button id="gr-add">Grant</button>
+            </div>
+            <table id="gr-table"><thead><tr><th>Namespace</th><th>Read</th><th>Write</th><th></th></tr></thead><tbody></tbody></table>
+          </div>
+        </section>
+
+        <!-- 7. Admin: Tokens -->
+        <section id="view-tokens" class="stage-view pad-view" hidden>
+          <div class="card full">
+            <h3>Mint token</h3>
+            <div class="row">
+              <select id="tok-principal"></select>
+              <input id="tok-label" placeholder="label (optional)">
+              <input id="tok-ttl" type="number" placeholder="ttl days (optional)" style="max-width:140px">
+              <button id="tok-mint">Mint</button>
+            </div>
+            <div id="tok-show" class="banner" hidden></div>
+          </div>
+          <div class="card full"><h3>Tokens for <span id="tok-who" class="muted"></span></h3>
+            <table id="tok-table"><thead><tr><th>ID</th><th>Token</th><th>Label</th><th>Created</th><th>Expires</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>
+        </section>
+
+        <!-- 8. Admin: Usage -->
+        <section id="view-usage" class="stage-view pad-view" hidden>
+          <div id="usage-budget-banner" hidden></div>
+          <div class="card full">
+            <h3>Usage &amp; cost</h3>
+            <div class="row">
+              <select id="usage-days">
+                <option value="7">last 7 days</option>
+                <option value="30" selected>last 30 days</option>
+                <option value="90">last 90 days</option>
+                <option value="365">last 365 days</option>
+              </select>
+              <input id="usage-ns" placeholder="namespace filter (optional)">
+              <button id="usage-refresh">Refresh</button>
+            </div>
+            <div id="usage-totals" class="muted" style="margin-top:10px"></div>
+          </div>
+          <div class="card full">
+            <h3>By operation</h3>
+            <table id="usage-op-table"><thead><tr><th>op</th><th>calls</th><th>tokens in</th><th>tokens out</th><th>cost $</th></tr></thead><tbody></tbody></table>
+          </div>
+          <div class="card full">
+            <h3>By namespace</h3>
+            <table id="usage-ns-table"><thead><tr><th>namespace</th><th>calls</th><th>tokens</th><th>cost $</th></tr></thead><tbody></tbody></table>
+          </div>
+          <div class="card full">
+            <h3>Day-by-day trend <span class="muted">· last 7 days</span></h3>
+            <table id="usage-day-table"><thead><tr><th>date</th><th>tokens</th><th>cost $</th></tr></thead><tbody></tbody></table>
+          </div>
+        </section>
+
+        <!-- 9. Admin: Secrets -->
+        <section id="view-secrets" class="stage-view pad-view" hidden>
+          <div class="card full">
+            <h3>Secret vault <span id="vault-state" class="muted"></span></h3>
+            <p class="muted">Encrypted at rest (AES-256-GCM). Plaintext is never stored, listed, or returned —
+              reference a secret anywhere as <code>secret://name</code>.</p>
+            <div class="row">
+              <input id="sec-name" placeholder="name (e.g. openai)">
+              <input id="sec-value" type="password" placeholder="value (stored encrypted)">
+              <input id="sec-desc" placeholder="description (optional)">
+              <button id="sec-set">Store</button>
+            </div>
+            <p id="sec-err" class="err"></p>
+          </div>
+          <div class="card full"><table id="sec-table"><thead><tr><th>Name</th><th>Description</th><th>Updated</th><th></th></tr></thead><tbody></tbody></table></div>
+        </section>
+
+        <!-- 10. Admin: Audit & Health -->
+        <section id="view-dashboard" class="stage-view pad-view" hidden>
+          <div class="card full"><h3>Health <span class="muted">· last 24h</span></h3><div id="dash-health"></div></div>
+          <div class="card full"><h3>Reliability <span class="muted">· last 24h</span></h3><table id="dash-stats"><thead><tr><th>op</th><th>calls</th><th>err%</th><th>p50ms</th><th>p95ms</th><th>recall-empty%</th></tr></thead><tbody></tbody></table></div>
+          <div class="card full"><h3>Usage / cost <span class="muted">· last 30 days</span></h3><table id="dash-usage"><thead><tr><th>op</th><th>calls</th><th>tokens in</th><th>tokens out</th><th>cost $</th></tr></thead><tbody></tbody></table></div>
+          <div class="card full"><h3>Recent activity</h3>
+            <table id="dash-audit"><thead><tr><th>time</th><th>principal</th><th>action</th><th>namespace</th><th>status</th><th>ms</th></tr></thead><tbody></tbody></table>
+            <div class="pager">
+              <button id="audit-prev" class="ghost sm">&#8249; newer</button>
+              <span id="audit-info" class="muted"></span>
+              <button id="audit-next" class="ghost sm">older &#8250;</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 11. CLI Reference -->
+        <section id="view-cli" class="stage-view pad-view" hidden>
+          <div class="card full">
+            <h3>CLI reference</h3>
+            <p class="muted">Generated from the <code>memnos</code> CLI — remote use: set <code>MEMNOS_URL</code> and <code>MEMNOS_TOKEN</code>.</p>
+            <div id="cli-ref"></div>
+          </div>
+        </section>
+
+        <!-- 12. Admin: Settings -->
+        <section id="view-settings" class="stage-view pad-view" hidden>
+          <div class="card full"><h3>LLM provider</h3><div id="set-provider"></div>
+            <p class="muted">memnos never stores your LLM key in plaintext. Configure <code>OPENAI_API_KEY</code> or run local embeddings with <code>memnos models pull</code>.</p>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
   <script src="/admin/app.js"></script>
 </body>
 </html>

@@ -10,6 +10,7 @@ use memnos_core::{
     },
     control::Control,
     db::build_pool,
+    desktop::run_desktop_app,
     embed::Embedder,
     extract::Extractor,
     gateway::run_gateway,
@@ -179,6 +180,22 @@ enum Commands {
     /// show this terminal's [MEMNOS @handle · #channels] identity badge
     #[command(visible_alias = "identity")]
     Id,
+    /// launch the real-time MEMNOS Workspace desktop app (or connect to a remote server)
+    #[command(visible_alias = "ui")]
+    App {
+        /// MEMNOS server URL (defaults to local server or MEMNOS_URL; e.g. https://memnos.acme.dev)
+        #[arg(long)]
+        url: Option<String>,
+        /// access token (admin or role-scoped; defaults to local config or MEMNOS_TOKEN)
+        #[arg(long)]
+        token: Option<String>,
+        /// install ~/Applications/MEMNOS.app bundle on macOS for Dock & Spotlight launch
+        #[arg(long)]
+        install: bool,
+        /// open in default web browser instead of native desktop window
+        #[arg(long)]
+        browser: bool,
+    },
     /// install a login service (launchd/systemd/schtasks) so the server always runs
     Autostart {
         #[arg(long)]
@@ -2088,25 +2105,13 @@ fn main() {
         }
     }
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
-        .max_blocking_threads(8)
-        .enable_all()
-        .build()
-        .expect("failed to initialize async runtime");
-    rt.block_on(async_main());
-}
-
-async fn async_main() {
     let cfg = load_config();
     let norm_args = normalize_argv(env::args().collect());
-
     if norm_args.len() == 2 && norm_args[1] == "help" {
         let _ = Cli::command().print_help();
         println!();
         return;
     }
-
     let cli = Cli::parse_from(norm_args);
     let Some(cmd) = cli.command else {
         println!("memnos {}\n", VERSION);
@@ -2114,15 +2119,37 @@ async fn async_main() {
         println!();
         return;
     };
-
-    if let Err(e) = run_cli(cmd, cfg).await {
-        eprintln!("error: {}", e);
-        std::process::exit(1);
+    if let Commands::App {
+        url,
+        token,
+        install,
+        browser,
+    } = cmd
+    {
+        if let Err(e) = run_desktop_app(url.as_deref(), token.as_deref(), install, browser, &cfg) {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+        return;
     }
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .max_blocking_threads(8)
+        .enable_all()
+        .build()
+        .expect("failed to initialize async runtime");
+    rt.block_on(async move {
+        if let Err(e) = run_cli(cmd, cfg).await {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    });
 }
 
 async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
     match cmd {
+        Commands::App { .. } => unreachable!(),
         Commands::Hook { which, reset } => {
             run_hook(&which, reset, &cfg);
             Ok(())
@@ -2285,10 +2312,12 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 handle = term.name.clone();
             }
             let mut channels: Vec<String> = Vec::new();
+            let st_tok = session_token(&cfg);
+            let tok_opt = (!st_tok.is_empty()).then_some(st_tok.as_str());
             if let Ok(polled) = http_post_json(
                 &cfg,
                 "/channel/poll",
-                None,
+                tok_opt,
                 &json!({
                     "namespace": ns,
                     "session_name": handle,
@@ -2329,10 +2358,12 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 sess = term.name.clone();
             }
             let mut chans: Vec<String> = Vec::new();
+            let st_tok = session_token(&cfg);
+            let tok_opt = (!st_tok.is_empty()).then_some(st_tok.as_str());
             if let Ok(polled) = http_post_json(
                 &cfg,
                 "/channel/poll",
-                None,
+                tok_opt,
                 &json!({
                     "namespace": ns,
                     "session_name": sess,
@@ -2346,6 +2377,11 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                         .iter()
                         .filter_map(|x| x.as_str().map(|s| s.to_string()))
                         .collect();
+                }
+            }
+            if chans.is_empty() {
+                if let Some((_, chs, _)) = load_cached_badge(&cwd, None, &term.tty) {
+                    chans = chs;
                 }
             }
             println!("memnos v{}", VERSION);

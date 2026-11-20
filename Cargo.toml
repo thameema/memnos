@@ -42,6 +42,7 @@ futures-util = "0.3"
 anyhow = "1.0"
 thiserror = "1.0"
 memmap2 = "0.9"
+libc = "0.2"
 candle-core = { version = "0.8", default-features = false }
 candle-nn = { version = "0.8", default-features = false }
 candle-transformers = { version = "0.8", default-features = false }
@@ -50,6 +51,9 @@ candle-transformers = { version = "0.8", default-features = false }
 candle-core = { version = "0.8", default-features = false, features = ["accelerate"] }
 candle-nn = { version = "0.8", default-features = false, features = ["accelerate"] }
 candle-transformers = { version = "0.8", default-features = false, features = ["accelerate"] }
+tao = "0.30"
+wry = "0.47"
+muda = "0.15"
 
 [profile.release]
 opt-level = 3

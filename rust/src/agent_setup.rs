@@ -21,6 +21,9 @@ MCP tools explicitly (this agent has no auto-inject hooks):
 - **Staleness check:** before answering from a local note on a key project detail, call
   `reconcile_claim(statement, subject, predicate)`. If it returns `stale`, tell the user their
   local note is out of date and give the newer memnos value + its date.
+- **Session identity badge:** if your harness does not already render a `[MEMNOS @...]` status line
+  or banner, surface `[MEMNOS @<handle> · #<channels>]` on the first turn and whenever subscribed
+  `#channels` change (never include harness vendor names in the badge).
 "#;
 
 const AGY_SKILL_MD: &str = r#"---
@@ -472,8 +475,35 @@ pub fn run_agent_setup(
             )
             .map_err(|e| e.to_string())?;
         }
+        let qexe = shell_quote(&exe);
+        let env_prefix = format!(
+            "MEMNOS_URL={} MEMNOS_TOKEN={} MEMNOS_NS={}",
+            shell_quote(&url),
+            shell_quote(&token),
+            shell_quote(&ns)
+        );
+        let codex_hooks_path = codex_dir.join("hooks.json");
+        let mut ch = read_json_obj(&codex_hooks_path);
+        if !ch.get("hooks").map(|v| v.is_object()).unwrap_or(false) {
+            ch["hooks"] = json!({});
+        }
+        ch["hooks"]["SessionStart"] = json!([{
+            "hooks": [{
+                "type": "command",
+                "command": format!("{} {} hook status", env_prefix, qexe),
+                "timeout": 15
+            }]
+        }]);
+        ch["hooks"]["UserPromptSubmit"] = json!([{
+            "hooks": [{
+                "type": "command",
+                "command": format!("{} {} hook recall", env_prefix, qexe),
+                "timeout": 15
+            }]
+        }]);
+        let _ = write_json_pretty(&codex_hooks_path, &ch);
         println!(
-            "[memnos] codex wired -> {} (MCP server 'memnos', ns={}).",
+            "[memnos] codex wired -> {} & hooks.json (MCP server 'memnos', ns={}).",
             toml_path.display(),
             ns
         );
@@ -539,7 +569,68 @@ pub fn run_agent_setup(
             "MEMNOS_NS": ns,
         }
     });
+    if agent == "gemini-cli" {
+        let qexe = shell_quote(&exe);
+        let env_prefix = format!(
+            "MEMNOS_URL={} MEMNOS_TOKEN={} MEMNOS_NS={}",
+            shell_quote(&url),
+            shell_quote(&token),
+            shell_quote(&ns)
+        );
+        if !doc.get("hooks").map(|v| v.is_object()).unwrap_or(false) {
+            doc["hooks"] = json!({});
+        }
+        doc["hooks"]["SessionStart"] = json!([{
+            "hooks": [{
+                "type": "command",
+                "command": format!("{} {} hook status", env_prefix, qexe),
+                "timeout": 15000
+            }]
+        }]);
+        doc["hooks"]["BeforeAgent"] = json!([{
+            "hooks": [{
+                "type": "command",
+                "command": format!("{} {} hook recall", env_prefix, qexe),
+                "timeout": 15000
+            }]
+        }]);
+        doc["hooks"]["AfterAgent"] = json!([{
+            "hooks": [{
+                "type": "command",
+                "command": format!("{} {} hook remember", env_prefix, qexe),
+                "timeout": 15000
+            }]
+        }]);
+    }
     write_json_pretty(&target_path, &doc)?;
+    if agent == "cursor" {
+        let qexe = shell_quote(&exe);
+        let env_prefix = format!(
+            "MEMNOS_URL={} MEMNOS_TOKEN={} MEMNOS_NS={}",
+            shell_quote(&url),
+            shell_quote(&token),
+            shell_quote(&ns)
+        );
+        let cur_hooks_path = home.join(".cursor").join("hooks.json");
+        let mut cur_hooks = read_json_obj(&cur_hooks_path);
+        cur_hooks["version"] = json!(1);
+        if !cur_hooks.get("hooks").map(|v| v.is_object()).unwrap_or(false) {
+            cur_hooks["hooks"] = json!({});
+        }
+        cur_hooks["hooks"]["sessionStart"] = json!([{
+            "command": format!("{} {} hook status", env_prefix, qexe),
+            "timeout": 15
+        }]);
+        cur_hooks["hooks"]["beforeSubmitPrompt"] = json!([{
+            "command": format!("{} {} hook recall", env_prefix, qexe),
+            "timeout": 15
+        }]);
+        cur_hooks["hooks"]["stop"] = json!([{
+            "command": format!("{} {} hook remember", env_prefix, qexe),
+            "timeout": 15
+        }]);
+        let _ = write_json_pretty(&cur_hooks_path, &cur_hooks);
+    }
     println!(
         "[memnos] {} wired -> {} (MCP server 'memnos', ns={}).",
         agent,

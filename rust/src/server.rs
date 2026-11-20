@@ -20,19 +20,25 @@ use axum::{
     body::Bytes,
     extract::{Path as AxumPath, Query, State},
     http::{header, HeaderMap, Method, StatusCode, Uri},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::{any, delete, get, post},
     Json, Router,
 };
 use deadpool_postgres::Pool;
+use futures_util::stream;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
 use std::env;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, Semaphore};
+use tower_http::cors::CorsLayer;
 
 const UI_INDEX_HTML: &[u8] = include_bytes!("../../ui/index.html");
 const UI_APP_CSS: &[u8] = include_bytes!("../../ui/app.css");
@@ -63,6 +69,59 @@ pub struct AppState {
     pub ns_cache: Arc<Mutex<Option<(Instant, Vec<Value>)>>>,
     pub mcp_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<String>>>>>,
     pub mcp_semaphore: Arc<Semaphore>,
+    pub started_at: Instant,
+}
+
+fn current_process_memory_mb() -> (Option<f64>, Option<f64>) {
+    #[cfg(target_os = "macos")]
+    {
+        #[repr(C)]
+        struct RusageInfoV4 {
+            ri_uuid: [u8; 16],
+            ri_user_time: u64,
+            ri_system_time: u64,
+            ri_pkg_idle_wkups: u64,
+            ri_interrupt_wkups: u64,
+            ri_pageins: u64,
+            ri_wired_size: u64,
+            ri_resident_size: u64,
+            ri_phys_footprint: u64,
+            _pad: [u64; 30],
+        }
+        extern "C" {
+            fn proc_pid_rusage(pid: libc::c_int, flavor: libc::c_int, buffer: *mut RusageInfoV4) -> libc::c_int;
+        }
+        unsafe {
+            let mut info: RusageInfoV4 = std::mem::zeroed();
+            if proc_pid_rusage(std::process::id() as libc::c_int, 4, &mut info) == 0 {
+                let rss = (info.ri_resident_size as f64) / (1024.0 * 1024.0);
+                let fp = (info.ri_phys_footprint as f64) / (1024.0 * 1024.0);
+                return (
+                    Some((rss * 10.0).round() / 10.0),
+                    Some((fp * 10.0).round() / 10.0),
+                );
+            }
+        }
+        (None, None)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
+            let mut parts = statm.split_whitespace();
+            let _ = parts.next();
+            if let Some(rss_pages) = parts.next().and_then(|s| s.parse::<u64>().ok()) {
+                let page_sz = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(4096) as u64;
+                let rss = ((rss_pages * page_sz) as f64) / (1024.0 * 1024.0);
+                let r = (rss * 10.0).round() / 10.0;
+                return (Some(r), Some(r));
+            }
+        }
+        (None, None)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        (None, None)
+    }
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<String> {
@@ -1219,6 +1278,430 @@ async fn admin_api_handler(
         _ => json_resp(
             StatusCode::NOT_FOUND,
             json!({ "error": "unknown admin route" }),
+        ),
+    }
+}
+
+async fn workspace_events_handler(
+    State(st): State<AppState>,
+    Query(qs): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    let tok = bearer_token(&headers)
+        .or_else(|| qs.get("token").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+        .unwrap_or_default();
+    match Control::authenticate(&st.pool, &tok).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return json_resp(StatusCode::UNAUTHORIZED, json!({ "error": "unauthorized" })),
+        Err(e) => return ctrl_err_resp(e),
+    }
+
+    let notify = st.channel_notify.clone();
+    let s = stream::unfold((notify, 0u64), |(notify, seq)| async move {
+        if seq == 0 {
+            let ev = Event::default().data(
+                json!({ "type": "connected", "seq": 0, "version": VERSION }).to_string(),
+            );
+            return Some((Ok::<Event, Infallible>(ev), (notify, 1)));
+        }
+        let kind = {
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            tokio::select! {
+                _ = notified => "refresh",
+                _ = tokio::time::sleep(Duration::from_secs(15)) => "heartbeat",
+            }
+        };
+        let ev = Event::default().data(
+            json!({
+                "type": kind,
+                "seq": seq,
+                "ts": chrono::Utc::now().to_rfc3339(),
+            })
+            .to_string(),
+        );
+        Some((Ok::<Event, Infallible>(ev), (notify, seq + 1)))
+    });
+
+    Sse::new(s)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(20)).text("keepalive"))
+        .into_response()
+}
+
+async fn workspace_api_handler(
+    State(st): State<AppState>,
+    AxumPath(sub): AxumPath<String>,
+    method: Method,
+    Query(qs): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if method == Method::OPTIONS {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let tok = bearer_token(&headers).unwrap_or_default();
+    let pid = match Control::authenticate(&st.pool, &tok).await {
+        Ok(Some(p)) => p,
+        Ok(None) => return json_resp(StatusCode::UNAUTHORIZED, json!({ "error": "unauthorized" })),
+        Err(e) => return ctrl_err_resp(e),
+    };
+
+    let b: Value = if body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(&body) {
+            Ok(v) => v,
+            Err(_) => return json_resp(StatusCode::BAD_REQUEST, json!({ "error": "invalid json" })),
+        }
+    };
+
+    match (sub.as_str(), method.clone()) {
+        ("overview", Method::GET) => {
+            let ns_filter = qs.get("namespace").map(|s| s.as_str());
+            match Control::workspace_overview(&st.pool, pid, ns_filter).await {
+                Ok(mut v) => {
+                    let (rss_mb, footprint_mb) = current_process_memory_mb();
+                    let emb_mode = if st.embedder.is_openai() {
+                        format!("OpenAI ({}-d)", st.embedder.dim)
+                    } else {
+                        format!("Local {} ({}-d)", st.embedder.model_name(), st.embedder.dim)
+                    };
+                    if let Some(vitals) = v.get_mut("vitals").and_then(|x| x.as_object_mut()) {
+                        vitals.insert("version".into(), json!(VERSION));
+                        vitals.insert("uptime_secs".into(), json!(st.started_at.elapsed().as_secs()));
+                        vitals.insert("rss_mb".into(), json!(rss_mb));
+                        vitals.insert("footprint_mb".into(), json!(footprint_mb));
+                        vitals.insert("embedding_mode".into(), json!(emb_mode));
+                        vitals.insert("ready".into(), json!(st.embed_configured.load(Ordering::Acquire)));
+                        vitals.insert("warm".into(), json!(st.warm_proven.load(Ordering::Relaxed)));
+                    }
+                    json_resp(StatusCode::OK, v)
+                }
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("channel/messages", Method::GET) => {
+            let ns = qs.get("namespace").map(|s| s.trim()).unwrap_or("");
+            let ch = qs.get("channel").map(|s| s.trim()).unwrap_or("");
+            if ns.is_empty() || ch.is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "namespace and channel required" }),
+                );
+            }
+            let limit = qs
+                .get("limit")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(120);
+            let before_id = qs.get("before_id").and_then(|s| s.parse::<i64>().ok());
+            match Control::workspace_channel_messages(&st.pool, pid, ns, ch, limit, before_id).await {
+                Ok(msgs) => json_resp(
+                    StatusCode::OK,
+                    json!({ "namespace": ns, "channel": ch, "messages": msgs }),
+                ),
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("channel/create", Method::POST) => {
+            let ns = b.get("namespace").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let raw_ch = b.get("channel").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if ns.is_empty() || raw_ch.is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "namespace and channel required" }),
+                );
+            }
+            match Control::authorize(&st.pool, pid, ns, true).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return json_resp(
+                        StatusCode::FORBIDDEN,
+                        json!({ "error": format!("write grant required on namespace '{}'", ns) }),
+                    )
+                }
+                Err(e) => return ctrl_err_resp(e),
+            }
+            let ch = if raw_ch.starts_with('#') {
+                raw_ch.to_string()
+            } else {
+                format!("#{}", raw_ch)
+            };
+            let desc = b.get("description").and_then(|v| v.as_str()).unwrap_or("");
+            let ad = Advert {
+                owner_session: "owner",
+                description: desc,
+                what_you_get: "",
+                intents: None,
+                metadata: None,
+            };
+            match Control::channel_advertise(&st.pool, ns, &ch, pid, ad).await {
+                Ok(v) => {
+                    st.channel_notify.notify_waiters();
+                    json_resp(StatusCode::OK, v)
+                }
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("channel", Method::DELETE) => {
+            let ns = qs
+                .get("namespace")
+                .map(|s| s.as_str())
+                .or_else(|| b.get("namespace").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .trim();
+            let ch = qs
+                .get("channel")
+                .map(|s| s.as_str())
+                .or_else(|| b.get("channel").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .trim();
+            if ns.is_empty() || ch.is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "namespace and channel required" }),
+                );
+            }
+            match Control::workspace_delete_channel(&st.pool, pid, ns, ch).await {
+                Ok(v) => {
+                    st.channel_notify.notify_waiters();
+                    json_resp(StatusCode::OK, v)
+                }
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("channel/subscribe", Method::POST) => {
+            let ns = b.get("namespace").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let ch = b.get("channel").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let sess = b
+                .get("session_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            match Control::workspace_manage_subscription(&st.pool, pid, ns, ch, sess, true).await {
+                Ok(v) => {
+                    st.channel_notify.notify_waiters();
+                    json_resp(StatusCode::OK, v)
+                }
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("channel/unsubscribe", Method::POST) => {
+            let ns = b.get("namespace").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let ch = b.get("channel").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let sess = b
+                .get("session_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            match Control::workspace_manage_subscription(&st.pool, pid, ns, ch, sess, false).await {
+                Ok(v) => {
+                    st.channel_notify.notify_waiters();
+                    json_resp(StatusCode::OK, v)
+                }
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("channel/publish", Method::POST) => {
+            let ns = b.get("namespace").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let ch = b.get("channel").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let sender = b
+                .get("sender_session")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().trim_start_matches('@'))
+                .filter(|s| !s.is_empty())
+                .unwrap_or("owner");
+            let content = b.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            if ns.is_empty() || ch.is_empty() || content.trim().is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "namespace, channel, and content required" }),
+                );
+            }
+            match Control::authorize(&st.pool, pid, ns, true).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return json_resp(
+                        StatusCode::FORBIDDEN,
+                        json!({ "error": format!("write grant required on namespace '{}'", ns) }),
+                    )
+                }
+                Err(e) => return ctrl_err_resp(e),
+            }
+            let claimable = b.get("claimable").and_then(|v| v.as_bool()).unwrap_or(false);
+            let default_intent = if claimable { "task" } else { "message" };
+            let opts = PublishOpts {
+                intent: b
+                    .get("intent")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(default_intent)
+                    .to_string(),
+                metadata: b.get("metadata").cloned().unwrap_or_else(|| json!({})),
+                description: String::new(),
+                what_you_get: String::new(),
+                claimable,
+                reply_to: b.get("reply_to").and_then(|v| v.as_i64()).filter(|&x| x > 0),
+            };
+            match Control::channel_publish(&st.pool, ns, ch, sender, pid, content, &opts).await {
+                Ok(v) => {
+                    st.channel_notify.notify_waiters();
+                    json_resp(StatusCode::OK, v)
+                }
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("session/messages", Method::GET) => {
+            let ns = qs.get("namespace").map(|s| s.trim()).unwrap_or("");
+            let sess = qs.get("session").map(|s| s.trim()).unwrap_or("");
+            if ns.is_empty() || sess.is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "namespace and session required" }),
+                );
+            }
+            let limit = qs
+                .get("limit")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(120);
+            match Control::workspace_session_messages(&st.pool, pid, ns, sess, limit).await {
+                Ok(msgs) => json_resp(
+                    StatusCode::OK,
+                    json!({ "namespace": ns, "session": sess, "messages": msgs }),
+                ),
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("session/send", Method::POST) => {
+            let ns = b.get("namespace").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let to_s = b
+                .get("to_session")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().trim_start_matches('@'))
+                .unwrap_or("");
+            let from_s = b
+                .get("from_session")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().trim_start_matches('@'))
+                .filter(|s| !s.is_empty())
+                .unwrap_or("owner");
+            let content = b.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            if ns.is_empty() || to_s.is_empty() || content.trim().is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "namespace, to_session, and content required" }),
+                );
+            }
+            match Control::authorize(&st.pool, pid, ns, true).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return json_resp(
+                        StatusCode::FORBIDDEN,
+                        json!({ "error": format!("write grant required on namespace '{}'", ns) }),
+                    )
+                }
+                Err(e) => return ctrl_err_resp(e),
+            }
+            let opts = SendOpts {
+                subject: b
+                    .get("subject")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                intent: b
+                    .get("intent")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("message")
+                    .to_string(),
+                priority: b
+                    .get("priority")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("normal")
+                    .to_string(),
+                thread_key: String::new(),
+                replaces_id: None,
+                replace_pending: false,
+                in_reply_to: None,
+                metadata: json!({}),
+            };
+            match Control::inbox_send(&st.pool, ns, to_s, from_s, pid, content, &opts).await {
+                Ok(v) => {
+                    st.channel_notify.notify_waiters();
+                    json_resp(StatusCode::OK, v)
+                }
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("session", Method::DELETE) => {
+            let ns = qs
+                .get("namespace")
+                .map(|s| s.as_str())
+                .or_else(|| b.get("namespace").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .trim();
+            let sess = qs
+                .get("session")
+                .map(|s| s.as_str())
+                .or_else(|| b.get("session_name").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .trim();
+            if ns.is_empty() || sess.is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "namespace and session required" }),
+                );
+            }
+            match Control::workspace_delete_session(&st.pool, pid, ns, sess).await {
+                Ok(v) => {
+                    st.channel_notify.notify_waiters();
+                    json_resp(StatusCode::OK, v)
+                }
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("memories", Method::GET) => {
+            let ns = qs.get("namespace").map(|s| s.as_str());
+            let ftype = qs
+                .get("type")
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty());
+            if let Some(ref ft) = ftype {
+                if !ALLOWED_MEMORY_TYPES.contains(&ft.as_str()) {
+                    return json_resp(
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": format!("unknown type {:?}", ft) }),
+                    );
+                }
+            }
+            let q = qs.get("q").map(|s| s.as_str());
+            let limit = qs
+                .get("limit")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(50);
+            let offset = qs
+                .get("offset")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            match Control::workspace_memories(
+                &st.pool,
+                pid,
+                ns,
+                ftype.as_deref(),
+                q,
+                limit,
+                offset,
+            )
+            .await
+            {
+                Ok(memories) => json_resp(
+                    StatusCode::OK,
+                    json!({ "memories": memories, "limit": limit, "offset": offset }),
+                ),
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        _ => json_resp(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "unknown workspace route" }),
         ),
     }
 }
@@ -3067,17 +3550,28 @@ pub async fn run_server_opts(
         ns_cache: Arc::new(Mutex::new(None)),
         mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
         mcp_semaphore: Arc::new(Semaphore::new(24)),
+        started_at: Instant::now(),
     };
 
+    let cors_routes = Router::new()
+        .route("/workspace/events", get(workspace_events_handler))
+        .route("/workspace/api/*sub", any(workspace_api_handler))
+        .route("/admin/api/*sub", any(admin_api_handler))
+        .layer(CorsLayer::permissive());
+
     let app = Router::new()
+        .route("/", get(admin_index_handler))
+        .route("/app", get(admin_index_handler))
+        .route("/app/", get(admin_index_handler))
+        .route("/app/*file", get(admin_static_handler))
         .route("/healthz", get(healthz_handler))
         .route("/readyz", get(readyz_handler))
         .route("/metrics", get(metrics_handler))
         .route("/metrics/prometheus", get(metrics_prometheus_handler))
         .route("/admin", get(admin_index_handler))
         .route("/admin/", get(admin_index_handler))
-        .route("/admin/api/*sub", any(admin_api_handler))
         .route("/admin/*file", get(admin_static_handler))
+        .merge(cors_routes)
         .route("/mcp", any(mcp_http_handler))
         .route("/secret/resolve", post(secret_resolve_handler))
         .route("/bindings", get(user_routes_handler).post(user_routes_handler))

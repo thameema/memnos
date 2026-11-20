@@ -5,6 +5,7 @@ pub mod code_anchors;
 pub mod config;
 pub mod control;
 pub mod db;
+pub mod desktop;
 pub mod embed;
 pub mod extract;
 pub mod gateway;

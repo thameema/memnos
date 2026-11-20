@@ -49,6 +49,19 @@ pub fn is_antigravity_hook(data: &Value) -> bool {
     AGY_PAYLOAD_KEYS.iter().any(|k| obj.contains_key(*k))
 }
 
+fn is_cursor_hook(data: &Value) -> bool {
+    env::var_os("CURSOR_PROJECT_DIR").is_some()
+        || env::var_os("CURSOR_TRACE_ID").is_some()
+        || data.get("cursor_version").is_some()
+        || data.get("workspace_roots").is_some()
+}
+
+fn is_codex_hook() -> bool {
+    env::var_os("CODEX_CI").is_some()
+        || env::var_os("CODEX_SANDBOX").is_some()
+        || env::var_os("CODEX_MANAGED_BY_NPM").is_some()
+}
+
 pub fn agy_inject(msgs: &[String], markdown: bool) -> String {
     let steps: Vec<Value> = msgs
         .iter()
@@ -1145,6 +1158,18 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
 
         if agy {
             println!("{}", agy_inject(&[msg], true));
+        } else if is_cursor_hook(&data) {
+            println!("{}", json!({"additional_context": msg, "user_message": msg}));
+        } else if is_codex_hook() {
+            println!(
+                "{}",
+                json!({
+                    "hookSpecificOutput": {
+                        "hookEventName": "SessionStart",
+                        "additionalContext": msg
+                    }
+                })
+            );
         } else {
             println!("{}", json!({"systemMessage": msg}));
         }
@@ -1472,25 +1497,55 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
             {
                 steps.push(json!({ "systemMessage": { "systemMessage": ac } }));
             }
-            if show_periodic_badge && !first_dest {
-                if let Some(sm) = out.get("systemMessage").and_then(|v| v.as_str()) {
-                    steps.push(json!({
-                        "systemMessage": {
-                            "systemMessage": sm,
-                            "metadata": { "user_markdown": sm }
-                        }
-                    }));
+            // Render inline `[MEMNOS @handle · #channels]` directly in Antigravity's UI on every
+            // prompt (empty `systemMessage` sends 0 extra tokens to the model while
+            // `metadata.user_markdown` renders inline instead of hiding in a collapsed row).
+            let ui_badge = format!("`{}`", format_memnos_badge(&eff_sn, &eff_chans, None));
+            steps.push(json!({
+                "systemMessage": {
+                    "systemMessage": "",
+                    "metadata": { "user_markdown": ui_badge }
                 }
+            }));
+            println!(
+                "{}",
+                serde_json::to_string(&json!({ "injectSteps": steps }))
+                    .unwrap_or_else(|_| "{}".to_string())
+            );
+        } else if is_cursor_hook(&data) {
+            let ac = out
+                .get("hookSpecificOutput")
+                .and_then(|h| h.get("additionalContext"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let mut cur_out = json!({
+                "continue": true,
+                "user_message": format_memnos_badge(&eff_sn, &eff_chans, None),
+            });
+            if !ac.is_empty() {
+                cur_out["additional_context"] = json!(ac);
             }
-            if steps.is_empty() {
-                println!("{{}}");
+            println!("{}", cur_out);
+        } else if is_codex_hook() {
+            let ac = out
+                .get("hookSpecificOutput")
+                .and_then(|h| h.get("additionalContext"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let prefixed = if ac.is_empty() {
+                badge_str.clone()
             } else {
-                println!(
-                    "{}",
-                    serde_json::to_string(&json!({ "injectSteps": steps }))
-                        .unwrap_or_else(|_| "{}".to_string())
-                );
-            }
+                format!("{}\n{}", badge_str, ac)
+            };
+            println!(
+                "{}",
+                json!({
+                    "hookSpecificOutput": {
+                        "hookEventName": "UserPromptSubmit",
+                        "additionalContext": prefixed
+                    }
+                })
+            );
         } else if !out.is_empty() {
             println!("{}", Value::Object(out));
         }

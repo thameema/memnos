@@ -4929,6 +4929,600 @@ impl Control {
         }
         Ok(results)
     }
+
+    // ================================================================ workspace app (role-scoped channels, handles, telemetry)
+
+    /// Return all concrete namespaces readable by `principal_id` (including namespaces discovered
+    /// via channels, sessions, turns, facts, or registry) along with `(namespace, can_write)`.
+    async fn workspace_authorized_ns_map(
+        c: &impl GenericClient,
+        principal_id: i64,
+    ) -> CResult<Vec<(String, bool)>> {
+        let eff = Self::effective_namespaces_on(c, principal_id).await?;
+        let read_grants: Vec<&(String, bool, bool)> = eff.iter().filter(|g| g.1).collect();
+        if read_grants.is_empty() {
+            return Ok(vec![]);
+        }
+        let has_tenant: bool = c
+            .query_one(
+                "SELECT to_regclass('tenant_memnos.raw_turns') IS NOT NULL AND to_regclass('tenant_memnos.semantic') IS NOT NULL",
+                &[],
+            )
+            .await
+            .map(|r| r.get(0))
+            .unwrap_or(false);
+        let discover_sql = if has_tenant {
+            "SELECT name AS ns FROM memnos_control.namespaces
+             UNION SELECT DISTINCT namespace FROM memnos_control.channel_catalog
+             UNION SELECT DISTINCT namespace FROM memnos_control.channel_messages
+             UNION SELECT DISTINCT namespace FROM memnos_control.channel_subscriptions
+             UNION SELECT DISTINCT namespace FROM memnos_control.agent_sessions
+             UNION SELECT DISTINCT namespace FROM tenant_memnos.raw_turns
+             UNION SELECT DISTINCT namespace FROM tenant_memnos.semantic"
+        } else {
+            "SELECT name AS ns FROM memnos_control.namespaces
+             UNION SELECT DISTINCT namespace FROM memnos_control.channel_catalog
+             UNION SELECT DISTINCT namespace FROM memnos_control.channel_messages
+             UNION SELECT DISTINCT namespace FROM memnos_control.channel_subscriptions
+             UNION SELECT DISTINCT namespace FROM memnos_control.agent_sessions"
+        };
+        let mut candidates: BTreeSet<String> = c
+            .query(discover_sql, &[])
+            .await?
+            .iter()
+            .map(|r| r.get::<_, String>(0))
+            .filter(|s| !s.is_empty() && s != "*" && !s.starts_with("secret:"))
+            .collect();
+        for (g, can_r, _) in &eff {
+            if *can_r && g != "*" && !g.ends_with(":*") && !g.starts_with("secret:") {
+                candidates.insert(g.clone());
+            }
+        }
+        let mut out = Vec::new();
+        for ns in candidates {
+            let can_r = eff
+                .iter()
+                .any(|(g, r, _)| *r && Self::grant_matches(g, &ns));
+            if can_r {
+                let can_w = eff
+                    .iter()
+                    .any(|(g, _, w)| *w && Self::grant_matches(g, &ns));
+                out.push((ns, can_w));
+            }
+        }
+        Ok(out)
+    }
+
+    pub async fn workspace_overview(
+        pool: &Pool,
+        principal_id: i64,
+        ns_filter: Option<&str>,
+    ) -> CResult<Value> {
+        let p_info = Self::principal_info(pool, principal_id).await?;
+        let c = conn(pool).await?;
+        let eff = Self::effective_namespaces_on(&**c, principal_id).await?;
+        let is_admin = eff.iter().any(|(g, r, _)| g == "*" && *r);
+        let ns_map = Self::workspace_authorized_ns_map(&**c, principal_id).await?;
+
+        let selected_ns: Vec<String> = match ns_filter.map(|s| s.trim()).filter(|s| !s.is_empty() && *s != "*") {
+            Some(target) => {
+                if !Self::authorize_on(&**c, principal_id, target, false).await? {
+                    return Err(ControlError::Forbidden(format!(
+                        "no read grant for namespace '{}'",
+                        target
+                    )));
+                }
+                vec![target.to_string()]
+            }
+            None => ns_map.iter().map(|(n, _)| n.clone()).collect(),
+        };
+
+        let all_auth_ns: Vec<String> = ns_map.iter().map(|(n, _)| n.clone()).collect();
+        let write_set: BTreeSet<String> = ns_map
+            .iter()
+            .filter(|(_, w)| *w)
+            .map(|(n, _)| n.clone())
+            .collect();
+
+        let has_tenant: bool = c
+            .query_one(
+                "SELECT to_regclass('tenant_memnos.raw_turns') IS NOT NULL
+                        AND to_regclass('tenant_memnos.semantic') IS NOT NULL
+                        AND to_regclass('tenant_memnos.entities') IS NOT NULL",
+                &[],
+            )
+            .await
+            .map(|r| r.get(0))
+            .unwrap_or(false);
+
+        let mut namespaces_json = Vec::new();
+        let mut total_turns: i64 = 0;
+        let mut total_facts: i64 = 0;
+        let mut total_entities: i64 = 0;
+
+        if !all_auth_ns.is_empty() {
+            let ns_rows = if has_tenant {
+                c.query(
+                    "SELECT u.ns AS name, COALESCE(n.description, '') AS description,
+                            COALESCE(n.kind, 'memory') AS kind,
+                            (n.name IS NOT NULL AND NOT COALESCE(n.auto_registered, false)) AS registered,
+                            COALESCE(rt.cnt, 0) AS turns,
+                            COALESCE(sm.cnt, 0) AS facts,
+                            COALESCE(en.cnt, 0) AS entities
+                     FROM UNNEST($1::text[]) AS u(ns)
+                     LEFT JOIN memnos_control.namespaces n ON n.name = u.ns
+                     LEFT JOIN (SELECT namespace, count(*) cnt FROM tenant_memnos.raw_turns WHERE namespace = ANY($1) GROUP BY namespace) rt ON rt.namespace = u.ns
+                     LEFT JOIN (SELECT namespace, count(*) cnt FROM tenant_memnos.semantic WHERE namespace = ANY($1) GROUP BY namespace) sm ON sm.namespace = u.ns
+                     LEFT JOIN (SELECT namespace, count(*) cnt FROM tenant_memnos.entities WHERE namespace = ANY($1) GROUP BY namespace) en ON en.namespace = u.ns
+                     ORDER BY COALESCE(rt.cnt, 0) DESC, u.ns",
+                    params![all_auth_ns],
+                )
+                .await?
+            } else {
+                c.query(
+                    "SELECT u.ns AS name, COALESCE(n.description, '') AS description,
+                            COALESCE(n.kind, 'memory') AS kind,
+                            (n.name IS NOT NULL AND NOT COALESCE(n.auto_registered, false)) AS registered,
+                            0::bigint AS turns, 0::bigint AS facts, 0::bigint AS entities
+                     FROM UNNEST($1::text[]) AS u(ns)
+                     LEFT JOIN memnos_control.namespaces n ON n.name = u.ns
+                     ORDER BY u.ns",
+                    params![all_auth_ns],
+                )
+                .await?
+            };
+            for r in ns_rows {
+                let name: String = r.get("name");
+                let turns: i64 = r.get("turns");
+                let facts: i64 = r.get("facts");
+                let entities: i64 = r.get("entities");
+                if selected_ns.contains(&name) {
+                    total_turns += turns;
+                    total_facts += facts;
+                    total_entities += entities;
+                }
+                namespaces_json.push(json!({
+                    "name": name,
+                    "description": r.get::<_, String>("description"),
+                    "kind": r.get::<_, String>("kind"),
+                    "registered": r.get::<_, bool>("registered"),
+                    "turns": turns,
+                    "facts": facts,
+                    "entities": entities,
+                    "can_write": write_set.contains(&name) || eff.iter().any(|(g, _, w)| *w && Self::grant_matches(g, &name)),
+                }));
+            }
+        }
+
+        let channels_json: Vec<Value> = if selected_ns.is_empty() {
+            vec![]
+        } else {
+            let ch_rows = c
+                .query(
+                    "WITH u AS (
+                        SELECT namespace, channel FROM memnos_control.channel_catalog WHERE namespace = ANY($1)
+                        UNION SELECT namespace, channel FROM memnos_control.channel_messages WHERE namespace = ANY($1) AND recalled_at IS NULL
+                        UNION SELECT namespace, channel FROM memnos_control.channel_subscriptions WHERE namespace = ANY($1)
+                     )
+                     SELECT u.namespace, u.channel,
+                            COALESCE(cc.kind, 'topic') AS kind,
+                            COALESCE(cc.description, '') AS description,
+                            COALESCE(cc.global_topic, false) AS global_topic,
+                            COALESCE(mc.n, 0) AS message_count,
+                            COALESCE(mc.open_tasks, 0) AS open_tasks,
+                            mc.last_at AS last_message_at,
+                            COALESCE(sc.subs, '{}') AS subscribers,
+                            COALESCE(mc.pubs, '{}') AS publishers
+                     FROM u
+                     LEFT JOIN memnos_control.channel_catalog cc ON cc.namespace = u.namespace AND cc.channel = u.channel
+                     LEFT JOIN (
+                         SELECT namespace, channel,
+                                count(*) AS n,
+                                count(*) FILTER (WHERE claimable AND claim_status IN ('pending', 'unclaimed', 'claimed')) AS open_tasks,
+                                max(created_at) AS last_at,
+                                array_agg(DISTINCT sender_session ORDER BY sender_session) AS pubs
+                         FROM memnos_control.channel_messages
+                         WHERE namespace = ANY($1) AND recalled_at IS NULL
+                         GROUP BY namespace, channel
+                     ) mc ON mc.namespace = u.namespace AND mc.channel = u.channel
+                     LEFT JOIN (
+                         SELECT namespace, channel, array_agg(session_name ORDER BY session_name) AS subs
+                         FROM memnos_control.channel_subscriptions
+                         WHERE namespace = ANY($1)
+                         GROUP BY namespace, channel
+                     ) sc ON sc.namespace = u.namespace AND sc.channel = u.channel
+                     WHERE u.channel NOT IN ('*', 'status:*') AND u.channel NOT LIKE 'status:%'
+                     ORDER BY mc.last_at DESC NULLS LAST, u.namespace, u.channel",
+                    params![selected_ns],
+                )
+                .await?;
+            rows_json(&ch_rows)
+        };
+
+        let sessions_json: Vec<Value> = if selected_ns.is_empty() {
+            vec![]
+        } else {
+            let s_rows = c
+                .query(
+                    "SELECT a.namespace, a.name, a.status, a.run_state, a.cwd, a.host,
+                            a.pid, a.tty, a.current_task, a.registered_at, a.last_heartbeat_at,
+                            a.expires_at, (a.expires_at > now() AND a.status <> 'offline') AS alive,
+                            COALESCE(sc.chs, '{}') AS channels,
+                            COALESCE(ib.unread, 0) AS unread_inbox
+                     FROM memnos_control.agent_sessions a
+                     LEFT JOIN (
+                         SELECT namespace, session_name, array_agg(channel ORDER BY channel) AS chs
+                         FROM memnos_control.channel_subscriptions
+                         WHERE namespace = ANY($1) AND channel LIKE '#%'
+                         GROUP BY namespace, session_name
+                     ) sc ON sc.namespace = a.namespace AND sc.session_name = a.name
+                     LEFT JOIN (
+                         SELECT namespace, to_session, count(*) AS unread
+                         FROM memnos_control.agent_inbox
+                         WHERE namespace = ANY($1) AND status IN ('pending', 'read') AND recalled_at IS NULL
+                         GROUP BY namespace, to_session
+                     ) ib ON ib.namespace = a.namespace AND ib.to_session = a.name
+                     WHERE a.namespace = ANY($1)
+                     ORDER BY (a.expires_at > now() AND a.status <> 'offline') DESC, a.last_heartbeat_at DESC",
+                    params![selected_ns],
+                )
+                .await?;
+            rows_json(&s_rows)
+        };
+
+        let db_size_bytes: Option<i64> = if is_admin {
+            c.query_opt("SELECT pg_database_size(current_database())", &[])
+                .await?
+                .map(|r| r.get(0))
+        } else {
+            None
+        };
+
+        let ops_24h: Vec<Value> = if selected_ns.is_empty() {
+            vec![]
+        } else {
+            let op_rows = c
+                .query(
+                    "SELECT action AS op,
+                            count(*) AS calls,
+                            round(100.0 * count(*) FILTER (WHERE status >= 400) / GREATEST(count(*), 1), 2)::float8 AS err_pct,
+                            COALESCE(percentile_cont(0.50) WITHIN GROUP (ORDER BY latency_ms), 0)::float8 AS p50_ms,
+                            COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::float8 AS p95_ms
+                     FROM memnos_control.audit_log
+                     WHERE ts >= now() - interval '24 hours'
+                       AND (namespace = ANY($1) OR ($2::bool AND COALESCE(namespace, '') = ''))
+                     GROUP BY action
+                     ORDER BY calls DESC LIMIT 12",
+                    params![selected_ns, is_admin],
+                )
+                .await?;
+            rows_json(&op_rows)
+        };
+
+        let usage_row = if selected_ns.is_empty() {
+            json!({"calls": 0, "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0})
+        } else {
+            let r = c
+                .query_one(
+                    "SELECT count(*) AS calls,
+                            COALESCE(sum(tokens_in), 0)::bigint AS tokens_in,
+                            COALESCE(sum(tokens_out), 0)::bigint AS tokens_out,
+                            COALESCE(sum(cost_usd), 0.0)::float8 AS cost_usd
+                     FROM memnos_control.usage_ledger
+                     WHERE ts >= now() - interval '30 days' AND namespace = ANY($1)",
+                    params![selected_ns],
+                )
+                .await?;
+            row_to_json(&r)
+        };
+
+        let grants_json: Vec<Value> = eff
+            .iter()
+            .map(|(ns, cr, cw)| json!({"namespace": ns, "can_read": cr, "can_write": cw}))
+            .collect();
+
+        Ok(json!({
+            "principal": p_info,
+            "is_admin": is_admin,
+            "grants": grants_json,
+            "namespaces": namespaces_json,
+            "channels": channels_json,
+            "sessions": sessions_json,
+            "vitals": {
+                "db_size_bytes": db_size_bytes,
+                "total_turns": total_turns,
+                "total_facts": total_facts,
+                "total_entities": total_entities,
+                "ops_24h": ops_24h,
+                "usage_30d": usage_row,
+            }
+        }))
+    }
+
+    pub async fn workspace_channel_messages(
+        pool: &Pool,
+        principal_id: i64,
+        namespace: &str,
+        channel: &str,
+        limit: i64,
+        before_id: Option<i64>,
+    ) -> CResult<Vec<Value>> {
+        let c = conn(pool).await?;
+        if !Self::authorize_on(&**c, principal_id, namespace, false).await? {
+            return Err(ControlError::Forbidden(format!(
+                "no read grant for namespace '{}'",
+                namespace
+            )));
+        }
+        let lim = limit.clamp(1, 300);
+        let rows = c
+            .query(
+                "SELECT * FROM (
+                    SELECT id, namespace, channel, sender_session, intent, content,
+                           claimable, claim_status, claimed_by, claimed_by_ns,
+                           resolution, metadata, created_at
+                    FROM memnos_control.channel_messages
+                    WHERE namespace = $1 AND channel = $2 AND recalled_at IS NULL
+                      AND ($3::bigint IS NULL OR id < $3)
+                    ORDER BY id DESC
+                    LIMIT $4
+                 ) sub ORDER BY id ASC",
+                params![namespace, channel, before_id, lim],
+            )
+            .await?;
+        Ok(rows_json(&rows))
+    }
+
+    pub async fn workspace_session_messages(
+        pool: &Pool,
+        principal_id: i64,
+        namespace: &str,
+        session_name: &str,
+        limit: i64,
+    ) -> CResult<Vec<Value>> {
+        let c = conn(pool).await?;
+        if !Self::authorize_on(&**c, principal_id, namespace, false).await? {
+            return Err(ControlError::Forbidden(format!(
+                "no read grant for namespace '{}'",
+                namespace
+            )));
+        }
+        let clean = session_name.trim().trim_start_matches('@');
+        let lim = limit.clamp(1, 300);
+        let rows = c
+            .query(
+                "SELECT * FROM (
+                    SELECT id, namespace, from_session, to_session, subject, content,
+                           intent, priority, status, resolution, metadata, created_at, acted_at
+                    FROM memnos_control.agent_inbox
+                    WHERE namespace = $1 AND (to_session = $2 OR from_session = $2) AND recalled_at IS NULL
+                    ORDER BY id DESC
+                    LIMIT $3
+                 ) sub ORDER BY id ASC",
+                params![namespace, clean, lim],
+            )
+            .await?;
+        Ok(rows_json(&rows))
+    }
+
+    pub async fn workspace_delete_channel(
+        pool: &Pool,
+        principal_id: i64,
+        namespace: &str,
+        channel: &str,
+    ) -> CResult<Value> {
+        let ch = channel.trim();
+        if ch.is_empty() {
+            return bad("channel required");
+        }
+        let mut c = conn(pool).await?;
+        if !Self::authorize_on(&**c, principal_id, namespace, true).await? {
+            return Err(ControlError::Forbidden(format!(
+                "write grant required on namespace '{}' to delete channel",
+                namespace
+            )));
+        }
+        let tx = c.transaction().await?;
+        let del_subs = tx
+            .execute(
+                "DELETE FROM memnos_control.channel_subscriptions WHERE namespace = $1 AND channel = $2",
+                params![namespace, ch],
+            )
+            .await?;
+        let del_msgs = tx
+            .execute(
+                "DELETE FROM memnos_control.channel_messages WHERE namespace = $1 AND channel = $2",
+                params![namespace, ch],
+            )
+            .await?;
+        let del_cat = tx
+            .execute(
+                "DELETE FROM memnos_control.channel_catalog WHERE namespace = $1 AND channel = $2",
+                params![namespace, ch],
+            )
+            .await?;
+        tx.execute(
+            "SELECT pg_notify('memnos_channel', $1::text)",
+            params![namespace],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(json!({
+            "ok": true,
+            "namespace": namespace,
+            "channel": ch,
+            "deleted_subscriptions": del_subs,
+            "deleted_messages": del_msgs,
+            "deleted_catalog": del_cat,
+        }))
+    }
+
+    pub async fn workspace_manage_subscription(
+        pool: &Pool,
+        principal_id: i64,
+        namespace: &str,
+        channel: &str,
+        session_name: &str,
+        subscribe: bool,
+    ) -> CResult<Value> {
+        let ch = channel.trim();
+        let sess = session_name.trim().trim_start_matches('@');
+        if ch.is_empty() || sess.is_empty() {
+            return bad("channel and session_name required");
+        }
+        let mut c = conn(pool).await?;
+        if !Self::authorize_on(&**c, principal_id, namespace, true).await? {
+            return Err(ControlError::Forbidden(format!(
+                "write grant required on namespace '{}'",
+                namespace
+            )));
+        }
+        let tx = c.transaction().await?;
+        let changed = if subscribe {
+            let max_id: i64 = tx
+                .query_one(
+                    "SELECT COALESCE(max(id), 0) FROM memnos_control.channel_messages WHERE namespace = $1 AND channel = $2",
+                    params![namespace, ch],
+                )
+                .await?
+                .get(0);
+            tx.execute(
+                "INSERT INTO memnos_control.channel_subscriptions (namespace, session_name, principal_id, channel, cursor)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (namespace, session_name, channel) DO NOTHING",
+                params![namespace, sess, principal_id, ch, max_id],
+            )
+            .await?
+        } else {
+            tx.execute(
+                "DELETE FROM memnos_control.channel_subscriptions
+                 WHERE namespace = $1 AND session_name = $2 AND channel = $3",
+                params![namespace, sess, ch],
+            )
+            .await?
+        };
+        tx.execute(
+            "SELECT pg_notify('memnos_channel', $1::text)",
+            params![namespace],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(json!({
+            "ok": true,
+            "namespace": namespace,
+            "channel": ch,
+            "session_name": sess,
+            "subscribed": subscribe,
+            "changed": changed,
+        }))
+    }
+
+    pub async fn workspace_delete_session(
+        pool: &Pool,
+        principal_id: i64,
+        namespace: &str,
+        session_name: &str,
+    ) -> CResult<Value> {
+        let sess = session_name.trim().trim_start_matches('@');
+        if sess.is_empty() {
+            return bad("session_name required");
+        }
+        let mut c = conn(pool).await?;
+        if !Self::authorize_on(&**c, principal_id, namespace, true).await? {
+            return Err(ControlError::Forbidden(format!(
+                "write grant required on namespace '{}'",
+                namespace
+            )));
+        }
+        let tx = c.transaction().await?;
+        let del_subs = tx
+            .execute(
+                "DELETE FROM memnos_control.channel_subscriptions WHERE namespace = $1 AND session_name = $2",
+                params![namespace, sess],
+            )
+            .await?;
+        let del_sess = tx
+            .execute(
+                "DELETE FROM memnos_control.agent_sessions WHERE namespace = $1 AND name = $2",
+                params![namespace, sess],
+            )
+            .await?;
+        tx.execute(
+            "SELECT pg_notify('memnos_channel', $1::text)",
+            params![namespace],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(json!({
+            "ok": true,
+            "namespace": namespace,
+            "session_name": sess,
+            "deleted_session": del_sess,
+            "deleted_subscriptions": del_subs,
+        }))
+    }
+
+    pub async fn workspace_memories(
+        pool: &Pool,
+        principal_id: i64,
+        ns_filter: Option<&str>,
+        memory_type: Option<&str>,
+        search_q: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> CResult<Vec<Value>> {
+        let c = conn(pool).await?;
+        let has_tenant: bool = c
+            .query_one(
+                "SELECT to_regclass('tenant_memnos.raw_turns') IS NOT NULL",
+                &[],
+            )
+            .await
+            .map(|r| r.get(0))
+            .unwrap_or(false);
+        if !has_tenant {
+            return Ok(vec![]);
+        }
+        let ns_list: Vec<String> = match ns_filter.map(|s| s.trim()).filter(|s| !s.is_empty() && *s != "*") {
+            Some(target) => {
+                if !Self::authorize_on(&**c, principal_id, target, false).await? {
+                    return Err(ControlError::Forbidden(format!(
+                        "no read grant for namespace '{}'",
+                        target
+                    )));
+                }
+                vec![target.to_string()]
+            }
+            None => Self::workspace_authorized_ns_map(&**c, principal_id)
+                .await?
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect(),
+        };
+        if ns_list.is_empty() {
+            return Ok(vec![]);
+        }
+        let lim = limit.clamp(1, 200);
+        let off = offset.max(0);
+        let q_pat = search_q
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("%{}%", s));
+        let rows = c
+            .query(
+                "SELECT id, namespace, speaker, text AS content, memory_type AS type,
+                        author_principal AS author, observed_at
+                 FROM tenant_memnos.raw_turns
+                 WHERE namespace = ANY($1)
+                   AND ($2::text IS NULL OR memory_type = $2)
+                   AND ($3::text IS NULL OR text ILIKE $3)
+                 ORDER BY id DESC
+                 LIMIT $4 OFFSET $5",
+                params![ns_list, memory_type, q_pat, lim, off],
+            )
+            .await?;
+        Ok(rows_json(&rows))
+    }
 }
 
 // ================================================================ tests (pure logic; DB paths need a live Postgres)
