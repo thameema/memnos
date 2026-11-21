@@ -348,6 +348,169 @@ def main():
               and ws_pong.get("req_id") == 77,
               f"hello={ws_hello} pong={ws_pong}")
 
+        print("=== 8. Headless Spawner Status, PRD Task DAG depends_on, Subscription Quota Failover & Cross-Harness Review ===")
+        sp_code, sp_st = call("GET", "/workspace/api/spawner/status", scoped_tok)
+        h_keys = {h["key"] for h in sp_st.get("harnesses", [])}
+        check("GET /workspace/api/spawner/status discovers harnesses & concurrency caps",
+              sp_code == 200 and {"claude-code", "antigravity", "codex", "gemini", "cursor"}.issubset(h_keys)
+              and sp_st.get("max_concurrent", 0) >= 1,
+              str(sp_st))
+
+        # Register multi-harness worker sessions on #prd-dag
+        for s_name, s_harness in [("dag-claude", "claude-code"), ("dag-claude-peer", "claude-code"), ("dag-agy", "antigravity")]:
+            call("POST", "/session/register", scoped_tok, {
+                "namespace": NS_RW,
+                "name": s_name,
+                "harness": s_harness,
+                "channels": ["#prd-dag"],
+            })
+
+        # Publish Task A (prefer claude-code) and Task B (depends_on: [task_a_id])
+        _, pub_a = call("POST", "/workspace/api/channel/publish", scoped_tok, {
+            "namespace": NS_RW,
+            "channel": "#prd-dag",
+            "sender_session": "owner",
+            "content": "Task A: Implement billing schema",
+            "claimable": True,
+            "intent": "task",
+            "metadata": {"preferred_harness": "claude-code"},
+        })
+        task_a_id = pub_a["id"]
+
+        _, pub_b = call("POST", "/workspace/api/channel/publish", scoped_tok, {
+            "namespace": NS_RW,
+            "channel": "#prd-dag",
+            "sender_session": "owner",
+            "content": "Task B: Wire API endpoints after schema",
+            "claimable": True,
+            "intent": "task",
+            "metadata": {"depends_on": [task_a_id]},
+        })
+        task_b_id = pub_b["id"]
+
+        # Non-preferred harness (dag-agy) yields Task A while preferred claude-code is online, AND cannot claim blocked Task B
+        _, poll_agy_early = call("POST", "/channel/poll", scoped_tok, {
+            "namespace": NS_RW, "session_name": "dag-agy", "channel": "#prd-dag"
+        })
+        claimed_early = [m["id"] for m in poll_agy_early.get("messages", []) if m.get("claimed_by") == "dag-agy"]
+        check("preferred_harness + depends_on gate non-preferred & downstream tasks accurately",
+              claimed_early == [], str(poll_agy_early))
+
+        # Preferred harness (dag-claude) claims Task A (still cannot claim blocked Task B)
+        _, poll_claude = call("POST", "/channel/poll", scoped_tok, {
+            "namespace": NS_RW, "session_name": "dag-claude", "channel": "#prd-dag"
+        })
+        claude_claimed = [m["id"] for m in poll_claude.get("messages", []) if m.get("claimed_by") == "dag-claude"]
+        check("preferred harness ('dag-claude') claims Task A while Task B stays gated on depends_on",
+              claude_claimed == [task_a_id], str(poll_claude))
+
+        # Simulate subscription quota limit on dag-claude -> releases Task A for automatic failover!
+        q_code, q_res = call("POST", "/workspace/api/session/quota", scoped_tok, {
+            "namespace": NS_RW, "session": "dag-claude", "paused": True, "cooldown_minutes": 60, "reason": "rate_limit_error"
+        })
+        # Also pause dag-claude-peer so preferred claude-code has 0 available capacity -> fallback unlocks!
+        call("POST", "/workspace/api/session/quota", scoped_tok, {
+            "namespace": NS_RW, "session": "dag-claude-peer", "paused": True, "cooldown_minutes": 60, "reason": "rate_limit_error"
+        })
+        _, poll_paused = call("POST", "/channel/poll", scoped_tok, {
+            "namespace": NS_RW, "session_name": "dag-claude", "channel": "#prd-dag"
+        })
+        check("POST /workspace/api/session/quota pauses handle, blocks polling, and releases in-progress task",
+              q_code == 200 and q_res.get("quota_paused") is True and q_res.get("released_tasks") == 1 and poll_paused.get("count") == 0,
+              f"q={q_res} poll={poll_paused}")
+
+        # Failover harness (dag-agy) now claims released Task A (with handoff_from metadata) & completes it!
+        _, poll_failover = call("POST", "/channel/poll", scoped_tok, {
+            "namespace": NS_RW, "session_name": "dag-agy", "channel": "#prd-dag"
+        })
+        agy_failover_msgs = [m for m in poll_failover.get("messages", []) if m.get("id") == task_a_id and m.get("claimed_by") == "dag-agy"]
+        check("failover harness ('dag-agy') claims released Task A when preferred harness is quota_paused",
+              len(agy_failover_msgs) == 1 and agy_failover_msgs[0].get("metadata", {}).get("handoff_from") == "dag-claude",
+              str(poll_failover))
+
+        call("POST", "/channel/ack", scoped_tok, {
+            "namespace": NS_RW, "session_name": "dag-agy", "id": task_a_id, "status": "done", "resolution": "schema migrated"
+        })
+
+        # Now that Task A is 'done', Task B unlocks immediately on next poll!
+        _, poll_unblocked = call("POST", "/channel/poll", scoped_tok, {
+            "namespace": NS_RW, "session_name": "dag-agy", "channel": "#prd-dag"
+        })
+        unblocked_ids = [m["id"] for m in poll_unblocked.get("messages", []) if m.get("claimed_by") == "dag-agy"]
+        check("downstream Task B unlocks immediately once upstream depends_on Task A is done",
+              task_b_id in unblocked_ids, str(poll_unblocked))
+        call("POST", "/channel/ack", scoped_tok, {
+            "namespace": NS_RW, "session_name": "dag-agy", "id": task_b_id, "status": "done", "resolution": "endpoints wired"
+        })
+
+        # Resume Claude sessions and test cross-harness code review (`different_harness: True`)
+        for s_name in ("dag-claude", "dag-claude-peer"):
+            call("POST", "/workspace/api/session/quota", scoped_tok, {
+                "namespace": NS_RW, "session": s_name, "paused": False
+            })
+        _, pub_rev = call("POST", "/workspace/api/channel/publish", scoped_tok, {
+            "namespace": NS_RW,
+            "channel": "#prd-dag",
+            "sender_session": "dag-claude",
+            "content": "Cross-harness review of billing PR",
+            "claimable": True,
+            "intent": "review_request",
+            "metadata": {"different_harness": True},
+        })
+        rev_id = pub_rev["id"]
+        _, poll_same_h = call("POST", "/channel/poll", scoped_tok, {
+            "namespace": NS_RW, "session_name": "dag-claude-peer", "channel": "#prd-dag"
+        })
+        same_h_claimed = [m["id"] for m in poll_same_h.get("messages", []) if m.get("claimed_by") == "dag-claude-peer"]
+        _, poll_diff_h = call("POST", "/channel/poll", scoped_tok, {
+            "namespace": NS_RW, "session_name": "dag-agy", "channel": "#prd-dag"
+        })
+        diff_h_claimed = [m["id"] for m in poll_diff_h.get("messages", []) if m.get("claimed_by") == "dag-agy"]
+        check("different_harness=True prevents same-harness peer claim and routes review to alternate harness",
+              rev_id not in same_h_claimed and rev_id in diff_h_claimed,
+              f"same={same_h_claimed} diff={diff_h_claimed}")
+
+        # Security & fail-closed checks (C1 admin-only spawner, unbound cwd guard, H5 quota ownership, M4 fail-closed depends_on)
+        sp_forbid_code, _ = call("POST", "/workspace/api/spawner/launch", scoped_tok, {
+            "namespace": NS_RW, "harness": "claude-code", "prompt": "noop"
+        })
+        check("non-admin principal is forbidden (403) from launching local headless workers",
+              sp_forbid_code == 403, f"code={sp_forbid_code}")
+
+        sp_cwd_code, sp_cwd_err = call("POST", "/workspace/api/spawner/launch", admin_tok, {
+            "namespace": NS_RW, "harness": "claude-code", "cwd": "/tmp", "prompt": "noop"
+        })
+        check("spawner rejects unbound arbitrary cwd ('/tmp') -> 400",
+              sp_cwd_code == 400 and "not bound" in sp_cwd_err.get("error", ""),
+              str(sp_cwd_err))
+
+        # Admin registers an admin-owned session in NS_RW; non-admin writer (`scoped_tok`) must get 403 trying to quota-pause it
+        call("POST", "/session/register", admin_tok, {
+            "namespace": NS_RW, "name": "admin-owned-sess", "harness": "antigravity"
+        })
+        q_hijack_code, _ = call("POST", "/workspace/api/session/quota", scoped_tok, {
+            "namespace": NS_RW, "session": "admin-owned-sess", "paused": True
+        })
+        check("non-owner writer cannot quota-pause another principal's session (403)",
+              q_hijack_code == 403, f"code={q_hijack_code}")
+
+        # Fail-closed depends_on: nonexistent dependency ID must stay gated (never fail open!)
+        _, pub_missing_dep = call("POST", "/workspace/api/channel/publish", scoped_tok, {
+            "namespace": NS_RW,
+            "channel": "#prd-dag",
+            "sender_session": "owner",
+            "content": "Task with nonexistent dependency",
+            "claimable": True,
+            "intent": "task",
+            "metadata": {"depends_on": [999999999]},
+        })
+        _, poll_missing_dep = call("POST", "/channel/poll", scoped_tok, {
+            "namespace": NS_RW, "session_name": "dag-agy", "channel": "#prd-dag"
+        })
+        missing_claimed = [m["id"] for m in poll_missing_dep.get("messages", []) if m.get("id") == pub_missing_dep["id"]]
+        check("nonexistent depends_on ID fails closed (stays gated, never claimed)",
+              missing_claimed == [], str(poll_missing_dep))
+
     finally:
         for ns in (NS_RW, NS_RO, NS_HIDDEN):
             call("DELETE", f"/admin/api/namespaces?name={ns}&purge=1", admin_tok)

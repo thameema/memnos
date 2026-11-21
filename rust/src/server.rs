@@ -73,6 +73,7 @@ pub struct AppState {
     pub ns_cache: Arc<Mutex<Option<(Instant, Vec<Value>)>>>,
     pub mcp_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<String>>>>>,
     pub mcp_semaphore: Arc<Semaphore>,
+    pub spawner: Arc<crate::spawner::HeadlessSpawner>,
     pub started_at: Instant,
 }
 
@@ -181,6 +182,7 @@ fn is_write_op(path: &str) -> bool {
             | "/lease/release"
             | "/session/register"
             | "/session/rename"
+            | "/session/quota"
             | "/session/heartbeat"
             | "/session/unregister"
             | "/channel/publish"
@@ -1508,7 +1510,7 @@ async fn workspace_ws_handler(
                                     } else {
                                         let opts = PublishOpts {
                                             intent: if claimable { "task".to_string() } else { "message".to_string() },
-                                            metadata: json!({}),
+                                            metadata: cmd.get("metadata").cloned().unwrap_or_else(|| json!({})),
                                             description: String::new(),
                                             what_you_get: String::new(),
                                             claimable,
@@ -1559,7 +1561,22 @@ async fn workspace_ws_handler(
                                             metadata: json!({}),
                                         };
                                         match Control::inbox_send(&st.pool, ns, to_s, from_s, pid, content, &opts).await {
-                                            Ok(v) => {
+                                            Ok(mut v) => {
+                                                let is_adm = Control::is_admin(&st.pool, pid).await.unwrap_or(false);
+                                                if let Some(hd_mode) = st.spawner.deliver_dm(
+                                                    &st.pool,
+                                                    st.port,
+                                                    pid,
+                                                    is_adm,
+                                                    st.event_tx.clone(),
+                                                    Arc::clone(&st.channel_notify),
+                                                    ns,
+                                                    to_s,
+                                                    from_s,
+                                                    content,
+                                                ).await {
+                                                    v["headless_delivery"] = json!(hd_mode);
+                                                }
                                                 st.channel_notify.notify_waiters();
                                                 let _ = st.event_tx.send(json!({
                                                     "type": "activity",
@@ -2004,6 +2021,122 @@ async fn workspace_api_handler(
                 metadata: json!({}),
             };
             match Control::inbox_send(&st.pool, ns, to_s, from_s, pid, content, &opts).await {
+                Ok(mut v) => {
+                    let is_adm = Control::is_admin(&st.pool, pid).await.unwrap_or(false);
+                    if let Some(hd_mode) = st
+                        .spawner
+                        .deliver_dm(
+                            &st.pool,
+                            st.port,
+                            pid,
+                            is_adm,
+                            st.event_tx.clone(),
+                            Arc::clone(&st.channel_notify),
+                            ns,
+                            to_s,
+                            from_s,
+                            content,
+                        )
+                        .await
+                    {
+                        v["headless_delivery"] = json!(hd_mode);
+                    }
+                    st.channel_notify.notify_waiters();
+                    json_resp(StatusCode::OK, v)
+                }
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("spawner/status", Method::GET) => {
+            let is_admin = Control::is_admin(&st.pool, pid).await.unwrap_or(false);
+            let allowed_ns: Option<Vec<String>> = if is_admin {
+                None
+            } else if let Ok(c) = st.pool.get().await {
+                Control::workspace_authorized_ns_map(&**c, pid)
+                    .await
+                    .ok()
+                    .map(|v| v.into_iter().map(|(n, _)| n).collect())
+            } else {
+                Some(vec![])
+            };
+            json_resp(
+                StatusCode::OK,
+                st.spawner.status_snapshot(allowed_ns.as_deref(), is_admin),
+            )
+        }
+        ("spawner/launch", Method::POST) => {
+            let is_admin = Control::is_admin(&st.pool, pid).await.unwrap_or(false);
+            if !is_admin {
+                return json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": "admin role required to spawn local headless workers" }),
+                );
+            }
+            let lreq: crate::spawner::LaunchRequest = match serde_json::from_value(b.clone()) {
+                Ok(r) => r,
+                Err(e) => {
+                    return json_resp(
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": format!("invalid launch payload: {}", e) }),
+                    )
+                }
+            };
+            match st
+                .spawner
+                .launch(
+                    st.pool.clone(),
+                    st.port,
+                    pid,
+                    st.event_tx.clone(),
+                    Arc::clone(&st.channel_notify),
+                    lreq,
+                )
+                .await
+            {
+                Ok(rec) => json_resp(StatusCode::OK, json!({ "ok": true, "worker": rec })),
+                Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
+            }
+        }
+        ("spawner/stop", Method::POST) => {
+            let is_admin = Control::is_admin(&st.pool, pid).await.unwrap_or(false);
+            if !is_admin {
+                return json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": "admin role required to stop local headless workers" }),
+                );
+            }
+            let run_id = b.get("run_id").and_then(|v| v.as_u64());
+            let handle = b.get("handle").and_then(|v| v.as_str());
+            let ns_opt = b.get("namespace").and_then(|v| v.as_str());
+            match st.spawner.stop_worker(run_id, handle, ns_opt) {
+                Ok(v) => {
+                    st.channel_notify.notify_waiters();
+                    json_resp(StatusCode::OK, v)
+                }
+                Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
+            }
+        }
+        ("session/quota", Method::POST) => {
+            let ns = b.get("namespace").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let sess = b
+                .get("session_name")
+                .or_else(|| b.get("name"))
+                .or_else(|| b.get("session"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let paused = b.get("paused").and_then(|v| v.as_bool()).unwrap_or(true);
+            let mins = b.get("cooldown_minutes").and_then(|v| v.as_i64()).unwrap_or(60);
+            let reason = b.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+            if ns.is_empty() || sess.is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "namespace and session_name required" }),
+                );
+            }
+            match Control::workspace_set_session_quota(&st.pool, pid, ns, sess, paused, mins, reason)
+                .await
+            {
                 Ok(v) => {
                     st.channel_notify.notify_waiters();
                     json_resp(StatusCode::OK, v)
@@ -3503,6 +3636,24 @@ async fn api_post_handler(
                 .map(|v| (StatusCode::OK, v))
                 .map_err(ctrl_err_resp)
         }
+        "/session/quota" => {
+            let sess = req
+                .get("session_name")
+                .or_else(|| req.get("name"))
+                .or_else(|| req.get("session"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let paused = req.get("paused").and_then(|v| v.as_bool()).unwrap_or(true);
+            let mins = req
+                .get("cooldown_minutes")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(60);
+            let reason = req.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+            Control::workspace_set_session_quota(&st.pool, pid, &ns, sess, paused, mins, reason)
+                .await
+                .map(|v| (StatusCode::OK, v))
+                .map_err(ctrl_err_resp)
+        }
         "/session/rename" => {
             let old_s = req.get("old_name").and_then(|v| v.as_str()).unwrap_or("");
             let new_s = req.get("new_name").and_then(|v| v.as_str()).unwrap_or("");
@@ -4146,6 +4297,7 @@ async fn api_post_handler(
                     | "inbox/recall"
                     | "session/register"
                     | "session/rename"
+                    | "session/quota"
                     | "session/unregister"
             ) {
                 st.channel_notify.notify_waiters();
@@ -4335,6 +4487,7 @@ pub async fn run_server_opts(
         ns_cache: Arc::new(Mutex::new(None)),
         mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
         mcp_semaphore: Arc::new(Semaphore::new(24)),
+        spawner: crate::spawner::HeadlessSpawner::new(),
         started_at: Instant::now(),
     };
 

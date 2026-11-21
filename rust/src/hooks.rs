@@ -910,6 +910,12 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
         run_hook_stats(reset);
         return;
     }
+    // Inside spawned headless workers (`MEMNOS_HEADLESS=1`), keep PreToolUse guardrails active
+    // while skipping interactive terminal lifecycle hooks whose hardcoded user tokens would
+    // collide with the worker's ephemeral namespace-scoped principal.
+    if which != "pretooluse" && env::var("MEMNOS_HEADLESS").ok().as_deref() == Some("1") {
+        return;
+    }
     if which == "statusline" {
         let mut raw_stdin = String::new();
         let _ = io::stdin().read_to_string(&mut raw_stdin);
@@ -1943,6 +1949,33 @@ fn hook_remember(data: &Value, ns: &str, url: &str, token: &str, agy: bool) {
     }
 
     let a_trimmed = a_text.trim();
+    let structured_api_err = data
+        .get("is_api_error")
+        .or_else(|| data.get("is_error"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        || data
+            .get("error")
+            .and_then(|v| v.as_str())
+            .map(|s| s == "rate_limit" || s == "rate_limit_error")
+            .unwrap_or(false);
+    if !rem_actor_sn.is_empty()
+        && structured_api_err
+        && crate::spawner::looks_like_quota_error(a_trimmed)
+    {
+        let _ = http_post(
+            &format!("{}/session/quota", url),
+            token,
+            &json!({
+                "namespace": ns,
+                "session_name": rem_actor_sn,
+                "paused": true,
+                "cooldown_minutes": 60,
+                "reason": a_trimmed.chars().take(120).collect::<String>(),
+            }),
+            1500,
+        );
+    }
     if a_trimmed.len() >= 30 {
         if eval_or_empty {
             record_capture(

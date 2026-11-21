@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MEMNOS · Workspace</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='8' fill='url(%23g)'/%3E%3Cpath d='M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8' stroke='%23fff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='2' y1='2' x2='30' y2='30' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='%237C5CFF'/%3E%3Cstop offset='.52' stop-color='%23B832E5'/%3E%3Cstop offset='1' stop-color='%23EC4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/admin/app.css?v=9">
+  <link rel="stylesheet" href="/admin/app.css?v=12">
 </head>
 <body>
   <!-- Connect / Server Onboarding Screen -->
@@ -271,10 +271,13 @@
             </div>
             <div class="chat-hdr-actions">
               <div id="ch-live-avatars" class="avatar-stack"></div>
+              <button id="btn-ch-spawn" class="btn-primary sm admin-only" title="Launch a non-TTY headless harness worker on this channel" hidden>⚡ Launch Headless</button>
               <button id="toggle-ch-inspector" class="ghost sm">Members &amp; Manage</button>
               <button id="delete-channel-btn" class="danger sm" hidden>Delete Channel</button>
             </div>
           </div>
+
+          <div id="ch-pipeline-strip" class="pipeline-strip" hidden></div>
 
           <div id="ch-messages" class="message-feed"></div>
 
@@ -287,6 +290,18 @@
                   <input id="ch-comp-sender" value="owner" title="Sender @handle">
                 </div>
                 <label class="chk"><input type="checkbox" id="ch-comp-claimable"> Competing-consumer task</label>
+                <div id="ch-task-opts" class="task-opts-inline" hidden>
+                  <select id="ch-comp-route" title="Harness routing rule for this task">
+                    <option value="">Route: Any harness</option>
+                    <option value="cross">Cross-harness review (≠ author)</option>
+                    <option value="antigravity">Prefer Antigravity</option>
+                    <option value="claude-code">Prefer Claude Code</option>
+                    <option value="codex">Prefer Codex</option>
+                    <option value="gemini">Prefer Gemini</option>
+                    <option value="cursor">Prefer Cursor</option>
+                  </select>
+                  <input id="ch-comp-deps" placeholder="Depends on #id (e.g. 101,102)" title="Comma-separated task message IDs that must complete before this task unlocks">
+                </div>
                 <span id="ch-comp-err" class="err"></span>
               </div>
               <div class="composer-main">
@@ -312,6 +327,7 @@
               <div class="pane-title">Handles</div>
               <div id="hd-pane-sub" class="pane-sub">Attached agent &amp; harness sessions</div>
             </div>
+            <button id="btn-hd-spawn" class="btn-primary sm admin-only" title="Launch a non-TTY headless harness worker" hidden>⚡ Headless</button>
           </div>
 
           <div class="pane-controls">
@@ -548,7 +564,7 @@
           <div class="page-hdr">
             <div>
               <h2>Engine, Resource &amp; Database Telemetry</h2>
-              <p class="muted">Live Rust single-binary memory footprint, PostgreSQL + pgvector storage, recall latency, and namespace distribution.</p>
+              <p class="muted">Live single-binary engine memory footprint, PostgreSQL + pgvector storage, recall latency, and namespace distribution.</p>
             </div>
           </div>
           <div id="tel-cards" class="kpi-grid"></div>
@@ -817,7 +833,7 @@
     <div class="login-card modal-card" style="max-width:420px">
       <h3 id="rename-title" style="margin:0 0 8px;font-size:16px">Rename @Handle</h3>
       <p id="rename-sub" class="muted" style="margin:0 0 12px;font-size:12.5px">Migrates all #channel subscriptions and unread @inbox messages to the new handle.</p>
-      <input id="rename-input" placeholder="new-handle-name (e.g. tommy-daax-dev)" style="margin-bottom:14px">
+      <input id="rename-input" placeholder="new-handle-name (e.g. payments-builder)" style="margin-bottom:14px">
       <div class="row" style="justify-content:flex-end;gap:8px">
         <button type="button" id="rename-cancel" class="ghost sm">Cancel</button>
         <button type="button" id="rename-save" class="btn-primary sm">Rename Handle</button>
@@ -825,9 +841,80 @@
     </div>
   </div>
 
+  <!-- Launch Headless Worker Modal -->
+  <div id="spawn-modal" class="modal-backdrop" hidden>
+    <div class="login-card modal-card" style="max-width:540px">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <h3 style="margin:0;font-size:16px">⚡ Launch Headless Harness Worker</h3>
+        <button type="button" id="spawn-close" class="ghost sm">✕</button>
+      </div>
+      <p class="muted" style="margin:0 0 12px;font-size:12.5px;line-height:1.45">
+        Spawns a non-TTY CLI worker in the background using your logged-in subscription, streams live calls to MEMNOS, and auto-closes when finished.
+      </p>
+
+      <div id="spawn-active-runs" class="spawn-runs-box" hidden></div>
+
+      <div class="two-col-grid" style="gap:10px;margin-bottom:10px">
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="spawn-harness">CLI Harness</label>
+          <select id="spawn-harness"></select>
+        </div>
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="spawn-model">Model <span class="muted">(optional)</span></label>
+          <input id="spawn-model" placeholder="Default subscription model">
+        </div>
+      </div>
+
+      <div class="two-col-grid" style="gap:10px;margin-bottom:10px">
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="spawn-ns">Namespace</label>
+          <input id="spawn-ns" placeholder="e.g. proj:payments">
+        </div>
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="spawn-ch">#Channel</label>
+          <input id="spawn-ch" placeholder="e.g. #arch-review">
+        </div>
+      </div>
+
+      <div class="two-col-grid" style="gap:10px;margin-bottom:10px">
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="spawn-role">Worker Role</label>
+          <select id="spawn-role">
+            <option value="">any (general worker)</option>
+            <option value="builder">builder</option>
+            <option value="reviewer">reviewer</option>
+            <option value="backend">backend</option>
+            <option value="frontend">frontend</option>
+            <option value="tests">tests</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="spawn-cwd">Repo Folder <span class="muted">(optional)</span></label>
+          <input id="spawn-cwd" placeholder="Auto-detect from repo binding">
+        </div>
+      </div>
+
+      <label class="field-lbl" style="margin-top:0" for="spawn-prompt">Task / Prompt <span class="muted">(leave blank to drain ready tasks on #channel)</span></label>
+      <textarea id="spawn-prompt" class="spawn-textarea" rows="3" placeholder="Leave blank to claim &amp; complete open ready tasks on #channel then auto-close, or enter a specific instruction…"></textarea>
+
+      <div class="spawn-checks">
+        <label class="chk"><input type="checkbox" id="spawn-sub-only" checked> <span><b>Subscription-only ($0 API billing)</b> — strip API key env vars</span></label>
+        <label class="chk"><input type="checkbox" id="spawn-failover" checked> <span><b>Auto-failover</b> — switch harness automatically if subscription hits quota limit</span></label>
+        <label class="chk"><input type="checkbox" id="spawn-skip-perms"> <span><b>Autonomous tool execution (opt-in)</b> — pass non-interactive permission flag (<code>--dangerously-skip-permissions</code> / <code>--full-auto</code>)</span></label>
+        <label class="chk"><input type="checkbox" id="spawn-worktree"> <span>Run in isolated named-branch <code>git worktree</code></span></label>
+      </div>
+
+      <p id="spawn-err" class="err" style="margin:8px 0 0"></p>
+      <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px">
+        <button type="button" id="spawn-cancel" class="ghost sm">Cancel</button>
+        <button type="button" id="spawn-submit" class="btn-primary sm">⚡ Launch Worker</button>
+      </div>
+    </div>
+  </div>
+
   <!-- In-App Toast Banner -->
   <div id="app-toast" class="app-toast" hidden></div>
 
-  <script src="/admin/app.js?v=9"></script>
+  <script src="/admin/app.js?v=12"></script>
 </body>
 </html>

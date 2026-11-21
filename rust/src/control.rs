@@ -649,6 +649,45 @@ const SUB_MATCH: &str = "(
          OR (m.claim_status = 'claimed' AND m.claim_lease_until < now() AND m.claim_attempts < 3)
          OR (m.claimed_by = s.session_name AND m.claimed_by_ns = s.namespace))";
 
+/// Variant of `SUB_MATCH` used ONLY inside `channel_poll_on` so newly spawned / failover / unblocked
+/// workers see open `pending` tasks without affecting unread counters or wake-daemon checks.
+const SUB_MATCH_POLL: &str = "(
+    m.namespace = s.namespace
+    OR (
+        m.channel = s.channel
+        AND m.channel LIKE '#%'
+        AND m.channel <> '#general'
+        AND EXISTS (SELECT 1 FROM memnos_control.channel_catalog cc
+                    WHERE cc.channel = m.channel AND cc.global_topic = true)
+        AND (
+            m.principal_id = s.principal_id
+            OR EXISTS (
+                SELECT 1 FROM (
+                    SELECT g0.namespace, g0.can_read FROM memnos_control.grants g0
+                    WHERE g0.principal_id = s.principal_id
+                    UNION ALL
+                    SELECT rg.namespace, rg.can_read FROM memnos_control.role_grants rg
+                    JOIN memnos_control.role_members rm ON rm.role_id = rg.role_id
+                    WHERE rm.principal_id = s.principal_id
+                ) g
+                WHERE g.can_read = true
+                  AND (g.namespace = '*' OR g.namespace = m.namespace
+                       OR (right(g.namespace, 2) = ':*'
+                           AND starts_with(m.namespace, left(g.namespace, length(g.namespace) - 1))))
+            )
+        )
+    )
+) AND (m.id > s.cursor OR (m.claimable AND m.claim_status = 'pending')) AND (
+    m.channel = s.channel
+    OR (s.channel = '*' AND (m.channel NOT LIKE '@%' OR m.channel = '@' || s.session_name))
+    OR (s.channel <> '*' AND right(s.channel, 1) = '*'
+        AND starts_with(m.channel, left(s.channel, length(s.channel) - 1))))
+    AND (m.sender_session <> s.session_name OR m.channel = '@' || s.session_name)
+    AND m.recalled_at IS NULL
+    AND (NOT m.claimable OR m.claim_status = 'pending'
+         OR (m.claim_status = 'claimed' AND m.claim_lease_until < now() AND m.claim_attempts < 3)
+         OR (m.claimed_by = s.session_name AND m.claimed_by_ns = s.namespace))";
+
 pub struct Control;
 
 /// Associated-function aliases of the pure helpers, so callers can use either `control::slug` or `Control::slug`.
@@ -3170,11 +3209,17 @@ impl Control {
     ) -> CResult<Value> {
         let mut name = slug(name, "session name")?;
         bound_channels(opts.channels.len())?;
-        let meta = if opts.metadata.is_object() {
+        let mut meta = if opts.metadata.is_object() {
             opts.metadata.clone()
         } else {
             json!({})
         };
+        if opts.status != "quota_paused" {
+            if let Some(m_obj) = meta.as_object_mut() {
+                m_obj.remove("quota_until");
+                m_obj.remove("quota_reason");
+            }
+        }
         bound_meta(&meta)?;
         let mut machine_id = opts.machine_id.clone();
         if machine_id.is_empty() {
@@ -3256,8 +3301,29 @@ impl Control {
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now() + ($12::float8 * interval '1 second'), $13,$14,$15,$16,$17,$18)
              ON CONFLICT (namespace,name) DO UPDATE SET
                principal_id=EXCLUDED.principal_id, harness=EXCLUDED.harness, model=EXCLUDED.model,
-               role=EXCLUDED.role, host=EXCLUDED.host, cwd=EXCLUDED.cwd, status=EXCLUDED.status,
-               current_task=EXCLUDED.current_task, metadata=EXCLUDED.metadata,
+               role=EXCLUDED.role, host=EXCLUDED.host, cwd=EXCLUDED.cwd,
+               status=CASE
+                   WHEN memnos_control.agent_sessions.status = 'quota_paused'
+                    AND memnos_control.agent_sessions.principal_id = EXCLUDED.principal_id
+                    AND CASE WHEN COALESCE(memnos_control.agent_sessions.metadata->>'quota_until', '') ~ '^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T'
+                             THEN (memnos_control.agent_sessions.metadata->>'quota_until')::timestamptz > now()
+                             ELSE false END
+                   THEN 'quota_paused'
+                   ELSE EXCLUDED.status
+               END,
+               current_task=EXCLUDED.current_task,
+               metadata=CASE
+                   WHEN memnos_control.agent_sessions.status = 'quota_paused'
+                    AND memnos_control.agent_sessions.principal_id = EXCLUDED.principal_id
+                    AND CASE WHEN COALESCE(memnos_control.agent_sessions.metadata->>'quota_until', '') ~ '^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T'
+                             THEN (memnos_control.agent_sessions.metadata->>'quota_until')::timestamptz > now()
+                             ELSE false END
+                   THEN EXCLUDED.metadata || jsonb_build_object(
+                       'quota_until', memnos_control.agent_sessions.metadata->'quota_until',
+                       'quota_reason', COALESCE(memnos_control.agent_sessions.metadata->'quota_reason', to_jsonb('quota_paused'::text))
+                   )
+                   ELSE EXCLUDED.metadata
+               END,
                registered_at=now(), last_heartbeat_at=now(), expires_at=EXCLUDED.expires_at,
                machine_id=CASE WHEN EXCLUDED.machine_id <> '' THEN EXCLUDED.machine_id ELSE memnos_control.agent_sessions.machine_id END,
                pid=COALESCE(EXCLUDED.pid, memnos_control.agent_sessions.pid),
@@ -3914,29 +3980,237 @@ impl Control {
         } else {
             ""
         };
-        args.push(Box::new(limit));
+        let scan_limit = (limit.saturating_mul(4)).clamp(50, 400);
+        args.push(Box::new(scan_limit));
         let q = format!(
             "SELECT s.id AS sub_id, m.id, m.namespace AS origin_namespace, m.channel, m.sender_session, m.intent, m.content,
                     m.metadata, m.created_at, m.claimable, m.claim_status, m.claimed_by, m.claimed_by_ns, p.name AS author
              FROM memnos_control.channel_subscriptions s
-             JOIN memnos_control.channel_messages m ON {SUB_MATCH}
+             JOIN memnos_control.channel_messages m ON {SUB_MATCH_POLL}
              LEFT JOIN memnos_control.principals p ON p.id = m.principal_id
              WHERE s.namespace=$1 AND s.session_name=$2 AND s.principal_id=$3 {chan_clause}
-             ORDER BY m.id LIMIT ${}",
+             ORDER BY (m.id > s.cursor) DESC, m.id ASC LIMIT ${}",
             args.len()
         );
         let rows = c.query(q.as_str(), &arg_refs(&args)).await?;
+
+        // Fetch caller session's harness, role, and quota state for smart multi-harness routing
+        let mut caller_harness = String::new();
+        let mut caller_role = String::new();
+        let mut caller_quota_paused = false;
+        if let Some(sr) = c
+            .query_opt(
+                "SELECT COALESCE(harness, '') AS harness, COALESCE(role, '') AS role,
+                        COALESCE(status, 'active') AS status,
+                        COALESCE(metadata->>'quota_until', '') AS quota_until,
+                        (last_heartbeat_at < now() - interval '60 minutes') AS stale_pause
+                 FROM memnos_control.agent_sessions
+                 WHERE namespace = $1 AND name = $2",
+                params![namespace, session],
+            )
+            .await?
+        {
+            caller_harness = sr.get("harness");
+            caller_role = sr.get("role");
+            let st_s: String = sr.get("status");
+            let qu_s: String = sr.get("quota_until");
+            let stale_pause: bool = sr.get("stale_pause");
+            if st_s == "quota_paused" {
+                let expired = chrono::DateTime::parse_from_rfc3339(&qu_s)
+                    .map(|dt| dt.with_timezone(&chrono::Utc) <= chrono::Utc::now())
+                    .unwrap_or(stale_pause);
+                if expired {
+                    let _ = c
+                        .execute(
+                            "UPDATE memnos_control.agent_sessions
+                             SET status = 'active', run_state = 'idle',
+                                 metadata = COALESCE(metadata, '{}'::jsonb) - 'quota_until' - 'quota_reason'
+                             WHERE namespace = $1 AND name = $2",
+                            params![namespace, session],
+                        )
+                        .await;
+                } else {
+                    caller_quota_paused = true;
+                }
+            }
+        }
+        let caller_norm_h = crate::spawner::normalize_harness_key(&caller_harness);
+
         let mut delivered: Vec<Map<String, Value>> = vec![];
         if peek {
-            delivered = rows.iter().map(|r| obj(row_to_json(r))).collect();
+            delivered = rows
+                .iter()
+                .take(limit as usize)
+                .map(|r| obj(row_to_json(r)))
+                .collect();
         } else {
             let mut top: BTreeMap<i64, i64> = BTreeMap::new();
             for r in &rows {
+                if delivered.len() >= limit as usize {
+                    break;
+                }
                 let (sub_id, id): (i64, i64) = (r.get("sub_id"), r.get("id"));
-                let e = top.entry(sub_id).or_insert(0);
-                *e = (*e).max(id);
                 let mut m = obj(row_to_json(r));
                 if r.get::<_, bool>("claimable") {
+                    if caller_quota_paused {
+                        continue;
+                    }
+                    let meta: Value = r.get("metadata");
+                    let msg_ns: String = r.get("origin_namespace");
+                    let msg_ch: String = r.get("channel");
+
+                    // 1. Task DAG dependency check (`depends_on`: [msg_id, ...]) — scoped & fail-closed (fixes M4)
+                    if let Some(deps) = meta.get("depends_on").and_then(|v| v.as_array()) {
+                        let mut dep_set = std::collections::BTreeSet::new();
+                        let mut invalid_dep = false;
+                        for x in deps {
+                            match x.as_i64() {
+                                Some(d) if d > 0 && d != id => {
+                                    dep_set.insert(d);
+                                }
+                                _ => {
+                                    invalid_dep = true;
+                                }
+                            }
+                        }
+                        if invalid_dep {
+                            continue;
+                        }
+                        if !dep_set.is_empty() {
+                            let dep_ids: Vec<i64> = dep_set.into_iter().collect();
+                            let done_cnt: i64 = c
+                                .query_one(
+                                    "SELECT count(*) FROM memnos_control.channel_messages
+                                     WHERE namespace = $1
+                                       AND id = ANY($2)
+                                       AND recalled_at IS NULL
+                                       AND claim_status IN ('done', 'acted')",
+                                    params![msg_ns, dep_ids],
+                                )
+                                .await
+                                .map(|row| row.get(0))
+                                .unwrap_or(0);
+                            if done_cnt < dep_ids.len() as i64 {
+                                continue;
+                            }
+                        }
+                    }
+
+                    // 2. Cross-harness review check (`different_harness`: true) — normalized & fail-closed (fixes M5)
+                    let diff_h_req = meta
+                        .get("different_harness")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let mut author_norm_h = "";
+                    if diff_h_req {
+                        if caller_norm_h.is_empty() {
+                            continue;
+                        }
+                        let sender_sess: String = r.get("sender_session");
+                        let mut author_raw = String::new();
+                        if !sender_sess.is_empty() {
+                            if let Ok(Some(ar)) = c
+                                .query_opt(
+                                    "SELECT COALESCE(harness, '') FROM memnos_control.agent_sessions
+                                     WHERE namespace IN ($1, $2) AND name = $3
+                                     ORDER BY (namespace = $1) DESC, last_heartbeat_at DESC LIMIT 1",
+                                    params![msg_ns, namespace, sender_sess],
+                                )
+                                .await
+                            {
+                                author_raw = ar.get(0);
+                            }
+                        }
+                        if author_raw.is_empty() {
+                            author_raw = meta
+                                .get("author_harness")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                        }
+                        author_norm_h = crate::spawner::normalize_harness_key(&author_raw);
+                        if !author_norm_h.is_empty() && author_norm_h == caller_norm_h {
+                            continue;
+                        }
+                    }
+
+                    // 3. Preferred harness / role routing with subscribed-session check & deadlock guard (fixes M5 & M6)
+                    if let Some(pref_h) = meta
+                        .get("preferred_harness")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        let pref_norm = crate::spawner::normalize_harness_key(pref_h);
+                        let skip_contradictory_pref =
+                            diff_h_req && !author_norm_h.is_empty() && pref_norm == author_norm_h;
+                        let caller_matches_pref = if !pref_norm.is_empty() {
+                            caller_norm_h == pref_norm
+                        } else {
+                            caller_harness.eq_ignore_ascii_case(pref_h)
+                        };
+                        if !skip_contradictory_pref && !caller_matches_pref {
+                            let allow_fb = meta
+                                .get("allow_fallback")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(true);
+                            if !allow_fb {
+                                continue;
+                            }
+                            let match_pat = if !pref_norm.is_empty() { pref_norm } else { pref_h };
+                            let pref_available: i64 = c
+                                .query_one(
+                                    "SELECT count(*) FROM memnos_control.agent_sessions a
+                                     JOIN memnos_control.channel_subscriptions cs
+                                       ON cs.namespace = a.namespace
+                                      AND cs.session_name = a.name
+                                      AND (cs.channel = $4 OR cs.channel = '*')
+                                     WHERE a.namespace IN ($1, $2)
+                                       AND lower(a.harness) = lower($3)
+                                       AND a.expires_at > now()
+                                       AND a.last_heartbeat_at > now() - interval '10 minutes'
+                                       AND a.status NOT IN ('offline', 'quota_paused')",
+                                    params![namespace, msg_ns, match_pat, msg_ch],
+                                )
+                                .await
+                                .map(|row| row.get(0))
+                                .unwrap_or(0);
+                            if pref_available > 0 {
+                                continue;
+                            }
+                        }
+                    }
+
+                    if let Some(req_role) = meta
+                        .get("required_role")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        if !caller_role.eq_ignore_ascii_case(req_role) {
+                            let role_available: i64 = c
+                                .query_one(
+                                    "SELECT count(*) FROM memnos_control.agent_sessions a
+                                     JOIN memnos_control.channel_subscriptions cs
+                                       ON cs.namespace = a.namespace
+                                      AND cs.session_name = a.name
+                                      AND (cs.channel = $4 OR cs.channel = '*')
+                                     WHERE a.namespace IN ($1, $2)
+                                       AND lower(a.role) = lower($3)
+                                       AND a.expires_at > now()
+                                       AND a.last_heartbeat_at > now() - interval '10 minutes'
+                                       AND a.status NOT IN ('offline', 'quota_paused')",
+                                    params![namespace, msg_ns, req_role, msg_ch],
+                                )
+                                .await
+                                .map(|row| row.get(0))
+                                .unwrap_or(0);
+                            if role_available > 0 {
+                                continue;
+                            }
+                        }
+                    }
+
                     let claimed = c
                         .query_opt(
                             "UPDATE memnos_control.channel_messages
@@ -3950,9 +4224,14 @@ impl Control {
                             params![session, namespace, id],
                         )
                         .await?;
+                    let e = top.entry(sub_id).or_insert(0);
+                    *e = (*e).max(id);
                     // lost the race: the cursor still advances, the message is not delivered to us
                     let Some(cl) = claimed else { continue };
                     m.extend(obj(row_to_json(&cl)));
+                } else {
+                    let e = top.entry(sub_id).or_insert(0);
+                    *e = (*e).max(id);
                 }
                 delivered.push(m);
             }
@@ -5078,7 +5357,7 @@ impl Control {
 
     /// Return all concrete namespaces readable by `principal_id` (including namespaces discovered
     /// via channels, sessions, turns, facts, or registry) along with `(namespace, can_write)`.
-    async fn workspace_authorized_ns_map(
+    pub async fn workspace_authorized_ns_map(
         c: &impl GenericClient,
         principal_id: i64,
     ) -> CResult<Vec<(String, bool)>> {
@@ -5347,7 +5626,7 @@ impl Control {
                             GREATEST(a.last_heartbeat_at, ao.last_op_at) AS last_heartbeat_at,
                             ao.last_op_at, ao.last_op,
                             a.expires_at,
-                            ((a.expires_at > now() AND a.status <> 'offline') OR ao.last_op_at > now() - interval '30 minutes') AS alive,
+                            (a.status <> 'offline' AND (a.expires_at > now() OR ao.last_op_at > now() - interval '30 minutes')) AS alive,
                             COALESCE(sc.chs, '{}') AS channels,
                             COALESCE(ib.unread, 0) AS unread_inbox
                      FROM memnos_control.agent_sessions a
@@ -5376,7 +5655,7 @@ impl Control {
                          GROUP BY namespace, to_session
                      ) ib ON ib.namespace = a.namespace AND ib.to_session = a.name
                      WHERE a.namespace = ANY($1)
-                     ORDER BY (((a.expires_at > now() AND a.status <> 'offline') OR ao.last_op_at > now() - interval '30 minutes')) DESC,
+                     ORDER BY (a.status <> 'offline' AND (a.expires_at > now() OR ao.last_op_at > now() - interval '30 minutes')) DESC,
                               GREATEST(a.last_heartbeat_at, ao.last_op_at) DESC",
                     params![selected_ns],
                 )
@@ -5983,6 +6262,127 @@ impl Control {
             "cwd": out_cwd,
             "tty": out_tty,
             "harness": out_harness,
+        }))
+    }
+
+    pub async fn workspace_set_session_quota(
+        pool: &Pool,
+        principal_id: i64,
+        namespace: &str,
+        session_name: &str,
+        paused: bool,
+        cooldown_minutes: i64,
+        reason: &str,
+    ) -> CResult<Value> {
+        let sess = slug(session_name.trim().trim_start_matches('@'), "session_name")?;
+        let is_admin = Self::is_admin(pool, principal_id).await?;
+        let mut c = conn(pool).await?;
+        if !is_admin && !Self::authorize_on(&**c, principal_id, namespace, true).await? {
+            return Err(ControlError::Forbidden(format!(
+                "write grant required on namespace '{}'",
+                namespace
+            )));
+        }
+        let owner_row = c
+            .query_opt(
+                "SELECT principal_id FROM memnos_control.agent_sessions WHERE namespace = $1 AND name = $2",
+                params![namespace, sess],
+            )
+            .await?;
+        let Some(owner_r) = owner_row else {
+            return Err(ControlError::NotFound(format!(
+                "session '@{}' not found in namespace '{}'",
+                sess, namespace
+            )));
+        };
+        let session_owner_pid: i64 = owner_r.get(0);
+        if !is_admin && session_owner_pid != principal_id {
+            return Err(ControlError::Forbidden(format!(
+                "only admin or the owner of '@{}' can toggle its quota state",
+                sess
+            )));
+        }
+        let tx = c.transaction().await?;
+        let mins = cooldown_minutes.clamp(1, 10_080);
+        let until_iso = (chrono::Utc::now() + chrono::Duration::minutes(mins)).to_rfc3339();
+        let mut released_tasks = 0u64;
+        let mut released_leases = 0u64;
+
+        if paused {
+            let patch = json!({
+                "quota_until": until_iso,
+                "quota_reason": if reason.trim().is_empty() { "Subscription quota paused" } else { reason.trim() },
+            });
+            tx.execute(
+                "UPDATE memnos_control.agent_sessions
+                 SET status = 'quota_paused',
+                     run_state = 'quota_paused',
+                     metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb
+                 WHERE namespace = $1 AND name = $2",
+                params![namespace, sess, patch],
+            )
+            .await?;
+
+            // Atomically release in-progress claimed tasks (capped at 3 failover attempts to prevent poison loops)
+            let handoff_patch = json!({
+                "handoff_from": sess,
+                "handoff_at": chrono::Utc::now().to_rfc3339(),
+                "handoff_reason": if reason.trim().is_empty() { "quota_paused" } else { reason.trim() },
+            });
+            released_tasks = tx
+                .execute(
+                    "UPDATE memnos_control.channel_messages
+                     SET claim_status = 'pending',
+                         claimed_by = NULL,
+                         claimed_by_ns = NULL,
+                         claim_lease_until = NULL,
+                         metadata = COALESCE(metadata, '{}'::jsonb)
+                             || $3::jsonb
+                             || jsonb_build_object('failover_attempts', COALESCE((metadata->>'failover_attempts')::int, 0) + 1)
+                     WHERE claimable = true
+                       AND claim_status = 'claimed'
+                       AND claimed_by = $2
+                       AND (claimed_by_ns = $1 OR namespace = $1)
+                       AND COALESCE((metadata->>'failover_attempts')::int, 0) < 3",
+                    params![namespace, sess, handoff_patch],
+                )
+                .await?;
+
+            released_leases = tx
+                .execute(
+                    "UPDATE memnos_control.leases
+                     SET released_at = now()
+                     WHERE namespace = $1 AND holder_id = $2 AND released_at IS NULL",
+                    params![namespace, sess],
+                )
+                .await?;
+        } else {
+            tx.execute(
+                "UPDATE memnos_control.agent_sessions
+                 SET status = 'active',
+                     run_state = 'idle',
+                     expires_at = GREATEST(expires_at, now() + interval '30 minutes'),
+                     metadata = COALESCE(metadata, '{}'::jsonb) - 'quota_until' - 'quota_reason'
+                 WHERE namespace = $1 AND name = $2",
+                params![namespace, sess],
+            )
+            .await?;
+        }
+
+        tx.execute(
+            "SELECT pg_notify('memnos_channel', $1::text)",
+            params![namespace],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(json!({
+            "ok": true,
+            "namespace": namespace,
+            "session_name": sess,
+            "quota_paused": paused,
+            "quota_until": if paused { Some(until_iso) } else { None },
+            "released_tasks": released_tasks,
+            "released_leases": released_leases,
         }))
     }
 

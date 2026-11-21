@@ -19,6 +19,7 @@ pub mod redact;
 pub mod repo_init;
 pub mod rerank;
 pub mod server;
+pub mod spawner;
 pub mod store;
 pub mod temporal;
 pub mod vault;

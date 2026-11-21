@@ -819,8 +819,11 @@ function harnessBadgeForSession(s, includeModel = true) {
   const info = normalizeHarness(s?.harness, s?.metadata);
   const hPill = info ? `<span class="harness-pill ${info.cls}" title="Attached harness: ${esc(info.label)}">${esc(info.label)}</span>` : "";
   const mPill = includeModel ? modelBadgeForSession(s) : "";
-  if (hPill && mPill) return `<span style="display:inline-flex;align-items:center;gap:4px;min-width:0">${hPill}${mPill}</span>`;
-  return hPill || mPill;
+  const hlPill = s?.metadata?.headless ? `<span class="headless-pill" title="Non-TTY background worker launched by MEMNOS">HEADLESS</span>` : "";
+  const qPill = s?.status === "quota_paused" ? `<span class="quota-pill" title="Subscription quota paused — open tasks released for failover">QUOTA PAUSED</span>` : "";
+  const parts = [hPill, mPill, hlPill, qPill].filter(Boolean);
+  if (parts.length > 1) return `<span style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;min-width:0">${parts.join("")}</span>`;
+  return parts[0] || "";
 }
 
 function harnessBadgeByName(handleName) {
@@ -1183,6 +1186,136 @@ $("#new-ch-save").onclick = async () => {
   } catch (e) { showToast(e.message, true); }
 };
 
+// ---- Headless Harness Spawner Modal ----
+let spawnerStatusCache = null;
+
+async function refreshSpawnerModalRuns() {
+  const box = $("#spawn-active-runs");
+  const sel = $("#spawn-harness");
+  if (!sel) return;
+  try {
+    const st = await wapi("GET", "spawner/status");
+    spawnerStatusCache = st;
+    const prevVal = sel.value;
+    const harnesses = st.harnesses || [];
+    const sorted = [...harnesses].sort((a, b) => (b.installed ? 1 : 0) - (a.installed ? 1 : 0));
+    sel.innerHTML = sorted.map(h =>
+      `<option value="${esc(h.key)}" ${h.installed ? "" : "disabled"}>${h.installed ? "✓ " : ""}${esc(h.label)} (${esc(h.binary_name)})${h.installed ? "" : " — not installed"}</option>`
+    ).join("");
+    if (prevVal && [...sel.options].some(o => o.value === prevVal && !o.disabled)) {
+      sel.value = prevVal;
+    } else {
+      const firstInst = sorted.find(h => h.installed);
+      if (firstInst) sel.value = firstInst.key;
+    }
+
+    const running = (st.runs || []).filter(r => r.status === "running");
+    if (box) {
+      if (!running.length) {
+        box.hidden = true;
+        box.innerHTML = "";
+      } else {
+        box.hidden = false;
+        box.innerHTML = `<div class="row" style="justify-content:space-between">
+          <b>Running Headless Workers (${running.length}/${st.max_concurrent || 4})</b>
+        </div>` + running.map(r => `<div class="row" style="justify-content:space-between;gap:8px">
+          <span><code>@${esc(r.handle)}</code> · <span class="muted">${esc(r.harness)}${r.channel ? " · " + esc(r.channel) : ""}</span></span>
+          <button type="button" class="danger sm" style="padding:2px 8px;font-size:11px" data-stop-run="${r.run_id}">⏹ Stop</button>
+        </div>`).join("");
+        $$("[data-stop-run]", box).forEach(b => {
+          b.onclick = async () => {
+            try {
+              await wapi("POST", "spawner/stop", { run_id: Number(b.dataset.stopRun) });
+              showToast("Stopped headless worker");
+              await refreshSpawnerModalRuns();
+              await refreshOverview(false);
+            } catch (e) { showToast(e.message, true); }
+          };
+        });
+      }
+    }
+  } catch (e) {
+    if ($("#spawn-err")) $("#spawn-err").textContent = e.message;
+  }
+}
+
+async function openSpawnModal(defaults = {}) {
+  const modal = $("#spawn-modal");
+  if (!modal) return;
+  $("#spawn-err").textContent = "";
+  const curNs = $("#ws-ns-filter")?.value;
+  const fallbackNs = (curNs && curNs !== "*")
+    ? curNs
+    : (selectedChannel?.namespace || selectedHandle?.namespace || wsData?.namespaces?.find(n => !n.name.startsWith("test:"))?.name || "proj:default");
+  $("#spawn-ns").value = defaults.namespace || fallbackNs;
+  $("#spawn-ch").value = defaults.channel !== undefined ? defaults.channel : (selectedChannel?.channel || "#general");
+  $("#spawn-role").value = defaults.role || "";
+  $("#spawn-cwd").value = defaults.cwd || "";
+  $("#spawn-prompt").value = defaults.prompt || "";
+  $("#spawn-sub-only").checked = true;
+  $("#spawn-failover").checked = true;
+  if ($("#spawn-skip-perms")) $("#spawn-skip-perms").checked = !!defaults.skipPermissions;
+  $("#spawn-worktree").checked = false;
+  modal.hidden = false;
+  await refreshSpawnerModalRuns();
+  if (defaults.preferredHarness && [...$("#spawn-harness").options].some(o => o.value === defaults.preferredHarness && !o.disabled)) {
+    $("#spawn-harness").value = defaults.preferredHarness;
+  }
+  $("#spawn-prompt").focus();
+}
+
+if ($("#btn-ch-spawn")) {
+  $("#btn-ch-spawn").onclick = () => openSpawnModal({
+    namespace: selectedChannel?.namespace,
+    channel: selectedChannel?.channel || "",
+  });
+}
+if ($("#btn-hd-spawn")) {
+  $("#btn-hd-spawn").onclick = () => openSpawnModal({
+    namespace: selectedHandle?.namespace,
+    channel: selectedChannel?.channel || "#general",
+  });
+}
+if ($("#spawn-close")) $("#spawn-close").onclick = () => { $("#spawn-modal").hidden = true; };
+if ($("#spawn-cancel")) $("#spawn-cancel").onclick = () => { $("#spawn-modal").hidden = true; };
+if ($("#spawn-modal")) {
+  $("#spawn-modal").onclick = (ev) => { if (ev.target === $("#spawn-modal")) $("#spawn-modal").hidden = true; };
+}
+if ($("#spawn-submit")) {
+  $("#spawn-submit").onclick = async () => {
+    const ns = ($("#spawn-ns").value || "").trim();
+    const harness = $("#spawn-harness").value;
+    if (!ns || ns === "*") { $("#spawn-err").textContent = "Enter a concrete namespace (e.g. proj:payments)."; return; }
+    if (!harness) { $("#spawn-err").textContent = "No installed CLI harness selected."; return; }
+    $("#spawn-err").textContent = "";
+    $("#spawn-submit").disabled = true;
+    try {
+      const res = await wapi("POST", "spawner/launch", {
+        namespace: ns,
+        harness,
+        model: ($("#spawn-model").value || "").trim(),
+        role: $("#spawn-role").value || "",
+        channel: ($("#spawn-ch").value || "").trim(),
+        cwd: ($("#spawn-cwd").value || "").trim(),
+        prompt: ($("#spawn-prompt").value || "").trim(),
+        subscription_only: $("#spawn-sub-only").checked,
+        skip_permissions: !!$("#spawn-skip-perms")?.checked,
+        auto_failover: $("#spawn-failover").checked,
+        isolate_worktree: $("#spawn-worktree").checked,
+      });
+      const w = res.worker || {};
+      $("#spawn-modal").hidden = true;
+      showToast(`⚡ Launched @${w.handle || "worker"} (${w.harness || harness})`);
+      await refreshOverview(false);
+      if (activeSection === "channels" && selectedChannel) renderChannelHeaderAndInspector();
+    } catch (e) {
+      $("#spawn-err").textContent = e.message;
+    } finally {
+      $("#spawn-submit").disabled = false;
+    }
+  };
+}
+
 $("#toggle-ch-inspector").onclick = () => {
   inspectorOpen = !inspectorOpen;
   $("#ch-inspector").hidden = !inspectorOpen;
@@ -1307,11 +1440,13 @@ function renderChannelHeaderAndInspector() {
 async function loadChannelMessages(forceScrollBottom = false) {
   if (!selectedChannel) return;
   const box = $("#ch-messages");
+  const pipeEl = $("#ch-pipeline-strip");
   const nearBottom = forceScrollBottom || (box.scrollHeight - box.scrollTop - box.clientHeight < 100);
   const { namespace, channel } = selectedChannel;
   try {
     const { messages } = await wapi("GET", `channel/messages?namespace=${encodeURIComponent(namespace)}&channel=${encodeURIComponent(channel)}&limit=150`);
     if (!messages || !messages.length) {
+      if (pipeEl) { pipeEl.hidden = true; pipeEl.innerHTML = ""; }
       box.innerHTML = `<div class="empty-state">
         <div class="empty-ico">#</div>
         <h3 style="margin:0 0 6px;color:var(--fg)">${esc(channel)}</h3>
@@ -1319,19 +1454,75 @@ async function loadChannelMessages(forceScrollBottom = false) {
       </div>`;
       return;
     }
+
+    const isTaskDone = (m) => m.claimable && ["acked", "completed", "done", "acted"].includes(String(m.claim_status || "").toLowerCase());
+    const doneIds = new Set(messages.filter(isTaskDone).map(m => Number(m.id)));
+    const allTasks = messages.filter(m => m.claimable);
+    if (pipeEl) {
+      if (!allTasks.length) {
+        pipeEl.hidden = true;
+        pipeEl.innerHTML = "";
+      } else {
+        let readyCnt = 0, blockedCnt = 0, claimedCnt = 0, doneCnt = 0;
+        let prefHint = "";
+        for (const t of allTasks) {
+          if (isTaskDone(t)) { doneCnt++; continue; }
+          const st = String(t.claim_status || "pending").toLowerCase();
+          if (st === "claimed" || st === "read") { claimedCnt++; continue; }
+          const deps = Array.isArray(t.metadata?.depends_on) ? t.metadata.depends_on.map(Number).filter(Boolean) : [];
+          if (deps.some(id => !doneIds.has(id))) blockedCnt++;
+          else {
+            readyCnt++;
+            if (!prefHint && typeof t.metadata?.preferred_harness === "string") prefHint = t.metadata.preferred_harness;
+          }
+        }
+        pipeEl.hidden = false;
+        pipeEl.innerHTML = `
+          <div class="pipeline-counts">
+            <b>Task Pipeline (${allTasks.length})</b>
+            ${readyCnt > 0 ? `<span class="pill ok">${readyCnt} ready</span>` : ""}
+            ${claimedCnt > 0 ? `<span class="pill warn">${claimedCnt} in progress</span>` : ""}
+            ${blockedCnt > 0 ? `<span class="tiny-pill warn">⛓ ${blockedCnt} blocked</span>` : ""}
+            <span class="tiny-pill">${doneCnt}/${allTasks.length} done</span>
+          </div>
+          ${readyCnt > 0 && wsData?.is_admin ? `<button type="button" id="btn-pipe-run-ready" class="btn-primary sm" style="padding:3px 10px;font-size:11.5px">⚡ Run ${readyCnt} Ready Headlessly</button>` : ""}
+        `;
+        const runBtn = $("#btn-pipe-run-ready");
+        if (runBtn) {
+          runBtn.onclick = () => openSpawnModal({
+            namespace,
+            channel,
+            preferredHarness: prefHint,
+            prompt: "",
+          });
+        }
+      }
+    }
+
     box.innerHTML = messages.map(m => {
       const sender = m.sender_session || "agent";
       const initials = sender.replace(/^@/, "").slice(0, 2).toUpperCase();
-      const isDone = m.claimable && ["acked", "completed", "done", "acted"].includes(String(m.claim_status || "").toLowerCase());
+      const isDone = isTaskDone(m);
       const cls = m.claimable ? (isDone ? "msg-row is-done" : "msg-row is-task") : "msg-row";
       const isPeerDm = m.source === "peer_dm" && m.to_session;
       let taskStrip = "";
       if (m.claimable) {
-        const st = (m.claim_status || "pending").toUpperCase();
-        const who = m.claimed_by ? ` · handled by <b>@${esc(m.claimed_by)}</b>` : (m.to_session ? ` · assigned to <b>@${esc(m.to_session)}</b>` : " · waiting for subscriber");
+        const meta = (m.metadata && typeof m.metadata === "object") ? m.metadata : {};
+        const deps = Array.isArray(meta.depends_on) ? meta.depends_on.map(Number).filter(Boolean) : [];
+        const unmetDeps = deps.filter(id => !doneIds.has(id));
+        const stRaw = String(m.claim_status || "pending").toLowerCase();
+        const st = (!isDone && stRaw === "pending" && unmetDeps.length > 0) ? "BLOCKED" : stRaw.toUpperCase();
+        const who = m.claimed_by ? ` · handled by <b>@${esc(m.claimed_by)}</b>` : (m.to_session ? ` · assigned to <b>@${esc(m.to_session)}</b>` : (unmetDeps.length ? ` · waiting on #${unmetDeps.join(", #")}` : " · ready for subscriber"));
         const res = m.resolution ? ` · <code>${esc(m.resolution)}</code>` : "";
+        const routePills = [
+          deps.length ? `<span class="tiny-pill ${unmetDeps.length ? "warn" : ""}" title="Task DAG dependencies">⛓ deps: #${deps.join(", #")}</span>` : "",
+          meta.different_harness ? `<span class="tiny-pill tag" title="Must be claimed by a different CLI harness than the author">⇄ cross-harness</span>` : "",
+          meta.preferred_harness ? `<span class="tiny-pill tag" title="Preferred harness (auto-falls back if offline or quota-paused)">🎯 ${esc(meta.preferred_harness)}</span>` : "",
+          meta.handoff_from ? `<span class="tiny-pill warn" title="Auto-released when @${esc(meta.handoff_from)} hit subscription quota cap">↻ failover from @${esc(meta.handoff_from)}</span>` : "",
+        ].filter(Boolean).join(" ");
         taskStrip = `<div class="task-strip">
           <span class="pill ${isDone ? "ok" : "warn"}">TASK · ${esc(st)}</span>
+          ${routePills}
           <span class="muted">#${m.id}${who}${res}</span>
         </div>`;
       }
@@ -1360,12 +1551,30 @@ async function loadChannelMessages(forceScrollBottom = false) {
   }
 }
 
+if ($("#ch-comp-claimable")) {
+  $("#ch-comp-claimable").onchange = () => {
+    const opts = $("#ch-task-opts");
+    if (opts) opts.hidden = !$("#ch-comp-claimable").checked;
+  };
+}
+
 async function sendChannelMessage() {
   if (!selectedChannel) return;
   const text = $("#ch-comp-input").value.trim();
   if (!text) return;
   const sender = ($("#ch-comp-sender").value.trim().replace(/^@/, "")) || "owner";
   const claimable = $("#ch-comp-claimable").checked;
+  const metadata = {};
+  if (claimable) {
+    const routeVal = ($("#ch-comp-route")?.value || "").trim();
+    if (routeVal === "cross") metadata.different_harness = true;
+    else if (routeVal) metadata.preferred_harness = routeVal;
+    const rawDeps = ($("#ch-comp-deps")?.value || "").trim();
+    if (rawDeps) {
+      const deps = rawDeps.split(/[\s,]+/).map(x => Number(x.replace(/^#/, ""))).filter(n => Number.isFinite(n) && n > 0);
+      if (deps.length) metadata.depends_on = deps;
+    }
+  }
   $("#ch-comp-err").textContent = "";
   $("#ch-comp-send").disabled = true;
   try {
@@ -1376,6 +1585,7 @@ async function sendChannelMessage() {
       content: text,
       claimable,
       intent: claimable ? "task" : "message",
+      metadata,
     };
     try {
       await wsCall("publish_channel", payload);
@@ -1384,6 +1594,9 @@ async function sendChannelMessage() {
     }
     $("#ch-comp-input").value = "";
     $("#ch-comp-claimable").checked = false;
+    if ($("#ch-task-opts")) $("#ch-task-opts").hidden = true;
+    if ($("#ch-comp-route")) $("#ch-comp-route").value = "";
+    if ($("#ch-comp-deps")) $("#ch-comp-deps").value = "";
     await loadChannelMessages(true);
     await refreshOverview(false);
   } catch (e) {
@@ -1433,12 +1646,19 @@ function jumpToChannel(namespace, channel) {
   switchSection("channels");
 }
 
+function isRecentHeadless(s) {
+  if (!s?.metadata?.headless) return false;
+  const hb = s.last_heartbeat_at ? new Date(s.last_heartbeat_at).getTime() : 0;
+  return hb > 0 && (Date.now() - hb) < 30 * 60 * 1000;
+}
+
 function filteredHandles() {
   const all = (wsData?.sessions || []).filter(s => !s.namespace.startsWith("test:"));
   const q = ($("#hd-search").value || "").trim().toLowerCase();
   const hf = ($("#hd-harness-filter")?.value || "").trim();
   return all.filter(s => {
-    if (hdFilterMode === "online" && !s.alive) return false;
+    const isSel = selectedHandle && selectedHandle.namespace === s.namespace && selectedHandle.name === s.name;
+    if (hdFilterMode === "online" && !s.alive && !isSel && !isRecentHeadless(s)) return false;
     const hInfo = normalizeHarness(s.harness, s.metadata);
     if (hf && hInfo?.key !== hf) return false;
     if (q) {
@@ -1512,7 +1732,7 @@ function renderHandleList() {
     const liveAct = actorLiveMap.get(s.name);
     const hbMs = s.last_heartbeat_at ? new Date(s.last_heartbeat_at).getTime() : 0;
     const bestIso = (liveAct && liveAct.ms > hbMs) ? liveAct.ts : s.last_heartbeat_at;
-    const dotCls = !s.alive ? "idle" : (s.run_state === "running" || s.run_state === "busy" ? "busy" : "alive");
+    const dotCls = !s.alive ? "idle" : (s.status === "quota_paused" ? "paused" : (s.run_state === "running" || s.run_state === "busy" ? "busy" : "alive"));
     const chs = s.channels || [];
     const unread = s.unread_inbox || 0;
     const shortCwd = s.cwd ? s.cwd.split("/").slice(-2).join("/") : s.namespace;
@@ -1579,7 +1799,12 @@ function renderHandleHero() {
   const chs = sObj?.channels || [];
   const initials = name.slice(0, 2).toUpperCase();
 
-  $("#hd-comp-input").placeholder = `Send direct @inbox message or task to @${name}… (Enter to send)`;
+  const isHeadless = !!sObj?.metadata?.headless;
+  $("#hd-comp-input").placeholder = isHeadless
+    ? (sObj?.alive
+        ? `Ask @${name} a question or send follow-up instructions (will reply right as current step completes)…`
+        : `Send a DM to wake @${name} headlessly and continue this conversation…`)
+    : `Send direct @inbox message or task to @${name}… (Enter to send)`;
 
   box.innerHTML = `
     <div class="hero-top">
@@ -1591,12 +1816,13 @@ function renderHandleHero() {
             ${sObj ? harnessBadgeForSession(sObj) : ""}
             <span class="ns-badge">${esc(namespace)}</span>
             ${sObj
-              ? `<span class="pill ${sObj.alive ? "ok" : "no"}">${sObj.alive ? "ONLINE · " + esc(sObj.run_state || "idle") : "OFFLINE"}</span>`
+              ? `<span class="pill ${sObj.status === "quota_paused" ? "warn" : (sObj.alive ? "ok" : (isHeadless ? "warn" : "no"))}">${sObj.status === "quota_paused" ? "QUOTA PAUSED" : (sObj.alive ? "ONLINE · " + esc(sObj.run_state || "idle") : (isHeadless ? "IDLE · DM TO WAKE" : "OFFLINE"))}</span>`
               : `<span class="pill warn">UNREGISTERED HANDLE</span>`}
           </div>
           ${sObj ? `<div class="hero-meta-grid" style="margin-top:5px">
             ${sObj.harness || sObj.metadata?.display_label ? `<span>Harness: <b>${esc(normalizeHarness(sObj.harness, sObj.metadata)?.label || sObj.harness)}</b></span>` : ""}
             ${sObj.model ? `<span>Model: <code>${esc(sObj.model)}</code></span>` : ""}
+            ${sObj.role ? `<span>Role: <code>${esc(sObj.role)}</code></span>` : ""}
             <span>Heartbeat: <b>${age(sObj.last_heartbeat_at)} ago</b></span>
             ${sObj.pid ? `<span>PID: <code>${sObj.pid}</code> ${esc(sObj.tty || "")}</span>` : ""}
             ${sObj.cwd ? `<span>Folder: <code>${esc(sObj.cwd)}</code></span>` : ""}
@@ -1606,6 +1832,8 @@ function renderHandleHero() {
       </div>
 
       ${writable && sObj ? `<div class="row" style="gap:6px">
+        ${wsData?.is_admin && sObj.metadata?.headless && sObj.alive ? `<button id="stop-worker-btn" class="danger sm" title="Stop running headless worker process">⏹ Stop Worker</button>` : ""}
+        <button id="quota-handle-btn" class="ghost sm" title="${sObj.status === "quota_paused" ? "Resume handle so it can claim channel tasks again" : "Mark subscription quota reached (1h) and release in-progress tasks + file leases for failover"}">${sObj.status === "quota_paused" ? "▶ Resume Quota" : "⏸ Quota Cap"}</button>
         <button id="rename-handle-btn" class="ghost sm">Rename</button>
         <button id="unreg-handle-btn" class="danger sm">Unregister Handle</button>
       </div>` : ""}
@@ -1649,6 +1877,40 @@ function renderHandleHero() {
       } catch (e) { showToast(e.message, true); }
     };
   }
+  const stopWorkerBtn = $("#stop-worker-btn");
+  if (stopWorkerBtn) {
+    stopWorkerBtn.onclick = async () => {
+      try {
+        await wapi("POST", "spawner/stop", { handle: name, namespace });
+        showToast(`Stopped headless worker @${name}`);
+        await refreshOverview(false);
+        renderHandleHero();
+      } catch (e) { showToast(e.message, true); }
+    };
+  }
+  const quotaBtn = $("#quota-handle-btn");
+  if (quotaBtn && sObj) {
+    quotaBtn.onclick = async () => {
+      const pause = sObj.status !== "quota_paused";
+      try {
+        const res = await wapi("POST", "session/quota", {
+          namespace,
+          session: name,
+          paused: pause,
+          cooldown_minutes: 60,
+          reason: pause ? "manual UI quota cap" : "",
+        });
+        if (pause) {
+          const rel = res.released_tasks || 0;
+          showToast(`Paused @${name} (1h quota cap)${rel ? ` · released ${rel} task(s) for failover` : ""}`);
+        } else {
+          showToast(`Resumed @${name}`);
+        }
+        await refreshOverview(false);
+        renderHandleHero();
+      } catch (e) { showToast(e.message, true); }
+    };
+  }
   const renameBtn = $("#rename-handle-btn");
   if (renameBtn) {
     renameBtn.onclick = async () => {
@@ -1689,9 +1951,40 @@ async function loadHandleMessages(forceScrollBottom = false) {
   const box = $("#hd-messages");
   const nearBottom = forceScrollBottom || (box.scrollHeight - box.scrollTop - box.clientHeight < 100);
   const { namespace, name } = selectedHandle;
+  const sObj = (wsData?.sessions || []).find(s => s.namespace === namespace && s.name === name);
+  const isHeadless = !!sObj?.metadata?.headless;
   try {
-    const { messages } = await wapi("GET", `session/messages?namespace=${encodeURIComponent(namespace)}&session=${encodeURIComponent(name)}&limit=150`);
-    const handleOps = liveEvents.filter(e => String(e.actor || "").replace(/^@/, "") === name).slice(0, 12);
+    const [{ messages }, spStatus] = await Promise.all([
+      wapi("GET", `session/messages?namespace=${encodeURIComponent(namespace)}&session=${encodeURIComponent(name)}&limit=150`),
+      isHeadless ? wapi("GET", "spawner/status").catch(() => null) : Promise.resolve(null),
+    ]);
+
+    let consoleHtml = "";
+    const matchingRun = (spStatus?.runs || []).find(r => r.namespace === namespace && r.handle === name);
+    if (isHeadless || matchingRun) {
+      const rStatus = matchingRun?.status || (sObj?.alive ? "running" : "completed");
+      const isRunning = rStatus === "running" || rStatus === "starting";
+      const logLines = matchingRun?.log_lines?.length
+        ? matchingRun.log_lines
+        : liveEvents
+            .filter(e => String(e.actor || "").replace(/^@/, "") === name)
+            .slice(0, 15)
+            .reverse()
+            .map(e => `${e.op}: ${e.detail || "—"}`);
+      consoleHtml = `<div class="headless-console">
+        <div class="headless-console-hdr">
+          <span><b>🖥 Headless Worker Live Stream</b> · <code>@${esc(name)}</code></span>
+          <span class="pill ${isRunning ? "ok" : "warn"}">${isRunning ? "● RUNNING LIVE" : ("IDLE (" + esc(rStatus.toUpperCase()) + ") · DM BELOW TO WAKE")}</span>
+        </div>
+        <div class="headless-console-body" id="hd-console-scroll">
+          ${logLines.length
+            ? logLines.map(l => `<div class="headless-log-line">${esc(l)}</div>`).join("")
+            : `<div class="muted">${isRunning ? "Waiting for first stream output…" : "Last turn auto-closed cleanly. Send a DM below to wake @" + esc(name) + " and continue chatting."}</div>`}
+        </div>
+      </div>`;
+    }
+
+    const handleOps = liveEvents.filter(e => String(e.actor || "").replace(/^@/, "") === name && !String(e.op || "").startsWith("headless/")).slice(0, 10);
     const opsStrip = handleOps.length ? `<div class="surface-card" style="margin:8px 0 14px;padding:12px 14px">
       <div class="row" style="justify-content:space-between;margin-bottom:8px">
         <b style="font-size:12.5px">⚡ Recent MEMNOS Calls by @${esc(name)}</b>
@@ -1705,14 +1998,18 @@ async function loadHandleMessages(forceScrollBottom = false) {
       </div>
     </div>` : "";
     if (!messages || !messages.length) {
-      box.innerHTML = opsStrip + `<div class="empty-state">
+      box.innerHTML = consoleHtml + opsStrip + `<div class="empty-state">
         <div class="empty-ico">@</div>
         <h3 style="margin:0 0 6px;color:var(--fg)">@${esc(name)}</h3>
-        <p>No direct <code>@inbox</code> messages for <b>@${esc(name)}</b> in <code>${esc(namespace)}</code>.<br>Send a DM below to wake this handle directly.</p>
+        <p>${isHeadless
+          ? `Headless worker <b>@${esc(name)}</b> automatically posts its turn summary here when done — or send a DM below anytime to ask questions or assign follow-up work.`
+          : `No direct <code>@inbox</code> messages for <b>@${esc(name)}</b> in <code>${esc(namespace)}</code>.<br>Send a DM below to wake this handle directly.`}</p>
       </div>`;
+      const cScroll = $("#hd-console-scroll");
+      if (cScroll) cScroll.scrollTop = cScroll.scrollHeight;
       return;
     }
-    box.innerHTML = opsStrip + messages.map(m => {
+    box.innerHTML = consoleHtml + opsStrip + messages.map(m => {
       const sender = m.from_session || "agent";
       const initials = sender.slice(0, 2).toUpperCase();
       const isActed = m.status === "acted";
@@ -1730,6 +2027,8 @@ async function loadHandleMessages(forceScrollBottom = false) {
         </div>
       </div>`;
     }).join("");
+    const cScroll = $("#hd-console-scroll");
+    if (cScroll) cScroll.scrollTop = cScroll.scrollHeight;
     if (nearBottom) box.scrollTop = box.scrollHeight;
   } catch (e) {
     box.innerHTML = `<div class="empty-state"><span class="err">${esc(e.message)}</span></div>`;
@@ -1752,10 +2051,16 @@ async function sendHandleMessage() {
       content: text,
       intent,
     };
+    let sendRes = null;
     try {
-      await wsCall("send_dm", payload);
+      sendRes = await wsCall("send_dm", payload);
     } catch (_) {
-      await wapi("POST", "session/send", payload);
+      sendRes = await wapi("POST", "session/send", payload);
+    }
+    if (sendRes?.headless_delivery === "woke_headless_worker") {
+      showToast(`⚡ Woke @${selectedHandle.name} headlessly — streaming reply…`);
+    } else if (sendRes?.headless_delivery === "queued_for_running_worker") {
+      showToast(`⏳ Queued for @${selectedHandle.name} — will reply right after current step`);
     }
     $("#hd-comp-input").value = "";
     await loadHandleMessages(true);
@@ -2009,7 +2314,7 @@ function renderTelemetry() {
   const ramSub = (v.rss_mb != null && v.footprint_mb != null) ? `RSS ${v.rss_mb} MB · v${v.version || ""} · up ${upHrs}` : `v${v.version || ""} · up ${upHrs}`;
 
   $("#tel-cards").innerHTML = `
-    <div class="kpi-card"><div class="kpi-lbl">Rust Engine Footprint</div><div class="kpi-val">${esc(ramVal)}</div><div class="kpi-sub">${esc(ramSub)}</div></div>
+    <div class="kpi-card"><div class="kpi-lbl">Engine Footprint</div><div class="kpi-val">${esc(ramVal)}</div><div class="kpi-sub">${esc(ramSub)}</div></div>
     <div class="kpi-card"><div class="kpi-lbl">PostgreSQL Storage</div><div class="kpi-val">${esc(fmtBytes(v.db_size_bytes))}</div><div class="kpi-sub">${esc(v.embedding_mode || "—")}</div></div>
     <div class="kpi-card"><div class="kpi-lbl">Semantic Facts</div><div class="kpi-val">${(v.total_facts || 0).toLocaleString()}</div><div class="kpi-sub">${(v.total_entities || 0).toLocaleString()} graph entities</div></div>
     <div class="kpi-card"><div class="kpi-lbl">Raw Turns</div><div class="kpi-val">${(v.total_turns || 0).toLocaleString()}</div><div class="kpi-sub">across authorized scope</div></div>

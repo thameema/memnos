@@ -26,27 +26,36 @@ MCP tools explicitly (this agent has no auto-inject hooks):
   `#channels` change (never include harness vendor names in the badge).
 "#;
 
-const AGY_SKILL_MD: &str = r#"---
+const AGY_SKILL_MD: &str = r##"---
 name: memnos
 description: >-
   Use this skill when the user invokes /memnos or asks to register a topic channel,
-  coordinate with peer Claude Code / Antigravity / Gemini sessions, pin constraints,
-  audit recall, or run memnos doctor/tips/watch.
+  split a PRD into a multi-harness task plan, coordinate with peer Claude Code / Antigravity /
+  Codex / Gemini sessions, pin constraints, audit recall, or run memnos doctor/tips/watch.
 ---
 
 # MEMNOS — Long-Term Memory & Multi-Agent Mesh (Antigravity / `agy`)
 
-Use either the `memnos` MCP tools (`recall`, `recall_wide`, `remember`, `channel_registry`, `channel_publish`, `channel_poll`, `channel_ack`, `inbox_send`, `inbox_list`, `inbox_retract`) or the `memnos` CLI:
+Use either the `memnos` MCP tools (`recall`, `recall_wide`, `remember`, `corpus_ingest`, `channel_registry`, `channel_publish`, `channel_poll`, `channel_ack`, `inbox_send`, `inbox_list`, `inbox_retract`, `lease_acquire`, `lease_release`) or the `memnos` CLI:
 
 - **Show this session's identity & subscribed channels:** `memnos id` (displays `[MEMNOS @<handle> · #<channels>]`)
 - **Join or create a global cross-namespace topic channel:** `memnos registry <topic>` (or `channel_registry(topic=...)`)
 - **List active terminal sessions (same-laptop vs remote) & topic channels:** `memnos registry`
 - **Post a competing-consumer task (claimed by 1 listener, no duplicate work):** `memnos registry <topic> --task "..."`
+- **PRD -> Multi-Harness Task Plan (`depends_on`, `preferred_harness`, `different_harness`):**
+  1. Ingest the PRD into governed corpus memory: `corpus_ingest(corpus="payments-prd", content=...)` and pin non-negotiable rules via `remember(..., memory_type="constraint")`.
+  2. Create/join a dedicated feature channel (e.g. `channel_registry(topic="#payments-prd")`).
+  3. Publish atomic `claimable=true` tasks (`intent="task"`) with DAG & routing `metadata`:
+     - `{"preferred_harness": "claude-code", "required_role": "backend"}` (auto-falls back if offline or quota-paused)
+     - `{"depends_on": [101, 102]}` (stays gated until upstream task IDs are `channel_ack`ed `done`)
+     - `{"depends_on": [103], "different_harness": true}` (cross-model code review — cannot be claimed by the authoring harness)
+  4. Before editing shared files, acquire a lease (`lease_acquire(resource="src/billing.ts")`), check `corpus_check` against the PRD, then call `channel_ack(id=..., status="done", resolution="...")` and `lease_release`.
+  5. Need background workers without opening terminals? Launch subscription-only headless workers from `MEMNOS.app` (**⚡ Launch Headless**) or `POST /workspace/api/spawner/launch` (auto-strips API keys for $0 API billing, auto-fails over across harnesses on quota limits, and auto-closes on exit).
 - **Hands-free wakeups (no background polling loops):** Do NOT spawn `memnos channel wait` or `memnos watch` background tasks — `memnos wake-daemon` watches Postgres `LISTEN/NOTIFY` in the background and automatically wakes your session when idle. Subscribe, publish, and end your turn.
 - **Pin a permanent project rule:** `memnos remember "<rule>" --type constraint`
 - **Platform doctor & entity-graph cleanup:** `memnos doctor --fix`
 - **Feature showcase & workflow tips:** `memnos tips`
-"#;
+"##;
 
 pub const SUPPORTED_AGENTS: &[&str] = &[
     "claude-code",
