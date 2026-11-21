@@ -2990,6 +2990,74 @@ async fn workspace_api_handler(
                 Err(e) => ctrl_err_resp(e),
             }
         }
+        ("doctor", Method::GET) => {
+            let ns_opt = qs.get("namespace").map(|s| s.as_str());
+            match crate::doctor::run_doctor_scan(&st.pool, Some(pid), ns_opt).await {
+                Ok(v) => json_resp(StatusCode::OK, v),
+                Err(e) if e.starts_with("Forbidden:") => json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": e.trim_start_matches("Forbidden:").trim() }),
+                ),
+                Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
+            }
+        }
+        ("doctor/run", Method::POST) => {
+            let ns_opt = b
+                .get("namespace")
+                .and_then(|v| v.as_str())
+                .or_else(|| qs.get("namespace").map(|s| s.as_str()));
+            let dry_run = b.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+            let actions: Vec<String> = b
+                .get("actions")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .or_else(|| {
+                    b.get("action")
+                        .and_then(|v| v.as_str())
+                        .map(|s| vec![s.trim().to_string()])
+                })
+                .unwrap_or_else(|| vec!["all".to_string()]);
+
+            match crate::doctor::execute_doctor_actions(
+                &st.pool,
+                &st.store,
+                Some(pid),
+                ns_opt,
+                &actions,
+                dry_run,
+            )
+            .await
+            {
+                Ok(v) => {
+                    if !dry_run {
+                        if let Ok(mut g) = st.ns_cache.lock() {
+                            *g = None;
+                        }
+                        st.channel_notify.notify_waiters();
+                        let _ = st.event_tx.send(json!({
+                            "type": "activity",
+                            "op": "doctor/run",
+                            "namespace": ns_opt.unwrap_or("*"),
+                            "actor": "doctor",
+                            "detail": actions.join(","),
+                            "ok": true,
+                        }));
+                        let _ = st.event_tx.send(json!({ "type": "refresh", "namespace": "*" }));
+                    }
+                    json_resp(StatusCode::OK, v)
+                }
+                Err(e) if e.starts_with("Forbidden:") => json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": e.trim_start_matches("Forbidden:").trim() }),
+                ),
+                Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
+            }
+        }
         _ => json_resp(
             StatusCode::NOT_FOUND,
             json!({ "error": "unknown workspace route" }),

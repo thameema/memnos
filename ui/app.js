@@ -59,16 +59,16 @@ function renderVersionSurfaces() {
   const mismatch = hasVersionMismatch(client, srv);
   const hostShort = serverBase().replace(/^https?:\/\//, "");
 
-  // 1. Topbar App version pill + Server switcher button
+  // 1. Topbar compact version chip + single-line Server switcher button
   const topBadge = $("#topbar-ver-badge");
   if (topBadge) {
     const cShort = fmtVerTag(client.version, client.build, false);
     const sShort = fmtVerTag(srv.version, srv.build, false);
     const label = mismatch
       ? (client.version !== srv.version
-          ? `⚠ ${client.kind} ${cShort} ≠ Server ${sShort}`
-          : `⚠ ${client.kind} #${client.build} ≠ Server #${srv.build}`)
-      : `${client.kind} ${fmtVerTag(client.version || srv.version, client.build || srv.build, true)}`;
+          ? `⚠ ${cShort} ≠ ${sShort}`
+          : `⚠ #${client.build} ≠ #${srv.build}`)
+      : fmtVerTag(client.version || srv.version, "", false);
     if (topBadge.textContent !== label) topBadge.textContent = label;
     topBadge.classList.toggle("mismatch", mismatch);
     topBadge.title = `${client.fullLabel}: ${fmtVerTag(client.version, client.build, true)} · Server (${hostShort}): ${fmtVerTag(srv.version, srv.build, true)}${mismatch ? " — version mismatch! Restart MEMNOS.app or server so both match." : " — click for details"}`;
@@ -76,18 +76,18 @@ function renderVersionSurfaces() {
 
   const swBtn = $("#switch-server");
   if (swBtn) {
-    const srvSuffix = srv.version ? ` · Server v${srv.version}` : "";
-    const swText = `${hostShort}${srvSuffix}`;
-    if (swBtn.textContent !== swText) swBtn.textContent = swText;
+    if (swBtn.textContent !== hostShort) swBtn.textContent = hostShort;
     swBtn.title = `Connected server: ${serverBase()} (${fmtVerTag(srv.version, srv.build, true)}) — click to switch Local or Remote server`;
   }
 
   // 2. Persistent Bottom Bar right-edge version readout
   const footVer = $("#footer-version");
   if (footVer) {
+    const cShort = fmtVerTag(client.version, client.build, false);
+    const sShort = fmtVerTag(srv.version, srv.build, false);
     const cFull = fmtVerTag(client.version, client.build, true);
     const sFull = fmtVerTag(srv.version, srv.build, true);
-    const footText = `${mismatch ? "⚠ " : ""}${client.kind} ${cFull} · Server ${sFull}`;
+    const footText = `${mismatch ? "⚠ " : ""}${client.kind} ${cShort} · Server ${sShort}`;
     if (footVer.textContent !== footText) footVer.textContent = footText;
     footVer.classList.toggle("mismatch", mismatch);
     footVer.title = mismatch
@@ -970,7 +970,7 @@ function switchSection(sec) {
   }
   activeSection = sec;
   $$(".rail-btn").forEach(b => b.classList.toggle("active", b.dataset.section === sec));
-  ["channels", "handles", "namespaces", "live", "memories", "constraints", "telemetry", "console"].forEach(k => {
+  ["channels", "handles", "namespaces", "live", "memories", "constraints", "telemetry", "doctor", "console"].forEach(k => {
     const el = $("#sec-" + k);
     if (el) el.hidden = (k !== sec);
   });
@@ -996,6 +996,8 @@ function switchSection(sec) {
     loadWorkspaceConstraints();
   } else if (sec === "telemetry") {
     renderTelemetry();
+  } else if (sec === "doctor") {
+    loadDoctorScan();
   } else if (sec === "console") {
     const activeTab = $("#console-tabs button.active")?.dataset.ctab || "access";
     switchConsoleTab(activeTab);
@@ -1127,7 +1129,7 @@ async function refreshOverview(pickDefaults = false) {
   if (!data.is_admin && activeSection === "console") {
     switchSection("channels");
   }
-  ["channels", "handles", "namespaces", "live", "memories", "constraints", "telemetry", "console"].forEach(k => {
+  ["channels", "handles", "namespaces", "live", "memories", "constraints", "telemetry", "doctor", "console"].forEach(k => {
     const el = $("#sec-" + k);
     if (el) el.hidden = (k !== activeSection);
   });
@@ -1154,13 +1156,20 @@ async function refreshOverview(pickDefaults = false) {
     })));
   syncSelectOptions($("#ws-ns-filter"), nsItems, prevNs);
 
-  // Sync Constraints namespace selector
+  // Sync Constraints & Doctor namespace selectors
   const csSel = $("#cs-ns-select");
   if (csSel) {
     const prevCs = csSel.value || "*";
     const csItems = [{ value: "*", label: "All authorized namespaces (*)" }]
       .concat(allNs.map(n => ({ value: n.name, label: `${n.name} (+ inherited)` })));
     syncSelectOptions(csSel, csItems, prevCs);
+  }
+  const docSel = $("#doc-ns-select");
+  if (docSel) {
+    const prevDoc = docSel.value || "*";
+    const docItems = [{ value: "*", label: "All authorized namespaces (*)" }]
+      .concat(allNs.map(n => ({ value: n.name, label: n.name })));
+    syncSelectOptions(docSel, docItems, prevDoc);
   }
 
   // Sync Harness filter dropdown in @Handles
@@ -2519,31 +2528,36 @@ function renderNamespaceList() {
 
   const html = items.map(n => {
     const isSel = selectedNamespace === n.name;
-    const pfxTag = namespacePrefixOf(n.name);
-    const linkTotal = (n.links_out || 0) + (n.links_in || 0);
     const onlineCnt = (wsData.sessions || []).filter(s => s.namespace === n.name && s.alive).length;
-    return `<div class="entity-item ${isSel ? "active" : ""}" data-ns-item="${esc(n.name)}">
-      <div class="entity-top">
-        <span class="entity-name" title="${esc(n.name)}">⊞ ${esc(n.name)}</span>
-        <span class="pill ${n.can_write ? "ok" : ""}" style="font-size:10px;padding:1px 6px">${n.can_write ? "RW" : "RO"}</span>
+    const linkTotal = (n.links_out || 0) + (n.links_in || 0);
+    const subLeft = n.description
+      ? esc(n.description)
+      : `${(n.turns || 0).toLocaleString()} turns` +
+        (linkTotal ? ` · ${linkTotal} link${linkTotal > 1 ? "s" : ""}` : "") +
+        ((n.bindings || 0) ? ` · ${n.bindings} route${n.bindings > 1 ? "s" : ""}` : "");
+
+    const rightTags = [];
+    if (onlineCnt) rightTags.push(`<span class="tiny-pill live">${onlineCnt} online</span>`);
+    else if (!n.can_write) rightTags.push(`<span class="tiny-pill">RO</span>`);
+    else if (n.kind === "knowledge") rightTags.push(`<span class="tiny-pill tag">knowledge</span>`);
+
+    return `<button type="button" class="list-card ${isSel ? "active" : ""}" data-ns-item="${esc(n.name)}">
+      <div class="list-card-top">
+        <span class="list-card-name" title="${esc(n.name)}">${esc(n.name)}</span>
+        <span class="tiny-pill">${(n.facts || 0).toLocaleString()} facts</span>
       </div>
-      ${n.description ? `<div class="entity-sub">${esc(n.description)}</div>` : ""}
-      <div class="entity-meta">
-        <span class="ns-pfx-tag">${esc(pfxTag)}</span>
-        ${n.kind === "knowledge" ? `<span class="ns-pfx-tag">knowledge</span>` : ""}
-        <span><b>${(n.facts || 0).toLocaleString()}</b> facts</span>
-        <span>· ${(n.turns || 0).toLocaleString()} turns</span>
-        ${onlineCnt ? `<span style="color:var(--ok)">· ${onlineCnt} @</span>` : ""}
-        ${linkTotal ? `<span title="${linkTotal} grounded link(s)">· 🔗${linkTotal}</span>` : ""}
-        ${(n.bindings || 0) ? `<span title="${n.bindings} repo/path binding(s)">· 📍${n.bindings}</span>` : ""}
+      <div class="list-card-sub">
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${subLeft}</span>
+        <span>${rightTags.join(" ")}</span>
       </div>
-    </div>`;
+    </button>`;
   }).join("");
 
   if (setHtmlBySig(box, sig, html)) {
     $$("[data-ns-item]", box).forEach(el => {
       el.onclick = () => {
         selectedNamespace = el.dataset.nsItem;
+        if ($("#ns-ws-settings-bar")) $("#ns-ws-settings-bar").hidden = true;
         renderNamespaceList();
         loadNamespaceDetail(selectedNamespace, true);
       };
@@ -2568,31 +2582,31 @@ async function loadNamespaceDetail(nsName, syncInputs = false) {
     const c = d.counts || {};
     const rel = d.related || {};
 
-    // 1. Hero Top
-    const heroSig = `${d.name}|${writable}|${d.is_admin}|${d.registered}|${d.kind}|${d.inherit_ancestors}|${d.created_by}|${d.created_at}`;
+    // 1. Clean Edge-to-Edge Hero Header
+    const heroSig = `${d.name}|${d.description || ""}|${writable}|${d.is_admin}|${d.registered}|${d.kind}|${d.inherit_ancestors}|${d.created_by}`;
     const heroHtml = `
       <div class="hero-top">
         <div class="hero-id">
-          <div class="hero-av" style="background:${avatarColor(d.name)}">${esc(d.name.slice(0, 2).toUpperCase())}</div>
+          <div class="hero-av" style="background:${avatarColor(d.name)}">${esc(d.name.replace(/^[^:]+:/, "").slice(0, 2).toUpperCase() || d.name.slice(0, 2).toUpperCase())}</div>
           <div>
             <div class="chat-title-row">
-              <h2 style="margin:0;font-size:18px">${esc(d.name)}</h2>
-              <span class="pill ${writable ? "ok" : ""}">${writable ? "READ + WRITE" : "READ-ONLY"}</span>
+              <h2 style="margin:0;font-size:17px">${esc(d.name)}</h2>
               <span class="ns-badge">${esc(d.kind || "memory")}</span>
-              ${d.registered ? `<span class="pill ok">REGISTERED</span>` : `<span class="pill warn">AUTO-DISCOVERED</span>`}
+              ${!writable ? `<span class="pill warn">READ-ONLY</span>` : ""}
+              ${!d.registered ? `<span class="pill warn">DISCOVERED</span>` : ""}
             </div>
-            <div class="hero-meta-grid" style="margin-top:5px">
-              ${d.created_by ? `<span>Created by: <b>@${esc(d.created_by)}</b></span>` : ""}
-              ${d.created_at ? `<span>Created: <b>${fmt(d.created_at)}</b></span>` : ""}
-              <span>Ancestor Inheritance: <b>${d.inherit_ancestors ? "Enabled" : "Disabled"}</b></span>
+            <div class="hero-meta-grid" style="margin-top:4px">
+              ${d.description ? `<span style="color:var(--fg-soft)">${esc(d.description)}</span>` : ""}
+              <span>Ancestor inheritance: <b>${d.inherit_ancestors ? "On" : "Off"}</b></span>
+              ${d.created_by ? `<span>Owner: <b>@${esc(d.created_by)}</b></span>` : ""}
             </div>
           </div>
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap">
-          <button type="button" id="ns-act-scope" class="ghost sm" title="Filter workspace topbar scope to ${esc(d.name)}">Scope Workspace Here</button>
-          <button type="button" id="ns-act-memories" class="ghost sm">◈ View Memories</button>
-          <button type="button" id="ns-act-child" class="ghost sm">+ Child NS</button>
-          <button type="button" id="ns-act-transfer" class="btn-primary sm">⇄ Move / Merge…</button>
+          <button type="button" id="ns-act-scope" class="ghost sm" title="Filter workspace Scope to ${esc(d.name)}">Scope Here</button>
+          <button type="button" id="ns-act-memories" class="ghost sm">Memories</button>
+          ${writable ? `<button type="button" id="ns-act-edit" class="ghost sm">✎ Edit</button>` : ""}
+          <button type="button" id="ns-act-transfer" class="btn-primary sm">⇄ Move / Merge</button>
           ${d.is_admin ? `<button type="button" id="ns-act-delete" class="danger sm">Delete</button>` : ""}
         </div>
       </div>
@@ -2629,8 +2643,14 @@ async function loadNamespaceDetail(nsName, syncInputs = false) {
           switchSection("memories");
         };
       }
-      if ($("#ns-act-child")) {
-        $("#ns-act-child").onclick = () => openCreateNamespaceModal(d.name + ":");
+      if ($("#ns-act-edit")) {
+        $("#ns-act-edit").onclick = () => {
+          const sb = $("#ns-ws-settings-bar");
+          if (sb) {
+            sb.hidden = !sb.hidden;
+            if (!sb.hidden && $("#ns-edit-desc")) $("#ns-edit-desc").focus();
+          }
+        };
       }
       if ($("#ns-act-transfer")) {
         $("#ns-act-transfer").onclick = () => openTransferNamespaceModal(d.name, "", "merge");
@@ -2657,10 +2677,10 @@ async function loadNamespaceDetail(nsName, syncInputs = false) {
       }
     }
 
-    // 2. Static Settings Bar (only touch when unfocused or switching namespace)
+    // 2. Collapsible Settings Bar (stays hidden unless user clicked `✎ Edit`)
     const sBar = $("#ns-ws-settings-bar");
     if (sBar) {
-      sBar.hidden = !writable;
+      if (!writable) sBar.hidden = true;
       if (writable && (syncInputs || !hasActiveControl(sBar))) {
         if ($("#ns-edit-desc")) $("#ns-edit-desc").value = d.description || "";
         if ($("#ns-edit-kind")) $("#ns-edit-kind").value = d.kind || "memory";
@@ -2670,27 +2690,28 @@ async function loadNamespaceDetail(nsName, syncInputs = false) {
     if ($("#ns-link-bar")) $("#ns-link-bar").hidden = !writable;
     if ($("#ns-bind-bar")) $("#ns-bind-bar").hidden = !writable;
 
-    // Sync target dropdown for `+ Link Related NS`
+    // Populate datalist for single-input `+ Link`
     const otherNs = (wsData?.namespaces || [])
       .map(n => n.name)
       .filter(n => n !== d.name && !n.startsWith("test:"))
       .sort();
-    syncSelectOptions(
-      $("#ns-link-pick"),
-      [{ value: "", label: "Choose namespace…" }].concat(otherNs.map(n => ({ value: n, label: n }))),
-      $("#ns-link-pick")?.value || ""
-    );
+    const linkDatalist = $("#ns-link-datalist");
+    if (linkDatalist) {
+      const dlSig = otherNs.join(",");
+      setHtmlBySig(linkDatalist, dlSig, otherNs.map(n => `<option value="${esc(n)}"></option>`).join(""));
+    }
 
-    // 3. KPI Cards
+    // 3. Compact 4-Stat Strip
+    const linkCount = (rel.links_out || []).length + (rel.links_in || []).length;
     const kpiHtml = `
-      <div class="kpi-card"><div class="kpi-lbl">Semantic Facts</div><div class="kpi-val">${(c.facts || 0).toLocaleString()}</div><div class="kpi-sub">${(c.entities || 0).toLocaleString()} entities · ${(c.edges || 0).toLocaleString()} graph edges</div></div>
-      <div class="kpi-card"><div class="kpi-lbl">Turns &amp; Episodes</div><div class="kpi-val">${(c.turns || 0).toLocaleString()}</div><div class="kpi-sub">${(c.episodes || 0).toLocaleString()} episodic summaries</div></div>
-      <div class="kpi-card"><div class="kpi-lbl">Coordination Mesh</div><div class="kpi-val">${c.online_sessions || 0} @ · ${c.channels || 0} #</div><div class="kpi-sub">${(c.channel_messages || 0).toLocaleString()} channel msgs · ${(c.inbox_messages || 0).toLocaleString()} inbox DMs</div></div>
-      <div class="kpi-card"><div class="kpi-lbl">Governance &amp; Routing</div><div class="kpi-val">${(c.bindings || 0)} routes</div><div class="kpi-sub">${c.pinned_constraints || 0} pinned · ${c.guardrails || 0} guardrails · ${(rel.links_out || []).length + (rel.links_in || []).length} links</div></div>
+      <div class="ns-stat-box"><span class="ns-stat-lbl">Semantic Facts</span><span class="ns-stat-val">${(c.facts || 0).toLocaleString()}</span><span class="ns-stat-sub">${(c.entities || 0).toLocaleString()} entities · ${(c.edges || 0).toLocaleString()} edges</span></div>
+      <div class="ns-stat-box"><span class="ns-stat-lbl">Turns &amp; Episodes</span><span class="ns-stat-val">${(c.turns || 0).toLocaleString()}</span><span class="ns-stat-sub">${(c.episodes || 0).toLocaleString()} episodic summaries</span></div>
+      <div class="ns-stat-box"><span class="ns-stat-lbl">Channels &amp; Handles</span><span class="ns-stat-val">${c.online_sessions || 0} @ · ${c.channels || 0} #</span><span class="ns-stat-sub">${(c.channel_messages || 0).toLocaleString()} msgs · ${(c.inbox_messages || 0).toLocaleString()} inbox DMs</span></div>
+      <div class="ns-stat-box"><span class="ns-stat-lbl">Governance &amp; Links</span><span class="ns-stat-val">${c.bindings || 0} routes · ${linkCount} links</span><span class="ns-stat-sub">${c.pinned_constraints || 0} pinned · ${c.guardrails || 0} guardrails</span></div>
     `;
     setHtmlBySig($("#ns-ws-kpis"), kpiHtml, kpiHtml);
 
-    // 4. Related Namespaces & Grounded Links Grid
+    // 4. Clean Related Namespaces Stack (only renders populated sections — zero empty box clutter!)
     const linksOut = rel.links_out || [];
     const linksIn = rel.links_in || [];
     const ancestors = rel.ancestors || [];
@@ -2700,107 +2721,89 @@ async function loadNamespaceDetail(nsName, syncInputs = false) {
     const prov = rel.provenance || [];
     const nudges = rel.nudges || [];
 
+    const relSections = [];
+    if (linksOut.length) {
+      relSections.push(`<div class="ns-rel-section">
+        <div class="ns-rel-hdr">Grounded In (${linksOut.length})</div>
+        <div class="ns-chip-wrap">${linksOut.map(l => `
+          <span class="ns-chip" data-jump-ns="${esc(l.dst_ns)}" title="Recall on ${esc(d.name)} grounds in ${esc(l.dst_ns)} (${esc(l.kind)})">
+            <span>→ ${esc(l.dst_ns)}</span>
+            <span class="ns-pfx-tag">${esc(l.kind)}</span>
+            ${writable ? `<button type="button" class="ns-chip-del" data-unlink-dst="${esc(l.dst_ns)}" title="Unlink ${esc(l.dst_ns)}">×</button>` : ""}
+          </span>`).join("")}</div>
+      </div>`);
+    }
+    if (linksIn.length) {
+      relSections.push(`<div class="ns-rel-section">
+        <div class="ns-rel-hdr">Referenced By (${linksIn.length})</div>
+        <div class="ns-chip-wrap">${linksIn.map(l => `
+          <span class="ns-chip" data-jump-ns="${esc(l.src_ns)}">
+            <span>← ${esc(l.src_ns)}</span>
+            <span class="ns-pfx-tag">${esc(l.kind)}</span>
+          </span>`).join("")}</div>
+      </div>`);
+    }
+    if (ancestors.length || children.length) {
+      relSections.push(`<div class="ns-rel-section">
+        <div class="ns-rel-hdr">Prefix Hierarchy</div>
+        <div class="ns-chip-wrap">
+          ${ancestors.map(a => `<span class="ns-chip" data-jump-ns="${esc(a)}"><span>↑ ${esc(a)}</span><span class="ns-pfx-tag">${d.inherit_ancestors ? "parent" : "off"}</span></span>`).join("")}
+          ${children.map(ch => `<span class="ns-chip" data-jump-ns="${esc(ch)}"><span>↳ ${esc(ch)}</span><span class="ns-pfx-tag">child</span></span>`).join("")}
+          <span class="ns-chip" id="ns-quick-child" title="Create a child sub-namespace under ${esc(d.name)}">+ ${esc(d.name)}:*</span>
+        </div>
+      </div>`);
+    }
+    if (siblings.length) {
+      relSections.push(`<div class="ns-rel-section">
+        <div class="ns-rel-hdr">Related Prefix Siblings (${siblings.length})</div>
+        <div class="ns-chip-wrap">${siblings.map(sib => `
+          <span class="ns-chip" data-jump-ns="${esc(sib)}">
+            <span>${esc(sib)}</span>
+            <button type="button" class="ns-chip-del" data-merge-from="${esc(sib)}" title="Merge ${esc(sib)} into ${esc(d.name)}">⇄</button>
+          </span>`).join("")}</div>
+      </div>`);
+    }
+    if (sharedChs.length) {
+      relSections.push(`<div class="ns-rel-section">
+        <div class="ns-rel-hdr">Shared <code>#Channels</code> Across Scopes</div>
+        <div class="ns-chip-wrap">${sharedChs.map(sc => `
+          <span class="ns-chip" data-open-shared-ch="${esc(sc.channel)}">
+            <b>${esc(sc.channel)}</b>
+            <span class="muted">${(sc.other_namespaces || []).map(esc).join(", ")}</span>
+          </span>`).join("")}</div>
+      </div>`);
+    }
+    if (nudges.length) {
+      relSections.push(`<div class="ns-rel-section">
+        <div class="ns-rel-hdr">Suggested Consolidations</div>
+        <div style="display:flex;flex-direction:column;gap:6px">${nudges.map(nu => `
+          <div class="ver-info-row" style="background:var(--bg-surface);padding:6px 10px;border-radius:8px;border:1px solid var(--border)">
+            <span><code>${esc(nu.write_ns)}</code> → <code>${esc(nu.suggested_ns)}</code> <span class="muted">(${nu.hits || 1} hits)</span></span>
+            <button type="button" class="btn-primary sm" data-nudge-src="${esc(nu.write_ns)}" data-nudge-dst="${esc(nu.suggested_ns)}">⇄ Merge</button>
+          </div>`).join("")}</div>
+      </div>`);
+    }
+    if (prov.length) {
+      relSections.push(`<div class="ns-rel-section">
+        <div class="ns-rel-hdr">Merge &amp; Copy Lineage</div>
+        <div class="ns-chip-wrap">${prov.map(p => {
+          const other = p.src_ns === d.name ? p.dst_ns : p.src_ns;
+          const dirLbl = p.src_ns === d.name ? `${esc(p.mode)} → ${esc(p.dst_ns)}` : `${esc(p.mode)} ← ${esc(p.src_ns)}`;
+          return `<span class="ns-chip" data-jump-ns="${esc(other)}" title="${esc(fmt(p.copied_at))}"><span>${dirLbl}</span><span class="muted" style="font-size:10.5px">${age(p.copied_at)} ago</span></span>`;
+        }).join("")}</div>
+      </div>`);
+    }
+
     const relSig = JSON.stringify({ writable, linksOut, linksIn, ancestors, children, siblings, sharedChs, prov, nudges, inh: d.inherit_ancestors });
-    const relHtml = `
-      <div class="ns-rel-grid">
-        <div class="ns-rel-group">
-          <div class="ns-rel-hdr"><span>Grounded In (Outgoing Links)</span><span>${linksOut.length}</span></div>
-          <div class="ns-chip-wrap">
-            ${linksOut.length ? linksOut.map(l => `
-              <span class="ns-chip" data-jump-ns="${esc(l.dst_ns)}" title="Recall on ${esc(d.name)} also grounds in ${esc(l.dst_ns)} (${esc(l.kind)})">
-                <span>→ ${esc(l.dst_ns)}</span>
-                <span class="ns-pfx-tag">${esc(l.kind)}</span>
-                ${writable ? `<button type="button" class="ns-chip-del" data-unlink-dst="${esc(l.dst_ns)}" title="Unlink ${esc(l.dst_ns)}">×</button>` : ""}
-              </span>
-            `).join("") : `<span class="muted">No outgoing links yet.</span>`}
-          </div>
-        </div>
-
-        <div class="ns-rel-group">
-          <div class="ns-rel-hdr"><span>Referenced By (Incoming Links)</span><span>${linksIn.length}</span></div>
-          <div class="ns-chip-wrap">
-            ${linksIn.length ? linksIn.map(l => `
-              <span class="ns-chip" data-jump-ns="${esc(l.src_ns)}" title="${esc(l.src_ns)} grounds recall in ${esc(d.name)} (${esc(l.kind)})">
-                <span>← ${esc(l.src_ns)}</span>
-                <span class="ns-pfx-tag">${esc(l.kind)}</span>
-              </span>
-            `).join("") : `<span class="muted">No other namespaces link here yet.</span>`}
-          </div>
-        </div>
-
-        <div class="ns-rel-group">
-          <div class="ns-rel-hdr"><span>Hierarchy (Ancestors &amp; Children)</span><span>${ancestors.length + children.length}</span></div>
-          <div class="ns-chip-wrap">
-            ${ancestors.map(a => `
-              <span class="ns-chip" data-jump-ns="${esc(a)}" title="Parent ancestor namespace (${d.inherit_ancestors ? "inherited" : "inheritance off"})">
-                <span>↑ ${esc(a)}</span>
-                <span class="ns-pfx-tag">${d.inherit_ancestors ? "parent" : "off"}</span>
-              </span>
-            `).join("")}
-            ${children.map(ch => `
-              <span class="ns-chip" data-jump-ns="${esc(ch)}" title="Child namespace">
-                <span>↳ ${esc(ch)}</span>
-                <span class="ns-pfx-tag">child</span>
-              </span>
-            `).join("")}
-            ${!ancestors.length && !children.length ? `<span class="muted">No parent/child prefix namespaces yet.</span>` : ""}
-          </div>
-        </div>
-
-        <div class="ns-rel-group">
-          <div class="ns-rel-hdr"><span>Sibling Prefix Namespaces</span><span>${siblings.length}</span></div>
-          <div class="ns-chip-wrap">
-            ${siblings.length ? siblings.map(sib => `
-              <span class="ns-chip" data-jump-ns="${esc(sib)}">
-                <span>${esc(sib)}</span>
-                <button type="button" class="ns-chip-del" data-merge-from="${esc(sib)}" title="Merge ${esc(sib)} into ${esc(d.name)}">⇄</button>
-              </span>
-            `).join("") : `<span class="muted">No sibling namespaces under this prefix.</span>`}
-          </div>
-        </div>
-      </div>
-
-      ${sharedChs.length ? `<div style="margin-top:12px">
-        <div class="ns-rel-hdr" style="margin-bottom:6px"><span>Cross-Namespace Shared <code>#Channels</code></span></div>
-        <div class="ns-chip-wrap">
-          ${sharedChs.map(sc => `
-            <span class="ns-chip" data-open-shared-ch="${esc(sc.channel)}">
-              <b>${esc(sc.channel)}</b>
-              <span class="muted">shared with ${(sc.other_namespaces || []).map(esc).join(", ")}</span>
-            </span>
-          `).join("")}
-        </div>
-      </div>` : ""}
-
-      ${nudges.length ? `<div style="margin-top:12px">
-        <div class="ns-rel-hdr" style="margin-bottom:6px"><span>Suggested Consolidations (Misrouted Writes)</span></div>
-        <div style="display:flex;flex-direction:column;gap:6px">
-          ${nudges.map(nu => `
-            <div class="ver-info-row" style="background:var(--bg-surface);padding:7px 10px;border-radius:8px;border:1px solid var(--border)">
-              <span><code>${esc(nu.write_ns)}</code> → <code>${esc(nu.suggested_ns)}</code> <span class="muted">(${nu.hits || 1} hits${nu.reason ? " · " + esc(nu.reason) : ""})</span></span>
-              <button type="button" class="btn-primary sm" data-nudge-src="${esc(nu.write_ns)}" data-nudge-dst="${esc(nu.suggested_ns)}">⇄ Review &amp; Merge</button>
-            </div>
-          `).join("")}
-        </div>
-      </div>` : ""}
-
-      ${prov.length ? `<div style="margin-top:12px">
-        <div class="ns-rel-hdr" style="margin-bottom:6px"><span>Copy &amp; Merge Provenance Lineage</span></div>
-        <div class="ns-chip-wrap">
-          ${prov.map(p => {
-            const other = p.src_ns === d.name ? p.dst_ns : p.src_ns;
-            const dirLbl = p.src_ns === d.name ? `${esc(p.mode)} → ${esc(p.dst_ns)}` : `${esc(p.mode)} ← ${esc(p.src_ns)}`;
-            return `<span class="ns-chip" data-jump-ns="${esc(other)}" title="${esc(fmt(p.copied_at))}">
-              <span>${dirLbl}</span>
-              <span class="muted" style="font-size:10.5px">${age(p.copied_at)} ago</span>
-            </span>`;
-          }).join("")}
-        </div>
-      </div>` : ""}
-    `;
+    const relHtml = relSections.length
+      ? `<div class="ns-rel-stack">${relSections.join("")}</div>`
+      : `<div class="muted" style="font-size:12.5px">Standalone namespace — link a related namespace above or create a <code>${esc(d.name)}:*</code> child scope.</div>`;
 
     const relBox = $("#ns-ws-related-body");
     if (setHtmlBySig(relBox, relSig, relHtml)) {
+      if ($("#ns-quick-child", relBox)) {
+        $("#ns-quick-child", relBox).onclick = () => openCreateNamespaceModal(d.name + ":");
+      }
       $$("[data-jump-ns]", relBox).forEach(el => {
         el.onclick = (ev) => {
           if (ev.target.closest("button")) return;
@@ -2838,23 +2841,22 @@ async function loadNamespaceDetail(nsName, syncInputs = false) {
       });
     }
 
-    // 5. Repo & Folder Bindings
+    // 5. Repo & Folder Bindings (clean compact rows)
     const binds = d.bindings || [];
     const bindSig = JSON.stringify({ writable, is_admin: d.is_admin, binds });
     const bindHtml = binds.length ? `
-      <table>
-        <thead><tr><th>Type</th><th>Repo / Folder Key</th><th>Host</th>${d.is_admin ? "<th>Principal</th>" : ""}<th style="width:90px"></th></tr></thead>
-        <tbody>
-          ${binds.map(b => `<tr>
-            <td><span class="ns-pfx-tag">${esc(b.key_type)}</span></td>
-            <td><code>${esc(b.key)}</code></td>
-            <td class="muted">${esc(b.host_id || "all hosts")}</td>
-            ${d.is_admin ? `<td>@${esc(b.principal_name || b.principal_id)}</td>` : ""}
-            <td>${writable ? `<button type="button" class="danger sm" data-unbind-id="${b.id}">Unbind</button>` : ""}</td>
-          </tr>`).join("")}
-        </tbody>
-      </table>
-    ` : `<div class="muted">No repositories or folder paths bound directly to <code>${esc(d.name)}</code> yet.</div>`;
+      <div style="display:flex;flex-direction:column;gap:6px">
+        ${binds.map(b => `
+          <div class="ver-info-row" style="background:var(--bg-surface);padding:6px 10px;border-radius:8px;border:1px solid var(--border)">
+            <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+              <span class="ns-pfx-tag" style="margin-right:6px">${esc(b.key_type)}</span>
+              <code>${esc(b.key)}</code>
+            </span>
+            ${writable ? `<button type="button" class="ghost sm" style="color:var(--err);flex-shrink:0" data-unbind-id="${b.id}">Unbind</button>` : ""}
+          </div>
+        `).join("")}
+      </div>
+    ` : `<div class="muted" style="font-size:12.5px">No repositories or folders bound yet.</div>`;
 
     const bindBox = $("#ns-ws-bindings-body");
     if (setHtmlBySig(bindBox, bindSig, bindHtml)) {
@@ -2874,28 +2876,24 @@ async function loadNamespaceDetail(nsName, syncInputs = false) {
     const myChannels = (d.related?.shared_channels || []).map(x => x.channel);
     const mySessions = d.sessions || [];
     const meshSig = JSON.stringify({ ns: d.name, myChannels, mySessions });
-    const meshHtml = `
-      <div style="display:flex;flex-direction:column;gap:10px">
-        <div>
-          <div class="muted" style="font-size:11.5px;margin-bottom:5px;font-weight:600">#Channels (${myChannels.length})</div>
-          <div class="ns-chip-wrap">
-            ${myChannels.length ? myChannels.map(ch => `<span class="ns-chip" data-mesh-ch="${esc(ch)}"><b>${esc(ch)}</b></span>`).join("") : `<span class="muted">No channels in this namespace yet.</span>`}
-          </div>
-        </div>
-        <div>
-          <div class="muted" style="font-size:11.5px;margin-bottom:5px;font-weight:600">@Handles (${mySessions.length})</div>
-          <div class="ns-chip-wrap">
-            ${mySessions.length ? mySessions.map(s => `
+    const meshHtml = (!myChannels.length && !mySessions.length)
+      ? `<div class="muted" style="font-size:12.5px">No active <code>#channels</code> or <code>@handles</code> attached to this namespace right now.</div>`
+      : `<div style="display:flex;flex-direction:column;gap:10px">
+          ${myChannels.length ? `<div>
+            <div class="ns-rel-hdr" style="margin-bottom:5px">#Channels (${myChannels.length})</div>
+            <div class="ns-chip-wrap">${myChannels.map(ch => `<span class="ns-chip" data-mesh-ch="${esc(ch)}"><b>${esc(ch)}</b></span>`).join("")}</div>
+          </div>` : ""}
+          ${mySessions.length ? `<div>
+            <div class="ns-rel-hdr" style="margin-bottom:5px">@Handles (${mySessions.length})</div>
+            <div class="ns-chip-wrap">${mySessions.map(s => `
               <span class="ns-chip" data-mesh-hd="${esc(s.name)}">
-                <span class="dot ${s.alive ? "on" : "off"}"></span>
+                <span class="dot ${s.alive ? "alive" : "idle"}"></span>
                 <span>@${esc(s.name)}</span>
                 ${s.harness ? `<span class="muted" style="font-size:11px">${esc(s.harness)}</span>` : ""}
-              </span>
-            `).join("") : `<span class="muted">No registered @handles in this namespace yet.</span>`}
-          </div>
-        </div>
-      </div>
-    `;
+              </span>`).join("")}</div>
+          </div>` : ""}
+        </div>`;
+
     const meshBox = $("#ns-ws-mesh-body");
     if (setHtmlBySig(meshBox, meshSig, meshHtml)) {
       $$("[data-mesh-ch]", meshBox).forEach(el => {
@@ -2921,6 +2919,7 @@ if ($("#ns-edit-save")) {
         kind: $("#ns-edit-kind")?.value || "memory",
         inherit_ancestors: !!$("#ns-edit-inherit")?.checked,
       });
+      if ($("#ns-ws-settings-bar")) $("#ns-ws-settings-bar").hidden = true;
       showToast(`Saved ${selectedNamespace} settings`);
       await refreshOverview(false);
       await loadNamespaceDetail(selectedNamespace, true);
@@ -2930,9 +2929,7 @@ if ($("#ns-edit-save")) {
 
 async function submitNsLinkAdd() {
   if (!selectedNamespace) return;
-  const picked = ($("#ns-link-pick")?.value || "").trim();
-  const typed = ($("#ns-link-custom")?.value || "").trim();
-  const dst = typed || picked;
+  const dst = ($("#ns-link-custom")?.value || "").trim();
   const kind = $("#ns-link-kind")?.value || "link";
   if (!dst) { showToast("Choose or type a target namespace to link", true); return; }
   try {
@@ -3471,6 +3468,170 @@ function renderTelemetryNamespaces() {
   });
 }
 $("#tel-ns-search").oninput = renderTelemetryNamespaces;
+if ($("#tel-open-doctor")) $("#tel-open-doctor").onclick = () => switchSection("doctor");
+
+// ============================================================================
+// SECTION 4B: MEMNOS DOCTOR (Diagnostics, Safe Repair & Optimization)
+// ============================================================================
+
+let lastDoctorScan = null;
+let doctorBusy = false;
+
+function updateDoctorRailBadge(scan) {
+  const badge = $("#rail-doc-badge");
+  if (!badge || !scan) return;
+  const issues = (scan.checks || []).filter(c => c.status === "warn" || c.status === "critical").length;
+  if (issues > 0) {
+    badge.hidden = false;
+    badge.textContent = String(issues);
+  } else {
+    badge.hidden = true;
+  }
+}
+
+function renderDoctorScan(scan) {
+  if (!scan) return;
+  lastDoctorScan = scan;
+  updateDoctorRailBadge(scan);
+
+  const score = scan.score ?? 100;
+  const ringCls = score >= 90 ? "" : (score >= 70 ? "warn" : "crit");
+  const stPill = score >= 90
+    ? `<span class="pill ok">HEALTHY</span>`
+    : (score >= 70 ? `<span class="pill warn">OPTIMIZATION RECOMMENDED</span>` : `<span class="pill no">ACTION REQUIRED</span>`);
+  const warnCount = (scan.checks || []).filter(c => c.status !== "ok").length;
+
+  const heroHtml = `
+    <div class="row" style="gap:16px">
+      <div class="doc-score-ring ${ringCls}">
+        <span class="doc-score-num">${score}</span>
+        <span class="doc-score-sub">/ 100</span>
+      </div>
+      <div>
+        <div class="row" style="gap:8px;margin-bottom:4px">
+          <h3 style="margin:0;font-size:17px">System &amp; Memory Health Score</h3>
+          ${stPill}
+        </div>
+        <div class="muted" style="font-size:12.5px">
+          Scope: <code>${esc(scan.scope || "*")}</code> · Scanned ${(scan.checks || []).length} subsystems in <b>${scan.scan_ms ?? 0} ms</b> · ${warnCount ? `<b>${warnCount}</b> item(s) can be optimized` : "Zero issues detected"}
+        </div>
+      </div>
+    </div>
+    <div class="muted" style="font-size:12px">
+      CLI equivalent: <code>memnos doctor --fix --optimize</code>
+    </div>
+  `;
+  setHtmlBySig($("#doc-hero"), JSON.stringify({ score, scope: scan.scope, warnCount, ms: scan.scan_ms }), heroHtml);
+
+  const cardsHtml = (scan.checks || []).map(ch => {
+    const st = ch.status || "ok";
+    const pillCls = st === "ok" ? "ok" : (st === "critical" ? "no" : "warn");
+    const pillLbl = st === "ok" ? "OK" : st.toUpperCase();
+    const m = ch.metrics || {};
+    const metricChips = Object.entries(m)
+      .filter(([k, v]) => typeof v === "number" || typeof v === "string" || typeof v === "boolean")
+      .filter(([, v]) => v !== "" && v !== null)
+      .slice(0, 6)
+      .map(([k, v]) => {
+        const valStr = k.endsWith("_bytes") ? fmtBytes(v) : (typeof v === "number" ? v.toLocaleString() : String(v));
+        return `<span class="doc-metric-chip">${esc(k.replace(/_/g, " "))}: <b>${esc(valStr)}</b></span>`;
+      })
+      .join("");
+
+    const topTbls = Array.isArray(m.top_tables) && m.top_tables.length
+      ? `<div style="margin-top:8px;font-size:11.5px" class="muted">Largest tables: ` +
+        m.top_tables.slice(0, 4).map(t => `<code>${esc(t.table.split(".")[1] || t.table)}</code> (${esc(fmtBytes(t.bytes))})`).join(" · ") +
+        `</div>`
+      : "";
+
+    return `<div class="doc-card ${esc(st)}">
+      <div>
+        <div class="row" style="justify-content:space-between;gap:8px;margin-bottom:6px">
+          <b style="font-size:14px">${esc(ch.title)}</b>
+          <span class="pill ${pillCls}">${esc(pillLbl)}</span>
+        </div>
+        <div style="font-size:12.5px;line-height:1.5;color:var(--fg-soft)">${esc(ch.summary)}</div>
+        ${metricChips ? `<div class="doc-metrics-row">${metricChips}</div>` : ""}
+        ${topTbls}
+      </div>
+      ${ch.action ? `<div class="row" style="justify-content:flex-end;padding-top:6px;border-top:1px solid var(--border)">
+        <button type="button" class="${st === "ok" ? "ghost" : "btn-primary"} sm" data-doc-action="${esc(ch.action)}">${esc(ch.action_label || ch.action)}</button>
+      </div>` : ""}
+    </div>`;
+  }).join("");
+
+  const cardsBox = $("#doc-cards");
+  if (setHtmlBySig(cardsBox, JSON.stringify(scan.checks), cardsHtml)) {
+    $$("[data-doc-action]", cardsBox).forEach(btn => {
+      btn.onclick = () => runDoctorActions([btn.dataset.docAction], false);
+    });
+  }
+}
+
+async function loadDoctorScan() {
+  const ns = $("#doc-ns-select")?.value || "*";
+  try {
+    const scan = await wapi("GET", "doctor?namespace=" + encodeURIComponent(ns));
+    renderDoctorScan(scan);
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
+
+async function runDoctorActions(actions, dryRun = false) {
+  if (doctorBusy) return;
+  doctorBusy = true;
+  const ns = $("#doc-ns-select")?.value || "*";
+  const runBox = $("#doc-run-box");
+  if ($("#doc-fixall-btn")) $("#doc-fixall-btn").disabled = true;
+  if ($("#doc-dryrun-btn")) $("#doc-dryrun-btn").disabled = true;
+  if (runBox) {
+    runBox.hidden = false;
+    runBox.innerHTML = `<span class="muted"><span class="spinner"></span> Running MEMNOS Doctor (${dryRun ? "dry-run preview" : actions.join(", ")})…</span>`;
+  }
+  try {
+    const prevScore = lastDoctorScan?.score ?? 100;
+    const res = await wapi("POST", "doctor/run", {
+      namespace: ns,
+      actions,
+      dry_run: dryRun,
+    });
+    if (res.scan) renderDoctorScan(res.scan);
+    const nextScore = res.scan?.score ?? prevScore;
+    const summaryLines = Object.entries(res.results || {}).map(([k, v]) => {
+      const kv = Object.entries(v || {})
+        .filter(([subK]) => subK !== "dry_run")
+        .map(([subK, subV]) => `${subK.replace(/_/g, " ")}=<b>${esc(typeof subV === "object" ? JSON.stringify(subV) : String(subV))}</b>`)
+        .join(" · ");
+      return `<div><code>${esc(k)}</code>: ${kv || "ok"}</div>`;
+    }).join("");
+
+    if (runBox) {
+      runBox.hidden = false;
+      runBox.innerHTML = `
+        <div class="row" style="justify-content:space-between;margin-bottom:6px">
+          <b>${dryRun ? "Dry-Run Preview Complete" : "Repair &amp; Optimization Complete"} (${res.elapsed_ms ?? 0} ms)</b>
+          <span class="pill ok">Score ${prevScore} → ${nextScore}</span>
+        </div>
+        <div style="font-size:12px;line-height:1.6;color:var(--fg-soft)">${summaryLines || "All checks clean."}</div>
+      `;
+    }
+    showToast(dryRun ? "Doctor dry-run preview ready" : `Doctor completed (${res.elapsed_ms ?? 0} ms) · Score ${nextScore}/100`);
+    if (!dryRun) await refreshOverview(false);
+  } catch (e) {
+    if (runBox) runBox.innerHTML = `<span class="err">${esc(e.message)}</span>`;
+    showToast(e.message, true);
+  } finally {
+    doctorBusy = false;
+    if ($("#doc-fixall-btn")) $("#doc-fixall-btn").disabled = false;
+    if ($("#doc-dryrun-btn")) $("#doc-dryrun-btn").disabled = false;
+  }
+}
+
+if ($("#doc-rescan-btn")) $("#doc-rescan-btn").onclick = loadDoctorScan;
+if ($("#doc-ns-select")) $("#doc-ns-select").onchange = loadDoctorScan;
+if ($("#doc-dryrun-btn")) $("#doc-dryrun-btn").onclick = () => runDoctorActions(["all"], true);
+if ($("#doc-fixall-btn")) $("#doc-fixall-btn").onclick = () => runDoctorActions(["all"], false);
 
 // ============================================================================
 // SECTION 5: GOVERNANCE & CONSOLE SUBTABS

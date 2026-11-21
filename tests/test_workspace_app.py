@@ -631,6 +631,57 @@ def main():
               and dc.get("bindings", 0) == 1,
               str(dst_det))
 
+        print("=== 10. MEMNOS Doctor: Diagnostics Scan, Role Guards, Stuck-Lock Repair & VACUUM ANALYZE ===")
+        check("/app embeds MEMNOS Doctor rail + section",
+              'data-section="doctor"' in app_html and 'id="sec-doctor"' in app_html)
+
+        st_doc_forb, _ = call("GET", f"/workspace/api/doctor?namespace={NS_HIDDEN}", scoped_tok)
+        check("scoped token cannot scan hidden namespace in doctor -> 403", st_doc_forb == 403)
+
+        st_opt_forb, _ = call("POST", "/workspace/api/doctor/run", scoped_tok, {
+            "actions": ["optimize_db"]
+        })
+        check("scoped token cannot run admin optimize_db -> 403", st_opt_forb == 403)
+
+        # Seed a stuck claimable task + expired file lease in NS_RW
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO memnos_control.channel_messages(namespace, channel, sender_session, principal_id, intent, content, claimable, claim_status, claimed_by, claimed_by_ns, claim_lease_until) "
+                "VALUES (%s, '#doc-test', 'owner', %s, 'task', 'Stuck task', true, 'claimed', 'dead-worker', %s, now() - interval '15 minutes')",
+                (NS_RW, admin_id, NS_RW),
+            )
+            cur.execute(
+                "INSERT INTO memnos_control.leases(namespace, key, holder_id, principal_id, expires_at) "
+                "VALUES (%s, 'src/payments.rs', 'dead-worker', %s, now() - interval '15 minutes')",
+                (NS_RW, admin_id),
+            )
+
+        st_dscan, dscan = call("GET", f"/workspace/api/doctor?namespace={urllib.parse.quote(NS_RW)}", admin_tok)
+        coord_chk = next((c for c in dscan.get("checks", []) if c.get("id") == "coordination_hygiene"), {})
+        check("GET /workspace/api/doctor detects stuck task claims and expired file leases",
+              st_dscan == 200
+              and isinstance(dscan.get("score"), int)
+              and coord_chk.get("metrics", {}).get("stuck_claims") == 1
+              and coord_chk.get("metrics", {}).get("expired_leases") == 1,
+              str(coord_chk))
+
+        st_drun, drun = call("POST", "/workspace/api/doctor/run", admin_tok, {
+            "namespace": NS_RW,
+            "actions": ["repair_coordination", "repair_graph", "optimize_memories", "optimize_db"],
+            "dry_run": False,
+        })
+        rc_res = drun.get("results", {}).get("repair_coordination", {})
+        db_res = drun.get("results", {}).get("optimize_db", {})
+        post_coord = next((c for c in drun.get("scan", {}).get("checks", []) if c.get("id") == "coordination_hygiene"), {})
+        check("POST /workspace/api/doctor/run repairs stuck claims/leases & runs online VACUUM ANALYZE",
+              st_drun == 200
+              and rc_res.get("released_claims") == 1
+              and rc_res.get("released_leases") == 1
+              and db_res.get("tables_vacuum_analyzed", 0) >= 10
+              and post_coord.get("metrics", {}).get("stuck_claims") == 0
+              and post_coord.get("metrics", {}).get("expired_leases") == 0,
+              str(drun))
+
     finally:
         for ns in (NS_RW, NS_RO, NS_HIDDEN, "test:ws-merge-src", "test:ws-merge-dst", f"{NS_RW}:api"):
             call("DELETE", f"/admin/api/namespaces?name={urllib.parse.quote(ns)}&purge=1", admin_tok)
@@ -641,6 +692,7 @@ def main():
             cur.execute("UPDATE memnos_control.namespace_links SET created_by = NULL WHERE created_by = %s", (admin_id,))
             cur.execute("DELETE FROM memnos_control.namespace_copy_provenance WHERE copied_by = %s", (admin_id,))
             cur.execute("DELETE FROM memnos_control.bindings WHERE principal_id = %s", (admin_id,))
+            cur.execute("DELETE FROM memnos_control.leases WHERE principal_id = %s", (admin_id,))
             cur.execute("DELETE FROM memnos_control.channel_messages WHERE principal_id = %s", (admin_id,))
             cur.execute("DELETE FROM memnos_control.agent_inbox WHERE principal_id = %s", (admin_id,))
             cur.execute("UPDATE memnos_control.channel_catalog SET principal_id = NULL WHERE principal_id = %s", (admin_id,))

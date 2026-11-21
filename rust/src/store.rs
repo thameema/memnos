@@ -3300,6 +3300,234 @@ impl BrainStore {
         Ok(json!({"dry_run": dry_run, "namespaces": out, "removed": removed}))
     }
 
+    pub async fn doctor_clean_orphans_and_graph(
+        &self,
+        namespaces: &[String],
+        dry_run: bool,
+    ) -> Result<Value, String> {
+        if namespaces.is_empty() {
+            return Ok(json!({"dry_run": dry_run, "removed_entities": 0, "embedded_entities": 0, "orphan_mentions": 0, "orphan_edges": 0, "orphan_dossiers": 0}));
+        }
+        let s = &self.schema;
+        let c = self.conn().await?;
+
+        let (mut removed_entities, mut embedded_entities) = (0u64, 0u64);
+        for ns in namespaces {
+            let r = self.cleanup_entity_graph(ns, dry_run).await?;
+            removed_entities += if dry_run {
+                r["invalid_entities"].as_u64().unwrap_or(0)
+            } else {
+                r["removed"].as_u64().unwrap_or(0)
+            };
+            embedded_entities += r["embedded"].as_u64().unwrap_or(0);
+        }
+
+        let (orphan_mentions, orphan_edges, orphan_dossiers) = if dry_run {
+            let row = c
+                .query_one(
+                    &format!(
+                        "SELECT
+                            (SELECT count(*) FROM {s}.mentions m WHERE NOT EXISTS (SELECT 1 FROM {s}.entities e WHERE e.id = m.entity_id)
+                               OR (m.memory_kind = 'semantic' AND NOT EXISTS (SELECT 1 FROM {s}.semantic f WHERE f.id = m.memory_id))) AS om,
+                            (SELECT count(*) FROM {s}.edges ed WHERE ed.namespace = ANY($1)
+                               AND (NOT EXISTS (SELECT 1 FROM {s}.entities e1 WHERE e1.id = ed.src_entity)
+                                 OR NOT EXISTS (SELECT 1 FROM {s}.entities e2 WHERE e2.id = ed.dst_entity))) AS oe,
+                            (SELECT count(*) FROM {s}.entity_dossiers d WHERE d.namespace = ANY($1)
+                               AND NOT EXISTS (SELECT 1 FROM {s}.entities e WHERE e.id = d.entity_id)) AS od"
+                    ),
+                    &[&namespaces],
+                )
+                .await
+                .map_err(de)?;
+            (
+                row.get::<_, i64>("om") as u64,
+                row.get::<_, i64>("oe") as u64,
+                row.get::<_, i64>("od") as u64,
+            )
+        } else {
+            let om = c
+                .execute(
+                    format!(
+                        "DELETE FROM {s}.mentions m WHERE NOT EXISTS (SELECT 1 FROM {s}.entities e WHERE e.id = m.entity_id)
+                         OR (m.memory_kind = 'semantic' AND NOT EXISTS (SELECT 1 FROM {s}.semantic f WHERE f.id = m.memory_id))"
+                    )
+                    .as_str(),
+                    &[],
+                )
+                .await
+                .map_err(de)?;
+            let oe = c
+                .execute(
+                    format!(
+                        "DELETE FROM {s}.edges ed WHERE ed.namespace = ANY($1)
+                         AND (NOT EXISTS (SELECT 1 FROM {s}.entities e1 WHERE e1.id = ed.src_entity)
+                           OR NOT EXISTS (SELECT 1 FROM {s}.entities e2 WHERE e2.id = ed.dst_entity))"
+                    )
+                    .as_str(),
+                    &[&namespaces],
+                )
+                .await
+                .map_err(de)?;
+            let od = c
+                .execute(
+                    format!(
+                        "DELETE FROM {s}.entity_dossiers d WHERE d.namespace = ANY($1)
+                         AND NOT EXISTS (SELECT 1 FROM {s}.entities e WHERE e.id = d.entity_id)"
+                    )
+                    .as_str(),
+                    &[&namespaces],
+                )
+                .await
+                .map_err(de)?;
+            (om, oe, od)
+        };
+
+        Ok(json!({
+            "dry_run": dry_run,
+            "removed_entities": removed_entities,
+            "embedded_entities": embedded_entities,
+            "orphan_mentions": orphan_mentions,
+            "orphan_edges": orphan_edges,
+            "orphan_dossiers": orphan_dossiers,
+        }))
+    }
+
+    pub async fn doctor_optimize_memories(
+        &self,
+        namespaces: &[String],
+        max_embed: usize,
+        dry_run: bool,
+    ) -> Result<Value, String> {
+        if namespaces.is_empty() {
+            return Ok(json!({"dry_run": dry_run, "exact_dupes_expired": 0, "semantic_merged": 0, "dossiers_refreshed": 0, "facts_embedded": 0, "turns_embedded": 0}));
+        }
+        let s = &self.schema;
+        let c = self.conn().await?;
+
+        let exact_dupes_expired = if dry_run {
+            let r = c
+                .query_one(
+                    &format!(
+                        "SELECT count(*) AS n FROM (
+                            SELECT id, row_number() OVER (PARTITION BY namespace, lower(statement) ORDER BY id ASC) AS rn
+                            FROM {s}.semantic
+                            WHERE namespace = ANY($1) AND expired_at IS NULL AND valid_to IS NULL AND constraint_retired_at IS NULL
+                         ) sub WHERE rn > 1"
+                    ),
+                    &[&namespaces],
+                )
+                .await
+                .map_err(de)?;
+            r.get::<_, i64>("n") as u64
+        } else {
+            c.execute(
+                format!(
+                    "WITH ranked AS (
+                        SELECT id,
+                               first_value(id) OVER (PARTITION BY namespace, lower(statement) ORDER BY id ASC) AS keep_id,
+                               row_number() OVER (PARTITION BY namespace, lower(statement) ORDER BY id ASC) AS rn
+                        FROM {s}.semantic
+                        WHERE namespace = ANY($1) AND expired_at IS NULL AND valid_to IS NULL AND constraint_retired_at IS NULL
+                     )
+                     UPDATE {s}.semantic tgt
+                     SET expired_at = now(), valid_to = COALESCE(tgt.valid_to, now()), superseded_by = ranked.keep_id
+                     FROM ranked
+                     WHERE tgt.id = ranked.id AND ranked.rn > 1"
+                )
+                .as_str(),
+                &[&namespaces],
+            )
+            .await
+            .map_err(de)?
+        };
+
+        let mut semantic_merged: u64 = 0;
+        let mut dossiers_refreshed: u64 = 0;
+        let mut facts_embedded: u64 = 0;
+        let mut turns_embedded: u64 = 0;
+
+        if !dry_run {
+            // Consolidate only namespaces that actually have live facts
+            let active_fact_ns = c
+                .query(
+                    &format!(
+                        "SELECT DISTINCT namespace FROM {s}.semantic WHERE namespace = ANY($1) AND expired_at IS NULL ORDER BY namespace"
+                    ),
+                    &[&namespaces],
+                )
+                .await
+                .map_err(de)?;
+            for row in active_fact_ns {
+                let ns: String = row.get(0);
+                if let Ok(cr) = self.consolidate(&ns).await {
+                    semantic_merged += cr["duplicates_merged"].as_u64().unwrap_or(0);
+                    dossiers_refreshed += cr["dossiers"].as_u64().unwrap_or(0);
+                }
+            }
+
+            let cap = max_embed.min(200) as i64;
+            let unemb_facts = c
+                .query(
+                    &format!(
+                        "SELECT id, statement FROM {s}.semantic WHERE namespace = ANY($1) AND expired_at IS NULL AND embedding IS NULL ORDER BY id DESC LIMIT $2"
+                    ),
+                    &[&namespaces, &cap],
+                )
+                .await
+                .map_err(de)?;
+            let cast_sql = self.ensure_vt_cast(1);
+            for r in unemb_facts {
+                let id: i64 = r.get("id");
+                let stmt: String = r.get("statement");
+                if let Ok(lit) = self.embed_lit(&stmt).await {
+                    if c.execute(
+                        format!("UPDATE {s}.semantic SET embedding={cast_sql} WHERE id=$2").as_str(),
+                        &[&lit, &id],
+                    )
+                    .await
+                    .is_ok()
+                    {
+                        facts_embedded += 1;
+                    }
+                }
+            }
+
+            let unemb_turns = c
+                .query(
+                    &format!(
+                        "SELECT id, text FROM {s}.raw_turns WHERE namespace = ANY($1) AND embedding IS NULL ORDER BY id DESC LIMIT $2"
+                    ),
+                    &[&namespaces, &cap],
+                )
+                .await
+                .map_err(de)?;
+            for r in unemb_turns {
+                let id: i64 = r.get("id");
+                let txt: String = r.get("text");
+                if let Ok(lit) = self.embed_lit(&txt).await {
+                    if c.execute(
+                        format!("UPDATE {s}.raw_turns SET embedding={cast_sql} WHERE id=$2").as_str(),
+                        &[&lit, &id],
+                    )
+                    .await
+                    .is_ok()
+                    {
+                        turns_embedded += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(json!({
+            "dry_run": dry_run,
+            "exact_dupes_expired": exact_dupes_expired,
+            "semantic_merged": semantic_merged,
+            "dossiers_refreshed": dossiers_refreshed,
+            "facts_embedded": facts_embedded,
+            "turns_embedded": turns_embedded,
+        }))
+    }
+
     /// Deterministic sleep cycle (no LLM): (1) merge near-duplicate live facts among the 500 newest
     /// (same subject and object, distance < 0.03): the oldest survives with the duplicate's
     /// provenance, the newer is expired, never deleted; (2) drop junk entity-graph nodes;

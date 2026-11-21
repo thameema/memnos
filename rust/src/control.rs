@@ -2319,16 +2319,18 @@ impl Control {
                     format!("{op}: {err}% errors over {hours}h — check `errors`"),
                 ));
             }
-            if p95 >= 8000 {
-                findings.push((
-                    "CRITICAL",
-                    format!("{op}: p95 {p95}ms — pool saturation/reranker/DB; scale or tune"),
-                ));
-            } else if p95 >= 2000 {
-                findings.push((
-                    "WARN",
-                    format!("{op}: p95 {p95}ms — watch reranker/pool; consider lighter reranker"),
-                ));
+            if !matches!(op.as_str(), "channel/wait" | "channel_wait") {
+                if p95 >= 8000 {
+                    findings.push((
+                        "CRITICAL",
+                        format!("{op}: p95 {p95}ms — pool saturation/reranker/DB; scale or tune"),
+                    ));
+                } else if p95 >= 2000 {
+                    findings.push((
+                        "WARN",
+                        format!("{op}: p95 {p95}ms — watch reranker/pool; consider lighter reranker"),
+                    ));
+                }
             }
             if let (true, Some(e)) = (op == "recall", r["recall_empty_pct"].as_f64()) {
                 if e >= 25.0 {

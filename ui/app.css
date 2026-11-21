@@ -360,11 +360,13 @@ html, body {
 
 .chip-btn {
   background: var(--bg-surface); border: 1px solid var(--border); color: var(--tag);
-  padding: 4px 11px; border-radius: 99px; font-size: 12px; font-weight: 600; cursor: pointer;
+  padding: 4px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; cursor: pointer;
+  white-space: nowrap; flex-shrink: 0;
 }
 .role-chip {
   background: var(--bg-elevated); border: 1px solid var(--border); color: var(--fg-soft);
   padding: 4px 10px; border-radius: 99px; font-size: 11.5px; font-weight: 600;
+  white-space: nowrap; flex-shrink: 0;
 }
 .vitals-strip {
   flex: 1 1 auto; min-width: 0; justify-content: center;
@@ -408,8 +410,8 @@ html, body {
 .rail-spacer { flex: 1; }
 .rail-btn {
   position: relative;
-  width: 58px;
-  padding: 9px 4px 7px;
+  width: 60px;
+  padding: 11px 4px 6px;
   border-radius: 12px;
   background: transparent;
   border: 1px solid transparent;
@@ -427,13 +429,13 @@ html, body {
   border-color: var(--border-strong);
   color: var(--fg);
 }
-.rail-glyph { font-size: 19px; font-weight: 800; line-height: 1; }
+.rail-glyph { font-size: 16.5px; font-weight: 800; line-height: 1.1; }
 .rail-lbl { font-size: 10px; font-weight: 600; letter-spacing: .02em; }
 .rail-badge {
   position: absolute;
-  top: 4px; right: 5px;
-  font-size: 9.5px; font-weight: 700;
-  padding: 1px 5px; border-radius: 99px;
+  top: 2px; right: 2px;
+  font-size: 9px; font-weight: 700; line-height: 13px;
+  padding: 0 4.5px; min-width: 15px; text-align: center; border-radius: 99px;
   background: var(--bg-elevated); color: var(--fg-soft); border: 1px solid var(--border);
 }
 .rail-badge.ok { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
@@ -991,25 +993,59 @@ button.retry { background: transparent; border: 1px solid var(--err); color: var
 }
 
 /* Namespaces Workspace */
-.ns-stage {
+.ns-stage-inner {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
+}
+.ns-scroll-body {
+  flex: 1;
   overflow-y: auto;
-  padding: 20px 26px 34px;
-  background: var(--bg);
-}
-.ns-detail-wrap {
-  max-width: 1180px;
-  margin: 0 auto;
+  padding: 18px 22px 28px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
 }
-.ns-hero-card {
-  display: flex;
-  flex-direction: column;
+.ns-stat-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+}
+@media (max-width: 1100px) {
+  .ns-stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.ns-stat-box {
+  background: var(--bg-pane);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  padding: 11px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ns-stat-lbl {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+}
+.ns-stat-val {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--fg);
+  line-height: 1.25;
+}
+.ns-stat-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.ns-inline-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .ns-settings-bar {
   display: flex;
@@ -1019,29 +1055,22 @@ button.retry { background: transparent; border: 1px solid var(--err); color: var
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
-.ns-rel-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 12px;
-}
-.ns-rel-group {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 11px 13px;
+.ns-rel-stack {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
+}
+.ns-rel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .ns-rel-hdr {
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .05em;
   color: var(--muted);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
 }
 .ns-chip-wrap {
   display: flex;
@@ -1052,11 +1081,11 @@ button.retry { background: transparent; border: 1px solid var(--err); color: var
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 9px;
+  padding: 4px 10px;
   border-radius: 99px;
   font-size: 12px;
   font-weight: 600;
-  background: var(--bg-elevated);
+  background: var(--bg-surface);
   border: 1px solid var(--border);
   color: var(--fg);
   cursor: pointer;
@@ -1078,8 +1107,65 @@ button.retry { background: transparent; border: 1px solid var(--err); color: var
   padding: 1px 6px;
   border-radius: 6px;
   font-size: 10.5px;
-  font-weight: 700;
-  background: var(--bg-surface);
+  font-weight: 600;
+  background: var(--bg-elevated);
   color: var(--tag);
   border: 1px solid var(--border);
+}
+
+/* MEMNOS Doctor */
+.doc-hero-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.doc-score-ring {
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  border: 3px solid var(--ok);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+.doc-score-ring.warn { border-color: var(--warn); color: var(--warn); }
+.doc-score-ring.crit { border-color: var(--danger, #f43f5e); color: var(--danger, #f43f5e); }
+.doc-score-num { font-size: 21px; line-height: 1; }
+.doc-score-sub { font-size: 9.5px; color: var(--muted); font-weight: 700; margin-top: 2px; }
+.doc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 14px;
+}
+.doc-card {
+  background: var(--bg-pane);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 15px 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 12px;
+}
+.doc-card.warn { border-color: rgba(245, 158, 11, 0.45); }
+.doc-card.critical { border-color: rgba(244, 63, 94, 0.55); }
+.doc-metrics-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.doc-metric-chip {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--fg-soft);
 }

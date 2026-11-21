@@ -403,18 +403,26 @@ enum Commands {
         #[arg(long)]
         fix_graph: bool,
         #[arg(long)]
+        optimize: bool,
+        #[arg(long)]
         dry_run: bool,
+        #[arg(long)]
+        json: bool,
         #[arg(short, long)]
         namespace: Option<String>,
     },
-    /// platform health check + automatic entity-graph cleanup
+    /// full diagnostics, safe repair, memory deduplication, and PostgreSQL optimization
     Doctor {
         #[arg(long)]
         fix: bool,
         #[arg(long)]
         fix_graph: bool,
         #[arg(long)]
+        optimize: bool,
+        #[arg(long)]
         dry_run: bool,
+        #[arg(long)]
+        json: bool,
         #[arg(short, long)]
         namespace: Option<String>,
     },
@@ -4036,31 +4044,91 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
         Commands::Health {
             fix,
             fix_graph,
+            optimize,
             dry_run,
+            json: as_json,
             namespace,
         }
         | Commands::Doctor {
             fix,
             fix_graph,
+            optimize,
             dry_run,
+            json: as_json,
             namespace,
         } => {
             let pool = build_pool(&dsn(&cfg), 4)?;
             Control::init(&pool).await.map_err(|e| e.to_string())?;
-            let h = Control::health(&pool, 24)
-                .await
-                .map_err(|e| e.to_string())?;
-            println!("=== Platform Health ===");
-            println!("{}", serde_json::to_string_pretty(&h).unwrap());
-            if fix || fix_graph || dry_run {
-                let store = build_store_from_cfg(&cfg, pool).await?;
-                let g = if let Some(ns) = namespace {
-                    store.cleanup_entity_graph(&ns, dry_run).await?
+            let scan = memnos_core::doctor::run_doctor_scan(&pool, None, namespace.as_deref()).await?;
+
+            if fix || fix_graph || optimize || dry_run {
+                let mut actions: Vec<String> = Vec::new();
+                if fix {
+                    actions.push("all".to_string());
                 } else {
-                    store.cleanup_all_entity_graphs(dry_run).await?
-                };
-                println!("\n=== Entity Graph Cleanup (dry_run={}) ===", dry_run);
-                println!("{}", serde_json::to_string_pretty(&g).unwrap());
+                    if fix_graph {
+                        actions.push("repair_graph".to_string());
+                    }
+                    if optimize {
+                        actions.push("optimize_memories".to_string());
+                        actions.push("optimize_db".to_string());
+                    }
+                    if actions.is_empty() && dry_run {
+                        actions.push("all".to_string());
+                    }
+                }
+                let store = build_store_from_cfg(&cfg, pool.clone()).await?;
+                let out = memnos_core::doctor::execute_doctor_actions(
+                    &pool,
+                    &store,
+                    None,
+                    namespace.as_deref(),
+                    &actions,
+                    dry_run,
+                )
+                .await?;
+                if as_json {
+                    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                } else {
+                    println!(
+                        "=== MEMNOS Doctor (score: {}/100 -> {}/100, dry_run={}) ===",
+                        scan["score"].as_i64().unwrap_or(100),
+                        out["scan"]["score"].as_i64().unwrap_or(100),
+                        dry_run
+                    );
+                    if let Some(checks) = out["scan"]["checks"].as_array() {
+                        for ch in checks {
+                            println!(
+                                "  [{:<8}] {}: {}",
+                                ch["status"].as_str().unwrap_or("ok").to_uppercase(),
+                                ch["title"].as_str().unwrap_or(""),
+                                ch["summary"].as_str().unwrap_or("")
+                            );
+                        }
+                    }
+                    println!("\n=== Actions Executed ({} ms) ===", out["elapsed_ms"].as_u64().unwrap_or(0));
+                    println!("{}", serde_json::to_string_pretty(&out["results"]).unwrap());
+                }
+            } else if as_json {
+                println!("{}", serde_json::to_string_pretty(&scan).unwrap());
+            } else {
+                println!(
+                    "=== MEMNOS Doctor · Score {}/100 ({}) · {} ms ===",
+                    scan["score"].as_i64().unwrap_or(100),
+                    scan["status"].as_str().unwrap_or("healthy").to_uppercase(),
+                    scan["scan_ms"].as_u64().unwrap_or(0)
+                );
+                if let Some(checks) = scan["checks"].as_array() {
+                    for ch in checks {
+                        println!(
+                            "  [{:<8}] {}: {}",
+                            ch["status"].as_str().unwrap_or("ok").to_uppercase(),
+                            ch["title"].as_str().unwrap_or(""),
+                            ch["summary"].as_str().unwrap_or("")
+                        );
+                    }
+                }
+                println!("\nTip: run `memnos doctor --fix` to repair & optimize automatically (or `--dry-run` to preview).");
             }
             Ok(())
         }

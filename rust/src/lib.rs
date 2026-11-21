@@ -6,6 +6,7 @@ pub mod config;
 pub mod control;
 pub mod db;
 pub mod desktop;
+pub mod doctor;
 pub mod embed;
 pub mod extract;
 pub mod gateway;

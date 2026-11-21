@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MEMNOS · Workspace</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='8' fill='url(%23g)'/%3E%3Cpath d='M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8' stroke='%23fff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='2' y1='2' x2='30' y2='30' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='%237C5CFF'/%3E%3Cstop offset='.52' stop-color='%23B832E5'/%3E%3Cstop offset='1' stop-color='%23EC4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/admin/app.css?v=16">
+  <link rel="stylesheet" href="/admin/app.css?v=18">
 </head>
 <body>
   <!-- Connect / Server Onboarding Screen -->
@@ -211,6 +211,12 @@
         <button class="rail-btn" data-section="telemetry" title="Engine &amp; DB Telemetry">
           <span class="rail-glyph">⚡</span>
           <span class="rail-lbl">Telemetry</span>
+        </button>
+
+        <button class="rail-btn" data-section="doctor" title="MEMNOS Doctor — Diagnostics, Safe Repair &amp; Optimization">
+          <span class="rail-glyph">✚</span>
+          <span class="rail-lbl">Doctor</span>
+          <span id="rail-doc-badge" class="rail-badge" hidden>0</span>
         </button>
 
         <div class="rail-spacer"></div>
@@ -425,7 +431,7 @@
               <div class="pane-title">Namespaces</div>
               <div id="ns-pane-sub" class="pane-sub">Memory &amp; coordination scopes</div>
             </div>
-            <div class="row" style="gap:5px">
+            <div class="row" style="gap:6px">
               <button type="button" id="btn-open-ns-merge" class="ghost sm" title="Move, merge, or copy between namespaces">⇄ Merge</button>
               <button type="button" id="btn-open-ns-create" class="btn-primary sm" title="Create a new namespace">+ New</button>
             </div>
@@ -434,20 +440,20 @@
           <div class="pane-controls">
             <div class="search-box">
               <span class="search-ico">⌕</span>
-              <input id="ns-ws-search" placeholder="Filter namespaces, prefixes, or descriptions…">
+              <input id="ns-ws-search" type="search" placeholder="Filter namespaces, prefixes, or descriptions…">
             </div>
-            <div class="filter-bar">
-              <div class="seg-control" id="ns-ws-mode">
+            <div class="row" style="gap:6px">
+              <div class="seg-control" id="ns-ws-mode" style="flex:1">
                 <button type="button" data-mode="active" class="active">Active</button>
                 <button type="button" data-mode="all">All</button>
               </div>
-              <select id="ns-ws-prefix" class="mini-select" title="Filter by namespace prefix">
+              <select id="ns-ws-prefix" title="Filter by namespace prefix" style="max-width:128px;padding:5px 8px;font-size:11.5px">
                 <option value="*">All prefixes</option>
               </select>
             </div>
-            <div class="sort-bar">
+            <div class="sort-row">
               <span class="sort-lbl">Sort</span>
-              <select id="ns-ws-sort" class="mini-select" style="flex:1">
+              <select id="ns-ws-sort">
                 <option value="name">Name (A–Z)</option>
                 <option value="facts">Most Facts</option>
                 <option value="turns">Most Turns</option>
@@ -455,77 +461,80 @@
             </div>
           </div>
 
-          <div id="ns-ws-list" class="entity-list"></div>
+          <div id="ns-ws-list" class="item-list"></div>
         </aside>
 
-        <div class="ns-stage">
-          <div id="ns-ws-empty" class="empty-state" style="padding:60px 24px">
-            <div class="empty-glyph">⊞</div>
-            <h3 style="margin:6px 0 4px">Select or Create a Namespace</h3>
-            <p class="muted" style="max-width:440px">Inspect memory counts, active <code>#channels</code> &amp; <code>@handles</code>, repo auto-routing, related hierarchy &amp; grounded links, or move/merge namespaces together.</p>
+        <div class="chat-stage">
+          <div id="ns-ws-empty" class="empty-state">
+            <div class="empty-ico">⊞</div>
+            <h3 style="margin:0 0 6px;color:var(--fg)">Select or Create a Namespace</h3>
+            <p class="muted" style="margin:0">Inspect memory counts, active <code>#channels</code> &amp; <code>@handles</code>, repo auto-routing, related links, or consolidate namespaces.</p>
           </div>
 
-          <div id="ns-ws-detail" class="ns-detail-wrap" hidden>
-            <div class="surface-card ns-hero-card">
+          <div id="ns-ws-detail" class="ns-stage-inner" hidden>
+            <div class="handle-hero">
               <div id="ns-ws-hero-top"></div>
-              <div id="ns-ws-settings-bar" class="ns-settings-bar">
-                <input id="ns-edit-desc" placeholder="Namespace description (e.g. Payments architecture &amp; agent coordination)" style="flex:1;min-width:200px">
-                <select id="ns-edit-kind" style="max-width:155px" title="Namespace kind">
+              <div id="ns-ws-settings-bar" class="ns-settings-bar" hidden>
+                <input id="ns-edit-desc" placeholder="Description (e.g. Payments service memory &amp; coordination)" style="flex:1;min-width:180px">
+                <select id="ns-edit-kind" style="max-width:150px" title="Namespace kind">
                   <option value="memory">Kind: memory</option>
                   <option value="knowledge">Kind: knowledge</option>
                 </select>
-                <label class="chk" title="Automatically inherit constraints and grounded context from parent prefix namespaces"><input type="checkbox" id="ns-edit-inherit" checked> Inherit ancestors</label>
+                <label class="chk" title="Inherit constraints and grounded context from parent prefix namespaces"><input type="checkbox" id="ns-edit-inherit" checked> Inherit ancestors</label>
                 <button type="button" id="ns-edit-save" class="btn-primary sm">Save</button>
               </div>
             </div>
 
-            <div id="ns-ws-kpis" class="kpi-grid"></div>
+            <div class="ns-scroll-body">
+              <div id="ns-ws-kpis" class="ns-stat-strip"></div>
 
-            <!-- Related Namespaces & Grounded Recall Graph -->
-            <div class="surface-card">
-              <div class="row" style="justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">
-                <div>
-                  <h3 style="margin:0">Related Namespaces &amp; Grounded Links</h3>
-                  <div class="muted" style="font-size:12px">Ancestors, child &amp; sibling spaces, grounded recall links (<code>link</code> / <code>inherits</code> / <code>governed_by</code>), shared <code>#channels</code>, and merge lineage.</div>
+              <div class="two-col-grid">
+                <!-- Left Column: Related Namespaces & Grounded Links -->
+                <div class="surface-card">
+                  <div style="margin-bottom:10px">
+                    <h3 style="margin:0;font-size:14.5px">Related Namespaces &amp; Links</h3>
+                    <div class="muted" style="font-size:12px">Parent/child hierarchy, grounded recall links, shared <code>#channels</code>, and merge lineage.</div>
+                  </div>
+
+                  <div id="ns-link-bar" class="ns-inline-form" style="margin-bottom:12px">
+                    <input id="ns-link-custom" list="ns-link-datalist" placeholder="Target namespace (e.g. org:standards)" style="flex:1;min-width:150px">
+                    <datalist id="ns-link-datalist"></datalist>
+                    <select id="ns-link-kind" style="width:130px;flex-shrink:0" title="Relationship kind">
+                      <option value="link">link</option>
+                      <option value="inherits">inherits</option>
+                      <option value="governed_by">governed_by</option>
+                    </select>
+                    <button type="button" id="ns-link-add" class="btn-primary sm" style="flex-shrink:0">+ Link</button>
+                  </div>
+
+                  <div id="ns-ws-related-body"></div>
+                </div>
+
+                <!-- Right Column: Repo Auto-Routing + Active Mesh -->
+                <div style="display:flex;flex-direction:column;gap:14px">
+                  <div class="surface-card">
+                    <div style="margin-bottom:10px">
+                      <h3 style="margin:0;font-size:14.5px">Repository &amp; Folder Routing</h3>
+                      <div class="muted" style="font-size:12px">Auto-route sessions in bound repositories or folders to this namespace.</div>
+                    </div>
+                    <div id="ns-bind-bar" class="ns-inline-form" style="margin-bottom:12px">
+                      <select id="ns-bind-type" style="width:128px;flex-shrink:0">
+                        <option value="repo">repo</option>
+                        <option value="host_path">folder path</option>
+                        <option value="host_repo">host repo</option>
+                      </select>
+                      <input id="ns-bind-key" placeholder="github.com/acme/app or /path" style="flex:1;min-width:140px">
+                      <button type="button" id="ns-bind-add" class="btn-primary sm" style="flex-shrink:0">+ Bind</button>
+                    </div>
+                    <div id="ns-ws-bindings-body"></div>
+                  </div>
+
+                  <div class="surface-card">
+                    <h3 style="margin:0 0 10px;font-size:14.5px">Active <code>#Channels</code> &amp; <code>@Handles</code></h3>
+                    <div id="ns-ws-mesh-body"></div>
+                  </div>
                 </div>
               </div>
-
-              <div id="ns-link-bar" class="row" style="margin-bottom:14px;flex-wrap:wrap;gap:8px">
-                <select id="ns-link-pick" style="max-width:220px"><option value="">Choose namespace…</option></select>
-                <input id="ns-link-custom" placeholder="or type target namespace (e.g. org:standards)" style="max-width:260px">
-                <select id="ns-link-kind" style="max-width:165px" title="Relationship kind">
-                  <option value="link">link (ground recall)</option>
-                  <option value="inherits">inherits</option>
-                  <option value="governed_by">governed_by (rules)</option>
-                </select>
-                <button type="button" id="ns-link-add" class="btn-primary sm">+ Link Related NS</button>
-              </div>
-
-              <div id="ns-ws-related-body"></div>
-            </div>
-
-            <!-- Repo & Folder Auto-Routing Bindings -->
-            <div class="surface-card">
-              <div style="margin-bottom:10px">
-                <h3 style="margin:0">Repository &amp; Folder Auto-Routing</h3>
-                <div class="muted" style="font-size:12px">Sessions opened inside bound repositories or folders automatically resolve to this namespace.</div>
-              </div>
-              <div id="ns-bind-bar" class="row" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
-                <select id="ns-bind-type" style="max-width:160px">
-                  <option value="repo">repo (all hosts)</option>
-                  <option value="host_path">folder path</option>
-                  <option value="host_repo">repo (host-scoped)</option>
-                </select>
-                <input id="ns-bind-key" placeholder="e.g. github.com/acme/payments-sync  or  /path/to/repo" style="flex:1;min-width:220px">
-                <button type="button" id="ns-bind-add" class="btn-primary sm">+ Bind to Namespace</button>
-              </div>
-              <div id="ns-ws-bindings-body"></div>
-            </div>
-
-            <!-- Active #Channels & @Handles in Namespace -->
-            <div class="surface-card">
-              <h3 style="margin:0 0 10px">Active <code>#Channels</code> &amp; <code>@Handles</code> in Scope</h3>
-              <div id="ns-ws-mesh-body"></div>
             </div>
           </div>
         </div>
@@ -710,6 +719,7 @@
               <h2>Engine, Resource &amp; Database Telemetry</h2>
               <p class="muted">Live single-binary engine memory footprint, PostgreSQL + pgvector storage, recall latency, and namespace distribution.</p>
             </div>
+            <button type="button" id="tel-open-doctor" class="btn-primary sm">✚ Run MEMNOS Doctor</button>
           </div>
           <div id="tel-cards" class="kpi-grid"></div>
 
@@ -735,6 +745,34 @@
               </div>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- SECTION 4B: MEMNOS DOCTOR (Diagnostics, Repair & Optimize)   -->
+      <!-- ============================================================ -->
+      <section id="sec-doctor" class="page-stage" hidden>
+        <div class="page-inner">
+          <div class="page-hdr" style="flex-wrap:wrap;gap:12px">
+            <div>
+              <h2>✚ MEMNOS Doctor · Diagnostics, Repair &amp; Optimization</h2>
+              <p class="muted">Non-destructive health inspection, knowledge-graph &amp; vector repair, duplicate fact consolidation, stuck lock recovery, and online PostgreSQL <code>VACUUM ANALYZE</code>.</p>
+            </div>
+            <div class="row" style="gap:8px;flex-wrap:wrap">
+              <select id="doc-ns-select" style="max-width:240px;padding:6px 10px;font-size:12.5px" title="Scope diagnostics &amp; repairs">
+                <option value="*">All authorized namespaces (*)</option>
+              </select>
+              <button type="button" id="doc-rescan-btn" class="ghost sm">↻ Scan Now</button>
+              <button type="button" id="doc-dryrun-btn" class="ghost sm">Preview Dry-Run</button>
+              <button type="button" id="doc-fixall-btn" class="btn-primary sm">⚡ Repair &amp; Optimize All</button>
+            </div>
+          </div>
+
+          <div id="doc-hero" class="surface-card doc-hero-card"></div>
+
+          <div id="doc-run-box" class="surface-card" hidden></div>
+
+          <div id="doc-cards" class="doc-grid"></div>
         </div>
       </section>
 
@@ -1172,6 +1210,6 @@
   <!-- In-App Toast Banner -->
   <div id="app-toast" class="app-toast" hidden></div>
 
-  <script src="/admin/app.js?v=16"></script>
+  <script src="/admin/app.js?v=18"></script>
 </body>
 </html>
