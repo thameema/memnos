@@ -2498,6 +2498,498 @@ async fn workspace_api_handler(
                 Err(e) => ctrl_err_resp(e),
             }
         }
+        ("namespace/detail", Method::GET) => {
+            let ns = qs.get("namespace").map(|s| s.as_str()).unwrap_or("").trim();
+            if ns.is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "namespace required" }),
+                );
+            }
+            match Control::workspace_namespace_detail(&st.pool, pid, ns).await {
+                Ok(v) => json_resp(StatusCode::OK, v),
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("namespace/create", Method::POST) => {
+            let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if name.is_empty()
+                || name.len() > 200
+                || name == "*"
+                || name.contains('*')
+                || name.starts_with("secret:")
+            {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "valid concrete namespace name required (<=200 chars)" }),
+                );
+            }
+            match Control::authorize(&st.pool, pid, name, true).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return json_resp(
+                        StatusCode::FORBIDDEN,
+                        json!({ "error": format!("write grant required to create namespace '{}'", name) }),
+                    )
+                }
+                Err(e) => return ctrl_err_resp(e),
+            }
+            let desc = b
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+            if let Err(e) = Control::create_namespace(&st.pool, name, Some(pid), desc).await {
+                return ctrl_err_resp(e);
+            }
+            let kind = b
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("memory")
+                .trim();
+            if matches!(kind, "memory" | "knowledge") {
+                if let Err(e) = Control::set_namespace_kind(&st.pool, name, kind).await {
+                    return ctrl_err_resp(e);
+                }
+            }
+            if let Some(inh) = b.get("inherit_ancestors").and_then(|v| v.as_bool()) {
+                let _ = Control::set_namespace_inherit_ancestors(&st.pool, name, inh).await;
+            }
+            if let Some(dst) = b
+                .get("link_to")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty() && *s != name)
+            {
+                let lkind = b
+                    .get("link_kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("link")
+                    .trim();
+                if Control::authorize(&st.pool, pid, dst, false)
+                    .await
+                    .unwrap_or(false)
+                {
+                    let _ = Control::link_namespaces(&st.pool, name, dst, Some(pid), lkind).await;
+                }
+            }
+            if let Some(bkey) = b
+                .get("bind_key")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                let ktype = b
+                    .get("bind_key_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("repo")
+                    .trim();
+                let _ = Control::upsert_binding(&st.pool, pid, ktype, bkey, name, None).await;
+            }
+            if let Ok(mut g) = st.ns_cache.lock() {
+                *g = None;
+            }
+            let _ = st.event_tx.send(json!({ "type": "refresh", "namespace": name }));
+            json_resp(StatusCode::OK, json!({ "ok": true, "name": name }))
+        }
+        ("namespace/update", Method::POST) => {
+            let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if name.is_empty() || name == "*" || name.starts_with("secret:") {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "concrete namespace name required" }),
+                );
+            }
+            match Control::authorize(&st.pool, pid, name, true).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return json_resp(
+                        StatusCode::FORBIDDEN,
+                        json!({ "error": format!("write grant required on namespace '{}'", name) }),
+                    )
+                }
+                Err(e) => return ctrl_err_resp(e),
+            }
+            if let Some(desc) = b.get("description").and_then(|v| v.as_str()) {
+                if let Err(e) =
+                    Control::create_namespace(&st.pool, name, Some(pid), Some(desc.trim())).await
+                {
+                    return ctrl_err_resp(e);
+                }
+            }
+            if let Some(kind) = b.get("kind").and_then(|v| v.as_str()).map(|s| s.trim()) {
+                if matches!(kind, "memory" | "knowledge") {
+                    if let Err(e) = Control::set_namespace_kind(&st.pool, name, kind).await {
+                        return ctrl_err_resp(e);
+                    }
+                }
+            }
+            if let Some(inh) = b.get("inherit_ancestors").and_then(|v| v.as_bool()) {
+                if let Err(e) = Control::set_namespace_inherit_ancestors(&st.pool, name, inh).await
+                {
+                    return ctrl_err_resp(e);
+                }
+            }
+            if let Ok(mut g) = st.ns_cache.lock() {
+                *g = None;
+            }
+            let _ = st.event_tx.send(json!({ "type": "refresh", "namespace": name }));
+            json_resp(StatusCode::OK, json!({ "ok": true, "name": name }))
+        }
+        ("namespace/link", Method::POST) => {
+            let src = b.get("src").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let dst = b.get("dst").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let kind = b
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("link")
+                .trim();
+            if src.is_empty() || dst.is_empty() || src == dst {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "distinct src and dst namespaces required" }),
+                );
+            }
+            if !Control::authorize(&st.pool, pid, src, true)
+                .await
+                .unwrap_or(false)
+            {
+                return json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": format!("write grant required on '{}'", src) }),
+                );
+            }
+            if !Control::authorize(&st.pool, pid, dst, false)
+                .await
+                .unwrap_or(false)
+            {
+                return json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": format!("read grant required on target '{}'", dst) }),
+                );
+            }
+            match Control::link_namespaces(&st.pool, src, dst, Some(pid), kind).await {
+                Ok(()) => {
+                    if let Ok(mut g) = st.ns_cache.lock() {
+                        *g = None;
+                    }
+                    let _ = st.event_tx.send(json!({ "type": "refresh", "namespace": src }));
+                    json_resp(
+                        StatusCode::OK,
+                        json!({ "ok": true, "src": src, "dst": dst, "kind": kind }),
+                    )
+                }
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("namespace/unlink", Method::POST) => {
+            let src = b.get("src").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let dst = b.get("dst").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if src.is_empty() || dst.is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "src and dst required" }),
+                );
+            }
+            if !Control::authorize(&st.pool, pid, src, true)
+                .await
+                .unwrap_or(false)
+            {
+                return json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": format!("write grant required on '{}'", src) }),
+                );
+            }
+            match Control::unlink_namespaces(&st.pool, src, dst).await {
+                Ok(removed) => {
+                    if let Ok(mut g) = st.ns_cache.lock() {
+                        *g = None;
+                    }
+                    let _ = st.event_tx.send(json!({ "type": "refresh", "namespace": src }));
+                    json_resp(StatusCode::OK, json!({ "ok": true, "removed": removed }))
+                }
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("namespace/bind", Method::POST) => {
+            let ns = b.get("namespace").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let ktype = b
+                .get("key_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("repo")
+                .trim();
+            let key = b.get("key").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let host_id = b
+                .get("host_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+            if ns.is_empty() || key.is_empty() {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "namespace and key required" }),
+                );
+            }
+            if !Control::authorize(&st.pool, pid, ns, true)
+                .await
+                .unwrap_or(false)
+            {
+                return json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": format!("write grant required on '{}'", ns) }),
+                );
+            }
+            match Control::upsert_binding(&st.pool, pid, ktype, key, ns, host_id).await {
+                Ok(v) => {
+                    let _ = st.event_tx.send(json!({ "type": "refresh", "namespace": ns }));
+                    json_resp(StatusCode::OK, json!({ "ok": true, "binding": v }))
+                }
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
+        ("namespace/unbind", Method::POST) => {
+            let id = b
+                .get("id")
+                .and_then(|v| v.as_i64())
+                .or_else(|| qs.get("id").and_then(|s| s.parse::<i64>().ok()))
+                .unwrap_or(0);
+            if id <= 0 {
+                return json_resp(StatusCode::BAD_REQUEST, json!({ "error": "id required" }));
+            }
+            let is_adm = Control::is_admin(&st.pool, pid).await.unwrap_or(false);
+            let removed = if is_adm {
+                if let Ok(c) = st.pool.get().await {
+                    c.execute("DELETE FROM memnos_control.bindings WHERE id = $1", &[&id])
+                        .await
+                        .map(|n| n > 0)
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            } else {
+                Control::delete_binding(&st.pool, pid, id)
+                    .await
+                    .unwrap_or(false)
+            };
+            let _ = st.event_tx.send(json!({ "type": "refresh", "namespace": "*" }));
+            json_resp(StatusCode::OK, json!({ "ok": true, "removed": removed }))
+        }
+        ("namespace/transfer", Method::POST) => {
+            let src = b.get("src").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let dst = b.get("dst").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let mode = b
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("merge")
+                .trim();
+            let dry_run = b.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+            let like_filter = b
+                .get("like_filter")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+
+            if src.is_empty() || src == "*" || src.starts_with("secret:") {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "concrete source namespace required" }),
+                );
+            }
+            if !matches!(mode, "merge" | "move" | "copy") {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "mode must be 'merge', 'move', or 'copy'" }),
+                );
+            }
+
+            if dry_run {
+                return match Control::workspace_namespace_transfer_preview(
+                    &st.pool,
+                    pid,
+                    src,
+                    like_filter,
+                )
+                .await
+                {
+                    Ok(v) => json_resp(StatusCode::OK, v),
+                    Err(e) => ctrl_err_resp(e),
+                };
+            }
+
+            if dst.is_empty()
+                || dst.len() > 200
+                || dst == "*"
+                || dst.contains('*')
+                || dst.starts_with("secret:")
+                || dst == src
+            {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "distinct concrete target namespace required" }),
+                );
+            }
+
+            let need_src_write = mode != "copy";
+            if !Control::authorize(&st.pool, pid, src, need_src_write)
+                .await
+                .unwrap_or(false)
+            {
+                return json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({
+                        "error": format!(
+                            "{} grant required on source namespace '{}'",
+                            if need_src_write { "write" } else { "read" },
+                            src
+                        )
+                    }),
+                );
+            }
+            if !Control::authorize(&st.pool, pid, dst, true)
+                .await
+                .unwrap_or(false)
+            {
+                return json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": format!("write grant required on target namespace '{}'", dst) }),
+                );
+            }
+
+            let is_adm = Control::is_admin(&st.pool, pid).await.unwrap_or(false);
+            let include_memories = b
+                .get("include_memories")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let include_coordination = b
+                .get("include_coordination")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(mode != "copy");
+            let include_routing = b
+                .get("include_routing")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(mode == "merge");
+            let delete_source = b
+                .get("delete_source")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            if let Err(e) = Control::create_namespace(&st.pool, dst, Some(pid), None).await {
+                return ctrl_err_resp(e);
+            }
+
+            let mem_res = if include_memories {
+                let mem_mode = if mode == "copy" { "copy" } else { "move" };
+                match st
+                    .store
+                    .namespace_copy(src, dst, mem_mode, like_filter, Some(pid))
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
+                }
+            } else {
+                json!({ "raw_turns": 0, "facts": 0, "episodes": 0 })
+            };
+
+            let ctrl_res = if mode != "copy" && (include_coordination || include_routing) {
+                match Control::workspace_transfer_control_plane(
+                    &st.pool,
+                    pid,
+                    is_adm,
+                    src,
+                    dst,
+                    like_filter,
+                    include_coordination,
+                    include_routing,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return ctrl_err_resp(e),
+                }
+            } else {
+                json!({
+                    "channels_merged": 0,
+                    "channel_messages_moved": 0,
+                    "channel_subs_merged": 0,
+                    "sessions_merged": 0,
+                    "inbox_moved": 0,
+                    "bindings_repointed": 0,
+                    "guardrails_merged": 0,
+                    "links_merged": 0,
+                })
+            };
+
+            let mut source_deleted = false;
+            if delete_source && mode == "merge" && like_filter.is_none() && is_adm {
+                if Control::delete_namespace(&st.pool, src, true).await.is_ok() {
+                    source_deleted = true;
+                }
+            }
+
+            if let Ok(mut g) = st.ns_cache.lock() {
+                *g = None;
+            }
+            st.channel_notify.notify_waiters();
+            let _ = st.event_tx.send(json!({
+                "type": "activity",
+                "op": format!("namespace/{}", mode),
+                "namespace": dst,
+                "actor": "workspace",
+                "detail": format!("{} -> {}", src, dst),
+                "ok": true,
+            }));
+            let _ = st.event_tx.send(json!({ "type": "refresh", "namespace": "*" }));
+
+            json_resp(
+                StatusCode::OK,
+                json!({
+                    "ok": true,
+                    "mode": mode,
+                    "src": src,
+                    "dst": dst,
+                    "memories": mem_res,
+                    "coordination": ctrl_res,
+                    "source_deleted": source_deleted,
+                }),
+            )
+        }
+        ("namespace", Method::DELETE) => {
+            if !Control::is_admin(&st.pool, pid).await.unwrap_or(false) {
+                return json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": "admin role required to delete namespaces" }),
+                );
+            }
+            let ns = qs
+                .get("namespace")
+                .or_else(|| qs.get("name"))
+                .map(|s| s.as_str())
+                .or_else(|| b.get("namespace").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .trim();
+            let purge = qs
+                .get("purge")
+                .map(|s| s == "1" || s == "true")
+                .or_else(|| b.get("purge").and_then(|v| v.as_bool()))
+                .unwrap_or(false);
+            if ns.is_empty() || ns == "*" || ns.starts_with("secret:") {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "concrete namespace required" }),
+                );
+            }
+            match Control::delete_namespace(&st.pool, ns, purge).await {
+                Ok(()) => {
+                    if let Ok(mut g) = st.ns_cache.lock() {
+                        *g = None;
+                    }
+                    let _ = st.event_tx.send(json!({ "type": "refresh", "namespace": "*" }));
+                    json_resp(StatusCode::OK, json!({ "ok": true, "deleted": ns, "purged": purge }))
+                }
+                Err(e) => ctrl_err_resp(e),
+            }
+        }
         _ => json_resp(
             StatusCode::NOT_FOUND,
             json!({ "error": "unknown workspace route" }),

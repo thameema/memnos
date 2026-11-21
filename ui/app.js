@@ -970,7 +970,7 @@ function switchSection(sec) {
   }
   activeSection = sec;
   $$(".rail-btn").forEach(b => b.classList.toggle("active", b.dataset.section === sec));
-  ["channels", "handles", "live", "memories", "constraints", "telemetry", "console"].forEach(k => {
+  ["channels", "handles", "namespaces", "live", "memories", "constraints", "telemetry", "console"].forEach(k => {
     const el = $("#sec-" + k);
     if (el) el.hidden = (k !== sec);
   });
@@ -981,6 +981,9 @@ function switchSection(sec) {
   } else if (sec === "handles") {
     renderHandleList();
     if (selectedHandle) { renderHandleHero(); loadHandleMessages(false); }
+  } else if (sec === "namespaces") {
+    renderNamespaceList();
+    if (selectedNamespace) loadNamespaceDetail(selectedNamespace, true);
   } else if (sec === "live") {
     liveNewCount = 0;
     const badge = $("#rail-live-count");
@@ -1124,7 +1127,7 @@ async function refreshOverview(pickDefaults = false) {
   if (!data.is_admin && activeSection === "console") {
     switchSection("channels");
   }
-  ["channels", "handles", "live", "memories", "constraints", "telemetry", "console"].forEach(k => {
+  ["channels", "handles", "namespaces", "live", "memories", "constraints", "telemetry", "console"].forEach(k => {
     const el = $("#sec-" + k);
     if (el) el.hidden = (k !== activeSection);
   });
@@ -1179,6 +1182,7 @@ async function refreshOverview(pickDefaults = false) {
   const onlineHds = (data.sessions || []).filter(s => s.alive && !s.namespace.startsWith("test:"));
   $("#rail-ch-count").textContent = activeChs.length;
   $("#rail-hd-count").textContent = onlineHds.length;
+  if ($("#rail-ns-count")) $("#rail-ns-count").textContent = activeNs.length || allNs.length;
   if ($("#rail-cs-count")) $("#rail-cs-count").textContent = v.total_constraints ?? 0;
 
   // Pick sensible initial selections
@@ -1193,9 +1197,14 @@ async function refreshOverview(pickDefaults = false) {
     const bestHd = onlineHds[0] || (data.sessions || [])[0];
     if (bestHd) selectedHandle = { namespace: bestHd.namespace, name: bestHd.name };
   }
+  if (!selectedNamespace || !(data.namespaces || []).some(n => n.name === selectedNamespace)) {
+    const bestNs = activeNs[0] || allNs[0] || (data.namespaces || [])[0];
+    if (bestNs) selectedNamespace = bestNs.name;
+  }
 
   renderChannelList();
   renderHandleList();
+  renderNamespaceList();
   if (activeSection === "channels" && selectedChannel) {
     renderChannelHeaderAndInspector();
     if (pickDefaults) await loadChannelMessages(true);
@@ -1203,6 +1212,9 @@ async function refreshOverview(pickDefaults = false) {
   if (activeSection === "handles" && selectedHandle) {
     renderHandleHero();
     if (pickDefaults) await loadHandleMessages(true);
+  }
+  if (activeSection === "namespaces" && selectedNamespace) {
+    loadNamespaceDetail(selectedNamespace, false);
   }
   if (activeSection === "telemetry") renderTelemetry();
 }
@@ -2390,6 +2402,796 @@ $("#hd-comp-input").addEventListener("keydown", e => {
 });
 
 // ============================================================================
+// SECTION 2A: NAMESPACES WORKSPACE (Show, Create, Move/Merge, Related Links)
+// ============================================================================
+
+let selectedNamespace = null;
+let nsFilterMode = "active";
+let nsSortMode = localStorage.getItem("memnos_ns_sort_v1") || "name";
+let currentNsDetail = null;
+let transferMode = "merge";
+let transferPreviewTimer = null;
+
+if ($("#ns-ws-sort")) {
+  $("#ns-ws-sort").value = nsSortMode;
+  $("#ns-ws-sort").onchange = () => {
+    nsSortMode = $("#ns-ws-sort").value || "name";
+    localStorage.setItem("memnos_ns_sort_v1", nsSortMode);
+    renderNamespaceList();
+  };
+}
+if ($("#ns-ws-search")) $("#ns-ws-search").oninput = renderNamespaceList;
+if ($("#ns-ws-prefix")) $("#ns-ws-prefix").onchange = renderNamespaceList;
+$$("#ns-ws-mode button").forEach(btn => {
+  btn.onclick = () => {
+    nsFilterMode = btn.dataset.mode || "active";
+    $$("#ns-ws-mode button").forEach(x => x.classList.toggle("active", x === btn));
+    renderNamespaceList();
+  };
+});
+
+function isNamespaceActiveItem(n) {
+  if (!n || String(n.name || "").startsWith("test:")) return false;
+  if ((n.facts || 0) > 0 || (n.turns || 0) > 0 || n.registered) return true;
+  if ((n.links_out || 0) > 0 || (n.links_in || 0) > 0 || (n.bindings || 0) > 0) return true;
+  if ((wsData?.sessions || []).some(s => s.namespace === n.name && s.alive)) return true;
+  return false;
+}
+
+function namespacePrefixOf(name) {
+  const s = String(name || "");
+  const idx = s.indexOf(":");
+  return idx > 0 ? s.slice(0, idx) : "other";
+}
+
+function openNamespaceWorkspace(nsName) {
+  if (nsName) selectedNamespace = nsName;
+  switchSection("namespaces");
+  if (nsName) loadNamespaceDetail(nsName, true);
+}
+
+function renderNamespaceList() {
+  const box = $("#ns-ws-list");
+  if (!box || !wsData) return;
+
+  const all = wsData.namespaces || [];
+  const activeAll = all.filter(isNamespaceActiveItem);
+
+  // Sync prefix selector without touching focus
+  const pfxSel = $("#ns-ws-prefix");
+  if (pfxSel) {
+    const prevPfx = pfxSel.value || "*";
+    const pfxCounts = new Map();
+    for (const n of (nsFilterMode === "active" ? activeAll : all)) {
+      const p = namespacePrefixOf(n.name);
+      pfxCounts.set(p, (pfxCounts.get(p) || 0) + 1);
+    }
+    const pfxItems = [{ value: "*", label: "All prefixes" }]
+      .concat([...pfxCounts.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([p, c]) => ({
+        value: p,
+        label: p === "other" ? `unprefixed (${c})` : `${p}:* (${c})`,
+      })));
+    syncSelectOptions(pfxSel, pfxItems, prevPfx);
+  }
+
+  $$("#ns-ws-mode button").forEach(btn => {
+    if (btn.dataset.mode === "active") btn.textContent = `Active (${activeAll.length})`;
+    if (btn.dataset.mode === "all") btn.textContent = `All (${all.length})`;
+  });
+
+  const q = ($("#ns-ws-search")?.value || "").trim().toLowerCase();
+  const pfx = $("#ns-ws-prefix")?.value || "*";
+
+  let items = nsFilterMode === "active" ? [...activeAll] : [...all];
+  if (pfx !== "*") {
+    items = items.filter(n => namespacePrefixOf(n.name) === pfx);
+  }
+  if (q) {
+    items = items.filter(n =>
+      n.name.toLowerCase().includes(q) ||
+      (n.description || "").toLowerCase().includes(q) ||
+      (n.kind || "").toLowerCase().includes(q)
+    );
+  }
+
+  items.sort((a, b) => {
+    if (nsSortMode === "facts") {
+      const d = (b.facts || 0) - (a.facts || 0);
+      if (d !== 0) return d;
+    } else if (nsSortMode === "turns") {
+      const d = (b.turns || 0) - (a.turns || 0);
+      if (d !== 0) return d;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  if ($("#ns-pane-sub")) {
+    $("#ns-pane-sub").textContent = `${activeAll.length} active · ${items.length} shown`;
+  }
+
+  const sig = `${nsFilterMode}|${nsSortMode}|${pfx}|${q}|sel=${selectedNamespace || ""}|` +
+    items.map(n => `${n.name}:${n.facts || 0}:${n.turns || 0}:${n.kind || ""}:${n.links_out || 0}:${n.links_in || 0}:${n.bindings || 0}:${n.can_write ? 1 : 0}`).join(";");
+
+  if (!items.length) {
+    setHtmlBySig(box, "empty:" + sig, `<div class="empty-state" style="padding:26px 14px"><span class="muted">No matching namespaces.</span></div>`);
+    return;
+  }
+
+  const html = items.map(n => {
+    const isSel = selectedNamespace === n.name;
+    const pfxTag = namespacePrefixOf(n.name);
+    const linkTotal = (n.links_out || 0) + (n.links_in || 0);
+    const onlineCnt = (wsData.sessions || []).filter(s => s.namespace === n.name && s.alive).length;
+    return `<div class="entity-item ${isSel ? "active" : ""}" data-ns-item="${esc(n.name)}">
+      <div class="entity-top">
+        <span class="entity-name" title="${esc(n.name)}">⊞ ${esc(n.name)}</span>
+        <span class="pill ${n.can_write ? "ok" : ""}" style="font-size:10px;padding:1px 6px">${n.can_write ? "RW" : "RO"}</span>
+      </div>
+      ${n.description ? `<div class="entity-sub">${esc(n.description)}</div>` : ""}
+      <div class="entity-meta">
+        <span class="ns-pfx-tag">${esc(pfxTag)}</span>
+        ${n.kind === "knowledge" ? `<span class="ns-pfx-tag">knowledge</span>` : ""}
+        <span><b>${(n.facts || 0).toLocaleString()}</b> facts</span>
+        <span>· ${(n.turns || 0).toLocaleString()} turns</span>
+        ${onlineCnt ? `<span style="color:var(--ok)">· ${onlineCnt} @</span>` : ""}
+        ${linkTotal ? `<span title="${linkTotal} grounded link(s)">· 🔗${linkTotal}</span>` : ""}
+        ${(n.bindings || 0) ? `<span title="${n.bindings} repo/path binding(s)">· 📍${n.bindings}</span>` : ""}
+      </div>
+    </div>`;
+  }).join("");
+
+  if (setHtmlBySig(box, sig, html)) {
+    $$("[data-ns-item]", box).forEach(el => {
+      el.onclick = () => {
+        selectedNamespace = el.dataset.nsItem;
+        renderNamespaceList();
+        loadNamespaceDetail(selectedNamespace, true);
+      };
+    });
+  }
+}
+
+async function loadNamespaceDetail(nsName, syncInputs = false) {
+  if (!nsName) {
+    if ($("#ns-ws-empty")) $("#ns-ws-empty").hidden = false;
+    if ($("#ns-ws-detail")) $("#ns-ws-detail").hidden = true;
+    return;
+  }
+  try {
+    const d = await wapi("GET", "namespace/detail?namespace=" + encodeURIComponent(nsName));
+    if (selectedNamespace !== nsName) return;
+    currentNsDetail = d;
+    if ($("#ns-ws-empty")) $("#ns-ws-empty").hidden = true;
+    if ($("#ns-ws-detail")) $("#ns-ws-detail").hidden = false;
+
+    const writable = !!d.can_write;
+    const c = d.counts || {};
+    const rel = d.related || {};
+
+    // 1. Hero Top
+    const heroSig = `${d.name}|${writable}|${d.is_admin}|${d.registered}|${d.kind}|${d.inherit_ancestors}|${d.created_by}|${d.created_at}`;
+    const heroHtml = `
+      <div class="hero-top">
+        <div class="hero-id">
+          <div class="hero-av" style="background:${avatarColor(d.name)}">${esc(d.name.slice(0, 2).toUpperCase())}</div>
+          <div>
+            <div class="chat-title-row">
+              <h2 style="margin:0;font-size:18px">${esc(d.name)}</h2>
+              <span class="pill ${writable ? "ok" : ""}">${writable ? "READ + WRITE" : "READ-ONLY"}</span>
+              <span class="ns-badge">${esc(d.kind || "memory")}</span>
+              ${d.registered ? `<span class="pill ok">REGISTERED</span>` : `<span class="pill warn">AUTO-DISCOVERED</span>`}
+            </div>
+            <div class="hero-meta-grid" style="margin-top:5px">
+              ${d.created_by ? `<span>Created by: <b>@${esc(d.created_by)}</b></span>` : ""}
+              ${d.created_at ? `<span>Created: <b>${fmt(d.created_at)}</b></span>` : ""}
+              <span>Ancestor Inheritance: <b>${d.inherit_ancestors ? "Enabled" : "Disabled"}</b></span>
+            </div>
+          </div>
+        </div>
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          <button type="button" id="ns-act-scope" class="ghost sm" title="Filter workspace topbar scope to ${esc(d.name)}">Scope Workspace Here</button>
+          <button type="button" id="ns-act-memories" class="ghost sm">◈ View Memories</button>
+          <button type="button" id="ns-act-child" class="ghost sm">+ Child NS</button>
+          <button type="button" id="ns-act-transfer" class="btn-primary sm">⇄ Move / Merge…</button>
+          ${d.is_admin ? `<button type="button" id="ns-act-delete" class="danger sm">Delete</button>` : ""}
+        </div>
+      </div>
+    `;
+    if (setHtmlBySig($("#ns-ws-hero-top"), heroSig, heroHtml)) {
+      if ($("#ns-act-scope")) {
+        $("#ns-act-scope").onclick = () => {
+          const sel = $("#ws-ns-filter");
+          if (sel) {
+            if (![...sel.options].some(o => o.value === d.name)) {
+              const opt = document.createElement("option");
+              opt.value = d.name;
+              opt.textContent = d.name;
+              sel.appendChild(opt);
+            }
+            sel.value = d.name;
+            refreshOverview(true);
+            showToast(`Scoped workspace to ${d.name}`);
+          }
+        };
+      }
+      if ($("#ns-act-memories")) {
+        $("#ns-act-memories").onclick = () => {
+          const sel = $("#ws-ns-filter");
+          if (sel) {
+            if (![...sel.options].some(o => o.value === d.name)) {
+              const opt = document.createElement("option");
+              opt.value = d.name;
+              opt.textContent = d.name;
+              sel.appendChild(opt);
+            }
+            sel.value = d.name;
+          }
+          switchSection("memories");
+        };
+      }
+      if ($("#ns-act-child")) {
+        $("#ns-act-child").onclick = () => openCreateNamespaceModal(d.name + ":");
+      }
+      if ($("#ns-act-transfer")) {
+        $("#ns-act-transfer").onclick = () => openTransferNamespaceModal(d.name, "", "merge");
+      }
+      if ($("#ns-act-delete")) {
+        $("#ns-act-delete").onclick = async () => {
+          const { ok, checked } = await askConfirm({
+            title: `Delete namespace "${d.name}"?`,
+            message: `Remove "${d.name}" from registered namespaces, grants, and links?`,
+            confirmLabel: "Delete Namespace",
+            checkboxLabel: "Also permanently purge all stored facts, turns, #channel messages, @handles & bindings in this namespace",
+            defaultChecked: false,
+          });
+          if (!ok) return;
+          try {
+            await wapi("DELETE", `namespace?namespace=${encodeURIComponent(d.name)}&purge=${checked ? 1 : 0}`);
+            showToast(`Deleted namespace ${d.name}${checked ? " (purged)" : ""}`);
+            selectedNamespace = null;
+            await refreshOverview(true);
+            renderNamespaceList();
+            if (selectedNamespace) loadNamespaceDetail(selectedNamespace, true);
+          } catch (e) { showToast(e.message, true); }
+        };
+      }
+    }
+
+    // 2. Static Settings Bar (only touch when unfocused or switching namespace)
+    const sBar = $("#ns-ws-settings-bar");
+    if (sBar) {
+      sBar.hidden = !writable;
+      if (writable && (syncInputs || !hasActiveControl(sBar))) {
+        if ($("#ns-edit-desc")) $("#ns-edit-desc").value = d.description || "";
+        if ($("#ns-edit-kind")) $("#ns-edit-kind").value = d.kind || "memory";
+        if ($("#ns-edit-inherit")) $("#ns-edit-inherit").checked = !!d.inherit_ancestors;
+      }
+    }
+    if ($("#ns-link-bar")) $("#ns-link-bar").hidden = !writable;
+    if ($("#ns-bind-bar")) $("#ns-bind-bar").hidden = !writable;
+
+    // Sync target dropdown for `+ Link Related NS`
+    const otherNs = (wsData?.namespaces || [])
+      .map(n => n.name)
+      .filter(n => n !== d.name && !n.startsWith("test:"))
+      .sort();
+    syncSelectOptions(
+      $("#ns-link-pick"),
+      [{ value: "", label: "Choose namespace…" }].concat(otherNs.map(n => ({ value: n, label: n }))),
+      $("#ns-link-pick")?.value || ""
+    );
+
+    // 3. KPI Cards
+    const kpiHtml = `
+      <div class="kpi-card"><div class="kpi-lbl">Semantic Facts</div><div class="kpi-val">${(c.facts || 0).toLocaleString()}</div><div class="kpi-sub">${(c.entities || 0).toLocaleString()} entities · ${(c.edges || 0).toLocaleString()} graph edges</div></div>
+      <div class="kpi-card"><div class="kpi-lbl">Turns &amp; Episodes</div><div class="kpi-val">${(c.turns || 0).toLocaleString()}</div><div class="kpi-sub">${(c.episodes || 0).toLocaleString()} episodic summaries</div></div>
+      <div class="kpi-card"><div class="kpi-lbl">Coordination Mesh</div><div class="kpi-val">${c.online_sessions || 0} @ · ${c.channels || 0} #</div><div class="kpi-sub">${(c.channel_messages || 0).toLocaleString()} channel msgs · ${(c.inbox_messages || 0).toLocaleString()} inbox DMs</div></div>
+      <div class="kpi-card"><div class="kpi-lbl">Governance &amp; Routing</div><div class="kpi-val">${(c.bindings || 0)} routes</div><div class="kpi-sub">${c.pinned_constraints || 0} pinned · ${c.guardrails || 0} guardrails · ${(rel.links_out || []).length + (rel.links_in || []).length} links</div></div>
+    `;
+    setHtmlBySig($("#ns-ws-kpis"), kpiHtml, kpiHtml);
+
+    // 4. Related Namespaces & Grounded Links Grid
+    const linksOut = rel.links_out || [];
+    const linksIn = rel.links_in || [];
+    const ancestors = rel.ancestors || [];
+    const children = rel.children || [];
+    const siblings = rel.siblings || [];
+    const sharedChs = (rel.shared_channels || []).filter(sc => (sc.other_namespaces || []).length > 0);
+    const prov = rel.provenance || [];
+    const nudges = rel.nudges || [];
+
+    const relSig = JSON.stringify({ writable, linksOut, linksIn, ancestors, children, siblings, sharedChs, prov, nudges, inh: d.inherit_ancestors });
+    const relHtml = `
+      <div class="ns-rel-grid">
+        <div class="ns-rel-group">
+          <div class="ns-rel-hdr"><span>Grounded In (Outgoing Links)</span><span>${linksOut.length}</span></div>
+          <div class="ns-chip-wrap">
+            ${linksOut.length ? linksOut.map(l => `
+              <span class="ns-chip" data-jump-ns="${esc(l.dst_ns)}" title="Recall on ${esc(d.name)} also grounds in ${esc(l.dst_ns)} (${esc(l.kind)})">
+                <span>→ ${esc(l.dst_ns)}</span>
+                <span class="ns-pfx-tag">${esc(l.kind)}</span>
+                ${writable ? `<button type="button" class="ns-chip-del" data-unlink-dst="${esc(l.dst_ns)}" title="Unlink ${esc(l.dst_ns)}">×</button>` : ""}
+              </span>
+            `).join("") : `<span class="muted">No outgoing links yet.</span>`}
+          </div>
+        </div>
+
+        <div class="ns-rel-group">
+          <div class="ns-rel-hdr"><span>Referenced By (Incoming Links)</span><span>${linksIn.length}</span></div>
+          <div class="ns-chip-wrap">
+            ${linksIn.length ? linksIn.map(l => `
+              <span class="ns-chip" data-jump-ns="${esc(l.src_ns)}" title="${esc(l.src_ns)} grounds recall in ${esc(d.name)} (${esc(l.kind)})">
+                <span>← ${esc(l.src_ns)}</span>
+                <span class="ns-pfx-tag">${esc(l.kind)}</span>
+              </span>
+            `).join("") : `<span class="muted">No other namespaces link here yet.</span>`}
+          </div>
+        </div>
+
+        <div class="ns-rel-group">
+          <div class="ns-rel-hdr"><span>Hierarchy (Ancestors &amp; Children)</span><span>${ancestors.length + children.length}</span></div>
+          <div class="ns-chip-wrap">
+            ${ancestors.map(a => `
+              <span class="ns-chip" data-jump-ns="${esc(a)}" title="Parent ancestor namespace (${d.inherit_ancestors ? "inherited" : "inheritance off"})">
+                <span>↑ ${esc(a)}</span>
+                <span class="ns-pfx-tag">${d.inherit_ancestors ? "parent" : "off"}</span>
+              </span>
+            `).join("")}
+            ${children.map(ch => `
+              <span class="ns-chip" data-jump-ns="${esc(ch)}" title="Child namespace">
+                <span>↳ ${esc(ch)}</span>
+                <span class="ns-pfx-tag">child</span>
+              </span>
+            `).join("")}
+            ${!ancestors.length && !children.length ? `<span class="muted">No parent/child prefix namespaces yet.</span>` : ""}
+          </div>
+        </div>
+
+        <div class="ns-rel-group">
+          <div class="ns-rel-hdr"><span>Sibling Prefix Namespaces</span><span>${siblings.length}</span></div>
+          <div class="ns-chip-wrap">
+            ${siblings.length ? siblings.map(sib => `
+              <span class="ns-chip" data-jump-ns="${esc(sib)}">
+                <span>${esc(sib)}</span>
+                <button type="button" class="ns-chip-del" data-merge-from="${esc(sib)}" title="Merge ${esc(sib)} into ${esc(d.name)}">⇄</button>
+              </span>
+            `).join("") : `<span class="muted">No sibling namespaces under this prefix.</span>`}
+          </div>
+        </div>
+      </div>
+
+      ${sharedChs.length ? `<div style="margin-top:12px">
+        <div class="ns-rel-hdr" style="margin-bottom:6px"><span>Cross-Namespace Shared <code>#Channels</code></span></div>
+        <div class="ns-chip-wrap">
+          ${sharedChs.map(sc => `
+            <span class="ns-chip" data-open-shared-ch="${esc(sc.channel)}">
+              <b>${esc(sc.channel)}</b>
+              <span class="muted">shared with ${(sc.other_namespaces || []).map(esc).join(", ")}</span>
+            </span>
+          `).join("")}
+        </div>
+      </div>` : ""}
+
+      ${nudges.length ? `<div style="margin-top:12px">
+        <div class="ns-rel-hdr" style="margin-bottom:6px"><span>Suggested Consolidations (Misrouted Writes)</span></div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${nudges.map(nu => `
+            <div class="ver-info-row" style="background:var(--bg-surface);padding:7px 10px;border-radius:8px;border:1px solid var(--border)">
+              <span><code>${esc(nu.write_ns)}</code> → <code>${esc(nu.suggested_ns)}</code> <span class="muted">(${nu.hits || 1} hits${nu.reason ? " · " + esc(nu.reason) : ""})</span></span>
+              <button type="button" class="btn-primary sm" data-nudge-src="${esc(nu.write_ns)}" data-nudge-dst="${esc(nu.suggested_ns)}">⇄ Review &amp; Merge</button>
+            </div>
+          `).join("")}
+        </div>
+      </div>` : ""}
+
+      ${prov.length ? `<div style="margin-top:12px">
+        <div class="ns-rel-hdr" style="margin-bottom:6px"><span>Copy &amp; Merge Provenance Lineage</span></div>
+        <div class="ns-chip-wrap">
+          ${prov.map(p => {
+            const other = p.src_ns === d.name ? p.dst_ns : p.src_ns;
+            const dirLbl = p.src_ns === d.name ? `${esc(p.mode)} → ${esc(p.dst_ns)}` : `${esc(p.mode)} ← ${esc(p.src_ns)}`;
+            return `<span class="ns-chip" data-jump-ns="${esc(other)}" title="${esc(fmt(p.copied_at))}">
+              <span>${dirLbl}</span>
+              <span class="muted" style="font-size:10.5px">${age(p.copied_at)} ago</span>
+            </span>`;
+          }).join("")}
+        </div>
+      </div>` : ""}
+    `;
+
+    const relBox = $("#ns-ws-related-body");
+    if (setHtmlBySig(relBox, relSig, relHtml)) {
+      $$("[data-jump-ns]", relBox).forEach(el => {
+        el.onclick = (ev) => {
+          if (ev.target.closest("button")) return;
+          const target = el.dataset.jumpNs;
+          if (target) {
+            selectedNamespace = target;
+            renderNamespaceList();
+            loadNamespaceDetail(target, true);
+          }
+        };
+      });
+      $$("[data-unlink-dst]", relBox).forEach(btn => {
+        btn.onclick = async (ev) => {
+          ev.stopPropagation();
+          const dst = btn.dataset.unlinkDst;
+          try {
+            await wapi("POST", "namespace/unlink", { src: d.name, dst });
+            showToast(`Unlinked ${d.name} → ${dst}`);
+            await refreshOverview(false);
+            await loadNamespaceDetail(d.name, false);
+          } catch (e) { showToast(e.message, true); }
+        };
+      });
+      $$("[data-merge-from]", relBox).forEach(btn => {
+        btn.onclick = (ev) => {
+          ev.stopPropagation();
+          openTransferNamespaceModal(btn.dataset.mergeFrom, d.name, "merge");
+        };
+      });
+      $$("[data-nudge-src]", relBox).forEach(btn => {
+        btn.onclick = () => openTransferNamespaceModal(btn.dataset.nudgeSrc, btn.dataset.nudgeDst, "merge");
+      });
+      $$("[data-open-shared-ch]", relBox).forEach(el => {
+        el.onclick = () => jumpToChannel(d.name, el.dataset.openSharedCh);
+      });
+    }
+
+    // 5. Repo & Folder Bindings
+    const binds = d.bindings || [];
+    const bindSig = JSON.stringify({ writable, is_admin: d.is_admin, binds });
+    const bindHtml = binds.length ? `
+      <table>
+        <thead><tr><th>Type</th><th>Repo / Folder Key</th><th>Host</th>${d.is_admin ? "<th>Principal</th>" : ""}<th style="width:90px"></th></tr></thead>
+        <tbody>
+          ${binds.map(b => `<tr>
+            <td><span class="ns-pfx-tag">${esc(b.key_type)}</span></td>
+            <td><code>${esc(b.key)}</code></td>
+            <td class="muted">${esc(b.host_id || "all hosts")}</td>
+            ${d.is_admin ? `<td>@${esc(b.principal_name || b.principal_id)}</td>` : ""}
+            <td>${writable ? `<button type="button" class="danger sm" data-unbind-id="${b.id}">Unbind</button>` : ""}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+    ` : `<div class="muted">No repositories or folder paths bound directly to <code>${esc(d.name)}</code> yet.</div>`;
+
+    const bindBox = $("#ns-ws-bindings-body");
+    if (setHtmlBySig(bindBox, bindSig, bindHtml)) {
+      $$("[data-unbind-id]", bindBox).forEach(btn => {
+        btn.onclick = async () => {
+          try {
+            await wapi("POST", "namespace/unbind", { id: Number(btn.dataset.unbindId) });
+            showToast("Removed binding");
+            await refreshOverview(false);
+            await loadNamespaceDetail(d.name, false);
+          } catch (e) { showToast(e.message, true); }
+        };
+      });
+    }
+
+    // 6. Active #Channels & @Handles in Scope
+    const myChannels = (d.related?.shared_channels || []).map(x => x.channel);
+    const mySessions = d.sessions || [];
+    const meshSig = JSON.stringify({ ns: d.name, myChannels, mySessions });
+    const meshHtml = `
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div>
+          <div class="muted" style="font-size:11.5px;margin-bottom:5px;font-weight:600">#Channels (${myChannels.length})</div>
+          <div class="ns-chip-wrap">
+            ${myChannels.length ? myChannels.map(ch => `<span class="ns-chip" data-mesh-ch="${esc(ch)}"><b>${esc(ch)}</b></span>`).join("") : `<span class="muted">No channels in this namespace yet.</span>`}
+          </div>
+        </div>
+        <div>
+          <div class="muted" style="font-size:11.5px;margin-bottom:5px;font-weight:600">@Handles (${mySessions.length})</div>
+          <div class="ns-chip-wrap">
+            ${mySessions.length ? mySessions.map(s => `
+              <span class="ns-chip" data-mesh-hd="${esc(s.name)}">
+                <span class="dot ${s.alive ? "on" : "off"}"></span>
+                <span>@${esc(s.name)}</span>
+                ${s.harness ? `<span class="muted" style="font-size:11px">${esc(s.harness)}</span>` : ""}
+              </span>
+            `).join("") : `<span class="muted">No registered @handles in this namespace yet.</span>`}
+          </div>
+        </div>
+      </div>
+    `;
+    const meshBox = $("#ns-ws-mesh-body");
+    if (setHtmlBySig(meshBox, meshSig, meshHtml)) {
+      $$("[data-mesh-ch]", meshBox).forEach(el => {
+        el.onclick = () => jumpToChannel(d.name, el.dataset.meshCh);
+      });
+      $$("[data-mesh-hd]", meshBox).forEach(el => {
+        el.onclick = () => jumpToHandle(d.name, el.dataset.meshHd);
+      });
+    }
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
+
+// Static action handlers inside `#sec-namespaces`
+if ($("#ns-edit-save")) {
+  $("#ns-edit-save").onclick = async () => {
+    if (!selectedNamespace) return;
+    try {
+      await wapi("POST", "namespace/update", {
+        name: selectedNamespace,
+        description: ($("#ns-edit-desc")?.value || "").trim(),
+        kind: $("#ns-edit-kind")?.value || "memory",
+        inherit_ancestors: !!$("#ns-edit-inherit")?.checked,
+      });
+      showToast(`Saved ${selectedNamespace} settings`);
+      await refreshOverview(false);
+      await loadNamespaceDetail(selectedNamespace, true);
+    } catch (e) { showToast(e.message, true); }
+  };
+}
+
+async function submitNsLinkAdd() {
+  if (!selectedNamespace) return;
+  const picked = ($("#ns-link-pick")?.value || "").trim();
+  const typed = ($("#ns-link-custom")?.value || "").trim();
+  const dst = typed || picked;
+  const kind = $("#ns-link-kind")?.value || "link";
+  if (!dst) { showToast("Choose or type a target namespace to link", true); return; }
+  try {
+    await wapi("POST", "namespace/link", { src: selectedNamespace, dst, kind });
+    if ($("#ns-link-custom")) $("#ns-link-custom").value = "";
+    if ($("#ns-link-pick")) $("#ns-link-pick").value = "";
+    showToast(`Linked ${selectedNamespace} → ${dst} (${kind})`);
+    await refreshOverview(false);
+    await loadNamespaceDetail(selectedNamespace, false);
+  } catch (e) { showToast(e.message, true); }
+}
+if ($("#ns-link-add")) $("#ns-link-add").onclick = submitNsLinkAdd;
+if ($("#ns-link-custom")) {
+  $("#ns-link-custom").addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); submitNsLinkAdd(); }
+  });
+}
+
+async function submitNsBindAdd() {
+  if (!selectedNamespace) return;
+  const key_type = $("#ns-bind-type")?.value || "repo";
+  const key = ($("#ns-bind-key")?.value || "").trim();
+  if (!key) { showToast("Enter a repository slug/URL or folder path", true); return; }
+  try {
+    await wapi("POST", "namespace/bind", { namespace: selectedNamespace, key_type, key });
+    if ($("#ns-bind-key")) $("#ns-bind-key").value = "";
+    showToast(`Bound ${key} → ${selectedNamespace}`);
+    await refreshOverview(false);
+    await loadNamespaceDetail(selectedNamespace, false);
+  } catch (e) { showToast(e.message, true); }
+}
+if ($("#ns-bind-add")) $("#ns-bind-add").onclick = submitNsBindAdd;
+if ($("#ns-bind-key")) {
+  $("#ns-bind-key").addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); submitNsBindAdd(); }
+  });
+}
+
+// ---- Create Namespace Modal ----
+function openCreateNamespaceModal(prefillName = "") {
+  const modal = $("#ns-create-modal");
+  if (!modal) return;
+  $("#nsc-name").value = prefillName || "";
+  $("#nsc-desc").value = "";
+  $("#nsc-kind").value = "memory";
+  $("#nsc-link-to").value = "";
+  $("#nsc-bind-repo").value = "";
+  $("#nsc-inherit").checked = true;
+  $("#nsc-err").textContent = "";
+  modal.hidden = false;
+  $("#nsc-name").focus();
+}
+if ($("#btn-open-ns-create")) $("#btn-open-ns-create").onclick = () => openCreateNamespaceModal();
+if ($("#nsc-close")) $("#nsc-close").onclick = () => { $("#ns-create-modal").hidden = true; };
+if ($("#nsc-cancel")) $("#nsc-cancel").onclick = () => { $("#ns-create-modal").hidden = true; };
+$$("[data-ns-pfx]").forEach(btn => {
+  btn.onclick = () => {
+    const inp = $("#nsc-name");
+    if (!inp) return;
+    const pfx = btn.dataset.nsPfx;
+    const cur = inp.value.trim();
+    const stripped = cur.includes(":") ? cur.slice(cur.indexOf(":") + 1) : cur;
+    inp.value = pfx + stripped;
+    inp.focus();
+  };
+});
+async function submitCreateNamespaceModal() {
+  const name = ($("#nsc-name")?.value || "").trim();
+  if (!name) { $("#nsc-err").textContent = "Enter a namespace name (e.g. proj:payments-sync)."; return; }
+  const description = ($("#nsc-desc")?.value || "").trim();
+  const kind = $("#nsc-kind")?.value || "memory";
+  const inherit_ancestors = !!$("#nsc-inherit")?.checked;
+  const link_to = ($("#nsc-link-to")?.value || "").trim();
+  const bindRaw = ($("#nsc-bind-repo")?.value || "").trim();
+  const bind_key_type = bindRaw.startsWith("/") || /^[A-Za-z]:[\\/]/.test(bindRaw) ? "host_path" : "repo";
+  $("#nsc-err").textContent = "";
+  try {
+    await wapi("POST", "namespace/create", {
+      name,
+      description,
+      kind,
+      inherit_ancestors,
+      link_to,
+      bind_key: bindRaw,
+      bind_key_type,
+    });
+    $("#ns-create-modal").hidden = true;
+    selectedNamespace = name;
+    showToast(`Created namespace ${name}`);
+    await refreshOverview(false);
+    openNamespaceWorkspace(name);
+  } catch (e) {
+    $("#nsc-err").textContent = e.message;
+  }
+}
+if ($("#nsc-submit")) $("#nsc-submit").onclick = submitCreateNamespaceModal;
+if ($("#nsc-name")) {
+  $("#nsc-name").addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); submitCreateNamespaceModal(); }
+  });
+}
+
+// ---- Move / Merge / Copy Namespaces Modal ----
+function syncTransferModeUI() {
+  const isCopy = transferMode === "copy";
+  const hasFilter = !!(($("#nst-filter")?.value || "").trim());
+  const isAdmin = !!wsData?.is_admin;
+  $$("#nst-mode-tabs button").forEach(b => b.classList.toggle("active", b.dataset.tmode === transferMode));
+  if ($("#nst-coord-wrap")) $("#nst-coord-wrap").hidden = isCopy;
+  if ($("#nst-route-wrap")) $("#nst-route-wrap").hidden = isCopy;
+  if ($("#nst-del-wrap")) {
+    $("#nst-del-wrap").hidden = isCopy || !isAdmin || hasFilter;
+    if (isCopy || !isAdmin || hasFilter) $("#nst-del-src").checked = false;
+  }
+  if ($("#nst-submit")) {
+    $("#nst-submit").textContent = isCopy ? "⎘ Copy Memories into Target" : "⇄ Merge into Target";
+  }
+}
+
+async function refreshTransferPreview() {
+  const src = ($("#nst-src")?.value || "").trim();
+  const box = $("#nst-preview-box");
+  if (!box) return;
+  if (!src) {
+    box.innerHTML = `<span class="muted">Select a source namespace to preview item counts…</span>`;
+    return;
+  }
+  const like_filter = ($("#nst-filter")?.value || "").trim();
+  try {
+    const res = await wapi("POST", "namespace/transfer", {
+      src,
+      dst: "__preview__",
+      mode: transferMode,
+      dry_run: true,
+      like_filter,
+    });
+    const c = res.counts || {};
+    const filtNote = like_filter ? ` matching <code>${esc(like_filter)}</code>` : "";
+    box.innerHTML = `
+      <div class="ver-info-row"><span><b>Preview from <code>${esc(src)}</code></b>${filtNote}</span><span class="pill ok">Dry-run ready</span></div>
+      <div class="muted" style="font-size:11.5px">
+        Memories: <b>${(c.facts || 0).toLocaleString()}</b> facts · <b>${(c.raw_turns || 0).toLocaleString()}</b> turns · <b>${(c.episodes || 0).toLocaleString()}</b> episodes<br>
+        ${transferMode !== "copy" ? `Mesh &amp; Routing: <b>${(c.channels || 0)}</b> #channels (<b>${(c.channel_messages || 0)}</b> msgs) · <b>${(c.inbox_messages || 0)}</b> @inbox DMs · <b>${(c.sessions || 0)}</b> @handles · <b>${(c.bindings || 0)}</b> repo bindings · <b>${(c.guardrails || 0)}</b> guardrails` : `(Copy mode leaves #channels, @handles, and bindings untouched in ${esc(src)})`}
+      </div>
+    `;
+  } catch (e) {
+    box.innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  }
+}
+
+function scheduleTransferPreview() {
+  syncTransferModeUI();
+  if (transferPreviewTimer) clearTimeout(transferPreviewTimer);
+  transferPreviewTimer = setTimeout(refreshTransferPreview, 240);
+}
+
+function openTransferNamespaceModal(prefillSrc = "", prefillDst = "", mode = "merge") {
+  const modal = $("#ns-transfer-modal");
+  if (!modal) return;
+  transferMode = mode === "copy" ? "copy" : "merge";
+  const allNs = (wsData?.namespaces || []).filter(n => !n.name.startsWith("test:"));
+  const srcCandidates = transferMode === "copy" ? allNs : allNs.filter(n => n.can_write);
+  const srcList = srcCandidates.length ? srcCandidates : allNs;
+  const selSrc = $("#nst-src");
+  if (selSrc) {
+    selSrc.innerHTML = srcList.map(n =>
+      `<option value="${esc(n.name)}">${esc(n.name)} (${(n.facts || 0).toLocaleString()} facts, ${(n.turns || 0).toLocaleString()} turns)</option>`
+    ).join("");
+    const targetSrc = prefillSrc || selectedNamespace || srcList[0]?.name || "";
+    if (targetSrc && [...selSrc.options].some(o => o.value === targetSrc)) selSrc.value = targetSrc;
+  }
+  const dlist = $("#nst-dst-datalist");
+  if (dlist) {
+    dlist.innerHTML = allNs.filter(n => n.can_write).map(n => `<option value="${esc(n.name)}"></option>`).join("");
+  }
+  $("#nst-dst").value = prefillDst || "";
+  $("#nst-filter").value = "";
+  $("#nst-inc-mem").checked = true;
+  $("#nst-inc-coord").checked = true;
+  $("#nst-inc-route").checked = true;
+  $("#nst-del-src").checked = false;
+  $("#nst-err").textContent = "";
+  syncTransferModeUI();
+  modal.hidden = false;
+  refreshTransferPreview();
+}
+
+if ($("#btn-open-ns-merge")) $("#btn-open-ns-merge").onclick = () => openTransferNamespaceModal(selectedNamespace || "", "", "merge");
+if ($("#nst-close")) $("#nst-close").onclick = () => { $("#ns-transfer-modal").hidden = true; };
+if ($("#nst-cancel")) $("#nst-cancel").onclick = () => { $("#ns-transfer-modal").hidden = true; };
+if ($("#nst-preview-btn")) $("#nst-preview-btn").onclick = refreshTransferPreview;
+if ($("#nst-src")) $("#nst-src").onchange = scheduleTransferPreview;
+if ($("#nst-filter")) $("#nst-filter").oninput = scheduleTransferPreview;
+$$("#nst-mode-tabs button").forEach(btn => {
+  btn.onclick = () => {
+    transferMode = btn.dataset.tmode || "merge";
+    syncTransferModeUI();
+    refreshTransferPreview();
+  };
+});
+if ($("#nst-swap")) {
+  $("#nst-swap").onclick = () => {
+    const srcSel = $("#nst-src");
+    const dstInp = $("#nst-dst");
+    if (!srcSel || !dstInp) return;
+    const oldSrc = srcSel.value;
+    const oldDst = dstInp.value.trim();
+    if (oldDst && [...srcSel.options].some(o => o.value === oldDst)) {
+      srcSel.value = oldDst;
+      dstInp.value = oldSrc;
+      scheduleTransferPreview();
+    } else if (oldDst) {
+      showToast(`"${oldDst}" does not exist yet — only existing namespaces can be Source`, true);
+    }
+  };
+}
+if ($("#nst-submit")) {
+  $("#nst-submit").onclick = async () => {
+    const src = ($("#nst-src")?.value || "").trim();
+    const dst = ($("#nst-dst")?.value || "").trim();
+    const like_filter = ($("#nst-filter")?.value || "").trim();
+    if (!src || !dst) { $("#nst-err").textContent = "Select a source namespace and enter a target namespace."; return; }
+    if (src === dst) { $("#nst-err").textContent = "Source and target namespaces must be different."; return; }
+    $("#nst-err").textContent = "";
+    $("#nst-submit").disabled = true;
+    try {
+      const res = await wapi("POST", "namespace/transfer", {
+        src,
+        dst,
+        mode: transferMode,
+        dry_run: false,
+        like_filter,
+        include_memories: !!$("#nst-inc-mem")?.checked,
+        include_coordination: transferMode !== "copy" && !!$("#nst-inc-coord")?.checked,
+        include_routing: transferMode !== "copy" && !!$("#nst-inc-route")?.checked,
+        delete_source: transferMode === "merge" && !like_filter && !!$("#nst-del-src")?.checked,
+      });
+      $("#ns-transfer-modal").hidden = true;
+      const m = res.memories || {};
+      const c = res.coordination || {};
+      const parts = [];
+      if (m.facts) parts.push(`${m.facts} facts`);
+      if (m.raw_turns) parts.push(`${m.raw_turns} turns`);
+      if (c.channel_messages_moved) parts.push(`${c.channel_messages_moved} #channel msgs`);
+      if (c.inbox_moved) parts.push(`${c.inbox_moved} @inbox DMs`);
+      if (c.bindings_repointed) parts.push(`${c.bindings_repointed} bindings`);
+      showToast(`${transferMode === "copy" ? "Copied" : "Merged"} ${src} → ${dst}${parts.length ? ` (${parts.join(", ")})` : ""}`);
+      selectedNamespace = dst;
+      await refreshOverview(false);
+      openNamespaceWorkspace(dst);
+    } catch (e) {
+      $("#nst-err").textContent = e.message;
+    } finally {
+      $("#nst-submit").disabled = false;
+    }
+  };
+}
+
+// ============================================================================
 // SECTION 3: MEMORY EXPLORER
 // ============================================================================
 
@@ -2657,13 +3459,16 @@ function renderTelemetryNamespaces() {
     .filter(n => !q || n.name.toLowerCase().includes(q) || (n.description || "").toLowerCase().includes(q))
     .filter(n => q || (n.facts || 0) > 0 || (n.turns || 0) > 0 || n.registered);
 
-  $("#tel-ns-table tbody").innerHTML = rows.map(n => `<tr>
+  $("#tel-ns-table tbody").innerHTML = rows.map(n => `<tr style="cursor:pointer" data-tel-open-ns="${esc(n.name)}" title="Click to inspect ${esc(n.name)} in Namespaces Workspace">
     <td><code>${esc(n.name)}</code></td>
     <td><b>${(n.facts || 0).toLocaleString()}</b></td>
     <td>${(n.turns || 0).toLocaleString()}</td>
     <td>${(n.entities || 0).toLocaleString()}</td>
     <td><span class="pill ok">${n.can_write ? "RW" : "RO"}</span></td>
   </tr>`).join("") || emptyRow(5, "No matching namespaces with data.");
+  $$("#tel-ns-table [data-tel-open-ns]").forEach(tr => {
+    tr.onclick = () => openNamespaceWorkspace(tr.dataset.telOpenNs);
+  });
 }
 $("#tel-ns-search").oninput = renderTelemetryNamespaces;
 
@@ -2688,16 +3493,25 @@ $$("#console-tabs button").forEach(b => {
   b.onclick = () => switchConsoleTab(b.dataset.ctab);
 });
 
+if ($("#admin-ns-open-ws")) $("#admin-ns-open-ws").onclick = () => openNamespaceWorkspace(selectedNamespace || "");
+if ($("#admin-ns-open-merge")) $("#admin-ns-open-merge").onclick = () => openTransferNamespaceModal(selectedNamespace || "", "", "merge");
+
 // ---- Namespaces ----
 async function loadNamespaces() {
   const tbody = $("#ns-table tbody");
   await loadTable(tbody, () => api("GET", "namespaces"), ({ namespaces }) => {
     tbody.innerHTML = namespaces.map(n => `<tr>
-      <td><code>${esc(n.name)}</code>${n.registered ? "" : ' <span class="pill warn">discovered</span>'}</td>
+      <td><code style="cursor:pointer" data-adm-open-ns="${esc(n.name)}" title="Inspect ${esc(n.name)}">${esc(n.name)}</code>${n.registered ? "" : ' <span class="pill warn">discovered</span>'}</td>
       <td>${esc(n.description || "")}</td>
       <td>${n.turns}</td><td>${n.facts}</td><td>${fmt(n.created_at)}</td>
-      <td><button class="danger" data-del="${esc(n.name)}">delete</button></td></tr>`).join("")
+      <td class="row" style="gap:6px">
+        <button class="ghost sm" data-adm-open-ns="${esc(n.name)}">inspect</button>
+        <button class="ghost sm" data-adm-merge-ns="${esc(n.name)}">merge…</button>
+        <button class="danger sm" data-del="${esc(n.name)}">delete</button>
+      </td></tr>`).join("")
       || emptyRow(6, `No namespaces yet.`);
+    $$("#ns-table [data-adm-open-ns]").forEach(b => b.onclick = () => openNamespaceWorkspace(b.dataset.admOpenNs));
+    $$("#ns-table [data-adm-merge-ns]").forEach(b => b.onclick = () => openTransferNamespaceModal(b.dataset.admMergeNs, "", "merge"));
     $$("#ns-table [data-del]").forEach(b => b.onclick = async () => {
       const nsName = b.dataset.del;
       const { ok, checked } = await askConfirm({

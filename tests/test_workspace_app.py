@@ -528,12 +528,121 @@ def main():
         check("nonexistent depends_on ID fails closed (stays gated, never claimed)",
               missing_claimed == [], str(poll_missing_dep))
 
+        print("=== 9. Namespaces Workspace: Create, Related Graph, Links, Bindings & Atomic Merge ===")
+        check("/app embeds Namespaces Workspace rail + Create & Move/Merge modals",
+              'data-section="namespaces"' in app_html
+              and 'id="sec-namespaces"' in app_html
+              and 'id="ns-create-modal"' in app_html
+              and 'id="ns-transfer-modal"' in app_html)
+
+        ns_src = "test:ws-merge-src"
+        ns_dst = "test:ws-merge-dst"
+        ns_child = f"{NS_RW}:api"
+
+        # Scoped user without grant on ns_src cannot create arbitrary root namespace -> 403
+        st_forb_create, _ = call("POST", "/workspace/api/namespace/create", scoped_tok, {
+            "name": ns_src, "description": "unauthorized root"
+        })
+        check("scoped token cannot create ungranted namespace -> 403", st_forb_create == 403)
+
+        # Admin creates ns_src + child namespace with link & repo binding
+        st_c1, _ = call("POST", "/workspace/api/namespace/create", admin_tok, {
+            "name": ns_src,
+            "description": "Legacy source scope",
+            "kind": "memory",
+            "bind_key": "github.com/acme/legacy-payments",
+            "bind_key_type": "repo",
+        })
+        st_c2, _ = call("POST", "/workspace/api/namespace/create", admin_tok, {
+            "name": ns_child,
+            "description": "API child scope",
+            "kind": "knowledge",
+            "link_to": NS_RO,
+            "link_kind": "link",
+        })
+        check("POST /workspace/api/namespace/create creates namespaces + link + repo binding -> 200",
+              st_c1 == 200 and st_c2 == 200)
+
+        # Cycle detection on namespace/link
+        st_cyc1, _ = call("POST", "/workspace/api/namespace/link", admin_tok, {
+            "src": NS_RO, "dst": ns_child, "kind": "link"
+        })
+        check("POST /workspace/api/namespace/link rejects cycle -> 400", st_cyc1 == 400)
+
+        # Scoped token cannot link to hidden namespace
+        st_hid_link, _ = call("POST", "/workspace/api/namespace/link", scoped_tok, {
+            "src": NS_RW, "dst": NS_HIDDEN, "kind": "link"
+        })
+        check("scoped token cannot link to unauthorized hidden namespace -> 403", st_hid_link == 403)
+
+        # Inspect detail on child namespace -> ancestors + links_out + kind
+        st_det, det = call("GET", f"/workspace/api/namespace/detail?namespace={urllib.parse.quote(ns_child)}", admin_tok)
+        check("GET /workspace/api/namespace/detail returns ancestors, outgoing links, and kind",
+              st_det == 200
+              and det.get("kind") == "knowledge"
+              and NS_RW in det.get("related", {}).get("ancestors", [])
+              and any(l.get("dst_ns") == NS_RO for l in det.get("related", {}).get("links_out", [])),
+              str(det))
+
+        # Seed coordination + memory data in ns_src, preview dry-run, then atomic merge into ns_dst
+        call("POST", "/workspace/api/channel/create", admin_tok, {
+            "namespace": ns_src, "channel": "#legacy-sync", "description": "Legacy sync"
+        })
+        call("POST", "/workspace/api/channel/publish", admin_tok, {
+            "namespace": ns_src, "channel": "#legacy-sync", "sender_session": "owner", "content": "Migrate this thread"
+        })
+        call("POST", "/inbox/send", admin_tok, {
+            "namespace": ns_src, "from_session": "owner", "to_session": "mig-worker", "intent": "task", "content": "Follow up in merged ns"
+        })
+        call("POST", "/remember", admin_tok, {
+            "namespace": ns_src, "text": "Payments service uses idempotency keys on all retries.", "extract": False
+        })
+
+        st_prev, prev = call("POST", "/workspace/api/namespace/transfer", admin_tok, {
+            "src": ns_src, "dst": ns_dst, "mode": "merge", "dry_run": True
+        })
+        pc = prev.get("counts", {})
+        check("POST /workspace/api/namespace/transfer (dry_run=True) previews accurate counts",
+              st_prev == 200
+              and pc.get("raw_turns", 0) >= 1
+              and pc.get("channel_messages", 0) == 1
+              and pc.get("inbox_messages", 0) == 1
+              and pc.get("bindings", 0) == 1,
+              str(prev))
+
+        st_mrg, mrg = call("POST", "/workspace/api/namespace/transfer", admin_tok, {
+            "src": ns_src,
+            "dst": ns_dst,
+            "mode": "merge",
+            "dry_run": False,
+            "include_memories": True,
+            "include_coordination": True,
+            "include_routing": True,
+            "delete_source": True,
+        })
+        _, dst_det = call("GET", f"/workspace/api/namespace/detail?namespace={urllib.parse.quote(ns_dst)}", admin_tok)
+        dc = dst_det.get("counts", {})
+        check("atomic merge moves memories, #channels, @inbox, and repo bindings into target & deletes source",
+              st_mrg == 200
+              and mrg.get("source_deleted") is True
+              and dc.get("turns", 0) >= 1
+              and dc.get("channel_messages", 0) == 1
+              and dc.get("inbox_messages", 0) == 1
+              and dc.get("bindings", 0) == 1,
+              str(dst_det))
+
     finally:
-        for ns in (NS_RW, NS_RO, NS_HIDDEN):
-            call("DELETE", f"/admin/api/namespaces?name={ns}&purge=1", admin_tok)
+        for ns in (NS_RW, NS_RO, NS_HIDDEN, "test:ws-merge-src", "test:ws-merge-dst", f"{NS_RW}:api"):
+            call("DELETE", f"/admin/api/namespaces?name={urllib.parse.quote(ns)}&purge=1", admin_tok)
         call("DELETE", f"/admin/api/principals?id={scoped_id}", admin_tok)
         with conn.cursor() as cur:
             cur.execute("DELETE FROM memnos_control.constraint_enforcement WHERE namespace = ANY(%s)", ([NS_RW, NS_RO, NS_HIDDEN],))
+            cur.execute("UPDATE memnos_control.namespaces SET created_by = NULL WHERE created_by = %s", (admin_id,))
+            cur.execute("UPDATE memnos_control.namespace_links SET created_by = NULL WHERE created_by = %s", (admin_id,))
+            cur.execute("DELETE FROM memnos_control.namespace_copy_provenance WHERE copied_by = %s", (admin_id,))
+            cur.execute("DELETE FROM memnos_control.bindings WHERE principal_id = %s", (admin_id,))
+            cur.execute("DELETE FROM memnos_control.channel_messages WHERE principal_id = %s", (admin_id,))
+            cur.execute("DELETE FROM memnos_control.agent_inbox WHERE principal_id = %s", (admin_id,))
             cur.execute("UPDATE memnos_control.channel_catalog SET principal_id = NULL WHERE principal_id = %s", (admin_id,))
             cur.execute("DELETE FROM memnos_control.channel_subscriptions WHERE principal_id = %s", (admin_id,))
             cur.execute("DELETE FROM memnos_control.agent_sessions WHERE principal_id = %s", (admin_id,))

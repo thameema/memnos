@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MEMNOS · Workspace</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='8' fill='url(%23g)'/%3E%3Cpath d='M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8' stroke='%23fff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='2' y1='2' x2='30' y2='30' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='%237C5CFF'/%3E%3Cstop offset='.52' stop-color='%23B832E5'/%3E%3Cstop offset='1' stop-color='%23EC4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/admin/app.css?v=15">
+  <link rel="stylesheet" href="/admin/app.css?v=16">
 </head>
 <body>
   <!-- Connect / Server Onboarding Screen -->
@@ -183,6 +183,12 @@
           <span class="rail-glyph">@</span>
           <span class="rail-lbl">Handles</span>
           <span id="rail-hd-count" class="rail-badge ok">0</span>
+        </button>
+
+        <button class="rail-btn" data-section="namespaces" title="Namespaces — Inspect, Create, Link Related &amp; Move/Merge">
+          <span class="rail-glyph">⊞</span>
+          <span class="rail-lbl">Spaces</span>
+          <span id="rail-ns-count" class="rail-badge">0</span>
         </button>
 
         <button class="rail-btn" data-section="live" title="Live MEMNOS Activity Stream">
@@ -404,6 +410,122 @@
                 <textarea id="hd-comp-input" rows="2" placeholder="Send direct @inbox message to wake this handle… (Enter to send)"></textarea>
                 <button id="hd-comp-send" class="btn-primary">Send DM</button>
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- SECTION 2A: NAMESPACES WORKSPACE (Show, Create, Merge, Links)-->
+      <!-- ============================================================ -->
+      <section id="sec-namespaces" class="workspace-split" hidden>
+        <aside class="list-pane">
+          <div class="pane-hdr">
+            <div>
+              <div class="pane-title">Namespaces</div>
+              <div id="ns-pane-sub" class="pane-sub">Memory &amp; coordination scopes</div>
+            </div>
+            <div class="row" style="gap:5px">
+              <button type="button" id="btn-open-ns-merge" class="ghost sm" title="Move, merge, or copy between namespaces">⇄ Merge</button>
+              <button type="button" id="btn-open-ns-create" class="btn-primary sm" title="Create a new namespace">+ New</button>
+            </div>
+          </div>
+
+          <div class="pane-controls">
+            <div class="search-box">
+              <span class="search-ico">⌕</span>
+              <input id="ns-ws-search" placeholder="Filter namespaces, prefixes, or descriptions…">
+            </div>
+            <div class="filter-bar">
+              <div class="seg-control" id="ns-ws-mode">
+                <button type="button" data-mode="active" class="active">Active</button>
+                <button type="button" data-mode="all">All</button>
+              </div>
+              <select id="ns-ws-prefix" class="mini-select" title="Filter by namespace prefix">
+                <option value="*">All prefixes</option>
+              </select>
+            </div>
+            <div class="sort-bar">
+              <span class="sort-lbl">Sort</span>
+              <select id="ns-ws-sort" class="mini-select" style="flex:1">
+                <option value="name">Name (A–Z)</option>
+                <option value="facts">Most Facts</option>
+                <option value="turns">Most Turns</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="ns-ws-list" class="entity-list"></div>
+        </aside>
+
+        <div class="ns-stage">
+          <div id="ns-ws-empty" class="empty-state" style="padding:60px 24px">
+            <div class="empty-glyph">⊞</div>
+            <h3 style="margin:6px 0 4px">Select or Create a Namespace</h3>
+            <p class="muted" style="max-width:440px">Inspect memory counts, active <code>#channels</code> &amp; <code>@handles</code>, repo auto-routing, related hierarchy &amp; grounded links, or move/merge namespaces together.</p>
+          </div>
+
+          <div id="ns-ws-detail" class="ns-detail-wrap" hidden>
+            <div class="surface-card ns-hero-card">
+              <div id="ns-ws-hero-top"></div>
+              <div id="ns-ws-settings-bar" class="ns-settings-bar">
+                <input id="ns-edit-desc" placeholder="Namespace description (e.g. Payments architecture &amp; agent coordination)" style="flex:1;min-width:200px">
+                <select id="ns-edit-kind" style="max-width:155px" title="Namespace kind">
+                  <option value="memory">Kind: memory</option>
+                  <option value="knowledge">Kind: knowledge</option>
+                </select>
+                <label class="chk" title="Automatically inherit constraints and grounded context from parent prefix namespaces"><input type="checkbox" id="ns-edit-inherit" checked> Inherit ancestors</label>
+                <button type="button" id="ns-edit-save" class="btn-primary sm">Save</button>
+              </div>
+            </div>
+
+            <div id="ns-ws-kpis" class="kpi-grid"></div>
+
+            <!-- Related Namespaces & Grounded Recall Graph -->
+            <div class="surface-card">
+              <div class="row" style="justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+                <div>
+                  <h3 style="margin:0">Related Namespaces &amp; Grounded Links</h3>
+                  <div class="muted" style="font-size:12px">Ancestors, child &amp; sibling spaces, grounded recall links (<code>link</code> / <code>inherits</code> / <code>governed_by</code>), shared <code>#channels</code>, and merge lineage.</div>
+                </div>
+              </div>
+
+              <div id="ns-link-bar" class="row" style="margin-bottom:14px;flex-wrap:wrap;gap:8px">
+                <select id="ns-link-pick" style="max-width:220px"><option value="">Choose namespace…</option></select>
+                <input id="ns-link-custom" placeholder="or type target namespace (e.g. org:standards)" style="max-width:260px">
+                <select id="ns-link-kind" style="max-width:165px" title="Relationship kind">
+                  <option value="link">link (ground recall)</option>
+                  <option value="inherits">inherits</option>
+                  <option value="governed_by">governed_by (rules)</option>
+                </select>
+                <button type="button" id="ns-link-add" class="btn-primary sm">+ Link Related NS</button>
+              </div>
+
+              <div id="ns-ws-related-body"></div>
+            </div>
+
+            <!-- Repo & Folder Auto-Routing Bindings -->
+            <div class="surface-card">
+              <div style="margin-bottom:10px">
+                <h3 style="margin:0">Repository &amp; Folder Auto-Routing</h3>
+                <div class="muted" style="font-size:12px">Sessions opened inside bound repositories or folders automatically resolve to this namespace.</div>
+              </div>
+              <div id="ns-bind-bar" class="row" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
+                <select id="ns-bind-type" style="max-width:160px">
+                  <option value="repo">repo (all hosts)</option>
+                  <option value="host_path">folder path</option>
+                  <option value="host_repo">repo (host-scoped)</option>
+                </select>
+                <input id="ns-bind-key" placeholder="e.g. github.com/acme/payments-sync  or  /path/to/repo" style="flex:1;min-width:220px">
+                <button type="button" id="ns-bind-add" class="btn-primary sm">+ Bind to Namespace</button>
+              </div>
+              <div id="ns-ws-bindings-body"></div>
+            </div>
+
+            <!-- Active #Channels & @Handles in Namespace -->
+            <div class="surface-card">
+              <h3 style="margin:0 0 10px">Active <code>#Channels</code> &amp; <code>@Handles</code> in Scope</h3>
+              <div id="ns-ws-mesh-body"></div>
             </div>
           </div>
         </div>
@@ -679,7 +801,13 @@
           <!-- Admin: Namespaces -->
           <div id="ctab-namespaces" class="ctab-pane" hidden>
             <div class="surface-card">
-              <h3>Create namespace</h3>
+              <div class="row" style="justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+                <h3 style="margin:0">Create namespace</h3>
+                <div class="row" style="gap:8px">
+                  <button type="button" id="admin-ns-open-merge" class="ghost sm">⇄ Move / Merge Namespaces</button>
+                  <button type="button" id="admin-ns-open-ws" class="btn-primary sm">⊞ Open Namespaces Workspace</button>
+                </div>
+              </div>
               <div class="row">
                 <input id="ns-name" placeholder="e.g. proj:myapp  or  team:eng:notes">
                 <input id="ns-desc" placeholder="description (optional)">
@@ -935,9 +1063,115 @@
     </div>
   </div>
 
+  <!-- Create Namespace Modal -->
+  <div id="ns-create-modal" class="modal-backdrop" hidden>
+    <div class="login-card modal-card" style="max-width:500px">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <h3 style="margin:0;font-size:16px">⊞ Create Namespace</h3>
+        <button type="button" id="nsc-close" class="ghost sm">✕</button>
+      </div>
+      <p class="muted" style="margin:0 0 10px;font-size:12.5px;line-height:1.45">
+        Namespaces isolate and govern memories, <code>#channels</code>, <code>@handles</code>, and guardrails by project, team, or user.
+      </p>
+
+      <div class="row" style="gap:6px;margin-bottom:8px;flex-wrap:wrap">
+        <span class="muted" style="font-size:11.5px">Prefix helper:</span>
+        <button type="button" class="ghost sm" data-ns-pfx="proj:">proj:</button>
+        <button type="button" class="ghost sm" data-ns-pfx="team:">team:</button>
+        <button type="button" class="ghost sm" data-ns-pfx="org:">org:</button>
+        <button type="button" class="ghost sm" data-ns-pfx="user:">user:</button>
+      </div>
+
+      <label class="field-lbl" style="margin-top:0" for="nsc-name">Namespace Name</label>
+      <input id="nsc-name" placeholder="e.g. proj:payments-sync  or  team:eng:api" style="margin-bottom:10px">
+
+      <div class="two-col-grid" style="gap:10px;margin-bottom:10px">
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="nsc-kind">Kind</label>
+          <select id="nsc-kind">
+            <option value="memory">memory (facts &amp; sessions)</option>
+            <option value="knowledge">knowledge (reference corpus)</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="nsc-link-to">Link Related NS <span class="muted">(optional)</span></label>
+          <input id="nsc-link-to" placeholder="e.g. org:standards">
+        </div>
+      </div>
+
+      <label class="field-lbl" style="margin-top:0" for="nsc-desc">Description <span class="muted">(optional)</span></label>
+      <input id="nsc-desc" placeholder="What belongs in this namespace?" style="margin-bottom:10px">
+
+      <label class="field-lbl" style="margin-top:0" for="nsc-bind-repo">Bind Repository or Path <span class="muted">(optional)</span></label>
+      <input id="nsc-bind-repo" placeholder="e.g. github.com/acme/payments-sync" style="margin-bottom:10px">
+
+      <label class="chk" style="margin-bottom:8px"><input type="checkbox" id="nsc-inherit" checked> <span>Inherit constraints &amp; context from parent prefix namespaces</span></label>
+
+      <p id="nsc-err" class="err" style="margin:6px 0 0"></p>
+      <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px">
+        <button type="button" id="nsc-cancel" class="ghost sm">Cancel</button>
+        <button type="button" id="nsc-submit" class="btn-primary sm">Create Namespace</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Move / Merge / Copy Namespaces Modal -->
+  <div id="ns-transfer-modal" class="modal-backdrop" hidden>
+    <div class="login-card modal-card" style="max-width:560px">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <h3 style="margin:0;font-size:16px">⇄ Move, Merge &amp; Copy Namespaces</h3>
+        <button type="button" id="nst-close" class="ghost sm">✕</button>
+      </div>
+      <p class="muted" style="margin:0 0 12px;font-size:12.5px;line-height:1.45">
+        Consolidate or copy memories, <code>#channels</code>, <code>@handles</code>, <code>@inbox</code> threads, repo bindings, and guardrails from a source namespace into a target namespace (existing or new).
+      </p>
+
+      <div class="seg-control conn-tabs" id="nst-mode-tabs" style="margin-bottom:12px">
+        <button type="button" data-tmode="merge" class="active">⇄ Merge &amp; Move into Target</button>
+        <button type="button" data-tmode="copy">⎘ Copy Memories Only (Keep Source)</button>
+      </div>
+
+      <div class="row" style="gap:8px;align-items:flex-end;margin-bottom:10px">
+        <div style="flex:1">
+          <label class="field-lbl" style="margin-top:0" for="nst-src">Source Namespace</label>
+          <select id="nst-src"></select>
+        </div>
+        <button type="button" id="nst-swap" class="ghost sm" title="Swap Source and Target" style="margin-bottom:2px">⇄</button>
+        <div style="flex:1">
+          <label class="field-lbl" style="margin-top:0" for="nst-dst">Target Namespace <span class="muted">(existing or new)</span></label>
+          <input id="nst-dst" list="nst-dst-datalist" placeholder="e.g. proj:payments-sync">
+          <datalist id="nst-dst-datalist"></datalist>
+        </div>
+      </div>
+
+      <label class="field-lbl" style="margin-top:0" for="nst-filter">Topic / Keyword Filter <span class="muted">(leave blank to move/merge entire namespace)</span></label>
+      <input id="nst-filter" placeholder="Optional substring filter (e.g. payments) — blank moves/copies all items" style="margin-bottom:10px">
+
+      <div class="spawn-checks" style="margin-bottom:10px">
+        <label class="chk"><input type="checkbox" id="nst-inc-mem" checked> <span><b>Memories &amp; Knowledge Graph</b> — raw turns, semantic facts, episodes &amp; entities (deduped)</span></label>
+        <label class="chk" id="nst-coord-wrap"><input type="checkbox" id="nst-inc-coord" checked> <span><b>Coordination Mesh</b> — <code>#channels</code>, channel messages, subscriptions, <code>@handles</code> &amp; <code>@inbox</code> DMs</span></label>
+        <label class="chk" id="nst-route-wrap"><input type="checkbox" id="nst-inc-route" checked> <span><b>Routing &amp; Governance</b> — repoint repo/folder bindings, PreToolUse guardrails &amp; grounded links</span></label>
+        <label class="chk" id="nst-del-wrap"><input type="checkbox" id="nst-del-src"> <span><b>Delete source namespace after full merge</b> <span class="muted">(admin only, when no keyword filter is set)</span></span></label>
+      </div>
+
+      <div id="nst-preview-box" class="ver-info-box" style="margin-bottom:8px">
+        <span class="muted">Select a source namespace to preview item counts…</span>
+      </div>
+
+      <p id="nst-err" class="err" style="margin:6px 0 0"></p>
+      <div class="row" style="justify-content:space-between;gap:8px;margin-top:12px">
+        <button type="button" id="nst-preview-btn" class="ghost sm">↻ Preview Counts</button>
+        <div class="row" style="gap:8px">
+          <button type="button" id="nst-cancel" class="ghost sm">Cancel</button>
+          <button type="button" id="nst-submit" class="btn-primary sm">⇄ Merge into Target</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- In-App Toast Banner -->
   <div id="app-toast" class="app-toast" hidden></div>
 
-  <script src="/admin/app.js?v=15"></script>
+  <script src="/admin/app.js?v=16"></script>
 </body>
 </html>

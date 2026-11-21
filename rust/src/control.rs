@@ -1436,7 +1436,7 @@ impl Control {
         let c = conn(pool).await?;
         c.execute(
             "INSERT INTO memnos_control.namespaces(name,created_by,description,auto_registered) VALUES($1,$2,$3,false)
-             ON CONFLICT (name) DO UPDATE SET description=EXCLUDED.description, auto_registered=false",
+             ON CONFLICT (name) DO UPDATE SET description=COALESCE(EXCLUDED.description, memnos_control.namespaces.description), auto_registered=false",
             params![name, created_by, description],
         )
         .await?;
@@ -1494,17 +1494,45 @@ impl Control {
         )
         .await?;
         if purge_data {
-            tx.execute(
-                "DELETE FROM tenant_memnos.mentions m USING tenant_memnos.entities e WHERE m.entity_id=e.id AND e.namespace=$1",
-                params![name],
-            )
-            .await?;
-            for t in ["edges", "entities", "semantic", "episodic", "raw_turns"] {
+            for ct in [
+                "channel_subscriptions",
+                "channel_messages",
+                "channel_catalog",
+                "agent_inbox",
+                "agent_sessions",
+                "bindings",
+                "constraint_enforcement",
+                "subscriptions",
+                "leases",
+            ] {
                 tx.execute(
-                    format!("DELETE FROM tenant_memnos.{t} WHERE namespace=$1").as_str(),
+                    format!("DELETE FROM memnos_control.{ct} WHERE namespace=$1").as_str(),
                     params![name],
                 )
                 .await?;
+            }
+            let has_tenant: bool = tx
+                .query_one(
+                    "SELECT to_regclass('tenant_memnos.raw_turns') IS NOT NULL
+                            AND to_regclass('tenant_memnos.entities') IS NOT NULL",
+                    &[],
+                )
+                .await
+                .map(|r| r.get(0))
+                .unwrap_or(false);
+            if has_tenant {
+                tx.execute(
+                    "DELETE FROM tenant_memnos.mentions m USING tenant_memnos.entities e WHERE m.entity_id=e.id AND e.namespace=$1",
+                    params![name],
+                )
+                .await?;
+                for t in ["entity_dossiers", "edges", "entities", "semantic", "episodic", "raw_turns"] {
+                    tx.execute(
+                        format!("DELETE FROM tenant_memnos.{t} WHERE namespace=$1").as_str(),
+                        params![name],
+                    )
+                    .await?;
+                }
             }
         }
         tx.commit().await?;
@@ -5468,15 +5496,22 @@ impl Control {
                 c.query(
                     "SELECT u.ns AS name, COALESCE(n.description, '') AS description,
                             COALESCE(n.kind, 'memory') AS kind,
+                            COALESCE(n.inherit_ancestors, true) AS inherit_ancestors,
                             (n.name IS NOT NULL AND NOT COALESCE(n.auto_registered, false)) AS registered,
                             COALESCE(rt.cnt, 0) AS turns,
                             COALESCE(sm.cnt, 0) AS facts,
-                            COALESCE(en.cnt, 0) AS entities
+                            COALESCE(en.cnt, 0) AS entities,
+                            COALESCE(lo.cnt, 0) AS links_out,
+                            COALESCE(li.cnt, 0) AS links_in,
+                            COALESCE(bd.cnt, 0) AS bindings
                      FROM UNNEST($1::text[]) AS u(ns)
                      LEFT JOIN memnos_control.namespaces n ON n.name = u.ns
                      LEFT JOIN (SELECT namespace, count(*) cnt FROM tenant_memnos.raw_turns WHERE namespace = ANY($1) GROUP BY namespace) rt ON rt.namespace = u.ns
-                     LEFT JOIN (SELECT namespace, count(*) cnt FROM tenant_memnos.semantic WHERE namespace = ANY($1) GROUP BY namespace) sm ON sm.namespace = u.ns
+                     LEFT JOIN (SELECT namespace, count(*) cnt FROM tenant_memnos.semantic WHERE namespace = ANY($1) AND expired_at IS NULL GROUP BY namespace) sm ON sm.namespace = u.ns
                      LEFT JOIN (SELECT namespace, count(*) cnt FROM tenant_memnos.entities WHERE namespace = ANY($1) GROUP BY namespace) en ON en.namespace = u.ns
+                     LEFT JOIN (SELECT src_ns, count(*) cnt FROM memnos_control.namespace_links WHERE src_ns = ANY($1) AND dst_ns = ANY($1) GROUP BY src_ns) lo ON lo.src_ns = u.ns
+                     LEFT JOIN (SELECT dst_ns, count(*) cnt FROM memnos_control.namespace_links WHERE dst_ns = ANY($1) AND src_ns = ANY($1) GROUP BY dst_ns) li ON li.dst_ns = u.ns
+                     LEFT JOIN (SELECT namespace, count(*) cnt FROM memnos_control.bindings WHERE namespace = ANY($1) GROUP BY namespace) bd ON bd.namespace = u.ns
                      ORDER BY COALESCE(rt.cnt, 0) DESC, u.ns",
                     params![all_auth_ns],
                 )
@@ -5485,10 +5520,17 @@ impl Control {
                 c.query(
                     "SELECT u.ns AS name, COALESCE(n.description, '') AS description,
                             COALESCE(n.kind, 'memory') AS kind,
+                            COALESCE(n.inherit_ancestors, true) AS inherit_ancestors,
                             (n.name IS NOT NULL AND NOT COALESCE(n.auto_registered, false)) AS registered,
-                            0::bigint AS turns, 0::bigint AS facts, 0::bigint AS entities
+                            0::bigint AS turns, 0::bigint AS facts, 0::bigint AS entities,
+                            COALESCE(lo.cnt, 0) AS links_out,
+                            COALESCE(li.cnt, 0) AS links_in,
+                            COALESCE(bd.cnt, 0) AS bindings
                      FROM UNNEST($1::text[]) AS u(ns)
                      LEFT JOIN memnos_control.namespaces n ON n.name = u.ns
+                     LEFT JOIN (SELECT src_ns, count(*) cnt FROM memnos_control.namespace_links WHERE src_ns = ANY($1) AND dst_ns = ANY($1) GROUP BY src_ns) lo ON lo.src_ns = u.ns
+                     LEFT JOIN (SELECT dst_ns, count(*) cnt FROM memnos_control.namespace_links WHERE dst_ns = ANY($1) AND src_ns = ANY($1) GROUP BY dst_ns) li ON li.dst_ns = u.ns
+                     LEFT JOIN (SELECT namespace, count(*) cnt FROM memnos_control.bindings WHERE namespace = ANY($1) GROUP BY namespace) bd ON bd.namespace = u.ns
                      ORDER BY u.ns",
                     params![all_auth_ns],
                 )
@@ -5508,10 +5550,14 @@ impl Control {
                     "name": name,
                     "description": r.get::<_, String>("description"),
                     "kind": r.get::<_, String>("kind"),
+                    "inherit_ancestors": r.get::<_, bool>("inherit_ancestors"),
                     "registered": r.get::<_, bool>("registered"),
                     "turns": turns,
                     "facts": facts,
                     "entities": entities,
+                    "links_out": r.get::<_, i64>("links_out"),
+                    "links_in": r.get::<_, i64>("links_in"),
+                    "bindings": r.get::<_, i64>("bindings"),
                     "can_write": write_set.contains(&name) || eff.iter().any(|(g, _, w)| *w && Self::grant_matches(g, &name)),
                 }));
             }
@@ -6849,6 +6895,640 @@ impl Control {
             )
             .await?;
         Ok(n > 0)
+    }
+
+    pub async fn workspace_namespace_detail(
+        pool: &Pool,
+        principal_id: i64,
+        ns: &str,
+    ) -> CResult<Value> {
+        let ns = ns.trim();
+        if ns.is_empty() || ns == "*" || ns.starts_with("secret:") {
+            return bad("concrete namespace required");
+        }
+        let c = conn(pool).await?;
+        if !Self::authorize_on(&**c, principal_id, ns, false).await? {
+            return Err(ControlError::Forbidden(format!(
+                "no read grant for namespace '{}'",
+                ns
+            )));
+        }
+        let eff = Self::effective_namespaces_on(&**c, principal_id).await?;
+        let is_admin = eff.iter().any(|(g, r, _)| g == "*" && *r);
+        let can_write = eff
+            .iter()
+            .any(|(g, _, w)| *w && Self::grant_matches(g, ns));
+        let ns_map = Self::workspace_authorized_ns_map(&**c, principal_id).await?;
+        let auth_ns: Vec<String> = ns_map.iter().map(|(n, _)| n.clone()).collect();
+
+        let reg_row = c
+            .query_opt(
+                "SELECT COALESCE(n.description, '') AS description,
+                        COALESCE(n.kind, 'memory') AS kind,
+                        COALESCE(n.inherit_ancestors, true) AS inherit_ancestors,
+                        (NOT COALESCE(n.auto_registered, false)) AS registered,
+                        n.created_at,
+                        COALESCE(p.name, '') AS created_by
+                 FROM memnos_control.namespaces n
+                 LEFT JOIN memnos_control.principals p ON p.id = n.created_by
+                 WHERE n.name = $1",
+                params![ns],
+            )
+            .await?;
+
+        let (description, kind, inherit_ancestors, registered, created_at, created_by) =
+            if let Some(r) = reg_row {
+                (
+                    r.get::<_, String>("description"),
+                    r.get::<_, String>("kind"),
+                    r.get::<_, bool>("inherit_ancestors"),
+                    r.get::<_, bool>("registered"),
+                    r.get::<_, Option<DateTime<Utc>>>("created_at")
+                        .map(|d| d.to_rfc3339()),
+                    r.get::<_, String>("created_by"),
+                )
+            } else {
+                (
+                    String::new(),
+                    "memory".to_string(),
+                    true,
+                    false,
+                    None,
+                    String::new(),
+                )
+            };
+
+        let has_tenant: bool = c
+            .query_one(
+                "SELECT to_regclass('tenant_memnos.raw_turns') IS NOT NULL
+                        AND to_regclass('tenant_memnos.semantic') IS NOT NULL
+                        AND to_regclass('tenant_memnos.entities') IS NOT NULL",
+                &[],
+            )
+            .await
+            .map(|r| r.get(0))
+            .unwrap_or(false);
+
+        let (turns, facts, episodes, entities, edges, pinned_constraints) = if has_tenant {
+            let mrow = c
+                .query_one(
+                    "SELECT
+                        (SELECT count(*) FROM tenant_memnos.raw_turns WHERE namespace = $1) AS turns,
+                        (SELECT count(*) FROM tenant_memnos.semantic WHERE namespace = $1 AND expired_at IS NULL) AS facts,
+                        (SELECT count(*) FROM tenant_memnos.episodic WHERE namespace = $1) AS episodes,
+                        (SELECT count(*) FROM tenant_memnos.entities WHERE namespace = $1) AS entities,
+                        (SELECT count(*) FROM tenant_memnos.edges WHERE namespace = $1) AS edges,
+                        (SELECT count(*) FROM tenant_memnos.semantic WHERE namespace = $1 AND memory_type = 'constraint' AND constraint_retired_at IS NULL AND expired_at IS NULL) AS pinned",
+                    params![ns],
+                )
+                .await?;
+            (
+                mrow.get::<_, i64>("turns"),
+                mrow.get::<_, i64>("facts"),
+                mrow.get::<_, i64>("episodes"),
+                mrow.get::<_, i64>("entities"),
+                mrow.get::<_, i64>("edges"),
+                mrow.get::<_, i64>("pinned"),
+            )
+        } else {
+            (0, 0, 0, 0, 0, 0)
+        };
+
+        let crow = c
+            .query_one(
+                "SELECT
+                    (SELECT count(*) FROM memnos_control.constraint_enforcement WHERE namespace = $1 AND active) AS guardrails,
+                    (SELECT count(DISTINCT channel) FROM (
+                        SELECT channel FROM memnos_control.channel_catalog WHERE namespace = $1 AND channel LIKE '#%'
+                        UNION SELECT channel FROM memnos_control.channel_messages WHERE namespace = $1 AND recalled_at IS NULL AND channel LIKE '#%'
+                        UNION SELECT channel FROM memnos_control.channel_subscriptions WHERE namespace = $1 AND channel LIKE '#%'
+                    ) ch_u) AS channels,
+                    (SELECT count(*) FROM memnos_control.channel_messages WHERE namespace = $1 AND recalled_at IS NULL) AS channel_messages,
+                    (SELECT count(*) FROM memnos_control.agent_inbox WHERE namespace = $1 AND recalled_at IS NULL) AS inbox_messages,
+                    (SELECT count(*) FROM memnos_control.agent_sessions WHERE namespace = $1 AND expires_at > now()) AS online_sessions,
+                    (SELECT count(*) FROM memnos_control.agent_sessions WHERE namespace = $1) AS total_sessions",
+                params![ns],
+            )
+            .await?;
+
+        let guardrails: i64 = crow.get("guardrails");
+        let channels_cnt: i64 = crow.get("channels");
+        let channel_messages_cnt: i64 = crow.get("channel_messages");
+        let inbox_messages_cnt: i64 = crow.get("inbox_messages");
+        let online_sessions_cnt: i64 = crow.get("online_sessions");
+        let total_sessions_cnt: i64 = crow.get("total_sessions");
+
+        let ancestors: Vec<String> = namespace_ancestors(ns)
+            .into_iter()
+            .filter(|a| is_admin || eff.iter().any(|(g, r, _)| *r && Self::grant_matches(g, a)))
+            .collect();
+        let child_prefix = format!("{ns}:");
+        let children: Vec<String> = auth_ns
+            .iter()
+            .filter(|n| n.starts_with(&child_prefix))
+            .cloned()
+            .collect();
+        let siblings: Vec<String> = if let Some((pfx, _)) = ns.rsplit_once(':') {
+            let sib_prefix = format!("{pfx}:");
+            auth_ns
+                .iter()
+                .filter(|n| {
+                    *n != ns
+                        && !n.starts_with(&child_prefix)
+                        && !ancestors.contains(n)
+                        && n.starts_with(&sib_prefix)
+                        && !n.starts_with("test:")
+                })
+                .take(24)
+                .cloned()
+                .collect()
+        } else {
+            vec![]
+        };
+
+        let links_out = rows_json(
+            &c.query(
+                "SELECT l.src_ns, l.dst_ns, l.kind, l.created_at, COALESCE(p.name, '') AS created_by
+                 FROM memnos_control.namespace_links l
+                 LEFT JOIN memnos_control.principals p ON p.id = l.created_by
+                 WHERE l.src_ns = $1 AND l.dst_ns = ANY($2)
+                 ORDER BY l.dst_ns",
+                params![ns, auth_ns],
+            )
+            .await?,
+        );
+        let links_in = rows_json(
+            &c.query(
+                "SELECT l.src_ns, l.dst_ns, l.kind, l.created_at, COALESCE(p.name, '') AS created_by
+                 FROM memnos_control.namespace_links l
+                 LEFT JOIN memnos_control.principals p ON p.id = l.created_by
+                 WHERE l.dst_ns = $1 AND l.src_ns = ANY($2)
+                 ORDER BY l.src_ns",
+                params![ns, auth_ns],
+            )
+            .await?,
+        );
+        let provenance = rows_json(
+            &c.query(
+                "SELECT cp.id, cp.src_ns, cp.dst_ns, cp.mode, cp.copied_at, COALESCE(p.name, '') AS copied_by
+                 FROM memnos_control.namespace_copy_provenance cp
+                 LEFT JOIN memnos_control.principals p ON p.id = cp.copied_by
+                 WHERE (cp.src_ns = $1 OR cp.dst_ns = $1)
+                   AND cp.src_ns = ANY($2) AND cp.dst_ns = ANY($2)
+                 ORDER BY cp.copied_at DESC
+                 LIMIT 20",
+                params![ns, auth_ns],
+            )
+            .await?,
+        );
+
+        let shared_channels = rows_json(
+            &c.query(
+                "WITH my_ch AS (
+                    SELECT DISTINCT channel FROM (
+                        SELECT channel FROM memnos_control.channel_catalog WHERE namespace = $1 AND channel LIKE '#%'
+                        UNION SELECT channel FROM memnos_control.channel_messages WHERE namespace = $1 AND recalled_at IS NULL AND channel LIKE '#%'
+                        UNION SELECT channel FROM memnos_control.channel_subscriptions WHERE namespace = $1 AND channel LIKE '#%'
+                    ) x
+                 ),
+                 all_ch AS (
+                    SELECT namespace, channel FROM memnos_control.channel_catalog WHERE namespace = ANY($2) AND namespace <> $1 AND channel LIKE '#%'
+                    UNION SELECT namespace, channel FROM memnos_control.channel_messages WHERE namespace = ANY($2) AND namespace <> $1 AND recalled_at IS NULL AND channel LIKE '#%'
+                    UNION SELECT namespace, channel FROM memnos_control.channel_subscriptions WHERE namespace = ANY($2) AND namespace <> $1 AND channel LIKE '#%'
+                 )
+                 SELECT m.channel,
+                        COALESCE(array_agg(DISTINCT a.namespace ORDER BY a.namespace) FILTER (WHERE a.namespace IS NOT NULL), '{}'::text[]) AS other_namespaces
+                 FROM my_ch m
+                 LEFT JOIN all_ch a ON a.channel = m.channel
+                 GROUP BY m.channel
+                 ORDER BY m.channel",
+                params![ns, auth_ns],
+            )
+            .await?,
+        );
+
+        let nudges = if is_admin {
+            rows_json(
+                &c.query(
+                    "SELECT id, write_ns, suggested_ns, COALESCE(reason, '') AS reason, hits, updated_at
+                     FROM memnos_control.ns_nudges
+                     WHERE delivered_at IS NULL AND (write_ns = $1 OR suggested_ns = $1)
+                       AND write_ns = ANY($2) AND suggested_ns = ANY($2)
+                     ORDER BY hits DESC, updated_at DESC LIMIT 12",
+                    params![ns, auth_ns],
+                )
+                .await?,
+            )
+        } else {
+            rows_json(
+                &c.query(
+                    "SELECT id, write_ns, suggested_ns, COALESCE(reason, '') AS reason, hits, updated_at
+                     FROM memnos_control.ns_nudges
+                     WHERE principal_id = $1 AND delivered_at IS NULL AND (write_ns = $2 OR suggested_ns = $2)
+                       AND write_ns = ANY($3) AND suggested_ns = ANY($3)
+                     ORDER BY hits DESC, updated_at DESC LIMIT 12",
+                    params![principal_id, ns, auth_ns],
+                )
+                .await?,
+            )
+        };
+
+        let bindings = if is_admin {
+            rows_json(
+                &c.query(
+                    "SELECT b.id, b.principal_id, COALESCE(p.name, '') AS principal_name, b.key_type, b.key,
+                            COALESCE(b.host_id, '') AS host_id, b.updated_at
+                     FROM memnos_control.bindings b
+                     LEFT JOIN memnos_control.principals p ON p.id = b.principal_id
+                     WHERE b.namespace = $1
+                     ORDER BY b.key_type, b.key",
+                    params![ns],
+                )
+                .await?,
+            )
+        } else {
+            rows_json(
+                &c.query(
+                    "SELECT b.id, b.principal_id, COALESCE(p.name, '') AS principal_name, b.key_type, b.key,
+                            COALESCE(b.host_id, '') AS host_id, b.updated_at
+                     FROM memnos_control.bindings b
+                     LEFT JOIN memnos_control.principals p ON p.id = b.principal_id
+                     WHERE b.namespace = $1 AND b.principal_id = $2
+                     ORDER BY b.key_type, b.key",
+                    params![ns, principal_id],
+                )
+                .await?,
+            )
+        };
+
+        let sessions = rows_json(
+            &c.query(
+                "SELECT name, harness, model, role, status, (expires_at > now()) AS alive, last_heartbeat_at
+                 FROM memnos_control.agent_sessions
+                 WHERE namespace = $1
+                 ORDER BY (expires_at > now()) DESC, last_heartbeat_at DESC
+                 LIMIT 40",
+                params![ns],
+            )
+            .await?,
+        );
+
+        Ok(json!({
+            "name": ns,
+            "description": description,
+            "kind": kind,
+            "inherit_ancestors": inherit_ancestors,
+            "registered": registered,
+            "created_at": created_at,
+            "created_by": created_by,
+            "can_write": can_write,
+            "is_admin": is_admin,
+            "counts": {
+                "turns": turns,
+                "facts": facts,
+                "episodes": episodes,
+                "entities": entities,
+                "edges": edges,
+                "pinned_constraints": pinned_constraints,
+                "guardrails": guardrails,
+                "channels": channels_cnt,
+                "channel_messages": channel_messages_cnt,
+                "inbox_messages": inbox_messages_cnt,
+                "online_sessions": online_sessions_cnt,
+                "total_sessions": total_sessions_cnt,
+                "bindings": bindings.len(),
+            },
+            "related": {
+                "ancestors": ancestors,
+                "children": children,
+                "siblings": siblings,
+                "links_out": links_out,
+                "links_in": links_in,
+                "provenance": provenance,
+                "shared_channels": shared_channels,
+                "nudges": nudges,
+            },
+            "bindings": bindings,
+            "sessions": sessions,
+        }))
+    }
+
+    pub async fn workspace_namespace_transfer_preview(
+        pool: &Pool,
+        principal_id: i64,
+        src_ns: &str,
+        like_filter: Option<&str>,
+    ) -> CResult<Value> {
+        let src_ns = src_ns.trim();
+        if src_ns.is_empty() || src_ns == "*" || src_ns.starts_with("secret:") {
+            return bad("concrete source namespace required");
+        }
+        let c = conn(pool).await?;
+        if !Self::authorize_on(&**c, principal_id, src_ns, false).await? {
+            return Err(ControlError::Forbidden(format!(
+                "no read grant for source namespace '{}'",
+                src_ns
+            )));
+        }
+        let eff = Self::effective_namespaces_on(&**c, principal_id).await?;
+        let is_admin = eff.iter().any(|(g, r, _)| g == "*" && *r);
+        let pat: Option<String> = like_filter
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                format!(
+                    "%{}%",
+                    s.replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_")
+                )
+            });
+
+        let has_tenant: bool = c
+            .query_one(
+                "SELECT to_regclass('tenant_memnos.raw_turns') IS NOT NULL
+                        AND to_regclass('tenant_memnos.semantic') IS NOT NULL",
+                &[],
+            )
+            .await
+            .map(|r| r.get(0))
+            .unwrap_or(false);
+
+        let (raw_turns, facts, episodes) = if has_tenant {
+            let mr = c
+                .query_one(
+                    "SELECT
+                        (SELECT count(*) FROM tenant_memnos.raw_turns WHERE namespace = $1 AND constraint_retired_at IS NULL AND ($2::text IS NULL OR text ILIKE $2 ESCAPE '\\')) AS raw_turns,
+                        (SELECT count(*) FROM tenant_memnos.semantic WHERE namespace = $1 AND expired_at IS NULL AND constraint_retired_at IS NULL AND ($2::text IS NULL OR statement ILIKE $2 ESCAPE '\\')) AS facts,
+                        (SELECT count(*) FROM tenant_memnos.episodic WHERE namespace = $1 AND constraint_retired_at IS NULL AND ($2::text IS NULL OR text ILIKE $2 ESCAPE '\\')) AS episodes",
+                    params![src_ns, pat],
+                )
+                .await?;
+            (
+                mr.get::<_, i64>("raw_turns"),
+                mr.get::<_, i64>("facts"),
+                mr.get::<_, i64>("episodes"),
+            )
+        } else {
+            (0, 0, 0)
+        };
+
+        let cr = c
+            .query_one(
+                "SELECT
+                    (SELECT count(*) FROM memnos_control.channel_catalog WHERE namespace = $1 AND ($2::text IS NULL OR channel ILIKE $2 ESCAPE '\\' OR description ILIKE $2 ESCAPE '\\')) AS channels,
+                    (SELECT count(*) FROM memnos_control.channel_messages WHERE namespace = $1 AND recalled_at IS NULL AND ($2::text IS NULL OR content ILIKE $2 ESCAPE '\\' OR channel ILIKE $2 ESCAPE '\\')) AS channel_messages,
+                    (SELECT count(*) FROM memnos_control.channel_subscriptions WHERE namespace = $1 AND ($2::text IS NULL)) AS channel_subscriptions,
+                    (SELECT count(*) FROM memnos_control.agent_inbox WHERE namespace = $1 AND recalled_at IS NULL AND ($2::text IS NULL OR content ILIKE $2 ESCAPE '\\' OR subject ILIKE $2 ESCAPE '\\')) AS inbox_messages,
+                    (SELECT count(*) FROM memnos_control.agent_sessions WHERE namespace = $1 AND ($2::text IS NULL)) AS sessions,
+                    (SELECT count(*) FROM memnos_control.bindings WHERE namespace = $1 AND ($2::text IS NULL) AND ($3::bool OR principal_id = $4)) AS bindings,
+                    (SELECT count(*) FROM memnos_control.constraint_enforcement WHERE namespace = $1 AND active AND ($2::text IS NULL OR rule_text ILIKE $2 ESCAPE '\\')) AS guardrails,
+                    (SELECT count(*) FROM memnos_control.namespace_links WHERE (src_ns = $1 OR dst_ns = $1) AND ($2::text IS NULL)) AS links",
+                params![src_ns, pat, is_admin, principal_id],
+            )
+            .await?;
+
+        Ok(json!({
+            "dry_run": true,
+            "src": src_ns,
+            "like_filter": like_filter.unwrap_or(""),
+            "counts": {
+                "raw_turns": raw_turns,
+                "facts": facts,
+                "episodes": episodes,
+                "channels": cr.get::<_, i64>("channels"),
+                "channel_messages": cr.get::<_, i64>("channel_messages"),
+                "channel_subscriptions": cr.get::<_, i64>("channel_subscriptions"),
+                "inbox_messages": cr.get::<_, i64>("inbox_messages"),
+                "sessions": cr.get::<_, i64>("sessions"),
+                "bindings": cr.get::<_, i64>("bindings"),
+                "guardrails": cr.get::<_, i64>("guardrails"),
+                "links": cr.get::<_, i64>("links"),
+            }
+        }))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn workspace_transfer_control_plane(
+        pool: &Pool,
+        principal_id: i64,
+        is_admin: bool,
+        src_ns: &str,
+        dst_ns: &str,
+        like_filter: Option<&str>,
+        include_coordination: bool,
+        include_routing: bool,
+    ) -> CResult<Value> {
+        let pat: Option<String> = like_filter
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                format!(
+                    "%{}%",
+                    s.replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_")
+                )
+            });
+
+        let mut c = conn(pool).await?;
+        let tx = c.transaction().await?;
+
+        let mut channels_merged: u64 = 0;
+        let mut channel_messages_moved: u64 = 0;
+        let mut channel_subs_merged: u64 = 0;
+        let mut sessions_merged: u64 = 0;
+        let mut inbox_moved: u64 = 0;
+        let mut bindings_repointed: u64 = 0;
+        let mut guardrails_merged: u64 = 0;
+        let mut links_merged: u64 = 0;
+
+        if include_coordination {
+            channels_merged = tx
+                .execute(
+                    "INSERT INTO memnos_control.channel_catalog(namespace, channel, kind, description, what_you_get, intents, owner_session, principal_id, metadata, global_topic, created_at, updated_at)
+                     SELECT $2, channel, kind, description, what_you_get, intents, owner_session, principal_id, metadata, global_topic, created_at, now()
+                     FROM memnos_control.channel_catalog
+                     WHERE namespace = $1 AND ($3::text IS NULL OR channel ILIKE $3 ESCAPE '\\' OR description ILIKE $3 ESCAPE '\\')
+                     ON CONFLICT (namespace, channel) DO UPDATE
+                       SET description = CASE WHEN memnos_control.channel_catalog.description = '' THEN EXCLUDED.description ELSE memnos_control.channel_catalog.description END,
+                           global_topic = memnos_control.channel_catalog.global_topic OR EXCLUDED.global_topic,
+                           updated_at = now()",
+                    params![src_ns, dst_ns, pat],
+                )
+                .await?;
+            if pat.is_none() {
+                tx.execute(
+                    "DELETE FROM memnos_control.channel_catalog WHERE namespace = $1",
+                    params![src_ns],
+                )
+                .await?;
+            }
+
+            channel_messages_moved = tx
+                .execute(
+                    "UPDATE memnos_control.channel_messages
+                     SET namespace = $2,
+                         claimed_by_ns = CASE WHEN claimed_by_ns = $1 THEN $2 ELSE claimed_by_ns END
+                     WHERE namespace = $1 AND ($3::text IS NULL OR content ILIKE $3 ESCAPE '\\' OR channel ILIKE $3 ESCAPE '\\')",
+                    params![src_ns, dst_ns, pat],
+                )
+                .await?;
+
+            // Also ensure channels for moved messages exist in dst_ns catalog if they existed in src_ns
+            if pat.is_some() && channel_messages_moved > 0 {
+                tx.execute(
+                    "INSERT INTO memnos_control.channel_catalog(namespace, channel, kind, description, what_you_get, intents, owner_session, principal_id, metadata, global_topic, created_at, updated_at)
+                     SELECT DISTINCT $2, c.channel, c.kind, c.description, c.what_you_get, c.intents, c.owner_session, c.principal_id, c.metadata, c.global_topic, c.created_at, now()
+                     FROM memnos_control.channel_catalog c
+                     JOIN memnos_control.channel_messages m ON m.namespace = $2 AND m.channel = c.channel
+                     WHERE c.namespace = $1
+                     ON CONFLICT (namespace, channel) DO NOTHING",
+                    params![src_ns, dst_ns],
+                )
+                .await?;
+            }
+
+            inbox_moved = tx
+                .execute(
+                    "UPDATE memnos_control.agent_inbox
+                     SET namespace = $2, updated_at = now()
+                     WHERE namespace = $1 AND ($3::text IS NULL OR content ILIKE $3 ESCAPE '\\' OR subject ILIKE $3 ESCAPE '\\')",
+                    params![src_ns, dst_ns, pat],
+                )
+                .await?;
+
+            if pat.is_none() {
+                channel_subs_merged = tx
+                    .execute(
+                        "INSERT INTO memnos_control.channel_subscriptions(namespace, session_name, principal_id, channel, cursor, created_at, last_polled_at)
+                         SELECT $2, session_name, principal_id, channel, cursor, created_at, last_polled_at
+                         FROM memnos_control.channel_subscriptions
+                         WHERE namespace = $1
+                         ON CONFLICT (namespace, session_name, channel) DO UPDATE
+                           SET cursor = GREATEST(memnos_control.channel_subscriptions.cursor, EXCLUDED.cursor),
+                               last_polled_at = COALESCE(GREATEST(memnos_control.channel_subscriptions.last_polled_at, EXCLUDED.last_polled_at), memnos_control.channel_subscriptions.last_polled_at, EXCLUDED.last_polled_at)",
+                        params![src_ns, dst_ns],
+                    )
+                    .await?;
+                tx.execute(
+                    "DELETE FROM memnos_control.channel_subscriptions WHERE namespace = $1",
+                    params![src_ns],
+                )
+                .await?;
+
+                sessions_merged = tx
+                    .execute(
+                        "INSERT INTO memnos_control.agent_sessions(namespace, name, principal_id, harness, model, role, host, cwd, status, current_task, metadata, registered_at, last_heartbeat_at, expires_at, webhook, webhook_failures, webhook_active, webhook_secret, machine_id, pid, tty, run_state)
+                         SELECT $2, name, principal_id, harness, model, role, host, cwd, status, current_task, metadata, registered_at, last_heartbeat_at, expires_at, webhook, webhook_failures, webhook_active, webhook_secret, machine_id, pid, tty, run_state
+                         FROM memnos_control.agent_sessions
+                         WHERE namespace = $1
+                         ON CONFLICT (namespace, name) DO UPDATE
+                           SET last_heartbeat_at = GREATEST(memnos_control.agent_sessions.last_heartbeat_at, EXCLUDED.last_heartbeat_at),
+                               expires_at = GREATEST(memnos_control.agent_sessions.expires_at, EXCLUDED.expires_at)",
+                        params![src_ns, dst_ns],
+                    )
+                    .await?;
+                tx.execute(
+                    "DELETE FROM memnos_control.agent_sessions WHERE namespace = $1",
+                    params![src_ns],
+                )
+                .await?;
+            }
+        }
+
+        if include_routing {
+            if pat.is_none() {
+                bindings_repointed = if is_admin {
+                    tx.execute(
+                        "UPDATE memnos_control.bindings SET namespace = $2, updated_at = now() WHERE namespace = $1",
+                        params![src_ns, dst_ns],
+                    )
+                    .await?
+                } else {
+                    tx.execute(
+                        "UPDATE memnos_control.bindings SET namespace = $2, updated_at = now() WHERE namespace = $1 AND principal_id = $3",
+                        params![src_ns, dst_ns, principal_id],
+                    )
+                    .await?
+                };
+            }
+
+            guardrails_merged = tx
+                .execute(
+                    "INSERT INTO memnos_control.constraint_enforcement(namespace, rule_text, enforce_level, tool_matcher, created_by, active)
+                     SELECT $2, c.rule_text, c.enforce_level, c.tool_matcher, c.created_by, true
+                     FROM memnos_control.constraint_enforcement c
+                     WHERE c.namespace = $1 AND c.active
+                       AND ($3::text IS NULL OR c.rule_text ILIKE $3 ESCAPE '\\')
+                       AND NOT EXISTS (
+                           SELECT 1 FROM memnos_control.constraint_enforcement d
+                           WHERE d.namespace = $2 AND d.active AND d.rule_text = c.rule_text AND d.tool_matcher = c.tool_matcher
+                       )",
+                    params![src_ns, dst_ns, pat],
+                )
+                .await?;
+            if pat.is_none() {
+                tx.execute(
+                    "UPDATE memnos_control.constraint_enforcement SET active = false WHERE namespace = $1 AND active",
+                    params![src_ns],
+                )
+                .await?;
+
+                // Migrate outgoing links src_ns -> X (where X != dst_ns and doesn't reach dst_ns)
+                let out_links = tx
+                    .query(
+                        "SELECT dst_ns, kind, created_by FROM memnos_control.namespace_links WHERE src_ns = $1 AND dst_ns <> $2",
+                        params![src_ns, dst_ns],
+                    )
+                    .await?;
+                for r in out_links {
+                    let target: String = r.get("dst_ns");
+                    let lkind: String = r.get("kind");
+                    let cby: Option<i64> = r.get("created_by");
+                    let cyc = tx
+                        .query_one(
+                            "WITH RECURSIVE reach(ns) AS (
+                                SELECT $2::text
+                                UNION
+                                SELECT l.dst_ns FROM memnos_control.namespace_links l JOIN reach rc ON l.src_ns = rc.ns)
+                             SELECT EXISTS(SELECT 1 FROM reach WHERE ns = $1::text)",
+                            params![dst_ns, target],
+                        )
+                        .await?
+                        .get::<_, bool>(0);
+                    if !cyc {
+                        links_merged += tx
+                            .execute(
+                                "INSERT INTO memnos_control.namespace_links(src_ns, dst_ns, created_by, kind)
+                                 VALUES($1, $2, $3, $4) ON CONFLICT (src_ns, dst_ns) DO NOTHING",
+                                params![dst_ns, target, cby, lkind],
+                            )
+                            .await?;
+                    }
+                }
+            }
+
+            tx.execute(
+                "UPDATE memnos_control.ns_nudges SET delivered_at = now(), updated_at = now()
+                 WHERE delivered_at IS NULL AND write_ns = $1 AND suggested_ns = $2",
+                params![src_ns, dst_ns],
+            )
+            .await?;
+        }
+
+        tx.commit().await?;
+
+        Ok(json!({
+            "channels_merged": channels_merged,
+            "channel_messages_moved": channel_messages_moved,
+            "channel_subs_merged": channel_subs_merged,
+            "sessions_merged": sessions_merged,
+            "inbox_moved": inbox_moved,
+            "bindings_repointed": bindings_repointed,
+            "guardrails_merged": guardrails_merged,
+            "links_merged": links_merged,
+        }))
     }
 }
 
