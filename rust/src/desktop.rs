@@ -4,7 +4,7 @@
 //! `@handles`, role-scoped memory explorer, live activity stream, and server/DB telemetry),
 //! connecting to either the local MEMNOS instance or any remote `https://...` MEMNOS server.
 
-use crate::config::{home_dir, server_url, session_token, Config, VERSION};
+use crate::config::{home_dir, server_url, session_token, Config, BUILD_SHA, VERSION};
 use serde_json::json;
 use std::env;
 use std::fs;
@@ -304,6 +304,11 @@ pub fn install_macos_app_bundle() -> Result<std::path::PathBuf, String> {
         fs::create_dir_all(&macos_dir).map_err(|e| e.to_string())?;
         build_macos_icns(&resources_dir)?;
 
+        let bundle_build_ver = if BUILD_SHA.is_empty() {
+            VERSION.to_string()
+        } else {
+            format!("{}.{}", VERSION, BUILD_SHA)
+        };
         let plist = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -334,7 +339,7 @@ pub fn install_macos_app_bundle() -> Result<std::path::PathBuf, String> {
 </dict>
 </plist>
 "#,
-            VERSION, VERSION
+            bundle_build_ver, VERSION
         );
         fs::write(contents.join("Info.plist"), plist).map_err(|e| e.to_string())?;
 
@@ -537,7 +542,9 @@ fn launch_macos_webview(base_url: &str, token: &str) -> Result<(), String> {
             "token": token,
             "local_url": local_url,
             "local_token": local_tok,
-            "desktop": true
+            "desktop": true,
+            "app_version": VERSION,
+            "app_build": BUILD_SHA
         })
     );
 
@@ -577,9 +584,15 @@ fn launch_macos_webview(base_url: &str, token: &str) -> Result<(), String> {
     let _ = menu_bar.append_items(&[&app_m, &edit_m, &win_m]);
     menu_bar.init_for_nsapp();
 
+    let title_ver = if BUILD_SHA.is_empty() {
+        format!("v{}", VERSION)
+    } else {
+        format!("v{} ({})", VERSION, BUILD_SHA)
+    };
     let window = WindowBuilder::new()
         .with_title(format!(
-            "MEMNOS · {}",
+            "MEMNOS {} · {}",
+            title_ver,
             base_url
                 .trim_start_matches("http://")
                 .trim_start_matches("https://")

@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const BUILD_SHA: &str = env!("MEMNOS_BUILD_SHA");
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct ProxyConfig {

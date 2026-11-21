@@ -92,13 +92,24 @@ def main():
               and 'id="ch-insp-custom"' in app_html
               and "function setHtmlBySig(" in app_js
               and "if (isWsOpen() || isSseOpen()) return;" in app_js)
+        health_json = json.loads(urllib.request.urlopen(URL + "/healthz", timeout=5).read().decode())
+        check("/app & /health expose App + Server version and build SHA surfaces",
+              "window.__MEMNOS_UI__=" in app_html
+              and 'id="topbar-ver-badge"' in app_html
+              and 'id="footer-version"' in app_html
+              and 'id="modal-version-box"' in app_html
+              and bool(health_json.get("version"))
+              and "build" in health_json)
 
         print("=== 2. Role-based token scoping ===")
         check("unauthenticated -> 401", call("GET", "/workspace/api/overview")[0] == 401)
 
         s_adm, ov_adm = call("GET", "/workspace/api/overview", admin_tok)
         check("admin overview -> 200 & is_admin=True", s_adm == 200 and ov_adm.get("is_admin") is True)
-        check("admin vitals expose db_size_bytes", ov_adm.get("vitals", {}).get("db_size_bytes") is not None)
+        check("admin vitals expose db_size_bytes + version + build",
+              ov_adm.get("vitals", {}).get("db_size_bytes") is not None
+              and bool(ov_adm.get("vitals", {}).get("version"))
+              and "build" in ov_adm.get("vitals", {}))
 
         s_sc, ov_sc = call("GET", "/workspace/api/overview", scoped_tok)
         sc_ns = {n["name"]: n["can_write"] for n in ov_sc.get("namespaces", [])}

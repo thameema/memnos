@@ -4,7 +4,7 @@
 //! inside the single binary), the Streamable-HTTP `/mcp` JSON-RPC 2.0 mount, and the
 //! `LISTEN memnos_channel` `/channel/wait` long-polling bus.
 
-use crate::config::{dsn, load_config, server_port, VERSION};
+use crate::config::{dsn, load_config, server_port, BUILD_SHA, VERSION};
 use crate::control::{
     Advert, Control, ControlError, HeartbeatOpts, PublishOpts, SendOpts, SessionOpts, Webhook,
     SECRET_NS_PREFIX,
@@ -294,7 +294,8 @@ async fn healthz_handler() -> Response {
         StatusCode::OK,
         json!({
             "ok": true,
-            "version": VERSION
+            "version": VERSION,
+            "build": BUILD_SHA
         }),
     )
 }
@@ -316,7 +317,8 @@ async fn readyz_handler(State(st): State<AppState>) -> Response {
                 "ready": true,
                 "db": true,
                 "warm": true,
-                "version": VERSION
+                "version": VERSION,
+                "build": BUILD_SHA
             }),
         )
     } else {
@@ -344,7 +346,8 @@ async fn readyz_handler(State(st): State<AppState>) -> Response {
                 "warm": false,
                 "reason": reason,
                 "error": reason,
-                "version": VERSION
+                "version": VERSION,
+                "build": BUILD_SHA
             }),
         )
     }
@@ -413,6 +416,19 @@ async fn metrics_prometheus_handler(State(st): State<AppState>) -> Response {
         .into_response()
 }
 
+fn inject_ui_meta(html_bytes: &[u8]) -> Vec<u8> {
+    if let Ok(s) = std::str::from_utf8(html_bytes) {
+        let tag = format!(
+            "<script>window.__MEMNOS_UI__={};</script></head>",
+            json!({ "version": VERSION, "build": BUILD_SHA })
+        );
+        if s.contains("</head>") {
+            return s.replacen("</head>", &tag, 1).into_bytes();
+        }
+    }
+    html_bytes.to_vec()
+}
+
 fn serve_ui_asset(file_name: &str) -> Response {
     let safe = std::path::Path::new(file_name)
         .file_name()
@@ -433,25 +449,35 @@ fn serve_ui_asset(file_name: &str) -> Response {
         let disk_path = PathBuf::from(ui_dir).join(canonical);
         if disk_path.is_file() {
             if let Ok(bytes) = std::fs::read(&disk_path) {
+                let out = if canonical == "index.html" {
+                    inject_ui_meta(&bytes)
+                } else {
+                    bytes
+                };
                 return (
                     StatusCode::OK,
                     [
                         (header::CONTENT_TYPE, ctype),
                         (header::CACHE_CONTROL, "no-cache, no-store, must-revalidate"),
                     ],
-                    bytes,
+                    out,
                 )
                     .into_response();
             }
         }
     }
+    let out = if canonical == "index.html" {
+        inject_ui_meta(embedded)
+    } else {
+        embedded.to_vec()
+    };
     (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, ctype),
             (header::CACHE_CONTROL, "no-cache, no-store, must-revalidate"),
         ],
-        embedded.to_vec(),
+        out,
     )
         .into_response()
 }
@@ -1436,6 +1462,7 @@ async fn workspace_ws_handler(
             "transport": "websocket",
             "seq": 0,
             "version": VERSION,
+            "build": BUILD_SHA,
         });
         if tx.send(WsMessage::Text(hello.to_string())).await.is_err() {
             return;
@@ -1658,7 +1685,7 @@ async fn workspace_events_handler(
                 // 2 KB comment preamble flushes macOS WKWebView / CFNetwork's initial chunk buffer immediately
                 let ev = Event::default()
                     .comment(" ".repeat(2048))
-                    .data(json!({ "type": "connected", "seq": 0, "version": VERSION }).to_string());
+                    .data(json!({ "type": "connected", "seq": 0, "version": VERSION, "build": BUILD_SHA }).to_string());
                 return Some((Ok::<Event, Infallible>(ev), (event_rx, auth_ns, is_admin, 1)));
             }
             let payload = loop {
@@ -1755,6 +1782,7 @@ async fn workspace_api_handler(
                     };
                     if let Some(vitals) = v.get_mut("vitals").and_then(|x| x.as_object_mut()) {
                         vitals.insert("version".into(), json!(VERSION));
+                        vitals.insert("build".into(), json!(BUILD_SHA));
                         vitals.insert("uptime_secs".into(), json!(st.started_at.elapsed().as_secs()));
                         vitals.insert("rss_mb".into(), json!(rss_mb));
                         vitals.insert("footprint_mb".into(), json!(footprint_mb));
@@ -4499,6 +4527,9 @@ pub async fn run_server_opts(
     }
 
     let cors_routes = Router::new()
+        .route("/healthz", get(healthz_handler))
+        .route("/health", get(healthz_handler))
+        .route("/readyz", get(readyz_handler))
         .route("/workspace/ws", get(workspace_ws_handler))
         .route("/workspace/events", get(workspace_events_handler))
         .route("/workspace/api/*sub", any(workspace_api_handler))
@@ -4510,8 +4541,6 @@ pub async fn run_server_opts(
         .route("/app", get(admin_index_handler))
         .route("/app/", get(admin_index_handler))
         .route("/app/*file", get(admin_static_handler))
-        .route("/healthz", get(healthz_handler))
-        .route("/readyz", get(readyz_handler))
         .route("/metrics", get(metrics_handler))
         .route("/metrics/prometheus", get(metrics_prometheus_handler))
         .route("/admin", get(admin_index_handler))

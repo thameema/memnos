@@ -7,8 +7,139 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 // ---- Bootstrap Auth & Theme ----
 const THEME_KEY = "memnos_ui_theme_v2";
 const BOOT_INFO = window.__MEMNOS_BOOT__ || null;
+const UI_INFO = window.__MEMNOS_UI__ || null;
 const DEFAULT_LOCAL_URL = (BOOT_INFO && BOOT_INFO.local_url) || "http://127.0.0.1:8900";
 const DEFAULT_LOCAL_TOKEN = (BOOT_INFO && BOOT_INFO.local_token) || "";
+
+let serverVerState = { version: "", build: "" };
+
+function getClientVersionInfo() {
+  if (BOOT_INFO && BOOT_INFO.desktop) {
+    return {
+      kind: "App",
+      fullLabel: "MEMNOS.app Desktop",
+      version: String(BOOT_INFO.app_version || (UI_INFO && UI_INFO.version) || "").trim(),
+      build: String(BOOT_INFO.app_build || (UI_INFO && UI_INFO.build) || "").trim(),
+    };
+  }
+  return {
+    kind: "UI",
+    fullLabel: "Browser Web UI",
+    version: String((UI_INFO && UI_INFO.version) || "").trim(),
+    build: String((UI_INFO && UI_INFO.build) || "").trim(),
+  };
+}
+
+function fmtVerTag(version, build, includeBuild = true) {
+  const v = String(version || "").trim();
+  const b = String(build || "").trim();
+  if (!v) return "—";
+  return includeBuild && b ? `v${v} (${b})` : `v${v}`;
+}
+
+function hasVersionMismatch(client, srv) {
+  if (!client.version || !srv.version) return false;
+  if (client.version !== srv.version) return true;
+  if (client.build && srv.build && client.build !== srv.build) return true;
+  return false;
+}
+
+function updateServerVersion(version, build) {
+  const v = String(version || "").trim();
+  const b = String(build || "").trim();
+  if (!v && !b) return;
+  if (v) serverVerState.version = v;
+  if (build !== undefined && build !== null) serverVerState.build = b;
+  renderVersionSurfaces();
+}
+
+function renderVersionSurfaces() {
+  const client = getClientVersionInfo();
+  const srv = serverVerState;
+  const mismatch = hasVersionMismatch(client, srv);
+  const hostShort = serverBase().replace(/^https?:\/\//, "");
+
+  // 1. Topbar App version pill + Server switcher button
+  const topBadge = $("#topbar-ver-badge");
+  if (topBadge) {
+    const cShort = fmtVerTag(client.version, client.build, false);
+    const sShort = fmtVerTag(srv.version, srv.build, false);
+    const label = mismatch
+      ? (client.version !== srv.version
+          ? `⚠ ${client.kind} ${cShort} ≠ Server ${sShort}`
+          : `⚠ ${client.kind} #${client.build} ≠ Server #${srv.build}`)
+      : `${client.kind} ${fmtVerTag(client.version || srv.version, client.build || srv.build, true)}`;
+    if (topBadge.textContent !== label) topBadge.textContent = label;
+    topBadge.classList.toggle("mismatch", mismatch);
+    topBadge.title = `${client.fullLabel}: ${fmtVerTag(client.version, client.build, true)} · Server (${hostShort}): ${fmtVerTag(srv.version, srv.build, true)}${mismatch ? " — version mismatch! Restart MEMNOS.app or server so both match." : " — click for details"}`;
+  }
+
+  const swBtn = $("#switch-server");
+  if (swBtn) {
+    const srvSuffix = srv.version ? ` · Server v${srv.version}` : "";
+    const swText = `${hostShort}${srvSuffix}`;
+    if (swBtn.textContent !== swText) swBtn.textContent = swText;
+    swBtn.title = `Connected server: ${serverBase()} (${fmtVerTag(srv.version, srv.build, true)}) — click to switch Local or Remote server`;
+  }
+
+  // 2. Persistent Bottom Bar right-edge version readout
+  const footVer = $("#footer-version");
+  if (footVer) {
+    const cFull = fmtVerTag(client.version, client.build, true);
+    const sFull = fmtVerTag(srv.version, srv.build, true);
+    const footText = `${mismatch ? "⚠ " : ""}${client.kind} ${cFull} · Server ${sFull}`;
+    if (footVer.textContent !== footText) footVer.textContent = footText;
+    footVer.classList.toggle("mismatch", mismatch);
+    footVer.title = mismatch
+      ? `Version mismatch between ${client.fullLabel} (${cFull}) and Server (${sFull}). Click to inspect connection.`
+      : `${client.fullLabel}: ${cFull} · Connected Server (${hostShort}): ${sFull}`;
+  }
+
+  // 3. Login / Onboarding screen version line
+  const loginVer = $("#login-version-line");
+  if (loginVer) {
+    const cFull = fmtVerTag(client.version, client.build, true);
+    const sPart = srv.version ? ` · Server ${fmtVerTag(srv.version, srv.build, true)}` : "";
+    const lText = `${client.kind} ${cFull}${sPart}`;
+    if (loginVer.textContent !== lText) loginVer.textContent = lText;
+  }
+
+  // 4. Server Connection Modal detailed side-by-side box
+  const modalBox = $("#modal-version-box");
+  if (modalBox) {
+    const cFull = fmtVerTag(client.version, client.build, true);
+    const sFull = fmtVerTag(srv.version, srv.build, true);
+    const sig = `${client.kind}:${cFull}|${hostShort}:${sFull}|${mismatch}`;
+    const statusPill = (!client.version || !srv.version)
+      ? `<span class="pill">Checking…</span>`
+      : (mismatch
+          ? `<span class="pill warn">⚠ Out of sync — restart ${client.kind === "App" ? "MEMNOS.app" : "UI"} or server</span>`
+          : `<span class="pill ok">✓ Versions in sync</span>`);
+    setHtmlBySig(modalBox, sig, `
+      <div class="ver-info-row"><span class="muted">${esc(client.fullLabel)}</span><code>${esc(cFull)}</code></div>
+      <div class="ver-info-row"><span class="muted">Server (<code>${esc(hostShort)}</code>)</span><code>${esc(sFull)}</code></div>
+      <div class="ver-info-row"><span class="muted">Sync Status</span>${statusPill}</div>
+    `);
+  }
+
+  const docVer = srv.version || client.version;
+  if (docVer) {
+    const nextTitle = `MEMNOS v${docVer} · Workspace`;
+    if (document.title !== nextTitle) document.title = nextTitle;
+  }
+}
+
+async function probeServerHealthVersion(targetUrl) {
+  const base = String(targetUrl || serverBase()).trim().replace(/\/+$/, "");
+  if (!base) return;
+  try {
+    const r = await fetch(base + "/healthz", { cache: "no-store" });
+    if (r.ok) {
+      const j = await r.json();
+      if (j && j.version) updateServerVersion(j.version, j.build || "");
+    }
+  } catch (_) {}
+}
 
 function isLoopbackUrl(u) {
   const l = String(u || "").toLowerCase();
@@ -338,6 +469,8 @@ function disconnectToLogin(errMsg = "") {
   $("#server-url").value = cur;
   setLoginMode(isLoopbackUrl(cur) ? "local" : "remote");
   $("#loginerr").textContent = errMsg;
+  renderVersionSurfaces();
+  probeServerHealthVersion(cur);
 }
 
 async function connectWorkspace(tokenVal, urlVal) {
@@ -391,14 +524,24 @@ $$("#modal-mode-tabs button").forEach(btn => {
   btn.onclick = () => setModalMode(btn.dataset.mmode);
 });
 
-$("#switch-server").onclick = () => {
+function openServerModal() {
   const cur = serverBase();
   $("#modal-url").value = cur;
   $("#modal-token").value = "";
   $("#modal-err").textContent = "";
   setModalMode(isLoopbackUrl(cur) ? "local" : "remote");
+  renderVersionSurfaces();
+  probeServerHealthVersion(cur);
   $("#server-modal").hidden = false;
-};
+}
+$("#switch-server").onclick = openServerModal;
+if ($("#topbar-ver-badge")) $("#topbar-ver-badge").onclick = openServerModal;
+if ($("#footer-version")) {
+  $("#footer-version").onclick = (ev) => {
+    ev.stopPropagation();
+    openServerModal();
+  };
+}
 $("#modal-close").onclick = () => { $("#server-modal").hidden = true; };
 $("#modal-cancel").onclick = () => { $("#server-modal").hidden = true; };
 $("#modal-use-local").onclick = async () => {
@@ -719,7 +862,8 @@ function startSseFallback() {
     sseSource.onmessage = (ev) => {
       try {
         const d = JSON.parse(ev.data || "{}");
-        if (d.type === "refresh") scheduleRealtimeRefresh();
+        if (d.type === "connected" && d.version) updateServerVersion(d.version, d.build || "");
+        else if (d.type === "refresh") scheduleRealtimeRefresh();
         else if (d.type === "activity") handleLiveActivity(d);
       } catch (_) {}
     };
@@ -754,7 +898,8 @@ function connectWebSocket() {
           else p.reject(new Error(d.error || "WebSocket command failed"));
           return;
         }
-        if (d.type === "refresh") scheduleRealtimeRefresh();
+        if (d.type === "connected" && d.version) updateServerVersion(d.version, d.build || "");
+        else if (d.type === "refresh") scheduleRealtimeRefresh();
         else if (d.type === "activity") handleLiveActivity(d);
       } catch (_) {}
     };
@@ -970,8 +1115,9 @@ async function refreshOverview(pickDefaults = false) {
   data.channels = (data.channels || []).filter(c => String(c.channel || "").startsWith("#"));
   wsData = data;
 
-  // Topbar pills & Admin-only Settings visibility
-  $("#switch-server").textContent = serverBase().replace(/^https?:\/\//, "");
+  const v = data.vitals || {};
+  if (v.version) updateServerVersion(v.version, v.build || "");
+  else renderVersionSurfaces();
   const pName = data.principal?.name || "user";
   $("#who-badge").textContent = `@${pName} · ${data.is_admin ? "ADMIN" : "SCOPED"}`;
   $$(".admin-only").forEach(el => { el.hidden = !data.is_admin; });
@@ -983,7 +1129,6 @@ async function refreshOverview(pickDefaults = false) {
     if (el) el.hidden = (k !== activeSection);
   });
 
-  const v = data.vitals || {};
   const memStr = v.footprint_mb != null ? `${v.footprint_mb} MB` : (v.rss_mb != null ? `${v.rss_mb} MB` : "—");
   const dbStr = v.db_size_bytes != null ? fmtBytes(v.db_size_bytes) : "scoped";
   const vitalsHtml =
@@ -2479,7 +2624,10 @@ function renderTelemetry() {
   const activeChs = (wsData.channels || []).filter(isChannelActive).length;
   const upHrs = v.uptime_secs != null ? (v.uptime_secs / 3600).toFixed(1) + "h" : "—";
   const ramVal = v.footprint_mb != null ? `${v.footprint_mb} MB` : (v.rss_mb != null ? `${v.rss_mb} MB` : "remote");
-  const ramSub = (v.rss_mb != null && v.footprint_mb != null) ? `RSS ${v.rss_mb} MB · v${v.version || ""} · up ${upHrs}` : `v${v.version || ""} · up ${upHrs}`;
+  const cInfo = getClientVersionInfo();
+  const srvTag = fmtVerTag(v.version || serverVerState.version, v.build || serverVerState.build, true);
+  const cliTag = fmtVerTag(cInfo.version, cInfo.build, true);
+  const ramSub = `${cInfo.kind} ${cliTag} · Server ${srvTag} · up ${upHrs}`;
 
   $("#tel-cards").innerHTML = `
     <div class="kpi-card"><div class="kpi-lbl">Engine Footprint</div><div class="kpi-val">${esc(ramVal)}</div><div class="kpi-sub">${esc(ramSub)}</div></div>
@@ -3122,6 +3270,7 @@ $("#usage-refresh").addEventListener("click", loadUsagePanel);
 $("#usage-days").addEventListener("change", loadUsagePanel);
 
 // ---- Boot ----
+renderVersionSurfaces();
 $("#server-url").value = serverBase();
 if (tok()) {
   connectWorkspace(tok(), serverBase());

@@ -2,6 +2,7 @@
 name = "memnos"
 version = "0.1.64"
 edition = "2021"
+build = "rust/build.rs"
 description = "Self-hostable, governed, vendor-neutral memory and multi-agent coordination engine (single binary)"
 license = "Apache-2.0"
 authors = ["Thameem Ansari"]
