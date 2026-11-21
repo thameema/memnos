@@ -1254,7 +1254,7 @@ async function openSpawnModal(defaults = {}) {
   $("#spawn-prompt").value = defaults.prompt || "";
   $("#spawn-sub-only").checked = true;
   $("#spawn-failover").checked = true;
-  if ($("#spawn-skip-perms")) $("#spawn-skip-perms").checked = !!defaults.skipPermissions;
+  if ($("#spawn-skip-perms")) $("#spawn-skip-perms").checked = defaults.skipPermissions !== undefined ? !!defaults.skipPermissions : true;
   $("#spawn-worktree").checked = false;
   modal.hidden = false;
   await refreshSpawnerModalRuns();

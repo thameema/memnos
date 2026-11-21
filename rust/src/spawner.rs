@@ -208,7 +208,7 @@ pub struct LaunchRequest {
     pub prompt: String,
     #[serde(default = "default_true")]
     pub subscription_only: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub skip_permissions: bool,
     #[serde(default)]
     pub isolate_worktree: bool,
@@ -457,7 +457,7 @@ impl HeadlessSpawner {
         let skip_perms = meta
             .get("skip_permissions")
             .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+            .unwrap_or(true);
         let cli_sid = meta
             .get("cli_session_id")
             .and_then(|v| v.as_str())
@@ -887,8 +887,10 @@ impl HeadlessSpawner {
                 .env("MEMNOS_URL", format!("http://127.0.0.1:{}", port))
                 .env("MEMNOS_TOKEN", &worker_token);
 
+            let mut pipe_prompt_stdin = false;
             match h_key {
                 "claude-code" => {
+                    pipe_prompt_stdin = true;
                     cmd.args([
                         "-p",
                         "--output-format",
@@ -911,18 +913,21 @@ impl HeadlessSpawner {
                     }
                 }
                 "antigravity" => {
-                    cmd.args(["-p", "--input-format", "text", "--output-format", "stream-json"]);
+                    // Antigravity (`agy`) `--print` is a string flag (`--print=<prompt>`), NOT boolean stdin!
+                    cmd.arg("--output-format=stream-json");
                     if let Some(ref sid) = clean_resume_id {
-                        cmd.args(["--conversation", sid]);
+                        cmd.arg(format!("--conversation={}", sid));
                     }
                     if req.skip_permissions {
                         cmd.arg("--dangerously-skip-permissions");
                     }
                     if !model_trim.is_empty() {
-                        cmd.args(["--model", &model_trim]);
+                        cmd.arg(format!("--model={}", model_trim));
                     }
+                    cmd.arg(format!("--print={}", task_prompt));
                 }
                 "codex" => {
+                    pipe_prompt_stdin = true;
                     cmd.args(["exec", "--json"]);
                     if req.skip_permissions {
                         cmd.arg("--full-auto");
@@ -933,21 +938,27 @@ impl HeadlessSpawner {
                     cmd.arg("-");
                 }
                 "gemini" => {
-                    cmd.args(["-p", "", "--output-format", "stream-json"]);
+                    cmd.args(["--output-format", "stream-json"]);
                     if req.skip_permissions {
                         cmd.arg("--yolo");
                     }
                     if !model_trim.is_empty() {
                         cmd.args(["--model", &model_trim]);
                     }
+                    cmd.args(["-p", &task_prompt]);
                 }
                 "cursor" => {
-                    cmd.args(["-p", "--output-format", "stream-json"]);
+                    cmd.args(["--output-format", "stream-json"]);
                     if !model_trim.is_empty() {
                         cmd.args(["--model", &model_trim]);
                     }
+                    cmd.args(["-p", &task_prompt]);
                 }
                 _ => {}
+            }
+
+            if !pipe_prompt_stdin {
+                cmd.stdin(Stdio::null());
             }
 
             let mut child = match cmd.spawn() {
@@ -964,12 +975,14 @@ impl HeadlessSpawner {
                 }
             };
 
-            if let Some(mut child_in) = child.stdin.take() {
-                let prompt_bytes = task_prompt.into_bytes();
-                tokio::spawn(async move {
-                    let _ = child_in.write_all(&prompt_bytes).await;
-                    let _ = child_in.shutdown().await;
-                });
+            if pipe_prompt_stdin {
+                if let Some(mut child_in) = child.stdin.take() {
+                    let prompt_bytes = task_prompt.into_bytes();
+                    tokio::spawn(async move {
+                        let _ = child_in.write_all(&prompt_bytes).await;
+                        let _ = child_in.shutdown().await;
+                    });
+                }
             }
 
             let child_pid = child.id();
@@ -1518,12 +1531,27 @@ fn extract_session_and_reply(
         .get("session_id")
         .or_else(|| v.get("sessionId"))
         .or_else(|| v.get("conversation_id"))
+        .or_else(|| v.get("result").and_then(|r| r.get("conversation_id")))
+        .or_else(|| v.get("step_update").and_then(|s| s.get("conversation_id")))
         .and_then(|x| x.as_str())
     {
         if let Some(clean) = sanitize_session_id(sid_raw) {
             *sid_slot.lock().unwrap() = Some(clean);
         }
     }
+    // Antigravity (`agy`) stream-json result envelope: `{"event":"result","result":{"status":"SUCCESS","response":"..."}}`
+    if v.get("event").and_then(|x| x.as_str()) == Some("result") {
+        if let Some(robj) = v.get("result").and_then(|r| r.as_object()) {
+            if let Some(resp) = robj.get("response").and_then(|x| x.as_str()) {
+                let t = resp.trim();
+                if !t.is_empty() {
+                    *reply_slot.lock().unwrap() = t.to_string();
+                    return;
+                }
+            }
+        }
+    }
+    // Claude Code stream-json result envelope: `{"type":"result","result":"..."}`
     if v.get("type").and_then(|x| x.as_str()) == Some("result") {
         if let Some(res_txt) = v.get("result").and_then(|x| x.as_str()) {
             let t = res_txt.trim();
@@ -1857,6 +1885,17 @@ fn build_worker_prompt(
 
 fn structured_json_quota_error(raw: &str) -> Option<String> {
     let v: Value = serde_json::from_str(raw.trim()).ok()?;
+    // Antigravity (`agy`) error envelope: `{"event":"result","result":{"status":"ERROR","error":"..."}}`
+    if v.get("event").and_then(|x| x.as_str()) == Some("result") {
+        if let Some(robj) = v.get("result").and_then(|r| r.as_object()) {
+            if robj.get("status").and_then(|s| s.as_str()) == Some("ERROR") {
+                let err_txt = robj.get("error").and_then(|e| e.as_str()).unwrap_or("");
+                if looks_like_quota_error(err_txt) {
+                    return Some(err_txt.chars().take(120).collect());
+                }
+            }
+        }
+    }
     let is_err_type = v.get("type").and_then(|x| x.as_str()) == Some("error")
         || v.get("is_error").and_then(|x| x.as_bool()) == Some(true)
         || v.get("subtype")
@@ -1970,6 +2009,63 @@ fn summarize_stream_line(raw: &str) -> Option<String> {
         return None;
     }
     if let Ok(v) = serde_json::from_str::<Value>(t) {
+        // Antigravity (`agy`) stream-json events (`init`, `step_update`, `result`)
+        if let Some(ev_kind) = v.get("event").and_then(|x| x.as_str()) {
+            match ev_kind {
+                "init" => {
+                    return Some("🚀 Initialized Antigravity headless workspace".to_string());
+                }
+                "step_update" => {
+                    if let Some(su) = v.get("step_update").and_then(|x| x.as_object()) {
+                        let stype = su.get("step_type").and_then(|x| x.as_str()).unwrap_or("");
+                        let state = su.get("state").and_then(|x| x.as_str()).unwrap_or("");
+                        if let Some(tname) = su.get("tool_name").and_then(|x| x.as_str()) {
+                            return Some(summarize_tool_call(tname, su.get("tool_input")));
+                        }
+                        if stype == "agent_response" {
+                            if let Some(td) = su.get("text_delta").and_then(|x| x.as_str()) {
+                                let flat = td.split_whitespace().collect::<Vec<_>>().join(" ");
+                                if flat.len() >= 4 {
+                                    return Some(format!(
+                                        "💬 {}",
+                                        flat.chars().take(108).collect::<String>()
+                                    ));
+                                }
+                            }
+                        } else if !stype.is_empty()
+                            && stype != "user_input"
+                            && stype != "system_message"
+                            && state == "ACTIVE"
+                        {
+                            return Some(format!("🔧 {}", stype));
+                        }
+                    }
+                    return None;
+                }
+                "result" => {
+                    if let Some(robj) = v.get("result").and_then(|x| x.as_object()) {
+                        if robj.get("status").and_then(|s| s.as_str()) == Some("ERROR") {
+                            let err = robj.get("error").and_then(|e| e.as_str()).unwrap_or("error");
+                            return Some(format!(
+                                "⚠ {}",
+                                err.chars().take(108).collect::<String>()
+                            ));
+                        }
+                        if let Some(resp) = robj.get("response").and_then(|r| r.as_str()) {
+                            let flat = resp.split_whitespace().collect::<Vec<_>>().join(" ");
+                            if !flat.is_empty() {
+                                return Some(format!(
+                                    "✅ {}",
+                                    flat.chars().take(108).collect::<String>()
+                                ));
+                            }
+                        }
+                    }
+                    return None;
+                }
+                _ => {}
+            }
+        }
         if let Some(msg) = v.get("message") {
             if let Some(arr) = msg.get("content").and_then(|c| c.as_array()) {
                 for block in arr {
@@ -2073,5 +2169,23 @@ mod tests {
         assert!(sanitize_session_id("--dangerously-skip-permissions").is_none());
         assert!(sanitize_session_id("bad id with spaces").is_none());
         assert!(sanitize_session_id("bad;rm").is_none());
+    }
+
+    #[test]
+    fn antigravity_stream_json_envelope_parses_conversation_reply_and_quota() {
+        let sid = Arc::new(Mutex::new(None));
+        let rep = Arc::new(Mutex::new(String::new()));
+        let agy_ok = r#"{"event":"result","result":{"conversation_id":"d010ed37-f858-4579-92b2-cc354bf16f9b","status":"SUCCESS","response":"PONG\n"}}"#;
+        extract_session_and_reply(agy_ok, &sid, &rep);
+        assert_eq!(
+            sid.lock().unwrap().as_deref(),
+            Some("d010ed37-f858-4579-92b2-cc354bf16f9b")
+        );
+        assert_eq!(rep.lock().unwrap().as_str(), "PONG");
+        assert_eq!(summarize_stream_line(agy_ok).as_deref(), Some("✅ PONG"));
+        assert!(structured_json_quota_error(agy_ok).is_none());
+
+        let agy_quota = r#"{"event":"result","result":{"conversation_id":"","status":"ERROR","error":"429 rate limit exceeded"}}"#;
+        assert!(structured_json_quota_error(agy_quota).is_some());
     }
 }
