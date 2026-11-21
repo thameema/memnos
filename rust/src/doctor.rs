@@ -625,6 +625,7 @@ pub async fn execute_doctor_actions(
     ns_filter: Option<&str>,
     requested_actions: &[String],
     dry_run: bool,
+    event_tx: Option<&tokio::sync::broadcast::Sender<Value>>,
 ) -> Result<Value, String> {
     let t0 = Instant::now();
     let c = pool.get().await.map_err(|e| format!("db connection failed: {e}"))?;
@@ -702,10 +703,24 @@ pub async fn execute_doctor_actions(
     drop(c);
 
     let mut results = serde_json::Map::new();
+    let total_steps = expanded.len().max(1);
+    let emit_step = |idx: usize, msg: &str| {
+        if let Some(tx) = event_tx {
+            let _ = tx.send(json!({
+                "type": "activity",
+                "op": "doctor/step",
+                "namespace": target_ns_opt.unwrap_or("*"),
+                "actor": "doctor",
+                "detail": format!("[{}/{}] {}", idx + 1, total_steps, msg),
+                "ok": true,
+            }));
+        }
+    };
 
-    for act in &expanded {
+    for (step_idx, act) in expanded.iter().enumerate() {
         match act.as_str() {
             "backup_db" => {
+                emit_step(step_idx, "Snapshotting verified PostgreSQL database backup…");
                 if dry_run {
                     results.insert("backup_db".into(), json!({ "dry_run": true, "would_backup": true }));
                 } else {
@@ -726,6 +741,7 @@ pub async fn execute_doctor_actions(
                 }
             }
             "repair_graph" => {
+                emit_step(step_idx, "Cleaning junk entities, orphan edges & batch-embedding entities…");
                 if has_tenant {
                     let r = store
                         .doctor_clean_orphans_and_graph(&write_ns, dry_run)
@@ -736,9 +752,10 @@ pub async fn execute_doctor_actions(
                 }
             }
             "optimize_memories" => {
+                emit_step(step_idx, "Deduplicating live facts & batch-backfilling missing embeddings…");
                 if has_tenant {
                     let r = store
-                        .doctor_optimize_memories(&write_ns, 150, dry_run)
+                        .doctor_optimize_memories(&write_ns, 256, dry_run)
                         .await?;
                     results.insert("optimize_memories".into(), r);
                 } else {
@@ -746,6 +763,7 @@ pub async fn execute_doctor_actions(
                 }
             }
             "repair_coordination" => {
+                emit_step(step_idx, "Releasing stuck claims, expired file leases & stale sessions…");
                 let c = pool.get().await.map_err(|e| e.to_string())?;
                 if dry_run || write_ns.is_empty() {
                     results.insert(
@@ -825,6 +843,7 @@ pub async fn execute_doctor_actions(
                 }
             }
             "repair_namespaces" => {
+                emit_step(step_idx, "Registering active scopes & pruning leftover test:* artifacts…");
                 let c = pool.get().await.map_err(|e| e.to_string())?;
                 let mut registered_cnt = 0u64;
                 let mut pruned_test_ns = 0u64;
@@ -887,6 +906,7 @@ pub async fn execute_doctor_actions(
                 );
             }
             "optimize_db" => {
+                emit_step(step_idx, "Refreshing PostgreSQL planner statistics & reclaiming dead tuples…");
                 if dry_run {
                     results.insert(
                         "optimize_db".into(),
@@ -894,6 +914,23 @@ pub async fn execute_doctor_actions(
                     );
                 } else {
                     let c = pool.get().await.map_err(|e| e.to_string())?;
+                    // Check which tables actually have >= 100 dead tuples so multi-GB clean tables
+                    // only run sub-100ms ANALYZE instead of full-page VACUUM scans
+                    let dead_rows = c
+                        .query(
+                            "SELECT schemaname || '.' || relname AS fq, n_dead_tup::bigint AS dead
+                             FROM pg_stat_user_tables
+                             WHERE schemaname IN ('tenant_memnos', 'memnos_control')",
+                            &[],
+                        )
+                        .await
+                        .unwrap_or_default();
+                    let mut dead_map = std::collections::HashMap::new();
+                    for dr in dead_rows {
+                        dead_map.insert(dr.get::<_, String>("fq"), dr.get::<_, i64>("dead"));
+                    }
+
+                    let mut processed = 0u64;
                     let mut vacuumed = 0u64;
                     for tbl in VACUUM_TABLES {
                         let exists: bool = c
@@ -901,17 +938,27 @@ pub async fn execute_doctor_actions(
                             .await
                             .map(|r| r.get(0))
                             .unwrap_or(false);
-                        if exists
-                            && c.batch_execute(&format!("VACUUM (ANALYZE) {};", tbl))
-                                .await
-                                .is_ok()
-                        {
+                        if !exists {
+                            continue;
+                        }
+                        let dead_cnt = dead_map.get(*tbl).copied().unwrap_or(0);
+                        let sql = if dead_cnt >= 100 {
                             vacuumed += 1;
+                            format!("VACUUM (ANALYZE) {};", tbl)
+                        } else {
+                            format!("ANALYZE {};", tbl)
+                        };
+                        if c.batch_execute(&sql).await.is_ok() {
+                            processed += 1;
                         }
                     }
                     results.insert(
                         "optimize_db".into(),
-                        json!({ "dry_run": false, "tables_vacuum_analyzed": vacuumed }),
+                        json!({
+                            "dry_run": false,
+                            "tables_vacuum_analyzed": processed,
+                            "tables_vacuumed": vacuumed,
+                        }),
                     );
                 }
             }

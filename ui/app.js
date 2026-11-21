@@ -337,9 +337,9 @@ function formatRichText(raw) {
   return safe;
 }
 
-async function rawFetch(method, fullPath, body) {
+async function rawFetch(method, fullPath, body, timeoutMs = API_TIMEOUT_MS) {
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), API_TIMEOUT_MS);
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
   let r;
   try {
     r = await fetch(serverBase() + fullPath, {
@@ -364,9 +364,9 @@ async function rawFetch(method, fullPath, body) {
   return j;
 }
 
-const wapi = (m, p, b) => rawFetch(m, "/workspace/api/" + p, b);
-const api  = (m, p, b) => rawFetch(m, "/admin/api/" + p, b);
-const uapi = (m, p, b) => rawFetch(m, p, b);
+const wapi = (m, p, b, timeoutMs) => rawFetch(m, "/workspace/api/" + p, b, timeoutMs);
+const api  = (m, p, b, timeoutMs) => rawFetch(m, "/admin/api/" + p, b, timeoutMs);
+const uapi = (m, p, b, timeoutMs) => rawFetch(m, p, b, timeoutMs);
 
 // ---- App State ----
 let wsData = null;
@@ -738,6 +738,11 @@ function handleLiveActivity(ev) {
     } else if (!op.startsWith("session/heartbeat")) {
       loadHandleMessages(false);
     }
+  }
+  if (op === "doctor/step" && doctorBusy) {
+    const progEl = $("#doc-live-step");
+    if (progEl && ev.detail) progEl.textContent = ev.detail;
+    return;
   }
   if (activeSection !== "live") {
     liveNewCount += 1;
@@ -3166,7 +3171,7 @@ if ($("#nst-submit")) {
         include_coordination: transferMode !== "copy" && !!$("#nst-inc-coord")?.checked,
         include_routing: transferMode !== "copy" && !!$("#nst-inc-route")?.checked,
         delete_source: transferMode === "merge" && !like_filter && !!$("#nst-del-src")?.checked,
-      });
+      }, 180000);
       $("#ns-transfer-modal").hidden = true;
       const m = res.memories || {};
       const c = res.coordination || {};
@@ -3528,8 +3533,9 @@ function renderDoctorScan(scan) {
     const pillCls = st === "ok" ? "ok" : (st === "critical" ? "no" : "warn");
     const pillLbl = st === "ok" ? "OK" : st.toUpperCase();
     const m = ch.metrics || {};
+    const hiddenMetricKeys = new Set(["exists", "latest_at", "latest_file"]);
     const metricChips = Object.entries(m)
-      .filter(([k, v]) => typeof v === "number" || typeof v === "string" || typeof v === "boolean")
+      .filter(([k, v]) => !hiddenMetricKeys.has(k) && (typeof v === "number" || typeof v === "string"))
       .filter(([, v]) => v !== "" && v !== null)
       .slice(0, 6)
       .map(([k, v]) => {
@@ -3587,7 +3593,7 @@ async function runDoctorActions(actions, dryRun = false) {
   if ($("#doc-dryrun-btn")) $("#doc-dryrun-btn").disabled = true;
   if (runBox) {
     runBox.hidden = false;
-    runBox.innerHTML = `<span class="muted"><span class="spinner"></span> Running MEMNOS Doctor (${dryRun ? "dry-run preview" : actions.join(", ")})…</span>`;
+    runBox.innerHTML = `<div class="row" style="gap:8px"><span class="spinner"></span> <span id="doc-live-step" class="muted">Starting MEMNOS Doctor (${dryRun ? "dry-run preview" : actions.join(", ")})…</span></div>`;
   }
   try {
     const prevScore = lastDoctorScan?.score ?? 100;
@@ -3595,7 +3601,7 @@ async function runDoctorActions(actions, dryRun = false) {
       namespace: ns,
       actions,
       dry_run: dryRun,
-    });
+    }, 180000);
     if (res.scan) renderDoctorScan(res.scan);
     const nextScore = res.scan?.score ?? prevScore;
     const summaryLines = Object.entries(res.results || {}).map(([k, v]) => {

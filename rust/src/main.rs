@@ -4085,6 +4085,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                     namespace.as_deref(),
                     &actions,
                     dry_run,
+                    None,
                 )
                 .await?;
                 if as_json {

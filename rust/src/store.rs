@@ -3306,20 +3306,112 @@ impl BrainStore {
         dry_run: bool,
     ) -> Result<Value, String> {
         if namespaces.is_empty() {
-            return Ok(json!({"dry_run": dry_run, "removed_entities": 0, "embedded_entities": 0, "orphan_mentions": 0, "orphan_edges": 0, "orphan_dossiers": 0}));
+            return Ok(json!({
+                "dry_run": dry_run,
+                "removed_entities": 0,
+                "embedded_entities": 0,
+                "remaining_unembedded_entities": 0,
+                "orphan_mentions": 0,
+                "orphan_edges": 0,
+                "orphan_dossiers": 0
+            }));
         }
         let s = &self.schema;
         let c = self.conn().await?;
 
-        let (mut removed_entities, mut embedded_entities) = (0u64, 0u64);
-        for ns in namespaces {
-            let r = self.cleanup_entity_graph(ns, dry_run).await?;
-            removed_entities += if dry_run {
-                r["invalid_entities"].as_u64().unwrap_or(0)
-            } else {
-                r["removed"].as_u64().unwrap_or(0)
-            };
-            embedded_entities += r["embedded"].as_u64().unwrap_or(0);
+        // 1. Scan entities across all target namespaces in ONE query
+        let ent_rows = c
+            .query(
+                &format!("SELECT id, name, embedding IS NOT NULL AS has_emb FROM {s}.entities WHERE namespace = ANY($1) ORDER BY id DESC"),
+                &[&namespaces],
+            )
+            .await
+            .map_err(de)?;
+
+        let mut bad_ids: Vec<i64> = Vec::new();
+        let mut missing_vec_ents: Vec<(i64, String)> = Vec::new();
+        for r in &ent_rows {
+            let id: i64 = r.get("id");
+            let name: String = r.get("name");
+            let has_emb: bool = r.get("has_emb");
+            if !is_valid_entity_name(&name, true) {
+                bad_ids.push(id);
+            } else if !has_emb {
+                missing_vec_ents.push((id, name));
+            }
+        }
+
+        let total_missing_ent_vecs = missing_vec_ents.len() as u64;
+        let mut removed_entities = bad_ids.len() as u64;
+        let mut embedded_entities = 0u64;
+
+        if !dry_run {
+            if !bad_ids.is_empty() {
+                c.execute(
+                    format!("DELETE FROM {s}.mentions WHERE entity_id = ANY($1)").as_str(),
+                    &[&bad_ids],
+                )
+                .await
+                .map_err(de)?;
+                c.execute(
+                    format!(
+                        "DELETE FROM {s}.edges WHERE namespace = ANY($1) AND (src_entity = ANY($2) OR dst_entity = ANY($2))"
+                    )
+                    .as_str(),
+                    &[&namespaces, &bad_ids],
+                )
+                .await
+                .map_err(de)?;
+                c.execute(
+                    format!(
+                        "DELETE FROM {s}.entity_dossiers WHERE namespace = ANY($1) AND entity_id = ANY($2)"
+                    )
+                    .as_str(),
+                    &[&namespaces, &bad_ids],
+                )
+                .await
+                .map_err(de)?;
+                removed_entities = c
+                    .execute(
+                        format!("DELETE FROM {s}.entities WHERE id = ANY($1)").as_str(),
+                        &[&bad_ids],
+                    )
+                    .await
+                    .map_err(de)?;
+            }
+
+            // Batch-embed up to 256 valid entities in ONE fast forward pass + ONE UNNEST UPDATE
+            let batch_slice: Vec<(i64, String)> = missing_vec_ents.into_iter().take(256).collect();
+            if !batch_slice.is_empty() {
+                let texts: Vec<String> = batch_slice.iter().map(|(_, nm)| nm.clone()).collect();
+                if let Ok(vecs) = self.embedder.try_embed_batch(&texts).await {
+                    let dim = self.col_dim();
+                    let mut ids_col: Vec<i64> = Vec::with_capacity(vecs.len());
+                    let mut lits_col: Vec<String> = Vec::with_capacity(vecs.len());
+                    for ((id, _), v) in batch_slice.iter().zip(vecs.iter()) {
+                        if v.len() == dim {
+                            ids_col.push(*id);
+                            lits_col.push(vlit(v));
+                        }
+                    }
+                    if !ids_col.is_empty() {
+                        let vt = self.vt();
+                        embedded_entities = c
+                            .execute(
+                                format!(
+                                    "UPDATE {s}.entities tgt
+                                     SET embedding = u.emb::{vt}
+                                     FROM UNNEST($1::bigint[], $2::text[]) AS u(id, emb)
+                                     WHERE tgt.id = u.id"
+                                )
+                                .as_str(),
+                                &[&ids_col, &lits_col],
+                            )
+                            .await
+                            .unwrap_or(0);
+                    }
+                }
+            }
         }
 
         let (orphan_mentions, orphan_edges, orphan_dossiers) = if dry_run {
@@ -3386,6 +3478,7 @@ impl BrainStore {
             "dry_run": dry_run,
             "removed_entities": removed_entities,
             "embedded_entities": embedded_entities,
+            "remaining_unembedded_entities": total_missing_ent_vecs.saturating_sub(embedded_entities),
             "orphan_mentions": orphan_mentions,
             "orphan_edges": orphan_edges,
             "orphan_dossiers": orphan_dossiers,
@@ -3399,7 +3492,13 @@ impl BrainStore {
         dry_run: bool,
     ) -> Result<Value, String> {
         if namespaces.is_empty() {
-            return Ok(json!({"dry_run": dry_run, "exact_dupes_expired": 0, "semantic_merged": 0, "dossiers_refreshed": 0, "facts_embedded": 0, "turns_embedded": 0}));
+            return Ok(json!({
+                "dry_run": dry_run,
+                "exact_dupes_expired": 0,
+                "semantic_merged": 0,
+                "facts_embedded": 0,
+                "turns_embedded": 0
+            }));
         }
         let s = &self.schema;
         let c = self.conn().await?;
@@ -3442,30 +3541,49 @@ impl BrainStore {
         };
 
         let mut semantic_merged: u64 = 0;
-        let mut dossiers_refreshed: u64 = 0;
         let mut facts_embedded: u64 = 0;
         let mut turns_embedded: u64 = 0;
 
         if !dry_run {
-            // Consolidate only namespaces that actually have live facts
-            let active_fact_ns = c
-                .query(
-                    &format!(
-                        "SELECT DISTINCT namespace FROM {s}.semantic WHERE namespace = ANY($1) AND expired_at IS NULL ORDER BY namespace"
-                    ),
+            // Single bounded SQL CTE to expire cosine near-duplicates (< 0.03) among recent live facts
+            semantic_merged = c
+                .execute(
+                    format!(
+                        "WITH recent AS (
+                            SELECT id, namespace, lower(coalesce(subject_entity, '')) AS subj,
+                                   lower(coalesce(object, '')) AS obj, embedding
+                            FROM {s}.semantic
+                            WHERE namespace = ANY($1) AND kind = 'fact'
+                              AND valid_to IS NULL AND expired_at IS NULL AND embedding IS NOT NULL
+                            ORDER BY id DESC
+                            LIMIT 800
+                         ),
+                         pairs AS (
+                            SELECT DISTINCT ON (b.id) a.id AS keep_id, b.id AS dup_id
+                            FROM recent a
+                            JOIN recent b ON a.id < b.id
+                              AND a.namespace = b.namespace
+                              AND a.subj = b.subj
+                              AND a.obj = b.obj
+                              AND a.subj <> ''
+                              AND (a.embedding <=> b.embedding) < 0.03
+                            ORDER BY b.id, a.id ASC
+                         )
+                         UPDATE {s}.semantic tgt
+                         SET expired_at = now(), valid_to = COALESCE(tgt.valid_to, now()), superseded_by = pairs.keep_id
+                         FROM pairs
+                         WHERE tgt.id = pairs.dup_id AND tgt.expired_at IS NULL"
+                    )
+                    .as_str(),
                     &[&namespaces],
                 )
                 .await
-                .map_err(de)?;
-            for row in active_fact_ns {
-                let ns: String = row.get(0);
-                if let Ok(cr) = self.consolidate(&ns).await {
-                    semantic_merged += cr["duplicates_merged"].as_u64().unwrap_or(0);
-                    dossiers_refreshed += cr["dossiers"].as_u64().unwrap_or(0);
-                }
-            }
+                .unwrap_or(0);
 
-            let cap = max_embed.min(200) as i64;
+            let cap = max_embed.min(256) as i64;
+            let dim = self.col_dim();
+            let vt = self.vt();
+
             let unemb_facts = c
                 .query(
                     &format!(
@@ -3475,19 +3593,31 @@ impl BrainStore {
                 )
                 .await
                 .map_err(de)?;
-            let cast_sql = self.ensure_vt_cast(1);
-            for r in unemb_facts {
-                let id: i64 = r.get("id");
-                let stmt: String = r.get("statement");
-                if let Ok(lit) = self.embed_lit(&stmt).await {
-                    if c.execute(
-                        format!("UPDATE {s}.semantic SET embedding={cast_sql} WHERE id=$2").as_str(),
-                        &[&lit, &id],
-                    )
-                    .await
-                    .is_ok()
-                    {
-                        facts_embedded += 1;
+            if !unemb_facts.is_empty() {
+                let texts: Vec<String> = unemb_facts.iter().map(|r| r.get::<_, String>("statement")).collect();
+                if let Ok(vecs) = self.embedder.try_embed_batch(&texts).await {
+                    let mut ids_col: Vec<i64> = Vec::with_capacity(vecs.len());
+                    let mut lits_col: Vec<String> = Vec::with_capacity(vecs.len());
+                    for (r, v) in unemb_facts.iter().zip(vecs.iter()) {
+                        if v.len() == dim {
+                            ids_col.push(r.get("id"));
+                            lits_col.push(vlit(v));
+                        }
+                    }
+                    if !ids_col.is_empty() {
+                        facts_embedded = c
+                            .execute(
+                                format!(
+                                    "UPDATE {s}.semantic tgt
+                                     SET embedding = u.emb::{vt}
+                                     FROM UNNEST($1::bigint[], $2::text[]) AS u(id, emb)
+                                     WHERE tgt.id = u.id"
+                                )
+                                .as_str(),
+                                &[&ids_col, &lits_col],
+                            )
+                            .await
+                            .unwrap_or(0);
                     }
                 }
             }
@@ -3501,18 +3631,31 @@ impl BrainStore {
                 )
                 .await
                 .map_err(de)?;
-            for r in unemb_turns {
-                let id: i64 = r.get("id");
-                let txt: String = r.get("text");
-                if let Ok(lit) = self.embed_lit(&txt).await {
-                    if c.execute(
-                        format!("UPDATE {s}.raw_turns SET embedding={cast_sql} WHERE id=$2").as_str(),
-                        &[&lit, &id],
-                    )
-                    .await
-                    .is_ok()
-                    {
-                        turns_embedded += 1;
+            if !unemb_turns.is_empty() {
+                let texts: Vec<String> = unemb_turns.iter().map(|r| r.get::<_, String>("text")).collect();
+                if let Ok(vecs) = self.embedder.try_embed_batch(&texts).await {
+                    let mut ids_col: Vec<i64> = Vec::with_capacity(vecs.len());
+                    let mut lits_col: Vec<String> = Vec::with_capacity(vecs.len());
+                    for (r, v) in unemb_turns.iter().zip(vecs.iter()) {
+                        if v.len() == dim {
+                            ids_col.push(r.get("id"));
+                            lits_col.push(vlit(v));
+                        }
+                    }
+                    if !ids_col.is_empty() {
+                        turns_embedded = c
+                            .execute(
+                                format!(
+                                    "UPDATE {s}.raw_turns tgt
+                                     SET embedding = u.emb::{vt}
+                                     FROM UNNEST($1::bigint[], $2::text[]) AS u(id, emb)
+                                     WHERE tgt.id = u.id"
+                                )
+                                .as_str(),
+                                &[&ids_col, &lits_col],
+                            )
+                            .await
+                            .unwrap_or(0);
                     }
                 }
             }
@@ -3522,7 +3665,6 @@ impl BrainStore {
             "dry_run": dry_run,
             "exact_dupes_expired": exact_dupes_expired,
             "semantic_merged": semantic_merged,
-            "dossiers_refreshed": dossiers_refreshed,
             "facts_embedded": facts_embedded,
             "turns_embedded": turns_embedded,
         }))

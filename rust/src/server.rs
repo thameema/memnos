@@ -3030,6 +3030,7 @@ async fn workspace_api_handler(
                 ns_opt,
                 &actions,
                 dry_run,
+                Some(&st.event_tx),
             )
             .await
             {
