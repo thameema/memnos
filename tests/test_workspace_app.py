@@ -86,6 +86,12 @@ def main():
               and "Local MEMNOS (Default)" in app_html
               and "Remote MEMNOS Server" in app_html)
         check("/admin preserves generic repo placeholder", "github.com/acme/payments-sync" in adm_html)
+        app_js = urllib.request.urlopen(URL + "/admin/app.js", timeout=5).read().decode()
+        check("/app embeds permanent static channel inputs + signature-diffed WebSocket updates (no poll flicker)",
+              'id="hd-join-input"' in app_html
+              and 'id="ch-insp-custom"' in app_html
+              and "function setHtmlBySig(" in app_js
+              and "if (isWsOpen() || isSseOpen()) return;" in app_js)
 
         print("=== 2. Role-based token scoping ===")
         check("unauthenticated -> 401", call("GET", "/workspace/api/overview")[0] == 401)
