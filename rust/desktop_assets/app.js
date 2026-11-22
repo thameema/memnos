@@ -1165,7 +1165,7 @@ async function refreshOverview(pickDefaults = false) {
   if (!data.is_admin && activeSection === "console") {
     switchSection("channels");
   }
-  ["channels", "handles", "namespaces", "live", "memories", "constraints", "telemetry", "doctor", "console"].forEach(k => {
+  ["ask", "channels", "handles", "namespaces", "live", "memories", "constraints", "telemetry", "doctor", "console"].forEach(k => {
     const el = $("#sec-" + k);
     if (el) el.hidden = (k !== activeSection);
   });
@@ -1178,6 +1178,7 @@ async function refreshOverview(pickDefaults = false) {
     `<span>Facts <b>${(v.total_facts || 0).toLocaleString()}</b></span>` +
     `<span>Turns <b>${(v.total_turns || 0).toLocaleString()}</b></span>`;
   setHtmlBySig($("#vitals-strip"), vitalsHtml, vitalsHtml);
+  setHtmlBySig($("#footer-vitals"), vitalsHtml, vitalsHtml);
 
   // Smart Namespace Selector — sync only when option list changes & never overwrite while focused
   const prevNs = $("#ws-ns-filter").value || "*";
@@ -4310,14 +4311,13 @@ function renderAskMarkdown(raw) {
     return `\u0000CODEBLOCK_${idx}\u0000`;
   });
 
-  const lines = text.split("\n");
-  const out = [];
-  let inList = false;
-
   const fmtInline = (s) => {
     let h = esc(s);
     h = h.replace(/`([^`\n]+)`/g, (_, inner) => {
-      if (/^#[a-zA-Z0-9_.-]+$/.test(inner)) {
+      if (/^#\d+$/.test(inner)) {
+        return `<code class="ask-ref-id">${inner}</code>`;
+      }
+      if (/^#[a-zA-Z][a-zA-Z0-9_.-]*$/.test(inner)) {
         return `<a href="#" class="ask-entity-link" data-jump-ch="${inner}">${inner}</a>`;
       }
       if (/^@[a-zA-Z0-9_.-]+$/.test(inner)) {
@@ -4327,41 +4327,96 @@ function renderAskMarkdown(raw) {
     });
     h = h.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
     h = h.replace(/(^|\s)_([^_\n]+)_(\s|[.,;!?]|$)/g, "$1<i>$2</i>$3");
-    h = h.replace(/(^|[\s(])(#[a-zA-Z0-9_.-]+)/g, '$1<a href="#" class="ask-entity-link" data-jump-ch="$2">$2</a>');
+    h = h.replace(/(^|[\s(])(#\d+)\b/g, '$1<code class="ask-ref-id">$2</code>');
+    h = h.replace(/(^|[\s(])(#[a-zA-Z][a-zA-Z0-9_.-]*)/g, '$1<a href="#" class="ask-entity-link" data-jump-ch="$2">$2</a>');
     h = h.replace(/(^|[\s(])(@[a-zA-Z0-9_.-]+)/g, (_, pfx, hd) => `${pfx}<a href="#" class="ask-entity-link" data-jump-hd="${hd.slice(1)}">${hd}</a>`);
     return h;
   };
 
-  for (const rawLine of lines) {
-    const line = rawLine.trimEnd();
-    if (/^\u0000CODEBLOCK_\d+\u0000$/.test(line.trim())) {
-      if (inList) { out.push("</ul>"); inList = false; }
-      out.push(line.trim());
+  const isPipeRow = (ln) => {
+    const t = ln.trim();
+    return t.startsWith("|") && t.endsWith("|") && t.length >= 3;
+  };
+  const isSepRow = (ln) => {
+    if (!isPipeRow(ln)) return false;
+    const cells = ln.trim().slice(1, -1).split("|").map(c => c.trim());
+    return cells.length > 0 && cells.every(c => /^:?-{2,}:?$/.test(c));
+  };
+  const splitCells = (ln) => ln.trim().slice(1, -1).split("|").map(c => c.trim());
+
+  const lines = text.split("\n");
+  const out = [];
+  let listTag = null;
+  const closeList = () => {
+    if (listTag) { out.push(`</${listTag}>`); listTag = null; }
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimEnd();
+    const trimmed = line.trim();
+
+    if (/^\u0000CODEBLOCK_\d+\u0000$/.test(trimmed)) {
+      closeList();
+      out.push(trimmed);
       continue;
     }
-    if (!line.trim()) {
-      if (inList) { out.push("</ul>"); inList = false; }
+    if (!trimmed) {
+      closeList();
       continue;
     }
-    if (line.startsWith("#### ")) {
-      if (inList) { out.push("</ul>"); inList = false; }
-      out.push(`<h4>${fmtInline(line.slice(5))}</h4>`);
-    } else if (line.startsWith("### ") || line.startsWith("## ")) {
-      if (inList) { out.push("</ul>"); inList = false; }
-      const rest = line.replace(/^#{2,3}\s+/, "");
-      out.push(`<h3>${fmtInline(rest)}</h3>`);
-    } else if (/^[-*•]\s+/.test(line.trim())) {
-      if (!inList) { out.push("<ul>"); inList = true; }
-      out.push(`<li>${fmtInline(line.trim().replace(/^[-*•]\s+/, ""))}</li>`);
-    } else if (line.trim().startsWith("> ")) {
-      if (inList) { out.push("</ul>"); inList = false; }
-      out.push(`<p style="border-left:3px solid var(--accent);padding-left:10px;color:var(--fg-soft)">${fmtInline(line.trim().slice(2))}</p>`);
+
+    // Markdown Table (supports both Header + |---| + Rows AND headerless |---| + Rows)
+    if (isPipeRow(trimmed) && (isSepRow(trimmed) || (i + 1 < lines.length && isPipeRow(lines[i + 1])))) {
+      closeList();
+      let headers = null;
+      if (isSepRow(trimmed)) {
+        i++;
+      } else if (i + 1 < lines.length && isSepRow(lines[i + 1])) {
+        headers = splitCells(trimmed);
+        i += 2;
+      }
+      const bodyRows = [];
+      while (i < lines.length && isPipeRow(lines[i])) {
+        if (!isSepRow(lines[i])) bodyRows.push(splitCells(lines[i]));
+        i++;
+      }
+      i--; // compensate for outer loop increment
+      if (headers || bodyRows.length) {
+        const thead = headers && headers.some(Boolean)
+          ? `<thead><tr>${headers.map(c => `<th>${fmtInline(c)}</th>`).join("")}</tr></thead>`
+          : "";
+        const tbody = bodyRows.length
+          ? `<tbody>${bodyRows.map(r => `<tr>${r.map(c => `<td>${fmtInline(c)}</td>`).join("")}</tr>`).join("")}</tbody>`
+          : "";
+        out.push(`<div class="ask-table-wrap"><table class="ask-md-table">${thead}${tbody}</table></div>`);
+        continue;
+      }
+    }
+
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      closeList();
+      out.push("<hr>");
+    } else if (trimmed.startsWith("#### ")) {
+      closeList();
+      out.push(`<h4>${fmtInline(trimmed.slice(5))}</h4>`);
+    } else if (/^#{1,3}\s+/.test(trimmed)) {
+      closeList();
+      out.push(`<h3>${fmtInline(trimmed.replace(/^#{1,3}\s+/, ""))}</h3>`);
+    } else if (/^[-*•]\s+/.test(trimmed)) {
+      if (listTag !== "ul") { closeList(); out.push("<ul>"); listTag = "ul"; }
+      out.push(`<li>${fmtInline(trimmed.replace(/^[-*•]\s+/, ""))}</li>`);
+    } else if (/^\d+\.\s+/.test(trimmed)) {
+      if (listTag !== "ol") { closeList(); out.push("<ol>"); listTag = "ol"; }
+      out.push(`<li>${fmtInline(trimmed.replace(/^\d+\.\s+/, ""))}</li>`);
+    } else if (trimmed.startsWith("> ")) {
+      closeList();
+      out.push(`<p style="border-left:3px solid var(--accent);padding-left:12px;color:var(--fg-soft)">${fmtInline(trimmed.slice(2))}</p>`);
     } else {
-      if (inList) { out.push("</ul>"); inList = false; }
+      closeList();
       out.push(`<p>${fmtInline(line)}</p>`);
     }
   }
-  if (inList) out.push("</ul>");
+  closeList();
 
   return out.join("").replace(/\u0000CODEBLOCK_(\d+)\u0000/g, (_, idx) => blocks[+idx] || "");
 }
@@ -4456,6 +4511,8 @@ function renderAskThreadSidebar() {
 function renderAskFeed() {
   const feed = $("#ask-feed");
   if (!feed) return;
+  const sub = $("#ask-hdr-sub");
+  if (sub) sub.hidden = askState.messages.length > 0;
 
   if (!askState.messages.length) {
     const c = (askState.digest && askState.digest.counts) || {};
@@ -4756,10 +4813,17 @@ if ($("#ask-stop-btn")) {
   };
 }
 if ($("#ask-input")) {
-  $("#ask-input").addEventListener("keydown", (e) => {
+  const askInp = $("#ask-input");
+  const syncAskHeight = () => {
+    askInp.style.height = "auto";
+    askInp.style.height = Math.min(140, Math.max(36, askInp.scrollHeight)) + "px";
+  };
+  askInp.addEventListener("input", syncAskHeight);
+  askInp.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendAskPrompt();
+      askInp.style.height = "36px";
     }
   });
 }

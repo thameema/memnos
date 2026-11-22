@@ -160,8 +160,9 @@
         <div class="theme-picker" title="Switch theme">
           <select id="theme-select" aria-label="Theme">
             <option value="aubergine">◈ Slack Aubergine</option>
-            <option value="nebula">✦ Nebula Dark</option>
+            <option value="dusk">◑ Soft Dusk</option>
             <option value="daylight">☀ Daylight Frost</option>
+            <option value="nebula">✦ Nebula Slate</option>
             <option value="emerald">⚡ Cyber Emerald</option>
             <option value="copper">◐ Warm Copper</option>
           </select>
@@ -249,37 +250,42 @@
             <button type="button" id="btn-ask-new" class="btn-primary sm" title="Start a new conversation">+ New</button>
           </div>
 
-          <div class="ask-presets">
-            <div class="ask-sec-lbl">1-Click Catch-Up</div>
-            <button type="button" class="ask-preset-card" data-preset="away">
-              <span class="ask-preset-ico">🌙</span>
-              <div>
-                <div class="ask-preset-title">While I Was Away</div>
-                <div class="ask-preset-sub">Decisions, fixes &amp; channel threads</div>
-              </div>
-            </button>
-            <button type="button" class="ask-preset-card" data-preset="coord">
-              <span class="ask-preset-ico">🤝</span>
-              <div>
-                <div class="ask-preset-title">Agent Coordination</div>
-                <div class="ask-preset-sub">Who is online &amp; working on what</div>
-              </div>
-            </button>
-            <button type="button" class="ask-preset-card" data-preset="blockers">
-              <span class="ask-preset-ico">🚨</span>
-              <div>
-                <div class="ask-preset-title">Blockers &amp; Incidents</div>
-                <div class="ask-preset-sub">Stuck tasks, quota caps &amp; fixes</div>
-              </div>
-            </button>
-            <button type="button" class="ask-preset-card" data-preset="hygiene">
-              <span class="ask-preset-ico">🗂</span>
-              <div>
-                <div class="ask-preset-title">Channels &amp; Handles Audit</div>
-                <div class="ask-preset-sub">Idle channels &amp; stale sessions</div>
-              </div>
-            </button>
-          </div>
+          <details class="ask-presets-details" open>
+            <summary class="ask-presets-sum">
+              <span>1-Click Catch-Up</span>
+              <span class="ask-sum-chev">▾</span>
+            </summary>
+            <div class="ask-presets">
+              <button type="button" class="ask-preset-card" data-preset="away">
+                <span class="ask-preset-ico">🌙</span>
+                <div>
+                  <div class="ask-preset-title">While I Was Away</div>
+                  <div class="ask-preset-sub">Decisions, fixes &amp; channel threads</div>
+                </div>
+              </button>
+              <button type="button" class="ask-preset-card" data-preset="coord">
+                <span class="ask-preset-ico">🤝</span>
+                <div>
+                  <div class="ask-preset-title">Agent Coordination</div>
+                  <div class="ask-preset-sub">Who is online &amp; working on what</div>
+                </div>
+              </button>
+              <button type="button" class="ask-preset-card" data-preset="blockers">
+                <span class="ask-preset-ico">🚨</span>
+                <div>
+                  <div class="ask-preset-title">Blockers &amp; Incidents</div>
+                  <div class="ask-preset-sub">Stuck tasks, quota caps &amp; fixes</div>
+                </div>
+              </button>
+              <button type="button" class="ask-preset-card" data-preset="hygiene">
+                <span class="ask-preset-ico">🗂</span>
+                <div>
+                  <div class="ask-preset-title">Channels &amp; Handles Audit</div>
+                  <div class="ask-preset-sub">Idle channels &amp; stale sessions</div>
+                </div>
+              </button>
+            </div>
+          </details>
 
           <div class="ask-sec-lbl" style="padding:10px 14px 4px">Recent Conversations</div>
           <div id="ask-thread-list" class="item-list"></div>
@@ -289,12 +295,12 @@
           <header class="stage-hdr ask-hdr">
             <div class="ask-hdr-title-wrap">
               <span class="ask-spark-badge">✦</span>
-              <div>
-                <div class="row" style="gap:8px">
+              <div style="min-width:0">
+                <div class="row" style="gap:8px;flex-wrap:nowrap">
                   <span id="ask-thread-title" class="stage-title">Executive Briefing &amp; Coordination</span>
                   <span id="ask-run-pill" class="pill ok" hidden>Running…</span>
                 </div>
-                <div class="stage-sub">Ask what happened while you were away, inspect agent handoffs, or manage <code>#channels</code> &amp; <code>@handles</code> directly.</div>
+                <div id="ask-hdr-sub" class="stage-sub">Overnight catch-up, agent handoffs &amp; conversational <code>#channel</code> / <code>@handle</code> control</div>
               </div>
             </div>
 
@@ -336,18 +342,20 @@
           </div>
 
           <footer class="ask-composer-wrap">
-            <div class="ask-quick-chips">
-              <button type="button" class="ask-chip" data-fill="Catch me up on everything that happened while I was away — key decisions, completed work, #channel updates, and anything needing my attention.">🌙 Catch me up</button>
-              <button type="button" class="ask-chip" data-fill="Show how all online @handles are coordinating right now, what each agent is working on, and any open or claimed tasks.">🤝 Live coordination</button>
-              <button type="button" class="ask-chip" data-template="Create channel #release-sync in ">➕ Create #channel</button>
-              <button type="button" class="ask-chip" data-template="Subscribe @handle to #general in ">🔗 Subscribe @handle</button>
-              <button type="button" class="ask-chip" data-template="Send a task to @handle: ">📨 Assign @handle task</button>
-            </div>
-            <div class="ask-input-row">
-              <textarea id="ask-input" rows="2" placeholder="Ask what happened while you slept, inspect agent coordination, or type e.g. 'Create #sprint-sync and subscribe @claude-memnos'… (Enter to send, Shift+Enter for newline)"></textarea>
-              <div class="ask-send-col">
-                <button type="button" id="ask-stop-btn" class="danger sm" hidden>⏹ Stop</button>
-                <button type="button" id="ask-send-btn" class="btn-primary">Send ↵</button>
+            <div class="composer-card ask-composer-card">
+              <div class="ask-quick-chips">
+                <button type="button" class="ask-chip" data-fill="Catch me up on everything that happened while I was away — key decisions, completed work, #channel updates, and anything needing my attention.">🌙 Catch me up</button>
+                <button type="button" class="ask-chip" data-fill="Show how all online @handles are coordinating right now, what each agent is working on, and any open or claimed tasks.">🤝 Live coordination</button>
+                <button type="button" class="ask-chip" data-template="Create channel #release-sync in ">➕ Create #channel</button>
+                <button type="button" class="ask-chip" data-template="Subscribe @handle to #general in ">🔗 Subscribe @handle</button>
+                <button type="button" class="ask-chip" data-template="Send a task to @handle: ">📨 Assign @handle task</button>
+              </div>
+              <div class="ask-input-row">
+                <textarea id="ask-input" rows="1" placeholder="Ask what happened while you slept, inspect agent coordination, or type e.g. 'Create #sprint-sync and subscribe @claude-memnos'… (Enter to send, Shift+Enter for newline)"></textarea>
+                <div class="ask-send-col">
+                  <button type="button" id="ask-stop-btn" class="danger sm" hidden>⏹ Stop</button>
+                  <button type="button" id="ask-send-btn" class="btn-primary sm">Send ↵</button>
+                </div>
               </div>
             </div>
           </footer>
@@ -1123,6 +1131,7 @@
         <span>LIVE</span>
       </div>
       <div id="live-op-text" class="ticker-track">Listening for live memnos calls…</div>
+      <div id="footer-vitals" class="ticker-vitals"></div>
       <span class="ticker-cta">Open Stream ↗</span>
       <span id="footer-version" class="ticker-ver" title="Click to view App &amp; Server version details"></span>
     </footer>
