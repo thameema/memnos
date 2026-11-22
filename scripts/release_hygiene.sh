@@ -231,6 +231,36 @@ if [[ "$DIST_ONLY" -eq 0 ]]; then
   if check_path_leaks_in_stream "Release binary" "$STR_TMP"; then
     pass "Zero builder HOME/USERPROFILE, .cargo/registry, .rustup, or 'rust/src/' path strings in release binary"
   fi
+
+  # 4b. Companion single-process desktop binary (`memnos-desktop`), when built alongside `memnos`
+  BIN_DIR="$(dirname "$BIN")"
+  DESKTOP_BIN=""
+  if [[ -f "$BIN_DIR/memnos-desktop" ]]; then
+    DESKTOP_BIN="$BIN_DIR/memnos-desktop"
+  elif [[ -f "$BIN_DIR/memnos-desktop.exe" ]]; then
+    DESKTOP_BIN="$BIN_DIR/memnos-desktop.exe"
+  fi
+  if [[ -n "$DESKTOP_BIN" ]]; then
+    echo "=== Release Hygiene Gate (Desktop Companion): $DESKTOP_BIN ==="
+    D_HELP="$("$DESKTOP_BIN" --help 2>&1)"
+    D_VER="$("$DESKTOP_BIN" --version 2>&1)"
+    if echo "$D_HELP $D_VER" | grep -qi "rust"; then
+      fail "Desktop CLI --help/--version mentions 'rust'"
+    else
+      pass "Desktop --help / --version output is language-neutral"
+    fi
+    D_TMP="$(mktemp)"
+    extract_strings "$DESKTOP_BIN" > "$D_TMP"
+    if grep -E 'FAKE_EXTRACT|EMBED_MODE|TEST_DSN|SIMULATE_WARMING|SKIP_MODEL_HASH|local-hash' "$D_TMP" >/dev/null 2>&1; then
+      fail "Desktop binary contains test-only switch or hash-tier strings"
+    else
+      pass "Zero test-only switches in desktop binary"
+    fi
+    if check_path_leaks_in_stream "Desktop binary" "$D_TMP"; then
+      pass "Zero builder path leaks in desktop binary"
+    fi
+    rm -f "$D_TMP"
+  fi
 else
   echo "=== Release Hygiene Gate (Distribution Artifacts Only) ==="
 fi

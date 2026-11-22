@@ -1169,3 +1169,7 @@ button.retry { background: transparent; border: 1px solid var(--err); color: var
   border: 1px solid var(--border);
   color: var(--fg-soft);
 }
+/* Mask secret inputs without triggering OS Password AutoFill XPC helper processes */
+input.masked-secret {
+  -webkit-text-security: disc;
+}

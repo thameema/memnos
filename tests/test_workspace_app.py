@@ -74,32 +74,44 @@ def main():
         call("POST", "/admin/api/namespaces", admin_tok, {"name": NS_RO, "description": "ro scope"})
         call("POST", "/admin/api/namespaces", admin_tok, {"name": NS_HIDDEN, "description": "secret scope"})
 
-        print("=== 1. UI HTML endpoints (/app and /admin) ===")
-        app_html = urllib.request.urlopen(URL + "/app", timeout=5).read().decode()
-        adm_html = urllib.request.urlopen(URL + "/admin", timeout=5).read().decode()
-        check("/app serves MEMNOS Workspace HTML", "MEMNOS · Workspace" in app_html)
-        check("/app defaults to Slack Aubergine + M brand SVG + admin-only Settings + Local/Remote onboarding",
-              'data-theme="aubergine"' in app_html
-              and "M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8" in app_html
-              and 'class="rail-btn admin-only" data-section="console"' in app_html
-              and '<section id="sec-console" class="page-stage" hidden>' in app_html
-              and "Local MEMNOS (Default)" in app_html
-              and "Remote MEMNOS Server" in app_html)
-        check("/admin preserves generic repo placeholder", "github.com/acme/payments-sync" in adm_html)
-        app_js = urllib.request.urlopen(URL + "/admin/app.js", timeout=5).read().decode()
-        check("/app embeds permanent static channel inputs + signature-diffed WebSocket updates (no poll flicker)",
-              'id="hd-join-input"' in app_html
-              and 'id="ch-insp-custom"' in app_html
-              and "function setHtmlBySig(" in app_js
-              and "if (isWsOpen() || isSseOpen()) return;" in app_js)
+        print("=== 1. Headless server JSON status + Web UI completely removed (/app & /admin -> 404) ===")
+        root_status, root_json = call("GET", "/")
+        app_status, _ = call("GET", "/app")
+        adm_status, _ = call("GET", "/admin")
+        js_status, _ = call("GET", "/admin/app.js")
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        check("GET / returns JSON service metadata (no HTML web console)",
+              root_status == 200
+              and root_json.get("ok") is True
+              and root_json.get("service") == "memnos"
+              and bool(root_json.get("version")))
+        check("Legacy Web UI routes (/app, /admin, /admin/app.js) return 404 and ui/ directory is removed",
+              app_status == 404
+              and adm_status == 404
+              and js_status == 404
+              and not os.path.exists(os.path.join(repo_root, "ui", "index.html")))
         health_json = json.loads(urllib.request.urlopen(URL + "/healthz", timeout=5).read().decode())
-        check("/app & /health expose App + Server version and build SHA surfaces",
-              "window.__MEMNOS_UI__=" in app_html
-              and 'id="topbar-ver-badge"' in app_html
-              and 'id="footer-version"' in app_html
-              and 'id="modal-version-box"' in app_html
-              and bool(health_json.get("version"))
-              and "build" in health_json)
+        check("/healthz exposes server version and build SHA",
+              bool(health_json.get("version")) and "build" in health_json)
+
+        # CLI first-time admin onboarding & token listing/revealing verification
+        import subprocess
+        memnos_bin = os.path.join(repo_root, "target", "release", "memnos")
+        desktop_bin = os.path.join(repo_root, "target", "release", "memnos-desktop")
+        if os.path.isfile(memnos_bin):
+            tok_ls = subprocess.run(
+                [memnos_bin, "token", "ls", "--reveal", "--json"],
+                capture_output=True, text=True, timeout=15,
+                env={**os.environ, "MEMNOS_DSN": DSN},
+            )
+            ls_arr = json.loads(tok_ls.stdout or "[]") if tok_ls.returncode == 0 else []
+            check("CLI `memnos token ls --reveal --json` lists tokens across all principals with decrypted mnk_ tokens",
+                  tok_ls.returncode == 0
+                  and any(t.get("principal_name") == "ws-test-admin" and str(t.get("token", "")).startswith("mnk_") for t in ls_arr))
+        if os.path.isfile(desktop_bin):
+            dv = subprocess.run([desktop_bin, "--version"], capture_output=True, text=True, timeout=10)
+            check("Single-process `memnos-desktop --version` matches server version",
+                  dv.returncode == 0 and health_json["version"] in dv.stdout)
 
         print("=== 2. Role-based token scoping ===")
         check("unauthenticated -> 401", call("GET", "/workspace/api/overview")[0] == 401)
@@ -529,12 +541,6 @@ def main():
               missing_claimed == [], str(poll_missing_dep))
 
         print("=== 9. Namespaces Workspace: Create, Related Graph, Links, Bindings & Atomic Merge ===")
-        check("/app embeds Namespaces Workspace rail + Create & Move/Merge modals",
-              'data-section="namespaces"' in app_html
-              and 'id="sec-namespaces"' in app_html
-              and 'id="ns-create-modal"' in app_html
-              and 'id="ns-transfer-modal"' in app_html)
-
         ns_src = "test:ws-merge-src"
         ns_dst = "test:ws-merge-dst"
         ns_child = f"{NS_RW}:api"
@@ -632,9 +638,6 @@ def main():
               str(dst_det))
 
         print("=== 10. MEMNOS Doctor: Diagnostics Scan, Role Guards, Stuck-Lock Repair & VACUUM ANALYZE ===")
-        check("/app embeds MEMNOS Doctor rail + section",
-              'data-section="doctor"' in app_html and 'id="sec-doctor"' in app_html)
-
         st_doc_forb, _ = call("GET", f"/workspace/api/doctor?namespace={NS_HIDDEN}", scoped_tok)
         check("scoped token cannot scan hidden namespace in doctor -> 403", st_doc_forb == 403)
 
@@ -677,7 +680,7 @@ def main():
               st_drun == 200
               and rc_res.get("released_claims") == 1
               and rc_res.get("released_leases") == 1
-              and db_res.get("tables_vacuum_analyzed", 0) >= 10
+              and (db_res.get("tables_vacuum_analyzed", 0) + db_res.get("tables_skipped_clean", 0)) >= 10
               and post_coord.get("metrics", {}).get("stuck_claims") == 0
               and post_coord.get("metrics", {}).get("expired_leases") == 0,
               str(drun))

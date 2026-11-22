@@ -1,8 +1,8 @@
 //! `memnos serve` — Unified HTTP Server (`server.rs`).
 //!
-//! Serves 100% of the MEMNOS REST API, the zero-build `/admin` web console (embedded directly
-//! inside the single binary), the Streamable-HTTP `/mcp` JSON-RPC 2.0 mount, and the
-//! `LISTEN memnos_channel` `/channel/wait` long-polling bus.
+//! Serves 100% of the MEMNOS REST API, the workspace & admin JSON APIs + WebSocket bus,
+//! the Streamable-HTTP `/mcp` JSON-RPC 2.0 mount, and the `LISTEN memnos_channel`
+//! `/channel/wait` long-polling bus.
 
 use crate::config::{dsn, load_config, server_port, BUILD_SHA, VERSION};
 use crate::control::{
@@ -42,11 +42,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, Semaphore};
 use tower_http::cors::CorsLayer;
-
-const UI_INDEX_HTML: &[u8] = include_bytes!("../../ui/index.html");
-const UI_APP_CSS: &[u8] = include_bytes!("../../ui/app.css");
-const UI_APP_JS: &[u8] = include_bytes!("../../ui/app.js");
-const UI_CLI_REF_JSON: &[u8] = include_bytes!("../../ui/cli-reference.json");
 
 const ALLOWED_MEMORY_TYPES: &[&str] = &[
     "decision",
@@ -416,78 +411,17 @@ async fn metrics_prometheus_handler(State(st): State<AppState>) -> Response {
         .into_response()
 }
 
-fn inject_ui_meta(html_bytes: &[u8]) -> Vec<u8> {
-    if let Ok(s) = std::str::from_utf8(html_bytes) {
-        let tag = format!(
-            "<script>window.__MEMNOS_UI__={};</script></head>",
-            json!({ "version": VERSION, "build": BUILD_SHA })
-        );
-        if s.contains("</head>") {
-            return s.replacen("</head>", &tag, 1).into_bytes();
-        }
-    }
-    html_bytes.to_vec()
-}
-
-fn serve_ui_asset(file_name: &str) -> Response {
-    let safe = std::path::Path::new(file_name)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    let (canonical, ctype, embedded): (&str, &str, &[u8]) = match safe {
-        "" | "index.html" => ("index.html", "text/html; charset=utf-8", UI_INDEX_HTML),
-        "app.css" => ("app.css", "text/css; charset=utf-8", UI_APP_CSS),
-        "app.js" => ("app.js", "application/javascript; charset=utf-8", UI_APP_JS),
-        "cli-reference.json" => (
-            "cli-reference.json",
-            "application/json; charset=utf-8",
-            UI_CLI_REF_JSON,
-        ),
-        _ => return json_resp(StatusCode::NOT_FOUND, json!({ "error": "not found" })),
-    };
-    if let Ok(ui_dir) = env::var("MEMNOS_UI_DIR") {
-        let disk_path = PathBuf::from(ui_dir).join(canonical);
-        if disk_path.is_file() {
-            if let Ok(bytes) = std::fs::read(&disk_path) {
-                let out = if canonical == "index.html" {
-                    inject_ui_meta(&bytes)
-                } else {
-                    bytes
-                };
-                return (
-                    StatusCode::OK,
-                    [
-                        (header::CONTENT_TYPE, ctype),
-                        (header::CACHE_CONTROL, "no-cache, no-store, must-revalidate"),
-                    ],
-                    out,
-                )
-                    .into_response();
-            }
-        }
-    }
-    let out = if canonical == "index.html" {
-        inject_ui_meta(embedded)
-    } else {
-        embedded.to_vec()
-    };
-    (
+async fn root_status_handler() -> Response {
+    json_resp(
         StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, ctype),
-            (header::CACHE_CONTROL, "no-cache, no-store, must-revalidate"),
-        ],
-        out,
+        json!({
+            "ok": true,
+            "service": "memnos",
+            "version": VERSION,
+            "build": BUILD_SHA,
+            "hint": "Use the MEMNOS desktop app (`memnos app`) or `memnos` CLI."
+        }),
     )
-        .into_response()
-}
-
-async fn admin_index_handler() -> Response {
-    serve_ui_asset("index.html")
-}
-
-async fn admin_static_handler(AxumPath(file): AxumPath<String>) -> Response {
-    serve_ui_asset(&file)
 }
 
 async fn mcp_http_handler(
@@ -5088,27 +5022,16 @@ pub async fn run_server_opts(
     }
 
     let cors_routes = Router::new()
+        .route("/", get(root_status_handler))
         .route("/healthz", get(healthz_handler))
         .route("/health", get(healthz_handler))
         .route("/readyz", get(readyz_handler))
+        .route("/metrics", get(metrics_handler))
+        .route("/metrics/prometheus", get(metrics_prometheus_handler))
         .route("/workspace/ws", get(workspace_ws_handler))
         .route("/workspace/events", get(workspace_events_handler))
         .route("/workspace/api/*sub", any(workspace_api_handler))
         .route("/admin/api/*sub", any(admin_api_handler))
-        .layer(CorsLayer::permissive());
-
-    let app = Router::new()
-        .route("/", get(admin_index_handler))
-        .route("/app", get(admin_index_handler))
-        .route("/app/", get(admin_index_handler))
-        .route("/app/*file", get(admin_static_handler))
-        .route("/metrics", get(metrics_handler))
-        .route("/metrics/prometheus", get(metrics_prometheus_handler))
-        .route("/admin", get(admin_index_handler))
-        .route("/admin/", get(admin_index_handler))
-        .route("/admin/*file", get(admin_static_handler))
-        .merge(cors_routes)
-        .route("/mcp", any(mcp_http_handler))
         .route("/secret/resolve", post(secret_resolve_handler))
         .route("/bindings", get(user_routes_handler).post(user_routes_handler))
         .route("/bindings/recap", get(user_routes_handler))
@@ -5116,6 +5039,11 @@ pub async fn run_server_opts(
         .route("/hosts", get(user_routes_handler).post(user_routes_handler))
         .route("/nudges", get(user_routes_handler))
         .fallback(any(api_post_handler))
+        .layer(CorsLayer::permissive());
+
+    let app = Router::new()
+        .route("/mcp", any(mcp_http_handler))
+        .merge(cors_routes)
         .with_state(state);
 
     let bind_host = env::var("MEMNOS_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());

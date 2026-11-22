@@ -6653,7 +6653,7 @@ def _render_cli_md(groups):
 
 
 def cmd_docs_gen(args, cfg):
-    """(hidden) Regenerate docs/cli.md + ui/cli-reference.json from the argparse tree.
+    """(hidden) Regenerate docs/cli.md + docs/cli-reference.json from the argparse tree.
     --check: exit 1 if the committed files are stale (CI staleness gate)."""
     root = os.path.dirname(os.path.abspath(__file__))
     groups = _docs_payload()
@@ -6661,7 +6661,7 @@ def cmd_docs_gen(args, cfg):
     js = json.dumps({"_generated": "memnos docs-gen — do not edit", "groups": groups},
                     indent=1, sort_keys=True) + "\n"
     targets = [(os.path.join(root, "docs", "cli.md"), md),
-               (os.path.join(root, "ui", "cli-reference.json"), js)]
+               (os.path.join(root, "docs", "cli-reference.json"), js)]
     if getattr(args, "check", False):
         stale = []
         for path, want in targets:

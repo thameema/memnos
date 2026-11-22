@@ -180,7 +180,7 @@ enum Commands {
     /// show this terminal's [MEMNOS @handle · #channels] identity badge
     #[command(visible_alias = "identity")]
     Id,
-    /// launch the real-time MEMNOS Workspace desktop app (or connect to a remote server)
+    /// launch the native MEMNOS Workspace desktop app (local or remote server)
     #[command(visible_alias = "ui")]
     App {
         /// MEMNOS server URL (defaults to local server or MEMNOS_URL; e.g. https://memnos.acme.dev)
@@ -192,9 +192,6 @@ enum Commands {
         /// install ~/Applications/MEMNOS.app bundle on macOS for Dock & Spotlight launch
         #[arg(long)]
         install: bool,
-        /// open in default web browser instead of native desktop window
-        #[arg(long)]
-        browser: bool,
     },
     /// install a login service (launchd/systemd/schtasks) so the server always runs
     Autostart {
@@ -297,15 +294,21 @@ enum Commands {
         #[arg(long)]
         token: Option<String>,
     },
-    /// manage principals (identities): create | ls
+    /// manage principals (identities): create | ls | rm | prune-test
     Principal {
         #[command(subcommand)]
         verb: PrincipalVerb,
     },
-    /// manage bearer tokens: mint | ls | revoke
+    /// manage bearer tokens: mint | ls | reveal | revoke
     Token {
         #[command(subcommand)]
         verb: TokenVerb,
+    },
+    /// manage headless worker processes: status | launch | stop | logs
+    #[command(visible_alias = "spawner")]
+    Worker {
+        #[command(subcommand)]
+        verb: WorkerVerb,
     },
     /// manage namespace grants: add | ls | rm
     Grant {
@@ -322,7 +325,7 @@ enum Commands {
         #[command(subcommand)]
         verb: ConstraintVerb,
     },
-    /// manage namespaces: add | ls | rm | prune | set | link | unlink | links | copy | move | reconcile | cleanup-graph
+    /// manage namespaces: add | ls | detail | rm | prune | set | link | unlink | links | copy | move | merge | reconcile | cleanup-graph
     Namespace {
         action: String,
         name: Option<String>,
@@ -469,8 +472,18 @@ enum Commands {
         #[arg(long)]
         reset: bool,
     },
-    /// mint a fresh admin token (direct DB, no server needed)
-    Admin,
+    /// show or mint the local admin token for the desktop app & CLI (direct DB, no server needed)
+    Admin {
+        /// mint a fresh admin token even if an active one already exists in ~/.memnos/config.json
+        #[arg(long)]
+        rotate: bool,
+        /// print only the raw mnk_... token string
+        #[arg(long)]
+        raw: bool,
+        /// print JSON credentials summary
+        #[arg(long)]
+        json: bool,
+    },
     /// take a verified backup of the PostgreSQL database + ~/.memnos/config.json
     Backup {
         #[arg(long)]
@@ -590,8 +603,30 @@ enum SessionVerb {
         #[arg(long)]
         token: Option<String>,
     },
+    #[command(visible_alias = "rm")]
     Unregister {
         name: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Rename {
+        old_name: String,
+        new_name: String,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Quota {
+        name: String,
+        #[arg(long)]
+        pause: bool,
+        #[arg(long)]
+        resume: bool,
+        #[arg(long, default_value = "")]
+        reason: String,
         #[arg(long, default_value = "auto")]
         namespace: String,
         #[arg(long)]
@@ -636,6 +671,34 @@ enum ChannelVerb {
         from_beginning: bool,
         #[arg(long)]
         session: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Unsub {
+        channels: Vec<String>,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Create {
+        channel: String,
+        #[arg(short, long, default_value = "")]
+        description: String,
+        #[arg(long)]
+        global: bool,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    #[command(visible_alias = "delete")]
+    Rm {
+        channel: String,
         #[arg(long, default_value = "auto")]
         namespace: String,
         #[arg(long)]
@@ -794,23 +857,98 @@ enum PrincipalVerb {
         #[arg(long, default_value = "user")]
         kind: String,
     },
-    Ls,
+    #[command(visible_alias = "list")]
+    Ls {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(visible_alias = "delete")]
+    Rm {
+        target: String,
+    },
+    PruneTest,
 }
 
 #[derive(Subcommand)]
 enum TokenVerb {
+    /// Mint a bearer token for a principal (defaults to 'admin' with '*' access if omitted)
     Mint {
+        #[arg(default_value = "admin")]
         principal: String,
         #[arg(long)]
         label: Option<String>,
         #[arg(long)]
         ttl_days: Option<i32>,
+        #[arg(long)]
+        json: bool,
     },
+    /// List tokens across all principals (or filter to one principal)
+    #[command(visible_alias = "list")]
     Ls {
-        principal: String,
+        principal: Option<String>,
+        /// Decrypt and display full recoverable mnk_... tokens
+        #[arg(long)]
+        reveal: bool,
+        /// Include revoked tokens
+        #[arg(long)]
+        revoked: bool,
+        /// Output raw JSON array
+        #[arg(long)]
+        json: bool,
     },
+    /// Decrypt and reveal a recoverable token by ID
+    Reveal {
+        id: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Revoke a token by ID
     Revoke {
         id: i64,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkerVerb {
+    /// List active headless workers and installed local CLI harnesses
+    #[command(visible_alias = "ls")]
+    Status {
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Spawn a background CLI harness worker subscribed to MEMNOS channels/@inbox
+    Launch {
+        name: String,
+        #[arg(long, default_value = "claude")]
+        harness: String,
+        #[arg(long, default_value = "")]
+        model: String,
+        #[arg(long, default_value = "")]
+        prompt: String,
+        #[arg(long, default_value = "")]
+        channels: String,
+        #[arg(long)]
+        cwd: Option<String>,
+        #[arg(short, long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Stop a running headless worker
+    Stop {
+        name: String,
+        #[arg(short, long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Tail buffered stdout/stderr logs of a headless worker
+    Logs {
+        name: String,
+        #[arg(short, long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
     },
 }
 
@@ -953,12 +1091,22 @@ fn normalize_argv(raw: Vec<String>) -> Vec<String> {
     }
     if !second.starts_with('-') {
         match cmd {
-            "principal" if !matches!(second, "create" | "ls" | "help") => {
+            "principal"
+                if !matches!(
+                    second,
+                    "create" | "ls" | "list" | "rm" | "delete" | "prune-test" | "help"
+                ) =>
+            {
                 let mut out = vec![raw[0].clone(), "principal".to_string(), "create".to_string()];
                 out.extend_from_slice(&raw[2..]);
                 return out;
             }
-            "token" if !matches!(second, "mint" | "ls" | "revoke" | "help") => {
+            "token"
+                if !matches!(
+                    second,
+                    "mint" | "ls" | "list" | "reveal" | "revoke" | "help"
+                ) =>
+            {
                 let mut out = vec![raw[0].clone(), "token".to_string(), "mint".to_string()];
                 out.extend_from_slice(&raw[2..]);
                 return out;
@@ -2143,10 +2291,9 @@ fn main() {
         url,
         token,
         install,
-        browser,
     } = cmd
     {
-        if let Err(e) = run_desktop_app(url.as_deref(), token.as_deref(), install, browser, &cfg) {
+        if let Err(e) = run_desktop_app(url.as_deref(), token.as_deref(), install, &cfg) {
             eprintln!("error: {}", e);
             std::process::exit(1);
         }
@@ -3122,9 +3269,76 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 println!("{}", serde_json::to_string_pretty(&resp).unwrap());
                 Ok(())
             }
+            SessionVerb::Rename {
+                old_name,
+                new_name,
+                namespace,
+                token,
+            } => {
+                let ns = resolve_ns_arg(&namespace);
+                let resp = http_post_json(
+                    &cfg,
+                    "/session/rename",
+                    token.as_deref(),
+                    &json!({
+                        "namespace": ns,
+                        "old_name": old_name.trim_start_matches('@'),
+                        "new_name": new_name.trim_start_matches('@'),
+                    }),
+                    10,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                Ok(())
+            }
+            SessionVerb::Quota {
+                name,
+                pause,
+                resume,
+                reason,
+                namespace,
+                token,
+            } => {
+                let ns = resolve_ns_arg(&namespace);
+                let paused = if resume { false } else { pause || true };
+                let resp = http_post_json(
+                    &cfg,
+                    "/session/quota",
+                    token.as_deref(),
+                    &json!({
+                        "namespace": ns,
+                        "name": name.trim_start_matches('@'),
+                        "paused": paused,
+                        "reason": reason,
+                    }),
+                    10,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                Ok(())
+            }
         },
         Commands::Channel { verb } => {
+            if let ChannelVerb::Rm {
+                channel,
+                namespace,
+                token,
+            } = verb
+            {
+                let ns = resolve_ns_arg(&namespace);
+                let ch_enc: String =
+                    url::form_urlencoded::byte_serialize(channel.as_bytes()).collect();
+                let ns_enc: String =
+                    url::form_urlencoded::byte_serialize(ns.as_bytes()).collect();
+                let resp = http_delete_json(
+                    &cfg,
+                    &format!("/workspace/api/channel?namespace={}&channel={}", ns_enc, ch_enc),
+                    token.as_deref(),
+                    10,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                return Ok(());
+            }
             let (path, body, tok, timeout) = match verb {
+                ChannelVerb::Rm { .. } => unreachable!(),
                 ChannelVerb::Pub {
                     channel,
                     message,
@@ -3180,6 +3394,38 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                         "session_name": resolve_sess_arg(session.as_deref()),
                         "channels": channels,
                         "from_beginning": from_beginning,
+                    }),
+                    token,
+                    10,
+                ),
+                ChannelVerb::Unsub {
+                    channels,
+                    session,
+                    namespace,
+                    token,
+                } => (
+                    "/channel/unsubscribe",
+                    json!({
+                        "namespace": resolve_ns_arg(&namespace),
+                        "session_name": resolve_sess_arg(session.as_deref()),
+                        "channels": channels,
+                    }),
+                    token,
+                    10,
+                ),
+                ChannelVerb::Create {
+                    channel,
+                    description,
+                    global,
+                    namespace,
+                    token,
+                } => (
+                    "/workspace/api/channel/create",
+                    json!({
+                        "namespace": resolve_ns_arg(&namespace),
+                        "channel": channel,
+                        "description": description,
+                        "global_topic": global,
                     }),
                     token,
                     10,
@@ -3377,6 +3623,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             Ok(())
         }
         Commands::Principal { verb } => {
+            use std::io::IsTerminal;
             let pool = build_pool(&dsn(&cfg), 4)?;
             Control::init(&pool).await.map_err(|e| e.to_string())?;
             match verb {
@@ -3386,16 +3633,72 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                         .map_err(|e| e.to_string())?;
                     println!("principal '{}' (id={}, kind={})", name, id, kind);
                 }
-                PrincipalVerb::Ls => {
+                PrincipalVerb::Ls { json: as_json } => {
                     let list = Control::list_principals(&pool)
                         .await
                         .map_err(|e| e.to_string())?;
-                    println!("{}", serde_json::to_string_pretty(&list).unwrap());
+                    if as_json || !io::stdout().is_terminal() {
+                        println!("{}", serde_json::to_string_pretty(&list).unwrap());
+                    } else {
+                        println!("{:<6} {:<24} {:<10} {}", "ID", "NAME", "KIND", "CREATED");
+                        println!("{}", "-".repeat(64));
+                        for p in &list {
+                            let id = p.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                            let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                            let kind = p.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                            let created = p
+                                .get("created_at")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.chars().take(19).collect::<String>())
+                                .unwrap_or_default();
+                            println!("{:<6} {:<24} {:<10} {}", id, name, kind, created);
+                        }
+                    }
+                }
+                PrincipalVerb::Rm { target } => {
+                    let id = if let Ok(i) = target.parse::<i64>() {
+                        i
+                    } else {
+                        lookup_principal_id(&pool, &target).await?
+                    };
+                    let res = Control::delete_principal(&pool, id, 0)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!(
+                        "deleted principal id={} ({})",
+                        id,
+                        res.get("deleted_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&target)
+                    );
+                }
+                PrincipalVerb::PruneTest => {
+                    let list = Control::list_principals(&pool)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let mut pruned = 0usize;
+                    for p in list {
+                        let id = p.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                        let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        if name.starts_with("test-") || name.starts_with("test_") {
+                            let toks = Control::list_tokens(&pool, id)
+                                .await
+                                .unwrap_or_default();
+                            let has_active = toks
+                                .iter()
+                                .any(|t| !t.get("revoked").and_then(|b| b.as_bool()).unwrap_or(false));
+                            if !has_active && Control::delete_principal(&pool, id, 0).await.is_ok() {
+                                pruned += 1;
+                            }
+                        }
+                    }
+                    println!("pruned {} zero-token test principal(s).", pruned);
                 }
             }
             Ok(())
         }
         Commands::Token { verb } => {
+            use std::io::IsTerminal;
             let pool = build_pool(&dsn(&cfg), 4)?;
             Control::init(&pool).await.map_err(|e| e.to_string())?;
             match verb {
@@ -3403,25 +3706,240 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                     principal,
                     label,
                     ttl_days,
+                    json: as_json,
                 } => {
-                    let pid = lookup_principal_id(&pool, &principal).await?;
-                    let tok = Control::mint_token(&pool, pid, label.as_deref(), ttl_days)
+                    let pid = if principal.eq_ignore_ascii_case("admin") {
+                        let id = Control::create_principal(&pool, "admin", "user")
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        Control::grant(&pool, id, "*", true, true)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        id
+                    } else {
+                        lookup_principal_id(&pool, &principal).await?
+                    };
+                    let lbl = label.or_else(|| {
+                        if principal.eq_ignore_ascii_case("admin") {
+                            Some("cli-admin".to_string())
+                        } else {
+                            None
+                        }
+                    });
+                    let tok = Control::mint_token(&pool, pid, lbl.as_deref(), ttl_days)
                         .await
                         .map_err(|e| e.to_string())?;
-                    println!("{}", tok);
+                    if principal.eq_ignore_ascii_case("admin")
+                        && cfg
+                            .admin_token
+                            .as_ref()
+                            .map(|s| s.trim().is_empty())
+                            .unwrap_or(true)
+                    {
+                        cfg.admin_token = Some(tok.clone());
+                        let _ = save_config(&cfg);
+                    }
+                    if as_json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&json!({
+                                "principal": principal,
+                                "principal_id": pid,
+                                "label": lbl,
+                                "ttl_days": ttl_days,
+                                "token": tok,
+                            }))
+                            .unwrap()
+                        );
+                    } else {
+                        println!("{}", tok);
+                    }
                 }
-                TokenVerb::Ls { principal } => {
-                    let pid = lookup_principal_id(&pool, &principal).await?;
-                    let list = Control::list_tokens(&pool, pid)
+                TokenVerb::Ls {
+                    principal,
+                    reveal,
+                    revoked,
+                    json: as_json,
+                } => {
+                    let pid = match principal.as_deref() {
+                        Some(p) if !p.trim().is_empty() && p != "*" && p != "all" => {
+                            if let Ok(id) = p.parse::<i64>() {
+                                id
+                            } else {
+                                lookup_principal_id(&pool, p).await?
+                            }
+                        }
+                        _ => 0,
+                    };
+                    let mut list = Control::list_tokens(&pool, pid)
                         .await
                         .map_err(|e| e.to_string())?;
-                    println!("{}", serde_json::to_string_pretty(&list).unwrap());
+                    if !revoked {
+                        list.retain(|t| !t.get("revoked").and_then(|b| b.as_bool()).unwrap_or(false));
+                    }
+                    if reveal {
+                        for t in list.iter_mut() {
+                            let id = t.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                            let is_rev = t.get("revoked").and_then(|b| b.as_bool()).unwrap_or(false);
+                            if id > 0 && !is_rev {
+                                if let Ok(rv) = Control::reveal_token(&pool, id).await {
+                                    if let Some(plain) = rv.get("token").and_then(|s| s.as_str()) {
+                                        if let Some(obj) = t.as_object_mut() {
+                                            obj.insert("token".to_string(), json!(plain));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if as_json || !io::stdout().is_terminal() {
+                        println!("{}", serde_json::to_string_pretty(&list).unwrap());
+                    } else if list.is_empty() {
+                        println!("No matching tokens found. Mint an admin token with `memnos admin` or `memnos token mint`.");
+                    } else {
+                        println!(
+                            "{:<6} {:<18} {:<16} {:<9} {:<20} {}",
+                            "ID",
+                            "PRINCIPAL",
+                            "LABEL",
+                            "STATUS",
+                            "CREATED",
+                            if reveal { "TOKEN" } else { "HINT (--reveal for full)" }
+                        );
+                        println!("{}", "-".repeat(96));
+                        for t in &list {
+                            let id = t.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                            let pname = t
+                                .get("principal_name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?");
+                            let lbl = t.get("label").and_then(|v| v.as_str()).unwrap_or("—");
+                            let is_rev = t.get("revoked").and_then(|b| b.as_bool()).unwrap_or(false);
+                            let st = if is_rev { "REVOKED" } else { "ACTIVE" };
+                            let created = t
+                                .get("created_at")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.chars().take(19).collect::<String>())
+                                .unwrap_or_default();
+                            let secret = t
+                                .get("token")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| t.get("hint").and_then(|v| v.as_str()))
+                                .unwrap_or("mnk_••••••••");
+                            println!(
+                                "{:<6} {:<18} {:<16} {:<9} {:<20} {}",
+                                id, pname, lbl, st, created, secret
+                            );
+                        }
+                    }
+                }
+                TokenVerb::Reveal { id, json: as_json } => {
+                    let rv = Control::reveal_token(&pool, id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if as_json {
+                        println!("{}", serde_json::to_string_pretty(&rv).unwrap());
+                    } else {
+                        println!(
+                            "{}",
+                            rv.get("token").and_then(|v| v.as_str()).unwrap_or("")
+                        );
+                    }
                 }
                 TokenVerb::Revoke { id } => {
                     Control::revoke_token_by_id(&pool, id)
                         .await
                         .map_err(|e| e.to_string())?;
                     println!("revoked token id={}", id);
+                }
+            }
+            Ok(())
+        }
+        Commands::Worker { verb } => {
+            match verb {
+                WorkerVerb::Status { token } => {
+                    let resp = http_get_json(&cfg, "/workspace/api/spawner/status", token.as_deref(), 10)?;
+                    println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                }
+                WorkerVerb::Launch {
+                    name,
+                    harness,
+                    model,
+                    prompt,
+                    channels,
+                    cwd,
+                    namespace,
+                    token,
+                } => {
+                    let ns = resolve_ns_arg(&namespace);
+                    let ch_list: Vec<String> = channels
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    let dir = cwd.unwrap_or_else(|| {
+                        env::current_dir()
+                            .unwrap_or_else(|_| PathBuf::from("."))
+                            .to_string_lossy()
+                            .to_string()
+                    });
+                    let resp = http_post_json(
+                        &cfg,
+                        "/workspace/api/spawner/launch",
+                        token.as_deref(),
+                        &json!({
+                            "namespace": ns,
+                            "name": name,
+                            "harness": harness,
+                            "model": model,
+                            "prompt": prompt,
+                            "channels": ch_list,
+                            "cwd": dir,
+                        }),
+                        20,
+                    )?;
+                    println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                }
+                WorkerVerb::Stop {
+                    name,
+                    namespace,
+                    token,
+                } => {
+                    let ns = resolve_ns_arg(&namespace);
+                    let resp = http_post_json(
+                        &cfg,
+                        "/workspace/api/spawner/stop",
+                        token.as_deref(),
+                        &json!({ "namespace": ns, "name": name }),
+                        10,
+                    )?;
+                    println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                }
+                WorkerVerb::Logs {
+                    name,
+                    namespace,
+                    token,
+                } => {
+                    let ns = resolve_ns_arg(&namespace);
+                    let ns_enc: String =
+                        url::form_urlencoded::byte_serialize(ns.as_bytes()).collect();
+                    let nm_enc: String =
+                        url::form_urlencoded::byte_serialize(name.as_bytes()).collect();
+                    let resp = http_get_json(
+                        &cfg,
+                        &format!("/workspace/api/spawner/logs?namespace={}&name={}", ns_enc, nm_enc),
+                        token.as_deref(),
+                        10,
+                    )?;
+                    if let Some(lines) = resp.get("lines").and_then(|v| v.as_array()) {
+                        for ln in lines {
+                            if let Some(s) = ln.as_str() {
+                                println!("{}", s);
+                            }
+                        }
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                    }
                 }
             }
             Ok(())
@@ -3643,7 +4161,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             name,
             dst,
             to,
-            like: _,
+            like,
             desc,
             kind,
             inherit_ancestors,
@@ -3657,7 +4175,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             let pool = build_pool(&dsn(&cfg), 4)?;
             Control::init(&pool).await.map_err(|e| e.to_string())?;
             match action.as_str() {
-                "add" => {
+                "add" | "create" => {
                     let n = name.ok_or("namespace name required")?;
                     Control::create_namespace(&pool, &n, None, desc.as_deref())
                         .await
@@ -3669,13 +4187,24 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                     }
                     println!("created namespace '{}'", n);
                 }
-                "ls" => {
+                "ls" | "list" => {
                     let list = Control::list_namespaces(&pool)
                         .await
                         .map_err(|e| e.to_string())?;
                     println!("{}", serde_json::to_string_pretty(&list).unwrap());
                 }
-                "rm" => {
+                "detail" | "inspect" => {
+                    let n = name.unwrap_or_else(|| resolve_ns_arg("auto"));
+                    let pid = Control::create_principal(&pool, "admin", "user")
+                        .await
+                        .unwrap_or(1);
+                    let _ = Control::grant(&pool, pid, "*", true, true).await;
+                    let d = Control::workspace_namespace_detail(&pool, pid, &n)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("{}", serde_json::to_string_pretty(&d).unwrap());
+                }
+                "rm" | "delete" => {
                     let n = name.ok_or("namespace name required")?;
                     Control::delete_namespace(&pool, &n, purge)
                         .await
@@ -3698,7 +4227,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 }
                 "link" => {
                     let s = name.ok_or("src namespace required")?;
-                    let d = dst.ok_or("dst namespace required")?;
+                    let d = dst.or(to).ok_or("dst namespace required")?;
                     Control::link_namespaces(&pool, &s, &d, None, &link_kind)
                         .await
                         .map_err(|e| e.to_string())?;
@@ -3706,7 +4235,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 }
                 "unlink" => {
                     let s = name.ok_or("src namespace required")?;
-                    let d = dst.ok_or("dst namespace required")?;
+                    let d = dst.or(to).ok_or("dst namespace required")?;
                     Control::unlink_namespaces(&pool, &s, &d)
                         .await
                         .map_err(|e| e.to_string())?;
@@ -3718,17 +4247,69 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                         .map_err(|e| e.to_string())?;
                     println!("{}", serde_json::to_string_pretty(&l).unwrap());
                 }
-                "copy" | "move" => {
+                "copy" | "move" | "merge" => {
                     let s = name.ok_or("source namespace required")?;
-                    let d = to.or(dst).ok_or("--to <dest> required")?;
+                    let d = to
+                        .or(dst)
+                        .ok_or("destination namespace required (`<dst>` or `--to <dst>`)")?;
+                    let pid = Control::create_principal(&pool, "admin", "user")
+                        .await
+                        .unwrap_or(1);
+                    let _ = Control::grant(&pool, pid, "*", true, true).await;
+                    let include_cp = matches!(action.as_str(), "move" | "merge");
+                    let remove_src = action == "move" || (action == "merge" && purge);
+                    let preview = Control::workspace_namespace_transfer_preview(
+                        &pool,
+                        pid,
+                        &s,
+                        like.as_deref(),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                    if dry_run {
+                        println!("{}", serde_json::to_string_pretty(&preview).unwrap());
+                        return Ok(());
+                    }
+                    let _ = Control::create_namespace(&pool, &d, Some(pid), None).await;
                     let store = build_store_from_cfg(&cfg, pool.clone()).await?;
-                    let out = store.copy_memories_from(&s, &d, &[]).await?;
-                    if action == "move" {
+                    let mem_mode = if action == "copy" { "copy" } else { "move" };
+                    let mem_out = store
+                        .namespace_copy(&s, &d, mem_mode, like.as_deref(), Some(pid))
+                        .await?;
+                    let cp_out = if include_cp {
+                        Control::workspace_transfer_control_plane(
+                            &pool,
+                            pid,
+                            true,
+                            &s,
+                            &d,
+                            like.as_deref(),
+                            true,
+                            action == "merge" || action == "move",
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?
+                    } else {
+                        json!({})
+                    };
+                    if remove_src {
                         Control::delete_namespace(&pool, &s, true)
                             .await
                             .map_err(|e| e.to_string())?;
                     }
-                    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "ok": true,
+                            "mode": action,
+                            "source": s,
+                            "destination": d,
+                            "removed_source": remove_src,
+                            "memories": mem_out,
+                            "control_plane": cp_out,
+                        }))
+                        .unwrap()
+                    );
                 }
                 "cleanup-graph" => {
                     let store = build_store_from_cfg(&cfg, pool).await?;
@@ -4229,7 +4810,12 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             );
             Ok(())
         }
-        Commands::Admin => {
+        Commands::Admin {
+            rotate,
+            raw,
+            json: as_json,
+        } => {
+            use std::io::IsTerminal;
             let pool = build_pool(&dsn(&cfg), 4)?;
             Control::init(&pool).await.map_err(|e| e.to_string())?;
             let pid = Control::create_principal(&pool, "admin", "user")
@@ -4238,12 +4824,67 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             Control::grant(&pool, pid, "*", true, true)
                 .await
                 .map_err(|e| e.to_string())?;
-            let tok = Control::mint_token(&pool, pid, Some("cli-admin"), None)
-                .await
-                .map_err(|e| e.to_string())?;
-            cfg.admin_token = Some(tok.clone());
-            let _ = save_config(&cfg);
-            println!("{}", tok);
+
+            let mut reused = false;
+            let mut tok = String::new();
+            if !rotate {
+                if let Some(existing) = cfg
+                    .admin_token
+                    .as_ref()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                {
+                    if let Ok(Some(auth_pid)) = Control::authenticate(&pool, &existing).await {
+                        if Control::is_admin(&pool, auth_pid).await.unwrap_or(false) {
+                            tok = existing;
+                            reused = true;
+                        }
+                    }
+                }
+            }
+            if tok.is_empty() {
+                tok = Control::mint_token(&pool, pid, Some("cli-admin"), None)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                cfg.admin_token = Some(tok.clone());
+                let _ = save_config(&cfg);
+            }
+
+            let url = server_url(&cfg);
+            let cfg_file = config_dir().join("config.json");
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "server_url": url,
+                        "principal": "admin",
+                        "principal_id": pid,
+                        "token": tok,
+                        "reused": reused,
+                        "config": cfg_file.to_string_lossy(),
+                    }))
+                    .unwrap()
+                );
+            } else if raw || !io::stdout().is_terminal() {
+                println!("{}", tok);
+            } else {
+                println!("=== MEMNOS Admin Credentials ===");
+                println!("  Server URL:   {}", url);
+                println!("  Principal:    admin (* read/write)");
+                println!("  Admin Token:  {}", tok);
+                println!(
+                    "  Status:       {} (saved in {})",
+                    if reused {
+                        "active existing token"
+                    } else {
+                        "freshly minted"
+                    },
+                    cfg_file.display()
+                );
+                println!("\n  Launch Desktop App:  memnos app");
+                println!("  List All Tokens:     memnos token ls --reveal");
+                println!("  Rotate Admin Token:  memnos admin --rotate");
+            }
             Ok(())
         }
         Commands::Backup { out, keep } => {

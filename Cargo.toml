@@ -2,6 +2,7 @@
 name = "memnos"
 version = "0.1.64"
 edition = "2021"
+autobins = false
 build = "rust/build.rs"
 description = "Self-hostable, governed, vendor-neutral memory and multi-agent coordination engine (single binary)"
 license = "Apache-2.0"
@@ -15,6 +16,10 @@ path = "rust/src/lib.rs"
 [[bin]]
 name = "memnos"
 path = "rust/src/main.rs"
+
+[[bin]]
+name = "memnos-desktop"
+path = "rust/src/bin/memnos_desktop.rs"
 
 [dependencies]
 tokio = { version = "1.39", features = ["full"] }
@@ -49,13 +54,15 @@ candle-core = { version = "0.8", default-features = false }
 candle-nn = { version = "0.8", default-features = false }
 candle-transformers = { version = "0.8", default-features = false }
 
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tao = "0.30"
+wry = "0.47"
+muda = "0.15"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 candle-core = { version = "0.8", default-features = false, features = ["accelerate"] }
 candle-nn = { version = "0.8", default-features = false, features = ["accelerate"] }
 candle-transformers = { version = "0.8", default-features = false, features = ["accelerate"] }
-tao = "0.30"
-wry = "0.47"
-muda = "0.15"
 
 [profile.release]
 opt-level = 3

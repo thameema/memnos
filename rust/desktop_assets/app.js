@@ -165,7 +165,32 @@ function isLoopbackUrl(u) {
 const tok = () => localStorage.getItem("memnos_admin_token") || "";
 function serverBase() {
   const saved = (localStorage.getItem("memnos_server_url") || "").trim().replace(/\/+$/, "");
-  return saved || location.origin;
+  if (saved) return saved;
+  if (location.protocol === "http:" || location.protocol === "https:") return location.origin;
+  return DEFAULT_LOCAL_URL;
+}
+
+async function copyTextSafe(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (_) {}
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = String(text || "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 const API_TIMEOUT_MS = 30000;
@@ -3892,7 +3917,8 @@ function renderTokensRows() {
           const r = await api("GET", "tokens/reveal?id=" + id);
           revealedTokenMap[id] = r.token;
         }
-        try { await navigator.clipboard.writeText(revealedTokenMap[id]); showToast("Token copied to clipboard"); } catch (_) {}
+        await copyTextSafe(revealedTokenMap[id]);
+        showToast("Token copied to clipboard");
         renderTokensRows();
       } catch (e) {
         showToast(e.message, true);
@@ -3906,7 +3932,7 @@ function renderTokensRows() {
       const lbl = btn.dataset.rotLbl || "desktop-mint";
       try {
         const { token } = await api("POST", "tokens", { principal_id: pid, label: lbl, ttl_days: null });
-        try { await navigator.clipboard.writeText(token); } catch (_) {}
+        await copyTextSafe(token);
         const b = $("#tok-show");
         b.hidden = false;
         b.innerHTML = `Minted &amp; copied recoverable token:<br><code>${esc(token)}</code>`;

@@ -42,7 +42,8 @@
         </div>
         <div id="login-local-cli" class="muted">
           1. Start local engine: <code>memnos start</code><br>
-          2. Mint/print token: <code>memnos token mint admin --label desktop</code>
+          2. First-time admin token: <code>memnos admin</code><br>
+          3. List &amp; reveal tokens: <code>memnos token ls --reveal</code>
         </div>
       </div>
 
@@ -50,16 +51,17 @@
         <div class="conn-guide-hdr">Connect to an Existing Remote MEMNOS Instance</div>
         <div class="muted">
           Enter your team or cloud server URL (<code>https://...</code>) and token:<br>
-          • <b>Admin token</b> (full Settings &amp; all namespaces): <code>memnos token mint admin</code><br>
-          • <b>Role-scoped token</b> (granted namespaces only): <code>memnos principal create alice &amp;&amp; memnos grant add alice proj:app --write &amp;&amp; memnos token mint alice</code>
+          • <b>Admin token</b> (full Settings &amp; all namespaces): <code>memnos admin</code><br>
+          • <b>List existing tokens</b>: <code>memnos token ls --reveal</code><br>
+          • <b>Role-scoped token</b>: <code>memnos principal create alice &amp;&amp; memnos grant add alice proj:payments-sync &amp;&amp; memnos token mint alice</code>
         </div>
       </div>
 
       <label class="field-lbl" for="server-url">MEMNOS Server URL</label>
-      <input id="server-url" type="url" placeholder="http://127.0.0.1:8900" autocomplete="url">
+      <input id="server-url" type="url" placeholder="http://127.0.0.1:8900" autocomplete="off" spellcheck="false">
       <label class="field-lbl" for="token">Access Token</label>
       <div class="row">
-        <input id="token" type="password" placeholder="mnk_..." autocomplete="off">
+        <input id="token" type="text" class="masked-secret" placeholder="mnk_..." autocomplete="off" spellcheck="false" data-lpignore="true">
         <button id="signin" class="btn-primary">Connect</button>
       </div>
       <p id="loginerr" class="err"></p>
@@ -96,7 +98,7 @@
         <div class="conn-guide-hdr">Local MEMNOS (<code>http://127.0.0.1:8900</code>)</div>
         <div class="muted">
           Connects directly to the MEMNOS server running on this machine.<br>
-          Start if offline: <code>memnos start</code> · Mint token: <code>memnos token mint admin</code>
+          Start: <code>memnos start</code> · Admin token: <code>memnos admin</code> · List tokens: <code>memnos token ls --reveal</code>
         </div>
       </div>
 
@@ -110,9 +112,9 @@
       </div>
 
       <label class="field-lbl" for="modal-url">Server URL</label>
-      <input id="modal-url" type="url" placeholder="http://127.0.0.1:8900 or https://memnos.acme.dev">
+      <input id="modal-url" type="url" placeholder="http://127.0.0.1:8900 or https://memnos.acme.dev" autocomplete="off" spellcheck="false">
       <label class="field-lbl" for="modal-token">Access Token <span class="muted">(leave blank to keep current token)</span></label>
-      <input id="modal-token" type="password" placeholder="mnk_...">
+      <input id="modal-token" type="text" class="masked-secret" placeholder="mnk_..." autocomplete="off" spellcheck="false" data-lpignore="true">
       <p id="modal-err" class="err"></p>
       <div class="row" style="justify-content:flex-end;margin-top:14px">
         <button type="button" id="modal-use-local" class="ghost sm" hidden>Use Local Default</button>
@@ -957,7 +959,7 @@
               <p class="muted">AES-256-GCM encrypted at rest — reference secrets as <code>secret://name</code>.</p>
               <div class="row">
                 <input id="sec-name" placeholder="name (e.g. openai)">
-                <input id="sec-value" type="password" placeholder="value (stored encrypted)">
+                <input id="sec-value" type="text" class="masked-secret" placeholder="value (stored encrypted)" autocomplete="off" spellcheck="false" data-lpignore="true">
                 <input id="sec-desc" placeholder="description (optional)">
                 <button id="sec-set" class="btn-primary">Store</button>
               </div>

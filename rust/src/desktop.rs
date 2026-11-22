@@ -1,21 +1,16 @@
-//! Native Rust Desktop Workspace App (`memnos app` / `MEMNOS.app`).
+//! Native Desktop Workspace Launcher & Bundle Installer (`memnos app` / `MEMNOS.app`).
 //!
-//! Launches a native desktop window for the real-time MEMNOS Workspace (Slack-style `#channels`,
-//! `@handles`, role-scoped memory explorer, live activity stream, and server/DB telemetry),
-//! connecting to either the local MEMNOS instance or any remote `https://...` MEMNOS server.
+//! Launches the single-process native `memnos-desktop` workspace application and builds
+//! the macOS `MEMNOS.app` bundle (with Retina `AppIcon.icns`) without any browser or WebView
+//! dependencies in `memnos`.
 
 use crate::config::{home_dir, server_url, session_token, Config, BUILD_SHA, VERSION};
-use serde_json::json;
 use std::env;
 use std::fs;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
-const EMBED_HTML: &[u8] = include_bytes!("../../ui/index.html");
-const EMBED_CSS: &[u8] = include_bytes!("../../ui/app.css");
-const EMBED_JS: &[u8] = include_bytes!("../../ui/app.js");
-const EMBED_CLI: &[u8] = include_bytes!("../../ui/cli-reference.json");
-
-fn is_loopback_url(u: &str) -> bool {
+pub fn is_loopback_url(u: &str) -> bool {
     let l = u.to_ascii_lowercase();
     l.contains("://127.0.0.1") || l.contains("://localhost") || l.contains("://[::1]")
 }
@@ -54,75 +49,6 @@ pub fn resolve_app_target(
     (base_url, tok)
 }
 
-#[cfg(target_os = "macos")]
-fn crc32_png(data: &[u8]) -> u32 {
-    let mut crc: u32 = 0xffff_ffff;
-    for &b in data {
-        crc ^= b as u32;
-        for _ in 0..8 {
-            if crc & 1 != 0 {
-                crc = (crc >> 1) ^ 0xedb8_8320;
-            } else {
-                crc >>= 1;
-            }
-        }
-    }
-    !crc
-}
-
-#[cfg(target_os = "macos")]
-fn encode_uncompressed_rgba_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
-    let mut raw = Vec::with_capacity(((w * 4 + 1) * h) as usize);
-    for y in 0..h {
-        raw.push(0u8); // filter type 0 (None)
-        let row_start = (y * w * 4) as usize;
-        raw.extend_from_slice(&rgba[row_start..row_start + (w * 4) as usize]);
-    }
-
-    // Zlib stream using stored (uncompressed) deflate blocks
-    let mut z = Vec::with_capacity(raw.len() + 64);
-    z.extend_from_slice(&[0x78, 0x01]);
-    let chunks: Vec<&[u8]> = raw.chunks(65_535).collect();
-    for (i, ch) in chunks.iter().enumerate() {
-        let last = if i + 1 == chunks.len() { 1u8 } else { 0u8 };
-        z.push(last);
-        let len = ch.len() as u16;
-        z.extend_from_slice(&len.to_le_bytes());
-        z.extend_from_slice(&(!len).to_le_bytes());
-        z.extend_from_slice(ch);
-    }
-    // Adler-32 checksum
-    let mut s1: u32 = 1;
-    let mut s2: u32 = 0;
-    for &b in &raw {
-        s1 = (s1 + b as u32) % 65_521;
-        s2 = (s2 + s1) % 65_521;
-    }
-    let adler = (s2 << 16) | s1;
-    z.extend_from_slice(&adler.to_be_bytes());
-
-    fn push_chunk(out: &mut Vec<u8>, tag: &[u8; 4], payload: &[u8]) {
-        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-        let start = out.len();
-        out.extend_from_slice(tag);
-        out.extend_from_slice(payload);
-        let c = crc32_png(&out[start..]);
-        out.extend_from_slice(&c.to_be_bytes());
-    }
-
-    let mut png = Vec::with_capacity(z.len() + 128);
-    png.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
-    let mut ihdr = Vec::with_capacity(13);
-    ihdr.extend_from_slice(&w.to_be_bytes());
-    ihdr.extend_from_slice(&h.to_be_bytes());
-    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA
-    push_chunk(&mut png, b"IHDR", &ihdr);
-    push_chunk(&mut png, b"IDAT", &z);
-    push_chunk(&mut png, b"IEND", &[]);
-    png
-}
-
-#[cfg(target_os = "macos")]
 fn seg_dist(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
     let vx = bx - ax;
     let vy = by - ay;
@@ -139,8 +65,10 @@ fn seg_dist(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
     (dx * dx + dy * dy).sqrt()
 }
 
-#[cfg(target_os = "macos")]
-fn render_memnos_brand_rgba(size: u32) -> Vec<u8> {
+/// Renders the MEMNOS rounded-squircle brand icon (`M` monogram over Aubergine -> Violet -> Magenta)
+/// into an 8-bit RGBA buffer of `size * size * 4` bytes. Used both for window `IconData` on
+/// macOS/Windows/Linux and for generating macOS Retina `AppIcon.icns`.
+pub fn render_memnos_brand_rgba(size: u32) -> Vec<u8> {
     let n = size as usize;
     let mut buf = vec![0u8; n * n * 4];
     let inv = 1.0 / (size as f32);
@@ -151,7 +79,6 @@ fn render_memnos_brand_rgba(size: u32) -> Vec<u8> {
             let u = (x as f32 + 0.5) * inv;
             let v = (y as f32 + 0.5) * inv;
 
-            // macOS Big Sur / Sequoia rounded squircle inset (0.09..0.91 -> 82% footprint)
             let cx = (u - 0.5).abs();
             let cy = (v - 0.5).abs();
             let half = 0.412_f32;
@@ -167,7 +94,6 @@ fn render_memnos_brand_rgba(size: u32) -> Vec<u8> {
                 continue;
             }
 
-            // Diagonal MEMNOS Aubergine -> Electric Violet -> Magenta brand gradient
             let t = ((u - 0.09) * 0.58 + (v - 0.09) * 0.62).clamp(0.0, 1.0);
             let (mut rr, mut gg, mut bb) = if t < 0.52 {
                 let k = t / 0.52;
@@ -185,13 +111,11 @@ fn render_memnos_brand_rgba(size: u32) -> Vec<u8> {
                 )
             };
 
-            // Subtle top-left glass rim highlight
             let rim = (1.0 - ((u - 0.28).powi(2) + (v - 0.18).powi(2)).sqrt() * 2.1).clamp(0.0, 1.0);
             rr = (rr + rim * 22.0).min(255.0);
             gg = (gg + rim * 22.0).min(255.0);
             bb = (bb + rim * 22.0).min(255.0);
 
-            // Bold geometric 'M' monogram matching the inline SVG logo across MEMNOS
             let stroke = 0.052_f32;
             let d1 = seg_dist(u, v, 0.275, 0.285, 0.275, 0.715) - stroke;
             let d2 = seg_dist(u, v, 0.725, 0.285, 0.725, 0.715) - stroke;
@@ -215,7 +139,73 @@ fn render_memnos_brand_rgba(size: u32) -> Vec<u8> {
 }
 
 #[cfg(target_os = "macos")]
-fn build_macos_icns(resources_dir: &std::path::Path) -> Result<(), String> {
+fn crc32_png(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xffff_ffff;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xedb8_8320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    !crc
+}
+
+#[cfg(target_os = "macos")]
+fn encode_uncompressed_rgba_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    let mut raw = Vec::with_capacity(((w * 4 + 1) * h) as usize);
+    for y in 0..h {
+        raw.push(0u8);
+        let row_start = (y * w * 4) as usize;
+        raw.extend_from_slice(&rgba[row_start..row_start + (w * 4) as usize]);
+    }
+
+    let mut z = Vec::with_capacity(raw.len() + 64);
+    z.extend_from_slice(&[0x78, 0x01]);
+    let chunks: Vec<&[u8]> = raw.chunks(65_535).collect();
+    for (i, ch) in chunks.iter().enumerate() {
+        let last = if i + 1 == chunks.len() { 1u8 } else { 0u8 };
+        z.push(last);
+        let len = ch.len() as u16;
+        z.extend_from_slice(&len.to_le_bytes());
+        z.extend_from_slice(&(!len).to_le_bytes());
+        z.extend_from_slice(ch);
+    }
+    let mut s1: u32 = 1;
+    let mut s2: u32 = 0;
+    for &b in &raw {
+        s1 = (s1 + b as u32) % 65_521;
+        s2 = (s2 + s1) % 65_521;
+    }
+    let adler = (s2 << 16) | s1;
+    z.extend_from_slice(&adler.to_be_bytes());
+
+    fn push_chunk(out: &mut Vec<u8>, tag: &[u8; 4], payload: &[u8]) {
+        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        let start = out.len();
+        out.extend_from_slice(tag);
+        out.extend_from_slice(payload);
+        let c = crc32_png(&out[start..]);
+        out.extend_from_slice(&c.to_be_bytes());
+    }
+
+    let mut png = Vec::with_capacity(z.len() + 128);
+    png.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&w.to_be_bytes());
+    ihdr.extend_from_slice(&h.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+    push_chunk(&mut png, b"IHDR", &ihdr);
+    push_chunk(&mut png, b"IDAT", &z);
+    push_chunk(&mut png, b"IEND", &[]);
+    png
+}
+
+#[cfg(target_os = "macos")]
+fn build_macos_icns(resources_dir: &Path) -> Result<(), String> {
     fs::create_dir_all(resources_dir).map_err(|e| e.to_string())?;
     let tmp_root = env::temp_dir().join(format!("memnos-icon-{}", std::process::id()));
     let iconset = tmp_root.join("AppIcon.iconset");
@@ -277,26 +267,67 @@ fn build_macos_icns(resources_dir: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-pub fn install_macos_app_bundle() -> Result<std::path::PathBuf, String> {
-    let exe = env::current_exe().map_err(|e| e.to_string())?;
-    let preferred_bin = home_dir().join(".memnos").join("bin").join("memnos");
-    let src_bin = if exe
-        .file_name()
-        .map(|n| n != "memnos-desktop")
-        .unwrap_or(false)
-        && exe.is_file()
-    {
-        fs::canonicalize(&exe).unwrap_or(exe)
-    } else if preferred_bin.is_file() {
-        fs::canonicalize(&preferred_bin).unwrap_or(preferred_bin)
+pub fn find_desktop_binary() -> Result<PathBuf, String> {
+    let bin_name = if cfg!(windows) {
+        "memnos-desktop.exe"
     } else {
-        exe
+        "memnos-desktop"
     };
 
-    let sys_apps = std::path::PathBuf::from("/Applications");
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = env::current_exe() {
+        if let Ok(canon) = fs::canonicalize(&exe) {
+            if let Some(dir) = canon.parent() {
+                candidates.push(dir.join(bin_name));
+            }
+        }
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join(bin_name));
+        }
+    }
+    let home = home_dir();
+    candidates.push(home.join(".memnos").join("bin").join(bin_name));
+    candidates.push(home.join(".local").join("bin").join(bin_name));
+
+    #[cfg(target_os = "macos")]
+    {
+        candidates.push(
+            home.join("Applications")
+                .join("MEMNOS.app")
+                .join("Contents")
+                .join("MacOS")
+                .join("memnos-desktop"),
+        );
+        candidates.push(PathBuf::from(
+            "/Applications/MEMNOS.app/Contents/MacOS/memnos-desktop",
+        ));
+    }
+
+    if let Ok(path_var) = env::var("PATH") {
+        for dir in env::split_paths(&path_var) {
+            candidates.push(dir.join(bin_name));
+        }
+    }
+
+    for cand in candidates {
+        if cand.is_file() {
+            return Ok(fs::canonicalize(&cand).unwrap_or(cand));
+        }
+    }
+
+    Err(format!(
+        "`{}` binary not found alongside `memnos` or in ~/.memnos/bin — install or build the desktop package first",
+        bin_name
+    ))
+}
+
+#[cfg(target_os = "macos")]
+pub fn install_macos_app_bundle() -> Result<PathBuf, String> {
+    let src_bin = find_desktop_binary()?;
+    let sys_apps = PathBuf::from("/Applications");
     let user_apps = home_dir().join("Applications");
-    let write_bundle = |apps_dir: &std::path::Path| -> Result<std::path::PathBuf, String> {
+
+    let write_bundle = |apps_dir: &Path| -> Result<PathBuf, String> {
         let bundle = apps_dir.join("MEMNOS.app");
         let contents = bundle.join("Contents");
         let macos_dir = contents.join("MacOS");
@@ -343,20 +374,25 @@ pub fn install_macos_app_bundle() -> Result<std::path::PathBuf, String> {
         );
         fs::write(contents.join("Info.plist"), plist).map_err(|e| e.to_string())?;
 
-        // Copy native Mach-O binary atomically inside Contents/MacOS/memnos-desktop so macOS
-        // NSBundle.mainBundle resolves to MEMNOS.app and renders AppIcon.icns in Dock & Cmd+Tab!
-        let launcher_tmp = macos_dir.join("memnos-desktop.new");
         let launcher = macos_dir.join("memnos-desktop");
-        fs::copy(&src_bin, &launcher_tmp).map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&launcher_tmp, fs::Permissions::from_mode(0o755));
+        let same_inode = fs::canonicalize(&launcher)
+            .ok()
+            .map(|p| p == src_bin)
+            .unwrap_or(false);
+
+        if !same_inode {
+            let launcher_tmp = macos_dir.join("memnos-desktop.new");
+            fs::copy(&src_bin, &launcher_tmp).map_err(|e| e.to_string())?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&launcher_tmp, fs::Permissions::from_mode(0o755));
+            }
+            let _ = Command::new("codesign")
+                .args(["-s", "-", "-f", &launcher_tmp.to_string_lossy()])
+                .output();
+            fs::rename(&launcher_tmp, &launcher).map_err(|e| e.to_string())?;
         }
-        let _ = Command::new("codesign")
-            .args(["-s", "-", "-f", &launcher_tmp.to_string_lossy()])
-            .output();
-        fs::rename(&launcher_tmp, &launcher).map_err(|e| e.to_string())?;
 
         let _ = Command::new("codesign")
             .args(["-s", "-", "-f", "--deep", &bundle.to_string_lossy()])
@@ -371,66 +407,14 @@ pub fn install_macos_app_bundle() -> Result<std::path::PathBuf, String> {
     };
 
     let primary = write_bundle(&user_apps)?;
-    // Also mirror into /Applications/MEMNOS.app when writable so Launchpad & Finder Applications show MEMNOS natively
     let _ = write_bundle(&sys_apps);
     Ok(primary)
-}
-
-fn open_in_browser_or_app_mode(full_url: &str, force_browser: bool) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = force_browser;
-        Command::new("open")
-            .arg(full_url)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-    #[cfg(target_os = "windows")]
-    {
-        if !force_browser {
-            for candidate in ["msedge", "chrome"] {
-                if Command::new(candidate)
-                    .arg(format!("--app={}", full_url))
-                    .spawn()
-                    .is_ok()
-                {
-                    return Ok(());
-                }
-            }
-        }
-        Command::new("cmd")
-            .args(["/C", "start", "", full_url])
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    {
-        if !force_browser {
-            for candidate in ["google-chrome", "chromium", "chromium-browser", "microsoft-edge"] {
-                if Command::new(candidate)
-                    .arg(format!("--app={}", full_url))
-                    .spawn()
-                    .is_ok()
-                {
-                    return Ok(());
-                }
-            }
-        }
-        Command::new("xdg-open")
-            .arg(full_url)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
 }
 
 pub fn run_desktop_app(
     url_opt: Option<&str>,
     token_opt: Option<&str>,
     install_bundle: bool,
-    open_browser: bool,
     cfg: &Config,
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -444,229 +428,58 @@ pub fn run_desktop_app(
     }
     #[cfg(not(target_os = "macos"))]
     if install_bundle {
-        println!("[memnos] `memnos app --install` creates a `.app` bundle on macOS; run `memnos app` directly on this OS.");
+        let bin = find_desktop_binary()?;
+        println!(
+            "[memnos] desktop binary ready at {} (run `memnos app` to launch)",
+            bin.display()
+        );
         return Ok(());
     }
 
     let (base_url, token) = resolve_app_target(url_opt, token_opt, cfg);
-    let browser_url = if token.is_empty() {
-        format!("{}/app", base_url)
-    } else {
-        format!(
-            "{}/app#token={}&url={}",
-            base_url,
-            url::form_urlencoded::byte_serialize(token.as_bytes()).collect::<String>(),
-            url::form_urlencoded::byte_serialize(base_url.as_bytes()).collect::<String>()
-        )
-    };
-
-    if open_browser {
-        println!("[memnos] opening workspace in browser -> {}/app", base_url);
-        return open_in_browser_or_app_mode(&browser_url, true);
-    }
 
     #[cfg(target_os = "macos")]
     {
-        let inside_bundle = env::current_exe()
-            .ok()
-            .and_then(|p| p.file_name().map(|n| n == "memnos-desktop"))
-            .unwrap_or(false);
-        if !inside_bundle {
-            if let Ok(bundle) = install_macos_app_bundle() {
-                let mut cmd = Command::new("open");
-                cmd.arg("-a").arg(&bundle);
-                if url_opt.is_some() || token_opt.is_some() {
-                    cmd.arg("--args");
-                    if let Some(u) = url_opt {
-                        cmd.args(["--url", u]);
-                    }
-                    if let Some(t) = token_opt {
-                        cmd.args(["--token", t]);
-                    }
+        if let Ok(bundle) = install_macos_app_bundle() {
+            let mut cmd = Command::new("open");
+            cmd.arg("-a").arg(&bundle);
+            if url_opt.is_some() || token_opt.is_some() {
+                cmd.arg("--args");
+                if let Some(u) = url_opt {
+                    cmd.args(["--url", u]);
                 }
-                if cmd.status().map(|s| s.success()).unwrap_or(false) {
-                    return Ok(());
+                if let Some(t) = token_opt {
+                    cmd.args(["--token", t]);
                 }
+            }
+            if cmd.status().map(|s| s.success()).unwrap_or(false) {
+                println!(
+                    "[memnos] launched MEMNOS.app -> {} ({})",
+                    base_url,
+                    if token.is_empty() {
+                        "connect screen"
+                    } else {
+                        "authenticated"
+                    }
+                );
+                return Ok(());
             }
         }
-        return launch_macos_webview(&base_url, &token);
     }
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        println!("[memnos] launching MEMNOS workspace -> {}/app", base_url);
-        open_in_browser_or_app_mode(&browser_url, false)
+    let desktop_bin = find_desktop_binary()?;
+    let mut cmd = Command::new(&desktop_bin);
+    if let Some(u) = url_opt {
+        cmd.args(["--url", u]);
     }
-}
-
-#[cfg(target_os = "macos")]
-fn launch_macos_webview(base_url: &str, token: &str) -> Result<(), String> {
-    use muda::{Menu, PredefinedMenuItem, Submenu};
-    use tao::{
-        dpi::LogicalSize,
-        event::{Event, WindowEvent},
-        event_loop::{ControlFlow, EventLoop},
-        window::WindowBuilder,
-    };
-    use wry::{
-        dpi::{LogicalPosition as WryLogicalPos, LogicalSize as WryLogicalSize},
-        http::Response as HttpResponse,
-        Rect, WebViewBuilder,
-    };
-
-    let server_has_app = ureq::get(&format!("{}/app", base_url))
-        .timeout(std::time::Duration::from_millis(1200))
-        .call()
-        .map(|r| r.status() == 200)
-        .unwrap_or(false);
-
-    let start_url = if server_has_app {
-        format!("{}/app", base_url)
-    } else {
-        "memnos://localhost/index.html".to_string()
-    };
-
-    let local_cfg = crate::config::load_config();
-    let local_url = server_url(&local_cfg).trim_end_matches('/').to_string();
-    let local_tok = local_cfg
-        .admin_token
-        .as_ref()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| session_token(&local_cfg));
-
-    let boot_script = format!(
-        "window.__MEMNOS_BOOT__ = {};",
-        json!({
-            "url": base_url,
-            "token": token,
-            "local_url": local_url,
-            "local_token": local_tok,
-            "desktop": true,
-            "app_version": VERSION,
-            "app_build": BUILD_SHA
-        })
-    );
-
-    let event_loop = EventLoop::new();
-
-    // Native macOS Menu bar so Cmd+Q, Cmd+W, Cmd+C, Cmd+V, Cmd+X, Cmd+A work natively
-    let menu_bar = Menu::new();
-    let app_m = Submenu::new("MEMNOS", true);
-    let _ = app_m.append_items(&[
-        &PredefinedMenuItem::about(None, None),
-        &PredefinedMenuItem::separator(),
-        &PredefinedMenuItem::services(None),
-        &PredefinedMenuItem::separator(),
-        &PredefinedMenuItem::hide(None),
-        &PredefinedMenuItem::hide_others(None),
-        &PredefinedMenuItem::show_all(None),
-        &PredefinedMenuItem::separator(),
-        &PredefinedMenuItem::quit(None),
-    ]);
-    let edit_m = Submenu::new("Edit", true);
-    let _ = edit_m.append_items(&[
-        &PredefinedMenuItem::undo(None),
-        &PredefinedMenuItem::redo(None),
-        &PredefinedMenuItem::separator(),
-        &PredefinedMenuItem::cut(None),
-        &PredefinedMenuItem::copy(None),
-        &PredefinedMenuItem::paste(None),
-        &PredefinedMenuItem::select_all(None),
-    ]);
-    let win_m = Submenu::new("Window", true);
-    let _ = win_m.append_items(&[
-        &PredefinedMenuItem::minimize(None),
-        &PredefinedMenuItem::maximize(None),
-        &PredefinedMenuItem::separator(),
-        &PredefinedMenuItem::close_window(None),
-    ]);
-    let _ = menu_bar.append_items(&[&app_m, &edit_m, &win_m]);
-    menu_bar.init_for_nsapp();
-
-    let title_ver = if BUILD_SHA.is_empty() {
-        format!("v{}", VERSION)
-    } else {
-        format!("v{} ({})", VERSION, BUILD_SHA)
-    };
-    let window = WindowBuilder::new()
-        .with_title(format!(
-            "MEMNOS {} · {}",
-            title_ver,
-            base_url
-                .trim_start_matches("http://")
-                .trim_start_matches("https://")
-        ))
-        .with_inner_size(LogicalSize::new(1380.0, 860.0))
-        .with_min_inner_size(LogicalSize::new(900.0, 560.0))
-        .build(&event_loop)
-        .map_err(|e| format!("window creation failed: {}", e))?;
-
-    let sf = window.scale_factor();
-    let init_logical = window.inner_size().to_logical::<f64>(sf);
-    let init_bounds = Rect {
-        position: WryLogicalPos::new(0.0, 0.0).into(),
-        size: WryLogicalSize::new(init_logical.width, init_logical.height).into(),
-    };
-
-    let webview = WebViewBuilder::new()
-        .with_bounds(init_bounds)
-        .with_background_color((20, 14, 24, 255))
-        .with_initialization_script(&boot_script)
-        .with_custom_protocol("memnos".into(), |_id, req| {
-            let path = req.uri().path();
-            let (ctype, bytes): (&str, &[u8]) = match path {
-                "/admin/app.css" | "/app.css" => ("text/css; charset=utf-8", EMBED_CSS),
-                "/admin/app.js" | "/app.js" => ("application/javascript; charset=utf-8", EMBED_JS),
-                "/admin/cli-reference.json" | "/cli-reference.json" => {
-                    ("application/json; charset=utf-8", EMBED_CLI)
-                }
-                _ => ("text/html; charset=utf-8", EMBED_HTML),
-            };
-            HttpResponse::builder()
-                .header("Content-Type", ctype)
-                .body(std::borrow::Cow::Borrowed(bytes))
-                .unwrap()
-        })
-        .with_url(&start_url)
-        .build_as_child(&window)
-        .map_err(|e| format!("webview creation failed: {}", e))?;
-
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
-        match event {
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => {
-                *control_flow = ControlFlow::Exit;
-            }
-            Event::WindowEvent {
-                event: WindowEvent::Resized(phys_size),
-                ..
-            } => {
-                let scale = window.scale_factor();
-                let logical = phys_size.to_logical::<f64>(scale);
-                let _ = webview.set_bounds(Rect {
-                    position: WryLogicalPos::new(0.0, 0.0).into(),
-                    size: WryLogicalSize::new(logical.width, logical.height).into(),
-                });
-            }
-            Event::WindowEvent {
-                event:
-                    WindowEvent::ScaleFactorChanged {
-                        scale_factor,
-                        new_inner_size,
-                    },
-                ..
-            } => {
-                let logical = new_inner_size.to_logical::<f64>(scale_factor);
-                let _ = webview.set_bounds(Rect {
-                    position: WryLogicalPos::new(0.0, 0.0).into(),
-                    size: WryLogicalSize::new(logical.width, logical.height).into(),
-                });
-            }
-            _ => {}
-        }
-    });
+    if let Some(t) = token_opt {
+        cmd.args(["--token", t]);
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("failed to launch {}: {}", desktop_bin.display(), e))?;
+    println!("[memnos] launched MEMNOS desktop -> {}", base_url);
+    Ok(())
 }

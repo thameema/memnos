@@ -1,6 +1,6 @@
 """CLI docs staleness gate: regenerates the CLI reference from the live argparse tree
 (`memnos docs-gen --check`) and fails if the committed docs/cli.md or
-ui/cli-reference.json no longer match — so a CLI change can't merge without its docs.
+docs/cli-reference.json no longer match — so a CLI change can't merge without its docs.
 
 Also asserts the legacy alias forms still PARSE (the field-compat guarantee):
 `memnos principal <name>` / `memnos token <principal>` / `memnos grant <p> <ns>`.
@@ -31,7 +31,7 @@ def main():
     print("=== docs staleness (docs-gen --check) ===")
     r = subprocess.run([PY, os.path.join(ROOT, "memnos_cli.py"), "docs-gen", "--check"],
                        capture_output=True, text=True, timeout=120)
-    check("docs/cli.md + ui/cli-reference.json match the argparse tree",
+    check("docs/cli.md + docs/cli-reference.json match the argparse tree",
           r.returncode == 0, (r.stdout + r.stderr).strip()[:300])
 
     print("=== generated artifacts are sane ===")
@@ -42,7 +42,7 @@ def main():
          "token ls", "token revoke", "grant add", "grant ls", "grant rm",
          "namespace", "secret")))
     check("cli.md has the Remote use section", "## Remote use" in md and "MEMNOS_URL" in md)
-    ref = json.load(open(os.path.join(ROOT, "ui", "cli-reference.json"), encoding="utf-8"))
+    ref = json.load(open(os.path.join(ROOT, "docs", "cli-reference.json"), encoding="utf-8"))
     cmds = [c["command"] for g in ref["groups"] for c in g["commands"]]
     check("cli-reference.json mirrors the tree", "token mint" in cmds and "remember" in cmds)
     check("hidden docs-gen excluded from docs",

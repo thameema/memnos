@@ -43,10 +43,11 @@ jobs:
         run: |
           rm -rf dist && mkdir -p dist
           BIN="./target/release/memnos${{ matrix.ext }}"
+          DBIN="./target/release/memnos-desktop${{ matrix.ext }}"
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            powershell -NoProfile -Command "Compress-Archive -Path '$BIN' -DestinationPath 'dist/memnos-${{ matrix.target_label }}.zip' -Force"
+            powershell -NoProfile -Command "Compress-Archive -Path '$BIN','$DBIN' -DestinationPath 'dist/memnos-${{ matrix.target_label }}.zip' -Force"
           else
-            tar -czf "dist/memnos-${{ matrix.target_label }}.tar.gz" -C ./target/release memnos
+            tar -czf "dist/memnos-${{ matrix.target_label }}.tar.gz" -C ./target/release memnos memnos-desktop
           fi
       - name: Run release hygiene gate on exact binary AND unpacked dist/ archive
         shell: bash
@@ -101,10 +102,11 @@ jobs:
         run: |
           rm -rf dist && mkdir -p dist
           BIN="./target/release/memnos${{ matrix.ext }}"
+          DBIN="./target/release/memnos-desktop${{ matrix.ext }}"
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            powershell -NoProfile -Command "Compress-Archive -Path '$BIN' -DestinationPath 'dist/memnos-${{ matrix.target_label }}.zip' -Force"
+            powershell -NoProfile -Command "Compress-Archive -Path '$BIN','$DBIN' -DestinationPath 'dist/memnos-${{ matrix.target_label }}.zip' -Force"
           else
-            tar -czf "dist/memnos-${{ matrix.target_label }}.tar.gz" -C ./target/release memnos
+            tar -czf "dist/memnos-${{ matrix.target_label }}.tar.gz" -C ./target/release memnos memnos-desktop
           fi
       - name: Enforce release hygiene gate on exact binary AND unpacked dist/ archive
         shell: bash
