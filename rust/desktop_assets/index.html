@@ -144,6 +144,7 @@
           <span class="pulse-dot"></span><span id="sse-text">RECONNECTING</span>
         </span>
         <button id="switch-server" class="chip-btn" title="Switch between Local MEMNOS and Remote Server"></button>
+        <button type="button" id="topbar-ask-btn" class="ask-top-pill" title="Ask MEMNOS AI — Overnight Catch-Up &amp; Agent Coordination (⌘K)">✦ Ask AI</button>
       </div>
 
       <div id="vitals-strip" class="vitals-strip"></div>
@@ -175,6 +176,12 @@
     <div class="app-body">
       <!-- Primary Far-Left Icon Rail -->
       <nav class="rail" aria-label="Primary sections">
+        <button class="rail-btn rail-ask-btn" data-section="ask" title="Ask MEMNOS AI — Catch-Up, Insights &amp; Coordination (⌘K)">
+          <span class="rail-glyph">✦</span>
+          <span class="rail-lbl">Ask AI</span>
+          <span id="rail-ask-dot" class="rail-badge ok" hidden>●</span>
+        </button>
+
         <button class="rail-btn active" data-section="channels" title="Channels (#)">
           <span class="rail-glyph">#</span>
           <span class="rail-lbl">Channels</span>
@@ -228,6 +235,124 @@
           <span class="rail-lbl">Settings</span>
         </button>
       </nav>
+
+      <!-- ============================================================ -->
+      <!-- SECTION 0: ASK MEMNOS — AI BRIEFING & COORDINATION COPILOT   -->
+      <!-- ============================================================ -->
+      <section id="sec-ask" class="workspace-split" hidden>
+        <aside class="list-pane ask-sidebar">
+          <div class="pane-hdr">
+            <div>
+              <div class="pane-title">✦ Ask MEMNOS</div>
+              <div class="pane-sub">Briefings &amp; coordination</div>
+            </div>
+            <button type="button" id="btn-ask-new" class="btn-primary sm" title="Start a new conversation">+ New</button>
+          </div>
+
+          <div class="ask-presets">
+            <div class="ask-sec-lbl">1-Click Catch-Up</div>
+            <button type="button" class="ask-preset-card" data-preset="away">
+              <span class="ask-preset-ico">🌙</span>
+              <div>
+                <div class="ask-preset-title">While I Was Away</div>
+                <div class="ask-preset-sub">Decisions, fixes &amp; channel threads</div>
+              </div>
+            </button>
+            <button type="button" class="ask-preset-card" data-preset="coord">
+              <span class="ask-preset-ico">🤝</span>
+              <div>
+                <div class="ask-preset-title">Agent Coordination</div>
+                <div class="ask-preset-sub">Who is online &amp; working on what</div>
+              </div>
+            </button>
+            <button type="button" class="ask-preset-card" data-preset="blockers">
+              <span class="ask-preset-ico">🚨</span>
+              <div>
+                <div class="ask-preset-title">Blockers &amp; Incidents</div>
+                <div class="ask-preset-sub">Stuck tasks, quota caps &amp; fixes</div>
+              </div>
+            </button>
+            <button type="button" class="ask-preset-card" data-preset="hygiene">
+              <span class="ask-preset-ico">🗂</span>
+              <div>
+                <div class="ask-preset-title">Channels &amp; Handles Audit</div>
+                <div class="ask-preset-sub">Idle channels &amp; stale sessions</div>
+              </div>
+            </button>
+          </div>
+
+          <div class="ask-sec-lbl" style="padding:10px 14px 4px">Recent Conversations</div>
+          <div id="ask-thread-list" class="item-list"></div>
+        </aside>
+
+        <main class="main-stage ask-stage">
+          <header class="stage-hdr ask-hdr">
+            <div class="ask-hdr-title-wrap">
+              <span class="ask-spark-badge">✦</span>
+              <div>
+                <div class="row" style="gap:8px">
+                  <span id="ask-thread-title" class="stage-title">Executive Briefing &amp; Coordination</span>
+                  <span id="ask-run-pill" class="pill ok" hidden>Running…</span>
+                </div>
+                <div class="stage-sub">Ask what happened while you were away, inspect agent handoffs, or manage <code>#channels</code> &amp; <code>@handles</code> directly.</div>
+              </div>
+            </div>
+
+            <div class="ask-controls-bar">
+              <label class="ask-ctrl-pill" title="Choose which AI harness answers and executes MEMNOS actions">
+                <span class="muted">Harness</span>
+                <select id="ask-harness-select">
+                  <option value="auto">⚡ Auto (Best Available)</option>
+                  <option value="builtin">Instant Digest (Built-in)</option>
+                </select>
+              </label>
+
+              <input id="ask-model-input" class="ask-model-inp" placeholder="Model (auto)" title="Optional model override (e.g. sonnet, opus, o3)">
+
+              <label class="ask-ctrl-pill" title="Lookback window for the automatic catch-up digest">
+                <span class="muted">Window</span>
+                <select id="ask-window-select">
+                  <option value="8" selected>Last 8h (Sleep/Away)</option>
+                  <option value="24">Last 24h</option>
+                  <option value="72">Last 3d</option>
+                  <option value="168">Last 7d</option>
+                </select>
+              </label>
+
+              <label class="ask-ctrl-pill" title="Namespace scope for context and actions">
+                <span class="muted">Scope</span>
+                <select id="ask-ns-select">
+                  <option value="*">All Spaces (*)</option>
+                </select>
+              </label>
+            </div>
+          </header>
+
+          <div id="ask-feed" class="ask-feed"></div>
+
+          <div id="ask-live-bar" class="ask-live-bar" hidden>
+            <span class="spinner"></span>
+            <span id="ask-live-step">Assembling memory &amp; coordination digest…</span>
+          </div>
+
+          <footer class="ask-composer-wrap">
+            <div class="ask-quick-chips">
+              <button type="button" class="ask-chip" data-fill="Catch me up on everything that happened while I was away — key decisions, completed work, #channel updates, and anything needing my attention.">🌙 Catch me up</button>
+              <button type="button" class="ask-chip" data-fill="Show how all online @handles are coordinating right now, what each agent is working on, and any open or claimed tasks.">🤝 Live coordination</button>
+              <button type="button" class="ask-chip" data-template="Create channel #release-sync in ">➕ Create #channel</button>
+              <button type="button" class="ask-chip" data-template="Subscribe @handle to #general in ">🔗 Subscribe @handle</button>
+              <button type="button" class="ask-chip" data-template="Send a task to @handle: ">📨 Assign @handle task</button>
+            </div>
+            <div class="ask-input-row">
+              <textarea id="ask-input" rows="2" placeholder="Ask what happened while you slept, inspect agent coordination, or type e.g. 'Create #sprint-sync and subscribe @claude-memnos'… (Enter to send, Shift+Enter for newline)"></textarea>
+              <div class="ask-send-col">
+                <button type="button" id="ask-stop-btn" class="danger sm" hidden>⏹ Stop</button>
+                <button type="button" id="ask-send-btn" class="btn-primary">Send ↵</button>
+              </div>
+            </div>
+          </footer>
+        </main>
+      </section>
 
       <!-- ============================================================ -->
       <!-- SECTION 1: CHANNELS WORKSPACE (Unique #channels across server)-->

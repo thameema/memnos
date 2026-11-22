@@ -769,6 +769,10 @@ function handleLiveActivity(ev) {
     if (progEl && ev.detail) progEl.textContent = ev.detail;
     return;
   }
+  if (op === "copilot/step" || op === "copilot/delta" || op === "copilot/done") {
+    handleCopilotRealtimeEvent(ev);
+    return;
+  }
   if (activeSection !== "live") {
     liveNewCount += 1;
     const badge = $("#rail-live-count");
@@ -1000,12 +1004,14 @@ function switchSection(sec) {
   }
   activeSection = sec;
   $$(".rail-btn").forEach(b => b.classList.toggle("active", b.dataset.section === sec));
-  ["channels", "handles", "namespaces", "live", "memories", "constraints", "telemetry", "doctor", "console"].forEach(k => {
+  ["ask", "channels", "handles", "namespaces", "live", "memories", "constraints", "telemetry", "doctor", "console"].forEach(k => {
     const el = $("#sec-" + k);
     if (el) el.hidden = (k !== sec);
   });
 
-  if (sec === "channels") {
+  if (sec === "ask") {
+    loadAskWorkspace();
+  } else if (sec === "channels") {
     renderChannelList();
     if (selectedChannel) { renderChannelHeaderAndInspector(); loadChannelMessages(false); }
   } else if (sec === "handles") {
@@ -1200,6 +1206,13 @@ async function refreshOverview(pickDefaults = false) {
     const docItems = [{ value: "*", label: "All authorized namespaces (*)" }]
       .concat(allNs.map(n => ({ value: n.name, label: n.name })));
     syncSelectOptions(docSel, docItems, prevDoc);
+  }
+  const askNsSel = $("#ask-ns-select");
+  if (askNsSel) {
+    const prevAskNs = askNsSel.value || ($("#ws-ns-filter")?.value || "*");
+    const askItems = [{ value: "*", label: "All Spaces (*)" }]
+      .concat(allNs.map(n => ({ value: n.name, label: n.name })));
+    syncSelectOptions(askNsSel, askItems, prevAskNs);
   }
 
   // Sync Harness filter dropdown in @Handles
@@ -4275,6 +4288,540 @@ async function loadUsagePanel() {
 }
 $("#usage-refresh").addEventListener("click", loadUsagePanel);
 $("#usage-days").addEventListener("change", loadUsagePanel);
+
+// ============================================================================
+// SECTION 0: ASK MEMNOS — Executive AI Briefing & Agent Coordination Copilot
+// ============================================================================
+let askState = {
+  threads: [],
+  harnesses: [],
+  activeThreadId: null,
+  messages: [],
+  digest: null,
+  running: false,
+  liveStep: "",
+};
+
+function renderAskMarkdown(raw) {
+  const blocks = [];
+  let text = String(raw || "").replace(/```([\w-]*)\n?([\s\S]*?)```/g, (_, _lang, code) => {
+    const idx = blocks.length;
+    blocks.push(`<pre><code>${esc(code.replace(/\n$/, ""))}</code></pre>`);
+    return `\u0000CODEBLOCK_${idx}\u0000`;
+  });
+
+  const lines = text.split("\n");
+  const out = [];
+  let inList = false;
+
+  const fmtInline = (s) => {
+    let h = esc(s);
+    h = h.replace(/`([^`\n]+)`/g, (_, inner) => {
+      if (/^#[a-zA-Z0-9_.-]+$/.test(inner)) {
+        return `<a href="#" class="ask-entity-link" data-jump-ch="${inner}">${inner}</a>`;
+      }
+      if (/^@[a-zA-Z0-9_.-]+$/.test(inner)) {
+        return `<a href="#" class="ask-entity-link" data-jump-hd="${inner.slice(1)}">${inner}</a>`;
+      }
+      return `<code>${inner}</code>`;
+    });
+    h = h.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+    h = h.replace(/(^|\s)_([^_\n]+)_(\s|[.,;!?]|$)/g, "$1<i>$2</i>$3");
+    h = h.replace(/(^|[\s(])(#[a-zA-Z0-9_.-]+)/g, '$1<a href="#" class="ask-entity-link" data-jump-ch="$2">$2</a>');
+    h = h.replace(/(^|[\s(])(@[a-zA-Z0-9_.-]+)/g, (_, pfx, hd) => `${pfx}<a href="#" class="ask-entity-link" data-jump-hd="${hd.slice(1)}">${hd}</a>`);
+    return h;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (/^\u0000CODEBLOCK_\d+\u0000$/.test(line.trim())) {
+      if (inList) { out.push("</ul>"); inList = false; }
+      out.push(line.trim());
+      continue;
+    }
+    if (!line.trim()) {
+      if (inList) { out.push("</ul>"); inList = false; }
+      continue;
+    }
+    if (line.startsWith("#### ")) {
+      if (inList) { out.push("</ul>"); inList = false; }
+      out.push(`<h4>${fmtInline(line.slice(5))}</h4>`);
+    } else if (line.startsWith("### ") || line.startsWith("## ")) {
+      if (inList) { out.push("</ul>"); inList = false; }
+      const rest = line.replace(/^#{2,3}\s+/, "");
+      out.push(`<h3>${fmtInline(rest)}</h3>`);
+    } else if (/^[-*•]\s+/.test(line.trim())) {
+      if (!inList) { out.push("<ul>"); inList = true; }
+      out.push(`<li>${fmtInline(line.trim().replace(/^[-*•]\s+/, ""))}</li>`);
+    } else if (line.trim().startsWith("> ")) {
+      if (inList) { out.push("</ul>"); inList = false; }
+      out.push(`<p style="border-left:3px solid var(--accent);padding-left:10px;color:var(--fg-soft)">${fmtInline(line.trim().slice(2))}</p>`);
+    } else {
+      if (inList) { out.push("</ul>"); inList = false; }
+      out.push(`<p>${fmtInline(line)}</p>`);
+    }
+  }
+  if (inList) out.push("</ul>");
+
+  return out.join("").replace(/\u0000CODEBLOCK_(\d+)\u0000/g, (_, idx) => blocks[+idx] || "");
+}
+
+function setAskRunningUi(isRunning, stepText) {
+  askState.running = !!isRunning;
+  if (stepText) askState.liveStep = stepText;
+  const bar = $("#ask-live-bar");
+  const stepEl = $("#ask-live-step");
+  const stopBtn = $("#ask-stop-btn");
+  const sendBtn = $("#ask-send-btn");
+  const runPill = $("#ask-run-pill");
+  const railDot = $("#rail-ask-dot");
+  if (bar) bar.hidden = !askState.running;
+  if (stepEl && askState.liveStep) stepEl.textContent = askState.liveStep;
+  if (stopBtn) stopBtn.hidden = !askState.running;
+  if (sendBtn) sendBtn.disabled = askState.running;
+  if (runPill) runPill.hidden = !askState.running;
+  if (railDot) railDot.hidden = !askState.running;
+}
+
+function syncAskHarnessPicker(harnesses) {
+  const sel = $("#ask-harness-select");
+  if (!sel || !Array.isArray(harnesses) || !harnesses.length) return;
+  const saved = localStorage.getItem("memnos_ask_harness") || sel.value || "auto";
+  const opts = harnesses.map(h => {
+    let lbl = h.label;
+    if (h.key === "auto") lbl = "⚡ Auto (Best Available)";
+    else if (h.key === "builtin") lbl = "Instant Digest (Built-in)";
+    else lbl = `${h.installed ? "●" : "○"} ${h.label}${h.installed ? "" : " (not installed)"}`;
+    return { value: h.key, label: lbl, disabled: !h.installed && h.key !== "auto" && h.key !== "builtin" };
+  });
+  const sig = JSON.stringify(opts);
+  if (sel.dataset.sig !== sig) {
+    sel.dataset.sig = sig;
+    sel.innerHTML = opts.map(o =>
+      `<option value="${esc(o.value)}"${o.disabled ? " disabled" : ""}>${esc(o.label)}</option>`
+    ).join("");
+  }
+  if (opts.some(o => o.value === saved && !o.disabled)) {
+    sel.value = saved;
+  } else {
+    sel.value = "auto";
+  }
+}
+
+function renderAskThreadSidebar() {
+  const box = $("#ask-thread-list");
+  if (!box) return;
+  const html = (askState.threads || []).map(t => {
+    const active = t.id === askState.activeThreadId ? " active" : "";
+    const hBadge = t.harness && t.harness !== "auto" ? ` · ${esc(t.harness)}` : "";
+    return `<div class="ask-thread-row${active}" data-tid="${t.id}">
+      <div class="ask-thread-main">
+        <div class="ask-thread-name">${esc(t.title || "Conversation")}</div>
+        <div class="ask-thread-meta">
+          <span>${esc(age(t.updated_at))} ago${hBadge}</span>
+          ${t.running ? '<span class="pill ok">live</span>' : ""}
+        </div>
+      </div>
+      <button type="button" class="ask-thread-del" data-del-tid="${t.id}" title="Delete conversation">✕</button>
+    </div>`;
+  }).join("") || `<div class="muted" style="padding:12px 14px;font-size:12px">No saved conversations yet — pick a 1-click catch-up above or ask anything below.</div>`;
+
+  setHtmlBySig(box, JSON.stringify(askState.threads) + ":" + askState.activeThreadId, html);
+  $$(".ask-thread-row", box).forEach(el => {
+    el.onclick = (e) => {
+      if (e.target.closest("[data-del-tid]")) return;
+      loadAskThread(+el.dataset.tid);
+    };
+  });
+  $$("[data-del-tid]", box).forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const tid = +btn.dataset.delTid;
+      try {
+        await wapi("DELETE", "chat/thread?thread_id=" + tid);
+        if (askState.activeThreadId === tid) {
+          askState.activeThreadId = null;
+          askState.messages = [];
+          $("#ask-thread-title").textContent = "Executive Briefing & Coordination";
+        }
+        await loadAskThreadsOnly();
+        renderAskFeed();
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    };
+  });
+}
+
+function renderAskFeed() {
+  const feed = $("#ask-feed");
+  if (!feed) return;
+
+  if (!askState.messages.length) {
+    const c = (askState.digest && askState.digest.counts) || {};
+    const hrs = $("#ask-window-select")?.value || "8";
+    const sampleNs = ($("#ask-ns-select")?.value && $("#ask-ns-select").value !== "*")
+      ? $("#ask-ns-select").value
+      : ((wsData?.namespaces || []).find(n => !n.name.startsWith("test:"))?.name || "proj:payments-sync");
+    const welcomeHtml = `
+      <div class="ask-welcome-card">
+        <div class="row" style="gap:12px;margin-bottom:6px">
+          <span class="ask-spark-badge" style="width:38px;height:38px;font-size:18px">✦</span>
+          <div>
+            <h3 style="margin:0;font-size:17px">Ask MEMNOS · Overnight Catch-Up &amp; Agent Coordination</h3>
+            <div class="muted" style="font-size:12.5px">Understand everything your agents did while you were away and manage <code>#channels</code>, <code>@handles</code>, and tasks without opening harness controls.</div>
+          </div>
+        </div>
+
+        <div class="ask-welcome-kpis">
+          <div class="ask-kpi-tile">
+            <div class="ask-kpi-val">${c.online_handles ?? 0}</div>
+            <div class="ask-kpi-lbl">Online <code>@handles</code> now</div>
+          </div>
+          <div class="ask-kpi-tile">
+            <div class="ask-kpi-val">${c.new_facts ?? 0}</div>
+            <div class="ask-kpi-lbl">New memories (last ${esc(hrs)}h)</div>
+          </div>
+          <div class="ask-kpi-tile">
+            <div class="ask-kpi-val">${c.channel_posts ?? 0}</div>
+            <div class="ask-kpi-lbl"><code>#channel</code> posts (${esc(hrs)}h)</div>
+          </div>
+          <div class="ask-kpi-tile">
+            <div class="ask-kpi-val">${(c.open_tasks ?? 0) + (c.claimed_tasks ?? 0)}</div>
+            <div class="ask-kpi-lbl">Open / active tasks</div>
+          </div>
+        </div>
+
+        <div class="ask-sec-lbl">Click a starter prompt or type below</div>
+        <div class="ask-starter-grid">
+          <button type="button" class="ask-starter-btn" data-starter="Summarize everything that happened while I was asleep in the last ${esc(hrs)} hours — key decisions, fixes, #channel threads, completed tasks, and anything blocked.">
+            <b>🌙 What happened while I slept?</b>
+            <span>Full ${esc(hrs)}-hour executive digest across channels, handles &amp; memories</span>
+          </button>
+          <button type="button" class="ask-starter-btn" data-starter="Give me a live agent coordination briefing: which @handles are online across harnesses, what each one is working on, and how they are communicating on #channels.">
+            <b>🤝 How are my agents coordinating?</b>
+            <span>Live @handle presence, active leases, and cross-harness handoffs</span>
+          </button>
+          <button type="button" class="ask-starter-btn" data-starter="Create channel #sprint-sync in ${esc(sampleNs)} and show me which online @handles can be subscribed to it.">
+            <b>➕ Create &amp; wire a #channel</b>
+            <span>Create <code>#sprint-sync</code> in <code>${esc(sampleNs)}</code> via chat</span>
+          </button>
+          <button type="button" class="ask-starter-btn" data-starter="Check for any stuck task claims, quota-paused @handles, expired leases, or recent incidents and recommend actions.">
+            <b>🩺 Audit blockers, quotas &amp; stale handles</b>
+            <span>Spot stuck work or quota limits without digging through logs</span>
+          </button>
+        </div>
+      </div>`;
+    setHtmlBySig(feed, "welcome:" + JSON.stringify(c) + ":" + hrs + ":" + sampleNs, welcomeHtml);
+    $$("[data-starter]", feed).forEach(btn => {
+      btn.onclick = () => sendAskPrompt(btn.dataset.starter);
+    });
+    return;
+  }
+
+  const html = askState.messages.map(m => {
+    if (m.role === "user") {
+      return `<div class="ask-msg-row user">
+        <div class="ask-bubble">
+          <div class="ask-md">${renderAskMarkdown(m.content)}</div>
+        </div>
+      </div>`;
+    }
+    const hInfo = normalizeHarness(m.harness, null);
+    const hBadge = m.harness === "builtin"
+      ? `<span class="pill">Instant Digest</span>`
+      : (hInfo
+          ? `<span class="harness-pill ${hInfo.cls}">${esc(hInfo.label)}</span>`
+          : `<span class="pill">${esc(m.harness || "MEMNOS")}</span>`);
+    const steps = Array.isArray(m.steps) ? m.steps : [];
+    const stepsHtml = steps.length
+      ? `<details class="ask-steps-details">
+           <summary>⚡ ${steps.length} coordination step${steps.length === 1 ? "" : "s"} executed</summary>
+           <ul style="margin:5px 0 0;padding-left:18px">${steps.map(s => `<li>${esc(s)}</li>`).join("")}</ul>
+         </details>`
+      : "";
+    const bodyHtml = m.content
+      ? `<div class="ask-md">${renderAskMarkdown(m.content)}</div>`
+      : `<div class="muted"><span class="spinner"></span> Thinking &amp; inspecting MEMNOS…</div>`;
+
+    return `<div class="ask-msg-row assistant" data-msg-id="${m.id}">
+      <div class="ask-avatar">M</div>
+      <div class="ask-bubble">
+        <div class="ask-msg-hdr">
+          <div class="row" style="gap:6px">
+            <b>MEMNOS Copilot</b>
+            ${hBadge}
+          </div>
+          <span class="muted">${esc(age(m.created_at))} ago</span>
+        </div>
+        ${bodyHtml}
+        ${stepsHtml}
+      </div>
+    </div>`;
+  }).join("");
+
+  setHtmlBySig(feed, JSON.stringify(askState.messages), html);
+  feed.scrollTop = feed.scrollHeight;
+}
+
+// Event delegation for clickable #channel and @handle pills inside AI answers!
+if ($("#ask-feed")) {
+  $("#ask-feed").addEventListener("click", (e) => {
+    const chLink = e.target.closest("[data-jump-ch]");
+    if (chLink) {
+      e.preventDefault();
+      const chName = chLink.dataset.jumpCh;
+      const match = (wsData?.channels || []).find(c => c.channel === chName);
+      if (match) {
+        selectedChannel = { namespace: match.namespace, channel: match.channel };
+        switchSection("channels");
+      } else {
+        showToast(`Channel ${chName} not found in current scope`);
+      }
+      return;
+    }
+    const hdLink = e.target.closest("[data-jump-hd]");
+    if (hdLink) {
+      e.preventDefault();
+      const hdName = hdLink.dataset.jumpHd;
+      const match = (wsData?.sessions || []).find(s => s.name === hdName);
+      if (match) {
+        selectedHandle = { namespace: match.namespace, name: match.name };
+        switchSection("handles");
+      } else {
+        showToast(`Handle @${hdName} is not currently registered`);
+      }
+    }
+  });
+}
+
+async function loadAskThreadsOnly() {
+  const d = await wapi("GET", "chat/threads");
+  askState.threads = d.threads || [];
+  askState.harnesses = d.harnesses || [];
+  syncAskHarnessPicker(askState.harnesses);
+  renderAskThreadSidebar();
+}
+
+async function refreshAskDigest() {
+  const ns = $("#ask-ns-select")?.value || "*";
+  const hrs = $("#ask-window-select")?.value || "8";
+  const qs = `hours=${encodeURIComponent(hrs)}` + (ns && ns !== "*" ? `&namespace=${encodeURIComponent(ns)}` : "");
+  try {
+    askState.digest = await wapi("GET", `chat/digest?${qs}`);
+    if (!askState.messages.length) renderAskFeed();
+  } catch (_) {}
+}
+
+async function loadAskWorkspace() {
+  try {
+    await Promise.all([loadAskThreadsOnly(), refreshAskDigest()]);
+    if (askState.activeThreadId) {
+      await loadAskThread(askState.activeThreadId);
+    } else {
+      renderAskFeed();
+    }
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
+
+async function loadAskThread(tid) {
+  if (!tid) return;
+  try {
+    const d = await wapi("GET", "chat/messages?thread_id=" + tid);
+    askState.activeThreadId = tid;
+    askState.messages = d.messages || [];
+    if (d.thread) {
+      $("#ask-thread-title").textContent = d.thread.title || "Conversation";
+      setAskRunningUi(!!d.thread.running, "Processing…");
+    }
+    renderAskThreadSidebar();
+    renderAskFeed();
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
+
+async function sendAskPrompt(explicitPrompt) {
+  const inp = $("#ask-input");
+  const text = String(explicitPrompt != null ? explicitPrompt : (inp?.value || "")).trim();
+  if (!text || askState.running) return;
+  if (explicitPrompt == null && inp) inp.value = "";
+
+  const harness = $("#ask-harness-select")?.value || "auto";
+  const model = ($("#ask-model-input")?.value || "").trim();
+  const ns = $("#ask-ns-select")?.value || "*";
+  const windowHours = +($("#ask-window-select")?.value || 8);
+  localStorage.setItem("memnos_ask_harness", harness);
+
+  setAskRunningUi(true, "Assembling memory & coordination digest…");
+  try {
+    const res = await wapi("POST", "chat/send", {
+      thread_id: askState.activeThreadId,
+      message: text,
+      harness,
+      model,
+      namespace: ns,
+      window_hours: windowHours,
+      wait: false,
+    }, 30000);
+
+    if (res.thread) {
+      askState.activeThreadId = res.thread.id;
+      $("#ask-thread-title").textContent = res.thread.title || "Conversation";
+    }
+    if (res.user_message) askState.messages.push(res.user_message);
+    if (res.assistant_message) askState.messages.push(res.assistant_message);
+    renderAskFeed();
+    loadAskThreadsOnly().catch(() => {});
+  } catch (e) {
+    setAskRunningUi(false, "");
+    showToast(e.message, true);
+  }
+}
+
+function handleCopilotRealtimeEvent(ev) {
+  const op = String(ev.op || "");
+  const tid = Number(ev.thread_id || 0);
+  const mid = Number(ev.message_id || 0);
+
+  if (op === "copilot/step") {
+    if (!askState.activeThreadId || tid === askState.activeThreadId) {
+      setAskRunningUi(true, ev.detail || "Working…");
+    }
+    return;
+  }
+
+  if (op === "copilot/delta" && tid === askState.activeThreadId) {
+    const slot = askState.messages.find(m => m.id === mid);
+    if (slot && ev.content) {
+      slot.content = ev.content;
+      if (ev.harness) slot.harness = ev.harness;
+      if (activeSection === "ask") renderAskFeed();
+    }
+    return;
+  }
+
+  if (op === "copilot/done") {
+    if (tid === askState.activeThreadId) {
+      const slot = askState.messages.find(m => m.id === mid);
+      if (slot) {
+        slot.content = ev.content || slot.content;
+        slot.harness = ev.harness || slot.harness;
+        slot.steps = ev.steps || slot.steps || [];
+        slot.status = ev.status || "done";
+      } else {
+        loadAskThread(tid).catch(() => {});
+      }
+      setAskRunningUi(false, "");
+      if (activeSection === "ask") renderAskFeed();
+    } else {
+      setAskRunningUi(false, "");
+    }
+    loadAskThreadsOnly().catch(() => {});
+    refreshOverview(false).catch(() => {});
+  }
+}
+
+if ($("#topbar-ask-btn")) {
+  $("#topbar-ask-btn").onclick = () => {
+    switchSection("ask");
+    setTimeout(() => $("#ask-input")?.focus(), 40);
+  };
+}
+if ($("#btn-ask-new")) {
+  $("#btn-ask-new").onclick = () => {
+    askState.activeThreadId = null;
+    askState.messages = [];
+    $("#ask-thread-title").textContent = "Executive Briefing & Coordination";
+    renderAskThreadSidebar();
+    renderAskFeed();
+    refreshAskDigest();
+    $("#ask-input")?.focus();
+  };
+}
+if ($("#ask-send-btn")) {
+  $("#ask-send-btn").onclick = () => sendAskPrompt();
+}
+if ($("#ask-stop-btn")) {
+  $("#ask-stop-btn").onclick = async () => {
+    if (!askState.activeThreadId) return;
+    try {
+      await wapi("POST", "chat/stop", { thread_id: askState.activeThreadId });
+      setAskRunningUi(false, "");
+    } catch (e) {
+      showToast(e.message, true);
+    }
+  };
+}
+if ($("#ask-input")) {
+  $("#ask-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendAskPrompt();
+    }
+  });
+}
+if ($("#ask-window-select")) {
+  $("#ask-window-select").onchange = () => refreshAskDigest();
+}
+if ($("#ask-ns-select")) {
+  $("#ask-ns-select").onchange = () => refreshAskDigest();
+}
+if ($("#ask-harness-select")) {
+  $("#ask-harness-select").onchange = (e) => {
+    localStorage.setItem("memnos_ask_harness", e.target.value);
+  };
+}
+
+const ASK_PRESETS = {
+  away: () => {
+    const hrs = $("#ask-window-select")?.value || "8";
+    return `Give me an executive catch-up of everything that happened while I was away over the last ${hrs} hours: key decisions, fixes, #channel conversations, @inbox handoffs, and any open or blocked work.`;
+  },
+  coord: () => "Show me how all attached @handles are coordinating right now across harnesses and #channels, what each agent is actively working on, and whether any tasks are waiting to be claimed.",
+  blockers: () => "Audit the last 24 hours for any incidents, errors, stuck task claims, quota-paused @handles, or fixes, and tell me if anything needs my intervention.",
+  hygiene: () => "Inspect all #channels and @handles in scope, identify idle channels or stale sessions, and recommend specific cleanup actions I can run right here.",
+};
+
+$$(".ask-preset-card").forEach(btn => {
+  btn.onclick = () => {
+    askState.activeThreadId = null;
+    askState.messages = [];
+    const fn = ASK_PRESETS[btn.dataset.preset];
+    if (fn) sendAskPrompt(fn());
+  };
+});
+
+$$(".ask-chip").forEach(chip => {
+  chip.onclick = () => {
+    if (chip.dataset.fill) {
+      sendAskPrompt(chip.dataset.fill);
+    } else if (chip.dataset.template) {
+      const inp = $("#ask-input");
+      if (inp) {
+        const ns = ($("#ask-ns-select")?.value && $("#ask-ns-select").value !== "*")
+          ? $("#ask-ns-select").value
+          : ((wsData?.namespaces || []).find(n => !n.name.startsWith("test:"))?.name || "proj:payments-sync");
+        inp.value = chip.dataset.template.endsWith("in ")
+          ? chip.dataset.template + ns
+          : chip.dataset.template;
+        inp.focus();
+      }
+    }
+  };
+});
+
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+    if ($("#app") && !$("#app").hidden) {
+      e.preventDefault();
+      switchSection("ask");
+      setTimeout(() => $("#ask-input")?.focus(), 40);
+    }
+  }
+});
 
 // ---- Boot ----
 renderVersionSurfaces();

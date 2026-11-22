@@ -4,6 +4,7 @@ pub mod agent_setup;
 pub mod code_anchors;
 pub mod config;
 pub mod control;
+pub mod copilot;
 pub mod db;
 pub mod desktop;
 pub mod doctor;

@@ -69,6 +69,7 @@ pub struct AppState {
     pub mcp_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<String>>>>>,
     pub mcp_semaphore: Arc<Semaphore>,
     pub spawner: Arc<crate::spawner::HeadlessSpawner>,
+    pub copilot: Arc<crate::copilot::CopilotEngine>,
     pub started_at: Instant,
 }
 
@@ -1410,6 +1411,11 @@ async fn workspace_ws_handler(
                 res = event_rx.recv() => {
                     match res {
                         Ok(mut v) => {
+                            if let Some(tp) = v.get("target_principal_id").and_then(|x| x.as_i64()) {
+                                if tp != pid {
+                                    continue;
+                                }
+                            }
                             let ev_ns = v.get("namespace").and_then(|x| x.as_str()).unwrap_or("");
                             if is_admin || ev_ns.is_empty() || ev_ns == "*" || auth_ns.contains(ev_ns) {
                                 if let Some(obj) = v.as_object_mut() {
@@ -1613,20 +1619,25 @@ async fn workspace_events_handler(
 
     let event_rx = st.event_tx.subscribe();
     let s = stream::unfold(
-        (event_rx, auth_ns, is_admin, 0u64),
-        |(mut event_rx, auth_ns, is_admin, seq)| async move {
+        (event_rx, auth_ns, is_admin, pid, 0u64),
+        |(mut event_rx, auth_ns, is_admin, pid, seq)| async move {
             if seq == 0 {
                 // 2 KB comment preamble flushes macOS WKWebView / CFNetwork's initial chunk buffer immediately
                 let ev = Event::default()
                     .comment(" ".repeat(2048))
                     .data(json!({ "type": "connected", "seq": 0, "version": VERSION, "build": BUILD_SHA }).to_string());
-                return Some((Ok::<Event, Infallible>(ev), (event_rx, auth_ns, is_admin, 1)));
+                return Some((Ok::<Event, Infallible>(ev), (event_rx, auth_ns, is_admin, pid, 1)));
             }
             let payload = loop {
                 tokio::select! {
                     res = event_rx.recv() => {
                         match res {
                             Ok(mut v) => {
+                                if let Some(tp) = v.get("target_principal_id").and_then(|x| x.as_i64()) {
+                                    if tp != pid {
+                                        continue;
+                                    }
+                                }
                                 let ev_ns = v.get("namespace").and_then(|x| x.as_str()).unwrap_or("");
                                 if is_admin || ev_ns.is_empty() || ev_ns == "*" || auth_ns.contains(ev_ns) {
                                     if let Some(obj) = v.as_object_mut() {
@@ -1657,7 +1668,7 @@ async fn workspace_events_handler(
             let ev = Event::default().data(payload.to_string());
             Some((
                 Ok::<Event, Infallible>(ev),
-                (event_rx, auth_ns, is_admin, seq + 1),
+                (event_rx, auth_ns, is_admin, pid, seq + 1),
             ))
         },
     );
@@ -2989,6 +3000,121 @@ async fn workspace_api_handler(
                 Err(e) if e.starts_with("Forbidden:") => json_resp(
                     StatusCode::FORBIDDEN,
                     json!({ "error": e.trim_start_matches("Forbidden:").trim() }),
+                ),
+                Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
+            }
+        }
+        ("chat/threads", Method::GET) => match st.copilot.list_threads(&st.pool, pid).await {
+            Ok(v) => json_resp(StatusCode::OK, v),
+            Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
+        },
+        ("chat/messages", Method::GET) => {
+            let tid = qs
+                .get("thread_id")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            if tid <= 0 {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "thread_id required" }),
+                );
+            }
+            match st.copilot.get_thread_messages(&st.pool, pid, tid).await {
+                Ok(v) => json_resp(StatusCode::OK, v),
+                Err(e) if e.starts_with("NotFound:") => json_resp(
+                    StatusCode::NOT_FOUND,
+                    json!({ "error": e.trim_start_matches("NotFound:").trim() }),
+                ),
+                Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
+            }
+        }
+        ("chat/digest", Method::GET) => {
+            let ns_opt = qs.get("namespace").map(|s| s.as_str());
+            let hrs = qs
+                .get("hours")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(8);
+            match crate::copilot::CopilotEngine::build_digest(&st.pool, pid, ns_opt, hrs).await {
+                Ok(v) => json_resp(StatusCode::OK, v),
+                Err(e) if e.starts_with("Forbidden:") => json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": e.trim_start_matches("Forbidden:").trim() }),
+                ),
+                Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
+            }
+        }
+        ("chat/send", Method::POST) => {
+            let creq: crate::copilot::CopilotSendRequest = match serde_json::from_value(b.clone()) {
+                Ok(r) => r,
+                Err(e) => {
+                    return json_resp(
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": format!("invalid chat payload: {}", e) }),
+                    )
+                }
+            };
+            match st
+                .copilot
+                .send_message(
+                    st.pool.clone(),
+                    st.port,
+                    pid,
+                    st.event_tx.clone(),
+                    Arc::clone(&st.channel_notify),
+                    creq,
+                )
+                .await
+            {
+                Ok(v) => json_resp(StatusCode::OK, v),
+                Err(e) if e.starts_with("Forbidden:") => json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": e.trim_start_matches("Forbidden:").trim() }),
+                ),
+                Err(e) if e.starts_with("NotFound:") => json_resp(
+                    StatusCode::NOT_FOUND,
+                    json!({ "error": e.trim_start_matches("NotFound:").trim() }),
+                ),
+                Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
+            }
+        }
+        ("chat/stop", Method::POST) => {
+            let tid = b
+                .get("thread_id")
+                .and_then(|v| v.as_i64())
+                .or_else(|| qs.get("thread_id").and_then(|s| s.parse::<i64>().ok()))
+                .unwrap_or(0);
+            if tid <= 0 {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "thread_id required" }),
+                );
+            }
+            match st.copilot.stop_thread(&st.pool, pid, tid).await {
+                Ok(v) => json_resp(StatusCode::OK, v),
+                Err(e) if e.starts_with("NotFound:") => json_resp(
+                    StatusCode::NOT_FOUND,
+                    json!({ "error": e.trim_start_matches("NotFound:").trim() }),
+                ),
+                Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
+            }
+        }
+        ("chat/thread", Method::DELETE) => {
+            let tid = qs
+                .get("thread_id")
+                .and_then(|s| s.parse::<i64>().ok())
+                .or_else(|| b.get("thread_id").and_then(|v| v.as_i64()))
+                .unwrap_or(0);
+            if tid <= 0 {
+                return json_resp(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "thread_id required" }),
+                );
+            }
+            match st.copilot.delete_thread(&st.pool, pid, tid).await {
+                Ok(v) => json_resp(StatusCode::OK, v),
+                Err(e) if e.starts_with("NotFound:") => json_resp(
+                    StatusCode::NOT_FOUND,
+                    json!({ "error": e.trim_start_matches("NotFound:").trim() }),
                 ),
                 Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
             }
@@ -5011,6 +5137,7 @@ pub async fn run_server_opts(
         mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
         mcp_semaphore: Arc::new(Semaphore::new(24)),
         spawner: crate::spawner::HeadlessSpawner::new(),
+        copilot: crate::copilot::CopilotEngine::new(),
         started_at: Instant::now(),
     };
 

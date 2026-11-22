@@ -34,7 +34,7 @@ const HARNESS_SPECS: &[(&str, &str, &str)] = &[
     ("cursor", "Cursor", "cursor-agent"),
 ];
 
-const SAFE_OS_ENV_ALLOWLIST: &[&str] = &[
+pub(crate) const SAFE_OS_ENV_ALLOWLIST: &[&str] = &[
     "PATH",
     "HOME",
     "USERPROFILE",
@@ -66,7 +66,7 @@ const SAFE_OS_ENV_ALLOWLIST: &[&str] = &[
     "NODE_EXTRA_CA_CERTS",
 ];
 
-const API_KEY_ENV_VARS: &[&str] = &[
+pub(crate) const API_KEY_ENV_VARS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "OPENAI_API_KEY",
@@ -1519,7 +1519,7 @@ async fn post_worker_reply_if_needed(
     }
 }
 
-fn extract_session_and_reply(
+pub(crate) fn extract_session_and_reply(
     raw: &str,
     sid_slot: &Arc<Mutex<Option<String>>>,
     reply_slot: &Arc<Mutex<String>>,
@@ -1579,7 +1579,7 @@ fn extract_session_and_reply(
     }
 }
 
-fn write_private_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write;
@@ -1599,7 +1599,7 @@ fn write_private_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
     }
 }
 
-async fn read_bounded_line<R: tokio::io::AsyncRead + Unpin>(
+pub(crate) async fn read_bounded_line<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut BufReader<R>,
     max_bytes: usize,
 ) -> Option<String> {
@@ -1641,7 +1641,7 @@ async fn read_bounded_line<R: tokio::io::AsyncRead + Unpin>(
     }
 }
 
-fn kill_process_group(pid: Option<u32>) {
+pub(crate) fn kill_process_group(pid: Option<u32>) {
     #[cfg(unix)]
     if let Some(p) = pid.filter(|&p| p > 1) {
         unsafe {
@@ -1652,7 +1652,7 @@ fn kill_process_group(pid: Option<u32>) {
     let _ = pid;
 }
 
-async fn terminate_process_tree(child: &mut tokio::process::Child, pid: Option<u32>) {
+pub(crate) async fn terminate_process_tree(child: &mut tokio::process::Child, pid: Option<u32>) {
     #[cfg(unix)]
     if let Some(p) = pid.filter(|&p| p > 1) {
         unsafe {
@@ -1883,7 +1883,7 @@ fn build_worker_prompt(
     }
 }
 
-fn structured_json_quota_error(raw: &str) -> Option<String> {
+pub(crate) fn structured_json_quota_error(raw: &str) -> Option<String> {
     let v: Value = serde_json::from_str(raw.trim()).ok()?;
     // Antigravity (`agy`) error envelope: `{"event":"result","result":{"status":"ERROR","error":"..."}}`
     if v.get("event").and_then(|x| x.as_str()) == Some("result") {
@@ -2003,7 +2003,7 @@ fn summarize_tool_call(tname: &str, inp: Option<&Value>) -> String {
     }
 }
 
-fn summarize_stream_line(raw: &str) -> Option<String> {
+pub(crate) fn summarize_stream_line(raw: &str) -> Option<String> {
     let t = raw.trim();
     if t.is_empty() {
         return None;
