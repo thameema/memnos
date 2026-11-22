@@ -504,6 +504,7 @@ mod tests {
 
         assert!(!is_loopback_url("http://localhost.evil.com:8900"));
         assert!(!is_loopback_url("http://127.0.0.1.evil.com"));
+        assert!(!is_loopback_url("http://127.0.0.1@evil.com:8900"));
         assert!(!is_loopback_url("https://evil.com/http://127.0.0.1:8900"));
         assert!(!is_loopback_url("https://evil.com?next=http://localhost:8900"));
         assert!(!is_loopback_url("ftp://127.0.0.1:8900"));

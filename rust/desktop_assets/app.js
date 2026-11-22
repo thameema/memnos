@@ -2473,6 +2473,8 @@ async function sendHandleMessage() {
       showToast(`⚡ Woke @${selectedHandle.name} headlessly — streaming reply…`);
     } else if (sendRes?.headless_delivery === "queued_for_running_worker") {
       showToast(`⏳ Queued for @${selectedHandle.name} — will reply right after current step`);
+    } else if (selectedHandle?.metadata?.headless) {
+      showToast(`📩 Delivered to @${selectedHandle.name} inbox (auto-wake applies to workers started since the last server restart)`);
     }
     $("#hd-comp-input").value = "";
     await loadHandleMessages(true);

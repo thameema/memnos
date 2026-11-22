@@ -186,6 +186,10 @@ fn launch_studio_window(base_url: &str, token: &str) -> Result<(), String> {
             };
             HttpResponse::builder()
                 .header("Content-Type", ctype)
+                .header(
+                    "Content-Security-Policy",
+                    "default-src 'self' memnos:; script-src 'self' memnos:; style-src 'self' memnos: 'unsafe-inline'; img-src 'self' memnos: data:; font-src 'self' memnos: data:; connect-src http: https: ws: wss: memnos:; object-src 'none'; base-uri 'none'; form-action 'none'",
+                )
                 .header("Access-Control-Allow-Origin", "*")
                 .header("Cache-Control", "no-store")
                 .body(std::borrow::Cow::Borrowed(bytes))
@@ -237,13 +241,23 @@ fn launch_studio_window(base_url: &str, token: &str) -> Result<(), String> {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn launch_studio_window(base_url: &str, _token: &str) -> Result<(), String> {
     eprintln!(
-        "[memnos-desktop] native windowing on Linux requires desktop display libraries; use `memnos` CLI against {}",
+        "[memnos-desktop] native desktop windowing is supported on macOS and Windows; on Linux manage {} via the `memnos` CLI (`memnos status`, `memnos admin`, `memnos doctor`)",
         base_url
     );
     Ok(())
 }
 
 fn main() {
+    #[cfg(target_os = "windows")]
+    if std::env::args().any(|a| matches!(a.as_str(), "--help" | "-h" | "--version" | "-V")) {
+        extern "system" {
+            fn AttachConsole(dwProcessId: u32) -> i32;
+        }
+        unsafe {
+            let _ = AttachConsole(0xFFFF_FFFF);
+        }
+    }
+
     let cleaned_argv: Vec<String> = std::env::args()
         .filter(|a| !a.starts_with("-psn_"))
         .collect();

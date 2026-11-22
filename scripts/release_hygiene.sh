@@ -244,10 +244,12 @@ if [[ "$DIST_ONLY" -eq 0 ]]; then
     echo "=== Release Hygiene Gate (Desktop Companion): $DESKTOP_BIN ==="
     D_HELP="$("$DESKTOP_BIN" --help 2>&1)"
     D_VER="$("$DESKTOP_BIN" --version 2>&1)"
-    if echo "$D_HELP $D_VER" | grep -qi "rust"; then
+    if [[ -z "${D_HELP// /}" || -z "${D_VER// /}" ]]; then
+      fail "Desktop CLI --help or --version produced empty output"
+    elif echo "$D_HELP $D_VER" | grep -qi "rust"; then
       fail "Desktop CLI --help/--version mentions 'rust'"
     else
-      pass "Desktop --help / --version output is language-neutral"
+      pass "Desktop --help / --version output is non-empty and language-neutral"
     fi
     D_TMP="$(mktemp)"
     extract_strings "$DESKTOP_BIN" > "$D_TMP"
@@ -261,6 +263,23 @@ if [[ "$DIST_ONLY" -eq 0 ]]; then
     fi
     rm -f "$D_TMP"
   fi
+
+  # 4c. Docs & Desktop UI assets (`docs/` and `rust/desktop_assets/`): no language branding or personal path leaks
+  DOC_TMP="$(mktemp)"
+  cat "$REPO_ROOT/docs/cli.md" "$REPO_ROOT/docs/cli-reference.json" \
+      "$REPO_ROOT/rust/desktop_assets/index.html" \
+      "$REPO_ROOT/rust/desktop_assets/app.js" \
+      "$REPO_ROOT/rust/desktop_assets/app.css" > "$DOC_TMP" 2>/dev/null || true
+  if grep -Eiq '\brust\b' "$DOC_TMP"; then
+    fail "Docs or desktop UI assets mention implementation language ('rust')"
+    grep -Ein '\brust\b' "$DOC_TMP" | head -n 10 >&2
+  else
+    pass "CLI docs & desktop UI assets are language-neutral"
+  fi
+  if check_path_leaks_in_stream "CLI docs & desktop UI assets" "$DOC_TMP"; then
+    pass "Zero builder path leaks in CLI docs & desktop UI assets"
+  fi
+  rm -f "$DOC_TMP"
 else
   echo "=== Release Hygiene Gate (Distribution Artifacts Only) ==="
 fi

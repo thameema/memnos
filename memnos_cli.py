@@ -5888,7 +5888,7 @@ EXAMPLES = {
     "fix": "memnos fix --symptom '500 on /recall' --cause 'pool exhausted' --fix 'release conn before rerank' --verify 'pytest tests/test_perf_phases.py'",
     "init": "memnos init --days 90",
     "explain": "memnos explain --limit 3",
-    "registry": "memnos registry #arch-review --task 'Review the Rust single-binary PR'",
+    "registry": "memnos registry #arch-review --task 'Review the payments-sync PR'",
     "watch": "memnos watch --timeout 300",
     "tips": "memnos tips",
     "doctor": "memnos doctor --fix",
@@ -6564,7 +6564,7 @@ memnos recall "what did the team decide about retries?"
 Admin commands (`principal`, `token`, `grant`, `namespace`, `secret`, `stats`,
 `health`) connect to Postgres directly via `MEMNOS_DSN` and are for the operator
 of the server, not remote clients — remote administration goes through the
-`/admin` console or the [REST API](api.md).
+MEMNOS Desktop app (`memnos app`) or the [REST API](api.md).
 """
 
 

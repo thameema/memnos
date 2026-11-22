@@ -425,7 +425,7 @@ def test_b3_b4_b5_security_and_spawner_isolation() -> None:
             f,
         )
 
-    # Install a deterministic fake `claude` CLI binary in `~/.local/bin/claude` that logs argv, cwd, env, and stdin!
+    # Install deterministic fake `claude`, `agy`, and `codex` CLI binaries in `~/.local/bin`!
     invocations_log = os.path.join(home, "claude_invocations.jsonl")
     fake_claude = os.path.join(fake_bin_dir, "claude")
     with open(fake_claude, "w", encoding="utf-8") as f:
@@ -438,6 +438,7 @@ if "SLEEP_FOR_STOP_TEST" in stdin_data:
 if "SLEEP_FOR_QUEUE_TEST" in stdin_data:
     time.sleep(1.2)
 rec = {{
+    "bin": "claude",
     "argv": sys.argv[1:],
     "cwd": os.getcwd(),
     "has_anthropic_key": "ANTHROPIC_API_KEY" in os.environ,
@@ -445,10 +446,42 @@ rec = {{
 }}
 with open({invocations_log!r}, "a", encoding="utf-8") as lf:
     lf.write(json.dumps(rec) + "\\n")
+if "TRIGGER_QUOTA_FAILOVER" in stdin_data:
+    print(json.dumps({{"type": "result", "is_error": True, "result": "You've hit your limit · resets 5pm"}}), flush=True)
+    sys.exit(1)
 print(json.dumps({{"type": "result", "session_id": "sess_fake_123", "result": "Briefing acknowledged."}}), flush=True)
 """
         )
     os.chmod(fake_claude, 0o755)
+
+    fake_agy = os.path.join(fake_bin_dir, "agy")
+    with open(fake_agy, "w", encoding="utf-8") as f:
+        f.write(
+            f"""#!/usr/bin/env python3
+import json, os, sys
+rec = {{"bin": "agy", "argv": sys.argv[1:], "cwd": os.getcwd()}}
+with open({invocations_log!r}, "a", encoding="utf-8") as lf:
+    lf.write(json.dumps(rec) + "\\n")
+if any("TRIGGER_QUOTA_FAILOVER" in a for a in sys.argv[1:]):
+    print(json.dumps({{"type": "result", "is_error": True, "result": "You've hit your limit · resets 5pm"}}), flush=True)
+    sys.exit(1)
+print(json.dumps({{"event": "result", "result": {{"status": "SUCCESS", "response": "Failover ok."}}}}), flush=True)
+"""
+        )
+    os.chmod(fake_agy, 0o755)
+
+    fake_codex = os.path.join(fake_bin_dir, "codex")
+    with open(fake_codex, "w", encoding="utf-8") as f:
+        f.write(
+            f"""#!/usr/bin/env python3
+import json, os, sys
+rec = {{"bin": "codex", "argv": sys.argv[1:], "cwd": os.getcwd()}}
+with open({invocations_log!r}, "a", encoding="utf-8") as lf:
+    lf.write(json.dumps(rec) + "\\n")
+sys.exit(0)
+"""
+        )
+    os.chmod(fake_codex, 0o755)
 
     srv_env = {
         k: v
@@ -558,15 +591,43 @@ print(json.dumps({{"type": "result", "session_id": "sess_fake_123", "result": "B
         )
         http_json(url, "POST", "/workspace/api/chat/stop", admin_tok, {"thread_id": slow_tid})
 
-        # --- B4: `app.js` and `desktop.rs` strict URL hostname loopback check ---
+        # --- B4: `app.js` behavioral `isLoopbackUrl` & `sameServerOrigin` check ---
         app_js_path = os.path.join(REPO_ROOT, "rust", "desktop_assets", "app.js")
-        with open(app_js_path) as jf:
+        with open(app_js_path, encoding="utf-8") as jf:
             app_js_src = jf.read()
+        node_bin = shutil.which("node")
+        js_behav_ok = True
+        js_behav_detail = ""
+        if node_bin:
+            idx_fn = app_js_src.index("function isLoopbackUrl(u)")
+            idx_end = app_js_src.index("(function bootstrap()", idx_fn)
+            fn_snippet = app_js_src[idx_fn:idx_end]
+            probe_js = (
+                fn_snippet
+                + """
+const assert = require("assert");
+assert.strictEqual(isLoopbackUrl("http://127.0.0.1:8900"), true);
+assert.strictEqual(isLoopbackUrl("http://localhost:8900"), true);
+assert.strictEqual(isLoopbackUrl("http://[::1]:8900"), true);
+assert.strictEqual(isLoopbackUrl("http://localhost.evil.com"), false);
+assert.strictEqual(isLoopbackUrl("http://127.0.0.1.evil.net"), false);
+assert.strictEqual(isLoopbackUrl("http://127.0.0.1@evil.com"), false);
+assert.strictEqual(isLoopbackUrl("https://evil.com/http://localhost:8900"), false);
+assert.strictEqual(sameServerOrigin("http://127.0.0.1:8900/a", "http://127.0.0.1:8900/b"), true);
+assert.strictEqual(sameServerOrigin("http://127.0.0.1:8900", "https://remote.example.com"), false);
+console.log("JS_OK");
+"""
+            )
+            nr = subprocess.run([node_bin, "-e", probe_js], capture_output=True, text=True, timeout=10)
+            js_behav_ok = nr.returncode == 0 and "JS_OK" in nr.stdout
+            js_behav_detail = nr.stderr + nr.stdout
         check(
-            "B4: `app.js` uses `new URL(...)` hostname check + `sameServerOrigin` (no substring `includes('://localhost')` leak)",
-            "new URL(" in app_js_src
+            "B4: `app.js` `isLoopbackUrl` & `sameServerOrigin` reject `localhost.evil.com`, `127.0.0.1.evil.net`, and `127.0.0.1@evil.com`",
+            js_behav_ok
+            and "new URL(" in app_js_src
             and "sameServerOrigin(" in app_js_src
             and 'includes("://localhost")' not in app_js_src,
+            js_behav_detail,
         )
 
         # --- B5a: Peer-spoofed `agent_sessions` metadata (`headless: true`, `skip_permissions: true`, `cwd`) NEVER spawns on DM ---
@@ -649,12 +710,310 @@ print(json.dumps({{"type": "result", "session_id": "sess_fake_123", "result": "B
             and all(c != real_live_repo and "worktrees" in c for c in cwds_used),
             f"cwds={cwds_used} live_repo={real_live_repo}",
         )
+
+        # --- B5c: Quota failover is capped at 1 hop AND clears `skip_permissions` when `!isolate_worktree` ---
+        idx_before_fo = sum(1 for _ in open(invocations_log))
+        st_fo, _ = http_json(url, "POST", "/workspace/api/spawner/launch", admin_tok, {
+            "namespace": "proj:sec",
+            "harness": "claude-code",
+            "handle": "fo-worker",
+            "cwd": live_repo,
+            "prompt": "TRIGGER_QUOTA_FAILOVER check 1-hop cap",
+            "isolate_worktree": False,
+            "skip_permissions": True,
+            "auto_failover": True,
+        })
+        deadline = time.time() + 8.0
+        fo_runs = []
+        while time.time() < deadline:
+            with open(invocations_log) as lf:
+                all_invs = [json.loads(x) for x in lf if x.strip()]
+            fo_runs = all_invs[idx_before_fo:]
+            if len(fo_runs) >= 2:
+                time.sleep(0.5)
+                with open(invocations_log) as lf:
+                    fo_runs = [json.loads(x) for x in lf if x.strip()][idx_before_fo:]
+                break
+            time.sleep(0.2)
+        bins_called = [r.get("bin") for r in fo_runs]
+        agy_argv = fo_runs[1].get("argv", []) if len(fo_runs) >= 2 else []
+        check(
+            "B5c: Quota failover stops at 1 hop (`claude` -> `agy`, never 2nd hop to `codex`) and clears `--dangerously-skip-permissions` when `!isolate_worktree`",
+            st_fo == 200
+            and bins_called == ["claude", "agy"]
+            and "--dangerously-skip-permissions" not in agy_argv,
+            f"bins={bins_called} agy_argv={agy_argv}",
+        )
     finally:
         srv.terminate()
         try:
             srv.wait(timeout=5)
         except Exception:
             srv.kill()
+        shutil.rmtree(home, ignore_errors=True)
+        drop_scratch_db(ADMIN_DSN, db_name)
+
+
+def test_241_wake_daemon_routing_and_doorbells() -> None:
+    print("\n=== #241: Wake-Daemon Shared-CWD Isolation, MCP Metadata Capture, Orca & Tmux Doorbells ===")
+    ts = int(time.time() * 1000) % 100_000_000
+    db_name = f"memnos_wake_{ts}"
+    dsn = make_scratch_db(ADMIN_DSN, db_name)
+    home = tempfile.mkdtemp(prefix="memnos-wake-")
+    port = free_port()
+    url = f"http://127.0.0.1:{port}"
+    hf_cache = os.path.expanduser("~/.cache/huggingface/hub")
+
+    memnos_dir = os.path.join(home, ".memnos")
+    bin_dir = os.path.join(home, ".local", "bin")
+    os.makedirs(memnos_dir, exist_ok=True)
+    os.makedirs(bin_dir, exist_ok=True)
+
+    with open(os.path.join(memnos_dir, "config.json"), "w", encoding="utf-8") as f:
+        json.dump({"dsn": dsn, "port": port, "embed_choice": "local"}, f)
+
+    shared_cwd = os.path.join(home, "shared-workspace")
+    os.makedirs(shared_cwd, exist_ok=True)
+
+    orca_log = os.path.join(home, "orca_sends.jsonl")
+    fake_orca = os.path.join(bin_dir, "orca")
+    with open(fake_orca, "w", encoding="utf-8") as f:
+        f.write(
+            f"""#!/usr/bin/env python3
+import json, sys
+args = sys.argv[1:]
+if args[:2] == ["terminal", "list"]:
+    print(json.dumps([
+        {{"handle": "term_alpha", "state": "waiting", "connected": True, "writable": True, "worktreePath": {shared_cwd!r}, "agentIdentity": "claude"}},
+        {{"handle": "term_beta", "state": "waiting", "connected": True, "writable": True, "worktreePath": {shared_cwd!r}, "agentIdentity": "claude"}},
+        {{"handle": "term_busy", "state": "running", "connected": True, "writable": True, "worktreePath": {shared_cwd!r}, "agentIdentity": "claude"}},
+    ]))
+    sys.exit(0)
+if args[:2] == ["terminal", "send"]:
+    term = args[args.index("--terminal") + 1] if "--terminal" in args else ""
+    txt = args[args.index("--text") + 1] if "--text" in args else ""
+    with open({orca_log!r}, "a", encoding="utf-8") as lf:
+        lf.write(json.dumps({{"terminal": term, "text": txt}}) + "\\n")
+    print(json.dumps({{"ok": True}}))
+    sys.exit(0)
+sys.exit(0)
+"""
+        )
+    os.chmod(fake_orca, 0o755)
+
+    tmux_log = os.path.join(home, "tmux_sends.jsonl")
+    fake_tmux = os.path.join(bin_dir, "tmux")
+    with open(fake_tmux, "w", encoding="utf-8") as f:
+        f.write(
+            f"""#!/usr/bin/env python3
+import json, sys
+args = sys.argv[1:]
+if args and args[0] == "-V":
+    print("tmux 3.4")
+    sys.exit(0)
+if args and args[0] == "list-panes":
+    print("%21 0 zsh\\n%22 0 vim")
+    sys.exit(0)
+if args and args[0] == "send-keys":
+    pane = args[args.index("-t") + 1] if "-t" in args else ""
+    with open({tmux_log!r}, "a", encoding="utf-8") as lf:
+        lf.write(json.dumps({{"pane": pane, "args": args}}) + "\\n")
+    sys.exit(0)
+sys.exit(0)
+"""
+        )
+    os.chmod(fake_tmux, 0o755)
+
+    env_base = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("MEMNOS_") and k != "OPENAI_API_KEY"
+    }
+    env_base.update(
+        {
+            "HOME": home,
+            "USERPROFILE": home,
+            "MEMNOS_NO_DOTENV": "1",
+            "MEMNOS_EMBED_CHOICE": "local",
+            "MEMNOS_RERANK": "0",
+            "HF_HUB_CACHE": hf_cache,
+            "PATH": f"{bin_dir}{os.pathsep}{env_base.get('PATH', '')}",
+        }
+    )
+
+    srv = subprocess.Popen(
+        [MEMNOS_BIN, "serve", "--port", str(port), "--require-empty-db"],
+        env=env_base,
+        cwd=home,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    wake_orca = None
+    wake_tmux = None
+    try:
+        assert wait_ready(url), "Scratch server failed to reach /readyz"
+        adm_res = subprocess.run(
+            [MEMNOS_BIN, "admin", "--raw"],
+            env=env_base,
+            cwd=home,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        admin_tok = adm_res.stdout.strip()
+
+        # #241a: `memnos mcp` captures ORCA_TERMINAL_HANDLE + TMUX_PANE into session metadata
+        mcp_env = {
+            **env_base,
+            "MEMNOS_URL": url,
+            "MEMNOS_TOKEN": admin_tok,
+            "MEMNOS_MCP_AUTO_REGISTER": "0",
+            "ORCA_TERMINAL_HANDLE": "term_mcp_captured",
+            "ORCA_PANE_KEY": "tab9:leaf2",
+            "TMUX_PANE": "%99",
+        }
+        mcp_in = "\n".join(
+            [
+                json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}),
+                json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "session_register", "arguments": {"namespace": "proj:wake", "name": "mcp-sess", "metadata": {"custom_tag": "ok"}}}}),
+            ]
+        ) + "\n"
+        subprocess.run(
+            [MEMNOS_BIN, "mcp"],
+            input=mcp_in,
+            env=mcp_env,
+            cwd=shared_cwd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as conn:
+            mcp_meta = conn.execute(
+                "SELECT metadata FROM memnos_control.agent_sessions WHERE namespace='proj:wake' AND name='mcp-sess'"
+            ).fetchone()["metadata"]
+        check(
+            "#241a: `memnos mcp` `session_register` captures `orca_terminal_id`, `orca_pane_key`, `tmux_pane` & merges caller metadata",
+            mcp_meta.get("orca_terminal_id") == "term_mcp_captured"
+            and mcp_meta.get("orca_pane_key") == "tab9:leaf2"
+            and mcp_meta.get("tmux_pane") == "%99"
+            and mcp_meta.get("custom_tag") == "ok",
+            str(mcp_meta),
+        )
+
+        # #241b: Shared-CWD multi-session Orca isolation + idle-only + cooldown dedupe
+        for sname, th in [
+            ("session-alpha", "term_alpha"),
+            ("session-beta", "term_beta"),
+            ("session-busy", "term_busy"),
+            ("session-unbound", ""),
+        ]:
+            meta = {"orca_terminal_id": th} if th else {}
+            http_json(url, "POST", "/session/register", admin_tok, {
+                "namespace": "proj:wake",
+                "name": sname,
+                "harness": "claude-code",
+                "cwd": shared_cwd,
+                "metadata": meta,
+            })
+
+        for target in ("session-alpha", "session-busy", "session-unbound"):
+            http_json(url, "POST", "/inbox/send", admin_tok, {
+                "namespace": "proj:wake",
+                "from_session": "peer-sender",
+                "to_session": target,
+                "content": f"Ping for {target}",
+            })
+
+        wake_orca = subprocess.Popen(
+            [MEMNOS_BIN, "wake-daemon", "--backend", "orca", "--namespace", "proj:wake"],
+            env={**env_base, "MEMNOS_ORCA_BIN": fake_orca},
+            cwd=home,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        # Wait enough for initial sweep + second 5s sweep to prove cooldown deduplication AND zero cross-ringing!
+        time.sleep(6.2)
+        wake_orca.terminate()
+        wake_orca.wait(timeout=5)
+        wake_orca = None
+
+        orca_events = (
+            [json.loads(x) for x in open(orca_log, encoding="utf-8") if x.strip()]
+            if os.path.isfile(orca_log)
+            else []
+        )
+        check(
+            "#241b: Orca wake-daemon rings ONLY addressed idle `term_alpha` (once per cooldown) and NEVER cross-rings shared-cwd `term_beta`, `term_busy`, or unbound sessions",
+            len(orca_events) == 1
+            and orca_events[0]["terminal"] == "term_alpha"
+            and "@session-alpha" in orca_events[0]["text"],
+            f"orca_events={orca_events}",
+        )
+
+        # #241c: Tmux idle shell (%21 zsh) vs busy editor (%22 vim)
+        for sname, pane in [("tmux-idle", "%21"), ("tmux-busy", "%22")]:
+            http_json(url, "POST", "/session/register", admin_tok, {
+                "namespace": "proj:wake-tmux",
+                "name": sname,
+                "harness": "claude-code",
+                "cwd": shared_cwd,
+                "metadata": {"tmux_pane": pane},
+            })
+            http_json(url, "POST", "/inbox/send", admin_tok, {
+                "namespace": "proj:wake-tmux",
+                "from_session": "peer-sender",
+                "to_session": sname,
+                "content": f"Tmux ping for {sname}",
+            })
+
+        wake_tmux = subprocess.Popen(
+            [MEMNOS_BIN, "wake-daemon", "--backend", "tmux", "--namespace", "proj:wake-tmux"],
+            env=env_base,
+            cwd=home,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        time.sleep(6.2)
+        wake_tmux.terminate()
+        wake_tmux.wait(timeout=5)
+        wake_tmux = None
+
+        tmux_events = (
+            [json.loads(x) for x in open(tmux_log, encoding="utf-8") if x.strip()]
+            if os.path.isfile(tmux_log)
+            else []
+        )
+        check(
+            "#241c: Tmux wake-daemon rings ONLY idle shell pane `%21` (once per cooldown) and skips busy pane `%22` (`vim`)",
+            len(tmux_events) == 1 and tmux_events[0]["pane"] == "%21",
+            f"tmux_events={tmux_events}",
+        )
+
+        # #241d: Invalid `--backend` exits non-zero clearly
+        bad_be = subprocess.run(
+            [MEMNOS_BIN, "wake-daemon", "--backend", "bogus"],
+            env=env_base,
+            cwd=home,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        check(
+            "#241d: `wake-daemon --backend bogus` fails fast with clear error",
+            bad_be.returncode != 0 and "unsupported wake-daemon backend" in (bad_be.stderr + bad_be.stdout),
+            bad_be.stderr + bad_be.stdout,
+        )
+    finally:
+        for p in (wake_orca, wake_tmux, srv):
+            if p is not None:
+                p.terminate()
+                try:
+                    p.wait(timeout=5)
+                except Exception:
+                    p.kill()
         shutil.rmtree(home, ignore_errors=True)
         drop_scratch_db(ADMIN_DSN, db_name)
 
@@ -668,6 +1027,7 @@ def main() -> None:
         sys.exit(2)
     test_b1_b2_b6_data_safety_and_backups()
     test_b3_b4_b5_security_and_spawner_isolation()
+    test_241_wake_daemon_routing_and_doorbells()
     print(f"\nPassed: {PASS}, Failed: {FAIL}")
     sys.exit(1 if FAIL else 0)
 

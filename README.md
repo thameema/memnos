@@ -94,7 +94,8 @@ memnos setup                  # ← zero external dependencies by default: downl
                               #   Windows x86_64) — no Docker, no brew, no apt
                               # or: memnos setup --external (connect to YOUR existing Postgres)
                               # or: memnos setup --docker   (spin up a pgvector container)
-memnos start                  # background server → open http://127.0.0.1:8900/admin
+memnos start                  # background server on http://127.0.0.1:8900
+memnos app                    # launch native MEMNOS Desktop workspace
 ```
 
 Bare `memnos setup` downloads a pre-built PostgreSQL 16 + pgvector binary into
@@ -257,14 +258,16 @@ not a benchmarked copy and a shipped copy.
 
 ---
 
-## Management console
+## Desktop workspace & CLI administration
 
-A zero-build web console ships in the open-source build at **`/admin`**: create
-namespaces, mint/revoke tokens, manage grants, view the dashboard, store secrets. Every
-call is token-authenticated, namespace-ACL'd, and audited.
+Launch the native **MEMNOS Desktop** workspace (`memnos app`) or manage everything from the
+CLI: create namespaces, mint/revoke tokens, manage grants, inspect live `#channels` and
+`@handles`, run **Ask MEMNOS** briefings, and store encrypted secrets. Every call is
+token-authenticated, namespace-ACL'd, and audited.
 
 ```bash
-memnos admin          # bootstrap an admin token → paste into /admin
+memnos admin          # bootstrap or inspect your admin token
+memnos app            # launch the native MEMNOS Desktop app
 ```
 
 ---

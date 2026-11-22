@@ -1391,6 +1391,12 @@ fn missing_pg_client_tools_message(missing_tool: &str) -> String {
 }
 
 fn find_orca_bin() -> Option<PathBuf> {
+    if let Ok(explicit) = env::var("MEMNOS_ORCA_BIN") {
+        let p = PathBuf::from(explicit.trim());
+        if p.is_file() {
+            return Some(p);
+        }
+    }
     if let Ok(path_var) = env::var("PATH") {
         for dir in env::split_paths(&path_var) {
             let cand = dir.join(if cfg!(windows) { "orca.exe" } else { "orca" });
@@ -1399,7 +1405,30 @@ fn find_orca_bin() -> Option<PathBuf> {
             }
         }
     }
-    for cand in ["/usr/local/bin/orca", "/opt/homebrew/bin/orca"] {
+    if let Ok(home) = env::var("HOME").or_else(|_| env::var("USERPROFILE")) {
+        let local_cand = PathBuf::from(&home)
+            .join(".local")
+            .join("bin")
+            .join(if cfg!(windows) { "orca.exe" } else { "orca" });
+        if local_cand.is_file() {
+            return Some(local_cand);
+        }
+    }
+    #[cfg(windows)]
+    if let Ok(local_app) = env::var("LOCALAPPDATA") {
+        for sub in ["Programs\\Orca\\orca.exe", "Orca\\orca.exe"] {
+            let p = PathBuf::from(&local_app).join(sub);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    for cand in [
+        "/usr/local/bin/orca",
+        "/opt/homebrew/bin/orca",
+        "/Applications/Orca.app/Contents/Resources/bin/orca",
+        "/Applications/Orca.app/Contents/MacOS/orca",
+    ] {
         let p = PathBuf::from(cand);
         if p.is_file() {
             return Some(p);
@@ -1505,11 +1534,14 @@ fn orca_handle_from_pid(pid: Option<i64>) -> Option<String> {
 
 fn match_orca_handle(
     terms: &[Value],
-    sess_name: &str,
+    _sess_name: &str,
     harness: &str,
     cwd: &str,
     meta: &Value,
     pid: Option<i64>,
+    claimed_handles: &std::collections::HashSet<String>,
+    claimed_panes: &std::collections::HashSet<String>,
+    cwd_session_count: usize,
 ) -> Option<Value> {
     let explicit_opt = meta
         .get("orca_terminal_id")
@@ -1519,13 +1551,14 @@ fn match_orca_handle(
         .map(str::to_string)
         .or_else(|| orca_handle_from_pid(pid));
     if let Some(ref explicit) = explicit_opt {
-        if let Some(found) = terms.iter().find(|t| {
-            t.get("handle").and_then(|v| v.as_str()) == Some(explicit.as_str())
-                || t.get("id").and_then(|v| v.as_str()) == Some(explicit.as_str())
-                || t.get("terminal_id").and_then(|v| v.as_str()) == Some(explicit.as_str())
-        }) {
-            return Some(found.clone());
-        }
+        return terms
+            .iter()
+            .find(|t| {
+                t.get("handle").and_then(|v| v.as_str()) == Some(explicit.as_str())
+                    || t.get("id").and_then(|v| v.as_str()) == Some(explicit.as_str())
+                    || t.get("terminal_id").and_then(|v| v.as_str()) == Some(explicit.as_str())
+            })
+            .cloned();
     }
     if let Some(pane_key) = meta
         .get("orca_pane_key")
@@ -1533,14 +1566,26 @@ fn match_orca_handle(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        if let Some((tab_id, leaf_id)) = pane_key.split_once(':') {
-            if let Some(found) = terms.iter().find(|t| {
-                t.get("tabId").and_then(|v| v.as_str()) == Some(tab_id)
-                    && t.get("leafId").and_then(|v| v.as_str()) == Some(leaf_id)
-            }) {
-                return Some(found.clone());
-            }
-        }
+        return terms
+            .iter()
+            .find(|t| {
+                if t.get("paneKey").and_then(|v| v.as_str()) == Some(pane_key) {
+                    return true;
+                }
+                if let Some((tab_id, leaf_id)) = pane_key.split_once(':') {
+                    t.get("tabId").and_then(|v| v.as_str()) == Some(tab_id)
+                        && t.get("leafId").and_then(|v| v.as_str()) == Some(leaf_id)
+                } else {
+                    false
+                }
+            })
+            .cloned();
+    }
+
+    // Strict multi-session safety (#241): NEVER fall back to `cwd + harness` when multiple active
+    // sessions share the same `cwd`, nor match any terminal already bound to another session.
+    if cwd_session_count > 1 {
+        return None;
     }
     let expected_ident = match harness {
         "claude-code" | "claude" => "claude",
@@ -1551,9 +1596,26 @@ fn match_orca_handle(
         .get("orca_worktree_id")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let mut matches: Vec<&Value> = terms
+    let matches: Vec<&Value> = terms
         .iter()
         .filter(|t| {
+            let t_handle = t
+                .get("handle")
+                .or_else(|| t.get("id"))
+                .or_else(|| t.get("terminal_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !t_handle.is_empty() && claimed_handles.contains(t_handle) {
+                return false;
+            }
+            if let (Some(tab), Some(leaf)) = (
+                t.get("tabId").and_then(|v| v.as_str()),
+                t.get("leafId").and_then(|v| v.as_str()),
+            ) {
+                if claimed_panes.contains(&format!("{}:{}", tab, leaf)) {
+                    return false;
+                }
+            }
             let wt = t.get("worktreePath").and_then(|v| v.as_str()).unwrap_or("");
             let wt_id = t.get("worktreeId").and_then(|v| v.as_str()).unwrap_or("");
             let ident = t
@@ -1565,15 +1627,11 @@ fn match_orca_handle(
             path_ok && !expected_ident.is_empty() && ident == expected_ident
         })
         .collect();
-    if matches.len() > 1 {
-        if let Some(exact_title) = matches.iter().find(|t| {
-            let title = t.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            memnos_core::nsresolve::sanitize_slug(title, 64) == sess_name
-        }) {
-            return Some((*exact_title).clone());
-        }
+    if matches.len() == 1 {
+        Some(matches[0].clone())
+    } else {
+        None
     }
-    matches.pop().cloned()
 }
 
 fn send_orca_doorbell(orca_bin: &Path, handle: &str, doorbell: &str) -> bool {
@@ -1619,8 +1677,17 @@ fn send_tmux_doorbell_if_idle(pane: &str, doorbell: &str) -> bool {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.first().copied() == Some(pane) {
             let in_mode = parts.get(1).copied() == Some("1");
-            let cmd = parts.get(2).copied().unwrap_or("");
-            idle = !in_mode && matches!(cmd, "bash" | "zsh" | "sh" | "fish");
+            let cmd = parts
+                .get(2)
+                .copied()
+                .unwrap_or("")
+                .trim_start_matches('-')
+                .to_ascii_lowercase();
+            idle = !in_mode
+                && matches!(
+                    cmd.as_str(),
+                    "bash" | "zsh" | "sh" | "fish" | "dash" | "ksh" | "tcsh" | "nu" | "pwsh" | "elvish"
+                );
             break;
         }
     }
@@ -1666,6 +1733,37 @@ async fn run_wake_sweep(
     else {
         return;
     };
+
+    let mut claimed_handles: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut claimed_panes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut cwd_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for r in &rows {
+        let cwd_s: String = r.try_get("cwd").unwrap_or_default();
+        let mid_s: String = r.try_get("machine_id").unwrap_or_default();
+        if !mid_s.is_empty() && mid_s != local_mid {
+            continue;
+        }
+        if !cwd_s.is_empty() {
+            *cwd_counts.entry(cwd_s).or_insert(0) += 1;
+        }
+        let meta_r: Value = r.try_get("metadata").unwrap_or_else(|_| json!({}));
+        if let Some(th) = meta_r
+            .get("orca_terminal_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            claimed_handles.insert(th.to_string());
+        }
+        if let Some(pk) = meta_r
+            .get("orca_pane_key")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            claimed_panes.insert(pk.to_string());
+        }
+    }
 
     let mut pending_targets: Vec<(String, String, String, String, Value, Option<i64>, i64, String)> =
         Vec::new();
@@ -1762,7 +1860,18 @@ async fn run_wake_sweep(
             };
             let terms = fetch_orca_terminals(&orca_bin);
             for (ns, name, harness, cwd, meta, pid, lead_id, key) in pending_targets {
-                if let Some(term) = match_orca_handle(&terms, &name, &harness, &cwd, &meta, pid) {
+                let cwd_cnt = cwd_counts.get(&cwd).copied().unwrap_or(0);
+                if let Some(term) = match_orca_handle(
+                    &terms,
+                    &name,
+                    &harness,
+                    &cwd,
+                    &meta,
+                    pid,
+                    &claimed_handles,
+                    &claimed_panes,
+                    cwd_cnt,
+                ) {
                     if is_orca_terminal_idle(&term) {
                         if let Some(handle) = term
                             .get("handle")
@@ -2479,15 +2588,8 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 Some("orca") => "orca",
                 Some("tmux") => "tmux",
                 Some("noop") => "noop",
-                _ => {
-                    if Path::new("/usr/local/bin/orca").is_file()
-                        || Command::new("orca")
-                            .arg("--version")
-                            .stdout(Stdio::null())
-                            .stderr(Stdio::null())
-                            .status()
-                            .is_ok()
-                    {
+                Some("") | None => {
+                    if find_orca_bin().is_some() {
                         "orca"
                     } else if Command::new("tmux")
                         .arg("-V")
@@ -2501,12 +2603,23 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                         "noop"
                     }
                 }
+                Some(other) => {
+                    return Err(format!(
+                        "unsupported wake-daemon backend '{}' (expected 'orca', 'tmux', or 'noop')",
+                        other
+                    ));
+                }
             };
             println!(
                 "[memnos-wake] starting Postgres LISTEN/NOTIFY wake daemon (backend={}, namespace={}) ...",
                 chosen_backend,
                 namespace.as_deref().unwrap_or("*")
             );
+            if chosen_backend == "noop" {
+                println!(
+                    "[memnos-wake] note: neither 'orca' nor 'tmux' terminal multiplexer detected; running LISTEN/NOTIFY observer (terminal doorbell keystrokes disabled)"
+                );
+            }
             let pg_dsn = dsn(&cfg);
             let pool = build_pool(&pg_dsn, 4).map_err(|e| e.to_string())?;
             let notify = Arc::new(tokio::sync::Notify::new());

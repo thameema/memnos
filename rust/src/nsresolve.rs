@@ -809,25 +809,77 @@ pub fn detect_terminal_session(cwd: &Path) -> TerminalSessionInfo {
         display_label.push_str(&format!(" [{}]", tty_str));
     }
 
-    let orca_terminal_id = env::var("ORCA_TERMINAL_HANDLE")
+    let mut orca_terminal_id = env::var("ORCA_TERMINAL_HANDLE")
         .or_else(|_| env::var("ORCA_TERMINAL_ID"))
         .unwrap_or_default()
         .trim()
         .to_string();
-    let orca_pane_key = env::var("ORCA_PANE_KEY")
+    let mut orca_pane_key = env::var("ORCA_PANE_KEY")
         .or_else(|_| env::var("ORCA_AGENT_PANE"))
         .unwrap_or_default()
         .trim()
         .to_string();
-    let orca_worktree_id = env::var("ORCA_WORKTREE_ID")
+    let mut orca_worktree_id = env::var("ORCA_WORKTREE_ID")
         .or_else(|_| env::var("ORCA_WORKSPACE_ID"))
         .unwrap_or_default()
         .trim()
         .to_string();
-    let tmux_pane = env::var("TMUX_PANE")
+    let mut tmux_pane = env::var("TMUX_PANE")
         .unwrap_or_default()
         .trim()
         .to_string();
+
+    // When `memnos mcp` is spawned by an IDE/CLI harness that scrubs child env vars,
+    // recover Orca / tmux terminal identifiers from the ancestor harness process on Unix.
+    #[cfg(unix)]
+    if (orca_terminal_id.is_empty() && tmux_pane.is_empty()) && agent_pid > 1 {
+        if let Ok(out) = Command::new("ps")
+            .args(["eww", "-o", "command=", "-p", &agent_pid.to_string()])
+            .stderr(Stdio::null())
+            .output()
+        {
+            let cmdline = String::from_utf8_lossy(&out.stdout);
+            for tok in cmdline.split_whitespace() {
+                if orca_terminal_id.is_empty() {
+                    if let Some(v) = tok
+                        .strip_prefix("ORCA_TERMINAL_HANDLE=")
+                        .or_else(|| tok.strip_prefix("ORCA_TERMINAL_ID="))
+                    {
+                        if !v.is_empty() {
+                            orca_terminal_id = v.to_string();
+                        }
+                    }
+                }
+                if orca_pane_key.is_empty() {
+                    if let Some(v) = tok
+                        .strip_prefix("ORCA_PANE_KEY=")
+                        .or_else(|| tok.strip_prefix("ORCA_AGENT_PANE="))
+                    {
+                        if !v.is_empty() {
+                            orca_pane_key = v.to_string();
+                        }
+                    }
+                }
+                if orca_worktree_id.is_empty() {
+                    if let Some(v) = tok
+                        .strip_prefix("ORCA_WORKTREE_ID=")
+                        .or_else(|| tok.strip_prefix("ORCA_WORKSPACE_ID="))
+                    {
+                        if !v.is_empty() {
+                            orca_worktree_id = v.to_string();
+                        }
+                    }
+                }
+                if tmux_pane.is_empty() {
+                    if let Some(v) = tok.strip_prefix("TMUX_PANE=") {
+                        if !v.is_empty() {
+                            tmux_pane = v.to_string();
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     let tty_slug = sanitize_slug(&tty_str.replace("ttys", "s").replace("pts", "p"), 12);
     TerminalSessionInfo {

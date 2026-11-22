@@ -791,6 +791,15 @@ pub fn dispatch_tool_call(ctx: &McpContext, name: &str, args: &Value) -> Result<
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .unwrap_or(&info.name);
+            let mut merged_meta = info.session_metadata();
+            if let (Some(base_obj), Some(extra_obj)) = (
+                merged_meta.as_object_mut(),
+                args.get("metadata").and_then(|v| v.as_object()),
+            ) {
+                for (k, v) in extra_obj {
+                    base_obj.insert(k.clone(), v.clone());
+                }
+            }
             let mut body = json!({
                 "namespace": ns,
                 "name": req_name,
@@ -806,7 +815,7 @@ pub fn dispatch_tool_call(ctx: &McpContext, name: &str, args: &Value) -> Result<
                 "machine_id": info.machine_id,
                 "pid": info.pid,
                 "tty": info.tty,
-                "metadata": info.session_metadata(),
+                "metadata": merged_meta,
             });
             if let Some(wh) = args.get("webhook").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
                 body["webhook"] = json!(wh);
@@ -1236,11 +1245,7 @@ fn spawn_session_lifecycle_watcher(ctx: McpContext) {
                 "pid": info.pid,
                 "tty": info.tty,
                 "ttl_seconds": 120,
-                "metadata": {
-                    "auto_named": info.auto_named,
-                    "display_label": info.display_label,
-                    "suggested_topic": info.suggested_topic,
-                }
+                "metadata": info.session_metadata(),
             }),
             4,
         ) {

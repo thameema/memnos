@@ -54,8 +54,8 @@ memnos start
 memnos status
 ```
 
-That's the whole install. Step 3 prints a one-time admin token — save it; it's
-needed once to open the management console at `http://127.0.0.1:8900/admin`.
+That's the whole install. Run `memnos admin` anytime to bootstrap or inspect your admin
+token, and run `memnos app` to open the native MEMNOS Desktop workspace.
 
 Full step-by-step, with troubleshooting (antivirus scan delays, port conflicts),
 is in [`windows.md`](windows.md).
