@@ -3330,8 +3330,12 @@ impl Control {
                  current_task,metadata,expires_at,webhook,webhook_secret,machine_id,pid,tty,run_state)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now() + ($12::float8 * interval '1 second'), $13,$14,$15,$16,$17,$18)
              ON CONFLICT (namespace,name) DO UPDATE SET
-               principal_id=EXCLUDED.principal_id, harness=EXCLUDED.harness, model=EXCLUDED.model,
-               role=EXCLUDED.role, host=EXCLUDED.host, cwd=EXCLUDED.cwd,
+               principal_id=EXCLUDED.principal_id,
+               harness=CASE WHEN EXCLUDED.harness <> '' OR memnos_control.agent_sessions.principal_id <> EXCLUDED.principal_id THEN EXCLUDED.harness ELSE memnos_control.agent_sessions.harness END,
+               model=CASE WHEN EXCLUDED.model <> '' OR memnos_control.agent_sessions.principal_id <> EXCLUDED.principal_id THEN EXCLUDED.model ELSE memnos_control.agent_sessions.model END,
+               role=CASE WHEN EXCLUDED.role <> '' OR memnos_control.agent_sessions.principal_id <> EXCLUDED.principal_id THEN EXCLUDED.role ELSE memnos_control.agent_sessions.role END,
+               host=CASE WHEN EXCLUDED.host <> '' OR memnos_control.agent_sessions.principal_id <> EXCLUDED.principal_id THEN EXCLUDED.host ELSE memnos_control.agent_sessions.host END,
+               cwd=CASE WHEN EXCLUDED.cwd <> '' OR memnos_control.agent_sessions.principal_id <> EXCLUDED.principal_id THEN EXCLUDED.cwd ELSE memnos_control.agent_sessions.cwd END,
                status=CASE
                    WHEN memnos_control.agent_sessions.status = 'quota_paused'
                     AND memnos_control.agent_sessions.principal_id = EXCLUDED.principal_id
@@ -3341,18 +3345,19 @@ impl Control {
                    THEN 'quota_paused'
                    ELSE EXCLUDED.status
                END,
-               current_task=EXCLUDED.current_task,
+               current_task=CASE WHEN EXCLUDED.current_task <> '' OR memnos_control.agent_sessions.principal_id <> EXCLUDED.principal_id THEN EXCLUDED.current_task ELSE memnos_control.agent_sessions.current_task END,
                metadata=CASE
+                   WHEN memnos_control.agent_sessions.principal_id <> EXCLUDED.principal_id
+                   THEN EXCLUDED.metadata
                    WHEN memnos_control.agent_sessions.status = 'quota_paused'
-                    AND memnos_control.agent_sessions.principal_id = EXCLUDED.principal_id
                     AND CASE WHEN COALESCE(memnos_control.agent_sessions.metadata->>'quota_until', '') ~ '^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T'
                              THEN (memnos_control.agent_sessions.metadata->>'quota_until')::timestamptz > now()
                              ELSE false END
-                   THEN EXCLUDED.metadata || jsonb_build_object(
+                   THEN COALESCE(memnos_control.agent_sessions.metadata, '{{}}'::jsonb) || EXCLUDED.metadata || jsonb_build_object(
                        'quota_until', memnos_control.agent_sessions.metadata->'quota_until',
                        'quota_reason', COALESCE(memnos_control.agent_sessions.metadata->'quota_reason', to_jsonb('quota_paused'::text))
                    )
-                   ELSE EXCLUDED.metadata
+                   ELSE COALESCE(memnos_control.agent_sessions.metadata, '{{}}'::jsonb) || EXCLUDED.metadata
                END,
                registered_at=now(), last_heartbeat_at=now(), expires_at=EXCLUDED.expires_at,
                machine_id=CASE WHEN EXCLUDED.machine_id <> '' THEN EXCLUDED.machine_id ELSE memnos_control.agent_sessions.machine_id END,
@@ -3580,7 +3585,7 @@ impl Control {
                 "UPDATE memnos_control.agent_sessions SET
                    last_heartbeat_at=now(), expires_at=now() + ($1::float8 * interval '1 second'),
                    status=COALESCE($2::text, status), current_task=COALESCE($3::text, current_task),
-                   metadata=COALESCE($4::jsonb, metadata), machine_id=COALESCE($5::text, machine_id),
+                   metadata=CASE WHEN $4::jsonb IS NULL THEN metadata ELSE COALESCE(metadata, '{}'::jsonb) || $4::jsonb END, machine_id=COALESCE($5::text, machine_id),
                    pid=COALESCE($6::bigint, pid), tty=COALESCE($7::text, tty), run_state=COALESCE($8::text, run_state)
                  WHERE namespace=$9 AND name=$10 AND principal_id=$11 RETURNING *",
                 params![ttl, o.status, o.current_task, o.metadata, o.machine_id, o.pid, o.tty, o.run_state, namespace, name, principal_id],
