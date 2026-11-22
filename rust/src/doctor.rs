@@ -10,7 +10,6 @@ use chrono::{DateTime, Utc};
 use deadpool_postgres::Pool;
 use serde_json::{json, Value};
 use std::fs;
-use std::process::Command;
 use std::time::{Instant, SystemTime};
 
 const VACUUM_TABLES: &[&str] = &[
@@ -621,6 +620,7 @@ pub async fn run_doctor_scan(
 pub async fn execute_doctor_actions(
     pool: &Pool,
     store: &BrainStore,
+    pg_dsn: &str,
     principal_id: Option<i64>,
     ns_filter: Option<&str>,
     requested_actions: &[String],
@@ -717,6 +717,24 @@ pub async fn execute_doctor_actions(
         }
     };
 
+    if !dry_run && !expanded.is_empty() {
+        if let Some(tx) = event_tx {
+            let _ = tx.send(json!({
+                "type": "activity",
+                "op": "doctor/step",
+                "namespace": target_ns_opt.unwrap_or("*"),
+                "actor": "doctor",
+                "detail": "Taking mandatory verified PostgreSQL backup before repair…",
+                "ok": true,
+            }));
+        }
+        let bpath = crate::backup::take_verified_db_backup_dsn(pg_dsn, "pre-doctor", None, 10).await?;
+        results.insert(
+            "pre_backup".into(),
+            json!(bpath.to_string_lossy().to_string()),
+        );
+    }
+
     for (step_idx, act) in expanded.iter().enumerate() {
         match act.as_str() {
             "backup_db" => {
@@ -724,19 +742,6 @@ pub async fn execute_doctor_actions(
                 if dry_run {
                     results.insert("backup_db".into(), json!({ "dry_run": true, "would_backup": true }));
                 } else {
-                    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-                    let out = tokio::task::spawn_blocking(move || {
-                        Command::new(exe).arg("backup").output()
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .map_err(|e| format!("failed spawning backup: {e}"))?;
-                    if !out.status.success() {
-                        return Err(format!(
-                            "backup failed: {}",
-                            String::from_utf8_lossy(&out.stderr).trim()
-                        ));
-                    }
                     results.insert("backup_db".into(), inspect_latest_backup());
                 }
             }

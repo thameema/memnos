@@ -717,7 +717,10 @@ def test_vault_resolved_openai_1536_upgrade(admin_dsn: str) -> None:
             os.makedirs(os.path.join(locked_home, ".memnos"), exist_ok=True)
             with open(os.path.join(locked_home, ".memnos", "config.json"), "w") as fh:
                 json.dump({"dsn": dsn, "port": free_port()}, fh)
-            clean_env = {k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "MEMNOS_SECRET_KEY")}
+            clean_env = {
+                k: v for k, v in os.environ.items()
+                if k not in ("OPENAI_API_KEY", "MEMNOS_SECRET_KEY", "MEMNOS_DSN")
+            }
             bad_1536 = subprocess.run(
                 [MEMNOS_BIN, "serve", "--port", str(free_port())],
                 env={**clean_env, "HOME": locked_home, "MEMNOS_DSN": dsn},
@@ -735,7 +738,12 @@ def test_vault_resolved_openai_1536_upgrade(admin_dsn: str) -> None:
             shutil.rmtree(locked_home, ignore_errors=True)
 
         # Now boot with `~/.memnos/config.json` containing `"openai": "secret://openai"`!
-        clean_env = {k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "MEMNOS_SECRET_KEY")}
+        # Strip MEMNOS_DSN so `memnos serve` reads `"dsn": dsn` from `home/.memnos/config.json`
+        # even when the test runner itself was invoked with `MEMNOS_DSN=...` in os.environ.
+        clean_env = {
+            k: v for k, v in os.environ.items()
+            if k not in ("OPENAI_API_KEY", "MEMNOS_SECRET_KEY", "MEMNOS_DSN")
+        }
         srv = subprocess.Popen(
             [MEMNOS_BIN, "serve", "--port", str(port)],
             env={
@@ -923,11 +931,16 @@ def test_first_run_model_choice_and_backup_security(admin_dsn: str) -> None:
                 f"status={rz.status_code} body={rz_body}",
             )
 
-            ui_html = httpx.get(f"{url}/admin", timeout=3.0).text
+            adm_resp = httpx.get(f"{url}/admin", timeout=3.0)
+            repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            desktop_html_path = os.path.join(repo_dir, "rust", "desktop_assets", "index.html")
+            ui_html = open(desktop_html_path, encoding="utf-8").read() if os.path.isfile(desktop_html_path) else ""
             check(
-                "Admin UI uses generic repo placeholder (no personal GitHub path)",
-                "github.com/acme/payments-sync" in ui_html and "thameema/memnos" not in ui_html,
-                "admin html check",
+                "Headless server removes /admin (404) & Desktop UI uses generic repo placeholder",
+                adm_resp.status_code == 404
+                and "github.com/acme/payments-sync" in ui_html
+                and "thameema/memnos" not in ui_html,
+                f"status={adm_resp.status_code}",
             )
 
             rec_resp = httpx.post(

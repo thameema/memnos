@@ -1390,53 +1390,6 @@ fn missing_pg_client_tools_message(missing_tool: &str) -> String {
     )
 }
 
-fn precreate_private_file(p: &Path) -> Result<fs::File, String> {
-    let mut opts = fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    opts.open(p)
-        .map_err(|e| format!("failed to pre-create private file {}: {}", p.display(), e))
-}
-
-fn copy_private_file(src: &Path, dst: &Path) -> Result<(), String> {
-    let mut in_f = fs::File::open(src).map_err(|e| e.to_string())?;
-    let mut out_f = precreate_private_file(dst)?;
-    io::copy(&mut in_f, &mut out_f).map_err(|e| e.to_string())?;
-    out_f.sync_all().ok();
-    Ok(())
-}
-
-fn prune_old_backups(backups_dir: &Path, keep: usize) {
-    if keep == 0 {
-        return;
-    }
-    let Ok(entries) = fs::read_dir(backups_dir) else {
-        return;
-    };
-    let mut dumps: Vec<(std::time::SystemTime, PathBuf)> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            name.starts_with("memnos-pre-") && name.ends_with(".dump")
-        })
-        .filter_map(|p| {
-            let mtime = fs::metadata(&p).and_then(|m| m.modified()).ok()?;
-            Some((mtime, p))
-        })
-        .collect();
-    dumps.sort_by(|a, b| b.0.cmp(&a.0));
-    for (_, old_path) in dumps.into_iter().skip(keep) {
-        let cfg_snap = old_path.with_extension("config.json");
-        let _ = fs::remove_file(&old_path);
-        let _ = fs::remove_file(&cfg_snap);
-    }
-}
-
 fn find_orca_bin() -> Option<PathBuf> {
     if let Ok(path_var) = env::var("PATH") {
         for dir in env::split_paths(&path_var) {
@@ -1865,123 +1818,7 @@ async fn take_verified_db_backup(
     custom_out: Option<&str>,
     keep: usize,
 ) -> Result<PathBuf, String> {
-    let pg_dsn = dsn(cfg);
-    let parsed_url = url::Url::parse(&pg_dsn)
-        .map_err(|e| format!("invalid PostgreSQL DSN for backup: {}", e))?;
-    let pg_dump_bin = find_pg_tool_bin("pg_dump")
-        .ok_or_else(|| missing_pg_client_tools_message("pg_dump"))?;
-    let pg_restore_bin = find_pg_tool_bin("pg_restore")
-        .ok_or_else(|| missing_pg_client_tools_message("pg_restore"))?;
-
-    let backups_dir = config_dir().join("backups");
-    fs::create_dir_all(&backups_dir).map_err(|e| format!("create backups dir failed: {}", e))?;
-    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-
-    let target_path = match custom_out {
-        Some(raw) => PathBuf::from(raw),
-        None => backups_dir.join(format!("memnos-{}-{}.dump", reason, ts)),
-    };
-    if let Some(parent) = target_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-    }
-
-    // Pre-create with 0600 permissions BEFORE pg_dump writes a single byte (zero world-readable window)
-    drop(precreate_private_file(&target_path)?);
-
-    println!(
-        "[memnos] taking mandatory database backup ({}) -> {} ...",
-        reason,
-        target_path.display()
-    );
-
-    // Pass connection parameters & password via PG* environment variables (never in `ps` argv)
-    let mut cmd = Command::new(&pg_dump_bin);
-    cmd.args([
-        "-Fc",
-        "--no-owner",
-        "--no-acl",
-        "-f",
-        &target_path.to_string_lossy(),
-    ]);
-    if let Some(host) = parsed_url.host_str() {
-        cmd.env("PGHOST", host);
-    }
-    if let Some(port) = parsed_url.port() {
-        cmd.env("PGPORT", port.to_string());
-    }
-    let user = parsed_url.username();
-    if !user.is_empty() {
-        cmd.env("PGUSER", user);
-    }
-    if let Some(pw) = parsed_url.password() {
-        cmd.env("PGPASSWORD", pw);
-    }
-    let dbname = parsed_url.path().trim_start_matches('/');
-    if !dbname.is_empty() {
-        cmd.env("PGDATABASE", dbname);
-    }
-
-    let out = cmd
-        .output()
-        .map_err(|e| format!("failed to run {}: {}", pg_dump_bin.display(), e))?;
-    if !out.status.success() {
-        let _ = fs::remove_file(&target_path);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(format!(
-            "pre-upgrade database backup failed via pg_dump (aborting to protect data): {}",
-            stderr.trim()
-        ));
-    }
-
-    let meta = fs::metadata(&target_path)
-        .map_err(|e| format!("backup verification failed on {}: {}", target_path.display(), e))?;
-    if meta.len() == 0 {
-        let _ = fs::remove_file(&target_path);
-        return Err(format!(
-            "backup verification failed: {} is 0 bytes (aborting)",
-            target_path.display()
-        ));
-    }
-
-    // Verify archive integrity and table-of-contents via `pg_restore --list`
-    let verify_out = Command::new(&pg_restore_bin)
-        .args(["--list", &target_path.to_string_lossy()])
-        .output()
-        .map_err(|e| format!("failed running pg_restore --list: {}", e))?;
-    let toc_lines = String::from_utf8_lossy(&verify_out.stdout)
-        .lines()
-        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with(';'))
-        .count();
-    if !verify_out.status.success() || toc_lines == 0 {
-        let _ = fs::remove_file(&target_path);
-        let stderr = String::from_utf8_lossy(&verify_out.stderr);
-        return Err(format!(
-            "backup archive verification (`pg_restore --list`) failed on {}: {}",
-            target_path.display(),
-            stderr.trim()
-        ));
-    }
-
-    let src_cfg = config_dir().join("config.json");
-    if src_cfg.is_file() {
-        let cfg_snap = target_path.with_extension("config.json");
-        let _ = copy_private_file(&src_cfg, &cfg_snap);
-    }
-
-    if custom_out.is_none() {
-        prune_old_backups(&backups_dir, keep);
-    }
-
-    let mb = meta.len() as f64 / (1024.0 * 1024.0);
-    println!(
-        "[memnos] ✓ verified DB backup saved ({:.2} MB, {} archive objects verified via pg_restore): {}",
-        mb,
-        toc_lines,
-        target_path.display()
-    );
-    Ok(target_path)
+    memnos_core::backup::take_verified_db_backup_cfg(cfg, reason, custom_out, keep).await
 }
 
 fn kill_pid(pid: u32) {
@@ -4206,6 +4043,9 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 }
                 "rm" | "delete" => {
                     let n = name.ok_or("namespace name required")?;
+                    if purge {
+                        take_verified_db_backup(&cfg, "pre-purge", None, 10).await?;
+                    }
                     Control::delete_namespace(&pool, &n, purge)
                         .await
                         .map_err(|e| e.to_string())?;
@@ -4257,7 +4097,12 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                         .unwrap_or(1);
                     let _ = Control::grant(&pool, pid, "*", true, true).await;
                     let include_cp = matches!(action.as_str(), "move" | "merge");
-                    let remove_src = action == "move" || (action == "merge" && purge);
+                    let has_like = like
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|x| !x.is_empty())
+                        .is_some();
+                    let remove_src = !has_like && (action == "move" || (action == "merge" && purge));
                     let preview = Control::workspace_namespace_transfer_preview(
                         &pool,
                         pid,
@@ -4270,33 +4115,29 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                         println!("{}", serde_json::to_string_pretty(&preview).unwrap());
                         return Ok(());
                     }
-                    let _ = Control::create_namespace(&pool, &d, Some(pid), None).await;
-                    let store = build_store_from_cfg(&cfg, pool.clone()).await?;
-                    let mem_mode = if action == "copy" { "copy" } else { "move" };
-                    let mem_out = store
-                        .namespace_copy(&s, &d, mem_mode, like.as_deref(), Some(pid))
-                        .await?;
-                    let cp_out = if include_cp {
-                        Control::workspace_transfer_control_plane(
-                            &pool,
-                            pid,
-                            true,
-                            &s,
-                            &d,
-                            like.as_deref(),
-                            true,
-                            action == "merge" || action == "move",
-                        )
-                        .await
-                        .map_err(|e| e.to_string())?
+                    let pre_backup = if action != "copy" || remove_src {
+                        let bp = take_verified_db_backup(&cfg, "pre-transfer", None, 10).await?;
+                        Some(bp.to_string_lossy().to_string())
                     } else {
-                        json!({})
+                        None
                     };
-                    if remove_src {
-                        Control::delete_namespace(&pool, &s, true)
-                            .await
-                            .map_err(|e| e.to_string())?;
-                    }
+                    let store = build_store_from_cfg(&cfg, pool.clone()).await?;
+                    let (mem_out, cp_out, removed_source) = Control::transfer_namespace_atomic(
+                        &pool,
+                        &store,
+                        pid,
+                        true,
+                        &s,
+                        &d,
+                        &action,
+                        like.as_deref(),
+                        true,
+                        include_cp,
+                        include_cp,
+                        remove_src,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&json!({
@@ -4304,7 +4145,8 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                             "mode": action,
                             "source": s,
                             "destination": d,
-                            "removed_source": remove_src,
+                            "removed_source": removed_source,
+                            "pre_backup": pre_backup,
                             "memories": mem_out,
                             "control_plane": cp_out,
                         }))
@@ -4659,9 +4501,11 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                     }
                 }
                 let store = build_store_from_cfg(&cfg, pool.clone()).await?;
+                let pg_dsn = dsn(&cfg);
                 let out = memnos_core::doctor::execute_doctor_actions(
                     &pool,
                     &store,
+                    &pg_dsn,
                     None,
                     namespace.as_deref(),
                     &actions,
@@ -4888,7 +4732,11 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             Ok(())
         }
         Commands::Backup { out, keep } => {
-            take_verified_db_backup(&cfg, "manual", out.as_deref(), keep).await?;
+            let path = take_verified_db_backup(&cfg, "manual", out.as_deref(), keep).await?;
+            println!(
+                "[memnos] ✓ verified DB backup saved (verified via pg_restore): {}",
+                path.display()
+            );
             Ok(())
         }
         Commands::MigrateEmbeddings { to, model, yes } => {

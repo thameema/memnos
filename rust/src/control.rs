@@ -1477,7 +1477,17 @@ impl Control {
     /// Remove the registry row + all grants/links on `name`; optionally purge its memory rows.
     pub async fn delete_namespace(pool: &Pool, name: &str, purge_data: bool) -> CResult<()> {
         let mut c = conn(pool).await?;
-        let tx = c.transaction().await?;
+        let tx = (&mut **c).transaction().await?;
+        Self::delete_namespace_on_tx(&tx, name, purge_data).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn delete_namespace_on_tx<'a>(
+        tx: &tokio_postgres::Transaction<'a>,
+        name: &str,
+        purge_data: bool,
+    ) -> CResult<()> {
         tx.execute(
             "DELETE FROM memnos_control.namespaces WHERE name=$1",
             params![name],
@@ -1535,7 +1545,6 @@ impl Control {
                 }
             }
         }
-        tx.commit().await?;
         Ok(())
     }
 
@@ -7326,6 +7335,34 @@ impl Control {
         include_coordination: bool,
         include_routing: bool,
     ) -> CResult<Value> {
+        let mut c = conn(pool).await?;
+        let tx = (&mut **c).transaction().await?;
+        let out = Self::workspace_transfer_control_plane_on_tx(
+            &tx,
+            principal_id,
+            is_admin,
+            src_ns,
+            dst_ns,
+            like_filter,
+            include_coordination,
+            include_routing,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn workspace_transfer_control_plane_on_tx<'a>(
+        tx: &tokio_postgres::Transaction<'a>,
+        principal_id: i64,
+        is_admin: bool,
+        src_ns: &str,
+        dst_ns: &str,
+        like_filter: Option<&str>,
+        include_coordination: bool,
+        include_routing: bool,
+    ) -> CResult<Value> {
         let pat: Option<String> = like_filter
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -7337,9 +7374,6 @@ impl Control {
                         .replace('_', "\\_")
                 )
             });
-
-        let mut c = conn(pool).await?;
-        let tx = c.transaction().await?;
 
         let mut channels_merged: u64 = 0;
         let mut channel_messages_moved: u64 = 0;
@@ -7524,8 +7558,6 @@ impl Control {
             .await?;
         }
 
-        tx.commit().await?;
-
         Ok(json!({
             "channels_merged": channels_merged,
             "channel_messages_moved": channel_messages_moved,
@@ -7536,6 +7568,88 @@ impl Control {
             "guardrails_merged": guardrails_merged,
             "links_merged": links_merged,
         }))
+    }
+
+    /// Execute memory move/copy, control-plane transfer, and optional source namespace deletion
+    /// inside ONE single PostgreSQL transaction so partial failures roll back 100%.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn transfer_namespace_atomic(
+        pool: &Pool,
+        store: &crate::store::BrainStore,
+        principal_id: i64,
+        is_admin: bool,
+        src_ns: &str,
+        dst_ns: &str,
+        mode: &str,
+        like_filter: Option<&str>,
+        include_memories: bool,
+        include_coordination: bool,
+        include_routing: bool,
+        delete_source: bool,
+    ) -> CResult<(Value, Value, bool)> {
+        if src_ns.trim().is_empty() || dst_ns.trim().is_empty() || src_ns == dst_ns {
+            return bad("source and destination must be two distinct concrete namespaces");
+        }
+        let has_like = like_filter
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_some();
+
+        let mut c = conn(pool).await?;
+        let tx = (&mut **c).transaction().await?;
+
+        tx.execute(
+            "INSERT INTO memnos_control.namespaces(name, created_by, auto_registered)
+             VALUES($1, $2, false)
+             ON CONFLICT (name) DO UPDATE SET auto_registered = false",
+            params![dst_ns, Some(principal_id)],
+        )
+        .await?;
+        Self::grant_on(&tx, principal_id, dst_ns, true, true).await?;
+
+        let mem_res = if include_memories {
+            let mem_mode = if mode == "copy" { "copy" } else { "move" };
+            store
+                .namespace_copy_on_client(&tx, src_ns, dst_ns, mem_mode, like_filter, Some(principal_id))
+                .await
+                .map_err(ControlError::Db)?
+        } else {
+            json!({ "raw_turns": 0, "facts": 0, "episodes": 0 })
+        };
+
+        let ctrl_res = if mode != "copy" && (include_coordination || include_routing) {
+            Self::workspace_transfer_control_plane_on_tx(
+                &tx,
+                principal_id,
+                is_admin,
+                src_ns,
+                dst_ns,
+                like_filter,
+                include_coordination,
+                include_routing,
+            )
+            .await?
+        } else {
+            json!({
+                "channels_merged": 0,
+                "channel_messages_moved": 0,
+                "channel_subs_merged": 0,
+                "sessions_merged": 0,
+                "inbox_moved": 0,
+                "bindings_repointed": 0,
+                "guardrails_merged": 0,
+                "links_merged": 0,
+            })
+        };
+
+        let mut source_deleted = false;
+        if delete_source && !has_like && mode != "copy" && is_admin {
+            Self::delete_namespace_on_tx(&tx, src_ns, true).await?;
+            source_deleted = true;
+        }
+
+        tx.commit().await?;
+        Ok((mem_res, ctrl_res, source_deleted))
     }
 }
 

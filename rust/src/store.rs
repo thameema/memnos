@@ -1720,9 +1720,19 @@ impl BrainStore {
     }
 
     async fn upsert_entity(&self, c: &Client, ns: &str, name: &str, vec_lit: Option<String>) -> Result<i64, String> {
+        self.upsert_entity_g(c, ns, name, vec_lit).await
+    }
+
+    async fn upsert_entity_g<C: GenericClient>(
+        &self,
+        c: &C,
+        ns: &str,
+        name: &str,
+        vec_lit: Option<String>,
+    ) -> Result<i64, String> {
         let clean = name.split_whitespace().collect::<Vec<_>>().join(" ");
         let s = &self.schema;
-        let ex = jq(
+        let ex = jq_g(
             c,
             &format!("SELECT id, embedding IS NOT NULL AS has_emb FROM {s}.entities WHERE namespace=$1 AND lower(name)=lower($2) ORDER BY id LIMIT 1"),
             &[&ns, &clean],
@@ -1748,6 +1758,16 @@ impl BrainStore {
     }
 
     async fn add_mention(&self, c: &Client, entity_id: i64, memory_id: i64, kind: &str) -> Result<(), String> {
+        self.add_mention_g(c, entity_id, memory_id, kind).await
+    }
+
+    async fn add_mention_g<C: GenericClient>(
+        &self,
+        c: &C,
+        entity_id: i64,
+        memory_id: i64,
+        kind: &str,
+    ) -> Result<(), String> {
         c.execute(
             format!("INSERT INTO {}.mentions(entity_id,memory_id,memory_kind) VALUES($1,$2,$3) ON CONFLICT DO NOTHING", self.schema).as_str(),
             &[&entity_id, &memory_id, &kind],
@@ -1759,6 +1779,17 @@ impl BrainStore {
 
     /// Co-mention edge; weight accumulates.
     async fn bump_edge(&self, c: &Client, ns: &str, a: i64, b: i64, w: f32) -> Result<(), String> {
+        self.bump_edge_g(c, ns, a, b, w).await
+    }
+
+    async fn bump_edge_g<C: GenericClient>(
+        &self,
+        c: &C,
+        ns: &str,
+        a: i64,
+        b: i64,
+        w: f32,
+    ) -> Result<(), String> {
         if a == b {
             return Ok(());
         }
@@ -3419,8 +3450,16 @@ impl BrainStore {
                 .query_one(
                     &format!(
                         "SELECT
-                            (SELECT count(*) FROM {s}.mentions m WHERE NOT EXISTS (SELECT 1 FROM {s}.entities e WHERE e.id = m.entity_id)
-                               OR (m.memory_kind = 'semantic' AND NOT EXISTS (SELECT 1 FROM {s}.semantic f WHERE f.id = m.memory_id))) AS om,
+                            (SELECT count(*) FROM {s}.mentions m
+                             WHERE (
+                                 EXISTS (SELECT 1 FROM {s}.entities e WHERE e.id = m.entity_id AND e.namespace = ANY($1))
+                                 AND m.memory_kind = 'semantic'
+                                 AND NOT EXISTS (SELECT 1 FROM {s}.semantic f WHERE f.id = m.memory_id)
+                             ) OR (
+                                 m.memory_kind = 'semantic'
+                                 AND EXISTS (SELECT 1 FROM {s}.semantic f WHERE f.id = m.memory_id AND f.namespace = ANY($1))
+                                 AND NOT EXISTS (SELECT 1 FROM {s}.entities e WHERE e.id = m.entity_id)
+                             )) AS om,
                             (SELECT count(*) FROM {s}.edges ed WHERE ed.namespace = ANY($1)
                                AND (NOT EXISTS (SELECT 1 FROM {s}.entities e1 WHERE e1.id = ed.src_entity)
                                  OR NOT EXISTS (SELECT 1 FROM {s}.entities e2 WHERE e2.id = ed.dst_entity))) AS oe,
@@ -3440,11 +3479,19 @@ impl BrainStore {
             let om = c
                 .execute(
                     format!(
-                        "DELETE FROM {s}.mentions m WHERE NOT EXISTS (SELECT 1 FROM {s}.entities e WHERE e.id = m.entity_id)
-                         OR (m.memory_kind = 'semantic' AND NOT EXISTS (SELECT 1 FROM {s}.semantic f WHERE f.id = m.memory_id))"
+                        "DELETE FROM {s}.mentions m
+                         WHERE (
+                             EXISTS (SELECT 1 FROM {s}.entities e WHERE e.id = m.entity_id AND e.namespace = ANY($1))
+                             AND m.memory_kind = 'semantic'
+                             AND NOT EXISTS (SELECT 1 FROM {s}.semantic f WHERE f.id = m.memory_id)
+                         ) OR (
+                             m.memory_kind = 'semantic'
+                             AND EXISTS (SELECT 1 FROM {s}.semantic f WHERE f.id = m.memory_id AND f.namespace = ANY($1))
+                             AND NOT EXISTS (SELECT 1 FROM {s}.entities e WHERE e.id = m.entity_id)
+                         )"
                     )
                     .as_str(),
-                    &[],
+                    &[&namespaces],
                 )
                 .await
                 .map_err(de)?;
@@ -3511,6 +3558,7 @@ impl BrainStore {
                             SELECT id, row_number() OVER (PARTITION BY namespace, lower(statement) ORDER BY id ASC) AS rn
                             FROM {s}.semantic
                             WHERE namespace = ANY($1) AND expired_at IS NULL AND valid_to IS NULL AND constraint_retired_at IS NULL
+                              AND COALESCE(memory_type, '') <> 'constraint' AND kind <> 'constraint'
                          ) sub WHERE rn > 1"
                     ),
                     &[&namespaces],
@@ -3527,6 +3575,7 @@ impl BrainStore {
                                row_number() OVER (PARTITION BY namespace, lower(statement) ORDER BY id ASC) AS rn
                         FROM {s}.semantic
                         WHERE namespace = ANY($1) AND expired_at IS NULL AND valid_to IS NULL AND constraint_retired_at IS NULL
+                          AND COALESCE(memory_type, '') <> 'constraint' AND kind <> 'constraint'
                      )
                      UPDATE {s}.semantic tgt
                      SET expired_at = now(), valid_to = COALESCE(tgt.valid_to, now()), superseded_by = ranked.keep_id
@@ -3545,7 +3594,7 @@ impl BrainStore {
         let mut turns_embedded: u64 = 0;
 
         if !dry_run {
-            // Single bounded SQL CTE to expire cosine near-duplicates (< 0.03) among recent live facts
+            // Single bounded SQL CTE to expire cosine near-duplicates (< 0.03) among recent live non-constraint facts
             semantic_merged = c
                 .execute(
                     format!(
@@ -3554,6 +3603,7 @@ impl BrainStore {
                                    lower(coalesce(object, '')) AS obj, embedding
                             FROM {s}.semantic
                             WHERE namespace = ANY($1) AND kind = 'fact'
+                              AND COALESCE(memory_type, '') <> 'constraint'
                               AND valid_to IS NULL AND expired_at IS NULL AND embedding IS NOT NULL
                             ORDER BY id DESC
                             LIMIT 800
@@ -3787,9 +3837,27 @@ impl BrainStore {
     }
 
     /// `/namespace/copy`: copy or move memories (`raw_turns`, `semantic` facts, and `episodic`
-    /// summaries) from `src_ns` to `dst_ns`, optionally filtered by substring `like_filter`.
+    /// summaries) from `src_ns` to `dst_ns` inside a single PostgreSQL transaction.
     pub async fn namespace_copy(
         &self,
+        src_ns: &str,
+        dst_ns: &str,
+        mode: &str,
+        like_filter: Option<&str>,
+        copied_by: Option<i64>,
+    ) -> Result<Value, String> {
+        let mut c = self.conn().await?;
+        let tx = (&mut **c).transaction().await.map_err(de)?;
+        let out = self
+            .namespace_copy_on_client(&tx, src_ns, dst_ns, mode, like_filter, copied_by)
+            .await?;
+        tx.commit().await.map_err(de)?;
+        Ok(out)
+    }
+
+    pub async fn namespace_copy_on_client<C: GenericClient>(
+        &self,
+        c: &C,
         src_ns: &str,
         dst_ns: &str,
         mode: &str,
@@ -3803,51 +3871,59 @@ impl BrainStore {
         if mode != "copy" && mode != "move" {
             return Err(format!("invalid mode {:?} (expected 'copy' or 'move')", mode));
         }
+        let is_move = mode == "move";
         let pat: Option<String> = like_filter
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|s| format!("%{}%", s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
         let s = &self.schema;
-        let c = self.conn().await?;
-        let rt = jq(
-            &c,
+        // In `move` mode (`$4::bool = true`), retired constraint rows (`constraint_retired_at IS NOT NULL`)
+        // are ALSO moved to `dst_ns` with their `constraint_retired_at` timestamp intact so zero rows are
+        // ever destroyed uncopied when the source rows are deleted.
+        let rt = jq_g(
+            c,
             &format!(
-                "INSERT INTO {s}.raw_turns(namespace,session_id,speaker,text,observed_at,embedding,author_principal,memory_type,constraint_subject,code_anchors) \
-                 SELECT $2,session_id,speaker,text,observed_at,embedding,author_principal,memory_type,constraint_subject,code_anchors FROM {s}.raw_turns r \
-                 WHERE r.namespace=$1 AND ($3::text IS NULL OR r.text ILIKE $3 ESCAPE '\\') AND r.constraint_retired_at IS NULL \
+                "INSERT INTO {s}.raw_turns(namespace,session_id,speaker,text,observed_at,embedding,author_principal,memory_type,constraint_subject,constraint_retired_at,code_anchors) \
+                 SELECT $2,session_id,speaker,text,observed_at,embedding,author_principal,memory_type,constraint_subject,constraint_retired_at,code_anchors FROM {s}.raw_turns r \
+                 WHERE r.namespace=$1 AND ($3::text IS NULL OR r.text ILIKE $3 ESCAPE '\\') AND ($4::bool OR r.constraint_retired_at IS NULL) \
                  AND NOT EXISTS (SELECT 1 FROM {s}.raw_turns d WHERE d.namespace=$2 AND d.text=r.text AND d.observed_at=r.observed_at) RETURNING id"
             ),
-            &[&src_ns, &dst_ns, &pat],
+            &[&src_ns, &dst_ns, &pat, &is_move],
         )
         .await?;
-        let facts = jq(
-            &c,
+        let facts = jq_g(
+            c,
             &format!(
                 "INSERT INTO {s}.semantic(namespace,kind,statement,subject_entity,predicate,object,valid_from,valid_to,observed_at,confidence,salience,embedding,\
-                 source_speaker,author_principal,memory_type,constraint_subject,constraint_since,constraint_until,code_anchors) \
+                 source_speaker,author_principal,memory_type,constraint_subject,constraint_since,constraint_until,constraint_retired_at,code_anchors) \
                  SELECT $2,kind,statement,subject_entity,predicate,object,valid_from,valid_to,observed_at,confidence,salience,embedding,\
-                 source_speaker,author_principal,memory_type,constraint_subject,constraint_since,constraint_until,code_anchors FROM {s}.semantic f \
-                 WHERE f.namespace=$1 AND f.expired_at IS NULL AND f.constraint_retired_at IS NULL AND ($3::text IS NULL OR f.statement ILIKE $3 ESCAPE '\\') \
+                 source_speaker,author_principal,memory_type,constraint_subject,constraint_since,constraint_until,constraint_retired_at,code_anchors FROM {s}.semantic f \
+                 WHERE f.namespace=$1 AND f.expired_at IS NULL AND ($4::bool OR f.constraint_retired_at IS NULL) AND ($3::text IS NULL OR f.statement ILIKE $3 ESCAPE '\\') \
                  AND NOT EXISTS (SELECT 1 FROM {s}.semantic d WHERE d.namespace=$2 AND d.statement=f.statement AND d.observed_at=f.observed_at) \
                  RETURNING id, subject_entity, object"
             ),
-            &[&src_ns, &dst_ns, &pat],
+            &[&src_ns, &dst_ns, &pat, &is_move],
         )
         .await?;
-        let eps = jq(
-            &c,
+        let eps = jq_g(
+            c,
             &format!(
-                "INSERT INTO {s}.episodic(namespace,session_id,text,summary,t_start,t_end,observed_at,salience,embedding,author_principal,memory_type,constraint_subject) \
-                 SELECT $2,session_id,text,summary,t_start,t_end,observed_at,salience,embedding,author_principal,memory_type,constraint_subject FROM {s}.episodic e \
-                 WHERE e.namespace=$1 AND e.constraint_retired_at IS NULL AND ($3::text IS NULL OR e.text ILIKE $3 ESCAPE '\\') \
+                "INSERT INTO {s}.episodic(namespace,session_id,text,summary,t_start,t_end,observed_at,salience,embedding,author_principal,memory_type,constraint_subject,constraint_retired_at) \
+                 SELECT $2,session_id,text,summary,t_start,t_end,observed_at,salience,embedding,author_principal,memory_type,constraint_subject,constraint_retired_at FROM {s}.episodic e \
+                 WHERE e.namespace=$1 AND ($4::bool OR e.constraint_retired_at IS NULL) AND ($3::text IS NULL OR e.text ILIKE $3 ESCAPE '\\') \
                  AND NOT EXISTS (SELECT 1 FROM {s}.episodic d WHERE d.namespace=$2 AND d.text=e.text AND d.observed_at=e.observed_at) \
                  RETURNING id"
             ),
-            &[&src_ns, &dst_ns, &pat],
+            &[&src_ns, &dst_ns, &pat, &is_move],
         )
         .await?;
         if !rt.is_empty() || !facts.is_empty() || !eps.is_empty() {
-            self.register_namespace(&c, dst_ns).await;
+            c.execute(
+                "INSERT INTO memnos_control.namespaces(name, auto_registered) VALUES($1, true) ON CONFLICT (name) DO NOTHING",
+                &[&dst_ns],
+            )
+            .await
+            .map_err(de)?;
         }
         for f in &facts {
             let subj = canonicalize_entity_name(s_of(f, "subject_entity"), false);
@@ -3855,44 +3931,41 @@ impl BrainStore {
                 continue;
             }
             let fid = i_of(f, "id");
-            let se = self.upsert_entity(&c, dst_ns, &subj, None).await?;
-            self.add_mention(&c, se, fid, "semantic").await?;
+            let se = self.upsert_entity_g(c, dst_ns, &subj, None).await?;
+            self.add_mention_g(c, se, fid, "semantic").await?;
             let obj = canonicalize_entity_name(&s_of(f, "object").chars().take(100).collect::<String>(), true);
             if is_valid_entity_name(&obj, true) {
-                let oe = self.upsert_entity(&c, dst_ns, &obj, None).await?;
-                self.add_mention(&c, oe, fid, "semantic").await?;
-                self.bump_edge(&c, dst_ns, se, oe, 1.0).await?;
+                let oe = self.upsert_entity_g(c, dst_ns, &obj, None).await?;
+                self.add_mention_g(c, oe, fid, "semantic").await?;
+                self.bump_edge_g(c, dst_ns, se, oe, 1.0).await?;
             }
         }
-        if mode == "move" {
-            let _ = c
-                .execute(
-                    format!("DELETE FROM {s}.raw_turns WHERE namespace=$1 AND ($2::text IS NULL OR text ILIKE $2 ESCAPE '\\')").as_str(),
-                    &[&src_ns, &pat],
-                )
-                .await;
-            let _ = c
-                .execute(
-                    format!("UPDATE {s}.semantic SET expired_at=now(), valid_to=COALESCE(valid_to, now()) WHERE namespace=$1 AND expired_at IS NULL AND ($2::text IS NULL OR statement ILIKE $2 ESCAPE '\\')").as_str(),
-                    &[&src_ns, &pat],
-                )
-                .await;
-            let _ = c
-                .execute(
-                    format!("DELETE FROM {s}.episodic WHERE namespace=$1 AND ($2::text IS NULL OR text ILIKE $2 ESCAPE '\\')").as_str(),
-                    &[&src_ns, &pat],
-                )
-                .await;
-        }
-        let n_rt = rt.len() as i32;
-        let n_f = facts.len() as i32;
-        let n_e = eps.len() as i32;
-        let _ = c
-            .execute(
-                "INSERT INTO memnos_control.namespace_copy_provenance(src_ns,dst_ns,mode,copied_by,raw_turns,facts,episodes) VALUES($1,$2,$3,$4,$5,$6,$7)",
-                &[&src_ns, &dst_ns, &mode, &copied_by, &n_rt, &n_f, &n_e],
+        if is_move {
+            c.execute(
+                format!("DELETE FROM {s}.raw_turns WHERE namespace=$1 AND ($2::text IS NULL OR text ILIKE $2 ESCAPE '\\')").as_str(),
+                &[&src_ns, &pat],
             )
-            .await;
+            .await
+            .map_err(de)?;
+            c.execute(
+                format!("UPDATE {s}.semantic SET expired_at=now(), valid_to=COALESCE(valid_to, now()) WHERE namespace=$1 AND expired_at IS NULL AND ($2::text IS NULL OR statement ILIKE $2 ESCAPE '\\')").as_str(),
+                &[&src_ns, &pat],
+            )
+            .await
+            .map_err(de)?;
+            c.execute(
+                format!("DELETE FROM {s}.episodic WHERE namespace=$1 AND ($2::text IS NULL OR text ILIKE $2 ESCAPE '\\')").as_str(),
+                &[&src_ns, &pat],
+            )
+            .await
+            .map_err(de)?;
+        }
+        c.execute(
+            "INSERT INTO memnos_control.namespace_copy_provenance(dst_ns,src_ns,mode,copied_by) VALUES($1,$2,$3,$4)",
+            &[&dst_ns, &src_ns, &mode, &copied_by],
+        )
+        .await
+        .map_err(de)?;
         Ok(json!({
             "mode": mode,
             "src": src_ns,

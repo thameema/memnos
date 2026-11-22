@@ -56,6 +56,7 @@ const ALLOWED_MEMORY_TYPES: &[&str] = &[
 #[derive(Clone)]
 pub struct AppState {
     pub port: u16,
+    pub pg_dsn: String,
     pub pool: Pool,
     pub store: Arc<BrainStore>,
     pub embedder: Arc<Embedder>,
@@ -902,14 +903,30 @@ async fn admin_api_handler(
             if name.is_empty() {
                 return json_resp(StatusCode::BAD_REQUEST, json!({ "error": "name required" }));
             }
-            let purge = qs.get("purge").map(|s| s == "1").unwrap_or(false);
+            let purge = qs.get("purge").map(|s| s == "1" || s == "true").unwrap_or(false);
+            let backup_file = if purge {
+                match crate::backup::take_verified_db_backup_dsn(&st.pg_dsn, "pre-purge", None, 10).await {
+                    Ok(p) => Some(p.to_string_lossy().to_string()),
+                    Err(e) => {
+                        return json_resp(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            json!({ "error": e }),
+                        );
+                    }
+                }
+            } else {
+                None
+            };
             if let Err(e) = Control::delete_namespace(&st.pool, name, purge).await {
                 return ctrl_err_resp(e);
             }
             if let Ok(mut g) = st.ns_cache.lock() {
                 *g = None;
             }
-            json_resp(StatusCode::OK, json!({ "ok": true }))
+            json_resp(
+                StatusCode::OK,
+                json!({ "ok": true, "purged": purge, "pre_backup": backup_file }),
+            )
         }
         ("namespaces/links", Method::GET) => {
             let src = qs
@@ -2818,59 +2835,46 @@ async fn workspace_api_handler(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            if let Err(e) = Control::create_namespace(&st.pool, dst, Some(pid), None).await {
-                return ctrl_err_resp(e);
-            }
-
-            let mem_res = if include_memories {
-                let mem_mode = if mode == "copy" { "copy" } else { "move" };
-                match st
-                    .store
-                    .namespace_copy(src, dst, mem_mode, like_filter, Some(pid))
-                    .await
-                {
-                    Ok(v) => v,
-                    Err(e) => return json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
-                }
-            } else {
-                json!({ "raw_turns": 0, "facts": 0, "episodes": 0 })
-            };
-
-            let ctrl_res = if mode != "copy" && (include_coordination || include_routing) {
-                match Control::workspace_transfer_control_plane(
-                    &st.pool,
-                    pid,
-                    is_adm,
-                    src,
-                    dst,
-                    like_filter,
-                    include_coordination,
-                    include_routing,
+            let pre_backup = if mode != "copy" || delete_source {
+                match crate::backup::take_verified_db_backup_dsn(
+                    &st.pg_dsn,
+                    "pre-transfer",
+                    None,
+                    10,
                 )
                 .await
                 {
-                    Ok(v) => v,
-                    Err(e) => return ctrl_err_resp(e),
+                    Ok(p) => Some(p.to_string_lossy().to_string()),
+                    Err(e) => {
+                        return json_resp(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            json!({ "error": e }),
+                        );
+                    }
                 }
             } else {
-                json!({
-                    "channels_merged": 0,
-                    "channel_messages_moved": 0,
-                    "channel_subs_merged": 0,
-                    "sessions_merged": 0,
-                    "inbox_moved": 0,
-                    "bindings_repointed": 0,
-                    "guardrails_merged": 0,
-                    "links_merged": 0,
-                })
+                None
             };
 
-            let mut source_deleted = false;
-            if delete_source && mode == "merge" && like_filter.is_none() && is_adm {
-                if Control::delete_namespace(&st.pool, src, true).await.is_ok() {
-                    source_deleted = true;
-                }
-            }
+            let (mem_res, ctrl_res, source_deleted) = match Control::transfer_namespace_atomic(
+                &st.pool,
+                &st.store,
+                pid,
+                is_adm,
+                src,
+                dst,
+                mode,
+                like_filter,
+                include_memories,
+                include_coordination,
+                include_routing,
+                delete_source && mode == "merge",
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return ctrl_err_resp(e),
+            };
 
             if let Ok(mut g) = st.ns_cache.lock() {
                 *g = None;
@@ -2896,6 +2900,7 @@ async fn workspace_api_handler(
                     "memories": mem_res,
                     "coordination": ctrl_res,
                     "source_deleted": source_deleted,
+                    "pre_backup": pre_backup,
                 }),
             )
         }
@@ -2924,13 +2929,31 @@ async fn workspace_api_handler(
                     json!({ "error": "concrete namespace required" }),
                 );
             }
+            let pre_backup = if purge {
+                match crate::backup::take_verified_db_backup_dsn(&st.pg_dsn, "pre-purge", None, 10)
+                    .await
+                {
+                    Ok(p) => Some(p.to_string_lossy().to_string()),
+                    Err(e) => {
+                        return json_resp(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            json!({ "error": e }),
+                        );
+                    }
+                }
+            } else {
+                None
+            };
             match Control::delete_namespace(&st.pool, ns, purge).await {
                 Ok(()) => {
                     if let Ok(mut g) = st.ns_cache.lock() {
                         *g = None;
                     }
                     let _ = st.event_tx.send(json!({ "type": "refresh", "namespace": "*" }));
-                    json_resp(StatusCode::OK, json!({ "ok": true, "deleted": ns, "purged": purge }))
+                    json_resp(
+                        StatusCode::OK,
+                        json!({ "ok": true, "deleted": ns, "purged": purge, "pre_backup": pre_backup }),
+                    )
                 }
                 Err(e) => ctrl_err_resp(e),
             }
@@ -2971,6 +2994,7 @@ async fn workspace_api_handler(
             match crate::doctor::execute_doctor_actions(
                 &st.pool,
                 &st.store,
+                &st.pg_dsn,
                 Some(pid),
                 ns_opt,
                 &actions,
@@ -3928,7 +3952,8 @@ async fn api_post_handler(
                     json!({ "error": "src and dst must be two different non-empty namespaces" }),
                 );
             }
-            if !Control::authorize(&st.pool, pid, src, false)
+            let mode = req.get("mode").and_then(|v| v.as_str()).unwrap_or("copy");
+            if !Control::authorize(&st.pool, pid, src, mode == "move")
                 .await
                 .unwrap_or(false)
             {
@@ -3937,7 +3962,14 @@ async fn api_post_handler(
                     json!({ "error": "forbidden for source namespace" }),
                 );
             }
-            let mode = req.get("mode").and_then(|v| v.as_str()).unwrap_or("copy");
+            if mode == "move" {
+                if let Err(e) =
+                    crate::backup::take_verified_db_backup_dsn(&st.pg_dsn, "pre-move", None, 10)
+                        .await
+                {
+                    return json_resp(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e }));
+                }
+            }
             let like_f = req.get("like").and_then(|v| v.as_str());
             let _ = Control::create_namespace(&st.pool, &ns, Some(pid), None).await;
             match st
@@ -5124,6 +5156,7 @@ pub async fn run_server_opts(
 
     let state = AppState {
         port,
+        pg_dsn,
         pool,
         store,
         embedder,

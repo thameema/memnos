@@ -1,6 +1,7 @@
 //! `memnos_core` — Unified Rust library backing the single `memnos` binary.
 
 pub mod agent_setup;
+pub mod backup;
 pub mod code_anchors;
 pub mod config;
 pub mod control;
