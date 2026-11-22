@@ -10,7 +10,7 @@
 use clap::Parser;
 use memnos_core::{
     config::{load_config, server_url, session_token, BUILD_SHA, VERSION},
-    desktop::resolve_app_target,
+    desktop::{is_loopback_url, resolve_app_target},
 };
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -56,12 +56,16 @@ fn launch_studio_window(base_url: &str, token: &str) -> Result<(), String> {
 
     let local_cfg = load_config();
     let local_url = server_url(&local_cfg).trim_end_matches('/').to_string();
-    let local_tok = local_cfg
-        .admin_token
-        .as_ref()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| session_token(&local_cfg));
+    let local_tok = if is_loopback_url(&local_url) {
+        local_cfg
+            .admin_token
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| session_token(&local_cfg))
+    } else {
+        String::new()
+    };
 
     let boot_script = format!(
         "window.__MEMNOS_UI__ = {}; window.__MEMNOS_BOOT__ = {};",

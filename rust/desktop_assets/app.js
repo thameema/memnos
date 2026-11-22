@@ -142,22 +142,52 @@ async function probeServerHealthVersion(targetUrl) {
 }
 
 function isLoopbackUrl(u) {
-  const l = String(u || "").toLowerCase();
-  return l.includes("://127.0.0.1") || l.includes("://localhost") || l.includes("://[::1]");
+  try {
+    const parsed = new URL(String(u || "").trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    const h = parsed.hostname.toLowerCase();
+    return h === "127.0.0.1" || h === "localhost" || h === "[::1]" || h === "::1";
+  } catch (_) {
+    return false;
+  }
+}
+
+function sameServerOrigin(a, b) {
+  try {
+    return new URL(String(a || "").trim()).origin === new URL(String(b || "").trim()).origin;
+  } catch (_) {
+    return false;
+  }
 }
 
 (function bootstrap() {
   const savedTheme = localStorage.getItem(THEME_KEY) || "aubergine";
   document.documentElement.setAttribute("data-theme", savedTheme);
 
+  const prevUrl = localStorage.getItem("memnos_server_url") || "";
   if (BOOT_INFO) {
+    if (BOOT_INFO.url) {
+      localStorage.setItem("memnos_server_url", BOOT_INFO.url);
+      if (!BOOT_INFO.token && prevUrl && !sameServerOrigin(BOOT_INFO.url, prevUrl)) {
+        localStorage.removeItem("memnos_admin_token");
+      }
+      if (!BOOT_INFO.token && !isLoopbackUrl(BOOT_INFO.url)) {
+        localStorage.removeItem("memnos_admin_token");
+      }
+    }
     if (BOOT_INFO.token) localStorage.setItem("memnos_admin_token", BOOT_INFO.token);
-    if (BOOT_INFO.url) localStorage.setItem("memnos_server_url", BOOT_INFO.url);
   }
   if (location.hash && location.hash.length > 1) {
     const hp = new URLSearchParams(location.hash.slice(1));
-    if (hp.get("token")) localStorage.setItem("memnos_admin_token", hp.get("token"));
-    if (hp.get("url")) localStorage.setItem("memnos_server_url", hp.get("url"));
+    const hashUrl = hp.get("url");
+    const hashTok = hp.get("token");
+    if (hashUrl) {
+      localStorage.setItem("memnos_server_url", hashUrl);
+      if (!hashTok && !sameServerOrigin(hashUrl, prevUrl || DEFAULT_LOCAL_URL)) {
+        localStorage.removeItem("memnos_admin_token");
+      }
+    }
+    if (hashTok) localStorage.setItem("memnos_admin_token", hashTok);
     history.replaceState(null, "", location.pathname + location.search);
   }
 })();
@@ -578,7 +608,11 @@ $("#modal-connect").onclick = async () => {
   if (!nextUrl) { $("#modal-err").textContent = "Enter a MEMNOS server URL."; return; }
   let nextTok = ($("#modal-token").value || "").trim();
   if (!nextTok) {
-    nextTok = (isLoopbackUrl(nextUrl) && DEFAULT_LOCAL_TOKEN) ? DEFAULT_LOCAL_TOKEN : tok();
+    if (sameServerOrigin(nextUrl, serverBase()) && tok()) {
+      nextTok = tok();
+    } else if (isLoopbackUrl(nextUrl) && sameServerOrigin(nextUrl, DEFAULT_LOCAL_URL) && DEFAULT_LOCAL_TOKEN) {
+      nextTok = DEFAULT_LOCAL_TOKEN;
+    }
   }
   if (!nextTok) { $("#modal-err").textContent = "Enter an access token (mnk_...) for this server."; return; }
   $("#modal-err").textContent = "";

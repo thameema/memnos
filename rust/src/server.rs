@@ -3028,11 +3028,25 @@ async fn workspace_api_handler(
                 Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
             }
         }
-        ("chat/threads", Method::GET) => match st.copilot.list_threads(&st.pool, pid).await {
-            Ok(v) => json_resp(StatusCode::OK, v),
-            Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
-        },
+        ("chat/threads", Method::GET) => {
+            if !Control::is_admin(&st.pool, pid).await.unwrap_or(false) {
+                return json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": "admin role required for Ask MEMNOS" }),
+                );
+            }
+            match st.copilot.list_threads(&st.pool, pid).await {
+                Ok(v) => json_resp(StatusCode::OK, v),
+                Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
+            }
+        }
         ("chat/messages", Method::GET) => {
+            if !Control::is_admin(&st.pool, pid).await.unwrap_or(false) {
+                return json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": "admin role required for Ask MEMNOS" }),
+                );
+            }
             let tid = qs
                 .get("thread_id")
                 .and_then(|s| s.parse::<i64>().ok())
@@ -3053,6 +3067,12 @@ async fn workspace_api_handler(
             }
         }
         ("chat/digest", Method::GET) => {
+            if !Control::is_admin(&st.pool, pid).await.unwrap_or(false) {
+                return json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": "admin role required for Ask MEMNOS" }),
+                );
+            }
             let ns_opt = qs.get("namespace").map(|s| s.as_str());
             let hrs = qs
                 .get("hours")
@@ -3068,6 +3088,12 @@ async fn workspace_api_handler(
             }
         }
         ("chat/send", Method::POST) => {
+            if !Control::is_admin(&st.pool, pid).await.unwrap_or(false) {
+                return json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": "admin role required for Ask MEMNOS" }),
+                );
+            }
             let creq: crate::copilot::CopilotSendRequest = match serde_json::from_value(b.clone()) {
                 Ok(r) => r,
                 Err(e) => {
@@ -3098,10 +3124,20 @@ async fn workspace_api_handler(
                     StatusCode::NOT_FOUND,
                     json!({ "error": e.trim_start_matches("NotFound:").trim() }),
                 ),
+                Err(e) if e.starts_with("TooManyRequests:") => json_resp(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    json!({ "error": e.trim_start_matches("TooManyRequests:").trim() }),
+                ),
                 Err(e) => json_resp(StatusCode::BAD_REQUEST, json!({ "error": e })),
             }
         }
         ("chat/stop", Method::POST) => {
+            if !Control::is_admin(&st.pool, pid).await.unwrap_or(false) {
+                return json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": "admin role required for Ask MEMNOS" }),
+                );
+            }
             let tid = b
                 .get("thread_id")
                 .and_then(|v| v.as_i64())
@@ -3123,6 +3159,12 @@ async fn workspace_api_handler(
             }
         }
         ("chat/thread", Method::DELETE) => {
+            if !Control::is_admin(&st.pool, pid).await.unwrap_or(false) {
+                return json_resp(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": "admin role required for Ask MEMNOS" }),
+                );
+            }
             let tid = qs
                 .get("thread_id")
                 .and_then(|s| s.parse::<i64>().ok())

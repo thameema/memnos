@@ -222,6 +222,8 @@ pub struct LaunchRequest {
     pub reply_to_session: String,
     #[serde(default)]
     pub is_dm_turn: bool,
+    #[serde(skip)]
+    pub reuse_worktree: Option<(PathBuf, Option<String>, String)>,
 }
 
 fn default_true() -> bool {
@@ -238,8 +240,12 @@ pub struct WorkerRecord {
     pub role: String,
     pub channel: String,
     pub cwd: String,
+    pub base_cwd: String,
+    pub isolate_worktree: bool,
     pub worktree_path: Option<String>,
     pub worktree_branch: Option<String>,
+    #[serde(skip_serializing)]
+    pub worktree_base_sha: String,
     pub cli_session_id: Option<String>,
     pub subscription_only: bool,
     pub skip_permissions: bool,
@@ -282,8 +288,13 @@ impl HeadlessSpawner {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(1800)
             .clamp(30, 14_400);
+        let init_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(1)
+            .max(1);
         Arc::new(Self {
-            next_id: AtomicU64::new(1),
+            next_id: AtomicU64::new(init_id),
             max_concurrent: cap,
             timeout_secs,
             reaped_stale_db: AtomicBool::new(false),
@@ -423,46 +434,37 @@ impl HeadlessSpawner {
             return Some("queued_for_running_worker");
         }
 
-        // 2. Otherwise inspect `agent_sessions` to see if `to_session` is a headless handle we can wake/resume!
-        let Ok(c) = pool.get().await else {
+        // 2. Wake/resume ONLY handles previously launched by this `HeadlessSpawner` (`self.runs`).
+        //    NEVER read `headless`, `skip_permissions`, `cwd`, or `cli_session_id` from
+        //    `memnos_control.agent_sessions`, which peer agents with namespace write access can mutate.
+        let prev_rec = {
+            let runs = self.runs.lock().unwrap();
+            runs.iter()
+                .find(|r| {
+                    r.namespace == namespace
+                        && r.handle == clean_to
+                        && r.status != "running"
+                        && r.status != "starting"
+                        && r.status != "stopped"
+                })
+                .cloned()
+        };
+        let Some(prev) = prev_rec else {
             return None;
         };
-        let Ok(Some(row)) = c
-            .query_opt(
-                "SELECT COALESCE(harness, '') AS harness, COALESCE(model, '') AS model,
-                        COALESCE(role, '') AS role, COALESCE(cwd, '') AS cwd, metadata
-                 FROM memnos_control.agent_sessions
-                 WHERE namespace = $1 AND name = $2",
-                &[&namespace, &clean_to],
-            )
-            .await
-        else {
+        if prev.harness.is_empty() {
             return None;
+        }
+
+        let reuse_wt = if prev.isolate_worktree {
+            prev.worktree_path
+                .as_ref()
+                .map(PathBuf::from)
+                .filter(|p| p.is_dir())
+                .map(|p| (p, prev.worktree_branch.clone(), prev.worktree_base_sha.clone()))
+        } else {
+            None
         };
-        let meta: Value = row.get("metadata");
-        if meta.get("headless").and_then(|v| v.as_bool()) != Some(true) {
-            return None;
-        }
-        let harness: String = row.get("harness");
-        if harness.is_empty() {
-            return None;
-        }
-        let model: String = row.get("model");
-        let role: String = row.get("role");
-        let cwd: String = row.get("cwd");
-        let sub_only = meta
-            .get("subscription_only")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-        let skip_perms = meta
-            .get("skip_permissions")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-        let cli_sid = meta
-            .get("cli_session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
 
         let dm_prompt = format!(
             "Direct message from @{clean_from} in MEMNOS Workspace:\n\n\"{}\"\n\nRespond directly, clearly, and concisely to @{clean_from}. (Your reply will automatically be delivered to @{clean_from} in your @{clean_to} chat thread.)",
@@ -470,21 +472,22 @@ impl HeadlessSpawner {
         );
         let wake_req = LaunchRequest {
             namespace: namespace.to_string(),
-            harness,
-            model,
+            harness: prev.harness,
+            model: prev.model,
             handle: clean_to.to_string(),
-            role,
+            role: prev.role,
             channel: String::new(),
-            cwd,
+            cwd: prev.base_cwd,
             prompt: dm_prompt,
-            subscription_only: sub_only,
-            skip_permissions: skip_perms,
-            isolate_worktree: false,
-            auto_failover: true,
+            subscription_only: prev.subscription_only,
+            skip_permissions: prev.skip_permissions,
+            isolate_worktree: prev.isolate_worktree,
+            auto_failover: prev.auto_failover,
             failover_depth: 0,
-            resume_session_id: cli_sid,
+            resume_session_id: prev.cli_session_id.unwrap_or_default(),
             reply_to_session: clean_from.to_string(),
             is_dm_turn: true,
+            reuse_worktree: reuse_wt,
         };
         if self
             .launch(
@@ -534,6 +537,32 @@ impl HeadlessSpawner {
                             &[],
                         )
                         .await;
+                    let _ = c
+                        .execute(
+                            "DELETE FROM memnos_control.api_tokens
+                             WHERE label IN ('headless-ephemeral', 'copilot-ephemeral')",
+                            &[],
+                        )
+                        .await;
+                    let _ = c
+                        .execute(
+                            "DELETE FROM memnos_control.principals
+                             WHERE role = 'agent' AND name LIKE 'headless-%'",
+                            &[],
+                        )
+                        .await;
+                }
+                let tmp_dir = config_dir().join("tmp");
+                if let Ok(entries) = std::fs::read_dir(&tmp_dir) {
+                    for ent in entries.flatten() {
+                        if let Some(nm) = ent.file_name().to_str() {
+                            if (nm.starts_with("mcp-headless-") || nm.starts_with("mcp-copilot-"))
+                                && nm.ends_with(".json")
+                            {
+                                let _ = std::fs::remove_file(ent.path());
+                            }
+                        }
+                    }
                 }
             }
 
@@ -618,8 +647,11 @@ impl HeadlessSpawner {
                         role: req.role.trim().to_string(),
                         channel: ch_clean.clone(),
                         cwd: String::new(),
+                        base_cwd: String::new(),
+                        isolate_worktree: req.isolate_worktree,
                         worktree_path: None,
                         worktree_branch: None,
+                        worktree_base_sha: String::new(),
                         cli_session_id: clean_resume_id.clone(),
                         subscription_only: req.subscription_only,
                         skip_permissions: req.skip_permissions,
@@ -676,7 +708,16 @@ impl HeadlessSpawner {
             let mut worktree_branch: Option<String> = None;
             let mut worktree_base_sha = String::new();
 
-            let effective_cwd = if req.isolate_worktree {
+            let effective_cwd = if let Some((wt_p, wt_br, wt_sha)) = req
+                .reuse_worktree
+                .clone()
+                .filter(|(p, _, _)| p.is_dir())
+            {
+                worktree_dir = Some(wt_p.clone());
+                worktree_branch = wt_br;
+                worktree_base_sha = wt_sha;
+                wt_p
+            } else if req.isolate_worktree {
                 let base_out = Command::new("git")
                     .args(["-C", &resolved_cwd.to_string_lossy(), "rev-parse", "HEAD"])
                     .output()
@@ -1013,8 +1054,11 @@ impl HeadlessSpawner {
                 role: req.role.trim().to_string(),
                 channel: ch_clean.clone(),
                 cwd: effective_cwd.to_string_lossy().to_string(),
+                base_cwd: resolved_cwd.to_string_lossy().to_string(),
+                isolate_worktree: req.isolate_worktree,
                 worktree_path: worktree_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
                 worktree_branch: worktree_branch.clone(),
+                worktree_base_sha: worktree_base_sha.clone(),
                 cli_session_id: clean_resume_id.clone(),
                 subscription_only: req.subscription_only,
                 skip_permissions: req.skip_permissions,
@@ -1213,14 +1257,26 @@ impl HeadlessSpawner {
                     "failed"
                 };
 
-                if let Some(ref wt) = worktree_dir {
-                    cleanup_worktree_if_untouched(
-                        &resolved_cwd_buf,
-                        wt,
-                        worktree_branch.as_deref(),
-                        &worktree_base_sha,
-                    )
-                    .await;
+                let queued = if !was_stopped && quota_reason.is_none() {
+                    spawner_arc.take_queued_dms(&ns, &handle)
+                } else {
+                    Vec::new()
+                };
+
+                let mut active_wt_after_cleanup = worktree_dir.clone();
+                if queued.is_empty() {
+                    if let Some(ref wt) = worktree_dir {
+                        cleanup_worktree_if_untouched(
+                            &resolved_cwd_buf,
+                            wt,
+                            worktree_branch.as_deref(),
+                            &worktree_base_sha,
+                        )
+                        .await;
+                        if !wt.is_dir() {
+                            active_wt_after_cleanup = None;
+                        }
+                    }
                 }
 
                 // Auto-deliver the headless worker's final response into the @Handle inbox thread (and #channel if needed)
@@ -1252,6 +1308,9 @@ impl HeadlessSpawner {
                         r.finished_at = Some(fin_iso.clone());
                         r.exit_code = exit_code;
                         r.cli_session_id = final_sid.clone();
+                        r.worktree_path = active_wt_after_cleanup
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().to_string());
                         push_log_line(
                             &mut r.log_lines,
                             format!("[{}] ✓ Finished ({})", ts_hms, final_status),
@@ -1273,7 +1332,7 @@ impl HeadlessSpawner {
                     )
                     .await;
 
-                    if orig_req.auto_failover && orig_req.failover_depth < 2 {
+                    if orig_req.auto_failover && orig_req.failover_depth < 1 {
                         if let Some(alt_h) = pick_failover_harness(&orig_req.harness) {
                             let mut next_req = orig_req.clone();
                             next_req.harness = alt_h.to_string();
@@ -1281,6 +1340,11 @@ impl HeadlessSpawner {
                             next_req.handle = String::new();
                             next_req.resume_session_id = String::new();
                             next_req.cwd = resolved_cwd_buf.to_string_lossy().to_string();
+                            next_req.isolate_worktree = orig_req.isolate_worktree;
+                            next_req.reuse_worktree = None;
+                            if !orig_req.isolate_worktree {
+                                next_req.skip_permissions = false;
+                            }
                             next_req.failover_depth = orig_req.failover_depth + 1;
                             match spawner_arc
                                 .launch(
@@ -1333,50 +1397,63 @@ impl HeadlessSpawner {
                 }));
                 channel_notify.notify_waiters();
 
-                // If the user sent DMs while this turn was running, immediately wake `--resume` to answer them!
-                if !was_stopped {
-                    let queued = spawner_arc.take_queued_dms(&ns, &handle);
-                    if !queued.is_empty() {
-                        let last_from = queued
-                            .last()
-                            .map(|d| d.from_session.clone())
-                            .unwrap_or_else(|| "owner".to_string());
-                        let combined = queued
-                            .iter()
-                            .map(|d| format!("@{}: {}", d.from_session, d.content))
-                            .collect::<Vec<_>>()
-                            .join("\n\n");
-                        let follow_req = LaunchRequest {
-                            namespace: ns.clone(),
-                            harness: orig_req.harness.clone(),
-                            model: orig_req.model.clone(),
-                            handle: handle.clone(),
-                            role: orig_req.role.clone(),
-                            channel: String::new(),
-                            cwd: resolved_cwd_buf.to_string_lossy().to_string(),
-                            prompt: format!(
-                                "Direct message(s) received in MEMNOS Workspace while you were working:\n\n{}\n\nRespond directly and concisely to @{}.",
-                                combined, last_from
-                            ),
-                            subscription_only: orig_req.subscription_only,
-                            skip_permissions: orig_req.skip_permissions,
-                            isolate_worktree: false,
-                            auto_failover: orig_req.auto_failover,
-                            failover_depth: 0,
-                            resume_session_id: final_sid.unwrap_or_default(),
-                            reply_to_session: last_from,
-                            is_dm_turn: true,
-                        };
-                        let _ = spawner_arc
-                            .launch(
-                                pool,
-                                port,
-                                caller_principal_id,
-                                event_tx,
-                                channel_notify,
-                                follow_req,
+                // If the user sent DMs while this turn was running, immediately wake `--resume` inside the same isolated environment!
+                if !queued.is_empty() {
+                    let last_from = queued
+                        .last()
+                        .map(|d| d.from_session.clone())
+                        .unwrap_or_else(|| "owner".to_string());
+                    let combined = queued
+                        .iter()
+                        .map(|d| format!("@{}: {}", d.from_session, d.content))
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    let reuse_wt = worktree_dir.clone().map(|wt| {
+                        (wt, worktree_branch.clone(), worktree_base_sha.clone())
+                    });
+                    let follow_req = LaunchRequest {
+                        namespace: ns.clone(),
+                        harness: orig_req.harness.clone(),
+                        model: orig_req.model.clone(),
+                        handle: handle.clone(),
+                        role: orig_req.role.clone(),
+                        channel: String::new(),
+                        cwd: resolved_cwd_buf.to_string_lossy().to_string(),
+                        prompt: format!(
+                            "Direct message(s) received in MEMNOS Workspace while you were working:\n\n{}\n\nRespond directly and concisely to @{}.",
+                            combined, last_from
+                        ),
+                        subscription_only: orig_req.subscription_only,
+                        skip_permissions: orig_req.skip_permissions,
+                        isolate_worktree: orig_req.isolate_worktree,
+                        auto_failover: orig_req.auto_failover,
+                        failover_depth: 0,
+                        resume_session_id: final_sid.unwrap_or_default(),
+                        reply_to_session: last_from,
+                        is_dm_turn: true,
+                        reuse_worktree: reuse_wt,
+                    };
+                    if spawner_arc
+                        .launch(
+                            pool,
+                            port,
+                            caller_principal_id,
+                            event_tx,
+                            channel_notify,
+                            follow_req,
+                        )
+                        .await
+                        .is_err()
+                    {
+                        if let Some(ref wt) = worktree_dir {
+                            cleanup_worktree_if_untouched(
+                                &resolved_cwd_buf,
+                                wt,
+                                worktree_branch.as_deref(),
+                                &worktree_base_sha,
                             )
                             .await;
+                        }
                     }
                 }
             });

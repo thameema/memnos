@@ -11,8 +11,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub fn is_loopback_url(u: &str) -> bool {
-    let l = u.to_ascii_lowercase();
-    l.contains("://127.0.0.1") || l.contains("://localhost") || l.contains("://[::1]")
+    let Ok(parsed) = url::Url::parse(u.trim()) else {
+        return false;
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    matches!(
+        parsed.host_str(),
+        Some("127.0.0.1" | "localhost" | "[::1]" | "::1")
+    )
 }
 
 pub fn resolve_app_target(
@@ -31,20 +39,17 @@ pub fn resolve_app_target(
         })
         .unwrap_or_else(|| server_url(cfg).trim_end_matches('/').to_string());
 
-    let tok = token_opt
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            if is_loopback_url(&base_url) {
-                cfg.admin_token
-                    .as_ref()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| session_token(cfg));
+    let tok = if let Some(explicit) = token_opt.map(str::trim).filter(|s| !s.is_empty()) {
+        explicit.to_string()
+    } else if is_loopback_url(&base_url) {
+        cfg.admin_token
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| session_token(cfg))
+    } else {
+        String::new()
+    };
 
     (base_url, tok)
 }
@@ -482,4 +487,55 @@ pub fn run_desktop_app(
         .map_err(|e| format!("failed to launch {}: {}", desktop_bin.display(), e))?;
     println!("[memnos] launched MEMNOS desktop -> {}", base_url);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_loopback_url, resolve_app_target};
+    use crate::config::Config;
+
+    #[test]
+    fn test_is_loopback_url_strict_hostname() {
+        assert!(is_loopback_url("http://127.0.0.1:8900"));
+        assert!(is_loopback_url("http://localhost:8900"));
+        assert!(is_loopback_url("https://localhost:8443/workspace"));
+        assert!(is_loopback_url("http://[::1]:8900"));
+        assert!(is_loopback_url("  http://127.0.0.1:8900/  "));
+
+        assert!(!is_loopback_url("http://localhost.evil.com:8900"));
+        assert!(!is_loopback_url("http://127.0.0.1.evil.com"));
+        assert!(!is_loopback_url("https://evil.com/http://127.0.0.1:8900"));
+        assert!(!is_loopback_url("https://evil.com?next=http://localhost:8900"));
+        assert!(!is_loopback_url("ftp://127.0.0.1:8900"));
+        assert!(!is_loopback_url("javascript:alert(1)//http://localhost"));
+        assert!(!is_loopback_url(""));
+    }
+
+    #[test]
+    fn test_resolve_app_target_never_leaks_local_token_to_remote() {
+        let mut cfg = Config::default();
+        cfg.admin_token = Some("mnk_local_admin_secret".to_string());
+        cfg.proxy_token = Some("mnk_local_session_secret".to_string());
+
+        let (u_local, t_local) = resolve_app_target(Some("http://127.0.0.1:8900"), None, &cfg);
+        assert_eq!(u_local, "http://127.0.0.1:8900");
+        assert_eq!(t_local, "mnk_local_admin_secret");
+
+        let (u_spoof, t_spoof) =
+            resolve_app_target(Some("http://localhost.evil.com:8900"), None, &cfg);
+        assert_eq!(u_spoof, "http://localhost.evil.com:8900");
+        assert_eq!(t_spoof, "");
+
+        let (u_path, t_path) =
+            resolve_app_target(Some("https://evil.com/http://127.0.0.1:8900"), None, &cfg);
+        assert_eq!(u_path, "https://evil.com/http://127.0.0.1:8900");
+        assert_eq!(t_path, "");
+
+        let (_, t_explicit) = resolve_app_target(
+            Some("https://memnos.example.com"),
+            Some("mnk_explicit_remote"),
+            &cfg,
+        );
+        assert_eq!(t_explicit, "mnk_explicit_remote");
+    }
 }

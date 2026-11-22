@@ -685,19 +685,30 @@ def main():
               and post_coord.get("metrics", {}).get("expired_leases") == 0,
               str(drun))
 
-        print("=== 11. Ask MEMNOS AI Copilot: Overnight Digest, Harness Picker, Coordination Actions & RBAC ===")
-        st_cthr, cthr = call("GET", "/workspace/api/chat/threads", scoped_tok)
+        print("=== 11. Ask MEMNOS AI Copilot: Admin-Only Gate, Overnight Digest, Coordination Actions & Isolation ===")
+        st_nonadm_thr, _ = call("GET", "/workspace/api/chat/threads", scoped_tok)
+        st_nonadm_dig, _ = call("GET", f"/workspace/api/chat/digest?namespace={NS_RW}&hours=8", scoped_tok)
+        st_nonadm_snd, _ = call("POST", "/workspace/api/chat/send", scoped_tok, {
+            "message": "Attempted non-admin copilot call",
+            "harness": "builtin",
+            "namespace": NS_RW,
+            "wait": True,
+        })
+        check("Ask MEMNOS /workspace/api/chat/* requires admin role (403 for non-admin token)",
+              st_nonadm_thr == 403 and st_nonadm_dig == 403 and st_nonadm_snd == 403,
+              f"threads={st_nonadm_thr} digest={st_nonadm_dig} send={st_nonadm_snd}")
+
+        st_cthr, cthr = call("GET", "/workspace/api/chat/threads", admin_tok)
         h_keys = {h.get("key") for h in cthr.get("harnesses", [])}
-        check("GET /workspace/api/chat/threads exposes Auto, CLI harnesses, and Built-in Digest",
+        check("GET /workspace/api/chat/threads exposes Auto, CLI harnesses, and Built-in Digest to admin",
               st_cthr == 200 and {"auto", "claude-code", "antigravity", "codex", "gemini", "builtin"}.issubset(h_keys),
               str(h_keys))
 
-        st_dig_forb, _ = call("GET", f"/workspace/api/chat/digest?namespace={NS_HIDDEN}&hours=8", scoped_tok)
-        st_dig_ok, dig_ok = call("GET", f"/workspace/api/chat/digest?namespace={NS_RW}&hours=8", scoped_tok)
-        check("GET /workspace/api/chat/digest enforces namespace RBAC (403 on hidden, 200 on RW)",
-              st_dig_forb == 403 and st_dig_ok == 200 and "counts" in dig_ok)
+        st_dig_ok, dig_ok = call("GET", f"/workspace/api/chat/digest?namespace={NS_RW}&hours=8", admin_tok)
+        check("GET /workspace/api/chat/digest returns workspace briefing counts for admin",
+              st_dig_ok == 200 and "counts" in dig_ok)
 
-        st_csend1, csend1 = call("POST", "/workspace/api/chat/send", scoped_tok, {
+        st_csend1, csend1 = call("POST", "/workspace/api/chat/send", admin_tok, {
             "message": "What happened while I was asleep?",
             "harness": "builtin",
             "namespace": NS_RW,
@@ -711,14 +722,14 @@ def main():
               str(csend1))
 
         # Manage #channel creation and @handle subscription directly through AI chat
-        st_cact1, cact1 = call("POST", "/workspace/api/chat/send", scoped_tok, {
+        st_cact1, cact1 = call("POST", "/workspace/api/chat/send", admin_tok, {
             "thread_id": tid,
             "message": f"Create channel #chat-ops in {NS_RW}",
             "harness": "builtin",
             "namespace": NS_RW,
             "wait": True,
         })
-        st_cact2, cact2 = call("POST", "/workspace/api/chat/send", scoped_tok, {
+        st_cact2, cact2 = call("POST", "/workspace/api/chat/send", admin_tok, {
             "thread_id": tid,
             "message": f"Subscribe @worker-alpha to #chat-ops in {NS_RW}",
             "harness": "builtin",
@@ -733,15 +744,25 @@ def main():
               and "worker-alpha" in json.dumps(chat_ch.get("subscribers", [])),
               str(chat_ch))
 
-        # Cross-principal thread privacy check (admin_tok does not own scoped_tok's thread_id)
-        st_other_thr, _ = call("GET", f"/workspace/api/chat/messages?thread_id={tid}", admin_tok)
-        st_own_thr, own_thr = call("GET", f"/workspace/api/chat/messages?thread_id={tid}", scoped_tok)
-        st_del_thr, _ = call("DELETE", f"/workspace/api/chat/thread?thread_id={tid}", scoped_tok)
-        check("Copilot threads are isolated per principal & deletable",
-              st_other_thr == 404
-              and st_own_thr == 200
-              and len(own_thr.get("messages", [])) == 6
-              and st_del_thr == 200)
+        # Cross-principal thread privacy check (second admin principal does not own admin_tok's thread_id)
+        _, adm2_p = call("POST", "/admin/api/principals", admin_tok, {"name": f"ws-adm2-{int(time.time())}", "role": "admin"})
+        adm2_id = adm2_p["id"]
+        call("POST", "/admin/api/grants", admin_tok, {"principal_id": adm2_id, "namespace": "*", "can_read": True, "can_write": True})
+        _, adm2_t = call("POST", "/admin/api/tokens", admin_tok, {"principal_id": adm2_id, "label": "adm2-test"})
+        adm2_tok = adm2_t["token"]
+        try:
+            st_other_thr, _ = call("GET", f"/workspace/api/chat/messages?thread_id={tid}", adm2_tok)
+            st_other_del, _ = call("DELETE", f"/workspace/api/chat/thread?thread_id={tid}", adm2_tok)
+            st_own_thr, own_thr = call("GET", f"/workspace/api/chat/messages?thread_id={tid}", admin_tok)
+            st_del_thr, _ = call("DELETE", f"/workspace/api/chat/thread?thread_id={tid}", admin_tok)
+            check("Copilot threads are isolated per principal & deletable only by owner",
+                  st_other_thr == 404
+                  and st_other_del == 404
+                  and st_own_thr == 200
+                  and len(own_thr.get("messages", [])) == 6
+                  and st_del_thr == 200)
+        finally:
+            call("DELETE", f"/admin/api/principals?id={adm2_id}", admin_tok)
 
     finally:
         for ns in (NS_RW, NS_RO, NS_HIDDEN, "test:ws-merge-src", "test:ws-merge-dst", f"{NS_RW}:api"):
