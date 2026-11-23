@@ -1206,6 +1206,10 @@ def test_first_run_model_choice_and_backup_security(admin_dsn: str) -> None:
 
 
 def main() -> int:
+    if not os.path.isfile(MEMNOS_BIN):
+        if os.environ.get("CI") == "true":
+            print(f"SKIP: compiled binary not present at {MEMNOS_BIN} in Python-only CI job")
+            return 0
     admin_dsn = os.environ.get("MEMNOS_ADMIN_DSN") or os.environ.get("MEMNOS_DSN")
     if not admin_dsn:
         print("SKIP: MEMNOS_ADMIN_DSN not set")

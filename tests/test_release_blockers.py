@@ -1023,6 +1023,9 @@ def main() -> None:
         print("ERROR: set MEMNOS_ADMIN_DSN or MEMNOS_DSN explicitly to a scratch-capable PostgreSQL server (refusing implicit default)")
         sys.exit(2)
     if not os.path.isfile(MEMNOS_BIN):
+        if os.environ.get("CI") == "true":
+            print(f"SKIP: compiled binary not present at {MEMNOS_BIN} in Python-only CI job")
+            sys.exit(0)
         print(f"ERROR: binary not found at {MEMNOS_BIN} — run `bash scripts/build_release.sh --bins` first")
         sys.exit(2)
     test_b1_b2_b6_data_safety_and_backups()

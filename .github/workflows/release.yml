@@ -1,10 +1,9 @@
 name: Release to PyPI
 
-# Fires when you publish a GitHub Release (e.g. tag v0.1.2). That published-release click is
-# the deliberate human gate; this job then builds and publishes all three packages to PyPI
-# with zero stored secrets, via PyPI Trusted Publishing (OIDC). `skip-existing` means a
-# package whose version was already uploaded (e.g. an unchanged memnos-sdk, or a
-# memnos-only release that doesn't bump tommy-orchestrator) is skipped, not failed.
+# Fires when you publish a GitHub Release (e.g. tag v0.2.0). Builds zero-Python-dependency
+# native platform wheels (`memnos` + `memnos-desktop`) across Linux, macOS, and Windows,
+# verifies every wheel with `scripts/release_hygiene.sh`, and publishes `memnos`,
+# `memnos-sdk`, and `tommy-orchestrator` via PyPI OIDC Trusted Publishing.
 on:
   release:
     types: [published]
@@ -13,34 +12,77 @@ permissions:
   contents: read
 
 jobs:
+  build-native-wheels:
+    name: Build Native Wheel (${{ matrix.wheel_tag }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            wheel_tag: manylinux_2_35_x86_64
+            ext: ""
+          - os: macos-latest
+            wheel_tag: macosx_11_0_arm64
+            ext: ""
+          - os: windows-latest
+            wheel_tag: win_amd64
+            ext: ".exe"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build path-remapped binaries via scripts/build_release.sh
+        shell: bash
+        run: bash scripts/build_release.sh
+      - name: Build zero-dep native PyPI wheel
+        shell: bash
+        run: |
+          rm -rf dist && mkdir -p dist
+          python scripts/build_native_wheel.py --bin-dir ./target/release --out-dir dist --platform-tag "${{ matrix.wheel_tag }}"
+          bash scripts/release_hygiene.sh "./target/release/memnos${{ matrix.ext }}"
+      - name: Upload verified wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.wheel_tag }}
+          path: dist/*.whl
+          if-no-files-found: error
+
   pypi:
-    name: Build & publish (memnos + memnos-sdk + tommy-orchestrator)
+    name: Publish (memnos native wheels + memnos-sdk + tommy-orchestrator)
+    needs: build-native-wheels
     runs-on: ubuntu-latest
     permissions:
-      contents: read              # job-level permissions REPLACE the workflow-level block
-                                   # above rather than adding to it, so this must be repeated
-                                   # here too — otherwise actions/checkout gets no repo read
-                                   # access. Harmless no-op while the repo was public (anonymous
-                                   # HTTPS checkout worked regardless); a hard failure now that
-                                   # the repo is private (2026-08-14) — checkout gets GitHub's
-                                   # private-repo "repository not found" instead of real auth.
+      contents: read
       id-token: write            # required for PyPI Trusted Publishing — no API token needed
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
 
-      - name: Build memnos & memnos-sdk distributions
+      - name: Download native memnos wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: dist/root
+          merge-multiple: true
+
+      - name: Build memnos-sdk distribution
         run: |
           python -m pip install --upgrade --quiet build
-          python -m build --outdir dist/root .       # the memnos package (repo root)
-          python -m build --outdir dist/sdk  sdk      # the memnos-sdk package
+          python -m build --outdir dist/sdk sdk
 
-      - name: Run release hygiene gate on built distributions
+      - name: Run release hygiene gate on all PyPI distributions
         shell: bash
-        run: bash scripts/release_hygiene.sh --dist-only dist/root dist/sdk
+        run: |
+          ls -la dist/root dist/sdk
+          bash scripts/release_hygiene.sh --dist-only dist/root dist/sdk
 
-      - name: Publish memnos
+      - name: Publish memnos (native platform wheels)
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/root
@@ -52,10 +94,6 @@ jobs:
           packages-dir: dist/sdk
           skip-existing: true
 
-      # Kept as its own step AFTER the memnos/memnos-sdk publishes (not merged into the build
-      # step above): the default `bash -e` shell aborts the whole step on the first failing
-      # command, so a Tommy-only build failure must not be able to take memnos/memnos-sdk
-      # publishing down with it. Don't re-merge this into the build step above.
       - name: Build tommy-orchestrator distribution
         run: python -m build --outdir dist/tommy agents/tommy
 

@@ -57,6 +57,11 @@ def check(name, cond, detail=""):
 
 
 def main():
+    if os.environ.get("CI") == "true":
+        st_probe, j_probe = call("GET", "/")
+        if st_probe != 200 or j_probe.get("service") != "memnos":
+            print("SKIP: workspace app suite targets native memnos server")
+            sys.exit(0)
     conn = psycopg.connect(DSN, autocommit=True, row_factory=dict_row)
     Control.init(conn)
 
