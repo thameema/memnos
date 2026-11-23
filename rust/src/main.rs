@@ -2,7 +2,7 @@
 
 use clap::{CommandFactory, Parser, Subcommand};
 use memnos_core::{
-    agent_setup::{is_agent_target, run_agent_setup, run_autostart},
+    agent_setup::{auto_sync_installed_agents, is_agent_target, run_agent_setup, run_autostart},
     code_anchors::extract_code_anchors,
     config::{
         config_dir, config_path, dsn, load_config, redact_dsn_target, save_config, server_port,
@@ -2133,6 +2133,7 @@ async fn start_background_server(cfg: &mut Config, port_override: Option<u16>) -
     let health_url = format!("http://127.0.0.1:{}/healthz", port);
     if let Ok(r) = ureq::get(&health_url).timeout(Duration::from_secs(1)).call() {
         if r.status() == 200 {
+            let _ = auto_sync_installed_agents(cfg);
             println!("[memnos] server already running on http://127.0.0.1:{}", port);
             return Ok(());
         }
@@ -2167,11 +2168,15 @@ async fn start_background_server(cfg: &mut Config, port_override: Option<u16>) -
     while Instant::now() < deadline {
         if let Ok(r) = ureq::get(&ready_url).timeout(Duration::from_secs(2)).call() {
             if r.status() == 200 {
+                let synced = auto_sync_installed_agents(cfg);
                 println!(
                     "[memnos] started zero-downtime gateway (pid {}) on http://127.0.0.1:{}",
                     child.id(),
                     port
                 );
+                if !synced.is_empty() {
+                    println!("[memnos] auto-wired harnesses: {}", synced.join(", "));
+                }
                 return Ok(());
             }
         }
@@ -2239,6 +2244,9 @@ fn main() {
         install,
     } = cmd
     {
+        if url.is_none() {
+            let _ = auto_sync_installed_agents(&cfg);
+        }
         if let Err(e) = run_desktop_app(url.as_deref(), token.as_deref(), install, &cfg) {
             eprintln!("error: {}", e);
             std::process::exit(1);
@@ -2569,6 +2577,10 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 // Standing upgrade discipline: ALWAYS take and verify a full DB + config backup
                 // before applying any upgrade or restarting onto a new binary.
                 take_verified_db_backup(&cfg, "pre-upgrade", None, 10).await?;
+                let synced = auto_sync_installed_agents(&cfg);
+                if !synced.is_empty() {
+                    println!("[memnos] auto-wired harnesses: {}", synced.join(", "));
+                }
                 if let Some(l) = latest_ver {
                     cfg.latest_known = Some(l);
                     let _ = save_config(&cfg);
@@ -2676,6 +2688,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 .map(|s| s.eq_ignore_ascii_case("embeddings") || s.eq_ignore_ascii_case("models"))
                 .unwrap_or(false);
 
+            let had_dsn_flag = dsn_opt.is_some();
             let chosen_dsn = if docker {
                 let _ = Command::new("docker")
                     .args([
@@ -2779,6 +2792,21 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             println!("  target db:   {}", db_target);
             println!("  config:      {}", config_dir().join("config.json").display());
             println!("  admin token: {}", admin_tok);
+
+            let in_ci = matches!(
+                env::var("MEMNOS_CI")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "1" | "true" | "yes" | "on"
+            );
+            if !in_ci && !require_empty_db && !had_dsn_flag {
+                println!("\n[memnos] auto-wiring detected local AI harnesses (statusLine, hooks & MCP)...");
+                let _ = run_agent_setup("all", Some("auto"), None, true, None, &cfg);
+            } else {
+                println!("  next:        memnos start && memnos agent-setup all");
+            }
             Ok(())
         }
         Commands::Remember {

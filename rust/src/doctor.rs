@@ -187,6 +187,43 @@ pub async fn run_doctor_scan(
             "action_label": "Snapshot Backup Now",
             "metrics": binfo,
         }));
+
+        let (detected_agents, unwired_agents) =
+            crate::agent_setup::inspect_installed_agent_wiring();
+        let hw_st = if unwired_agents.is_empty() {
+            "ok"
+        } else {
+            score -= 4;
+            "warn"
+        };
+        let hw_summary = if detected_agents.is_empty() {
+            "No local AI CLI/IDE harnesses detected on this host.".to_string()
+        } else if unwired_agents.is_empty() {
+            format!(
+                "All {} detected harness(es) wired with MCP, hooks & statusLine ({}).",
+                detected_agents.len(),
+                detected_agents.join(", ")
+            )
+        } else {
+            format!(
+                "{}/{} detected harness(es) missing statusLine/hooks/MCP wiring: {}",
+                unwired_agents.len(),
+                detected_agents.len(),
+                unwired_agents.join(", ")
+            )
+        };
+        checks.push(json!({
+            "id": "harness_wiring",
+            "title": "Local AI Harnesses & StatusLine Wiring",
+            "status": hw_st,
+            "summary": hw_summary,
+            "action": "repair_harnesses",
+            "action_label": "Auto-Wire Harnesses",
+            "metrics": {
+                "detected": detected_agents,
+                "unwired": unwired_agents,
+            },
+        }));
     }
 
     // 2. Knowledge Graph & Entity Integrity
@@ -677,6 +714,7 @@ pub async fn execute_doctor_actions(
             "repair_namespaces".to_string(),
         ];
         if is_admin {
+            v.push("repair_harnesses".to_string());
             v.push("optimize_db".to_string());
         }
         v
@@ -685,7 +723,7 @@ pub async fn execute_doctor_actions(
     };
 
     for act in &expanded {
-        if matches!(act.as_str(), "optimize_db" | "backup_db") && !is_admin {
+        if matches!(act.as_str(), "optimize_db" | "backup_db" | "repair_harnesses") && !is_admin {
             return Err(format!("Forbidden: admin role required for '{}'", act));
         }
     }
@@ -743,6 +781,23 @@ pub async fn execute_doctor_actions(
                     results.insert("backup_db".into(), json!({ "dry_run": true, "would_backup": true }));
                 } else {
                     results.insert("backup_db".into(), inspect_latest_backup());
+                }
+            }
+            "repair_harnesses" => {
+                emit_step(step_idx, "Auto-discovering & wiring local AI harnesses (statusLine, hooks & MCP)…");
+                let (detected, unwired) = crate::agent_setup::inspect_installed_agent_wiring();
+                if dry_run {
+                    results.insert(
+                        "repair_harnesses".into(),
+                        json!({ "dry_run": true, "detected": detected, "would_wire": unwired }),
+                    );
+                } else {
+                    let cfg = crate::config::load_config();
+                    let synced = crate::agent_setup::auto_sync_installed_agents(&cfg);
+                    results.insert(
+                        "repair_harnesses".into(),
+                        json!({ "dry_run": false, "detected": detected, "wired": synced }),
+                    );
                 }
             }
             "repair_graph" => {

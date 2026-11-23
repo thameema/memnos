@@ -62,6 +62,16 @@ fn is_codex_hook() -> bool {
         || env::var_os("CODEX_MANAGED_BY_NPM").is_some()
 }
 
+fn is_gemini_cli_hook(data: &Value) -> bool {
+    env::var_os("GEMINI_CLI").is_some()
+        || matches!(
+            data.get("hook_event_name")
+                .or_else(|| data.get("hookEventName"))
+                .and_then(|v| v.as_str()),
+            Some("BeforeAgent" | "AfterAgent")
+        )
+}
+
 pub fn agy_inject(msgs: &[String], _markdown: bool) -> String {
     // Note: Antigravity 1.5.x `proto_utils.go:ScrubInternalFields` panics if
     // `HookSystemMessage.metadata` is non-empty (`cannot convert string to message`),
@@ -1381,7 +1391,7 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
             skip_repeat = inv > 1 && !first;
         }
         if prompt.is_empty() || skip_repeat {
-            if agy {
+            if agy || is_gemini_cli_hook(&data) {
                 println!("{{}}");
             }
             return;
@@ -1549,7 +1559,9 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
         }
 
         if let Some(setup_msg) = recall_not_setup_msg {
-            eprintln!("memnos: {}", setup_msg);
+            if !is_gemini_cli_hook(&data) {
+                eprintln!("memnos: {}", setup_msg);
+            }
             if agy {
                 println!("{}", agy_inject(&[format!("memnos: {}", setup_msg)], true));
             } else {
@@ -1577,6 +1589,21 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
                     } else {
                         println!("{}", agy_inject(&[inbox_block], false));
                     }
+                } else if is_gemini_cli_hook(&data) {
+                    let eff_sn_err = if sn.is_empty() {
+                        term_info.name.clone()
+                    } else {
+                        sn.clone()
+                    };
+                    let ui_badge_err = format_memnos_badge(&eff_sn_err, &[], None);
+                    let mut gem_out = json!({ "systemMessage": ui_badge_err });
+                    if !inbox_block.is_empty() {
+                        gem_out["hookSpecificOutput"] = json!({
+                            "hookEventName": "BeforeAgent",
+                            "additionalContext": inbox_block
+                        });
+                    }
+                    println!("{}", gem_out);
                 } else if !inbox_block.is_empty() {
                     println!(
                         "{}",
@@ -1732,6 +1759,28 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
                     }
                 })
             );
+        } else if is_gemini_cli_hook(&data) {
+            let ui_badge = format_memnos_badge(&eff_sn, &eff_chans, None);
+            let ac = out
+                .get("hookSpecificOutput")
+                .and_then(|h| h.get("additionalContext"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let gem_ac = if ac.is_empty() {
+                format!("<memnos:badge>{}</memnos:badge>", esc_xml(&ui_badge))
+            } else {
+                format!("{}\n<memnos:badge>{}</memnos:badge>", ac, esc_xml(&ui_badge))
+            };
+            println!(
+                "{}",
+                json!({
+                    "systemMessage": ui_badge,
+                    "hookSpecificOutput": {
+                        "hookEventName": "BeforeAgent",
+                        "additionalContext": gem_ac
+                    }
+                })
+            );
         } else if !out.is_empty() {
             println!("{}", Value::Object(out));
         }
@@ -1744,6 +1793,9 @@ pub fn run_hook(which: &str, reset: bool, cfg: &Config) {
             println!("{{}}");
         } else {
             hook_remember(&data, &ns, &url, &token, false);
+            if is_gemini_cli_hook(&data) {
+                println!("{{}}");
+            }
         }
     }
 }

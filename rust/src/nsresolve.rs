@@ -350,7 +350,9 @@ fn parent_tty_and_harness() -> (String, String, u32) {
     let mut agent_pid = std::process::id();
     let mut tty_str = String::new();
 
-    if env::var("ANTIGRAVITY_CLI").is_ok() || env::var("AGY_SESSION_ID").is_ok() {
+    if env::var("GEMINI_CLI").is_ok() {
+        harness = "gemini".to_string();
+    } else if env::var("ANTIGRAVITY_CLI").is_ok() || env::var("AGY_SESSION_ID").is_ok() {
         harness = "antigravity".to_string();
     } else if env::var("CLAUDE_CODE").is_ok()
         || env::var("CLAUDECODE").is_ok()
@@ -360,8 +362,6 @@ fn parent_tty_and_harness() -> (String, String, u32) {
         harness = "claude-code".to_string();
     } else if env::var("CURSOR_VERSION").is_ok() || env::var("CURSOR_TRACE_ID").is_ok() {
         harness = "cursor".to_string();
-    } else if env::var("GEMINI_CLI").is_ok() {
-        harness = "gemini".to_string();
     }
 
     #[cfg(unix)]
@@ -412,7 +412,9 @@ fn parent_tty_and_harness() -> (String, String, u32) {
                 } else if p_base == "agy" || p_base == "antigravity" {
                     harness = "antigravity".to_string();
                     agent_pid = p_pid;
-                } else if p_base == "gemini" {
+                } else if p_base == "gemini"
+                    || (matches!(p_base, "node" | "bun" | "deno") && low.contains("gemini"))
+                {
                     harness = "gemini".to_string();
                     agent_pid = p_pid;
                 } else if p_base == "cursor" {
@@ -624,12 +626,16 @@ pub fn resolve_active_session_with_data(cwd: &Path, data: Option<&Value>) -> Str
         if let Ok(map) = serde_json::from_str::<Value>(&raw) {
             if !tty.is_empty() {
                 let tty_key = format!("{}::{}", cwd_key, tty);
-                if let Some(n) = map
-                    .get(&tty_key)
-                    .and_then(|v| v.get("name"))
-                    .and_then(|v| v.as_str())
-                {
-                    return n.to_string();
+                if let Some(entry) = map.get(&tty_key) {
+                    let saved_h = entry
+                        .get("harness")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if saved_h.is_empty() || harness.is_empty() || saved_h == harness {
+                        if let Some(n) = entry.get("name").and_then(|v| v.as_str()) {
+                            return n.to_string();
+                        }
+                    }
                 }
             }
             if !harness.is_empty() {
@@ -682,74 +688,7 @@ unsafe fn libc_getppid() -> i32 {
 pub fn detect_terminal_session(cwd: &Path) -> TerminalSessionInfo {
     let real_cwd = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let explicit_name = resolve_active_session(&real_cwd);
-    let mut harness = String::new();
-    let mut agent_pid = std::process::id();
-    let mut tty_str = String::new();
-
-    #[cfg(unix)]
-    {
-        let mut cur = unsafe { libc_getppid() };
-        if cur > 1 {
-            agent_pid = cur as u32;
-        }
-        for _ in 0..5 {
-            if cur <= 1 {
-                break;
-            }
-            let out = Command::new("ps")
-                .args(["-o", "pid=,ppid=,tty=,comm=,args=", "-p", &cur.to_string()])
-                .output();
-            let Ok(o) = out else { break };
-            let line = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if line.is_empty() {
-                break;
-            }
-            let parts: Vec<&str> = line
-                .splitn(5, char::is_whitespace)
-                .filter(|s| !s.is_empty())
-                .collect();
-            if parts.len() < 4 {
-                break;
-            }
-            let p_pid: u32 = parts[0].parse().unwrap_or(cur as u32);
-            let p_ppid: i32 = parts[1].parse().unwrap_or(0);
-            let p_tty = parts[2];
-            let p_args = if parts.len() > 4 { parts[4] } else { parts[3] };
-            if tty_str.is_empty() && p_tty != "??" && p_tty != "?" && p_tty != "-" {
-                tty_str = p_tty.to_string();
-            }
-            let low = p_args.to_ascii_lowercase();
-            if harness.is_empty() {
-                if low.contains("claude.app") {
-                    harness = "claude-desktop".to_string();
-                    agent_pid = p_pid;
-                } else if low.contains("claude") && !low.contains("disclaimer") {
-                    harness = "claude-code".to_string();
-                    agent_pid = p_pid;
-                } else if low.contains("agy") || low.contains("antigravity") {
-                    harness = "antigravity".to_string();
-                    agent_pid = p_pid;
-                } else if low.contains("gemini") {
-                    harness = "gemini".to_string();
-                    agent_pid = p_pid;
-                } else if low.contains("cursor") {
-                    harness = "cursor".to_string();
-                    agent_pid = p_pid;
-                }
-            }
-            cur = p_ppid;
-        }
-    }
-
-    if harness.is_empty() {
-        if env::var("CLAUDE_PLUGIN_ROOT").is_ok() || env::var("CLAUDE_PROJECT_DIR").is_ok() {
-            harness = "claude-code".to_string();
-        } else if env::var("ANTIGRAVITY_CLI").is_ok() {
-            harness = "antigravity".to_string();
-        } else if env::var("CURSOR_VERSION").is_ok() {
-            harness = "cursor".to_string();
-        }
-    }
+    let (tty_str, harness, agent_pid) = parent_tty_and_harness();
 
     let root = git_root(&real_cwd).unwrap_or_else(|| real_cwd.clone());
     let repo_base = root.file_name().and_then(|s| s.to_str()).unwrap_or("workspace");

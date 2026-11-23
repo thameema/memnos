@@ -1018,6 +1018,160 @@ sys.exit(0)
         drop_scratch_db(ADMIN_DSN, db_name)
 
 
+def test_terminal_agnostic_harness_auto_discovery_and_gemini_statusline() -> None:
+    print("\n=== Auto-Discovery, Chained StatusLine Shims & Gemini CLI BeforeAgent Banner ===")
+    home = tempfile.mkdtemp(prefix="memnos-harnesses-")
+    try:
+        repo_dir = os.path.join(home, "demo-project")
+        os.makedirs(os.path.join(repo_dir, ".git"), exist_ok=True)
+
+        # Pre-seed Claude Code (with custom statusLine), Antigravity + Gemini CLI, Cursor, Codex
+        os.makedirs(os.path.join(home, ".claude"), exist_ok=True)
+        with open(os.path.join(home, ".claude", "settings.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "statusLine": {"type": "command", "command": "/bin/echo custom-sl"},
+                    "hooks": {
+                        "SessionStart": [{"hooks": [{"type": "command", "command": "echo keep-me"}]}]
+                    },
+                },
+                f,
+            )
+        os.makedirs(os.path.join(home, ".gemini", "config"), exist_ok=True)
+        with open(os.path.join(home, ".gemini", "settings.json"), "w", encoding="utf-8") as f:
+            json.dump({"theme": "Default"}, f)
+        os.makedirs(os.path.join(home, ".cursor"), exist_ok=True)
+        os.makedirs(os.path.join(home, ".codex"), exist_ok=True)
+
+        os.makedirs(os.path.join(home, ".memnos"), exist_ok=True)
+        with open(os.path.join(home, ".memnos", "config.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "port": 18999,
+                    "admin_token": "mnk_test_statusline_token",
+                    "embed_choice": "local",
+                },
+                f,
+            )
+
+        env = dict(os.environ)
+        env["HOME"] = home
+        env["USERPROFILE"] = home
+        env["MEMNOS_ISOLATED_HOME_DISCOVERY"] = "1"
+        env["PATH"] = f"{os.path.join(home, '.local', 'bin')}:/usr/bin:/bin"
+        env.pop("CI", None)
+        env.pop("MEMNOS_CI", None)
+
+        r_all = subprocess.run(
+            [MEMNOS_BIN, "agent-setup", "all", "--namespace", "auto", "--force"],
+            env=env,
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        check(
+            "`memnos agent-setup all` auto-discovers claude-code, antigravity, gemini-cli, cursor & codex",
+            r_all.returncode == 0
+            and "claude-code" in r_all.stdout
+            and "antigravity" in r_all.stdout
+            and "gemini-cli" in r_all.stdout,
+            r_all.stdout + r_all.stderr,
+        )
+
+        local_sl = os.path.join(home, ".local", "bin", "statusline")
+        memnos_sl = os.path.join(home, ".memnos", "bin", "statusline")
+        check(
+            "`statusline` shim is installed in BOTH `~/.local/bin/statusline` and `~/.memnos/bin/statusline`",
+            os.path.isfile(local_sl)
+            and os.access(local_sl, os.X_OK)
+            and os.path.isfile(memnos_sl)
+            and os.access(memnos_sl, os.X_OK),
+        )
+
+        r_sl = subprocess.run(
+            [local_sl],
+            input=json.dumps({"cwd": repo_dir}),
+            env=env,
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        check(
+            "`~/.local/bin/statusline` renders `[MEMNOS @...]` badge offline without a running server",
+            r_sl.returncode == 0 and "[MEMNOS @" in r_sl.stdout,
+            r_sl.stdout + r_sl.stderr,
+        )
+
+        mux_sl = os.path.join(home, ".memnos", "bin", "claude-statusline-mux.sh")
+        r_mux = subprocess.run(
+            [mux_sl],
+            input=json.dumps({"cwd": repo_dir}),
+            env=env,
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        check(
+            "`~/.memnos/bin/claude-statusline-mux.sh` chains existing statusLine and renders `[MEMNOS @...]`",
+            r_mux.returncode == 0 and "[MEMNOS @" in r_mux.stdout,
+            r_mux.stdout + r_mux.stderr,
+        )
+
+        gem_env = dict(env, GEMINI_CLI="1")
+        for turn in (1, 2):
+            r_gem = subprocess.run(
+                [MEMNOS_BIN, "hook", "recall"],
+                input=json.dumps(
+                    {
+                        "hook_event_name": "BeforeAgent",
+                        "session_id": "gem-sess-1",
+                        "prompt": f"hello turn {turn}",
+                        "cwd": repo_dir,
+                    }
+                ),
+                env=gem_env,
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            parsed = json.loads(r_gem.stdout.strip() or "{}")
+            check(
+                f"Gemini CLI `BeforeAgent` turn {turn} outputs valid JSON with `@gemini-demo-project` systemMessage",
+                r_gem.returncode == 0
+                and "[MEMNOS @gemini-demo-project" in parsed.get("systemMessage", ""),
+                r_gem.stdout + r_gem.stderr,
+            )
+
+        r_after = subprocess.run(
+            [MEMNOS_BIN, "hook", "remember"],
+            input=json.dumps(
+                {
+                    "hook_event_name": "AfterAgent",
+                    "session_id": "gem-sess-1",
+                    "prompt": "hello",
+                    "prompt_response": "hi",
+                    "cwd": repo_dir,
+                }
+            ),
+            env=gem_env,
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        check(
+            "Gemini CLI `AfterAgent` outputs valid JSON `{}`",
+            r_after.returncode == 0 and json.loads(r_after.stdout.strip()) == {},
+            r_after.stdout + r_after.stderr,
+        )
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def main() -> None:
     if not ADMIN_DSN:
         print("ERROR: set MEMNOS_ADMIN_DSN or MEMNOS_DSN explicitly to a scratch-capable PostgreSQL server (refusing implicit default)")
@@ -1031,6 +1185,7 @@ def main() -> None:
     test_b1_b2_b6_data_safety_and_backups()
     test_b3_b4_b5_security_and_spawner_isolation()
     test_241_wake_daemon_routing_and_doorbells()
+    test_terminal_agnostic_harness_auto_discovery_and_gemini_statusline()
     print(f"\nPassed: {PASS}, Failed: {FAIL}")
     sys.exit(1 if FAIL else 0)
 
