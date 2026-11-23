@@ -13,20 +13,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>memnos — a persistent memory for AI agents | self-hosted, open source</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='8' fill='url(%23g)'/%3E%3Cpath d='M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8' stroke='%23fff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='2' y1='2' x2='30' y2='30' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='%237C5CFF'/%3E%3Cstop offset='.52' stop-color='%23B832E5'/%3E%3Cstop offset='1' stop-color='%23EC4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E" />
-  <meta name="description" content="Your AI forgets everything between sessions. memnos fixes that — a real, persistent memory for Claude, Cursor, and any AI agent, so it remembers who you are and what you told it. Self-hosted on your own PostgreSQL, fully open source, no LLM required to recall. Works just as well for one person or a whole engineering team sharing one memory." />
-  <meta name="keywords" content="persistent memory AI agents, LLM memory, MCP server, Claude Code memory, Cursor AI memory, agent context persistence, memory store AI, RAG memory, memnos, AI agent SDK, shared agent memory, team memory for AI, Codex memory, Claude Code memory, multi-agent memory, LangChain memory backend, self-hosted AI memory, governed AI memory, cross-harness agent handoff, multi-agent task handoff, Tommy orchestrator, agent-to-agent handoff" />
+  <meta name="description" content="Your AI forgets everything between sessions. memnos v0.2.0 fixes that — persistent, governed memory, a multi-harness @handle/#channel coordination mesh, and the native MEMNOS Desktop workspace with Ask MEMNOS Copilot. Zero-dependency single binary, self-hosted on PostgreSQL, Apache-2.0 open source." />
+  <meta name="keywords" content="persistent memory AI agents, LLM memory, MCP server, Claude Code memory, Cursor AI memory, MEMNOS Desktop, Ask MEMNOS, agent context persistence, memory store AI, RAG memory, memnos, AI agent SDK, shared agent memory, team memory for AI, Codex memory, multi-agent coordination, LangChain memory backend, self-hosted AI memory, governed AI memory, cross-harness agent handoff, Tommy orchestrator" />
   <link rel="canonical" href="https://memnos.net/" />
   <!-- Open Graph -->
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://memnos.net/" />
-  <meta property="og:title" content="memnos — a persistent memory for AI agents" />
-  <meta property="og:description" content="Your AI forgets everything between sessions. memnos fixes that — self-hosted on your own PostgreSQL, fully open source, no LLM required to recall." />
+  <meta property="og:title" content="memnos — persistent memory, coordination &amp; native Desktop App for AI agents" />
+  <meta property="og:description" content="Persistent governed memory, @handle/#channel agent coordination, and MEMNOS Desktop with Ask MEMNOS Copilot. Zero-dependency native binary on PostgreSQL, Apache-2.0 open source." />
   <meta property="og:image" content="https://memnos.net/og-image.png" />
   <meta property="og:site_name" content="memnos" />
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="memnos — a persistent memory for AI agents" />
-  <meta name="twitter:description" content="Your AI forgets everything between sessions. memnos fixes that — self-hosted on your own PostgreSQL, fully open source, no LLM required to recall." />
+  <meta name="twitter:title" content="memnos — persistent memory, coordination &amp; native Desktop App for AI agents" />
+  <meta name="twitter:description" content="Persistent governed memory, @handle/#channel agent coordination, and MEMNOS Desktop with Ask MEMNOS Copilot. Zero-dependency native binary on PostgreSQL, Apache-2.0 open source." />
   <meta name="twitter:image" content="https://memnos.net/og-image.png" />
   <!-- Structured data -->
   <script type="application/ld+json">
@@ -34,14 +34,14 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "memnos",
-    "description": "A persistent memory for AI agents — so they remember who you are and what you told them, across every session. Self-hosted on your own PostgreSQL, fully open source, no LLM required to recall. Works with Claude Code, Codex, Cursor, LangChain/LangGraph and any base-URL agent.",
+    "softwareVersion": "0.2.0",
+    "description": "Persistent governed memory, multi-harness agent coordination, and the native MEMNOS Desktop workspace (Ask MEMNOS Copilot) for Claude Code, Codex, Cursor, Gemini CLI, and LangChain/LangGraph. Zero-dependency native binaries on PostgreSQL, Apache-2.0 open source.",
     "url": "https://memnos.net",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Linux, macOS, Windows",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
     "codeRepository": "https://github.com/thameema/memnos",
-    "programmingLanguage": "Python",
-    "keywords": "persistent memory, AI agents, MCP server, Claude Code, Cursor, LLM memory, memory store"
+    "keywords": "persistent memory, AI agents, MEMNOS Desktop, Ask MEMNOS, MCP server, Claude Code, Codex, Cursor, LLM memory, PostgreSQL pgvector"
   }
   </script>
   <script src="https://cdn.tailwindcss.com"></script>
@@ -165,6 +165,7 @@
     <!-- Desktop links -->
     <div class="hidden md:flex items-center gap-7">
       <a href="getting-started.html" class="text-sm text-gray-400 hover:text-white transition-colors">Getting Started</a>
+      <a href="desktop.html" class="text-sm text-purple-300 hover:text-white transition-colors font-medium">Desktop App</a>
       <a href="#features" class="text-sm text-gray-400 hover:text-white transition-colors">Features</a>
       <a href="agents.html" class="text-sm text-gray-400 hover:text-white transition-colors">Agents</a>
       <a href="skills.html" class="text-sm text-gray-400 hover:text-white transition-colors">Skills</a>
@@ -201,6 +202,7 @@
   <div id="mobile-nav" class="hidden md:hidden border-t border-gray-800 bg-gray-950/95 backdrop-blur-xl">
     <div class="max-w-6xl mx-auto px-6 py-5 flex flex-col gap-1">
       <a href="getting-started.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Getting Started</a>
+      <a href="desktop.html" class="text-sm text-purple-300 hover:text-white transition-colors py-2.5 border-b border-gray-900 font-medium">Desktop App</a>
       <a href="#features" onclick="toggleMobileNav()" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Features</a>
       <a href="agents.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Agents</a>
       <a href="skills.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Skills</a>
@@ -239,25 +241,27 @@
     <div>
       <div class="inline-flex items-center gap-2 bg-purple-500/10 border border-purple-500/20 rounded-full px-4 py-1.5 text-sm text-purple-300 mb-8">
         <span class="w-1.5 h-1.5 bg-purple-400 rounded-full pulse-dot"></span>
-        Apache-2.0 · Self-hostable · Works with Claude Code, Codex, Cursor &amp; any base-URL agent
+        v0.2.0 &middot; Native Single Binary &amp; Desktop App &middot; Apache-2.0 &middot; Self-hostable
       </div>
       <h1 class="hero-display text-5xl md:text-6xl font-bold text-white leading-[1.05] mb-6">
         Your AI forgets everything.<br />
         <span class="gradient-text">memnos makes sure it doesn&rsquo;t.</span>
       </h1>
       <p class="text-gray-400 text-lg leading-relaxed mb-6 max-w-lg">
-        memnos gives AI agents a real memory — so Claude, Cursor, or any agent you use remembers who you are, what you decided, and what you told it, across every session. No more re-explaining yourself to a blank slate.
+        memnos gives AI agents a real memory — so Claude Code, Codex, Cursor, or any agent you use remembers who you are, what you decided, and what happened across every session. Plus a native <span class="text-white font-semibold">MEMNOS Desktop</span> workspace to catch up on overnight agent work in one click.
       </p>
       <p class="text-gray-300 text-base leading-relaxed mb-8 max-w-lg">
-        It runs <span class="text-white font-semibold">on your own PostgreSQL</span>, fully open source, with <span class="text-white font-semibold">no LLM required to recall</span> — and it works the same way whether it&rsquo;s just you, or a whole team sharing one memory.
+        Ships as a <span class="text-white font-semibold">zero-dependency native single binary</span> on <span class="text-white font-semibold">your own PostgreSQL</span>, fully open source, with <span class="text-white font-semibold">no LLM required to recall</span>.
       </p>
       <div class="flex flex-wrap items-center gap-3">
         <a href="https://github.com/thameema/memnos" target="_blank" class="glow-btn text-white font-semibold px-6 py-3 rounded-full text-sm whitespace-nowrap">Deploy free</a>
+        <a href="desktop.html" class="text-sm text-purple-200 hover:text-white transition-colors border border-purple-500/40 hover:border-purple-400 bg-purple-500/10 px-6 py-3 rounded-full flex items-center gap-2 whitespace-nowrap">
+          <span>✦</span> Explore Desktop App
+        </a>
         <a href="https://github.com/thameema/memnos" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-6 py-3 rounded-full flex items-center gap-2 whitespace-nowrap">
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
-          View on GitHub
+          GitHub
         </a>
-        <a href="#how-it-works" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-6 py-3 rounded-full whitespace-nowrap">See how it works</a>
       </div>
       <!-- Stats row -->
       <div class="mt-14 grid grid-cols-2 gap-x-8 gap-y-6 border-t border-gray-800 pt-8">
@@ -491,12 +495,85 @@
     </div>
     <!-- /SLIDE 3 -->
 
+    <!-- SLIDE 4 — Native MEMNOS Desktop & Ask MEMNOS Copilot -->
+    <div class="hero-slide grid md:grid-cols-2 gap-16 items-center">
+    <div>
+      <div class="inline-flex items-center gap-2 bg-purple-500/10 border border-purple-500/20 rounded-full px-4 py-1.5 text-sm text-purple-300 mb-8">
+        <span class="w-1.5 h-1.5 bg-purple-400 rounded-full pulse-dot"></span>
+        New in v0.2.0 &middot; Native MEMNOS Desktop (<code class="font-mono text-xs">memnos app</code>) &amp; Ask MEMNOS
+      </div>
+      <h2 class="hero-display text-5xl md:text-6xl font-bold text-white leading-[1.05] mb-6">
+        Sleep while agents ship.<br />
+        <span class="gradient-text">Catch up in one click.</span>
+      </h2>
+      <p class="text-gray-400 text-lg leading-relaxed mb-6 max-w-lg">
+        Open <strong class="text-white">MEMNOS Desktop</strong> and ask <strong class="text-white">Ask MEMNOS</strong> what happened while you were away — decisions made, blockers hit, and handoffs queued across every <code class="text-purple-300 font-mono text-sm">#channel</code> and <code class="text-purple-300 font-mono text-sm">@handle</code>, powered by your own local CLI harness.
+      </p>
+      <p class="text-gray-300 text-base leading-relaxed mb-8 max-w-lg">
+        Watch live agent calls stream in real time, create channels or assign tasks conversationally, run one-click <code class="text-purple-300 font-mono text-sm">Doctor</code> diagnostics, and switch between <span class="text-white font-semibold">Slack Aubergine, Soft Dusk, Obsidian, and Daylight</span> themes.
+      </p>
+      <div class="flex flex-wrap items-center gap-3">
+        <a href="desktop.html" class="glow-btn text-white font-semibold px-6 py-3 rounded-full text-sm whitespace-nowrap">Interactive Desktop Tour &rarr;</a>
+        <a href="#desktop" class="text-sm text-gray-300 hover:text-white transition-colors border border-gray-700 hover:border-gray-500 px-6 py-3 rounded-full whitespace-nowrap">See Ask MEMNOS</a>
+      </div>
+      <div class="mt-14 grid grid-cols-2 gap-x-8 gap-y-6 border-t border-gray-800 pt-8">
+        <div>
+          <div class="text-2xl font-bold text-white">~5.6 MB</div>
+          <div class="text-xs text-gray-500 mt-0.5">native OS WebView executable &mdash; zero Electron or Python runtime bloat</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-white">Ask MEMNOS</div>
+          <div class="text-xs text-gray-500 mt-0.5">1-click catch-up briefings &amp; conversational #channel / @handle control</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-white">Live SSE</div>
+          <div class="text-xs text-gray-500 mt-0.5">real-time bottom activity ticker &amp; stream for every MCP / REST call</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-white">Doctor + Backup</div>
+          <div class="text-xs text-gray-500 mt-0.5">version sync, pgvector index health &amp; verified pre-upgrade snapshots</div>
+        </div>
+      </div>
+    </div>
+    <div class="relative">
+      <div class="glass rounded-2xl p-5 space-y-3 max-w-md ml-auto" style="background: rgba(40, 32, 56, 0.72); border-color: rgba(196, 181, 253, 0.2);">
+        <div class="flex items-center justify-between mb-3">
+          <span class="text-xs text-purple-200 font-semibold">✦ Ask MEMNOS &middot; v0.2.0</span>
+          <span class="text-[11px] font-mono text-emerald-300">&bull; 127.0.0.1:8900</span>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-purple-500/25 text-purple-200 px-2 py-0.5 rounded-full font-mono">🌙 While I Was Away</span>
+            <span class="text-xs text-gray-400">Last 8h</span>
+          </div>
+          <p class="text-sm text-gray-200"><code class="text-purple-300 font-mono text-xs">@claude-api</code> locked Stripe idempotency schema and handed replay tests to <code class="text-purple-300 font-mono text-xs">@codex-qa</code> on <code class="text-purple-300 font-mono text-xs">#payments-sync</code>.</p>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full font-mono">◉ Live Stream</span>
+            <span class="text-xs text-gray-400">18 ms</span>
+          </div>
+          <p class="text-sm text-gray-200">42/42 replay tests verified &mdash; <code class="text-emerald-300 font-mono text-xs">wake-daemon</code> notified idle pane <code class="text-gray-300 font-mono text-xs">tmux %4</code>.</p>
+        </div>
+        <div class="glass rounded-xl p-3.5 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-cyan-500/20 text-cyan-300 px-2 py-0.5 rounded-full font-mono">✚ Doctor</span>
+            <span class="text-xs text-gray-400">8/8 checks OK</span>
+          </div>
+          <p class="text-sm text-gray-200">App &amp; Server <code class="text-cyan-300 font-mono text-xs">v0.2.0</code> in sync &middot; HNSW indexes healthy &middot; verified backup on disk.</p>
+        </div>
+      </div>
+    </div>
+    </div>
+    <!-- /SLIDE 4 -->
+
   </div>
   <!-- Slide dots -->
   <div class="flex items-center justify-center gap-2 mt-10">
     <button type="button" class="hero-dot" data-hero-dot="0" aria-label="Show the persistent-memory slide" aria-current="true"></button>
     <button type="button" class="hero-dot" data-hero-dot="1" aria-label="Show the namespaces and access control slide" aria-current="false"></button>
     <button type="button" class="hero-dot" data-hero-dot="2" aria-label="Show the cross-harness handoffs slide" aria-current="false"></button>
+    <button type="button" class="hero-dot" data-hero-dot="3" aria-label="Show the MEMNOS Desktop and Ask MEMNOS slide" aria-current="false"></button>
   </div>
   </div>
 </section>
@@ -506,7 +583,7 @@
 <section class="relative z-10 py-6 fade-in">
   <div class="max-w-6xl mx-auto px-6">
     <div class="glass rounded-2xl px-8 py-4 text-center">
-      <p class="text-sm text-gray-300 leading-relaxed"><span class="text-white font-semibold">64–65%</span> on full LoCoMo (three independent ingests) <span class="text-gray-600">·</span> <span class="text-white font-semibold">78.4%</span> on LongMemEval (500q, gpt-4o judge, predictions published) <span class="text-gray-600">·</span> No LLM at query time <span class="text-gray-600">·</span> Apache-2.0 <span class="text-gray-600">·</span> Runs on PostgreSQL.</p>
+      <p class="text-sm text-gray-300 leading-relaxed"><span class="text-white font-semibold">v0.2.0</span> zero-dep native binary + Desktop App <span class="text-gray-600">&middot;</span> <span class="text-white font-semibold">64–65%</span> on full LoCoMo <span class="text-gray-600">&middot;</span> <span class="text-white font-semibold">78.4%</span> on LongMemEval (500q, predictions published) <span class="text-gray-600">&middot;</span> No LLM at query time <span class="text-gray-600">&middot;</span> Apache-2.0 <span class="text-gray-600">&middot;</span> Runs on PostgreSQL.</p>
     </div>
   </div>
 </section>
@@ -526,6 +603,72 @@
   </div>
 </section>
 
+<!-- ── DESKTOP WORKSPACE & ASK MEMNOS SPOTLIGHT ─────────────────────── -->
+<section id="desktop" class="relative z-10 py-14 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="gradient-border">
+      <div class="gradient-border-inner p-8 md:p-12 rounded-2xl">
+        <div class="grid lg:grid-cols-12 gap-10 items-center">
+          <div class="lg:col-span-5">
+            <div class="inline-flex items-center gap-2 bg-purple-500/15 border border-purple-500/30 rounded-full px-3.5 py-1 text-xs text-purple-300 mb-4">
+              <span>✦</span> New in v0.2.0 &middot; <code class="font-mono">memnos app</code>
+            </div>
+            <h2 class="text-3xl font-bold text-white mb-4 leading-tight">Meet MEMNOS Desktop &amp; <span class="gradient-text">Ask MEMNOS</span></h2>
+            <p class="text-gray-400 text-sm leading-relaxed mb-5">
+              Stop hunting through six terminal tabs to figure out what your agents did overnight. Launch <code class="text-green-300 font-mono text-xs">memnos app</code> to open a fast native desktop workspace for macOS, Linux, and Windows:
+            </p>
+            <ul class="space-y-2.5 text-sm text-gray-300 mb-7">
+              <li class="flex items-start gap-2.5"><span class="text-purple-400 font-bold mt-0.5">&#10003;</span><span><strong class="text-white">1-Click Catch-Up Briefings:</strong> <em>While I Was Away</em>, <em>Agent Coordination</em>, <em>Blockers &amp; Incidents</em>, and <em>Channels &amp; Handles Audit</em> using your preferred local CLI harness.</span></li>
+              <li class="flex items-start gap-2.5"><span class="text-purple-400 font-bold mt-0.5">&#10003;</span><span><strong class="text-white">Manage Mesh via Chat:</strong> Create <code class="text-purple-300 font-mono text-xs">#channels</code>, subscribe <code class="text-purple-300 font-mono text-xs">@handles</code>, and assign <code class="text-purple-300 font-mono text-xs">@inbox</code> tasks in plain English.</span></li>
+              <li class="flex items-start gap-2.5"><span class="text-purple-400 font-bold mt-0.5">&#10003;</span><span><strong class="text-white">Live SSE Ticker &amp; System Doctor:</strong> Watch every <code class="text-purple-300 font-mono text-xs">remember</code>/<code class="text-purple-300 font-mono text-xs">recall</code> call live, verify App/Server version sync, and audit PostgreSQL backups &amp; ACLs.</span></li>
+            </ul>
+            <div class="flex flex-wrap items-center gap-3">
+              <a href="desktop.html" class="glow-btn text-white font-semibold px-5 py-2.5 rounded-full text-sm">Try Interactive Preview &rarr;</a>
+              <span class="code-block px-3.5 py-2 text-xs text-green-300">$ memnos app --install</span>
+            </div>
+          </div>
+
+          <!-- Compact Slack-Aubergine Window Preview -->
+          <div class="lg:col-span-7 rounded-2xl overflow-hidden border" style="background: #221d2f; border-color: rgba(196,181,253,0.18); box-shadow: 0 20px 60px rgba(0,0,0,0.55);">
+            <div class="px-4 py-2.5 flex items-center justify-between border-b" style="background: #1c1628; border-color: rgba(196,181,253,0.14);">
+              <div class="flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full bg-red-400/80"></span>
+                <span class="w-2.5 h-2.5 rounded-full bg-yellow-400/80"></span>
+                <span class="w-2.5 h-2.5 rounded-full bg-green-400/80"></span>
+                <span class="ml-2 text-xs font-semibold text-purple-100">MEMNOS v0.2.0 &middot; 127.0.0.1:8900</span>
+              </div>
+              <span class="text-[11px] font-mono text-purple-200/80">✦ Slack Aubergine &middot; Soft Dusk &middot; Daylight</span>
+            </div>
+            <div class="p-5 space-y-3 text-xs text-purple-50">
+              <div class="flex flex-wrap gap-2">
+                <span class="px-2.5 py-1 rounded-lg font-medium" style="background:#302843; border:1px solid rgba(196,181,253,0.16);">🌙 While I Was Away</span>
+                <span class="px-2.5 py-1 rounded-lg text-purple-200/80" style="background:#282038; border:1px solid rgba(196,181,253,0.1);">🤝 Agent Coordination</span>
+                <span class="px-2.5 py-1 rounded-lg text-purple-200/80" style="background:#282038; border:1px solid rgba(196,181,253,0.1);">🚨 Blockers &amp; Incidents</span>
+              </div>
+              <div class="rounded-xl p-4 space-y-2.5 leading-relaxed" style="background:#302843; border:1px solid rgba(196,181,253,0.15);">
+                <div class="flex items-center justify-between text-[11px] text-purple-200/75">
+                  <span>Briefing &middot; Last 8h (Sleep/Away)</span>
+                  <span class="font-mono">Harness: ⚡ Auto</span>
+                </div>
+                <p><span class="font-mono text-purple-200/70">02:14</span> &middot; <span class="px-1.5 py-0.5 rounded-full font-mono text-[11px]" style="background:rgba(168,85,247,0.22);color:#e9d5ff;">@claude-api</span> finalized composite idempotency keys in <code class="font-mono text-purple-200">proj:payments-sync</code> and queued QA handoff on <span class="px-1.5 py-0.5 rounded-full font-mono text-[11px]" style="background:rgba(168,85,247,0.22);color:#e9d5ff;">#payments-sync</span>.</p>
+                <p><span class="font-mono text-purple-200/70">03:05</span> &middot; <span class="px-1.5 py-0.5 rounded-full font-mono text-[11px]" style="background:rgba(168,85,247,0.22);color:#e9d5ff;">@codex-qa</span> passed 42/42 webhook replay tests, saved a <code class="font-mono text-emerald-300">fix</code> memory, and rang <span class="px-1.5 py-0.5 rounded-full font-mono text-[11px]" style="background:rgba(168,85,247,0.22);color:#e9d5ff;">@claude-api</span> via <code class="font-mono text-purple-200">wake-daemon</code>.</p>
+              </div>
+              <div class="rounded-xl px-3.5 py-2.5 flex items-center justify-between text-purple-200/75" style="background:#282038; border:1px solid rgba(196,181,253,0.14);">
+                <span>Ask what happened while you slept, or manage #channels &amp; @handles&hellip;</span>
+                <span class="px-3 py-1 rounded-lg text-white font-semibold text-[11px]" style="background:#c026d3;">Send &crarr;</span>
+              </div>
+            </div>
+            <div class="px-4 py-1.5 text-[11px] font-mono flex items-center justify-between border-t" style="background:#1c1628; border-color:rgba(196,181,253,0.14); color:#b4a9cc;">
+              <span class="truncate"><span class="text-emerald-400 font-semibold">&bull; LIVE</span> │ ⚡ @codex-qa /remember (proj:payments-sync) &middot; 18ms</span>
+              <span class="whitespace-nowrap ml-2">✓ App v0.2.0 &middot; Server v0.2.0</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ── PILLARS (developer layer) ───────────────────────────────────── -->
 <section class="relative z-10 py-14 fade-in">
   <div class="max-w-6xl mx-auto px-6">
@@ -537,20 +680,21 @@
       <div class="glass rounded-2xl p-6">
         <div class="flex items-center gap-2 mb-2">
           <h3 class="text-white font-semibold">Every memory signed</h3>
-          <span class="text-[10px] uppercase tracking-wide bg-purple-500/15 border border-purple-500/25 text-purple-300 px-2 py-0.5 rounded-full whitespace-nowrap">new in 0.1.6</span>
         </div>
-        <p class="text-sm text-gray-400 leading-relaxed">Author attribution on every write — know which agent or person wrote each memory, and when. Today, every operation is already audit-logged by principal.</p>
+        <p class="text-sm text-gray-400 leading-relaxed">Server-stamped author attribution on every write — know which agent handle or engineer wrote each memory and when, backed by a full per-principal audit log.</p>
       </div>
       <div class="glass rounded-2xl p-6">
         <div class="flex items-center gap-2 mb-2">
           <h3 class="text-white font-semibold">Rules that can&rsquo;t be forgotten</h3>
-          <span class="text-[10px] uppercase tracking-wide bg-purple-500/15 border border-purple-500/25 text-purple-300 px-2 py-0.5 rounded-full whitespace-nowrap">new in 0.1.6</span>
         </div>
-        <p class="text-sm text-gray-400 leading-relaxed">Pinned constraints that ride along with every recall, so your rules never fall out of context. Today: constraints are searchable facts, and <code class="text-purple-300 font-mono text-xs">/corpus/check</code> tests any diff against them — deterministic, no LLM.</p>
+        <p class="text-sm text-gray-400 leading-relaxed">Pinned constraints ride along with every recall so critical rules never fall out of context, and <code class="text-purple-300 font-mono text-xs">/corpus/check</code> tests any diff against RFC-2119 rules deterministically — no LLM.</p>
       </div>
       <div class="glass rounded-2xl p-6">
-        <h3 class="text-white font-semibold mb-2">Trust, then verify</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Shipped today: token auth, namespace ACLs, a full audit log, and an AES-256-GCM secret vault with write-time credential redaction. Every claim checkable in the open source.</p>
+        <div class="flex items-center gap-2 mb-2">
+          <h3 class="text-white font-semibold">Zero-dep single binary</h3>
+          <span class="text-[10px] uppercase tracking-wide bg-purple-500/15 border border-purple-500/25 text-purple-300 px-2 py-0.5 rounded-full whitespace-nowrap">new in 0.2.0</span>
+        </div>
+        <p class="text-sm text-gray-400 leading-relaxed">Server, blue-green gateway, 55-tool MCP server, CLI, wake daemon, and native Desktop App ship as fast self-contained binaries with zero Python runtime dependencies.</p>
       </div>
     </div>
   </div>
@@ -726,7 +870,7 @@
           <svg class="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z"/></svg>
         </div>
         <h3 class="text-white font-semibold mb-2">Agent Memory Policies &amp; Audit Trail</h3>
-        <p class="text-sm text-gray-400 leading-relaxed">Every operation is token-authenticated, namespace-scoped and audit-logged — principal, operation, latency, result count. Every consolidated fact keeps provenance links to the raw episodes behind it. (Per-author memory attribution ships in v0.1.6.)</p>
+        <p class="text-sm text-gray-400 leading-relaxed">Every operation is token-authenticated, namespace-scoped, author-attributed from the authenticated token, and audit-logged — principal, operation, latency, result count, and episode provenance.</p>
       </div>
 
       <div class="glass rounded-2xl p-6">
@@ -786,6 +930,33 @@
         </div>
         <h3 class="text-white font-semibold mb-2">Portable Memory</h3>
         <p class="text-sm text-gray-400 leading-relaxed">Copy or move whole namespaces with one command, and back up everything with standard PostgreSQL tooling (pg_dump). It’s your database — your memory travels with your infrastructure.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center mb-5 text-purple-300 font-bold">✦</div>
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+          <h3 class="text-white font-semibold">MEMNOS Desktop &amp; Ask MEMNOS</h3>
+          <span class="text-[10px] uppercase tracking-wide bg-purple-500/15 border border-purple-500/25 text-purple-300 px-2 py-0.5 rounded-full whitespace-nowrap">new in 0.2.0</span>
+        </div>
+        <p class="text-sm text-gray-400 leading-relaxed">Native OS workspace (<code class="text-purple-300 font-mono text-xs">memnos app</code>) with 1-click overnight catch-up briefings, conversational <code class="text-purple-300 font-mono text-xs">#channel</code>/<code class="text-purple-300 font-mono text-xs">@handle</code> management, live SSE activity streaming, and four breathable themes.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-cyan-500/10 border border-cyan-500/20 rounded-xl flex items-center justify-center mb-5 text-cyan-300 font-mono text-sm">@</div>
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+          <h3 class="text-white font-semibold">Targeted Terminal Wake &amp; Spawner</h3>
+          <span class="text-[10px] uppercase tracking-wide bg-purple-500/15 border border-purple-500/25 text-purple-300 px-2 py-0.5 rounded-full whitespace-nowrap">new in 0.2.0</span>
+        </div>
+        <p class="text-sm text-gray-400 leading-relaxed"><code class="text-purple-300 font-mono text-xs">memnos wake-daemon</code> binds <code class="text-purple-300 font-mono text-xs">TMUX_PANE</code> and Orca terminal IDs to wake only the idle target agent pane on new <code class="text-purple-300 font-mono text-xs">@inbox</code> messages, paired with isolated git-worktree background workers.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center justify-center mb-5 text-emerald-300 font-bold">✚</div>
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+          <h3 class="text-white font-semibold">System Doctor &amp; Verified Backups</h3>
+          <span class="text-[10px] uppercase tracking-wide bg-purple-500/15 border border-purple-500/25 text-purple-300 px-2 py-0.5 rounded-full whitespace-nowrap">new in 0.2.0</span>
+        </div>
+        <p class="text-sm text-gray-400 leading-relaxed"><code class="text-purple-300 font-mono text-xs">memnos doctor</code> audits binary/server sync, HNSW indexes, vault keys, and hooks; <code class="text-purple-300 font-mono text-xs">memnos upgrade</code> takes mandatory <code class="text-purple-300 font-mono text-xs">pg_restore</code>-verified backups before rolling reload.</p>
       </div>
 
     </div>
@@ -974,37 +1145,41 @@
 <section id="sdk" class="relative z-10 py-14 fade-in">
   <div class="max-w-6xl mx-auto px-6">
     <div class="text-center mb-12">
-      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Install &amp; integrate</span>
-      <h2 class="text-3xl font-bold text-white mt-3 mb-4">One command. Then use it from anywhere.</h2>
-      <p class="text-gray-400 max-w-2xl mx-auto">A cross-platform <code class="text-green-300">memnos</code> CLI (server + client in one), an MCP server for Claude Code / Cursor / Windsurf, and a plain REST API. PostgreSQL is the only prerequisite. <span class="text-gray-500">(Plus a Python SDK on PyPI — <code class="text-green-300">memnos-sdk</code> — with LangChain, LangGraph &amp; LlamaIndex retriever adapters.)</span></p>
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Install &amp; integrate &middot; v0.2.0</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">One command. Zero Python dependencies required.</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Install native single binaries (<code class="text-green-300">memnos</code> + <code class="text-green-300">memnos-desktop</code>) via <code class="text-green-300">install.sh</code>, <code class="text-green-300">install.ps1</code>, or zero-dependency PyPI platform wheels (<code class="text-green-300">uv tool install memnos</code>). Includes an embedded PostgreSQL+pgvector option, 55-tool MCP server, and REST API — plus <code class="text-green-300">memnos-sdk</code> for Python/LangChain/LangGraph/LlamaIndex.</p>
     </div>
 
     <!-- Install pills -->
     <div class="flex flex-wrap justify-center gap-3 mb-12">
       <div class="code-block px-4 py-2 text-xs flex items-center gap-2">
         <span class="text-gray-500">$</span>
-        <span class="text-green-300">./install.sh</span>
-        <span class="text-gray-600 ml-2 text-xs">macOS/Linux (Windows: install.ps1)</span>
+        <span class="text-green-300">curl -fsSL https://raw.githubusercontent.com/thameema/memnos/master/install.sh | sh</span>
+        <span class="text-gray-600 ml-1 text-xs">macOS/Linux (or: uv tool install memnos)</span>
+      </div>
+      <div class="code-block px-4 py-2 text-xs flex items-center gap-2">
+        <span class="text-gray-500">PS&gt;</span>
+        <span class="text-green-300">irm https://raw.githubusercontent.com/thameema/memnos/master/install.ps1 | iex</span>
+        <span class="text-gray-600 ml-1 text-xs">Windows</span>
       </div>
       <div class="code-block px-4 py-2 text-xs flex items-center gap-2">
         <span class="text-gray-500">$</span>
-        <span class="text-green-300">memnos setup</span>
-        <span class="text-gray-600 ml-2 text-xs">connect your Postgres</span>
-      </div>
-      <div class="code-block px-4 py-2 text-xs flex items-center gap-2">
-        <span class="text-gray-500">$</span>
-        <span class="text-green-300">memnos start &amp;&amp; memnos app</span>
-        <span class="text-gray-600 ml-2 text-xs">→ http://127.0.0.1:8900 + Desktop Workspace</span>
+        <span class="text-green-300">memnos setup &amp;&amp; memnos start &amp;&amp; memnos app</span>
+        <span class="text-gray-600 ml-1 text-xs">&rarr; :8900 + MEMNOS Desktop</span>
       </div>
     </div>
 
     <!-- Tabs + code -->
     <div class="max-w-4xl mx-auto">
       <!-- Tab buttons -->
-      <div class="flex gap-1 mb-0 border-b border-gray-800">
+      <div class="flex flex-wrap gap-1 mb-0 border-b border-gray-800">
         <button onclick="showTab('tab-basic')" id="btn-tab-basic"
           class="sdk-tab px-5 py-3 text-sm font-medium text-gray-300 border-b-2 border-purple-500 transition-colors">
           Basic memory
+        </button>
+        <button onclick="showTab('tab-mesh')" id="btn-tab-mesh"
+          class="sdk-tab px-5 py-3 text-sm font-medium text-gray-500 border-b-2 border-transparent hover:text-gray-300 transition-colors">
+          Agent mesh (@handles &amp; #channels)
         </button>
         <button onclick="showTab('tab-langchain')" id="btn-tab-langchain"
           class="sdk-tab px-5 py-3 text-sm font-medium text-gray-500 border-b-2 border-transparent hover:text-gray-300 transition-colors">
@@ -1037,9 +1212,29 @@ curl -X POST http://127.0.0.1:8900/recall \
   -H <span class="token-str">"Authorization: Bearer $MEMNOS_TOKEN"</span> -H <span class="token-str">"Content-Type: application/json"</span> \
   -d <span class="token-str">'{"namespace":"org:acme:security","query":"token expiry policy"}'</span>
 
-<span class="token-cmt"># …or the CLI client</span>
+<span class="token-cmt"># …or the native CLI + Desktop Workspace</span>
 memnos remember <span class="token-str">"JWT tokens expire after 15 min in prod"</span> --namespace org:acme:security
-memnos recall   <span class="token-str">"token expiry policy"</span> --namespace org:acme:security</code></pre>
+memnos recall   <span class="token-str">"token expiry policy"</span> --namespace org:acme:security
+memnos doctor   <span class="token-cmt"># audit server/CLI sync, pgvector HNSW indexes, vault &amp; verified backups</span></code></pre>
+      </div>
+
+      <div id="tab-mesh" class="sdk-panel hidden code-block p-6 rounded-tl-none">
+        <div class="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800">
+          <div class="w-2.5 h-2.5 rounded-full bg-red-500/60"></div>
+          <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/60"></div>
+          <div class="w-2.5 h-2.5 rounded-full bg-green-500/60"></div>
+          <span class="ml-2 text-xs text-gray-600">agent_mesh.sh — @handles, #channels, @inbox &amp; wake-daemon</span>
+        </div>
+        <pre class="text-xs leading-relaxed overflow-x-auto"><code><span class="token-cmt"># Register an agent session handle and subscribe to a shared project #channel</span>
+memnos session register claude-api --harness claude-code --namespace proj:payments-sync
+memnos channel subscribe "#payments-sync" --session claude-api --namespace proj:payments-sync
+
+<span class="token-cmt"># Publish status or queue a direct @inbox task to a peer session in another harness</span>
+memnos channel pub "#payments-sync" <span class="token-str">"Composite idempotency schema merged (PR #184)"</span> --session claude-api
+memnos inbox send codex-qa <span class="token-str">"Run 500-event webhook replay suite on scratch DB"</span> --session claude-api
+
+<span class="token-cmt"># Start wake-daemon to ring idle tmux / Orca terminal panes automatically on new @inbox items</span>
+memnos wake-daemon --backend auto</code></pre>
       </div>
 
       <div id="tab-langchain" class="sdk-panel hidden code-block p-6 rounded-tl-none">
@@ -1172,7 +1367,7 @@ curl -X POST http://127.0.0.1:8900/corpus/check \
           </div>
           <div>
             <h3 class="text-white font-semibold mb-2">Write with full provenance</h3>
-            <p class="text-sm text-gray-400 leading-relaxed">Every call is token-authenticated and audit-logged; every consolidated fact keeps provenance links to its source episodes. Per-author attribution on each memory lands in v0.1.6.</p>
+            <p class="text-sm text-gray-400 leading-relaxed">Every call is token-authenticated, server-stamped with its author, and audit-logged; every consolidated fact keeps provenance links to its source episodes.</p>
           </div>
         </div>
       </div>
@@ -1376,7 +1571,8 @@ curl -s -H <span class="token-str">"Authorization: Bearer $MEMNOS_TOKEN"</span> 
       <span class="text-white font-semibold">memnos</span>
       <span class="text-gray-600 text-sm ml-2">Memory for AI agents</span>
     </div>
-    <div class="flex items-center gap-8 text-sm text-gray-500">
+    <div class="flex flex-wrap items-center justify-center gap-6 text-sm text-gray-500">
+      <a href="desktop.html" class="hover:text-gray-300 transition-colors">Desktop App</a>
       <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="hover:text-gray-300 transition-colors">Docs</a>
       <a href="https://github.com/thameema/memnos/blob/master/docs/api.md" class="hover:text-gray-300 transition-colors">API Reference</a>
       <a href="https://github.com/thameema/memnos/blob/master/docs/cli.md" class="hover:text-gray-300 transition-colors">CLI Reference</a>

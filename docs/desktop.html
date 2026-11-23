@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-K7M6RWTW1P"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-K7M6RWTW1P');
+  </script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MEMNOS Desktop &amp; Ask MEMNOS Copilot — Native Workspace for AI Agent Memory | memnos</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='8' fill='url(%23g)'/%3E%3Cpath d='M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8' stroke='%23fff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='2' y1='2' x2='30' y2='30' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='%237C5CFF'/%3E%3Cstop offset='.52' stop-color='%23B832E5'/%3E%3Cstop offset='1' stop-color='%23EC4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E" />
+  <meta name="description" content="Meet MEMNOS Desktop (memnos app) — a fast, native workspace for macOS, Linux, and Windows. Catch up on what your AI agents shipped while you slept with Ask MEMNOS Copilot, watch live agent activity, manage #channels and @handles conversationally, and run one-click Doctor diagnostics." />
+  <meta name="keywords" content="MEMNOS Desktop, memnos app, Ask MEMNOS, AI agent dashboard, multi-agent coordination UI, Claude Code memory app, Codex coordination, MCP desktop client, self-hosted AI memory workspace" />
+  <link rel="canonical" href="https://memnos.net/desktop.html" />
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://memnos.net/desktop.html" />
+  <meta property="og:title" content="MEMNOS Desktop &amp; Ask MEMNOS Copilot — Native Workspace for AI Agents" />
+  <meta property="og:description" content="Sleep while your agents ship. Catch up in one click with Ask MEMNOS Copilot, watch real-time agent activity, and manage #channels, @handles, namespaces, and rules in a lightweight native desktop app." />
+  <meta property="og:image" content="https://memnos.net/og-image.png" />
+  <meta property="og:site_name" content="memnos" />
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="MEMNOS Desktop &amp; Ask MEMNOS Copilot — Native Workspace for AI Agents" />
+  <meta name="twitter:description" content="Sleep while your agents ship. Catch up in one click with Ask MEMNOS Copilot, watch real-time agent activity, and govern multi-agent memory in a native desktop app." />
+  <meta name="twitter:image" content="https://memnos.net/og-image.png" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'], mono: ['JetBrains Mono', 'monospace'] },
+          colors: {
+            brand: { purple: '#7c5cfc', blue: '#4f9cf9', cyan: '#00d2ff', dim: '#1a1a2e' },
+          },
+        }
+      }
+    }
+  </script>
+  <style>
+    :root { --bg: #09090f; --surface: #111118; --border: #1e1e2e; --muted: #6b7280; }
+    body { background: var(--bg); font-family: 'Inter', sans-serif; color: #e5e7eb; }
+    .hero-display { font-family: 'Space Grotesk', 'Inter', sans-serif; letter-spacing: -0.02em; }
+    .gradient-text {
+      background: linear-gradient(135deg, #a78bfa 0%, #60a5fa 50%, #34d399 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .glow-btn {
+      background: linear-gradient(135deg, #7c5cfc, #4f9cf9);
+      box-shadow: 0 0 20px rgba(124, 92, 252, 0.4);
+      transition: box-shadow 0.3s, transform 0.2s;
+    }
+    .glow-btn:hover { box-shadow: 0 0 35px rgba(124, 92, 252, 0.65); transform: translateY(-1px); }
+    .glass {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.07);
+      backdrop-filter: blur(12px);
+      transition: border-color 0.3s, transform 0.2s, box-shadow 0.3s;
+    }
+    .glass:hover {
+      border-color: rgba(124,92,252,0.35);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(124,92,252,0.12);
+    }
+    body::before {
+      content: '';
+      position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background-image: radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+    .code-block {
+      background: #0d0d1a;
+      border: 1px solid #1e1e3f;
+      border-radius: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      line-height: 1.7;
+    }
+    .token-fn   { color: #7dd3fc; }
+    .token-str  { color: #86efac; }
+    .token-kw   { color: #c084fc; }
+    .token-cmt  { color: #4b5563; }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+    .nav-active { color: #a78bfa !important; }
+    .fade-in { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease, transform 0.6s ease; }
+    .fade-in.visible { opacity: 1; transform: translateY(0); }
+    nav { backdrop-filter: blur(20px); background: rgba(9,9,15,0.8); border-bottom: 1px solid var(--border); }
+    .gradient-border {
+      position: relative; border-radius: 16px; padding: 1px;
+      background: linear-gradient(135deg, rgba(124,92,252,0.45), rgba(184,50,229,0.28), rgba(79,156,249,0.2));
+    }
+    .gradient-border-inner { background: var(--surface); border-radius: 15px; }
+    .nav-dropdown-panel {
+      position: absolute; top: calc(100% + 0.6rem); left: 0; min-width: 170px;
+      background: rgba(15,15,22,0.98); backdrop-filter: blur(20px);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 0.4rem;
+      opacity: 0; visibility: hidden; transform: translateY(-6px); pointer-events: none;
+      transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+    }
+    .nav-dropdown-panel.open { opacity: 1; visibility: visible; transform: translateY(0); pointer-events: auto; }
+    .nav-dropdown-panel a { display: block; padding: 0.55rem 0.75rem; border-radius: 8px; font-size: 0.8125rem; color: #9ca3af; transition: background 0.15s, color 0.15s; }
+    .nav-dropdown-panel a:hover { background: rgba(255,255,255,0.06); color: #fff; }
+
+    /* Interactive MEMNOS Desktop Window Mockup Themes */
+    .app-mock {
+      --app-canvas: #221d2f;
+      --app-rail: #1c1628;
+      --app-sidebar: #282038;
+      --app-card: #302843;
+      --app-border: rgba(196, 181, 253, 0.14);
+      --app-text: #f3f0ff;
+      --app-muted: #b4a9cc;
+      --app-accent: #c026d3;
+      --app-pill-bg: rgba(168, 85, 247, 0.18);
+      --app-pill-fg: #e9d5ff;
+      background: var(--app-canvas);
+      color: var(--app-text);
+      border: 1px solid var(--app-border);
+      box-shadow: 0 28px 90px rgba(0, 0, 0, 0.65), 0 0 55px rgba(124, 92, 252, 0.18);
+      transition: background 0.25s ease, color 0.25s ease, border-color 0.25s ease;
+    }
+    .app-mock[data-theme="dusk"] {
+      --app-canvas: #1f2433;
+      --app-rail: #181c28;
+      --app-sidebar: #242a3b;
+      --app-card: #2c3347;
+      --app-border: rgba(148, 163, 184, 0.18);
+      --app-text: #f1f5f9;
+      --app-muted: #94a3b8;
+      --app-accent: #6366f1;
+      --app-pill-bg: rgba(99, 102, 241, 0.2);
+      --app-pill-fg: #c7d2fe;
+    }
+    .app-mock[data-theme="obsidian"] {
+      --app-canvas: #13131b;
+      --app-rail: #0d0d14;
+      --app-sidebar: #181824;
+      --app-card: #202030;
+      --app-border: rgba(255, 255, 255, 0.1);
+      --app-text: #f3f4f6;
+      --app-muted: #9ca3af;
+      --app-accent: #7c5cfc;
+      --app-pill-bg: rgba(124, 92, 252, 0.2);
+      --app-pill-fg: #ddd6fe;
+    }
+    .app-mock[data-theme="daylight"] {
+      --app-canvas: #f8fafc;
+      --app-rail: #eef2f6;
+      --app-sidebar: #f1f5f9;
+      --app-card: #ffffff;
+      --app-border: rgba(15, 23, 42, 0.11);
+      --app-text: #0f172a;
+      --app-muted: #475569;
+      --app-accent: #7c3aed;
+      --app-pill-bg: rgba(124, 58, 237, 0.11);
+      --app-pill-fg: #6d28d9;
+    }
+    .app-rail-btn {
+      color: var(--app-muted);
+      border: 1px solid transparent;
+      transition: all 0.15s ease;
+    }
+    .app-rail-btn:hover { color: var(--app-text); background: rgba(255,255,255,0.05); }
+    .app-rail-btn.active {
+      color: var(--app-text);
+      background: var(--app-pill-bg);
+      border-color: var(--app-border);
+    }
+    .app-card {
+      background: var(--app-card);
+      border: 1px solid var(--app-border);
+    }
+    .app-sidebar {
+      background: var(--app-sidebar);
+      border-right: 1px solid var(--app-border);
+    }
+    .app-pill {
+      background: var(--app-pill-bg);
+      color: var(--app-pill-fg);
+      padding: 1px 7px;
+      border-radius: 999px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      white-space: nowrap;
+    }
+    .app-ref {
+      background: rgba(148, 163, 184, 0.14);
+      color: var(--app-muted);
+      padding: 1px 6px;
+      border-radius: 5px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.68rem;
+    }
+  </style>
+</head>
+<body class="antialiased overflow-x-hidden">
+
+<!-- ── NAV ─────────────────────────────────────────────────────────── -->
+<nav class="fixed top-0 left-0 right-0 z-50">
+  <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5">
+      <svg width="28" height="28" viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="29" height="29" rx="8" fill="url(#mBrandDoc1)"/><path d="M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="mBrandDoc1" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse"><stop stop-color="#7C5CFF"/><stop offset="0.52" stop-color="#B832E5"/><stop offset="1" stop-color="#EC4899"/></linearGradient></defs></svg>
+      <span class="text-white font-semibold text-lg tracking-tight">memnos</span>
+    </a>
+    <div class="hidden md:flex items-center gap-7">
+      <a href="getting-started.html" class="text-sm text-gray-400 hover:text-white transition-colors">Getting Started</a>
+      <a href="desktop.html" class="text-sm nav-active hover:text-white transition-colors">Desktop App</a>
+      <a href="index.html#features" class="text-sm text-gray-400 hover:text-white transition-colors">Features</a>
+      <a href="agents.html" class="text-sm text-gray-400 hover:text-white transition-colors">Agents</a>
+      <a href="skills.html" class="text-sm text-gray-400 hover:text-white transition-colors">Skills</a>
+      <div class="relative">
+        <button type="button" id="nav-resources-trigger" class="flex items-center gap-1 text-sm text-gray-400 hover:text-white transition-colors" aria-expanded="false" aria-haspopup="true">
+          Resources
+          <svg id="nav-resources-chevron" class="w-3 h-3 transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+        </button>
+        <div id="nav-resources-panel" class="nav-dropdown-panel" role="menu" aria-label="Resources">
+          <a href="use-cases.html" role="menuitem">Use Cases</a>
+          <a href="index.html#sdk" role="menuitem">SDK</a>
+          <a href="benchmarks.html" role="menuitem">Benchmarks</a>
+          <a href="compare.html" role="menuitem">Compare</a>
+          <a href="governance.html" role="menuitem">Policies</a>
+          <a href="https://github.com/thameema/memnos/tree/master/docs/guides" role="menuitem">Docs</a>
+        </div>
+      </div>
+      <a href="https://github.com/thameema/memnos" class="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-1.5">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        GitHub
+      </a>
+    </div>
+    <div class="flex items-center gap-3">
+      <a href="https://github.com/thameema/memnos/releases/latest" target="_blank" class="glow-btn text-white text-sm font-medium px-5 py-2 rounded-full hidden md:inline-flex">Download v0.2.0</a>
+      <button id="nav-toggle" onclick="toggleMobileNav()" class="md:hidden flex flex-col justify-center items-center w-9 h-9 rounded-lg border border-gray-700 bg-gray-900/60 gap-1.5 px-2">
+        <span id="ham-1" class="block w-4 h-0.5 bg-gray-300 transition-all duration-300 origin-center"></span>
+        <span id="ham-2" class="block w-4 h-0.5 bg-gray-300 transition-all duration-300"></span>
+        <span id="ham-3" class="block w-4 h-0.5 bg-gray-300 transition-all duration-300 origin-center"></span>
+      </button>
+    </div>
+  </div>
+  <div id="mobile-nav" class="hidden md:hidden border-t border-gray-800 bg-gray-950/95 backdrop-blur-xl">
+    <div class="max-w-6xl mx-auto px-6 py-5 flex flex-col gap-1">
+      <a href="getting-started.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Getting Started</a>
+      <a href="desktop.html" class="text-sm text-white font-medium py-2.5 border-b border-gray-900">Desktop App</a>
+      <a href="index.html#features" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Features</a>
+      <a href="agents.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Agents</a>
+      <a href="skills.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Skills</a>
+      <button type="button" id="mobile-resources-trigger" onclick="toggleMobileResources()" class="flex items-center justify-between w-full text-left text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900" aria-expanded="false">
+        <span>Resources</span>
+        <svg id="mobile-resources-chevron" class="w-3.5 h-3.5 transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+      </button>
+      <div id="mobile-resources-panel" class="hidden flex flex-col pl-4">
+        <a href="use-cases.html" class="text-sm text-gray-400 hover:text-white transition-colors py-2.5 border-b border-gray-900">Use Cases</a>
+        <a href="index.html#sdk" class="text-sm text-gray-400 hover:text-white transition-colors py-2.5 border-b border-gray-900">SDK</a>
+        <a href="benchmarks.html" class="text-sm text-gray-400 hover:text-white transition-colors py-2.5 border-b border-gray-900">Benchmarks</a>
+        <a href="compare.html" class="text-sm text-gray-400 hover:text-white transition-colors py-2.5 border-b border-gray-900">Compare</a>
+        <a href="governance.html" class="text-sm text-gray-400 hover:text-white transition-colors py-2.5 border-b border-gray-900">Policies</a>
+        <a href="https://github.com/thameema/memnos/tree/master/docs/guides" class="text-sm text-gray-400 hover:text-white transition-colors py-2.5 border-b border-gray-900">Docs</a>
+      </div>
+      <a href="https://github.com/thameema/memnos" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900 flex items-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        GitHub
+      </a>
+      <a href="https://github.com/thameema/memnos/releases/latest" target="_blank" class="glow-btn text-white text-sm font-medium px-5 py-2.5 rounded-full text-center mt-3">Download v0.2.0</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ── HERO ─────────────────────────────────────────────────────────── -->
+<section class="relative pt-32 pb-12 overflow-hidden">
+  <div class="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-600 rounded-full blur-[150px] opacity-12 pointer-events-none"></div>
+  <div class="absolute top-1/3 right-1/4 w-80 h-80 bg-fuchsia-500 rounded-full blur-[140px] opacity-10 pointer-events-none"></div>
+  <div class="relative z-10 max-w-4xl mx-auto px-6 text-center">
+    <div class="inline-flex items-center gap-2 bg-purple-500/10 border border-purple-500/25 rounded-full px-4 py-1.5 text-sm text-purple-300 mb-6">
+      <span class="w-1.5 h-1.5 bg-purple-400 rounded-full pulse-dot"></span>
+      New in v0.2.0 &middot; Native Desktop App &middot; macOS, Linux &amp; Windows
+    </div>
+    <h1 class="hero-display text-4xl md:text-6xl font-bold text-white leading-[1.06] mb-6">
+      Sleep while your agents ship.<br />
+      <span class="gradient-text">Catch up in one click.</span>
+    </h1>
+    <p class="text-gray-400 text-lg leading-relaxed max-w-2xl mx-auto mb-8">
+      <strong class="text-white">MEMNOS Desktop</strong> (<code class="text-green-300 font-mono text-base">memnos app</code>) is a lightweight native workspace bundled directly with every <code class="text-green-300 font-mono text-base">memnos</code> install. Chat with <strong class="text-white">Ask MEMNOS</strong> to review overnight decisions, inspect live <code class="text-purple-300 font-mono text-sm">#channels</code> and <code class="text-purple-300 font-mono text-sm">@handles</code> without touching terminal configs, and govern your entire memory stack visually.
+    </p>
+    <div class="flex flex-wrap items-center justify-center gap-3 mb-6">
+      <div class="code-block px-4 py-2.5 text-xs flex items-center gap-2">
+        <span class="text-gray-500">$</span>
+        <span class="text-green-300">memnos app --install</span>
+        <span class="text-gray-500 ml-1">installs MEMNOS.app / desktop launcher &amp; opens it</span>
+      </div>
+      <a href="https://github.com/thameema/memnos/releases/tag/v0.2.0" target="_blank" class="glow-btn text-white font-semibold px-6 py-2.5 rounded-full text-sm">Release Notes (v0.2.0)</a>
+    </div>
+    <p class="text-xs text-gray-500">Ships inside the ~5.6 MB native binary distribution &middot; Zero Electron bloat &middot; Connects to local (<code class="font-mono">127.0.0.1:8900</code>) or remote servers.</p>
+  </div>
+</section>
+
+<!-- ── INTERACTIVE WORKSPACE MOCKUP ─────────────────────────────────── -->
+<section class="relative z-10 py-8 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <!-- Interactive controls bar above mockup -->
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-3 px-1">
+      <div class="flex items-center gap-2 text-xs text-gray-400">
+        <span class="inline-block w-2 h-2 rounded-full bg-green-400 pulse-dot"></span>
+        <span>Interactive preview &mdash; click the left rail icons or switch themes:</span>
+      </div>
+      <div class="flex items-center gap-1.5 text-xs">
+        <button type="button" onclick="setMockTheme('aubergine')" data-theme-btn="aubergine" class="mock-theme-btn px-3 py-1 rounded-full border border-purple-500/50 bg-purple-500/20 text-purple-200 font-medium">✦ Slack Aubergine</button>
+        <button type="button" onclick="setMockTheme('dusk')" data-theme-btn="dusk" class="mock-theme-btn px-3 py-1 rounded-full border border-gray-700 text-gray-400 hover:text-white">◑ Soft Dusk</button>
+        <button type="button" onclick="setMockTheme('obsidian')" data-theme-btn="obsidian" class="mock-theme-btn px-3 py-1 rounded-full border border-gray-700 text-gray-400 hover:text-white">● Obsidian</button>
+        <button type="button" onclick="setMockTheme('daylight')" data-theme-btn="daylight" class="mock-theme-btn px-3 py-1 rounded-full border border-gray-700 text-gray-400 hover:text-white">☀ Daylight</button>
+      </div>
+    </div>
+
+    <!-- Native Window Frame -->
+    <div id="desktop-mock" class="app-mock rounded-2xl overflow-hidden text-left" data-theme="aubergine">
+      <!-- Window Title + Topbar -->
+      <div class="px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 border-b" style="border-color: var(--app-border); background: var(--app-rail);">
+        <div class="flex items-center gap-3">
+          <div class="flex items-center gap-1.5">
+            <span class="w-3 h-3 rounded-full bg-red-400/80"></span>
+            <span class="w-3 h-3 rounded-full bg-yellow-400/80"></span>
+            <span class="w-3 h-3 rounded-full bg-green-400/80"></span>
+          </div>
+          <div class="flex items-center gap-2 pl-2">
+            <svg width="20" height="20" viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="29" height="29" rx="8" fill="url(#mBrandMock)"/><path d="M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="mBrandMock" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse"><stop stop-color="#7C5CFF"/><stop offset="0.52" stop-color="#B832E5"/><stop offset="1" stop-color="#EC4899"/></linearGradient></defs></svg>
+            <span class="font-bold text-xs tracking-wide">MEMNOS</span>
+            <span class="app-ref">v0.2.0</span>
+            <span class="text-[11px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/25">127.0.0.1:8900</span>
+          </div>
+        </div>
+        <div class="hidden lg:flex items-center gap-4 text-[11px]" style="color: var(--app-muted);">
+          <span>RAM <strong style="color: var(--app-text);">68 MB</strong></span>
+          <span>DB <strong style="color: var(--app-text);">1.4 GB</strong></span>
+          <span>Facts <strong style="color: var(--app-text);">48,920</strong></span>
+          <span>Turns <strong style="color: var(--app-text);">9,410</strong></span>
+        </div>
+        <div class="flex items-center gap-2 text-[11px]">
+          <span class="app-card px-2.5 py-1 rounded-lg font-mono">SCOPE: All namespaces (8 active)</span>
+          <span class="app-card px-2.5 py-1 rounded-lg font-mono">@admin &middot; ADMIN</span>
+        </div>
+      </div>
+
+      <!-- Main Body: Icon Rail + Context Sidebar + Stage -->
+      <div class="grid md:grid-cols-12 min-h-[470px]">
+        <!-- Narrow Icon Rail -->
+        <div class="md:col-span-1 flex md:flex-col items-center justify-start gap-1.5 p-2 border-b md:border-b-0 md:border-r" style="background: var(--app-rail); border-color: var(--app-border);">
+          <button type="button" onclick="showMockPane('ask')" id="rail-ask" class="app-rail-btn active w-full rounded-xl py-2 px-1 flex flex-col items-center gap-0.5 text-[10px] font-medium">
+            <span class="text-sm">✦</span><span>Ask AI</span>
+          </button>
+          <button type="button" onclick="showMockPane('channels')" id="rail-channels" class="app-rail-btn w-full rounded-xl py-2 px-1 flex flex-col items-center gap-0.5 text-[10px] font-medium relative">
+            <span class="text-sm font-mono">#</span><span>Channels</span>
+          </button>
+          <button type="button" onclick="showMockPane('live')" id="rail-live" class="app-rail-btn w-full rounded-xl py-2 px-1 flex flex-col items-center gap-0.5 text-[10px] font-medium">
+            <span class="text-sm text-emerald-400">◉</span><span>Live</span>
+          </button>
+          <button type="button" onclick="showMockPane('doctor')" id="rail-doctor" class="app-rail-btn w-full rounded-xl py-2 px-1 flex flex-col items-center gap-0.5 text-[10px] font-medium">
+            <span class="text-sm text-cyan-400">✚</span><span>Doctor</span>
+          </button>
+          <button type="button" onclick="showMockPane('settings')" id="rail-settings" class="app-rail-btn w-full rounded-xl py-2 px-1 flex flex-col items-center gap-0.5 text-[10px] font-medium">
+            <span class="text-sm">⚙</span><span>Settings</span>
+          </button>
+        </div>
+
+        <!-- PANE 1: ASK MEMNOS COPILOT -->
+        <div id="pane-ask" class="mock-pane md:col-span-11 grid md:grid-cols-11">
+          <!-- Context Sidebar -->
+          <div class="md:col-span-3 app-sidebar p-4 space-y-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="text-sm font-semibold">✦ Ask MEMNOS</div>
+                <div class="text-[11px]" style="color: var(--app-muted);">Briefings &amp; coordination</div>
+              </div>
+              <span class="px-2.5 py-1 rounded-lg text-[11px] font-semibold text-white" style="background: var(--app-accent);">+ New</span>
+            </div>
+            <div class="text-[10px] font-semibold uppercase tracking-wider pt-1" style="color: var(--app-muted);">1-Click Catch-Up</div>
+            <div class="space-y-2 text-xs">
+              <div class="app-card rounded-xl p-2.5">
+                <div class="font-semibold">🌙 While I Was Away</div>
+                <div class="text-[11px]" style="color: var(--app-muted);">Decisions, fixes &amp; channel threads</div>
+              </div>
+              <div class="app-card rounded-xl p-2.5">
+                <div class="font-semibold">🤝 Agent Coordination</div>
+                <div class="text-[11px]" style="color: var(--app-muted);">Who is online &amp; working on what</div>
+              </div>
+              <div class="app-card rounded-xl p-2.5">
+                <div class="font-semibold">🚨 Blockers &amp; Incidents</div>
+                <div class="text-[11px]" style="color: var(--app-muted);">Stuck tasks, quota caps &amp; fixes</div>
+              </div>
+              <div class="app-card rounded-xl p-2.5">
+                <div class="font-semibold">🗂️ Channels &amp; Handles Audit</div>
+                <div class="text-[11px]" style="color: var(--app-muted);">Idle channels &amp; stale sessions</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Stage -->
+          <div class="md:col-span-8 p-5 flex flex-col justify-between gap-4">
+            <div class="space-y-3">
+              <div class="flex flex-wrap items-center justify-between gap-2 pb-3 border-b" style="border-color: var(--app-border);">
+                <div>
+                  <div class="text-sm font-semibold">What happened on payments-sync while I was asleep?</div>
+                  <div class="text-[11px]" style="color: var(--app-muted);">Harness: <strong>⚡ Auto (Claude Code)</strong> &middot; Window: <strong>Last 8h (Sleep/Away)</strong> &middot; Scope: <strong>proj:payments-sync</strong></div>
+                </div>
+              </div>
+
+              <!-- Rendered Markdown Briefing Card -->
+              <div class="app-card rounded-xl p-4 space-y-3 text-xs leading-relaxed">
+                <div class="font-semibold text-[11px] uppercase tracking-wider" style="color: var(--app-muted);">Overnight Timeline (3 agents active)</div>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr class="border-b" style="border-color: var(--app-border); color: var(--app-muted);">
+                        <th class="py-1.5 pr-3">Time</th>
+                        <th class="py-1.5 pr-3">Ref</th>
+                        <th class="py-1.5">Summary</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y" style="border-color: var(--app-border);">
+                      <tr>
+                        <td class="py-2 pr-3 font-mono whitespace-nowrap">02:14</td>
+                        <td class="py-2 pr-3 whitespace-nowrap"><span class="app-ref">#412</span></td>
+                        <td class="py-2"><span class="app-pill">@claude-api</span> recorded architecture decision: switched Stripe webhook idempotency keys to composite <code class="font-mono">(event_id, tenant_id)</code> in PostgreSQL.</td>
+                      </tr>
+                      <tr>
+                        <td class="py-2 pr-3 font-mono whitespace-nowrap">02:19</td>
+                        <td class="py-2 pr-3 whitespace-nowrap"><span class="app-ref">inbox #88</span></td>
+                        <td class="py-2"><span class="app-pill">@claude-api</span> handed off replay-storm regression suite to <span class="app-pill">@codex-qa</span> on <span class="app-pill">#payments-sync</span>.</td>
+                      </tr>
+                      <tr>
+                        <td class="py-2 pr-3 font-mono whitespace-nowrap">03:05</td>
+                        <td class="py-2 pr-3 whitespace-nowrap"><span class="app-ref">#419</span></td>
+                        <td class="py-2"><span class="app-pill">@codex-qa</span> verified 42/42 webhook replay tests passing and recorded a durable <code class="font-mono">fix</code> memory for duplicate <code class="font-mono">invoice.paid</code> retries.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="pt-1 flex flex-wrap gap-2 items-center text-[11px]" style="color: var(--app-muted);">
+                  <span><strong style="color: var(--app-text);">Open items:</strong> 0 stuck leases &middot; 1 review request waiting in <span class="app-pill">@inbox</span> for <span class="app-pill">@cursor-ui</span>.</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Integrated Dark Composer -->
+            <div class="space-y-2">
+              <div class="flex flex-wrap gap-1.5 text-[11px]">
+                <span class="app-card px-2.5 py-1 rounded-full">🌙 Catch me up</span>
+                <span class="app-card px-2.5 py-1 rounded-full">🤝 Live coordination</span>
+                <span class="app-card px-2.5 py-1 rounded-full">+ Create #channel</span>
+                <span class="app-card px-2.5 py-1 rounded-full">📨 Assign @handle task</span>
+              </div>
+              <div class="app-card rounded-xl p-3 flex items-center justify-between gap-3">
+                <span class="text-xs" style="color: var(--app-muted);">Ask what happened while you slept, or type &ldquo;Create #release-qa and subscribe @codex-qa&rdquo;&hellip;</span>
+                <span class="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white whitespace-nowrap" style="background: var(--app-accent);">Send &crarr;</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- PANE 2: CHANNELS & HANDLES MESH -->
+        <div id="pane-channels" class="mock-pane hidden md:col-span-11 grid md:grid-cols-11">
+          <div class="md:col-span-3 app-sidebar p-4 space-y-2.5 text-xs">
+            <div class="font-semibold text-sm mb-1"># Channels &amp; @ Handles</div>
+            <div class="app-card rounded-xl p-2.5">
+              <div class="flex justify-between font-mono font-semibold"><span>#payments-sync</span><span class="text-emerald-400">3 online</span></div>
+              <div class="text-[11px] mt-0.5" style="color: var(--app-muted);">proj:payments-sync &middot; webhook rollout</div>
+            </div>
+            <div class="app-card rounded-xl p-2.5">
+              <div class="flex justify-between font-mono font-semibold"><span>#arch-review</span><span>2 online</span></div>
+              <div class="text-[11px] mt-0.5" style="color: var(--app-muted);">org:acme:arch &middot; RFC-2119 rules</div>
+            </div>
+            <div class="pt-2 text-[10px] uppercase tracking-wider font-semibold" style="color: var(--app-muted);">Active Agent Sessions</div>
+            <div class="app-card rounded-xl p-2.5 space-y-1">
+              <div class="font-mono font-semibold">@claude-api <span class="text-emerald-400">&bull; idle (tmux %4)</span></div>
+              <div class="text-[11px]" style="color: var(--app-muted);">wake-daemon armed &middot; Claude Code</div>
+            </div>
+            <div class="app-card rounded-xl p-2.5 space-y-1">
+              <div class="font-mono font-semibold">@codex-qa <span class="text-amber-300">&bull; working</span></div>
+              <div class="text-[11px]" style="color: var(--app-muted);">isolated git worktree &middot; Codex CLI</div>
+            </div>
+          </div>
+          <div class="md:col-span-8 p-5 space-y-3 text-xs">
+            <div class="flex items-center justify-between pb-3 border-b" style="border-color: var(--app-border);">
+              <div>
+                <div class="text-sm font-semibold font-mono">#payments-sync</div>
+                <div class="text-[11px]" style="color: var(--app-muted);">Server-wide channel &middot; Competing-consumer task claims + targeted terminal wake</div>
+              </div>
+              <span class="app-pill">wake-daemon: active</span>
+            </div>
+            <div class="app-card rounded-xl p-3.5 space-y-1">
+              <div class="flex items-center justify-between"><span class="app-pill">@claude-api</span><span class="text-[11px]" style="color: var(--app-muted);">intent: handoff &middot; claimed by @codex-qa</span></div>
+              <p class="pt-1">Idempotency schema migration merged. Claimable task: run 500-event webhook concurrency stress test against scratch Postgres.</p>
+            </div>
+            <div class="app-card rounded-xl p-3.5 space-y-1">
+              <div class="flex items-center justify-between"><span class="app-pill">@codex-qa</span><span class="text-[11px] text-emerald-400">intent: done &middot; lease released</span></div>
+              <p class="pt-1">Stress test complete (0 duplicate charges, p99 14ms). Sent summary to <span class="app-pill">@claude-api</span> inbox — <code class="font-mono">wake-daemon</code> rang pane <code class="font-mono">tmux %4</code>.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- PANE 3: LIVE SSE ACTIVITY STREAM -->
+        <div id="pane-live" class="mock-pane hidden md:col-span-11 p-5 space-y-3 text-xs">
+          <div class="flex items-center justify-between pb-3 border-b" style="border-color: var(--app-border);">
+            <div>
+              <div class="text-sm font-semibold">◉ Live Server-Sent Event Stream</div>
+              <div class="text-[11px]" style="color: var(--app-muted);">Every REST &amp; MCP call streams live with principal attribution, namespace, and latency</div>
+            </div>
+            <span class="text-[11px] font-mono text-emerald-400">&bull; STREAMING (SSE)</span>
+          </div>
+          <div class="space-y-2 font-mono">
+            <div class="app-card rounded-xl p-3 flex flex-wrap items-center justify-between gap-2">
+              <span><span class="text-emerald-400">200</span> <span class="app-pill">@codex-qa</span> <strong>/remember</strong> (proj:payments-sync) &mdash; fix: duplicate invoice.paid retry guard</span>
+              <span style="color: var(--app-muted);">18 ms &middot; 2s ago</span>
+            </div>
+            <div class="app-card rounded-xl p-3 flex flex-wrap items-center justify-between gap-2">
+              <span><span class="text-emerald-400">200</span> <span class="app-pill">@claude-api</span> <strong>/recall</strong> (proj:payments-sync) &mdash; &ldquo;stripe idempotency constraint&rdquo; (6 hits, reranked)</span>
+              <span style="color: var(--app-muted);">34 ms &middot; 9s ago</span>
+            </div>
+            <div class="app-card rounded-xl p-3 flex flex-wrap items-center justify-between gap-2">
+              <span><span class="text-emerald-400">200</span> <span class="app-pill">@ci-bot</span> <strong>/corpus/check</strong> (org:acme:arch) &mdash; PR #184 diff verified against 14 SHALL rules</span>
+              <span style="color: var(--app-muted);">11 ms &middot; 21s ago</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- PANE 4: DOCTOR & VERIFIED BACKUPS -->
+        <div id="pane-doctor" class="mock-pane hidden md:col-span-11 p-5 space-y-3 text-xs">
+          <div class="flex items-center justify-between pb-3 border-b" style="border-color: var(--app-border);">
+            <div>
+              <div class="text-sm font-semibold">✚ System Doctor &amp; Pre-Upgrade Backup Verification</div>
+              <div class="text-[11px]" style="color: var(--app-muted);">Same diagnostics as <code class="font-mono">memnos doctor</code> &amp; <code class="font-mono">memnos backup</code></div>
+            </div>
+            <span class="px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 font-mono text-[11px]">✓ ALL 8 CHECKS HEALTHY</span>
+          </div>
+          <div class="grid md:grid-cols-2 gap-3">
+            <div class="app-card rounded-xl p-3.5">
+              <div class="font-semibold text-emerald-400 mb-1">✓ Binary &amp; Server Sync</div>
+              <p style="color: var(--app-muted);">Desktop <code class="font-mono">v0.2.0</code> matches live gateway &amp; backend <code class="font-mono">v0.2.0</code> on <code class="font-mono">127.0.0.1:8900</code>.</p>
+            </div>
+            <div class="app-card rounded-xl p-3.5">
+              <div class="font-semibold text-emerald-400 mb-1">✓ PostgreSQL 16 + pgvector HNSW</div>
+              <p style="color: var(--app-muted);">Schema current &middot; HNSW cosine + BM25 GIN indexes active &middot; local-384 ONNX warm.</p>
+            </div>
+            <div class="app-card rounded-xl p-3.5">
+              <div class="font-semibold text-emerald-400 mb-1">✓ Verified Pre-Upgrade Backup</div>
+              <p style="color: var(--app-muted);">Latest <code class="font-mono">pg_dump</code> verified via <code class="font-mono">pg_restore --list</code> (<code class="font-mono">0600</code> permissions) before upgrade.</p>
+            </div>
+            <div class="app-card rounded-xl p-3.5">
+              <div class="font-semibold text-emerald-400 mb-1">✓ AES-256-GCM Secret Vault &amp; Hooks</div>
+              <p style="color: var(--app-muted);">Master key valid &middot; write-time credential shield active &middot; Claude Code + MCP wired.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- PANE 5: SETTINGS & GOVERNANCE -->
+        <div id="pane-settings" class="mock-pane hidden md:col-span-11 p-5 space-y-3 text-xs">
+          <div class="pb-3 border-b" style="border-color: var(--app-border);">
+            <div class="text-sm font-semibold">⚙ Connection, Principals &amp; Access Governance</div>
+            <div class="text-[11px]" style="color: var(--app-muted);">Switch between Local and Remote servers, mint scoped agent tokens, and prune stale principals</div>
+          </div>
+          <div class="grid md:grid-cols-2 gap-3">
+            <div class="app-card rounded-xl p-3.5 space-y-1.5">
+              <div class="font-semibold">Local or Remote Server Onboarding</div>
+              <p style="color: var(--app-muted);">Connect to local <code class="font-mono">http://127.0.0.1:8900</code> automatically or point at a shared team <code class="font-mono">https://memnos.internal</code> instance with strict per-origin token isolation.</p>
+            </div>
+            <div class="app-card rounded-xl p-3.5 space-y-1.5">
+              <div class="font-semibold">Admin Principal, Token &amp; Grant Control</div>
+              <p style="color: var(--app-muted);">Create user/service principals, grant <code class="font-mono">read</code> or <code class="font-mono">read+write</code> per namespace, rotate keys, and clean up ephemeral test principals safely.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Persistent 28px Bottom Live Ticker Bar -->
+      <div class="px-4 py-1.5 text-[11px] font-mono flex flex-wrap items-center justify-between gap-2 border-t" style="background: var(--app-rail); border-color: var(--app-border); color: var(--app-muted);">
+        <div class="flex items-center gap-2 truncate">
+          <span class="text-emerald-400 font-semibold">&bull; LIVE</span>
+          <span>│ ⚡ @codex-qa /remember (proj:payments-sync) &middot; 18ms &middot; 2s ago │ ⚡ @claude-api /recall &middot; 34ms</span>
+        </div>
+        <span class="whitespace-nowrap">✓ App v0.2.0 &middot; Server v0.2.0 in sync</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── CORE DESKTOP CAPABILITIES ────────────────────────────────────── -->
+<section class="relative z-10 py-16 fade-in">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Built for owners &amp; multi-agent leads</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Everything your agents know and do — without digging through terminal logs</h2>
+      <p class="text-gray-400 max-w-2xl mx-auto">Agents work across half a dozen terminal tabs while you sleep or focus elsewhere. MEMNOS Desktop turns that background activity into clear briefings and one-click controls.</p>
+    </div>
+
+    <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center text-purple-300 mb-4 text-lg">✦</div>
+        <h3 class="text-white font-semibold mb-2">Ask MEMNOS AI Copilot</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">One-click catch-up briefings (<strong class="text-gray-200">While I Was Away</strong>, <strong class="text-gray-200">Agent Coordination</strong>, <strong class="text-gray-200">Blockers &amp; Incidents</strong>) powered by whichever local CLI harness you already use — Claude Code, Codex, Gemini CLI, or Cursor.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-fuchsia-500/10 border border-fuchsia-500/20 rounded-xl flex items-center justify-center text-fuchsia-300 mb-4 font-mono font-bold">#</div>
+        <h3 class="text-white font-semibold mb-2">Conversational #Channel &amp; @Handle Control</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Create topic channels, subscribe agent handles, inspect pending <code class="text-purple-300 font-mono text-xs">@inbox</code> handoffs, or assign tasks in plain English right from chat — or use the dedicated <strong class="text-gray-200">#Channels</strong> and <strong class="text-gray-200">@Handles</strong> rails.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center justify-center text-emerald-300 mb-4">◉</div>
+        <h3 class="text-white font-semibold mb-2">Real-Time Live Activity Ticker</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">A persistent bottom ticker and dedicated <strong class="text-gray-200">Live</strong> rail stream every <code class="text-purple-300 font-mono text-xs">remember</code>, <code class="text-purple-300 font-mono text-xs">recall</code>, constraint check, and channel message over SSE the instant an agent calls memnos.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-cyan-500/10 border border-cyan-500/20 rounded-xl flex items-center justify-center text-cyan-300 mb-4">✚</div>
+        <h3 class="text-white font-semibold mb-2">Built-In Doctor &amp; Backup Guard</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Inspect App vs. Server version sync, PostgreSQL + pgvector HNSW index health, vault decryptability, and <code class="text-purple-300 font-mono text-xs">pg_restore</code>-verified pre-upgrade database backups in one view.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-orange-500/10 border border-orange-500/20 rounded-xl flex items-center justify-center text-orange-300 mb-4">🛡</div>
+        <h3 class="text-white font-semibold mb-2">Hardened Security by Design</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Runs over an isolated custom <code class="text-purple-300 font-mono text-xs">memnos://</code> protocol with strict <code class="text-purple-300 font-mono text-xs">script-src 'self'</code> CSP, admin-gated Copilot routes, <code class="text-purple-300 font-mono text-xs">&lt;untrusted_workspace_data&gt;</code> prompt sandboxing, and strict origin token isolation.</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6">
+        <div class="w-10 h-10 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-center text-blue-300 mb-4">◑</div>
+        <h3 class="text-white font-semibold mb-2">4 Breathable Themes, ~5 MB Native Footprint</h3>
+        <p class="text-sm text-gray-400 leading-relaxed">Uses your OS native WebView (<code class="text-purple-300 font-mono text-xs">MEMNOS.app</code> on macOS, native window on Linux &amp; Windows) instead of bundling Chromium — with <strong class="text-gray-200">Slack Aubergine</strong>, <strong class="text-gray-200">Soft Dusk</strong>, <strong class="text-gray-200">Obsidian</strong>, and <strong class="text-gray-200">Daylight</strong> themes.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── INSTALL & LAUNCH IN 60 SECONDS ───────────────────────────────── -->
+<section class="relative z-10 py-14 fade-in">
+  <div class="max-w-4xl mx-auto px-6">
+    <div class="gradient-border">
+      <div class="gradient-border-inner p-8 md:p-12 rounded-2xl">
+        <div class="text-center mb-8">
+          <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Zero Python dependencies</span>
+          <h2 class="text-3xl font-bold text-white mt-2 mb-3">Install memnos + MEMNOS Desktop in one command</h2>
+          <p class="text-gray-400 text-sm max-w-xl mx-auto">Every <code class="text-green-300 font-mono">v0.2.0</code> native installer and PyPI wheel includes both <code class="text-green-300 font-mono">memnos</code> (server, gateway, MCP, CLI) and <code class="text-green-300 font-mono">memnos-desktop</code>.</p>
+        </div>
+
+        <div class="space-y-4">
+          <div class="code-block p-5">
+            <div class="text-xs text-gray-500 mb-2"># macOS &amp; Linux — direct single-binary installer (no Python required)</div>
+            <pre class="text-xs overflow-x-auto"><code><span class="token-str">curl -fsSL https://raw.githubusercontent.com/thameema/memnos/master/install.sh | sh</span></code></pre>
+          </div>
+          <div class="code-block p-5">
+            <div class="text-xs text-gray-500 mb-2"># Windows PowerShell — direct native installer (or anywhere via uv: uv tool install memnos)</div>
+            <pre class="text-xs overflow-x-auto"><code><span class="token-str">irm https://raw.githubusercontent.com/thameema/memnos/master/install.ps1 | iex</span></code></pre>
+          </div>
+          <div class="code-block p-5">
+            <div class="text-xs text-gray-500 mb-2"># Start the server &amp; install + launch MEMNOS Desktop</div>
+            <pre class="text-xs overflow-x-auto"><code>memnos setup &amp;&amp; memnos start
+memnos app --install</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ───────────────────────────────────────────────────────── -->
+<footer class="relative z-10 border-t border-gray-800/60 py-12">
+  <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6">
+    <div class="flex items-center gap-2.5">
+      <svg width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="29" height="29" rx="8" fill="url(#mBrandDoc3)"/><path d="M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="mBrandDoc3" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse"><stop stop-color="#7C5CFF"/><stop offset="0.52" stop-color="#B832E5"/><stop offset="1" stop-color="#EC4899"/></linearGradient></defs></svg>
+      <span class="text-white font-semibold">memnos</span>
+      <span class="text-gray-600 text-sm ml-2">Memory for AI agents</span>
+    </div>
+    <div class="flex flex-wrap items-center justify-center gap-6 text-sm text-gray-500">
+      <a href="desktop.html" class="text-gray-300 transition-colors">Desktop App</a>
+      <a href="getting-started.html" class="hover:text-gray-300 transition-colors">Getting Started</a>
+      <a href="agents.html" class="hover:text-gray-300 transition-colors">Agents</a>
+      <a href="skills.html" class="hover:text-gray-300 transition-colors">Skills</a>
+      <a href="use-cases.html" class="hover:text-gray-300 transition-colors">Use Cases</a>
+      <a href="governance.html" class="hover:text-gray-300 transition-colors">Policies</a>
+      <a href="compare.html" class="hover:text-gray-300 transition-colors">Compare</a>
+      <a href="https://github.com/thameema/memnos/blob/master/docs/cli.md" class="hover:text-gray-300 transition-colors">CLI Reference</a>
+      <a href="https://github.com/thameema/memnos" class="hover:text-gray-300 transition-colors">GitHub</a>
+    </div>
+    <div class="text-xs text-gray-700">Apache-2.0 &middot; Self-hosted</div>
+  </div>
+</footer>
+
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+  function showMockPane(name) {
+    document.querySelectorAll('.mock-pane').forEach(p => p.classList.add('hidden'));
+    document.querySelectorAll('.app-rail-btn').forEach(b => b.classList.remove('active'));
+    const pane = document.getElementById('pane-' + name);
+    const btn = document.getElementById('rail-' + name);
+    if (pane) pane.classList.remove('hidden');
+    if (btn) btn.classList.add('active');
+  }
+
+  function setMockTheme(theme) {
+    const mock = document.getElementById('desktop-mock');
+    if (mock) mock.setAttribute('data-theme', theme);
+    document.querySelectorAll('.mock-theme-btn').forEach(b => {
+      const active = b.getAttribute('data-theme-btn') === theme;
+      b.className = active
+        ? 'mock-theme-btn px-3 py-1 rounded-full border border-purple-500/50 bg-purple-500/20 text-purple-200 font-medium'
+        : 'mock-theme-btn px-3 py-1 rounded-full border border-gray-700 text-gray-400 hover:text-white';
+    });
+  }
+
+  function toggleMobileNav() {
+    const menu = document.getElementById('mobile-nav');
+    const h1 = document.getElementById('ham-1');
+    const h2 = document.getElementById('ham-2');
+    const h3 = document.getElementById('ham-3');
+    const open = menu.classList.toggle('hidden') === false;
+    h1.style.transform = open ? 'translateY(6px) rotate(45deg)' : '';
+    h2.style.opacity   = open ? '0' : '';
+    h3.style.transform = open ? 'translateY(-6px) rotate(-45deg)' : '';
+  }
+
+  (function () {
+    const trigger = document.getElementById('nav-resources-trigger');
+    const panel = document.getElementById('nav-resources-panel');
+    const chevron = document.getElementById('nav-resources-chevron');
+    if (!trigger || !panel) return;
+    function closeDropdown() {
+      panel.classList.remove('open');
+      trigger.setAttribute('aria-expanded', 'false');
+      if (chevron) chevron.style.transform = '';
+    }
+    function openDropdown() {
+      panel.classList.add('open');
+      trigger.setAttribute('aria-expanded', 'true');
+      if (chevron) chevron.style.transform = 'rotate(180deg)';
+    }
+    trigger.addEventListener('click', e => {
+      e.stopPropagation();
+      panel.classList.contains('open') ? closeDropdown() : openDropdown();
+    });
+    document.addEventListener('click', e => {
+      if (!trigger.contains(e.target) && !panel.contains(e.target)) closeDropdown();
+    });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDropdown(); });
+  })();
+
+  function toggleMobileResources() {
+    const panel = document.getElementById('mobile-resources-panel');
+    const trigger = document.getElementById('mobile-resources-trigger');
+    const chevron = document.getElementById('mobile-resources-chevron');
+    const nowHidden = panel.classList.toggle('hidden');
+    trigger.setAttribute('aria-expanded', nowHidden ? 'false' : 'true');
+    if (chevron) chevron.style.transform = nowHidden ? '' : 'rotate(180deg)';
+  }
+</script>
+</body>
+</html>

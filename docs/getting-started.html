@@ -13,8 +13,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Getting Started with memnos — The Friendly Guide</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='8' fill='url(%23g)'/%3E%3Cpath d='M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8' stroke='%23fff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='2' y1='2' x2='30' y2='30' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='%237C5CFF'/%3E%3Cstop offset='.52' stop-color='%23B832E5'/%3E%3Cstop offset='1' stop-color='%23EC4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E" />
-  <meta name="description" content="A plain-English guide to memnos for anyone who isn't deep in the codebase: what it is, why it helps, and exactly how to install it on Windows." />
-  <meta name="keywords" content="memnos quickstart, AI memory setup, Windows AI memory install, memnos for beginners, persistent memory AI agents" />
+  <meta name="description" content="A plain-English guide to memnos v0.2.0: install in one command on macOS, Linux, or Windows with zero Python dependencies, launch the native MEMNOS Desktop app, and catch up with Ask MEMNOS." />
+  <meta name="keywords" content="memnos quickstart, MEMNOS Desktop, Ask MEMNOS, AI memory setup, macOS Linux Windows AI memory install, memnos for beginners, persistent memory AI agents" />
   <link rel="canonical" href="https://memnos.net/getting-started.html" />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://memnos.net/getting-started.html" />
@@ -122,6 +122,7 @@
     </a>
     <div class="hidden md:flex items-center gap-7">
       <a href="getting-started.html" class="text-sm nav-active hover:text-white transition-colors">Getting Started</a>
+      <a href="desktop.html" class="text-sm text-purple-300 hover:text-white transition-colors font-medium">Desktop App</a>
       <a href="index.html#features" class="text-sm text-gray-400 hover:text-white transition-colors">Features</a>
       <a href="agents.html" class="text-sm text-gray-400 hover:text-white transition-colors">Agents</a>
       <a href="skills.html" class="text-sm text-gray-400 hover:text-white transition-colors">Skills</a>
@@ -156,6 +157,7 @@
   <div id="mobile-nav" class="hidden md:hidden border-t border-gray-800 bg-gray-950/95 backdrop-blur-xl">
     <div class="max-w-6xl mx-auto px-6 py-5 flex flex-col gap-1">
       <a href="getting-started.html" class="text-sm text-white font-medium py-2.5 border-b border-gray-900">Getting Started</a>
+      <a href="desktop.html" class="text-sm text-purple-300 hover:text-white transition-colors py-2.5 border-b border-gray-900 font-medium">Desktop App</a>
       <a href="index.html#features" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Features</a>
       <a href="agents.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Agents</a>
       <a href="skills.html" class="text-sm text-gray-300 hover:text-white transition-colors py-2.5 border-b border-gray-900">Skills</a>
@@ -256,51 +258,56 @@
 <section class="relative z-10 py-14 fade-in">
   <div class="max-w-3xl mx-auto px-6">
     <div class="text-center mb-10">
-      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Setup &middot; Windows</span>
-      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Installing on Windows</h2>
-      <p class="text-gray-400 max-w-xl mx-auto">This installs memnos locally — no cloud account, no Docker, nothing else to set up first. Four commands, run in PowerShell.</p>
+      <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Setup &middot; macOS, Linux &amp; Windows (v0.2.0)</span>
+      <h2 class="text-3xl font-bold text-white mt-3 mb-4">Install in 4 simple steps</h2>
+      <p class="text-gray-400 max-w-xl mx-auto">memnos <code class="text-purple-300 font-mono text-xs">v0.2.0</code> ships as self-contained native executables (<code class="text-green-300 font-mono text-xs">memnos</code> + <code class="text-green-300 font-mono text-xs">memnos-desktop</code>) — no cloud account, no Docker, and no Python setup required.</p>
     </div>
 
     <div class="space-y-6">
       <div class="flex gap-4">
         <div class="step-num mt-1">1</div>
         <div class="flex-1">
-          <h4 class="text-white font-semibold mb-2">Install uv <span class="text-gray-500 font-normal text-sm">(a Python package runner)</span></h4>
-          <pre class="code-block p-4 overflow-x-auto"><code><span class="token-cmt"># run in PowerShell</span>
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"</code></pre>
+          <h4 class="text-white font-semibold mb-2">Install memnos <span class="text-gray-500 font-normal text-sm">(macOS, Linux, or Windows)</span></h4>
+          <pre class="code-block p-4 overflow-x-auto mb-3"><code><span class="token-cmt"># macOS &amp; Linux (Terminal — zero Python required)</span>
+curl -fsSL https://raw.githubusercontent.com/thameema/memnos/master/install.sh | sh</code></pre>
+          <pre class="code-block p-4 overflow-x-auto"><code><span class="token-cmt"># Windows (PowerShell — zero Python required)</span>
+irm https://raw.githubusercontent.com/thameema/memnos/master/install.ps1 | iex
+
+<span class="token-cmt"># Or on any platform if you already use uv:</span>
+uv tool install memnos</code></pre>
         </div>
       </div>
       <div class="flex gap-4">
         <div class="step-num mt-1">2</div>
         <div class="flex-1">
-          <h4 class="text-white font-semibold mb-2">Open a <em>new</em> PowerShell window, then install memnos</h4>
-          <pre class="code-block p-4 overflow-x-auto"><code>uv tool install memnos
-memnos --help          <span class="token-cmt"># confirms it installed</span></code></pre>
+          <h4 class="text-white font-semibold mb-2">Set up your private local database</h4>
+          <p class="text-sm text-gray-500 mb-2">Downloads its own embedded PostgreSQL + pgvector automatically (or connects to your existing Postgres).</p>
+          <pre class="code-block p-4 overflow-x-auto"><code>memnos setup</code></pre>
+          <p class="text-sm text-gray-500 mt-2">This configures your local server and saves your admin credentials safely in <code class="font-mono text-xs text-gray-400">~/.memnos/config.json</code>.</p>
         </div>
       </div>
       <div class="flex gap-4">
         <div class="step-num mt-1">3</div>
         <div class="flex-1">
-          <h4 class="text-white font-semibold mb-2">Set it up</h4>
-          <p class="text-sm text-gray-500 mb-2">Downloads its own private database automatically — nothing else to install first.</p>
-          <pre class="code-block p-4 overflow-x-auto"><code>memnos setup</code></pre>
-          <p class="text-sm text-gray-500 mt-2">This prints a one-time admin token — save it somewhere safe.</p>
+          <h4 class="text-white font-semibold mb-2">Start the background server &amp; wire your AI tool</h4>
+          <pre class="code-block p-4 overflow-x-auto"><code>memnos start
+memnos agent-setup claude-code   <span class="token-cmt"># also supports cursor, codex, antigravity &amp; more</span></code></pre>
+          <p class="text-sm text-gray-500 mt-2">Restart your AI tool once afterward. Recall and save now happen automatically in the background.</p>
         </div>
       </div>
       <div class="flex gap-4">
         <div class="step-num mt-1">4</div>
         <div class="flex-1">
-          <h4 class="text-white font-semibold mb-2">Start it, and connect it to Claude Code</h4>
-          <pre class="code-block p-4 overflow-x-auto"><code>memnos start
-memnos agent-setup claude-code</code></pre>
-          <p class="text-sm text-gray-500 mt-2">Restart Claude Code once afterward. From then on, recall and save happen automatically in the background.</p>
+          <h4 class="text-white font-semibold mb-2">Open the native MEMNOS Desktop app</h4>
+          <p class="text-sm text-gray-500 mb-2">Install <strong class="text-gray-300">MEMNOS.app</strong> (macOS) or your desktop launcher (Linux/Windows) and chat with <strong class="text-gray-300">Ask MEMNOS</strong> any time you want a plain-English briefing of what happened while you were away.</p>
+          <pre class="code-block p-4 overflow-x-auto"><code>memnos app --install</code></pre>
         </div>
       </div>
     </div>
 
     <div class="gradient-border mt-10">
       <div class="gradient-border-inner px-6 py-5 rounded-2xl text-center">
-        <p class="text-gray-300 text-sm leading-relaxed"><strong class="text-white">That's the whole install.</strong> For the full step-by-step with troubleshooting (antivirus scan delays, port conflicts), see the <a href="https://github.com/thameema/memnos/blob/master/docs/guides/windows.md" class="text-purple-400 hover:text-purple-300 underline underline-offset-2">Windows guide</a>.</p>
+        <p class="text-gray-300 text-sm leading-relaxed"><strong class="text-white">That's the whole install.</strong> Want to see the Desktop workspace first? <a href="desktop.html" class="text-purple-400 hover:text-purple-300 underline underline-offset-2">Take the interactive Desktop App tour &rarr;</a> (or check the <a href="https://github.com/thameema/memnos/blob/master/docs/guides/windows.md" class="text-purple-400 hover:text-purple-300 underline underline-offset-2">Windows troubleshooting guide</a>).</p>
       </div>
     </div>
   </div>
@@ -312,9 +319,9 @@ memnos agent-setup claude-code</code></pre>
     <div class="text-center mb-10">
       <span class="text-sm text-purple-400 font-medium tracking-wider uppercase">Using it</span>
       <h2 class="text-3xl font-bold text-white mt-3 mb-4">Day to day, there's nothing to learn</h2>
-      <p class="text-gray-400 max-w-xl mx-auto">Just talk to Claude (or whichever AI tool you connected it to) normally. In the background, memnos:</p>
+      <p class="text-gray-400 max-w-xl mx-auto">Just talk to Claude (or whichever AI tool you connected it to) normally — and open <strong class="text-gray-200">MEMNOS Desktop</strong> whenever you want a visual overview:</p>
     </div>
-    <div class="grid md:grid-cols-2 gap-5 mb-6">
+    <div class="grid md:grid-cols-3 gap-5 mb-6">
       <div class="glass rounded-xl p-5">
         <h4 class="text-white font-semibold mb-1.5">Saves</h4>
         <p class="text-sm text-gray-400">What you tell it — facts, preferences, decisions — as the conversation happens.</p>
@@ -323,8 +330,12 @@ memnos agent-setup claude-code</code></pre>
         <h4 class="text-white font-semibold mb-1.5">Recalls</h4>
         <p class="text-sm text-gray-400">What's relevant, automatically, before the assistant even answers.</p>
       </div>
+      <div class="glass rounded-xl p-5">
+        <h4 class="text-white font-semibold mb-1.5">✦ Ask MEMNOS</h4>
+        <p class="text-sm text-gray-400">Click <em>While I Was Away</em> in MEMNOS Desktop to catch up on overnight agent work, or run <code class="font-mono text-xs text-purple-300">memnos doctor</code> anytime.</p>
+      </div>
     </div>
-    <p class="text-sm text-gray-500 text-center">Curious what it remembers? Just ask — <code class="text-purple-300 font-mono text-xs bg-purple-950/40 px-1.5 py-0.5 rounded">&ldquo;what do you remember about the Q3 roadmap?&rdquo;</code> works exactly like you&rsquo;d expect.</p>
+    <p class="text-sm text-gray-500 text-center">Curious what it remembers? Just ask — <code class="text-purple-300 font-mono text-xs bg-purple-950/40 px-1.5 py-0.5 rounded">&ldquo;what do you remember about the Q3 roadmap?&rdquo;</code> works in your AI tool or right inside <strong class="text-gray-300">Ask MEMNOS</strong>.</p>
   </div>
 </section>
 
