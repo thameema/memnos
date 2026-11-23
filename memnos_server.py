@@ -1144,14 +1144,9 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == "/mcp":
             return self._forward_mcp("GET")
-        # --- management console (zero-build static UI) ---
-        if u.path in ("/admin", "/admin/"):
-            return self._send_static("index.html")
         if u.path.startswith("/admin/api/"):
             code, obj = self._admin("GET", u.path[len("/admin/api/"):], parse_qs(u.query), None)
             return self._send(code, obj)
-        if u.path.startswith("/admin/"):
-            return self._send_static(u.path[len("/admin/"):])
         r = self._user("GET", u.path, parse_qs(u.query), None)
         if r is not None:
             return self._send(*r)

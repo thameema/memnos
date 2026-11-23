@@ -1,0 +1,1352 @@
+<!doctype html>
+<html lang="en" data-theme="aubergine">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' memnos:; script-src 'self' memnos:; style-src 'self' memnos: 'unsafe-inline'; img-src 'self' memnos: data:; font-src 'self' memnos: data:; connect-src http: https: ws: wss: memnos:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>MEMNOS · Workspace</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='8' fill='url(%23g)'/%3E%3Cpath d='M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8' stroke='%23fff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='2' y1='2' x2='30' y2='30' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='%237C5CFF'/%3E%3Cstop offset='.52' stop-color='%23B832E5'/%3E%3Cstop offset='1' stop-color='%23EC4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/admin/app.css?v=19">
+</head>
+<body>
+  <!-- Connect / Server Onboarding Screen -->
+  <section id="login" class="login-shell">
+    <div class="login-card">
+      <div class="login-brand">
+        <svg class="m-logo-svg lg" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <rect x="1.5" y="1.5" width="29" height="29" rx="8" fill="url(#mBrandLogin)"/>
+          <path d="M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+          <defs>
+            <linearGradient id="mBrandLogin" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#7C5CFF"/><stop offset="0.52" stop-color="#B832E5"/><stop offset="1" stop-color="#EC4899"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        <div>
+          <div class="brand-title">MEMNOS</div>
+          <div class="muted">Real-Time Agent Mesh · Memory · Live Telemetry</div>
+          <div id="login-version-line" class="ver-meta-line"></div>
+        </div>
+      </div>
+
+      <!-- Local (Default) vs Remote Server Mode Selector -->
+      <div class="seg-control conn-tabs" id="login-mode-tabs">
+        <button type="button" data-cmode="local" class="active">● Local MEMNOS (Default)</button>
+        <button type="button" data-cmode="remote">🌐 Remote MEMNOS Server</button>
+      </div>
+
+      <div id="login-local-banner" class="conn-guide">
+        <div class="conn-guide-hdr">Local Engine on <code>http://127.0.0.1:8900</code></div>
+        <div id="login-local-autodetect" class="muted" hidden>
+          Local credentials detected from <code>~/.memnos/config.json</code>.
+          <button type="button" id="btn-connect-local-auto" class="btn-primary sm" style="margin-left:6px">Connect Local Now</button>
+        </div>
+        <div id="login-local-cli" class="muted">
+          1. Start local engine: <code>memnos start</code><br>
+          2. First-time admin token: <code>memnos admin</code><br>
+          3. List &amp; reveal tokens: <code>memnos token ls --reveal</code>
+        </div>
+      </div>
+
+      <div id="login-remote-banner" class="conn-guide" hidden>
+        <div class="conn-guide-hdr">Connect to an Existing Remote MEMNOS Instance</div>
+        <div class="muted">
+          Enter your team or cloud server URL (<code>https://...</code>) and token:<br>
+          • <b>Admin token</b> (full Settings &amp; all namespaces): <code>memnos admin</code><br>
+          • <b>List existing tokens</b>: <code>memnos token ls --reveal</code><br>
+          • <b>Role-scoped token</b>: <code>memnos principal create alice &amp;&amp; memnos grant add alice proj:payments-sync &amp;&amp; memnos token mint alice</code>
+        </div>
+      </div>
+
+      <label class="field-lbl" for="server-url">MEMNOS Server URL</label>
+      <input id="server-url" type="url" placeholder="http://127.0.0.1:8900" autocomplete="off" spellcheck="false">
+      <label class="field-lbl" for="token">Access Token</label>
+      <div class="row">
+        <input id="token" type="text" class="masked-secret" placeholder="mnk_..." autocomplete="off" spellcheck="false" data-lpignore="true">
+        <button id="signin" class="btn-primary">Connect</button>
+      </div>
+      <p id="loginerr" class="err"></p>
+    </div>
+  </section>
+
+  <!-- Switch Server Modal (Local vs Remote while inside the app) -->
+  <div id="server-modal" class="modal-backdrop" hidden>
+    <div class="login-card modal-card">
+      <div class="row" style="justify-content:space-between;margin-bottom:14px">
+        <div class="row" style="gap:10px">
+          <svg class="m-logo-svg sm" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <rect x="1.5" y="1.5" width="29" height="29" rx="8" fill="url(#mBrandModal)"/>
+            <path d="M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+            <defs>
+              <linearGradient id="mBrandModal" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#7C5CFF"/><stop offset="0.52" stop-color="#B832E5"/><stop offset="1" stop-color="#EC4899"/>
+              </linearGradient>
+            </defs>
+          </svg>
+          <h3 style="margin:0">MEMNOS Server Connection</h3>
+        </div>
+        <button type="button" id="modal-close" class="ghost sm">✕</button>
+      </div>
+
+      <div id="modal-version-box" class="ver-info-box"></div>
+
+      <div class="seg-control conn-tabs" id="modal-mode-tabs">
+        <button type="button" data-mmode="local" class="active">● Local MEMNOS (Default)</button>
+        <button type="button" data-mmode="remote">🌐 Remote MEMNOS Server</button>
+      </div>
+
+      <div id="modal-local-guide" class="conn-guide">
+        <div class="conn-guide-hdr">Local MEMNOS (<code>http://127.0.0.1:8900</code>)</div>
+        <div class="muted">
+          Connects directly to the MEMNOS server running on this machine.<br>
+          Start: <code>memnos start</code> · Admin token: <code>memnos admin</code> · List tokens: <code>memnos token ls --reveal</code>
+        </div>
+      </div>
+
+      <div id="modal-remote-guide" class="conn-guide" hidden>
+        <div class="conn-guide-hdr">Remote / Team MEMNOS Server</div>
+        <div class="muted">
+          Point the app at any self-hosted or cloud MEMNOS URL (e.g. <code>https://memnos.acme.dev</code>).<br>
+          • <b>Admin</b> sees <code>⚙ Settings</code> + all namespaces.<br>
+          • <b>Scoped user/agent</b> sees only authorized <code>#channels</code>, <code>@handles</code>, and <code>Memories</code>.
+        </div>
+      </div>
+
+      <label class="field-lbl" for="modal-url">Server URL</label>
+      <input id="modal-url" type="url" placeholder="http://127.0.0.1:8900 or https://memnos.acme.dev" autocomplete="off" spellcheck="false">
+      <label class="field-lbl" for="modal-token">Access Token <span class="muted">(leave blank to keep current token)</span></label>
+      <input id="modal-token" type="text" class="masked-secret" placeholder="mnk_..." autocomplete="off" spellcheck="false" data-lpignore="true">
+      <p id="modal-err" class="err"></p>
+      <div class="row" style="justify-content:flex-end;margin-top:14px">
+        <button type="button" id="modal-use-local" class="ghost sm" hidden>Use Local Default</button>
+        <button type="button" id="modal-cancel" class="ghost sm">Cancel</button>
+        <button type="button" id="modal-connect" class="btn-primary sm">Connect Server</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Workspace Shell -->
+  <div id="app" class="app-shell" hidden>
+    <!-- Top Header Bar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <svg class="m-logo-svg sm" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <rect x="1.5" y="1.5" width="29" height="29" rx="8" fill="url(#mBrandTop)"/>
+          <path d="M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+          <defs>
+            <linearGradient id="mBrandTop" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#7C5CFF"/><stop offset="0.52" stop-color="#B832E5"/><stop offset="1" stop-color="#EC4899"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        <span class="topbar-title">MEMNOS</span>
+        <button type="button" id="topbar-ver-badge" class="ver-chip" title="View MEMNOS App &amp; Server version details"></button>
+        <span id="sse-badge" class="status-chip offline" hidden title="Connection status">
+          <span class="pulse-dot"></span><span id="sse-text">RECONNECTING</span>
+        </span>
+        <button id="switch-server" class="chip-btn" title="Switch between Local MEMNOS and Remote Server"></button>
+        <button type="button" id="topbar-ask-btn" class="ask-top-pill" title="Ask MEMNOS AI — Overnight Catch-Up &amp; Agent Coordination (⌘K)">✦ Ask AI</button>
+      </div>
+
+      <div id="vitals-strip" class="vitals-strip"></div>
+
+      <div class="topbar-right">
+        <div class="ns-scope-pill" title="Filter workspace by namespace">
+          <span class="ns-scope-lbl">Scope</span>
+          <select id="ws-ns-filter">
+            <option value="*">Active namespaces</option>
+          </select>
+        </div>
+
+        <div class="theme-picker" title="Switch theme">
+          <select id="theme-select" aria-label="Theme">
+            <option value="aubergine">◈ Slack Aubergine</option>
+            <option value="dusk">◑ Soft Dusk</option>
+            <option value="daylight">☀ Daylight Frost</option>
+            <option value="nebula">✦ Nebula Slate</option>
+            <option value="emerald">⚡ Cyber Emerald</option>
+            <option value="copper">◐ Warm Copper</option>
+          </select>
+        </div>
+
+        <span id="who-badge" class="role-chip"></span>
+        <button id="refresh-now" class="icon-action" title="Refresh now">↻</button>
+        <button id="logout" class="ghost sm">Disconnect</button>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <!-- Primary Far-Left Icon Rail -->
+      <nav class="rail" aria-label="Primary sections">
+        <button class="rail-btn rail-ask-btn" data-section="ask" title="Ask MEMNOS AI — Catch-Up, Insights &amp; Coordination (⌘K)">
+          <span class="rail-glyph">✦</span>
+          <span class="rail-lbl">Ask AI</span>
+          <span id="rail-ask-dot" class="rail-badge ok" hidden>●</span>
+        </button>
+
+        <button class="rail-btn active" data-section="channels" title="Channels (#)">
+          <span class="rail-glyph">#</span>
+          <span class="rail-lbl">Channels</span>
+          <span id="rail-ch-count" class="rail-badge">0</span>
+        </button>
+
+        <button class="rail-btn" data-section="handles" title="Active Handles (@)">
+          <span class="rail-glyph">@</span>
+          <span class="rail-lbl">Handles</span>
+          <span id="rail-hd-count" class="rail-badge ok">0</span>
+        </button>
+
+        <button class="rail-btn" data-section="namespaces" title="Namespaces — Inspect, Create, Link Related &amp; Move/Merge">
+          <span class="rail-glyph">⊞</span>
+          <span class="rail-lbl">Spaces</span>
+          <span id="rail-ns-count" class="rail-badge">0</span>
+        </button>
+
+        <button class="rail-btn" data-section="live" title="Live MEMNOS Activity Stream">
+          <span class="rail-glyph">◉</span>
+          <span class="rail-lbl">Live</span>
+          <span id="rail-live-count" class="rail-badge" hidden>0</span>
+        </button>
+
+        <button class="rail-btn" data-section="memories" title="Memory Explorer">
+          <span class="rail-glyph">◈</span>
+          <span class="rail-lbl">Memories</span>
+        </button>
+
+        <button class="rail-btn" data-section="constraints" title="Constraints &amp; Guardrail Validator">
+          <span class="rail-glyph">🛡</span>
+          <span class="rail-lbl">Rules</span>
+          <span id="rail-cs-count" class="rail-badge">0</span>
+        </button>
+
+        <button class="rail-btn" data-section="telemetry" title="Engine &amp; DB Telemetry">
+          <span class="rail-glyph">⚡</span>
+          <span class="rail-lbl">Telemetry</span>
+        </button>
+
+        <button class="rail-btn" data-section="doctor" title="MEMNOS Doctor — Diagnostics, Safe Repair &amp; Optimization">
+          <span class="rail-glyph">✚</span>
+          <span class="rail-lbl">Doctor</span>
+          <span id="rail-doc-badge" class="rail-badge" hidden>0</span>
+        </button>
+
+        <div class="rail-spacer"></div>
+
+        <button class="rail-btn admin-only" data-section="console" title="Admin Server Settings" hidden>
+          <span class="rail-glyph">⚙</span>
+          <span class="rail-lbl">Settings</span>
+        </button>
+      </nav>
+
+      <!-- ============================================================ -->
+      <!-- SECTION 0: ASK MEMNOS — AI BRIEFING & COORDINATION COPILOT   -->
+      <!-- ============================================================ -->
+      <section id="sec-ask" class="workspace-split" hidden>
+        <aside class="list-pane ask-sidebar">
+          <div class="pane-hdr">
+            <div>
+              <div class="pane-title">✦ Ask MEMNOS</div>
+              <div class="pane-sub">Briefings &amp; coordination</div>
+            </div>
+            <button type="button" id="btn-ask-new" class="btn-primary sm" title="Start a new conversation">+ New</button>
+          </div>
+
+          <details class="ask-presets-details" open>
+            <summary class="ask-presets-sum">
+              <span>1-Click Catch-Up</span>
+              <span class="ask-sum-chev">▾</span>
+            </summary>
+            <div class="ask-presets">
+              <button type="button" class="ask-preset-card" data-preset="away">
+                <span class="ask-preset-ico">🌙</span>
+                <div>
+                  <div class="ask-preset-title">While I Was Away</div>
+                  <div class="ask-preset-sub">Decisions, fixes &amp; channel threads</div>
+                </div>
+              </button>
+              <button type="button" class="ask-preset-card" data-preset="coord">
+                <span class="ask-preset-ico">🤝</span>
+                <div>
+                  <div class="ask-preset-title">Agent Coordination</div>
+                  <div class="ask-preset-sub">Who is online &amp; working on what</div>
+                </div>
+              </button>
+              <button type="button" class="ask-preset-card" data-preset="blockers">
+                <span class="ask-preset-ico">🚨</span>
+                <div>
+                  <div class="ask-preset-title">Blockers &amp; Incidents</div>
+                  <div class="ask-preset-sub">Stuck tasks, quota caps &amp; fixes</div>
+                </div>
+              </button>
+              <button type="button" class="ask-preset-card" data-preset="hygiene">
+                <span class="ask-preset-ico">🗂</span>
+                <div>
+                  <div class="ask-preset-title">Channels &amp; Handles Audit</div>
+                  <div class="ask-preset-sub">Idle channels &amp; stale sessions</div>
+                </div>
+              </button>
+            </div>
+          </details>
+
+          <div class="ask-sec-lbl" style="padding:10px 14px 4px">Recent Conversations</div>
+          <div id="ask-thread-list" class="item-list"></div>
+        </aside>
+
+        <main class="main-stage ask-stage">
+          <header class="stage-hdr ask-hdr">
+            <div class="ask-hdr-title-wrap">
+              <span class="ask-spark-badge">✦</span>
+              <div style="min-width:0">
+                <div class="row" style="gap:8px;flex-wrap:nowrap">
+                  <span id="ask-thread-title" class="stage-title">Executive Briefing &amp; Coordination</span>
+                  <span id="ask-run-pill" class="pill ok" hidden>Running…</span>
+                </div>
+                <div id="ask-hdr-sub" class="stage-sub">Overnight catch-up, agent handoffs &amp; conversational <code>#channel</code> / <code>@handle</code> control</div>
+              </div>
+            </div>
+
+            <div class="ask-controls-bar">
+              <label class="ask-ctrl-pill" title="Choose which AI harness answers and executes MEMNOS actions">
+                <span class="muted">Harness</span>
+                <select id="ask-harness-select">
+                  <option value="auto">⚡ Auto (Best Available)</option>
+                  <option value="builtin">Instant Digest (Built-in)</option>
+                </select>
+              </label>
+
+              <input id="ask-model-input" class="ask-model-inp" placeholder="Model (auto)" title="Optional model override (e.g. sonnet, opus, o3)">
+
+              <label class="ask-ctrl-pill" title="Lookback window for the automatic catch-up digest">
+                <span class="muted">Window</span>
+                <select id="ask-window-select">
+                  <option value="8" selected>Last 8h (Sleep/Away)</option>
+                  <option value="24">Last 24h</option>
+                  <option value="72">Last 3d</option>
+                  <option value="168">Last 7d</option>
+                </select>
+              </label>
+
+              <label class="ask-ctrl-pill" title="Namespace scope for context and actions">
+                <span class="muted">Scope</span>
+                <select id="ask-ns-select">
+                  <option value="*">All Spaces (*)</option>
+                </select>
+              </label>
+            </div>
+          </header>
+
+          <div id="ask-feed" class="ask-feed"></div>
+
+          <div id="ask-live-bar" class="ask-live-bar" hidden>
+            <span class="spinner"></span>
+            <span id="ask-live-step">Assembling memory &amp; coordination digest…</span>
+          </div>
+
+          <footer class="ask-composer-wrap">
+            <div class="composer-card ask-composer-card">
+              <div class="ask-quick-chips">
+                <button type="button" class="ask-chip" data-fill="Catch me up on everything that happened while I was away — key decisions, completed work, #channel updates, and anything needing my attention.">🌙 Catch me up</button>
+                <button type="button" class="ask-chip" data-fill="Show how all online @handles are coordinating right now, what each agent is working on, and any open or claimed tasks.">🤝 Live coordination</button>
+                <button type="button" class="ask-chip" data-template="Create channel #release-sync in ">➕ Create #channel</button>
+                <button type="button" class="ask-chip" data-template="Subscribe @handle to #general in ">🔗 Subscribe @handle</button>
+                <button type="button" class="ask-chip" data-template="Send a task to @handle: ">📨 Assign @handle task</button>
+              </div>
+              <div class="ask-input-row">
+                <textarea id="ask-input" rows="1" placeholder="Ask what happened while you slept, inspect agent coordination, or type e.g. 'Create #sprint-sync and subscribe @claude-memnos'… (Enter to send, Shift+Enter for newline)"></textarea>
+                <div class="ask-send-col">
+                  <button type="button" id="ask-stop-btn" class="danger sm" hidden>⏹ Stop</button>
+                  <button type="button" id="ask-send-btn" class="btn-primary sm">Send ↵</button>
+                </div>
+              </div>
+            </div>
+          </footer>
+        </main>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- SECTION 1: CHANNELS WORKSPACE (Unique #channels across server)-->
+      <!-- ============================================================ -->
+      <section id="sec-channels" class="workspace-split">
+        <aside class="list-pane">
+          <div class="pane-hdr">
+            <div>
+              <div class="pane-title">Channels</div>
+              <div id="ch-pane-sub" class="pane-sub">Unique pub/sub topics</div>
+            </div>
+            <button id="btn-new-channel" class="btn-primary sm" title="Create #channel">+ New</button>
+          </div>
+
+          <div id="new-channel-box" class="drawer-form" hidden>
+            <input id="new-ch-ns" placeholder="Namespace (e.g. proj:payments)">
+            <input id="new-ch-name" placeholder="#channel-name (e.g. #arch-review)">
+            <input id="new-ch-desc" placeholder="Topic description (optional)">
+            <div class="row">
+              <button id="new-ch-save" class="btn-primary sm">Create Channel</button>
+              <button id="new-ch-cancel" class="ghost sm">Cancel</button>
+            </div>
+          </div>
+
+          <div class="pane-controls">
+            <div class="search-box">
+              <span class="search-ico">⌕</span>
+              <input id="ch-search" type="search" placeholder="Filter #channels or subscriber…">
+            </div>
+            <div class="seg-control" id="ch-mode-tabs">
+              <button data-mode="active" class="active" title="Channels with online @handles or recent messages">Active</button>
+              <button data-mode="history" title="All channels with message history">With Msgs</button>
+              <button data-mode="all" title="Every registered channel including empty ones">All</button>
+            </div>
+            <div class="sort-row">
+              <span class="sort-lbl">Sort</span>
+              <select id="ch-sort-mode" title="Channel sort order (Name A–Z prevents sidebar jumping)">
+                <option value="name">Name (A–Z)</option>
+                <option value="activity">Activity (Latest msg)</option>
+                <option value="custom">Custom (Drag / ↑↓)</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="channel-list" class="item-list"></div>
+        </aside>
+
+        <div class="chat-stage">
+          <div class="chat-hdr">
+            <div class="chat-hdr-left">
+              <span class="chat-prefix">#</span>
+              <div>
+                <div class="chat-title-row">
+                  <h2 id="ch-stage-title">Select a channel</h2>
+                  <span id="ch-stage-ns" class="ns-badge"></span>
+                </div>
+                <div id="ch-stage-meta" class="muted"></div>
+              </div>
+            </div>
+            <div class="chat-hdr-actions">
+              <div id="ch-live-avatars" class="avatar-stack"></div>
+              <button id="btn-ch-spawn" class="btn-primary sm admin-only" title="Launch a non-TTY headless harness worker on this channel" hidden>⚡ Launch Headless</button>
+              <button id="toggle-ch-inspector" class="ghost sm">Members &amp; Manage</button>
+              <button id="delete-channel-btn" class="danger sm" hidden>Delete Channel</button>
+            </div>
+          </div>
+
+          <div id="ch-pipeline-strip" class="pipeline-strip" hidden></div>
+
+          <div id="ch-messages" class="message-feed"></div>
+
+          <div class="composer-wrap">
+            <div class="composer-card">
+              <div class="composer-toolbar">
+                <span class="muted">Post as</span>
+                <div class="handle-input-pill">
+                  <span>@</span>
+                  <input id="ch-comp-sender" value="owner" title="Sender @handle">
+                </div>
+                <label class="chk"><input type="checkbox" id="ch-comp-claimable"> Competing-consumer task</label>
+                <div id="ch-task-opts" class="task-opts-inline" hidden>
+                  <select id="ch-comp-route" title="Harness routing rule for this task">
+                    <option value="">Route: Any harness</option>
+                    <option value="cross">Cross-harness review (≠ author)</option>
+                    <option value="antigravity">Prefer Antigravity</option>
+                    <option value="claude-code">Prefer Claude Code</option>
+                    <option value="codex">Prefer Codex</option>
+                    <option value="gemini">Prefer Gemini</option>
+                    <option value="cursor">Prefer Cursor</option>
+                  </select>
+                  <input id="ch-comp-deps" placeholder="Depends on #id (e.g. 101,102)" title="Comma-separated task message IDs that must complete before this task unlocks">
+                </div>
+                <span id="ch-comp-err" class="err"></span>
+              </div>
+              <div class="composer-main">
+                <textarea id="ch-comp-input" rows="2" placeholder="Message #channel… (Enter to send, Shift+Enter for newline)"></textarea>
+                <button id="ch-comp-send" class="btn-primary">Send</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <aside id="ch-inspector" class="inspector-pane">
+          <div id="ch-inspector-body"></div>
+          <div id="ch-insp-attach-box" class="insp-block" hidden>
+            <div id="ch-insp-attach-hdr" class="insp-hdr">Attach @Handle</div>
+            <div style="display:flex;flex-direction:column;gap:7px">
+              <select id="ch-insp-pick"><option value="">Choose online @handle…</option></select>
+              <input id="ch-insp-custom" placeholder="or type @handle…">
+              <button type="button" id="ch-insp-add" class="btn-primary sm">Subscribe Handle</button>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- SECTION 2: HANDLES WORKSPACE (Strictly @sessions only!)      -->
+      <!-- ============================================================ -->
+      <section id="sec-handles" class="workspace-split" hidden>
+        <aside class="list-pane">
+          <div class="pane-hdr">
+            <div>
+              <div class="pane-title">Handles</div>
+              <div id="hd-pane-sub" class="pane-sub">Attached agent &amp; harness sessions</div>
+            </div>
+            <button id="btn-hd-spawn" class="btn-primary sm admin-only" title="Launch a non-TTY headless harness worker" hidden>⚡ Headless</button>
+          </div>
+
+          <div class="pane-controls">
+            <div class="search-box">
+              <span class="search-ico">⌕</span>
+              <input id="hd-search" type="search" placeholder="Filter @handle, harness, #channel, or path…">
+            </div>
+            <div class="row" style="gap:6px">
+              <div class="seg-control" id="hd-mode-tabs" style="flex:1">
+                <button data-mode="online" class="active" title="Currently online &amp; heartbeating handles">Online</button>
+                <button data-mode="all" title="Include expired or offline handles">All</button>
+              </div>
+              <select id="hd-harness-filter" title="Filter handles by attached harness" style="max-width:132px;padding:5px 8px;font-size:11.5px">
+                <option value="">All harnesses</option>
+              </select>
+            </div>
+            <div class="sort-row">
+              <span class="sort-lbl">Sort</span>
+              <select id="hd-sort-mode" title="Handle sort order (Name A–Z prevents sidebar jumping)">
+                <option value="name">Name (A–Z)</option>
+                <option value="activity">Activity (Latest call)</option>
+                <option value="custom">Custom (Drag / ↑↓)</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="handle-list" class="item-list"></div>
+        </aside>
+
+        <div class="chat-stage">
+          <div id="hd-hero" class="handle-hero">
+            <div id="hd-hero-info"></div>
+            <div id="hd-hero-ch-row" class="hero-ch-bar">
+              <span class="muted" style="font-weight:600;margin-right:4px">Channels:</span>
+              <span id="hd-hero-ch-chips" style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap"></span>
+              <span id="hd-join-wrap" style="display:inline-flex;align-items:center;gap:6px">
+                <input id="hd-join-input" placeholder="+ #channel" style="max-width:140px;padding:3px 9px;font-size:12px;border-radius:99px">
+                <button type="button" id="hd-join-btn" class="ghost sm" style="border-radius:99px">Subscribe</button>
+              </span>
+            </div>
+          </div>
+
+          <div id="hd-messages" class="message-feed"></div>
+
+          <div class="composer-wrap">
+            <div class="composer-card">
+              <div class="composer-toolbar">
+                <span class="muted">Direct message from</span>
+                <div class="handle-input-pill">
+                  <span>@</span>
+                  <input id="hd-comp-sender" value="owner">
+                </div>
+                <select id="hd-comp-intent" style="max-width:150px;padding:4px 8px;font-size:12px">
+                  <option value="message">Intent: message</option>
+                  <option value="task">Intent: task</option>
+                  <option value="review_request">Intent: review_request</option>
+                  <option value="handoff">Intent: handoff</option>
+                </select>
+                <span id="hd-comp-err" class="err"></span>
+              </div>
+              <div class="composer-main">
+                <textarea id="hd-comp-input" rows="2" placeholder="Send direct @inbox message to wake this handle… (Enter to send)"></textarea>
+                <button id="hd-comp-send" class="btn-primary">Send DM</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- SECTION 2A: NAMESPACES WORKSPACE (Show, Create, Merge, Links)-->
+      <!-- ============================================================ -->
+      <section id="sec-namespaces" class="workspace-split" hidden>
+        <aside class="list-pane">
+          <div class="pane-hdr">
+            <div>
+              <div class="pane-title">Namespaces</div>
+              <div id="ns-pane-sub" class="pane-sub">Memory &amp; coordination scopes</div>
+            </div>
+            <div class="row" style="gap:6px">
+              <button type="button" id="btn-open-ns-merge" class="ghost sm" title="Move, merge, or copy between namespaces">⇄ Merge</button>
+              <button type="button" id="btn-open-ns-create" class="btn-primary sm" title="Create a new namespace">+ New</button>
+            </div>
+          </div>
+
+          <div class="pane-controls">
+            <div class="search-box">
+              <span class="search-ico">⌕</span>
+              <input id="ns-ws-search" type="search" placeholder="Filter namespaces, prefixes, or descriptions…">
+            </div>
+            <div class="row" style="gap:6px">
+              <div class="seg-control" id="ns-ws-mode" style="flex:1">
+                <button type="button" data-mode="active" class="active">Active</button>
+                <button type="button" data-mode="all">All</button>
+              </div>
+              <select id="ns-ws-prefix" title="Filter by namespace prefix" style="max-width:128px;padding:5px 8px;font-size:11.5px">
+                <option value="*">All prefixes</option>
+              </select>
+            </div>
+            <div class="sort-row">
+              <span class="sort-lbl">Sort</span>
+              <select id="ns-ws-sort">
+                <option value="name">Name (A–Z)</option>
+                <option value="facts">Most Facts</option>
+                <option value="turns">Most Turns</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="ns-ws-list" class="item-list"></div>
+        </aside>
+
+        <div class="chat-stage">
+          <div id="ns-ws-empty" class="empty-state">
+            <div class="empty-ico">⊞</div>
+            <h3 style="margin:0 0 6px;color:var(--fg)">Select or Create a Namespace</h3>
+            <p class="muted" style="margin:0">Inspect memory counts, active <code>#channels</code> &amp; <code>@handles</code>, repo auto-routing, related links, or consolidate namespaces.</p>
+          </div>
+
+          <div id="ns-ws-detail" class="ns-stage-inner" hidden>
+            <div class="handle-hero">
+              <div id="ns-ws-hero-top"></div>
+              <div id="ns-ws-settings-bar" class="ns-settings-bar" hidden>
+                <input id="ns-edit-desc" placeholder="Description (e.g. Payments service memory &amp; coordination)" style="flex:1;min-width:180px">
+                <select id="ns-edit-kind" style="max-width:150px" title="Namespace kind">
+                  <option value="memory">Kind: memory</option>
+                  <option value="knowledge">Kind: knowledge</option>
+                </select>
+                <label class="chk" title="Inherit constraints and grounded context from parent prefix namespaces"><input type="checkbox" id="ns-edit-inherit" checked> Inherit ancestors</label>
+                <button type="button" id="ns-edit-save" class="btn-primary sm">Save</button>
+              </div>
+            </div>
+
+            <div class="ns-scroll-body">
+              <div id="ns-ws-kpis" class="ns-stat-strip"></div>
+
+              <div class="two-col-grid">
+                <!-- Left Column: Related Namespaces & Grounded Links -->
+                <div class="surface-card">
+                  <div style="margin-bottom:10px">
+                    <h3 style="margin:0;font-size:14.5px">Related Namespaces &amp; Links</h3>
+                    <div class="muted" style="font-size:12px">Parent/child hierarchy, grounded recall links, shared <code>#channels</code>, and merge lineage.</div>
+                  </div>
+
+                  <div id="ns-link-bar" class="ns-inline-form" style="margin-bottom:12px">
+                    <input id="ns-link-custom" list="ns-link-datalist" placeholder="Target namespace (e.g. org:standards)" style="flex:1;min-width:150px">
+                    <datalist id="ns-link-datalist"></datalist>
+                    <select id="ns-link-kind" style="width:130px;flex-shrink:0" title="Relationship kind">
+                      <option value="link">link</option>
+                      <option value="inherits">inherits</option>
+                      <option value="governed_by">governed_by</option>
+                    </select>
+                    <button type="button" id="ns-link-add" class="btn-primary sm" style="flex-shrink:0">+ Link</button>
+                  </div>
+
+                  <div id="ns-ws-related-body"></div>
+                </div>
+
+                <!-- Right Column: Repo Auto-Routing + Active Mesh -->
+                <div style="display:flex;flex-direction:column;gap:14px">
+                  <div class="surface-card">
+                    <div style="margin-bottom:10px">
+                      <h3 style="margin:0;font-size:14.5px">Repository &amp; Folder Routing</h3>
+                      <div class="muted" style="font-size:12px">Auto-route sessions in bound repositories or folders to this namespace.</div>
+                    </div>
+                    <div id="ns-bind-bar" class="ns-inline-form" style="margin-bottom:12px">
+                      <select id="ns-bind-type" style="width:128px;flex-shrink:0">
+                        <option value="repo">repo</option>
+                        <option value="host_path">folder path</option>
+                        <option value="host_repo">host repo</option>
+                      </select>
+                      <input id="ns-bind-key" placeholder="github.com/acme/app or /path" style="flex:1;min-width:140px">
+                      <button type="button" id="ns-bind-add" class="btn-primary sm" style="flex-shrink:0">+ Bind</button>
+                    </div>
+                    <div id="ns-ws-bindings-body"></div>
+                  </div>
+
+                  <div class="surface-card">
+                    <h3 style="margin:0 0 10px;font-size:14.5px">Active <code>#Channels</code> &amp; <code>@Handles</code></h3>
+                    <div id="ns-ws-mesh-body"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- SECTION 2B: REAL-TIME LIVE ACTIVITY STREAM                   -->
+      <!-- ============================================================ -->
+      <section id="sec-live" class="page-stage" hidden>
+        <div class="page-inner">
+          <div class="page-hdr">
+            <div>
+              <h2>Live MEMNOS Activity Stream</h2>
+              <p class="muted">Real-time SSE feed of every <code>recall</code>, <code>remember</code>, <code>reconcile</code>, <code>channel/*</code>, <code>session/*</code>, and MCP call hitting this server.</p>
+            </div>
+            <div class="row">
+              <button id="live-pause-btn" class="ghost sm">Pause Stream</button>
+              <button id="live-clear-btn" class="ghost sm">Clear</button>
+            </div>
+          </div>
+
+          <div class="surface-card">
+            <div class="row" style="margin-bottom:14px">
+              <div class="search-box" style="flex:1">
+                <span class="search-ico">⌕</span>
+                <input id="live-filter" placeholder="Filter live calls by @handle, operation (recall, remember, channel/publish), namespace, or query…">
+              </div>
+              <span id="live-summary" class="muted"></span>
+            </div>
+            <table id="live-table">
+              <thead>
+                <tr>
+                  <th style="width:110px">Time</th>
+                  <th style="width:160px">Actor / Handle</th>
+                  <th style="width:170px">Operation</th>
+                  <th style="width:170px">Namespace</th>
+                  <th>Detail / Query</th>
+                  <th style="width:90px">Latency</th>
+                  <th style="width:80px">Status</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- SECTION 3: MEMORY EXPLORER                                   -->
+      <!-- ============================================================ -->
+      <section id="sec-memories" class="page-stage" hidden>
+        <div class="page-inner">
+          <div class="page-hdr">
+            <div>
+              <h2>Memory Explorer</h2>
+              <p class="muted">Governed facts, decisions, incidents, and pinned constraints across your authorized namespaces.</p>
+            </div>
+          </div>
+          <div class="surface-card">
+            <div class="row" style="margin-bottom:14px">
+              <div class="search-box" style="flex:1">
+                <span class="search-ico">⌕</span>
+                <input id="wmem-q" placeholder="Search memories (e.g. architecture, migration, auth, redis)…">
+              </div>
+              <div class="seg-control" id="wmem-type-pills">
+                <button data-type="" class="active">All</button>
+                <button data-type="constraint">Constraints</button>
+                <button data-type="decision">Decisions</button>
+                <button data-type="incident">Incidents</button>
+                <button data-type="fact">Facts</button>
+                <button data-type="fix">Fixes</button>
+              </div>
+              <button id="wmem-search" class="btn-primary sm">Search</button>
+            </div>
+            <table id="wmem-table">
+              <thead><tr><th style="width:70px">Age</th><th style="width:160px">Namespace</th><th style="width:110px">Type</th><th style="width:120px">Author</th><th>Memory</th></tr></thead>
+              <tbody></tbody>
+            </table>
+            <div class="pager">
+              <button id="wmem-prev" class="ghost sm">&#8249; Newer</button>
+              <span id="wmem-info" class="muted"></span>
+              <button id="wmem-next" class="ghost sm">Older &#8250;</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- SECTION 3B: CONSTRAINTS & CROSS-NAMESPACE VALIDATOR          -->
+      <!-- ============================================================ -->
+      <section id="sec-constraints" class="page-stage" hidden>
+        <div class="page-inner">
+          <div class="page-hdr">
+            <div>
+              <h2>Constraints &amp; Guardrail Validator</h2>
+              <p class="muted">Inspect, pin, enforce, and dry-run validate tool guardrails and semantic constraints on any namespace (including inherited ancestor &amp; linked namespaces) or across your entire scope.</p>
+            </div>
+            <div class="row">
+              <span class="muted">Inspecting:</span>
+              <select id="cs-ns-select" style="max-width:260px;padding:6px 10px;font-size:12.5px">
+                <option value="*">All authorized namespaces (*)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Interactive Validator -->
+          <div class="surface-card">
+            <h3>Validate Against Constraints <span class="muted">· deterministic PreToolUse + semantic reconcile</span></h3>
+            <div class="two-col-grid" style="margin-top:10px">
+              <div>
+                <label class="field-lbl" style="margin-top:0" for="cs-val-tool">1. Tool / Command Dry-Run (PreToolUse)</label>
+                <div class="row">
+                  <input id="cs-val-tool" placeholder="e.g. Bash(rm -rf /tmp/foo) or write_file(/app/.env)">
+                  <button id="cs-val-tool-btn" class="btn-primary sm">Test Tool</button>
+                </div>
+                <div id="cs-val-tool-out" style="margin-top:10px"></div>
+              </div>
+              <div>
+                <label class="field-lbl" style="margin-top:0" for="cs-val-stmt">2. Statement / Plan / Code Validation</label>
+                <div class="row">
+                  <input id="cs-val-stmt" placeholder="e.g. Upgrade live binary without running pg_dump first">
+                  <button id="cs-val-stmt-btn" class="btn-primary sm">Validate Claim</button>
+                </div>
+                <div id="cs-val-stmt-out" style="margin-top:10px"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- PreToolUse Hard Guardrails -->
+          <div class="surface-card">
+            <div class="row" style="justify-content:space-between;margin-bottom:10px">
+              <div>
+                <h3 style="margin:0">Active PreToolUse Tool Guardrails (<span id="cs-enf-cnt">0</span>)</h3>
+                <div class="muted">Deterministic LLM-free rules enforced before tool execution (<code>block</code> or <code>ask</code>).</div>
+              </div>
+            </div>
+            <div class="row" style="margin-bottom:12px">
+              <input id="cs-add-enf-ns" placeholder="namespace (e.g. proj:payments)" style="max-width:190px">
+              <select id="cs-add-enf-lvl" style="max-width:120px">
+                <option value="block">block</option>
+                <option value="ask">ask</option>
+              </select>
+              <input id="cs-add-enf-matcher" placeholder="matcher (e.g. Bash(git push --force*) or write_file(*.env))" style="max-width:280px">
+              <input id="cs-add-enf-text" placeholder="rule reason shown when triggered…">
+              <button id="cs-add-enf-btn" class="btn-primary sm">+ Add Guardrail</button>
+            </div>
+            <table id="cs-enf-table">
+              <thead><tr><th style="width:170px">Namespace</th><th style="width:90px">Level</th><th style="width:240px">Tool Matcher</th><th>Rule Reason</th><th style="width:90px">Age</th><th style="width:100px"></th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <!-- Pinned Semantic Constraints -->
+          <div class="surface-card">
+            <div class="row" style="justify-content:space-between;margin-bottom:10px">
+              <div>
+                <h3 style="margin:0">Pinned Semantic Constraints (<span id="cs-pin-cnt">0</span>)</h3>
+                <div class="muted">Always-injected architectural invariants, safety rules, and project policies across namespaces.</div>
+              </div>
+            </div>
+            <div class="row" style="margin-bottom:12px">
+              <input id="cs-add-pin-ns" placeholder="namespace (e.g. proj:payments)" style="max-width:190px">
+              <input id="cs-add-pin-subj" placeholder="subject (optional, e.g. db-backups)" style="max-width:210px">
+              <input id="cs-add-pin-text" placeholder="Self-contained constraint statement to pin…">
+              <button id="cs-add-pin-btn" class="btn-primary sm">+ Pin Constraint</button>
+            </div>
+            <table id="cs-pin-table">
+              <thead><tr><th style="width:170px">Namespace</th><th style="width:150px">Subject</th><th>Pinned Constraint</th><th style="width:110px">Author</th><th style="width:80px">Age</th><th style="width:95px"></th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- SECTION 4: ENGINE & DB TELEMETRY                             -->
+      <!-- ============================================================ -->
+      <section id="sec-telemetry" class="page-stage" hidden>
+        <div class="page-inner">
+          <div class="page-hdr">
+            <div>
+              <h2>Engine, Resource &amp; Database Telemetry</h2>
+              <p class="muted">Live single-binary engine memory footprint, PostgreSQL + pgvector storage, recall latency, and namespace distribution.</p>
+            </div>
+            <button type="button" id="tel-open-doctor" class="btn-primary sm">✚ Run MEMNOS Doctor</button>
+          </div>
+          <div id="tel-cards" class="kpi-grid"></div>
+
+          <div class="two-col-grid">
+            <div class="surface-card">
+              <h3>24h Operation Latency &amp; Error Rate</h3>
+              <table id="tel-ops-table">
+                <thead><tr><th>Operation</th><th>Calls</th><th>p50</th><th>p95</th><th>Err %</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+
+            <div class="surface-card">
+              <div class="row" style="justify-content:space-between;margin-bottom:10px">
+                <h3 style="margin:0">Namespace Storage Breakdown</h3>
+                <input id="tel-ns-search" placeholder="Filter namespaces…" style="max-width:220px;padding:5px 10px;font-size:12px">
+              </div>
+              <div style="max-height:460px;overflow-y:auto">
+                <table id="tel-ns-table">
+                  <thead><tr><th>Namespace</th><th>Facts</th><th>Turns</th><th>Entities</th><th>Access</th></tr></thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- SECTION 4B: MEMNOS DOCTOR (Diagnostics, Repair & Optimize)   -->
+      <!-- ============================================================ -->
+      <section id="sec-doctor" class="page-stage" hidden>
+        <div class="page-inner">
+          <div class="page-hdr" style="flex-wrap:wrap;gap:12px">
+            <div>
+              <h2>✚ MEMNOS Doctor · Diagnostics, Repair &amp; Optimization</h2>
+              <p class="muted">Non-destructive health inspection, knowledge-graph &amp; vector repair, duplicate fact consolidation, stuck lock recovery, and online PostgreSQL <code>VACUUM ANALYZE</code>.</p>
+            </div>
+            <div class="row" style="gap:8px;flex-wrap:wrap">
+              <select id="doc-ns-select" style="max-width:240px;padding:6px 10px;font-size:12.5px" title="Scope diagnostics &amp; repairs">
+                <option value="*">All authorized namespaces (*)</option>
+              </select>
+              <button type="button" id="doc-rescan-btn" class="ghost sm">↻ Scan Now</button>
+              <button type="button" id="doc-dryrun-btn" class="ghost sm">Preview Dry-Run</button>
+              <button type="button" id="doc-fixall-btn" class="btn-primary sm">⚡ Repair &amp; Optimize All</button>
+            </div>
+          </div>
+
+          <div id="doc-hero" class="surface-card doc-hero-card"></div>
+
+          <div id="doc-run-box" class="surface-card" hidden></div>
+
+          <div id="doc-cards" class="doc-grid"></div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- SECTION 5: ADMIN SERVER SETTINGS                             -->
+      <!-- ============================================================ -->
+      <section id="sec-console" class="page-stage" hidden>
+        <div class="page-inner">
+          <div class="page-hdr">
+            <div>
+              <h2>MEMNOS Server Settings</h2>
+              <p class="muted">Admin governance: principals &amp; role grants, API tokens, namespaces, repo routing, encrypted secret vault, and audit logs.</p>
+            </div>
+          </div>
+
+          <div class="subtabs" id="console-tabs">
+            <button data-ctab="access" class="active">Principals &amp; Grants</button>
+            <button data-ctab="tokens">API Tokens</button>
+            <button data-ctab="namespaces">Namespaces</button>
+            <button data-ctab="routing">Repo Routing</button>
+            <button data-ctab="usage">Cost &amp; Budgets</button>
+            <button data-ctab="secrets">Secret Vault</button>
+            <button data-ctab="dashboard">Audit &amp; Health</button>
+            <button data-ctab="settings">LLM Provider</button>
+            <button data-ctab="cli">CLI Reference</button>
+          </div>
+
+          <!-- Routing -->
+          <div id="ctab-routing" class="ctab-pane" hidden>
+            <div class="surface-card">
+              <h3>Add repo or folder binding</h3>
+              <p class="muted">Bind a repository or folder to a namespace so agents route automatically across machines.</p>
+              <div class="row">
+                <select id="bind-scope"><option value="repo">All hosts (follow the repo)</option></select>
+                <select id="bind-keytype" hidden>
+                  <option value="host_repo">repo on this host</option>
+                  <option value="host_path">path on this host</option>
+                </select>
+                <input id="bind-key" placeholder="repo (e.g. github.com/acme/payments-sync) or path">
+                <input id="bind-ns" placeholder="namespace (e.g. proj:payments)">
+                <button id="bind-add" class="btn-primary">Bind</button>
+              </div>
+              <p id="bind-err" class="err"></p>
+            </div>
+            <div class="surface-card">
+              <h3>Active Bindings</h3>
+              <div id="bind-groups"></div>
+            </div>
+            <div class="surface-card">
+              <h3>Registered Hosts</h3>
+              <table id="host-table"><thead><tr><th>Friendly name</th><th>Machine ID</th><th>Last seen</th><th></th></tr></thead><tbody></tbody></table>
+            </div>
+          </div>
+
+          <!-- CLI -->
+          <div id="ctab-cli" class="ctab-pane" hidden>
+            <div class="surface-card">
+              <h3>CLI Reference</h3>
+              <p class="muted">Remote use: set <code>MEMNOS_URL</code> and <code>MEMNOS_TOKEN</code>.</p>
+              <div id="cli-ref"></div>
+            </div>
+          </div>
+
+          <!-- Admin: Namespaces -->
+          <div id="ctab-namespaces" class="ctab-pane" hidden>
+            <div class="surface-card">
+              <div class="row" style="justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+                <h3 style="margin:0">Create namespace</h3>
+                <div class="row" style="gap:8px">
+                  <button type="button" id="admin-ns-open-merge" class="ghost sm">⇄ Move / Merge Namespaces</button>
+                  <button type="button" id="admin-ns-open-ws" class="btn-primary sm">⊞ Open Namespaces Workspace</button>
+                </div>
+              </div>
+              <div class="row">
+                <input id="ns-name" placeholder="e.g. proj:myapp  or  team:eng:notes">
+                <input id="ns-desc" placeholder="description (optional)">
+                <button id="ns-create" class="btn-primary">Create</button>
+              </div>
+            </div>
+            <div class="surface-card"><table id="ns-table"><thead><tr><th>Namespace</th><th>Description</th><th>Turns</th><th>Facts</th><th>Created</th><th></th></tr></thead><tbody></tbody></table></div>
+          </div>
+
+          <!-- Admin: Principals & Grants -->
+          <div id="ctab-access" class="ctab-pane">
+            <div class="surface-card">
+              <h3>Create principal</h3>
+              <div class="row">
+                <input id="pr-name" placeholder="name (user / agent / service)">
+                <select id="pr-kind"><option>user</option><option>agent</option><option>service</option></select>
+                <button id="pr-create" class="btn-primary">Create</button>
+              </div>
+            </div>
+
+            <div class="surface-card">
+              <div class="row" style="justify-content:space-between;margin-bottom:12px">
+                <div class="row" style="flex:1;max-width:440px">
+                  <h3 style="margin:0 10px 0 0">Principals</h3>
+                  <input id="pr-filter" placeholder="Filter principals by name or kind…" style="padding:6px 10px;font-size:12.5px">
+                </div>
+                <button id="pr-prune-test" class="danger sm" title="Delete stale test-* principals that have 0 active tokens" hidden>Prune 0-token test-*</button>
+              </div>
+              <table id="pr-table">
+                <thead><tr><th style="width:80px">ID</th><th>Name</th><th style="width:120px">Kind</th><th style="width:130px">Active tokens</th><th style="width:200px">Actions</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+
+            <div class="surface-card" id="grants-card">
+              <h3>Namespace Grants for <span id="gr-who" class="muted"></span></h3>
+              <div class="row">
+                <select id="gr-principal" style="max-width:260px"></select>
+                <input id="gr-namespace" placeholder="namespace (or team:eng:*  or  *)">
+                <label class="chk"><input type="checkbox" id="gr-read" checked> read</label>
+                <label class="chk"><input type="checkbox" id="gr-write" checked> write</label>
+                <button id="gr-add" class="btn-primary">Grant</button>
+              </div>
+              <table id="gr-table" style="margin-top:12px"><thead><tr><th>Namespace</th><th style="width:100px">Read</th><th style="width:100px">Write</th><th style="width:120px">Actions</th></tr></thead><tbody></tbody></table>
+            </div>
+          </div>
+
+          <!-- Admin: Tokens -->
+          <div id="ctab-tokens" class="ctab-pane" hidden>
+            <div class="surface-card">
+              <h3>Mint new token</h3>
+              <div class="row">
+                <select id="tok-principal" style="max-width:240px"></select>
+                <input id="tok-label" placeholder="label (e.g. laptop, ci, remote-app)">
+                <input id="tok-ttl" type="number" placeholder="ttl days (optional)" style="max-width:150px">
+                <button id="tok-mint" class="btn-primary">Mint Token</button>
+              </div>
+              <div id="tok-show" class="banner" hidden></div>
+            </div>
+            <div class="surface-card">
+              <div class="row" style="justify-content:space-between;margin-bottom:12px">
+                <h3 style="margin:0">Minted Tokens <span id="tok-who" class="muted"></span></h3>
+                <div class="row">
+                  <select id="tok-view-principal" style="max-width:220px;padding:6px 10px;font-size:12.5px">
+                    <option value="0">All principals</option>
+                  </select>
+                  <select id="tok-status-filter" style="max-width:150px;padding:6px 10px;font-size:12.5px">
+                    <option value="active">Active only</option>
+                    <option value="all">Active + Revoked</option>
+                    <option value="revoked">Revoked only</option>
+                  </select>
+                  <input id="tok-search" placeholder="Filter label, principal, or hint…" style="max-width:230px;padding:6px 10px;font-size:12.5px">
+                  <label class="chk"><input type="checkbox" id="tok-hide-test" checked> Hide test-*</label>
+                </div>
+              </div>
+              <table id="tok-table">
+                <thead><tr><th style="width:65px">ID</th><th style="width:155px">Principal</th><th style="width:220px">Token</th><th>Label</th><th style="width:155px">Created</th><th style="width:120px">Expires</th><th style="width:85px">Status</th><th style="width:210px">Actions</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Admin: Usage -->
+          <div id="ctab-usage" class="ctab-pane" hidden>
+            <div id="usage-budget-banner" hidden></div>
+            <div class="surface-card">
+              <h3>Usage &amp; cost</h3>
+              <div class="row">
+                <select id="usage-days">
+                  <option value="7">last 7 days</option>
+                  <option value="30" selected>last 30 days</option>
+                  <option value="90">last 90 days</option>
+                  <option value="365">last 365 days</option>
+                </select>
+                <input id="usage-ns" placeholder="namespace filter (optional)">
+                <button id="usage-refresh" class="btn-primary">Refresh</button>
+              </div>
+              <div id="usage-totals" class="muted" style="margin-top:10px"></div>
+            </div>
+            <div class="surface-card"><h3>By operation</h3><table id="usage-op-table"><thead><tr><th>op</th><th>calls</th><th>tokens in</th><th>tokens out</th><th>cost $</th></tr></thead><tbody></tbody></table></div>
+            <div class="surface-card"><h3>By namespace</h3><table id="usage-ns-table"><thead><tr><th>namespace</th><th>calls</th><th>tokens</th><th>cost $</th></tr></thead><tbody></tbody></table></div>
+            <div class="surface-card"><h3>Day-by-day trend</h3><table id="usage-day-table"><thead><tr><th>date</th><th>tokens</th><th>cost $</th></tr></thead><tbody></tbody></table></div>
+          </div>
+
+          <!-- Admin: Secrets -->
+          <div id="ctab-secrets" class="ctab-pane" hidden>
+            <div class="surface-card">
+              <h3>Secret vault <span id="vault-state" class="muted"></span></h3>
+              <p class="muted">AES-256-GCM encrypted at rest — reference secrets as <code>secret://name</code>.</p>
+              <div class="row">
+                <input id="sec-name" placeholder="name (e.g. openai)">
+                <input id="sec-value" type="text" class="masked-secret" placeholder="value (stored encrypted)" autocomplete="off" spellcheck="false" data-lpignore="true">
+                <input id="sec-desc" placeholder="description (optional)">
+                <button id="sec-set" class="btn-primary">Store</button>
+              </div>
+              <p id="sec-err" class="err"></p>
+            </div>
+            <div class="surface-card"><table id="sec-table"><thead><tr><th>Name</th><th>Description</th><th>Updated</th><th></th></tr></thead><tbody></tbody></table></div>
+          </div>
+
+          <!-- Admin: Audit & Health -->
+          <div id="ctab-dashboard" class="ctab-pane" hidden>
+            <div class="surface-card"><h3>Health <span class="muted">· last 24h</span></h3><div id="dash-health"></div></div>
+            <div class="surface-card"><h3>Reliability <span class="muted">· last 24h</span></h3><table id="dash-stats"><thead><tr><th>op</th><th>calls</th><th>err%</th><th>p50ms</th><th>p95ms</th><th>recall-empty%</th></tr></thead><tbody></tbody></table></div>
+            <div class="surface-card"><h3>Usage / cost <span class="muted">· last 30 days</span></h3><table id="dash-usage"><thead><tr><th>op</th><th>calls</th><th>tokens in</th><th>tokens out</th><th>cost $</th></tr></thead><tbody></tbody></table></div>
+            <div class="surface-card"><h3>Recent activity</h3>
+              <table id="dash-audit"><thead><tr><th>time</th><th>principal</th><th>action</th><th>namespace</th><th>status</th><th>ms</th></tr></thead><tbody></tbody></table>
+              <div class="pager">
+                <button id="audit-prev" class="ghost sm">&#8249; newer</button>
+                <span id="audit-info" class="muted"></span>
+                <button id="audit-next" class="ghost sm">older &#8250;</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Admin: Provider -->
+          <div id="ctab-settings" class="ctab-pane" hidden>
+            <div class="surface-card"><h3>LLM &amp; Embedding Provider</h3><div id="set-provider"></div></div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Persistent Bottom Live Activity Ticker -->
+    <footer id="live-op-pill" class="bottom-ticker" role="status" aria-live="polite" title="Click to open full Live Activity stream">
+      <div class="ticker-badge">
+        <span class="live-op-dot"></span>
+        <span>LIVE</span>
+      </div>
+      <div id="live-op-text" class="ticker-track">Listening for live memnos calls…</div>
+      <div id="footer-vitals" class="ticker-vitals"></div>
+      <span class="ticker-cta">Open Stream ↗</span>
+      <span id="footer-version" class="ticker-ver" title="Click to view App &amp; Server version details"></span>
+    </footer>
+  </div>
+
+  <!-- Native In-App Confirmation Modal (WKWebView suppresses window.confirm/alert) -->
+  <div id="confirm-modal" class="modal-backdrop" hidden>
+    <div class="login-card modal-card" style="max-width:440px">
+      <h3 id="confirm-title" style="margin:0 0 8px;font-size:16px">Confirm Action</h3>
+      <p id="confirm-body" class="muted" style="margin:0 0 14px;white-space:pre-line;line-height:1.5;font-size:13px"></p>
+      <label id="confirm-extra-wrap" class="chk" style="margin-bottom:14px" hidden>
+        <input type="checkbox" id="confirm-extra-chk">
+        <span id="confirm-extra-lbl"></span>
+      </label>
+      <div class="row" style="justify-content:flex-end;gap:8px">
+        <button type="button" id="confirm-cancel" class="ghost sm">Cancel</button>
+        <button type="button" id="confirm-ok" class="danger sm">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rename Handle Modal -->
+  <div id="rename-modal" class="modal-backdrop" hidden>
+    <div class="login-card modal-card" style="max-width:420px">
+      <h3 id="rename-title" style="margin:0 0 8px;font-size:16px">Rename @Handle</h3>
+      <p id="rename-sub" class="muted" style="margin:0 0 12px;font-size:12.5px">Migrates all #channel subscriptions and unread @inbox messages to the new handle.</p>
+      <input id="rename-input" placeholder="new-handle-name (e.g. payments-builder)" style="margin-bottom:14px">
+      <div class="row" style="justify-content:flex-end;gap:8px">
+        <button type="button" id="rename-cancel" class="ghost sm">Cancel</button>
+        <button type="button" id="rename-save" class="btn-primary sm">Rename Handle</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Launch Headless Worker Modal -->
+  <div id="spawn-modal" class="modal-backdrop" hidden>
+    <div class="login-card modal-card" style="max-width:540px">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <h3 style="margin:0;font-size:16px">⚡ Launch Headless Harness Worker</h3>
+        <button type="button" id="spawn-close" class="ghost sm">✕</button>
+      </div>
+      <p class="muted" style="margin:0 0 12px;font-size:12.5px;line-height:1.45">
+        Spawns a non-TTY CLI worker in the background using your logged-in subscription, streams live calls to MEMNOS, and auto-closes when finished.
+      </p>
+
+      <div id="spawn-active-runs" class="spawn-runs-box" hidden></div>
+
+      <div class="two-col-grid" style="gap:10px;margin-bottom:10px">
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="spawn-harness">CLI Harness</label>
+          <select id="spawn-harness"></select>
+        </div>
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="spawn-model">Model <span class="muted">(optional)</span></label>
+          <input id="spawn-model" placeholder="Default subscription model">
+        </div>
+      </div>
+
+      <div class="two-col-grid" style="gap:10px;margin-bottom:10px">
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="spawn-ns">Namespace</label>
+          <input id="spawn-ns" placeholder="e.g. proj:payments">
+        </div>
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="spawn-ch">#Channel</label>
+          <input id="spawn-ch" placeholder="e.g. #arch-review">
+        </div>
+      </div>
+
+      <div class="two-col-grid" style="gap:10px;margin-bottom:10px">
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="spawn-role">Worker Role</label>
+          <select id="spawn-role">
+            <option value="">any (general worker)</option>
+            <option value="builder">builder</option>
+            <option value="reviewer">reviewer</option>
+            <option value="backend">backend</option>
+            <option value="frontend">frontend</option>
+            <option value="tests">tests</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="spawn-cwd">Repo Folder <span class="muted">(optional)</span></label>
+          <input id="spawn-cwd" placeholder="Auto-detect from repo binding">
+        </div>
+      </div>
+
+      <label class="field-lbl" style="margin-top:0" for="spawn-prompt">Task / Prompt <span class="muted">(leave blank to drain ready tasks on #channel)</span></label>
+      <textarea id="spawn-prompt" class="spawn-textarea" rows="3" placeholder="Leave blank to claim &amp; complete open ready tasks on #channel then auto-close, or enter a specific instruction…"></textarea>
+
+      <div class="spawn-checks">
+        <label class="chk"><input type="checkbox" id="spawn-sub-only" checked> <span><b>Subscription-only ($0 API billing)</b> — strip API key env vars</span></label>
+        <label class="chk"><input type="checkbox" id="spawn-failover" checked> <span><b>Auto-failover</b> — switch harness automatically if subscription hits quota limit</span></label>
+        <label class="chk"><input type="checkbox" id="spawn-skip-perms" checked> <span><b>Non-interactive tool permissions</b> — required for headless MCP &amp; file tools (PreToolUse guardrails remain enforced)</span></label>
+        <label class="chk"><input type="checkbox" id="spawn-worktree"> <span>Run in isolated named-branch <code>git worktree</code></span></label>
+      </div>
+
+      <p id="spawn-err" class="err" style="margin:8px 0 0"></p>
+      <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px">
+        <button type="button" id="spawn-cancel" class="ghost sm">Cancel</button>
+        <button type="button" id="spawn-submit" class="btn-primary sm">⚡ Launch Worker</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create Namespace Modal -->
+  <div id="ns-create-modal" class="modal-backdrop" hidden>
+    <div class="login-card modal-card" style="max-width:500px">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <h3 style="margin:0;font-size:16px">⊞ Create Namespace</h3>
+        <button type="button" id="nsc-close" class="ghost sm">✕</button>
+      </div>
+      <p class="muted" style="margin:0 0 10px;font-size:12.5px;line-height:1.45">
+        Namespaces isolate and govern memories, <code>#channels</code>, <code>@handles</code>, and guardrails by project, team, or user.
+      </p>
+
+      <div class="row" style="gap:6px;margin-bottom:8px;flex-wrap:wrap">
+        <span class="muted" style="font-size:11.5px">Prefix helper:</span>
+        <button type="button" class="ghost sm" data-ns-pfx="proj:">proj:</button>
+        <button type="button" class="ghost sm" data-ns-pfx="team:">team:</button>
+        <button type="button" class="ghost sm" data-ns-pfx="org:">org:</button>
+        <button type="button" class="ghost sm" data-ns-pfx="user:">user:</button>
+      </div>
+
+      <label class="field-lbl" style="margin-top:0" for="nsc-name">Namespace Name</label>
+      <input id="nsc-name" placeholder="e.g. proj:payments-sync  or  team:eng:api" style="margin-bottom:10px">
+
+      <div class="two-col-grid" style="gap:10px;margin-bottom:10px">
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="nsc-kind">Kind</label>
+          <select id="nsc-kind">
+            <option value="memory">memory (facts &amp; sessions)</option>
+            <option value="knowledge">knowledge (reference corpus)</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-lbl" style="margin-top:0" for="nsc-link-to">Link Related NS <span class="muted">(optional)</span></label>
+          <input id="nsc-link-to" placeholder="e.g. org:standards">
+        </div>
+      </div>
+
+      <label class="field-lbl" style="margin-top:0" for="nsc-desc">Description <span class="muted">(optional)</span></label>
+      <input id="nsc-desc" placeholder="What belongs in this namespace?" style="margin-bottom:10px">
+
+      <label class="field-lbl" style="margin-top:0" for="nsc-bind-repo">Bind Repository or Path <span class="muted">(optional)</span></label>
+      <input id="nsc-bind-repo" placeholder="e.g. github.com/acme/payments-sync" style="margin-bottom:10px">
+
+      <label class="chk" style="margin-bottom:8px"><input type="checkbox" id="nsc-inherit" checked> <span>Inherit constraints &amp; context from parent prefix namespaces</span></label>
+
+      <p id="nsc-err" class="err" style="margin:6px 0 0"></p>
+      <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px">
+        <button type="button" id="nsc-cancel" class="ghost sm">Cancel</button>
+        <button type="button" id="nsc-submit" class="btn-primary sm">Create Namespace</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Move / Merge / Copy Namespaces Modal -->
+  <div id="ns-transfer-modal" class="modal-backdrop" hidden>
+    <div class="login-card modal-card" style="max-width:560px">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <h3 style="margin:0;font-size:16px">⇄ Move, Merge &amp; Copy Namespaces</h3>
+        <button type="button" id="nst-close" class="ghost sm">✕</button>
+      </div>
+      <p class="muted" style="margin:0 0 12px;font-size:12.5px;line-height:1.45">
+        Consolidate or copy memories, <code>#channels</code>, <code>@handles</code>, <code>@inbox</code> threads, repo bindings, and guardrails from a source namespace into a target namespace (existing or new).
+      </p>
+
+      <div class="seg-control conn-tabs" id="nst-mode-tabs" style="margin-bottom:12px">
+        <button type="button" data-tmode="merge" class="active">⇄ Merge &amp; Move into Target</button>
+        <button type="button" data-tmode="copy">⎘ Copy Memories Only (Keep Source)</button>
+      </div>
+
+      <div class="row" style="gap:8px;align-items:flex-end;margin-bottom:10px">
+        <div style="flex:1">
+          <label class="field-lbl" style="margin-top:0" for="nst-src">Source Namespace</label>
+          <select id="nst-src"></select>
+        </div>
+        <button type="button" id="nst-swap" class="ghost sm" title="Swap Source and Target" style="margin-bottom:2px">⇄</button>
+        <div style="flex:1">
+          <label class="field-lbl" style="margin-top:0" for="nst-dst">Target Namespace <span class="muted">(existing or new)</span></label>
+          <input id="nst-dst" list="nst-dst-datalist" placeholder="e.g. proj:payments-sync">
+          <datalist id="nst-dst-datalist"></datalist>
+        </div>
+      </div>
+
+      <label class="field-lbl" style="margin-top:0" for="nst-filter">Topic / Keyword Filter <span class="muted">(leave blank to move/merge entire namespace)</span></label>
+      <input id="nst-filter" placeholder="Optional substring filter (e.g. payments) — blank moves/copies all items" style="margin-bottom:10px">
+
+      <div class="spawn-checks" style="margin-bottom:10px">
+        <label class="chk"><input type="checkbox" id="nst-inc-mem" checked> <span><b>Memories &amp; Knowledge Graph</b> — raw turns, semantic facts, episodes &amp; entities (deduped)</span></label>
+        <label class="chk" id="nst-coord-wrap"><input type="checkbox" id="nst-inc-coord" checked> <span><b>Coordination Mesh</b> — <code>#channels</code>, channel messages, subscriptions, <code>@handles</code> &amp; <code>@inbox</code> DMs</span></label>
+        <label class="chk" id="nst-route-wrap"><input type="checkbox" id="nst-inc-route" checked> <span><b>Routing &amp; Governance</b> — repoint repo/folder bindings, PreToolUse guardrails &amp; grounded links</span></label>
+        <label class="chk" id="nst-del-wrap"><input type="checkbox" id="nst-del-src"> <span><b>Delete source namespace after full merge</b> <span class="muted">(admin only, when no keyword filter is set)</span></span></label>
+      </div>
+
+      <div id="nst-preview-box" class="ver-info-box" style="margin-bottom:8px">
+        <span class="muted">Select a source namespace to preview item counts…</span>
+      </div>
+
+      <p id="nst-err" class="err" style="margin:6px 0 0"></p>
+      <div class="row" style="justify-content:space-between;gap:8px;margin-top:12px">
+        <button type="button" id="nst-preview-btn" class="ghost sm">↻ Preview Counts</button>
+        <div class="row" style="gap:8px">
+          <button type="button" id="nst-cancel" class="ghost sm">Cancel</button>
+          <button type="button" id="nst-submit" class="btn-primary sm">⇄ Merge into Target</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- In-App Toast Banner -->
+  <div id="app-toast" class="app-toast" hidden></div>
+
+  <script src="/admin/app.js?v=19"></script>
+</body>
+</html>

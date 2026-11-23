@@ -94,7 +94,8 @@ memnos setup                  # ← zero external dependencies by default: downl
                               #   Windows x86_64) — no Docker, no brew, no apt
                               # or: memnos setup --external (connect to YOUR existing Postgres)
                               # or: memnos setup --docker   (spin up a pgvector container)
-memnos start                  # background server → open http://127.0.0.1:8900/admin
+memnos start                  # background server on http://127.0.0.1:8900
+memnos app                    # launch native MEMNOS Desktop workspace
 ```
 
 Bare `memnos setup` downloads a pre-built PostgreSQL 16 + pgvector binary into
@@ -109,13 +110,26 @@ Operate it like any daemon: `memnos status` / `stop` / `restart`; `memnos serve`
 the foreground for systemd/launchd/Docker; `memnos upgrade` updates in place;
 `memnos autostart` installs a login service so the server survives reboots.
 
-During setup you're asked for an **optional OpenAI key** (stored AES-256-GCM encrypted,
-never in plaintext): with one, you get 1536-d embeddings + bi-temporal fact extraction;
-without one, memnos runs in free **local 384-d mode** — nothing leaves your machine.
-For extraction without OpenAI, set `MEMNOS_EXTRACT_BASE_URL` to any OpenAI-compatible
-endpoint (Ollama / vLLM / LM Studio) — embeddings stay local-384 and free, only fact
-extraction calls that local LLM. `memnos migrate-embeddings` converts between embedding
-modes losslessly if you change your mind.
+During first-time setup (`memnos setup`), `memnos` asks you in plain English to choose one
+embedding mode before answering any queries (no silent background downloads or half-working
+state):
+
+1. **Use my own OpenAI key** — fastest setup, nothing to download; memory and query text is
+   sent to OpenAI (`text-embedding-3-small`, 1536-d, key stored AES-256-GCM encrypted in Vault).
+2. **Run it on this computer** — private and free (nothing leaves your machine); requires a
+   one-time download of **~1 GB (~930 MB)** for the local multilingual neural embedding
+   (`intfloat/multilingual-e5-small`, 384-d) and cross-encoder reranker
+   (`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`) models (in CI/headless mode, confirm
+   explicitly via `memnos setup embeddings --local --yes` or `memnos models pull --yes`).
+
+For fact extraction without OpenAI, set `MEMNOS_EXTRACT_BASE_URL` to any OpenAI-compatible
+endpoint (Ollama / vLLM / LM Studio). You can switch between OpenAI and local embeddings
+anytime with `memnos migrate-embeddings`, which (like `memnos upgrade` and `memnos backup`)
+automatically takes and verifies a full `0600` PostgreSQL backup (`pg_dump` + `pg_restore --list`)
+before touching data. Embedded PostgreSQL installs (`memnos setup`) bundle `pg_dump` and
+`pg_restore` automatically under `~/.memnos/embedded_pg`; for Docker or external PostgreSQL
+hosts without client tools on `PATH`, install `libpq` / `postgresql-client` (or point
+`MEMNOS_PG_BIN` at your PostgreSQL `bin/` folder).
 
 Extraction depends on who is speaking. Every turn is stored verbatim and stays searchable.
 From your own messages, memnos extracts decisions, preferences, rules, plans and personal
@@ -244,14 +258,16 @@ not a benchmarked copy and a shipped copy.
 
 ---
 
-## Management console
+## Desktop workspace & CLI administration
 
-A zero-build web console ships in the open-source build at **`/admin`**: create
-namespaces, mint/revoke tokens, manage grants, view the dashboard, store secrets. Every
-call is token-authenticated, namespace-ACL'd, and audited.
+Launch the native **MEMNOS Desktop** workspace (`memnos app`) or manage everything from the
+CLI: create namespaces, mint/revoke tokens, manage grants, inspect live `#channels` and
+`@handles`, run **Ask MEMNOS** briefings, and store encrypted secrets. Every call is
+token-authenticated, namespace-ACL'd, and audited.
 
 ```bash
-memnos admin          # bootstrap an admin token → paste into /admin
+memnos admin          # bootstrap or inspect your admin token
+memnos app            # launch the native MEMNOS Desktop app
 ```
 
 ---

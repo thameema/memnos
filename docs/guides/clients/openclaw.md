@@ -66,7 +66,7 @@ openclaw mcp set memnos '{"command":"memnos","args":["mcp"],"env":{"MEMNOS_URL":
   and grant the token accordingly — recall is ACL-clamped server-side, so a token can never
   read a namespace it wasn't granted.
 - Don't put the raw token anywhere except this config — it's an opaque bearer credential
-  (SHA-256 hashed at rest, instantly revocable with `memnos token` / the `/admin` console).
+  (SHA-256 hashed at rest, instantly revocable with `memnos token` or `memnos app`).
 
 ## Multi-server filter
 

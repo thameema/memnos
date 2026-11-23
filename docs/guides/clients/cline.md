@@ -48,4 +48,4 @@ Toggle the server on, then reload the Cline extension. memnos appears with three
 ## Verify
 
 Ask Cline to *"recall what we decided about <topic>"*; it should call `recall`. Confirm
-writes in the console at `http://127.0.0.1:8900/admin`.
+writes in the native desktop workspace (`memnos app`) or via `memnos recall`.

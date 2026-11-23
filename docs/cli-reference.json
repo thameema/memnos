@@ -526,7 +526,7 @@
       }
      ],
      "command": "registry",
-     "example": "memnos registry #arch-review --task 'Review the Rust single-binary PR'",
+     "example": "memnos registry #arch-review --task 'Review the payments-sync PR'",
      "help": "join or create a global cross-namespace topic channel (or list active terminal sessions)"
     },
     {

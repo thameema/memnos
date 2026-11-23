@@ -1,0 +1,125 @@
+name: Cross-OS Binaries & Release Hygiene (macOS, Linux, Windows)
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [master]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-cross-os:
+    name: Build, Wheel, Archive & Hygiene Gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target_label: linux-amd64
+            wheel_tag: manylinux_2_35_x86_64
+            ext: ""
+          - os: macos-latest
+            target_label: darwin-arm64
+            wheel_tag: macosx_11_0_arm64
+            ext: ""
+          - os: windows-latest
+            target_label: windows-amd64
+            wheel_tag: win_amd64
+            ext: ".exe"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run engine unit tests
+        run: cargo test --lib --release
+      - name: Build path-remapped single binary & desktop companion (scripts/build_release.sh)
+        shell: bash
+        run: bash scripts/build_release.sh
+      - name: Package release archive & zero-dep native PyPI wheel into dist/
+        shell: bash
+        run: |
+          rm -rf dist && mkdir -p dist
+          BIN="./target/release/memnos${{ matrix.ext }}"
+          DBIN="./target/release/memnos-desktop${{ matrix.ext }}"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            powershell -NoProfile -Command "Compress-Archive -Path '$BIN','$DBIN' -DestinationPath 'dist/memnos-${{ matrix.target_label }}.zip' -Force"
+          else
+            tar -czf "dist/memnos-${{ matrix.target_label }}.tar.gz" -C ./target/release memnos memnos-desktop
+          fi
+          python scripts/build_native_wheel.py --bin-dir ./target/release --out-dir dist --platform-tag "${{ matrix.wheel_tag }}"
+      - name: Run release hygiene gate on binaries, archive, and native wheel
+        shell: bash
+        run: bash scripts/release_hygiene.sh "./target/release/memnos${{ matrix.ext }}"
+      - name: Run negative + positive archive leak regression suite
+        shell: bash
+        run: python tests/test_release_hygiene_gate.py
+      - name: Smoke test installing zero-dep native wheel into clean venv
+        shell: bash
+        run: |
+          python -m venv wheel-smoke-env
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            ./wheel-smoke-env/Scripts/pip.exe install --no-deps dist/*.whl
+            ./wheel-smoke-env/Scripts/memnos.exe --version
+            ./wheel-smoke-env/Scripts/memnos-desktop.exe --version
+            ./wheel-smoke-env/Scripts/memnos.exe tips
+          else
+            ./wheel-smoke-env/bin/pip install --no-deps dist/*.whl
+            ./wheel-smoke-env/bin/memnos --version
+            ./wheel-smoke-env/bin/memnos-desktop --version
+            ./wheel-smoke-env/bin/memnos tips
+          fi
+
+  publish-release-binaries:
+    name: Upload Verified Release Archive (${{ matrix.target_label }})
+    if: github.event_name == 'release'
+    needs: test-cross-os
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target_label: linux-amd64
+            ext: ""
+          - os: macos-latest
+            target_label: darwin-arm64
+            ext: ""
+          - os: windows-latest
+            target_label: windows-amd64
+            ext: ".exe"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build path-remapped release binaries via scripts/build_release.sh
+        shell: bash
+        run: bash scripts/build_release.sh
+      - name: Package release archive into dist/
+        shell: bash
+        run: |
+          rm -rf dist && mkdir -p dist
+          BIN="./target/release/memnos${{ matrix.ext }}"
+          DBIN="./target/release/memnos-desktop${{ matrix.ext }}"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            powershell -NoProfile -Command "Compress-Archive -Path '$BIN','$DBIN' -DestinationPath 'dist/memnos-${{ matrix.target_label }}.zip' -Force"
+          else
+            tar -czf "dist/memnos-${{ matrix.target_label }}.tar.gz" -C ./target/release memnos memnos-desktop
+          fi
+      - name: Enforce release hygiene gate on binaries & archive
+        shell: bash
+        run: bash scripts/release_hygiene.sh "./target/release/memnos${{ matrix.ext }}"
+      - name: Upload verified release archive to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber

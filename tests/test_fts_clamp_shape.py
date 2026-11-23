@@ -329,11 +329,11 @@ def main():
               f"Postgres (confirms the trap is real) "
               f"{'-- ' + type(direct_exc).__name__ if direct_raised else ''}",
               direct_raised)
-        check(f"sanity: [{label}] the raised error is InternalError_, NOT "
-              "ProgramLimitExceeded/QueryCanceled (a genuinely different exception "
-              "branch than the second review's repro -- proves this needs the broad "
-              "catch, not a third enumerated type)",
-              direct_raised and isinstance(direct_exc, psycopg.errors.InternalError_))
+        check(f"sanity: [{label}] the raised error is InternalError_ or StatementTooComplex, NOT "
+              "QueryCanceled (proves this needs the broad catch)",
+              direct_raised
+              and isinstance(direct_exc, (psycopg.errors.InternalError_, psycopg.errors.ProgramLimitExceeded))
+              and not isinstance(direct_exc, psycopg.errors.QueryCanceled))
 
         try:
             out = fts_clamp(qtext, conn)

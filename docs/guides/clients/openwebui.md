@@ -42,4 +42,4 @@ service to run.)
 
 In a chat, ask: *"recall my notes about project status (namespace user:alice)"*. Open WebUI
 invokes the `recall` tool and the model answers from the returned context — with no LLM at
-query time inside memnos. Confirm writes in the console at `http://127.0.0.1:8900/admin`.
+query time inside memnos. Confirm writes in the native desktop workspace (`memnos app`) or via `memnos recall`.

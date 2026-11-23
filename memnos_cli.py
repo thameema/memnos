@@ -5888,7 +5888,7 @@ EXAMPLES = {
     "fix": "memnos fix --symptom '500 on /recall' --cause 'pool exhausted' --fix 'release conn before rerank' --verify 'pytest tests/test_perf_phases.py'",
     "init": "memnos init --days 90",
     "explain": "memnos explain --limit 3",
-    "registry": "memnos registry #arch-review --task 'Review the Rust single-binary PR'",
+    "registry": "memnos registry #arch-review --task 'Review the payments-sync PR'",
     "watch": "memnos watch --timeout 300",
     "tips": "memnos tips",
     "doctor": "memnos doctor --fix",
@@ -6564,7 +6564,7 @@ memnos recall "what did the team decide about retries?"
 Admin commands (`principal`, `token`, `grant`, `namespace`, `secret`, `stats`,
 `health`) connect to Postgres directly via `MEMNOS_DSN` and are for the operator
 of the server, not remote clients — remote administration goes through the
-`/admin` console or the [REST API](api.md).
+MEMNOS Desktop app (`memnos app`) or the [REST API](api.md).
 """
 
 
@@ -6653,7 +6653,7 @@ def _render_cli_md(groups):
 
 
 def cmd_docs_gen(args, cfg):
-    """(hidden) Regenerate docs/cli.md + ui/cli-reference.json from the argparse tree.
+    """(hidden) Regenerate docs/cli.md + docs/cli-reference.json from the argparse tree.
     --check: exit 1 if the committed files are stale (CI staleness gate)."""
     root = os.path.dirname(os.path.abspath(__file__))
     groups = _docs_payload()
@@ -6661,7 +6661,7 @@ def cmd_docs_gen(args, cfg):
     js = json.dumps({"_generated": "memnos docs-gen — do not edit", "groups": groups},
                     indent=1, sort_keys=True) + "\n"
     targets = [(os.path.join(root, "docs", "cli.md"), md),
-               (os.path.join(root, "ui", "cli-reference.json"), js)]
+               (os.path.join(root, "docs", "cli-reference.json"), js)]
     if getattr(args, "check", False):
         stale = []
         for path, want in targets:

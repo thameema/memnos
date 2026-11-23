@@ -105,7 +105,7 @@ After auditing the codebase ([`core/service.py`](../core/service.py), [`core/sto
     - The query, classified `query_intent` (`verbatim` | `list` | `broad` | `neutral`), and latency breakdown (`embed_ms`, `sql_ms`, `rerank_ms`).
     - Which **Pinned Constraints** were injected.
     - Which **Facts & Turns** made the cut, their cross-encoder scores, their provenance (`by <author>`, `turn_id`), and which candidates were **demoted as superseded** or **collapsed as duplicates (`dup_count`)**.
-  - Running `memnos explain` (or opening the `/admin` **Recall Inspector** tab) prints a crystal-clear table of the last prompt's memory injection in `<50ms`:
+  - Running `memnos explain` (or opening `memnos app`) prints a crystal-clear table of the last prompt's memory injection in `<50ms`:
     ```text
     $ memnos explain
     Last Recall (14s ago) · ns=proj:memnos · intent=broad · 118ms (embed 12ms, sql 31ms, rerank 75ms)

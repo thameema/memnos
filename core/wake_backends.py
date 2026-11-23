@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 
 
 class WakeBackend:
@@ -32,29 +33,63 @@ class WakeBackend:
 
 class OrcaBackend(WakeBackend):
     def __init__(self, orca_bin="orca"):
-        self.orca_bin = orca_bin
+        self.orca_bin = shutil.which(orca_bin) or ("/usr/local/bin/orca" if os.path.isfile("/usr/local/bin/orca") else orca_bin)
 
-    def is_idle(self, session_metadata):
-        term = session_metadata.get("orca_terminal_id")
-        if not term:
-            return None
+    def _list_terminals(self):
         try:
             out = subprocess.run([self.orca_bin, "terminal", "list", "--json"],
                                   capture_output=True, text=True, timeout=5, check=True)
-            terms = json.loads(out.stdout or "[]")
+            parsed = json.loads(out.stdout or "{}")
+            if isinstance(parsed, list):
+                return parsed
+            return ((parsed.get("result") or {}).get("terminals")) or []
         except Exception:
+            return []
+
+    def _match_terminal(self, session_metadata):
+        terms = self._list_terminals()
+        term = session_metadata.get("orca_terminal_id")
+        if term:
+            for t in terms:
+                if t.get("handle") == term or t.get("id") == term or t.get("terminal_id") == term:
+                    return t
+        cwd = session_metadata.get("cwd") or ""
+        harness = session_metadata.get("harness") or ""
+        expected = {"claude-code": "claude", "claude": "claude", "antigravity": "antigravity", "agy": "antigravity"}.get(harness, harness)
+        matches = [
+            t for t in terms
+            if cwd and t.get("worktreePath") == cwd and expected and t.get("agentIdentity") == expected
+        ]
+        return matches[-1] if matches else None
+
+    def is_idle(self, session_metadata):
+        t = self._match_terminal(session_metadata)
+        if not t:
             return None
-        for t in terms:
-            if t.get("id") == term or t.get("terminal_id") == term:
-                return (t.get("state") or t.get("status")) in ("waiting", "tui-idle", "idle")
-        return None
+        if not t.get("connected", True) or not t.get("writable", True):
+            return False
+        st = t.get("state") or t.get("status")
+        if st:
+            return st in ("waiting", "tui-idle", "idle")
+        last_out = t.get("lastOutputAt") or 0
+        if last_out and (time.time() * 1000.0 - float(last_out)) < 4500:
+            return False
+        preview = t.get("preview") or ""
+        tail = "\n".join(preview.splitlines()[-3:])
+        low = tail.lower()
+        if "running" in low or "esc to interrupt" in low or "esc to cancel" in low:
+            return False
+        if any(ch in tail for ch in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣽⣾⣷⣯⣟⡿⢿⣻"):
+            return False
+        return True
 
     def send_doorbell(self, session_metadata, text):
-        term = session_metadata.get("orca_terminal_id")
-        if not term:
+        t = self._match_terminal(session_metadata)
+        handle = (t or {}).get("handle") or (t or {}).get("id") or session_metadata.get("orca_terminal_id")
+        if not handle:
             return False
         try:
-            subprocess.run([self.orca_bin, "terminal", "send", "--terminal", term,
+            subprocess.run([self.orca_bin, "terminal", "send", "--terminal", handle,
                              "--text", text, "--enter", "--wait-submit", "5", "--json"],
                             capture_output=True, text=True, timeout=10, check=True)
             return True
@@ -136,8 +171,7 @@ def select_backend(name=None):
         if cls is None:
             raise ValueError(f"unknown wake backend '{name}' (choices: {', '.join(_BACKENDS)})")
         return cls()
-    # Never auto-select OrcaBackend unless explicitly requested via --backend orca
-    for cls in (TmuxBackend, NoopBackend):
+    for cls in (OrcaBackend, TmuxBackend, NoopBackend):
         if cls.available():
             return cls()
     return NoopBackend()

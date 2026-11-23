@@ -26,7 +26,7 @@ memnos recall "what did the team decide about retries?"
 Admin commands (`principal`, `token`, `grant`, `namespace`, `secret`, `stats`,
 `health`) connect to Postgres directly via `MEMNOS_DSN` and are for the operator
 of the server, not remote clients — remote administration goes through the
-`/admin` console or the [REST API](api.md).
+MEMNOS Desktop app (`memnos app`) or the [REST API](api.md).
 
 
 ## Memory (heroes)
@@ -279,7 +279,7 @@ join or create a global cross-namespace topic channel (or list active terminal s
 | `--token` | bearer token |
 
 ```bash
-memnos registry #arch-review --task 'Review the Rust single-binary PR'
+memnos registry #arch-review --task 'Review the payments-sync PR'
 ```
 
 ### `memnos watch`

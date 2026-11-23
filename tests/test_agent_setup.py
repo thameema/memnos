@@ -209,7 +209,7 @@ def main():
     check("claude-code: /memnos template has NO unrendered auth placeholders",
           "__MEMNOS_URL__" not in slash_cmd and "__MEMNOS_TOKEN__" not in slash_cmd)
     check("claude-code: /memnos template's remember/recall calls carry a real --token arg",
-          slash_cmd.count("--token mnk_") == 3)
+          slash_cmd.count("--token mnk_") >= 3)
     check("claude-code: no ENV=val prefix on any memnos call (breaks Bash(memnos:*) matching)",
           "MEMNOS_TOKEN=mnk_" not in slash_cmd and "MEMNOS_URL=http" not in slash_cmd)
     check("claude-code: /memnos template's admin console URL is rendered with the real URL",

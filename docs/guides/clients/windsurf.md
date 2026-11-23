@@ -60,4 +60,4 @@ Click **Refresh** in the MCP panel. memnos appears with three tools:
 ## Verify
 
 Ask Cascade to *"recall what I decided about <topic>"*; it should call `recall`. Confirm
-writes in the console at `http://127.0.0.1:8900/admin`.
+writes in the native desktop workspace (`memnos app`) or via `memnos recall`.

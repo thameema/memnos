@@ -43,19 +43,36 @@ def check(name, cond):
     PASS += bool(cond); FAIL += (not cond)
 
 
+def _cli_cmd():
+    cli_bin = os.environ.get("MEMNOS_CLI_BIN")
+    if cli_bin:
+        return [cli_bin]
+    py_cli = os.path.join(ROOT, "memnos_cli.py")
+    if os.path.isfile(py_cli):
+        return [PY, py_cli]
+    return [os.path.join(ROOT, "target", "release", "memnos")]
+
+
 def run_hook(ns, stdin_obj, cache_dir):
     env = {**os.environ, "MEMNOS_DSN": DSN, "MEMNOS_NS": ns, "HOME": cache_dir}
-    r = subprocess.run([PY, os.path.join(ROOT, "memnos_cli.py"), "hook", "enforce"],
+    r = subprocess.run([*_cli_cmd(), "hook", "enforce"],
                        input=json.dumps(stdin_obj), capture_output=True, text=True,
                        timeout=30, env=env)
     return r.returncode, r.stdout.strip(), r.stderr
 
 
 def refresh_cache(ns, home):
-    """Drive _refresh_enforce_cache the same way `hook status` (SessionStart) would, but
-    directly, so cache-population isn't entangled with the rest of the status hook's
-    behavior (server health, offline queue, nudges) in this test. Returns the rule count
-    _refresh_enforce_cache reports (issue #32: `hook status` surfaces this)."""
+    """Drive enforce cache refresh via `hook status` (compiled CLI) or `_refresh_enforce_cache`."""
+    cli = _cli_cmd()
+    if len(cli) == 1:
+        env = {**os.environ, "MEMNOS_DSN": DSN, "MEMNOS_NS": ns, "MEMNOS_URL": "http://127.0.0.1:9", "HOME": home}
+        r = subprocess.run([*cli, "hook", "status"], input=json.dumps({"source": "startup"}),
+                           capture_output=True, text=True, timeout=30, env=env)
+        assert r.returncode == 0, r.stdout + r.stderr
+        safe = "".join(c if (c.isalnum() or c in "_.-") else "_" for c in ns)
+        cpath = os.path.join(home, ".memnos", "enforce_cache", f"{safe}.json")
+        with open(cpath, encoding="utf-8") as f:
+            return len(json.load(f).get("rules", []))
     env = {**os.environ, "MEMNOS_DSN": DSN, "HOME": home}
     code = (
         "import sys; sys.path.insert(0, %r)\n"

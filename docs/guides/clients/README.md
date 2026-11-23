@@ -1,7 +1,7 @@
 # memnos Client Setup Guides
 
 All guides use the single-package install: `uv tool install memnos` → `memnos setup` →
-`memnos start` (server on `http://127.0.0.1:8900`, console at `/admin`).
+`memnos start` (server on `http://127.0.0.1:8900`, native desktop workspace via `memnos app`).
 
 ## One-command setup per agent
 

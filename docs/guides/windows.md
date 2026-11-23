@@ -39,8 +39,8 @@ on first run and never touches any Postgres you already have installed. `memnos 
 auto-starts the embedded database on every boot. Want your own Postgres instead? Pass
 `--external` (interactive wizard) or `--dsn postgresql://...` — see the native path below.
 
-Then open the console at **http://127.0.0.1:8900/admin** and paste the admin token that
-setup printed. Continue with the normal flow in [`QUICKSTART.md`](../../QUICKSTART.md)
+Then launch the native desktop workspace with **`memnos app`** (or bootstrap/inspect your
+admin token anytime via `memnos admin`). Continue with the normal flow in [`QUICKSTART.md`](../../QUICKSTART.md)
 (namespaces, tokens, `remember`/`recall`, agent wiring).
 
 > **PATH gotchas:** both the uv installer and `uv tool install` place executables in

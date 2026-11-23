@@ -12,6 +12,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>memnos — a persistent memory for AI agents | self-hosted, open source</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='8' fill='url(%23g)'/%3E%3Cpath d='M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8' stroke='%23fff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='2' y1='2' x2='30' y2='30' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='%237C5CFF'/%3E%3Cstop offset='.52' stop-color='%23B832E5'/%3E%3Cstop offset='1' stop-color='%23EC4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E" />
   <meta name="description" content="Your AI forgets everything between sessions. memnos fixes that — a real, persistent memory for Claude, Cursor, and any AI agent, so it remembers who you are and what you told it. Self-hosted on your own PostgreSQL, fully open source, no LLM required to recall. Works just as well for one person or a whole engineering team sharing one memory." />
   <meta name="keywords" content="persistent memory AI agents, LLM memory, MCP server, Claude Code memory, Cursor AI memory, agent context persistence, memory store AI, RAG memory, memnos, AI agent SDK, shared agent memory, team memory for AI, Codex memory, Claude Code memory, multi-agent memory, LangChain memory backend, self-hosted AI memory, governed AI memory, cross-harness agent handoff, multi-agent task handoff, Tommy orchestrator, agent-to-agent handoff" />
   <link rel="canonical" href="https://memnos.net/" />
@@ -158,16 +159,7 @@
 <nav class="fixed top-0 left-0 right-0 z-50">
   <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
     <a href="index.html" class="flex items-center gap-2.5">
-      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.6"/>
-        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gnav)" opacity="0.8"/>
-        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gnav)"/>
-        <defs>
-          <linearGradient id="gnav" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse">
-            <stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/>
-          </linearGradient>
-        </defs>
-      </svg>
+      <svg width="28" height="28" viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="29" height="29" rx="8" fill="url(#mBrandDoc1)"/><path d="M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="mBrandDoc1" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse"><stop stop-color="#7C5CFF"/><stop offset="0.52" stop-color="#B832E5"/><stop offset="1" stop-color="#EC4899"/></linearGradient></defs></svg>
       <span class="text-white font-semibold text-lg tracking-tight">memnos</span>
     </a>
     <!-- Desktop links -->
@@ -618,12 +610,7 @@
       <svg class="w-6 h-6 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
       <div class="gradient-border">
         <div class="gradient-border-inner px-10 py-4 flex items-center gap-3">
-          <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
-            <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gsolve)" opacity="0.6"/>
-            <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gsolve)" opacity="0.8"/>
-            <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gsolve)"/>
-            <defs><linearGradient id="gsolve" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/></linearGradient></defs>
-          </svg>
+          <svg width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="29" height="29" rx="8" fill="url(#mBrandDoc2)"/><path d="M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="mBrandDoc2" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse"><stop stop-color="#7C5CFF"/><stop offset="0.52" stop-color="#B832E5"/><stop offset="1" stop-color="#EC4899"/></linearGradient></defs></svg>
           <span class="text-white font-semibold text-lg">memnos fixes all six.</span>
         </div>
       </div>
@@ -1006,8 +993,8 @@
       </div>
       <div class="code-block px-4 py-2 text-xs flex items-center gap-2">
         <span class="text-gray-500">$</span>
-        <span class="text-green-300">memnos start</span>
-        <span class="text-gray-600 ml-2 text-xs">→ http://127.0.0.1:8900/admin</span>
+        <span class="text-green-300">memnos start &amp;&amp; memnos app</span>
+        <span class="text-gray-600 ml-2 text-xs">→ http://127.0.0.1:8900 + Desktop Workspace</span>
       </div>
     </div>
 
@@ -1385,12 +1372,7 @@ curl -s -H <span class="token-str">"Authorization: Bearer $MEMNOS_TOKEN"</span> 
 <footer class="relative z-10 border-t border-gray-800/60 py-12">
   <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6">
     <div class="flex items-center gap-2.5">
-      <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
-        <rect x="4" y="17" width="20" height="5" rx="2.5" fill="url(#gfoot)" opacity="0.6"/>
-        <rect x="4" y="11" width="20" height="5" rx="2.5" fill="url(#gfoot)" opacity="0.8"/>
-        <rect x="4" y="5" width="20" height="5" rx="2.5" fill="url(#gfoot)"/>
-        <defs><linearGradient id="gfoot" x1="4" y1="5" x2="24" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#a78bfa"/><stop offset="1" stop-color="#60a5fa"/></linearGradient></defs>
-      </svg>
+      <svg width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="1.5" y="1.5" width="29" height="29" rx="8" fill="url(#mBrandDoc3)"/><path d="M8.8 22.8V9.2L16 17.8L23.2 9.2V22.8" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="mBrandDoc3" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse"><stop stop-color="#7C5CFF"/><stop offset="0.52" stop-color="#B832E5"/><stop offset="1" stop-color="#EC4899"/></linearGradient></defs></svg>
       <span class="text-white font-semibold">memnos</span>
       <span class="text-gray-600 text-sm ml-2">Memory for AI agents</span>
     </div>

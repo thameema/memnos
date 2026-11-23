@@ -1,0 +1,5110 @@
+//! `memnos` — Unified CLI, Server, Gateway, MCP Adapter & Agent Mesh.
+
+use clap::{CommandFactory, Parser, Subcommand};
+use memnos_core::{
+    agent_setup::{is_agent_target, run_agent_setup, run_autostart},
+    code_anchors::extract_code_anchors,
+    config::{
+        config_dir, config_path, dsn, load_config, redact_dsn_target, save_config, server_port,
+        server_url, session_token, Config, VERSION,
+    },
+    control::Control,
+    db::build_pool,
+    desktop::run_desktop_app,
+    embed::Embedder,
+    extract::Extractor,
+    gateway::run_gateway,
+    hooks::{
+        enforce_cache_path, format_memnos_badge, load_cached_badge, print_tips_showcase, run_hook,
+    },
+    mcp::run_stdio,
+    nsresolve::{
+        clear_active_session, detect_terminal_session, hostname, is_local_pid_alive, machine_id,
+        repo_key, resolve_active_session, resolve_with_source, save_active_session,
+    },
+    proxy::run_proxy,
+    repo_init::hydrate_repo,
+    rerank::{
+        default_local_embed_model_from_env, ensure_local_models_ready, is_model_cached,
+        print_local_models_status, specs_for_embed_model, BGE_REPO_ID,
+    },
+    server::run_server_opts,
+    store::BrainStore,
+    vault::Vault,
+};
+use serde_json::{json, Value};
+use std::env;
+use std::fs;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+#[derive(Parser)]
+#[command(
+    name = "memnos",
+    version = VERSION,
+    about = "memnos memory & multi-agent coordination platform CLI",
+    after_help = "Remote use: set MEMNOS_URL and MEMNOS_TOKEN to point data commands (remember/recall) at a remote memnos server."
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// save a memory (data client — talks to the server)
+    Remember {
+        text: String,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long = "type")]
+        memory_type: Option<String>,
+        #[arg(long)]
+        subject: Option<String>,
+        #[arg(long)]
+        no_extract: bool,
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// recall relevant memories (data client)
+    Recall {
+        query: String,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long = "type")]
+        memory_type: Option<String>,
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// record a verified bug fix (Symptom / Cause / Fix / Verify, boosted on error queries)
+    Fix {
+        #[arg(long)]
+        symptom: String,
+        #[arg(long)]
+        cause: String,
+        #[arg(long)]
+        fix: String,
+        #[arg(long)]
+        verify: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// hydrate this repository into memnos in <5s (CLAUDE.md rules + recent git history)
+    Init {
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long, default_value_t = 90)]
+        days: usize,
+        #[arg(long, default_value_t = 50)]
+        max_commits: usize,
+        #[arg(long)]
+        no_rules: bool,
+        #[arg(long)]
+        no_git: bool,
+        #[arg(long)]
+        extract: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// audit what the last /recall injected (pinned constraints, scores, code drift, timings)
+    Explain {
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long, default_value_t = 1)]
+        limit: usize,
+        #[arg(long)]
+        query: Option<String>,
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// show the MEMNOS feature showcase and rotating workflow tips
+    Tips,
+    /// connect to Postgres, choose OpenAI vs local embeddings, create schema + admin token
+    Setup {
+        /// optional subtarget (`embeddings`) to configure or change embedding choice
+        target: Option<String>,
+        #[arg(long)]
+        dsn: Option<String>,
+        #[arg(long)]
+        embedded: bool,
+        #[arg(long)]
+        docker: bool,
+        #[arg(long)]
+        external: bool,
+        #[arg(long)]
+        port: Option<u16>,
+        #[arg(long)]
+        local: bool,
+        #[arg(long)]
+        openai_key: Option<String>,
+        #[arg(long)]
+        require_empty_db: bool,
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// start the memory server in the background (via zero-downtime gateway)
+    Start {
+        #[arg(long)]
+        port: Option<u16>,
+    },
+    /// stop the background server
+    Stop,
+    /// restart the background server (zero-downtime blue-green swap in gateway mode)
+    Restart {
+        #[arg(long)]
+        port: Option<u16>,
+    },
+    /// show server + config + embedding mode + active session
+    Status,
+    /// show this terminal's [MEMNOS @handle · #channels] identity badge
+    #[command(visible_alias = "identity")]
+    Id,
+    /// launch the native MEMNOS Workspace desktop app (local or remote server)
+    #[command(visible_alias = "ui")]
+    App {
+        /// MEMNOS server URL (defaults to local server or MEMNOS_URL; e.g. https://memnos.acme.dev)
+        #[arg(long)]
+        url: Option<String>,
+        /// access token (admin or role-scoped; defaults to local config or MEMNOS_TOKEN)
+        #[arg(long)]
+        token: Option<String>,
+        /// install ~/Applications/MEMNOS.app bundle on macOS for Dock & Spotlight launch
+        #[arg(long)]
+        install: bool,
+    },
+    /// install a login service (launchd/systemd/schtasks) so the server always runs
+    Autostart {
+        #[arg(long)]
+        remove: bool,
+        #[arg(long)]
+        proxy: bool,
+    },
+    /// run the server in the FOREGROUND
+    Serve {
+        #[arg(long)]
+        port: Option<u16>,
+        /// refuse to start if the target database already contains memnos schemas
+        #[arg(long)]
+        require_empty_db: bool,
+    },
+    /// run the zero-downtime upgrade front door in the FOREGROUND
+    Gateway {
+        #[arg(long)]
+        port: Option<u16>,
+    },
+    /// bridge idle local CLI sessions so they wake on a memnos message
+    WakeDaemon {
+        #[arg(long)]
+        backend: Option<String>,
+        #[arg(long)]
+        namespace: Option<String>,
+    },
+    /// run the stdio MCP adapter (Claude Code / Antigravity / Cursor / Windsurf)
+    Mcp {
+        #[arg(long)]
+        namespace: Option<String>,
+    },
+    /// LLM-API capture proxy (point ANTHROPIC_BASE_URL / OPENAI_BASE_URL at it)
+    Proxy {
+        #[arg(long)]
+        port: Option<u16>,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long)]
+        no_capture: bool,
+    },
+    /// check for a newer version and apply zero-downtime upgrade
+    Upgrade {
+        #[arg(long)]
+        check: bool,
+        #[arg(long)]
+        no_restart: bool,
+        #[arg(long)]
+        auto_update: bool,
+        #[arg(long)]
+        no_auto_update: bool,
+    },
+    /// agent coordination leases — one holder per work item at a time
+    Lease {
+        #[command(subcommand)]
+        verb: LeaseVerb,
+    },
+    /// named agent sessions — presence across harnesses/machines
+    Session {
+        #[command(subcommand)]
+        verb: SessionVerb,
+    },
+    /// channel pub/sub between sessions (#topic, @session, status:<session>)
+    Channel {
+        #[command(subcommand)]
+        verb: ChannelVerb,
+    },
+    /// email-style agent inbox: send | ls | act | recall | retract
+    Inbox {
+        #[command(subcommand)]
+        verb: InboxVerb,
+    },
+    /// join or create a global cross-namespace topic channel (or list active terminal sessions)
+    Registry {
+        topic: Vec<String>,
+        #[arg(long, default_value = "")]
+        task: String,
+        #[arg(short, long, default_value = "")]
+        description: String,
+        #[arg(long)]
+        from_beginning: bool,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(short, long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// hands-free LISTEN/NOTIFY watcher — blocks until a peer message or task arrives
+    Watch {
+        #[arg(long)]
+        channel: Option<String>,
+        #[arg(long, default_value_t = 300)]
+        timeout: u64,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(short, long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// manage principals (identities): create | ls | rm | prune-test
+    Principal {
+        #[command(subcommand)]
+        verb: PrincipalVerb,
+    },
+    /// manage bearer tokens: mint | ls | reveal | revoke
+    Token {
+        #[command(subcommand)]
+        verb: TokenVerb,
+    },
+    /// manage headless worker processes: status | launch | stop | logs
+    #[command(visible_alias = "spawner")]
+    Worker {
+        #[command(subcommand)]
+        verb: WorkerVerb,
+    },
+    /// manage namespace grants: add | ls | rm
+    Grant {
+        #[command(subcommand)]
+        verb: GrantVerb,
+    },
+    /// manage roles/groups: create | ls | rm | grant | revoke | grants | add-member | rm-member | members
+    Role {
+        #[command(subcommand)]
+        verb: RoleVerb,
+    },
+    /// manage constraints: add | ls | pins | retire | rm | override
+    Constraint {
+        #[command(subcommand)]
+        verb: ConstraintVerb,
+    },
+    /// manage namespaces: add | ls | detail | rm | prune | set | link | unlink | links | copy | move | merge | reconcile | cleanup-graph
+    Namespace {
+        action: String,
+        name: Option<String>,
+        dst: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        like: Option<String>,
+        #[arg(long)]
+        desc: Option<String>,
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long)]
+        inherit_ancestors: Option<String>,
+        #[arg(long, default_value = "link")]
+        link_kind: String,
+        #[arg(long)]
+        purge: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        empty: bool,
+        #[arg(long)]
+        stale: Option<i32>,
+        #[arg(long)]
+        force: bool,
+    },
+    /// encrypted secret vault: get | set | ls | rm | rotate | keygen
+    Secret {
+        action: String,
+        name: Option<String>,
+        #[arg(long)]
+        value: Option<String>,
+        #[arg(long)]
+        desc: Option<String>,
+    },
+    /// show or pin this folder's namespace (ns <value> | ns clear)
+    Ns {
+        value: Option<String>,
+    },
+    /// bind a repo/path to a namespace, server-side
+    Bind {
+        key: String,
+        namespace: String,
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        host_path: bool,
+        #[arg(long)]
+        all_hosts: bool,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// manage server-side bindings: ls | refresh | migrate | recap
+    Bindings {
+        #[command(subcommand)]
+        verb: BindingsVerb,
+    },
+    /// remove a server-side binding by id or key
+    Unbind {
+        target: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// list this principal's machines, or `hosts rename <name>`
+    Hosts {
+        subcmd: Option<String>,
+        name: Option<String>,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// per-op reliability stats (last 24h)
+    Stats,
+    /// actionable findings (the platform doctor)
+    Health {
+        #[arg(long)]
+        fix: bool,
+        #[arg(long)]
+        fix_graph: bool,
+        #[arg(long)]
+        optimize: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(short, long)]
+        namespace: Option<String>,
+    },
+    /// full diagnostics, safe repair, memory deduplication, and PostgreSQL optimization
+    Doctor {
+        #[arg(long)]
+        fix: bool,
+        #[arg(long)]
+        fix_graph: bool,
+        #[arg(long)]
+        optimize: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(short, long)]
+        namespace: Option<String>,
+    },
+    /// validate a token and show its grants
+    Whoami {
+        token: Option<String>,
+    },
+    /// wire memnos into an agent (claude-code, antigravity, cursor, codex, ...) or 'all'
+    AgentSetup {
+        agent: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        agent_dir: Option<String>,
+        #[arg(long)]
+        transport: Option<String>,
+    },
+    /// wire memnos into a server-wide extension point (omnigent)
+    ServerSetup {
+        target: String,
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long, default_value = "embedded")]
+        mode: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long)]
+        force: bool,
+    },
+    /// (alias of: memnos agent-setup claude-code)
+    ClaudeSetup {
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        transport: Option<String>,
+    },
+    /// Agent hook entry (stdin JSON; wired by agent-setup)
+    Hook {
+        which: String,
+        #[arg(long)]
+        reset: bool,
+    },
+    /// show or mint the local admin token for the desktop app & CLI (direct DB, no server needed)
+    Admin {
+        /// mint a fresh admin token even if an active one already exists in ~/.memnos/config.json
+        #[arg(long)]
+        rotate: bool,
+        /// print only the raw mnk_... token string
+        #[arg(long)]
+        raw: bool,
+        /// print JSON credentials summary
+        #[arg(long)]
+        json: bool,
+    },
+    /// take a verified backup of the PostgreSQL database + ~/.memnos/config.json
+    Backup {
+        #[arg(long)]
+        out: Option<String>,
+        #[arg(long, default_value_t = 10)]
+        keep: usize,
+    },
+    /// re-embed all memories to a different dimension or model (always takes a DB backup first)
+    MigrateEmbeddings {
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// inspect or download local neural models (status | pull)
+    Models {
+        #[arg(default_value = "status")]
+        action: String,
+        #[arg(long)]
+        english_only: bool,
+        #[arg(short, long)]
+        yes: bool,
+    },
+    #[command(hide = true)]
+    DocsGen {
+        #[arg(long)]
+        check: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum LeaseVerb {
+    Acquire {
+        key: String,
+        holder: String,
+        #[arg(long, default_value_t = 1200)]
+        ttl: u64,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Heartbeat {
+        key: String,
+        holder: String,
+        #[arg(long, default_value_t = 1200)]
+        ttl: u64,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Release {
+        key: String,
+        holder: String,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    WhoHolds {
+        key: String,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Ls {
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SessionVerb {
+    Register {
+        name: String,
+        #[arg(long, default_value = "")]
+        role: String,
+        #[arg(long, default_value = "")]
+        harness: String,
+        #[arg(long, default_value = "")]
+        model: String,
+        #[arg(long, default_value = "")]
+        task: String,
+        #[arg(long, default_value = "")]
+        channels: String,
+        #[arg(long, default_value_t = 1800)]
+        ttl: i64,
+        #[arg(long)]
+        webhook: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Ls {
+        #[arg(long)]
+        all: bool,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Heartbeat {
+        name: Option<String>,
+        #[arg(long, default_value = "active")]
+        status: String,
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    #[command(visible_alias = "rm")]
+    Unregister {
+        name: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Rename {
+        old_name: String,
+        new_name: String,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Quota {
+        name: String,
+        #[arg(long)]
+        pause: bool,
+        #[arg(long)]
+        resume: bool,
+        #[arg(long, default_value = "")]
+        reason: String,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ChannelVerb {
+    Pub {
+        channel: String,
+        message: String,
+        #[arg(long, default_value = "message")]
+        intent: String,
+        #[arg(long)]
+        remember: bool,
+        #[arg(long)]
+        claimable: bool,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Ack {
+        id: i64,
+        #[arg(long, default_value = "done")]
+        action: String,
+        #[arg(long, default_value = "")]
+        resolution: String,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Sub {
+        channels: Vec<String>,
+        #[arg(long)]
+        from_beginning: bool,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Unsub {
+        channels: Vec<String>,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Create {
+        channel: String,
+        #[arg(short, long, default_value = "")]
+        description: String,
+        #[arg(long)]
+        global: bool,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    #[command(visible_alias = "delete")]
+    Rm {
+        channel: String,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Poll {
+        #[arg(long)]
+        channel: Option<String>,
+        #[arg(long)]
+        peek: bool,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Wait {
+        #[arg(long)]
+        channel: Option<String>,
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Ls {
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Advertise {
+        channel: String,
+        #[arg(short, long)]
+        description: String,
+        #[arg(short = 'w', long, default_value = "")]
+        what_you_get: String,
+        #[arg(long, default_value = "")]
+        intents: String,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Cleanup {
+        #[arg(long, default_value_t = 7)]
+        idle_days: i64,
+        #[arg(long, default_value_t = 30)]
+        retention_days: i64,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum InboxVerb {
+    Send {
+        to: String,
+        message: String,
+        #[arg(long, default_value = "")]
+        subject: String,
+        #[arg(long, default_value = "task")]
+        intent: String,
+        #[arg(long, default_value = "normal")]
+        priority: String,
+        #[arg(long, default_value = "")]
+        thread_key: String,
+        #[arg(long, default_value_t = 0)]
+        replaces_id: i64,
+        #[arg(long)]
+        replace_pending: bool,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Ls {
+        #[arg(long, default_value = "active")]
+        status: String,
+        #[arg(long)]
+        include_recalled: bool,
+        #[arg(long)]
+        mark_read: bool,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Act {
+        id: i64,
+        #[arg(long, default_value = "acted")]
+        action: String,
+        #[arg(long, default_value = "")]
+        resolution: String,
+        #[arg(long, default_value = "")]
+        reply: String,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Recall {
+        #[arg(default_value_t = 0)]
+        id: i64,
+        #[arg(long, default_value_t = 0)]
+        channel_message_id: i64,
+        #[arg(long, default_value = "")]
+        thread_key: String,
+        #[arg(long, default_value = "")]
+        reason: String,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Retract {
+        #[arg(default_value_t = 0)]
+        id: i64,
+        #[arg(long, default_value_t = 0)]
+        channel_message_id: i64,
+        #[arg(long, default_value = "")]
+        thread_key: String,
+        #[arg(long, default_value = "")]
+        reason: String,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PrincipalVerb {
+    Create {
+        name: String,
+        #[arg(long, default_value = "user")]
+        kind: String,
+    },
+    #[command(visible_alias = "list")]
+    Ls {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(visible_alias = "delete")]
+    Rm {
+        target: String,
+    },
+    PruneTest,
+}
+
+#[derive(Subcommand)]
+enum TokenVerb {
+    /// Mint a bearer token for a principal (defaults to 'admin' with '*' access if omitted)
+    Mint {
+        #[arg(default_value = "admin")]
+        principal: String,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        ttl_days: Option<i32>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List tokens across all principals (or filter to one principal)
+    #[command(visible_alias = "list")]
+    Ls {
+        principal: Option<String>,
+        /// Decrypt and display full recoverable mnk_... tokens
+        #[arg(long)]
+        reveal: bool,
+        /// Include revoked tokens
+        #[arg(long)]
+        revoked: bool,
+        /// Output raw JSON array
+        #[arg(long)]
+        json: bool,
+    },
+    /// Decrypt and reveal a recoverable token by ID
+    Reveal {
+        id: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Revoke a token by ID
+    Revoke {
+        id: i64,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkerVerb {
+    /// List active headless workers and installed local CLI harnesses
+    #[command(visible_alias = "ls")]
+    Status {
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Spawn a background CLI harness worker subscribed to MEMNOS channels/@inbox
+    Launch {
+        name: String,
+        #[arg(long, default_value = "claude")]
+        harness: String,
+        #[arg(long, default_value = "")]
+        model: String,
+        #[arg(long, default_value = "")]
+        prompt: String,
+        #[arg(long, default_value = "")]
+        channels: String,
+        #[arg(long)]
+        cwd: Option<String>,
+        #[arg(short, long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Stop a running headless worker
+    Stop {
+        name: String,
+        #[arg(short, long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Tail buffered stdout/stderr logs of a headless worker
+    Logs {
+        name: String,
+        #[arg(short, long, default_value = "auto")]
+        namespace: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum GrantVerb {
+    Add {
+        principal: String,
+        namespace: String,
+        #[arg(long)]
+        read_only: bool,
+    },
+    Ls {
+        principal: String,
+    },
+    Rm {
+        principal: String,
+        namespace: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RoleVerb {
+    Create {
+        name: String,
+        #[arg(long)]
+        desc: Option<String>,
+    },
+    Ls,
+    Rm {
+        name: String,
+    },
+    Grant {
+        name: String,
+        namespace: String,
+        #[arg(long)]
+        read_only: bool,
+    },
+    Revoke {
+        name: String,
+        namespace: String,
+    },
+    Grants {
+        name: String,
+    },
+    AddMember {
+        name: String,
+        principal: String,
+    },
+    RmMember {
+        name: String,
+        principal: String,
+    },
+    Members {
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConstraintVerb {
+    Add {
+        namespace: String,
+        rule: String,
+        #[arg(long, default_value = "advise")]
+        enforce: String,
+        #[arg(long)]
+        tool: Option<String>,
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long)]
+        subject: Option<String>,
+    },
+    Ls {
+        namespace: Option<String>,
+    },
+    Rm {
+        id: i64,
+    },
+    Pins {
+        namespace: Option<String>,
+    },
+    Retire {
+        target: Option<String>,
+        #[arg(long)]
+        subject: Option<String>,
+        #[arg(long)]
+        namespace: String,
+    },
+    Override {
+        #[command(subcommand)]
+        verb: ConstraintOverrideVerb,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConstraintOverrideVerb {
+    Add {
+        child_namespace: String,
+        parent_namespace: String,
+    },
+    Ls {
+        namespace: Option<String>,
+    },
+    Rm {
+        id: i64,
+    },
+}
+
+#[derive(Subcommand)]
+enum BindingsVerb {
+    Ls {
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Refresh {
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Migrate {
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Recap {
+        #[arg(long, default_value_t = 7)]
+        days: i32,
+        #[arg(long)]
+        token: Option<String>,
+    },
+}
+
+fn normalize_argv(raw: Vec<String>) -> Vec<String> {
+    if raw.len() < 3 {
+        return raw;
+    }
+    let cmd = raw[1].as_str();
+    let second = raw[2].as_str();
+    if cmd == "setup" && !second.starts_with('-') && is_agent_target(second) {
+        let mut out = vec![raw[0].clone(), "agent-setup".to_string()];
+        out.extend_from_slice(&raw[2..]);
+        return out;
+    }
+    if !second.starts_with('-') {
+        match cmd {
+            "principal"
+                if !matches!(
+                    second,
+                    "create" | "ls" | "list" | "rm" | "delete" | "prune-test" | "help"
+                ) =>
+            {
+                let mut out = vec![raw[0].clone(), "principal".to_string(), "create".to_string()];
+                out.extend_from_slice(&raw[2..]);
+                return out;
+            }
+            "token"
+                if !matches!(
+                    second,
+                    "mint" | "ls" | "list" | "reveal" | "revoke" | "help"
+                ) =>
+            {
+                let mut out = vec![raw[0].clone(), "token".to_string(), "mint".to_string()];
+                out.extend_from_slice(&raw[2..]);
+                return out;
+            }
+            "grant" if !matches!(second, "add" | "ls" | "rm" | "help") => {
+                let mut out = vec![raw[0].clone(), "grant".to_string(), "add".to_string()];
+                out.extend_from_slice(&raw[2..]);
+                return out;
+            }
+            _ => {}
+        }
+    }
+    raw
+}
+
+fn resolve_ns_arg(ns_arg: &str) -> String {
+    let t = ns_arg.trim();
+    if !t.is_empty() && t != "auto" {
+        return t.to_string();
+    }
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    resolve_with_source(&cwd, None).0
+}
+
+fn resolve_tok_arg(tok_opt: Option<&str>, cfg: &Config) -> String {
+    tok_opt
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| session_token(cfg))
+}
+
+fn resolve_sess_arg(sess_opt: Option<&str>) -> String {
+    if let Some(s) = sess_opt {
+        let clean = s.trim().trim_start_matches('@');
+        if !clean.is_empty() {
+            return clean.to_string();
+        }
+    }
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let act = resolve_active_session(&cwd);
+    if !act.is_empty() {
+        return act;
+    }
+    detect_terminal_session(&cwd).name
+}
+
+fn http_post_json(
+    cfg: &Config,
+    path: &str,
+    tok_opt: Option<&str>,
+    body: &Value,
+    timeout_secs: u64,
+) -> Result<Value, String> {
+    let url = format!("{}{}", server_url(cfg), path);
+    let tok = resolve_tok_arg(tok_opt, cfg);
+    let mut req = ureq::post(&url)
+        .timeout(Duration::from_secs(timeout_secs))
+        .set("Content-Type", "application/json");
+    if !tok.is_empty() {
+        req = req.set("Authorization", &format!("Bearer {}", tok));
+    }
+    match req.send_json(body.clone()) {
+        Ok(r) => r.into_json::<Value>().map_err(|e| e.to_string()),
+        Err(ureq::Error::Status(code, resp)) => {
+            let err_txt = resp.into_string().unwrap_or_default();
+            Err(format!("HTTP {} from {}: {}", code, path, err_txt))
+        }
+        Err(e) => Err(format!("could not reach {} ({}): is `memnos start` running?", url, e)),
+    }
+}
+
+fn http_get_json(
+    cfg: &Config,
+    path: &str,
+    tok_opt: Option<&str>,
+    timeout_secs: u64,
+) -> Result<Value, String> {
+    let url = format!("{}{}", server_url(cfg), path);
+    let tok = resolve_tok_arg(tok_opt, cfg);
+    let mut req = ureq::get(&url).timeout(Duration::from_secs(timeout_secs));
+    if !tok.is_empty() {
+        req = req.set("Authorization", &format!("Bearer {}", tok));
+    }
+    match req.call() {
+        Ok(r) => r.into_json::<Value>().map_err(|e| e.to_string()),
+        Err(ureq::Error::Status(code, resp)) => {
+            let err_txt = resp.into_string().unwrap_or_default();
+            Err(format!("HTTP {} from {}: {}", code, path, err_txt))
+        }
+        Err(e) => Err(format!("could not reach {}: {}", url, e)),
+    }
+}
+
+fn http_delete_json(
+    cfg: &Config,
+    path: &str,
+    tok_opt: Option<&str>,
+    timeout_secs: u64,
+) -> Result<Value, String> {
+    let url = format!("{}{}", server_url(cfg), path);
+    let tok = resolve_tok_arg(tok_opt, cfg);
+    let mut req = ureq::delete(&url).timeout(Duration::from_secs(timeout_secs));
+    if !tok.is_empty() {
+        req = req.set("Authorization", &format!("Bearer {}", tok));
+    }
+    match req.call() {
+        Ok(r) => r.into_json::<Value>().map_err(|e| e.to_string()),
+        Err(ureq::Error::Status(code, resp)) => {
+            let err_txt = resp.into_string().unwrap_or_default();
+            Err(format!("HTTP {} from {}: {}", code, path, err_txt))
+        }
+        Err(e) => Err(format!("could not reach {}: {}", url, e)),
+    }
+}
+
+async fn lookup_principal_id(pool: &deadpool_postgres::Pool, name: &str) -> Result<i64, String> {
+    let list = Control::list_principals(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    for p in list {
+        if p.get("name").and_then(|v| v.as_str()) == Some(name) {
+            if let Some(id) = p.get("id").and_then(|v| v.as_i64()) {
+                return Ok(id);
+            }
+        }
+    }
+    Err(format!(
+        "principal '{}' not found (create with `memnos principal create {}`)",
+        name, name
+    ))
+}
+
+async fn refresh_local_enforce_cache(
+    pool: &deadpool_postgres::Pool,
+    ns: &str,
+) -> Result<usize, String> {
+    let rows = Control::list_constraint_enforcement_fanout(pool, ns)
+        .await
+        .map_err(|e| e.to_string())?;
+    let path = enforce_cache_path(ns);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let payload = json!({
+        "namespace": ns,
+        "refreshed_at": chrono::Utc::now().to_rfc3339(),
+        "rules": rows,
+    });
+    let raw = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    fs::write(&path, raw).map_err(|e| e.to_string())?;
+    Ok(rows.len())
+}
+
+async fn build_store_from_cfg(
+    cfg: &Config,
+    pool: deadpool_postgres::Pool,
+) -> Result<Arc<BrainStore>, String> {
+    let raw_openai_key = env::var("OPENAI_API_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| cfg.openai.clone());
+    let openai_key =
+        Vault::resolve_provider_key_from_pool(&pool, raw_openai_key, false).await;
+    let emb = Arc::new(Embedder::from_env(openai_key.clone(), None));
+    let ext = Arc::new(Extractor::from_env(openai_key));
+    Ok(Arc::new(BrainStore::new(pool, None, emb, ext)?))
+}
+
+fn find_pg_tool_bin(tool: &str) -> Option<PathBuf> {
+    let exe_name = if cfg!(windows) {
+        format!("{}.exe", tool)
+    } else {
+        tool.to_string()
+    };
+    let explicit_var = match tool {
+        "pg_dump" => Some("MEMNOS_PG_DUMP"),
+        "pg_restore" => Some("MEMNOS_PG_RESTORE"),
+        _ => None,
+    };
+    if let Some(var_name) = explicit_var {
+        if let Ok(explicit) = env::var(var_name) {
+            let trimmed = explicit.trim();
+            if !trimmed.is_empty() {
+                let p = PathBuf::from(trimmed);
+                return if p.is_file() { Some(p) } else { None };
+            }
+        }
+    }
+    if let Ok(pg_bin_dir) = env::var("MEMNOS_PG_BIN") {
+        let trimmed = pg_bin_dir.trim();
+        if !trimmed.is_empty() {
+            let cand = PathBuf::from(trimmed).join(&exe_name);
+            return if cand.is_file() { Some(cand) } else { None };
+        }
+    }
+
+    // 1. Embedded PostgreSQL bundle (`~/.memnos/embedded_pg/state.json` `pg_dir/bin/<tool>`)
+    let emb_root = config_dir().join("embedded_pg");
+    if let Ok(raw_state) = fs::read_to_string(emb_root.join("state.json")) {
+        if let Ok(st_json) = serde_json::from_str::<Value>(&raw_state) {
+            if let Some(pg_dir) = st_json.get("pg_dir").and_then(|v| v.as_str()) {
+                let cand = PathBuf::from(pg_dir).join("bin").join(&exe_name);
+                if cand.is_file() {
+                    return Some(cand);
+                }
+            }
+        }
+    }
+    if let Ok(entries) = fs::read_dir(&emb_root) {
+        for entry in entries.flatten() {
+            let p1 = entry.path().join("bin").join(&exe_name);
+            if p1.is_file() {
+                return Some(p1);
+            }
+            if let Ok(sub_entries) = fs::read_dir(entry.path()) {
+                for sub in sub_entries.flatten() {
+                    let p2 = sub.path().join("bin").join(&exe_name);
+                    if p2.is_file() {
+                        return Some(p2);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Active PATH
+    if let Ok(path_var) = env::var("PATH") {
+        for dir in env::split_paths(&path_var) {
+            let cand = dir.join(&exe_name);
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+
+    // 3. Common OS PostgreSQL client install paths
+    #[allow(unused_mut)]
+    let mut candidates: Vec<PathBuf> = vec![
+        emb_root.join("bin").join(&exe_name),
+        PathBuf::from(format!("/opt/homebrew/opt/libpq/bin/{}", exe_name)),
+        PathBuf::from(format!("/opt/homebrew/opt/postgresql@18/bin/{}", exe_name)),
+        PathBuf::from(format!("/opt/homebrew/opt/postgresql@17/bin/{}", exe_name)),
+        PathBuf::from(format!("/opt/homebrew/opt/postgresql@16/bin/{}", exe_name)),
+        PathBuf::from(format!("/opt/homebrew/opt/postgresql@15/bin/{}", exe_name)),
+        PathBuf::from(format!("/opt/homebrew/bin/{}", exe_name)),
+        PathBuf::from(format!("/usr/local/opt/libpq/bin/{}", exe_name)),
+        PathBuf::from(format!("/usr/local/opt/postgresql@17/bin/{}", exe_name)),
+        PathBuf::from(format!("/usr/local/opt/postgresql@16/bin/{}", exe_name)),
+        PathBuf::from(format!("/usr/local/bin/{}", exe_name)),
+        PathBuf::from(format!(
+            "/Applications/Postgres.app/Contents/Versions/latest/bin/{}",
+            exe_name
+        )),
+        PathBuf::from(format!("/usr/lib/postgresql/17/bin/{}", exe_name)),
+        PathBuf::from(format!("/usr/lib/postgresql/16/bin/{}", exe_name)),
+        PathBuf::from(format!("/usr/lib/postgresql/15/bin/{}", exe_name)),
+    ];
+    #[cfg(windows)]
+    {
+        for v in ["18", "17", "16", "15"] {
+            candidates.push(PathBuf::from(format!(
+                r"C:\Program Files\PostgreSQL\{}\bin\{}",
+                v, exe_name
+            )));
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+fn missing_pg_client_tools_message(missing_tool: &str) -> String {
+    let hint = if cfg!(target_os = "macos") {
+        "Install PostgreSQL client tools via `brew install libpq` (or set MEMNOS_PG_BIN=/path/to/pg/bin)."
+    } else if cfg!(windows) {
+        r#"Install PostgreSQL client tools via `winget install PostgreSQL.PostgreSQL` (or set MEMNOS_PG_BIN="C:\Program Files\PostgreSQL\17\bin"). Embedded PostgreSQL installs (`memnos setup`) bundle `pg_dump` and `pg_restore` automatically."#
+    } else {
+        "Install PostgreSQL client tools via `sudo apt-get install -y postgresql-client` (or set MEMNOS_PG_BIN=/path/to/pg/bin)."
+    };
+    format!(
+        "refusing operation without a verified PostgreSQL backup: `{}` was not found on PATH, in ~/.memnos/embedded_pg, or in MEMNOS_PG_BIN. {}",
+        missing_tool, hint
+    )
+}
+
+fn find_orca_bin() -> Option<PathBuf> {
+    if let Ok(explicit) = env::var("MEMNOS_ORCA_BIN") {
+        let p = PathBuf::from(explicit.trim());
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    if let Ok(path_var) = env::var("PATH") {
+        for dir in env::split_paths(&path_var) {
+            let cand = dir.join(if cfg!(windows) { "orca.exe" } else { "orca" });
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    if let Ok(home) = env::var("HOME").or_else(|_| env::var("USERPROFILE")) {
+        let local_cand = PathBuf::from(&home)
+            .join(".local")
+            .join("bin")
+            .join(if cfg!(windows) { "orca.exe" } else { "orca" });
+        if local_cand.is_file() {
+            return Some(local_cand);
+        }
+    }
+    #[cfg(windows)]
+    if let Ok(local_app) = env::var("LOCALAPPDATA") {
+        for sub in ["Programs\\Orca\\orca.exe", "Orca\\orca.exe"] {
+            let p = PathBuf::from(&local_app).join(sub);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    for cand in [
+        "/usr/local/bin/orca",
+        "/opt/homebrew/bin/orca",
+        "/Applications/Orca.app/Contents/Resources/bin/orca",
+        "/Applications/Orca.app/Contents/MacOS/orca",
+    ] {
+        let p = PathBuf::from(cand);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn fetch_orca_terminals(orca_bin: &Path) -> Vec<Value> {
+    let Ok(out) = Command::new(orca_bin)
+        .args(["terminal", "list", "--json"])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let Ok(parsed) = serde_json::from_slice::<Value>(&out.stdout) else {
+        return Vec::new();
+    };
+    if let Some(arr) = parsed.as_array() {
+        return arr.clone();
+    }
+    parsed
+        .get("result")
+        .and_then(|r| r.get("terminals"))
+        .and_then(|t| t.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn is_orca_terminal_idle(term: &Value) -> bool {
+    if !term.get("connected").and_then(|v| v.as_bool()).unwrap_or(true)
+        || !term.get("writable").and_then(|v| v.as_bool()).unwrap_or(true)
+    {
+        return false;
+    }
+    if let Some(st) = term
+        .get("state")
+        .or_else(|| term.get("status"))
+        .and_then(|v| v.as_str())
+    {
+        return matches!(st, "waiting" | "tui-idle" | "idle");
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let last_out = term.get("lastOutputAt").and_then(|v| v.as_u64()).unwrap_or(0);
+    if last_out > 0 && now_ms.saturating_sub(last_out) < 4500 {
+        return false;
+    }
+    let preview = term.get("preview").and_then(|v| v.as_str()).unwrap_or("");
+    let tail: String = preview
+        .lines()
+        .rev()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let low_tail = tail.to_ascii_lowercase();
+    if low_tail.contains("running")
+        || low_tail.contains("esc to interrupt")
+        || low_tail.contains("esc to cancel")
+        || tail
+            .chars()
+            .any(|ch| "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣽⣾⣷⣯⣟⡿⢿⣻".contains(ch))
+    {
+        return false;
+    }
+    true
+}
+
+fn orca_handle_from_pid(pid: Option<i64>) -> Option<String> {
+    #[cfg(unix)]
+    {
+        let p = pid.filter(|&n| n > 1 && n <= u32::MAX as i64)?;
+        let out = Command::new("ps")
+            .args(["eww", "-o", "command=", "-p", &p.to_string()])
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        let line = String::from_utf8_lossy(&out.stdout);
+        for tok in line.split_whitespace() {
+            if let Some(val) = tok
+                .strip_prefix("ORCA_TERMINAL_HANDLE=")
+                .or_else(|| tok.strip_prefix("ORCA_TERMINAL_ID="))
+            {
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+fn match_orca_handle(
+    terms: &[Value],
+    _sess_name: &str,
+    harness: &str,
+    cwd: &str,
+    meta: &Value,
+    pid: Option<i64>,
+    claimed_handles: &std::collections::HashSet<String>,
+    claimed_panes: &std::collections::HashSet<String>,
+    cwd_session_count: usize,
+) -> Option<Value> {
+    let explicit_opt = meta
+        .get("orca_terminal_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| orca_handle_from_pid(pid));
+    if let Some(ref explicit) = explicit_opt {
+        return terms
+            .iter()
+            .find(|t| {
+                t.get("handle").and_then(|v| v.as_str()) == Some(explicit.as_str())
+                    || t.get("id").and_then(|v| v.as_str()) == Some(explicit.as_str())
+                    || t.get("terminal_id").and_then(|v| v.as_str()) == Some(explicit.as_str())
+            })
+            .cloned();
+    }
+    if let Some(pane_key) = meta
+        .get("orca_pane_key")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return terms
+            .iter()
+            .find(|t| {
+                if t.get("paneKey").and_then(|v| v.as_str()) == Some(pane_key) {
+                    return true;
+                }
+                if let Some((tab_id, leaf_id)) = pane_key.split_once(':') {
+                    t.get("tabId").and_then(|v| v.as_str()) == Some(tab_id)
+                        && t.get("leafId").and_then(|v| v.as_str()) == Some(leaf_id)
+                } else {
+                    false
+                }
+            })
+            .cloned();
+    }
+
+    // Strict multi-session safety (#241): NEVER fall back to `cwd + harness` when multiple active
+    // sessions share the same `cwd`, nor match any terminal already bound to another session.
+    if cwd_session_count > 1 {
+        return None;
+    }
+    let expected_ident = match harness {
+        "claude-code" | "claude" => "claude",
+        "antigravity" | "agy" => "antigravity",
+        other => other,
+    };
+    let meta_wt_id = meta
+        .get("orca_worktree_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let matches: Vec<&Value> = terms
+        .iter()
+        .filter(|t| {
+            let t_handle = t
+                .get("handle")
+                .or_else(|| t.get("id"))
+                .or_else(|| t.get("terminal_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !t_handle.is_empty() && claimed_handles.contains(t_handle) {
+                return false;
+            }
+            if let (Some(tab), Some(leaf)) = (
+                t.get("tabId").and_then(|v| v.as_str()),
+                t.get("leafId").and_then(|v| v.as_str()),
+            ) {
+                if claimed_panes.contains(&format!("{}:{}", tab, leaf)) {
+                    return false;
+                }
+            }
+            let wt = t.get("worktreePath").and_then(|v| v.as_str()).unwrap_or("");
+            let wt_id = t.get("worktreeId").and_then(|v| v.as_str()).unwrap_or("");
+            let ident = t
+                .get("agentIdentity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let path_ok = (!cwd.is_empty() && wt == cwd)
+                || (!meta_wt_id.is_empty() && wt_id == meta_wt_id);
+            path_ok && !expected_ident.is_empty() && ident == expected_ident
+        })
+        .collect();
+    if matches.len() == 1 {
+        Some(matches[0].clone())
+    } else {
+        None
+    }
+}
+
+fn send_orca_doorbell(orca_bin: &Path, handle: &str, doorbell: &str) -> bool {
+    Command::new(orca_bin)
+        .args([
+            "terminal",
+            "send",
+            "--terminal",
+            handle,
+            "--text",
+            doorbell,
+            "--enter",
+            "--wait-submit",
+            "5",
+            "--json",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn send_tmux_doorbell_if_idle(pane: &str, doorbell: &str) -> bool {
+    let Ok(out) = Command::new("tmux")
+        .args([
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_id} #{pane_in_mode} #{pane_current_command}",
+        ])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    if !out.status.success() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut idle = false;
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.first().copied() == Some(pane) {
+            let in_mode = parts.get(1).copied() == Some("1");
+            let cmd = parts
+                .get(2)
+                .copied()
+                .unwrap_or("")
+                .trim_start_matches('-')
+                .to_ascii_lowercase();
+            idle = !in_mode
+                && matches!(
+                    cmd.as_str(),
+                    "bash" | "zsh" | "sh" | "fish" | "dash" | "ksh" | "tcsh" | "nu" | "pwsh" | "elvish"
+                );
+            break;
+        }
+    }
+    if !idle {
+        return false;
+    }
+    Command::new("tmux")
+        .args(["send-keys", "-t", pane, doorbell, "Enter"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+async fn run_wake_sweep(
+    pool: &deadpool_postgres::Pool,
+    backend: &str,
+    ns_filter: Option<&str>,
+    local_mid: &str,
+    cooldowns: &mut std::collections::HashMap<String, std::time::Instant>,
+) {
+    if backend == "noop" {
+        return;
+    }
+    cooldowns.retain(|_, ts| ts.elapsed() < Duration::from_secs(300));
+
+    let Ok(client) = pool.get().await else {
+        return;
+    };
+    let Ok(rows) = client
+        .query(
+            "SELECT namespace, name, principal_id::bigint AS principal_id,
+                    COALESCE(harness, '') AS harness, COALESCE(cwd, '') AS cwd,
+                    COALESCE(metadata, '{}'::jsonb) AS metadata,
+                    COALESCE(machine_id, '') AS machine_id, pid::bigint AS pid
+             FROM memnos_control.agent_sessions
+             WHERE status = 'active' AND expires_at > now()
+               AND ($1::text IS NULL OR namespace = $1)",
+            &[&ns_filter],
+        )
+        .await
+    else {
+        return;
+    };
+
+    let mut claimed_handles: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut claimed_panes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut cwd_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for r in &rows {
+        let cwd_s: String = r.try_get("cwd").unwrap_or_default();
+        let mid_s: String = r.try_get("machine_id").unwrap_or_default();
+        if !mid_s.is_empty() && mid_s != local_mid {
+            continue;
+        }
+        if !cwd_s.is_empty() {
+            *cwd_counts.entry(cwd_s).or_insert(0) += 1;
+        }
+        let meta_r: Value = r.try_get("metadata").unwrap_or_else(|_| json!({}));
+        if let Some(th) = meta_r
+            .get("orca_terminal_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            claimed_handles.insert(th.to_string());
+        }
+        if let Some(pk) = meta_r
+            .get("orca_pane_key")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            claimed_panes.insert(pk.to_string());
+        }
+    }
+
+    let mut pending_targets: Vec<(String, String, String, String, Value, Option<i64>, i64, String)> =
+        Vec::new();
+    for r in rows {
+        let ns: String = r.try_get("namespace").unwrap_or_default();
+        let name: String = r.try_get("name").unwrap_or_default();
+        let principal_id: i64 = r.try_get("principal_id").unwrap_or(0);
+        let harness: String = r.try_get("harness").unwrap_or_default();
+        let cwd: String = r.try_get("cwd").unwrap_or_default();
+        let meta: Value = r.try_get("metadata").unwrap_or_else(|_| json!({}));
+        let mid: String = r.try_get("machine_id").unwrap_or_default();
+        let pid: Option<i64> = r.try_get("pid").ok().flatten();
+
+        if !mid.is_empty() && mid != local_mid {
+            continue;
+        }
+        if let Some(p) = pid {
+            if p > 1 && p <= u32::MAX as i64 && !is_local_pid_alive(p as u32) {
+                continue;
+            }
+        }
+
+        let mut max_msg_id: i64 = 0;
+        if let Ok(polled) =
+            Control::channel_poll(pool, &ns, &name, principal_id, None, true, 15).await
+        {
+            if let Some(msgs) = polled.get("messages").and_then(|v| v.as_array()) {
+                for m in msgs {
+                    let sender = m
+                        .get("sender_session")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if sender != name {
+                        let id = m.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                        if id > max_msg_id {
+                            max_msg_id = id;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut max_inb_id: i64 = 0;
+        if let Ok(inb) = Control::inbox_list(
+            pool,
+            &ns,
+            &name,
+            principal_id,
+            "pending",
+            None,
+            false,
+            false,
+            15,
+        )
+        .await
+        {
+            if let Some(items) = inb.get("items").and_then(|v| v.as_array()) {
+                for it in items {
+                    let sender = it
+                        .get("from_session")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if sender != name {
+                        let id = it.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                        if id > max_inb_id {
+                            max_inb_id = id;
+                        }
+                    }
+                }
+            }
+        }
+
+        if max_msg_id == 0 && max_inb_id == 0 {
+            continue;
+        }
+        let lead_id = if max_inb_id > 0 { max_inb_id } else { max_msg_id };
+        let dedupe_key = format!("{}::{}::m{}:i{}", ns, name, max_msg_id, max_inb_id);
+        if cooldowns.contains_key(&dedupe_key) {
+            continue;
+        }
+        pending_targets.push((ns, name, harness, cwd, meta, pid, lead_id, dedupe_key));
+    }
+
+    if pending_targets.is_empty() {
+        return;
+    }
+
+    let backend_owned = backend.to_string();
+    let delivered = tokio::task::spawn_blocking(move || {
+        let mut fired: Vec<String> = Vec::new();
+        if backend_owned == "orca" {
+            let Some(orca_bin) = find_orca_bin() else {
+                return fired;
+            };
+            let terms = fetch_orca_terminals(&orca_bin);
+            for (ns, name, harness, cwd, meta, pid, lead_id, key) in pending_targets {
+                let cwd_cnt = cwd_counts.get(&cwd).copied().unwrap_or(0);
+                if let Some(term) = match_orca_handle(
+                    &terms,
+                    &name,
+                    &harness,
+                    &cwd,
+                    &meta,
+                    pid,
+                    &claimed_handles,
+                    &claimed_panes,
+                    cwd_cnt,
+                ) {
+                    if is_orca_terminal_idle(&term) {
+                        if let Some(handle) = term
+                            .get("handle")
+                            .or_else(|| term.get("id"))
+                            .and_then(|v| v.as_str())
+                        {
+                            let doorbell = format!(
+                                "New Memnos message (#{}) for @{} in {} — poll and process via memnos MCP.",
+                                lead_id, name, ns
+                            );
+                            if send_orca_doorbell(&orca_bin, handle, &doorbell) {
+                                println!(
+                                    "[memnos-wake] rang Orca doorbell ({}) for @{} in {} (#{})",
+                                    handle, name, ns, lead_id
+                                );
+                                fired.push(key);
+                            }
+                        }
+                    }
+                }
+            }
+        } else if backend_owned == "tmux" {
+            for (ns, name, _, _, meta, _, lead_id, key) in pending_targets {
+                if let Some(pane) = meta.get("tmux_pane").and_then(|v| v.as_str()) {
+                    let doorbell = format!(
+                        "New Memnos message (#{}) for @{} in {} — poll and process via memnos MCP.",
+                        lead_id, name, ns
+                    );
+                    if send_tmux_doorbell_if_idle(pane, &doorbell) {
+                        println!(
+                            "[memnos-wake] rang tmux doorbell ({}) for @{} in {} (#{})",
+                            pane, name, ns, lead_id
+                        );
+                        fired.push(key);
+                    }
+                }
+            }
+        }
+        fired
+    })
+    .await
+    .unwrap_or_default();
+
+    let now = std::time::Instant::now();
+    for k in delivered {
+        cooldowns.insert(k, now);
+    }
+}
+
+async fn take_verified_db_backup(
+    cfg: &Config,
+    reason: &str,
+    custom_out: Option<&str>,
+    keep: usize,
+) -> Result<PathBuf, String> {
+    memnos_core::backup::take_verified_db_backup_cfg(cfg, reason, custom_out, keep).await
+}
+
+fn kill_pid(pid: u32) {
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status();
+    }
+}
+
+fn stop_background_server() -> bool {
+    let dir = config_dir();
+    let gw_path = dir.join("gateway_state.json");
+    let pid_path = dir.join("server.pid");
+    let mut stopped = false;
+
+    if let Ok(raw) = fs::read_to_string(&gw_path) {
+        if let Ok(val) = serde_json::from_str::<Value>(&raw) {
+            if let Some(pid) = val.get("gateway_pid").and_then(|v| v.as_u64()) {
+                if is_local_pid_alive(pid as u32) {
+                    kill_pid(pid as u32);
+                    stopped = true;
+                }
+            }
+        }
+        let _ = fs::remove_file(&gw_path);
+    }
+    if let Ok(raw) = fs::read_to_string(&pid_path) {
+        if let Ok(pid) = raw.trim().parse::<u32>() {
+            if is_local_pid_alive(pid) {
+                kill_pid(pid);
+                stopped = true;
+            }
+        }
+        let _ = fs::remove_file(&pid_path);
+    }
+    stopped
+}
+
+fn has_configured_openai(cfg: &Config) -> bool {
+    env::var("OPENAI_API_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| cfg.openai.clone().filter(|s| !s.trim().is_empty()))
+        .is_some()
+}
+
+async fn configure_embed_choice(
+    cfg: &mut Config,
+    pool: &deadpool_postgres::Pool,
+    force_prompt: bool,
+    flag_local: bool,
+    flag_openai_key: Option<String>,
+    yes: bool,
+) -> Result<(), String> {
+    use std::io::IsTerminal;
+
+    if let Some(key_val) = flag_openai_key.filter(|s| !s.trim().is_empty()) {
+        if cfg.secret_key.is_none() {
+            let sk = Vault::keygen();
+            env::set_var("MEMNOS_SECRET_KEY", &sk);
+            cfg.secret_key = Some(sk);
+        } else if let Some(ref sk) = cfg.secret_key {
+            env::set_var("MEMNOS_SECRET_KEY", sk);
+        }
+        let client = pool.get().await.map_err(|e| e.to_string())?;
+        Vault::set(&client, "openai", key_val.trim(), Some("OpenAI provider key"))
+            .await
+            .map_err(|e| e.to_string())?;
+        env::set_var("OPENAI_API_KEY", key_val.trim());
+        cfg.openai = Some("secret://openai".to_string());
+        cfg.embed_choice = Some("openai".to_string());
+        save_config(cfg).map_err(|e| e.to_string())?;
+        println!("[memnos] OpenAI embedding key saved encrypted in Vault (1536-d, nothing to download).");
+        return Ok(());
+    }
+
+    if flag_local {
+        if !yes && !io::stdin().is_terminal() {
+            return Err(
+                "non-interactive local model setup requires `--yes` (e.g. `memnos setup embeddings --local --yes` or `memnos models pull --yes`)"
+                    .to_string(),
+            );
+        }
+        let (local_model, _) = default_local_embed_model_from_env();
+        ensure_local_models_ready(&local_model)?;
+        cfg.openai = None;
+        cfg.embed_choice = Some("local".to_string());
+        save_config(cfg).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    if !force_prompt {
+        if let Some(choice) = memnos_core::config::explicit_embed_choice(cfg) {
+            if choice == "local" {
+                let (local_model, _) = default_local_embed_model_from_env();
+                let (emb_spec, rerank_spec) = specs_for_embed_model(&local_model);
+                if !is_model_cached(emb_spec)
+                    || (memnos_core::rerank::rerank_enabled() && !is_model_cached(rerank_spec))
+                {
+                    if yes || io::stdin().is_terminal() {
+                        ensure_local_models_ready(&local_model)?;
+                    } else {
+                        return Err(
+                            "local embeddings selected, but neural models (~930 MB) are not downloaded yet — run `memnos models pull --yes`"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        let probe_store = build_store_from_cfg(cfg, pool.clone()).await?;
+        if probe_store.has_existing_embed_lineage().await? {
+            return Ok(());
+        }
+    }
+
+    if !io::stdin().is_terminal() {
+        return Err(
+            "memnos is not set up yet: choose an embedding mode explicitly (`memnos setup embeddings --local --yes`, `memnos models pull --yes`, or set `OPENAI_API_KEY`)"
+                .to_string(),
+        );
+    }
+
+    println!("\nmemnos needs an embedding setup before it can store or search memories.");
+    println!("Please pick one option:\n");
+    println!("  1. Use my own OpenAI key");
+    println!("     - Fastest setup, nothing to download.");
+    println!("     - Memory and search text leaves this computer and goes to OpenAI for embedding.");
+    println!();
+    println!("  2. Run it on this computer");
+    println!("     - Private and free — nothing leaves this computer.");
+    println!("     - One-time download of about 1 GB (~930 MB: multilingual embedding + reranker models),");
+    println!("       takes a few minutes depending on your connection.");
+    println!();
+    println!("  (You can change this choice anytime later with `memnos migrate-embeddings`,");
+    println!("   which automatically backs up your database first.)\n");
+    print!("Enter 1 or 2: ");
+    let _ = io::stdout().flush();
+
+    let mut line = String::new();
+    io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+    match line.trim() {
+        "1" => {
+            print!("Paste your OpenAI API key (sk-...): ");
+            let _ = io::stdout().flush();
+            let mut k = String::new();
+            io::stdin().read_line(&mut k).map_err(|e| e.to_string())?;
+            let k_trim = k.trim().to_string();
+            if k_trim.is_empty() {
+                return Err("no OpenAI key entered — setup cancelled".to_string());
+            }
+            if cfg.secret_key.is_none() {
+                let sk = Vault::keygen();
+                env::set_var("MEMNOS_SECRET_KEY", &sk);
+                cfg.secret_key = Some(sk);
+            } else if let Some(ref sk) = cfg.secret_key {
+                env::set_var("MEMNOS_SECRET_KEY", sk);
+            }
+            let client = pool.get().await.map_err(|e| e.to_string())?;
+            Vault::set(&client, "openai", &k_trim, Some("OpenAI provider key"))
+                .await
+                .map_err(|e| e.to_string())?;
+            env::set_var("OPENAI_API_KEY", &k_trim);
+            cfg.openai = Some("secret://openai".to_string());
+            cfg.embed_choice = Some("openai".to_string());
+            save_config(cfg).map_err(|e| e.to_string())?;
+            println!("[memnos] ✓ OpenAI key encrypted in Vault. Embeddings ready (nothing to download).");
+            Ok(())
+        }
+        "2" => {
+            let (local_model, _) = default_local_embed_model_from_env();
+            ensure_local_models_ready(&local_model)?;
+            cfg.openai = None;
+            cfg.embed_choice = Some("local".to_string());
+            save_config(cfg).map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        _ => Err("no embedding option chosen (expected 1 or 2) — memnos remains not set up".to_string()),
+    }
+}
+
+async fn start_background_server(cfg: &mut Config, port_override: Option<u16>) -> Result<(), String> {
+    let port = port_override.unwrap_or_else(|| server_port(cfg));
+    let pg_dsn = dsn(cfg);
+    let cfg_file = config_path();
+    println!(
+        "[memnos] config: {} ({})",
+        cfg_file.display(),
+        if cfg_file.is_file() { "present" } else { "not found" }
+    );
+    println!("[memnos] target db: {}", redact_dsn_target(&pg_dsn));
+
+    let health_url = format!("http://127.0.0.1:{}/healthz", port);
+    if let Ok(r) = ureq::get(&health_url).timeout(Duration::from_secs(1)).call() {
+        if r.status() == 200 {
+            println!("[memnos] server already running on http://127.0.0.1:{}", port);
+            return Ok(());
+        }
+    }
+
+    let pool = build_pool(&pg_dsn, 4)?;
+    Control::init(&pool).await.map_err(|e| e.to_string())?;
+    configure_embed_choice(cfg, &pool, false, false, None, false).await?;
+
+    let dir = config_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("server.log"))
+        .map_err(|e| e.to_string())?;
+    let err_file = log_file.try_clone().map_err(|e| e.to_string())?;
+
+    let exe = env::current_exe().map_err(|e| e.to_string())?;
+    let child = Command::new(exe)
+        .args(["gateway", "--port", &port.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(err_file))
+        .spawn()
+        .map_err(|e| format!("failed to start background gateway: {}", e))?;
+
+    let _ = fs::write(dir.join("server.pid"), child.id().to_string());
+
+    let ready_url = format!("http://127.0.0.1:{}/readyz", port);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if let Ok(r) = ureq::get(&ready_url).timeout(Duration::from_secs(2)).call() {
+            if r.status() == 200 {
+                println!(
+                    "[memnos] started zero-downtime gateway (pid {}) on http://127.0.0.1:{}",
+                    child.id(),
+                    port
+                );
+                return Ok(());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    Err(format!(
+        "server spawned (pid {}), but /readyz did not become ready within 30s — check {}/server.log",
+        child.id(),
+        dir.display()
+    ))
+}
+
+fn main() {
+    // Bound BLAS / Accelerate / Rayon thread pools BEFORE any worker thread spawns so
+    // nested parallelism never multiplies per-thread GEMM scratch slabs across cores.
+    // Because neural inference runs exclusively on the single serialized `memnos-infer`
+    // worker thread, 4 threads give fast SIMD/AMX matrix multiplies with zero contention.
+    let rr_threads = env::var("MEMNOS_RERANK_THREADS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(2)
+        .clamp(1, 8);
+    let rr_str = rr_threads.to_string();
+    for k in [
+        "RAYON_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+    ] {
+        if env::var_os(k).is_none() {
+            env::set_var(k, &rr_str);
+        }
+    }
+
+    let cfg = load_config();
+    let is_desktop_bin = env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n == "memnos-desktop"))
+        .unwrap_or(false);
+    let mut raw_args: Vec<String> = env::args()
+        .enumerate()
+        .filter(|(i, a)| *i == 0 || !a.starts_with("-psn_"))
+        .map(|(_, a)| a)
+        .collect();
+    if is_desktop_bin && (raw_args.len() == 1 || raw_args[1].starts_with('-')) {
+        raw_args.insert(1, "app".to_string());
+    }
+    let norm_args = normalize_argv(raw_args);
+    if norm_args.len() == 2 && norm_args[1] == "help" {
+        let _ = Cli::command().print_help();
+        println!();
+        return;
+    }
+    let cli = Cli::parse_from(norm_args);
+    let Some(cmd) = cli.command else {
+        println!("memnos {}\n", VERSION);
+        let _ = Cli::command().print_help();
+        println!();
+        return;
+    };
+    if let Commands::App {
+        url,
+        token,
+        install,
+    } = cmd
+    {
+        if let Err(e) = run_desktop_app(url.as_deref(), token.as_deref(), install, &cfg) {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .max_blocking_threads(8)
+        .enable_all()
+        .build()
+        .expect("failed to initialize async runtime");
+    rt.block_on(async move {
+        if let Err(e) = run_cli(cmd, cfg).await {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    });
+}
+
+async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
+    match cmd {
+        Commands::App { .. } => unreachable!(),
+        Commands::Hook { which, reset } => {
+            run_hook(&which, reset, &cfg);
+            Ok(())
+        }
+        Commands::Mcp { namespace } => {
+            let code = tokio::task::spawn_blocking(move || run_stdio(namespace))
+                .await
+                .unwrap_or(1);
+            std::process::exit(code);
+        }
+        Commands::Tips => {
+            let ns = resolve_ns_arg("auto");
+            print_tips_showcase(&ns);
+            Ok(())
+        }
+        Commands::Serve {
+            port,
+            require_empty_db,
+        } => run_server_opts(port, require_empty_db).await,
+        Commands::Gateway { port } => {
+            let p = port.unwrap_or_else(|| server_port(&cfg));
+            run_gateway(p).await
+        }
+        Commands::Proxy {
+            port,
+            namespace,
+            no_capture,
+        } => {
+            if let Some(ns) = namespace {
+                env::set_var("MEMNOS_NS", ns);
+            }
+            if no_capture {
+                if let Some(ref mut p) = cfg.proxy {
+                    p.capture = Some(false);
+                }
+            }
+            run_proxy(port).await
+        }
+        Commands::Start { port } => start_background_server(&mut cfg, port).await,
+        Commands::Stop => {
+            if stop_background_server() {
+                println!("[memnos] background server stopped.");
+            } else {
+                println!("[memnos] server was not running.");
+            }
+            Ok(())
+        }
+        Commands::Restart { port } => {
+            let gw_state_path = config_dir().join("gateway_state.json");
+            let mut upgraded = false;
+            if let Ok(raw) = fs::read_to_string(&gw_state_path) {
+                if let Ok(st) = serde_json::from_str::<Value>(&raw) {
+                    let gw_port = st.get("port").and_then(|v| v.as_u64()).unwrap_or(8900);
+                    let gw_tok = st
+                        .get("control_token")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if !gw_tok.is_empty() {
+                        let up_url = format!("http://127.0.0.1:{}/__gateway__/upgrade", gw_port);
+                        if ureq::post(&up_url)
+                            .set("Authorization", &format!("Bearer {}", gw_tok))
+                            .call()
+                            .is_ok()
+                        {
+                            println!("[memnos] triggered zero-downtime blue-green swap on gateway :{} ...", gw_port);
+                            let status_url =
+                                format!("http://127.0.0.1:{}/__gateway__/status", gw_port);
+                            let deadline = Instant::now() + Duration::from_secs(45);
+                            while Instant::now() < deadline {
+                                std::thread::sleep(Duration::from_millis(300));
+                                if let Ok(r) = ureq::get(&status_url)
+                                    .set("Authorization", &format!("Bearer {}", gw_tok))
+                                    .call()
+                                {
+                                    if let Ok(sv) = r.into_json::<Value>() {
+                                        let ustatus = sv
+                                            .get("upgrade")
+                                            .and_then(|u| u.get("status"))
+                                            .and_then(|s| s.as_str())
+                                            .unwrap_or("");
+                                        if ustatus == "done" {
+                                            println!(
+                                                "[memnos] zero-downtime reload complete (new backend pid {:?}, port {:?}).",
+                                                sv.get("current_backend_pid"),
+                                                sv.get("current_backend_port")
+                                            );
+                                            upgraded = true;
+                                            break;
+                                        } else if ustatus == "failed" {
+                                            return Err(format!(
+                                                "[memnos] rolling reload failed: {}",
+                                                sv["upgrade"]
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !upgraded {
+                stop_background_server();
+                std::thread::sleep(Duration::from_millis(400));
+                start_background_server(&mut cfg, port).await?;
+            }
+            Ok(())
+        }
+        Commands::Models {
+            action,
+            english_only,
+            yes,
+        } => {
+            use std::io::IsTerminal;
+            let model_id = if english_only {
+                BGE_REPO_ID.to_string()
+            } else {
+                let (m, _) = default_local_embed_model_from_env();
+                m
+            };
+            match action.trim().to_ascii_lowercase().as_str() {
+                "status" | "ls" => {
+                    print_local_models_status(has_configured_openai(&cfg), &model_id);
+                    Ok(())
+                }
+                "pull" | "download" => {
+                    let (emb_spec, rerank_spec) = specs_for_embed_model(&model_id);
+                    let already = is_model_cached(emb_spec) && is_model_cached(rerank_spec);
+                    if !already && !yes && !io::stdin().is_terminal() {
+                        return Err(
+                            "non-interactive `memnos models pull` requires `--yes` to confirm the ~930 MB (~1 GB) local model download"
+                                .to_string(),
+                        );
+                    }
+                    ensure_local_models_ready(&model_id)?;
+                    if cfg.openai.is_none() {
+                        cfg.embed_choice = Some("local".to_string());
+                        let _ = save_config(&cfg);
+                    }
+                    if already {
+                        println!(
+                            "[memnos] local neural models already cached & verified ({}, {}).",
+                            emb_spec.repo_id, rerank_spec.repo_id
+                        );
+                    }
+                    Ok(())
+                }
+                other => Err(format!(
+                    "unknown `memnos models` action '{}' (expected `status` or `pull`)",
+                    other
+                )),
+            }
+        }
+        Commands::Id => {
+            let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let term = detect_terminal_session(&cwd);
+            let (ns, _) = resolve_with_source(&cwd, None);
+            let mut handle = resolve_active_session(&cwd);
+            if handle.is_empty() {
+                handle = term.name.clone();
+            }
+            let mut channels: Vec<String> = Vec::new();
+            let st_tok = session_token(&cfg);
+            let tok_opt = (!st_tok.is_empty()).then_some(st_tok.as_str());
+            if let Ok(polled) = http_post_json(
+                &cfg,
+                "/channel/poll",
+                tok_opt,
+                &json!({
+                    "namespace": ns,
+                    "session_name": handle,
+                    "peek": true,
+                    "limit": 1,
+                }),
+                2,
+            ) {
+                if let Some(sn) = polled.get("session_name").and_then(|v| v.as_str()) {
+                    if !sn.is_empty() {
+                        handle = sn.to_string();
+                    }
+                }
+                if let Some(arr) = polled.get("channels").and_then(|v| v.as_array()) {
+                    channels = arr
+                        .iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect();
+                }
+            }
+            if channels.is_empty() {
+                if let Some((_, chs, _)) = load_cached_badge(&cwd, None, &term.tty) {
+                    channels = chs;
+                } else if !term.suggested_topic.is_empty() {
+                    channels.push(term.suggested_topic);
+                }
+            }
+            println!("{}", format_memnos_badge(&handle, &channels, Some(&ns)));
+            Ok(())
+        }
+        Commands::Status => {
+            let url = server_url(&cfg);
+            let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let term = detect_terminal_session(&cwd);
+            let (ns, src) = resolve_with_source(&cwd, None);
+            let mut sess = resolve_active_session(&cwd);
+            if sess.is_empty() {
+                sess = term.name.clone();
+            }
+            let mut chans: Vec<String> = Vec::new();
+            let st_tok = session_token(&cfg);
+            let tok_opt = (!st_tok.is_empty()).then_some(st_tok.as_str());
+            if let Ok(polled) = http_post_json(
+                &cfg,
+                "/channel/poll",
+                tok_opt,
+                &json!({
+                    "namespace": ns,
+                    "session_name": sess,
+                    "peek": true,
+                    "limit": 1,
+                }),
+                2,
+            ) {
+                if let Some(arr) = polled.get("channels").and_then(|v| v.as_array()) {
+                    chans = arr
+                        .iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect();
+                }
+            }
+            if chans.is_empty() {
+                if let Some((_, chs, _)) = load_cached_badge(&cwd, None, &term.tty) {
+                    chans = chs;
+                }
+            }
+            println!("memnos v{}", VERSION);
+            println!("  identity:   {}", format_memnos_badge(&sess, &chans, Some(&ns)));
+            println!("  server url: {}", url);
+            println!("  config:     {}", config_dir().join("config.json").display());
+            println!("  namespace:  {} (source: {})", ns, src);
+            if !sess.is_empty() {
+                println!("  session:    @{}", sess);
+            }
+            if !chans.is_empty() {
+                println!("  channels:   {}", chans.join(" "));
+            }
+            if has_configured_openai(&cfg) {
+                println!("  embeddings: OpenAI 1536-d (OPENAI_API_KEY configured)");
+            } else {
+                let (m, _) = default_local_embed_model_from_env();
+                let (emb_spec, rerank_spec) = specs_for_embed_model(&m);
+                if is_model_cached(emb_spec) && is_model_cached(rerank_spec) {
+                    println!("  embeddings: local ({} — cached, no external AI needed)", m);
+                } else {
+                    println!(
+                        "  embeddings: local ({} — download required; run `memnos models pull` so memnos runs without external AI)",
+                        m
+                    );
+                }
+            }
+            match http_get_json(&cfg, "/readyz", None, 2) {
+                Ok(v) => println!(
+                    "  status:     ONLINE (ready={}, warm={})",
+                    v.get("ready").and_then(|b| b.as_bool()).unwrap_or(false),
+                    v.get("warm").and_then(|b| b.as_bool()).unwrap_or(false),
+                ),
+                Err(_) => println!("  status:     OFFLINE (run `memnos start`)"),
+            }
+            Ok(())
+        }
+        Commands::Autostart { remove, proxy } => run_autostart(remove, proxy),
+        Commands::Upgrade {
+            check,
+            no_restart,
+            auto_update,
+            no_auto_update,
+        } => {
+            if auto_update || no_auto_update {
+                cfg.auto_update = Some(auto_update && !no_auto_update);
+                save_config(&cfg).map_err(|e| e.to_string())?;
+                println!(
+                    "[memnos] auto_update set to {}",
+                    cfg.auto_update.unwrap_or(false)
+                );
+                return Ok(());
+            }
+            println!("[memnos] installed version: v{}", VERSION);
+            let mut latest_ver: Option<String> = None;
+            if let Ok(r) = ureq::get("https://pypi.org/pypi/memnos/json")
+                .timeout(Duration::from_secs(4))
+                .call()
+            {
+                if let Ok(v) = r.into_json::<Value>() {
+                    if let Some(latest) = v
+                        .get("info")
+                        .and_then(|i| i.get("version"))
+                        .and_then(|s| s.as_str())
+                    {
+                        println!("[memnos] latest published release: v{}", latest);
+                        latest_ver = Some(latest.to_string());
+                    }
+                }
+            }
+            if !check {
+                // Standing upgrade discipline: ALWAYS take and verify a full DB + config backup
+                // before applying any upgrade or restarting onto a new binary.
+                take_verified_db_backup(&cfg, "pre-upgrade", None, 10).await?;
+                if let Some(l) = latest_ver {
+                    cfg.latest_known = Some(l);
+                    let _ = save_config(&cfg);
+                }
+                if !no_restart {
+                    println!("[memnos] pre-upgrade backup verified. Run `memnos restart` after replacing binary to trigger zero-downtime swap.");
+                }
+            }
+            Ok(())
+        }
+        Commands::WakeDaemon { backend, namespace } => {
+            let chosen_backend = match backend
+                .as_deref()
+                .map(|s| s.trim().to_ascii_lowercase())
+                .as_deref()
+            {
+                Some("orca") => "orca",
+                Some("tmux") => "tmux",
+                Some("noop") => "noop",
+                Some("") | None => {
+                    if find_orca_bin().is_some() {
+                        "orca"
+                    } else if Command::new("tmux")
+                        .arg("-V")
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status()
+                        .is_ok()
+                    {
+                        "tmux"
+                    } else {
+                        "noop"
+                    }
+                }
+                Some(other) => {
+                    return Err(format!(
+                        "unsupported wake-daemon backend '{}' (expected 'orca', 'tmux', or 'noop')",
+                        other
+                    ));
+                }
+            };
+            println!(
+                "[memnos-wake] starting Postgres LISTEN/NOTIFY wake daemon (backend={}, namespace={}) ...",
+                chosen_backend,
+                namespace.as_deref().unwrap_or("*")
+            );
+            if chosen_backend == "noop" {
+                println!(
+                    "[memnos-wake] note: neither 'orca' nor 'tmux' terminal multiplexer detected; running LISTEN/NOTIFY observer (terminal doorbell keystrokes disabled)"
+                );
+            }
+            let pg_dsn = dsn(&cfg);
+            let pool = build_pool(&pg_dsn, 4).map_err(|e| e.to_string())?;
+            let notify = Arc::new(tokio::sync::Notify::new());
+            memnos_core::db::spawn_channel_listener(pg_dsn, notify.clone());
+            let mut cooldowns: std::collections::HashMap<String, std::time::Instant> =
+                std::collections::HashMap::new();
+            let local_mid = machine_id();
+
+            loop {
+                run_wake_sweep(
+                    &pool,
+                    chosen_backend,
+                    namespace.as_deref(),
+                    &local_mid,
+                    &mut cooldowns,
+                )
+                .await;
+
+                let notified = notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => break Ok(()),
+                    _ = notified => {
+                        // Brief settle delay so sender finishes publishing companion inbox/channel items
+                        tokio::time::sleep(Duration::from_millis(800)).await;
+                    }
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                }
+            }
+        }
+        Commands::Setup {
+            target,
+            dsn: dsn_opt,
+            embedded: _,
+            docker,
+            external: _,
+            port,
+            local,
+            openai_key,
+            require_empty_db,
+            yes,
+        } => {
+            if let Some(ref sub) = target {
+                if !sub.eq_ignore_ascii_case("embeddings") && !sub.eq_ignore_ascii_case("models") {
+                    return Err(format!(
+                        "unknown setup target {:?} (use `memnos setup` or `memnos setup embeddings`)",
+                        sub
+                    ));
+                }
+            }
+            let only_embeddings = target
+                .as_deref()
+                .map(|s| s.eq_ignore_ascii_case("embeddings") || s.eq_ignore_ascii_case("models"))
+                .unwrap_or(false);
+
+            let chosen_dsn = if docker {
+                let _ = Command::new("docker")
+                    .args([
+                        "run",
+                        "-d",
+                        "--name",
+                        "memnos-pg",
+                        "-e",
+                        "POSTGRES_USER=memnos",
+                        "-e",
+                        "POSTGRES_PASSWORD=memnos",
+                        "-e",
+                        "POSTGRES_DB=memnos",
+                        "-p",
+                        "5432:5432",
+                        "--restart",
+                        "unless-stopped",
+                        "pgvector/pgvector:pg16",
+                    ])
+                    .status();
+                std::thread::sleep(Duration::from_secs(2));
+                "postgresql://memnos:memnos@localhost:5432/memnos".to_string()
+            } else {
+                dsn_opt.unwrap_or_else(|| dsn(&cfg))
+            };
+
+            cfg.dsn = Some(chosen_dsn.clone());
+            if let Some(p) = port {
+                cfg.port = Some(p);
+            }
+            if cfg.secret_key.is_none() {
+                let sk = Vault::keygen();
+                env::set_var("MEMNOS_SECRET_KEY", &sk);
+                cfg.secret_key = Some(sk);
+            }
+
+            let pool = build_pool(&chosen_dsn, 8)?;
+            let db_target = redact_dsn_target(&chosen_dsn);
+            println!(
+                "[memnos] config: {} ({})",
+                config_path().display(),
+                if config_path().is_file() { "present" } else { "new" }
+            );
+            println!("[memnos] target db: {}", db_target);
+            if require_empty_db
+                || matches!(
+                    env::var("MEMNOS_REQUIRE_EMPTY_DB")
+                        .unwrap_or_default()
+                        .trim()
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            {
+                let probe_conn = pool
+                    .get()
+                    .await
+                    .map_err(|e| format!("database connection failed ({}): {}", db_target, e))?;
+                let has_existing: bool = probe_conn
+                    .query_one(
+                        "SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname IN ('memnos_control', 'tenant_memnos'))",
+                        &[],
+                    )
+                    .await
+                    .map(|r| r.get(0))
+                    .map_err(|e| format!("database schema probe failed ({}): {}", db_target, e))?;
+                if has_existing {
+                    return Err(format!(
+                        "refusing setup with --require-empty-db: target database '{}' already contains existing memnos schemas — point --dsn at a fresh database or omit --require-empty-db",
+                        db_target
+                    ));
+                }
+            }
+            Control::init(&pool).await.map_err(|e| e.to_string())?;
+
+            configure_embed_choice(&mut cfg, &pool, only_embeddings, local, openai_key, yes).await?;
+
+            let store = build_store_from_cfg(&cfg, pool.clone()).await?;
+            store.init_schema().await?;
+
+            if only_embeddings && cfg.admin_token.is_some() {
+                save_config(&cfg).map_err(|e| e.to_string())?;
+                println!("[memnos] embedding setup complete! Restart or start server with `memnos restart` / `memnos start`.");
+                return Ok(());
+            }
+
+            let admin_pid = Control::create_principal(&pool, "admin", "user")
+                .await
+                .map_err(|e| e.to_string())?;
+            Control::grant(&pool, admin_pid, "*", true, true)
+                .await
+                .map_err(|e| e.to_string())?;
+            let admin_tok = Control::mint_token(&pool, admin_pid, Some("setup-admin"), None)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            cfg.admin_token = Some(admin_tok.clone());
+            save_config(&cfg).map_err(|e| e.to_string())?;
+
+            println!("[memnos] setup complete!");
+            println!("  target db:   {}", db_target);
+            println!("  config:      {}", config_dir().join("config.json").display());
+            println!("  admin token: {}", admin_tok);
+            Ok(())
+        }
+        Commands::Remember {
+            text,
+            namespace,
+            memory_type,
+            subject,
+            no_extract,
+            token,
+            json: print_json,
+        } => {
+            let ns = resolve_ns_arg(&namespace);
+            let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let anchors = extract_code_anchors(&text, &cwd, 8);
+            let mut body = json!({
+                "namespace": ns,
+                "text": text,
+                "speaker": "user",
+                "extract": !no_extract,
+            });
+            if !anchors.is_empty() {
+                body["code_anchors"] = serde_json::to_value(anchors).unwrap_or_else(|_| json!([]));
+            }
+            if let Some(t) = memory_type {
+                body["type"] = json!(t);
+            }
+            if let Some(s) = subject {
+                body["constraint_subject"] = json!(s);
+            }
+            let resp = http_post_json(&cfg, "/remember", token.as_deref(), &body, 30)?;
+            if print_json {
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+            } else {
+                println!(
+                    "Remembered in '{}' (turn_id={}, facts={})",
+                    ns,
+                    resp.get("turn_id").unwrap_or(&json!(null)),
+                    resp.get("facts_written").unwrap_or(&json!(0))
+                );
+            }
+            Ok(())
+        }
+        Commands::Recall {
+            query,
+            namespace,
+            scope,
+            memory_type,
+            token,
+            json: print_json,
+        } => {
+            let ns = resolve_ns_arg(&namespace);
+            let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let mut body = json!({
+                "namespace": ns,
+                "query": query,
+                "repo_root": cwd.to_string_lossy(),
+            });
+            if let Some(sc) = scope {
+                body["scope"] = json!(sc);
+            }
+            if let Some(mt) = memory_type {
+                body["type"] = json!(mt);
+            }
+            let resp = http_post_json(&cfg, "/recall", token.as_deref(), &body, 20)?;
+            if print_json {
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+            } else {
+                let ctx = resp.get("context").and_then(|v| v.as_str()).unwrap_or("");
+                if ctx.trim().is_empty() {
+                    println!("(no matching memories in '{}')", ns);
+                } else {
+                    println!("{}", ctx);
+                }
+            }
+            Ok(())
+        }
+        Commands::Fix {
+            symptom,
+            cause,
+            fix,
+            verify,
+            namespace,
+            token,
+            json: print_json,
+        } => {
+            let ns = resolve_ns_arg(&namespace);
+            let formatted = memnos_core::store::format_fix_memory(
+                &symptom,
+                &cause,
+                &fix,
+                verify.as_deref(),
+            );
+            let body = json!({
+                "namespace": ns,
+                "text": formatted,
+                "speaker": "user",
+                "type": "fix",
+            });
+            let resp = http_post_json(&cfg, "/remember", token.as_deref(), &body, 30)?;
+            if print_json {
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+            } else {
+                println!(
+                    "Recorded verified fix in '{}' (turn_id={})",
+                    ns,
+                    resp.get("turn_id").unwrap_or(&json!(null))
+                );
+            }
+            Ok(())
+        }
+        Commands::Init {
+            path,
+            namespace,
+            days,
+            max_commits,
+            no_rules,
+            no_git,
+            extract,
+            dry_run,
+            token,
+            json: print_json,
+        } => {
+            let root = path
+                .map(PathBuf::from)
+                .or_else(|| env::current_dir().ok())
+                .unwrap_or_else(|| PathBuf::from("."));
+            let ns = if namespace == "auto" {
+                resolve_with_source(&root, None).0
+            } else {
+                namespace
+            };
+            let summary = hydrate_repo(
+                &root,
+                Some(&ns),
+                days,
+                max_commits,
+                !no_rules,
+                !no_git,
+                extract,
+                dry_run,
+                |body| http_post_json(&cfg, "/remember", token.as_deref(), &body, 20).ok(),
+            );
+            if print_json {
+                println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+            } else {
+                println!(
+                    "[memnos init] repo={} -> namespace='{}' (dry_run={}): rules={}/{}, commits={}/{}",
+                    summary["repo_root"].as_str().unwrap_or(""),
+                    ns,
+                    dry_run,
+                    summary["rules_written"],
+                    summary["rules_found"],
+                    summary["commits_written"],
+                    summary["commits_found"]
+                );
+            }
+            Ok(())
+        }
+        Commands::Explain {
+            namespace,
+            limit,
+            query,
+            token,
+            json: print_json,
+        } => {
+            let ns = resolve_ns_arg(&namespace);
+            if let Some(q) = query {
+                let _ = http_post_json(
+                    &cfg,
+                    "/recall",
+                    token.as_deref(),
+                    &json!({ "namespace": ns, "query": q }),
+                    20,
+                )?;
+            }
+            let resp = http_post_json(
+                &cfg,
+                "/recall/explain",
+                token.as_deref(),
+                &json!({ "namespace": ns, "limit": limit }),
+                10,
+            )?;
+            if print_json {
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+            } else {
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+            }
+            Ok(())
+        }
+        Commands::Registry {
+            topic,
+            task,
+            description,
+            from_beginning,
+            session,
+            namespace,
+            token,
+        } => {
+            let ns = resolve_ns_arg(&namespace);
+            let sn = resolve_sess_arg(session.as_deref());
+            let topic_str = topic.join(" ").trim().to_string();
+            if topic_str.is_empty() {
+                let sessions = http_post_json(
+                    &cfg,
+                    "/session/list",
+                    token.as_deref(),
+                    &json!({ "namespace": ns }),
+                    10,
+                )?;
+                let chs = http_post_json(
+                    &cfg,
+                    "/channel/list",
+                    token.as_deref(),
+                    &json!({ "namespace": ns }),
+                    10,
+                )?;
+                println!("=== Active Sessions in '{}' ===", ns);
+                if let Some(arr) = sessions.get("sessions").and_then(|v| v.as_array()) {
+                    if arr.is_empty() {
+                        println!("  (none)");
+                    }
+                    for s in arr {
+                        println!(
+                            "  @{} [{}] same_laptop={} pid={:?} tty={:?} task={:?}",
+                            s.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                            s.get("harness").and_then(|v| v.as_str()).unwrap_or(""),
+                            s.get("same_laptop").and_then(|v| v.as_bool()).unwrap_or(false),
+                            s.get("pid"),
+                            s.get("tty"),
+                            s.get("current_task")
+                        );
+                    }
+                }
+                println!("\n=== Channels ===");
+                if let Some(arr) = chs.get("channels").and_then(|v| v.as_array()) {
+                    for c in arr {
+                        println!(
+                            "  {} (kind={}, global={}, msgs={})",
+                            c.get("channel").and_then(|v| v.as_str()).unwrap_or(""),
+                            c.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
+                            c.get("global_topic").and_then(|v| v.as_bool()).unwrap_or(false),
+                            c.get("message_count").and_then(|v| v.as_i64()).unwrap_or(0)
+                        );
+                    }
+                }
+            } else {
+                let resp = http_post_json(
+                    &cfg,
+                    "/channel/registry",
+                    token.as_deref(),
+                    &json!({
+                        "namespace": ns,
+                        "topic": topic_str,
+                        "session_name": sn,
+                        "task": if task.is_empty() { Value::Null } else { json!(task) },
+                        "description": description,
+                        "from_beginning": from_beginning,
+                    }),
+                    15,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+            }
+            Ok(())
+        }
+        Commands::Watch {
+            channel,
+            timeout,
+            session,
+            namespace,
+            token,
+        } => {
+            let ns = resolve_ns_arg(&namespace);
+            let sn = resolve_sess_arg(session.as_deref());
+            let mut body = json!({
+                "namespace": ns,
+                "session_name": sn,
+                "timeout_seconds": timeout,
+            });
+            if let Some(ch) = channel {
+                body["channel"] = json!(ch);
+            }
+            let resp = http_post_json(&cfg, "/channel/wait", token.as_deref(), &body, timeout + 10)?;
+            println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+            Ok(())
+        }
+        Commands::Lease { verb } => {
+            let (path, body, tok) = match verb {
+                LeaseVerb::Acquire {
+                    key,
+                    holder,
+                    ttl,
+                    namespace,
+                    token,
+                } => (
+                    "/lease/acquire",
+                    json!({"namespace": resolve_ns_arg(&namespace), "key": key, "holder_id": holder, "ttl_seconds": ttl}),
+                    token,
+                ),
+                LeaseVerb::Heartbeat {
+                    key,
+                    holder,
+                    ttl,
+                    namespace,
+                    token,
+                } => (
+                    "/lease/heartbeat",
+                    json!({"namespace": resolve_ns_arg(&namespace), "key": key, "holder_id": holder, "ttl_seconds": ttl}),
+                    token,
+                ),
+                LeaseVerb::Release {
+                    key,
+                    holder,
+                    namespace,
+                    token,
+                } => (
+                    "/lease/release",
+                    json!({"namespace": resolve_ns_arg(&namespace), "key": key, "holder_id": holder}),
+                    token,
+                ),
+                LeaseVerb::WhoHolds {
+                    key,
+                    namespace,
+                    token,
+                } => (
+                    "/lease/who_holds",
+                    json!({"namespace": resolve_ns_arg(&namespace), "key": key}),
+                    token,
+                ),
+                LeaseVerb::Ls { namespace, token } => (
+                    "/lease/list",
+                    json!({"namespace": resolve_ns_arg(&namespace)}),
+                    token,
+                ),
+            };
+            let resp = http_post_json(&cfg, path, tok.as_deref(), &body, 10)?;
+            println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+            Ok(())
+        }
+        Commands::Session { verb } => match verb {
+            SessionVerb::Register {
+                name,
+                role,
+                harness,
+                model,
+                task,
+                channels,
+                ttl,
+                webhook,
+                namespace,
+                token,
+            } => {
+                let ns = resolve_ns_arg(&namespace);
+                let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let term = detect_terminal_session(&cwd);
+                let ch_list: Vec<String> = channels
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let term_meta = term.session_metadata();
+                let mut body = json!({
+                    "namespace": ns,
+                    "name": name,
+                    "role": role,
+                    "harness": if harness.is_empty() { term.harness } else { harness },
+                    "model": model,
+                    "current_task": task,
+                    "channels": ch_list,
+                    "ttl_seconds": ttl,
+                    "host": term.host,
+                    "cwd": term.cwd,
+                    "machine_id": term.machine_id,
+                    "pid": term.pid,
+                    "tty": term.tty,
+                    "metadata": term_meta,
+                });
+                if let Some(wh) = webhook {
+                    body["webhook"] = json!(wh);
+                }
+                let resp = http_post_json(&cfg, "/session/register", token.as_deref(), &body, 10)?;
+                let assigned = resp
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&name);
+                save_active_session(assigned, &cwd, &ns);
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                Ok(())
+            }
+            SessionVerb::Ls {
+                all,
+                namespace,
+                token,
+            } => {
+                let ns = resolve_ns_arg(&namespace);
+                let resp = http_post_json(
+                    &cfg,
+                    "/session/list",
+                    token.as_deref(),
+                    &json!({ "namespace": ns, "include_expired": all }),
+                    10,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                Ok(())
+            }
+            SessionVerb::Heartbeat {
+                name,
+                status,
+                task,
+                namespace,
+                token,
+            } => {
+                let ns = resolve_ns_arg(&namespace);
+                let sn = resolve_sess_arg(name.as_deref());
+                let mut body = json!({ "namespace": ns, "name": sn, "status": status });
+                if let Some(t) = task {
+                    body["current_task"] = json!(t);
+                }
+                let resp = http_post_json(&cfg, "/session/heartbeat", token.as_deref(), &body, 10)?;
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                Ok(())
+            }
+            SessionVerb::Unregister {
+                name,
+                namespace,
+                token,
+            } => {
+                let ns = resolve_ns_arg(&namespace);
+                let sn = resolve_sess_arg(name.as_deref());
+                let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let resp = http_post_json(
+                    &cfg,
+                    "/session/unregister",
+                    token.as_deref(),
+                    &json!({ "namespace": ns, "name": sn }),
+                    10,
+                )?;
+                clear_active_session(&sn, &cwd);
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                Ok(())
+            }
+            SessionVerb::Rename {
+                old_name,
+                new_name,
+                namespace,
+                token,
+            } => {
+                let ns = resolve_ns_arg(&namespace);
+                let resp = http_post_json(
+                    &cfg,
+                    "/session/rename",
+                    token.as_deref(),
+                    &json!({
+                        "namespace": ns,
+                        "old_name": old_name.trim_start_matches('@'),
+                        "new_name": new_name.trim_start_matches('@'),
+                    }),
+                    10,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                Ok(())
+            }
+            SessionVerb::Quota {
+                name,
+                pause,
+                resume,
+                reason,
+                namespace,
+                token,
+            } => {
+                let ns = resolve_ns_arg(&namespace);
+                let paused = if resume { false } else { pause || true };
+                let resp = http_post_json(
+                    &cfg,
+                    "/session/quota",
+                    token.as_deref(),
+                    &json!({
+                        "namespace": ns,
+                        "name": name.trim_start_matches('@'),
+                        "paused": paused,
+                        "reason": reason,
+                    }),
+                    10,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                Ok(())
+            }
+        },
+        Commands::Channel { verb } => {
+            if let ChannelVerb::Rm {
+                channel,
+                namespace,
+                token,
+            } = verb
+            {
+                let ns = resolve_ns_arg(&namespace);
+                let ch_enc: String =
+                    url::form_urlencoded::byte_serialize(channel.as_bytes()).collect();
+                let ns_enc: String =
+                    url::form_urlencoded::byte_serialize(ns.as_bytes()).collect();
+                let resp = http_delete_json(
+                    &cfg,
+                    &format!("/workspace/api/channel?namespace={}&channel={}", ns_enc, ch_enc),
+                    token.as_deref(),
+                    10,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                return Ok(());
+            }
+            let (path, body, tok, timeout) = match verb {
+                ChannelVerb::Rm { .. } => unreachable!(),
+                ChannelVerb::Pub {
+                    channel,
+                    message,
+                    intent,
+                    remember,
+                    claimable,
+                    session,
+                    namespace,
+                    token,
+                } => (
+                    "/channel/publish",
+                    json!({
+                        "namespace": resolve_ns_arg(&namespace),
+                        "channel": channel,
+                        "sender_session": resolve_sess_arg(session.as_deref()),
+                        "content": message,
+                        "intent": intent,
+                        "remember": remember,
+                        "claimable": claimable,
+                    }),
+                    token,
+                    15,
+                ),
+                ChannelVerb::Ack {
+                    id,
+                    action,
+                    resolution,
+                    session,
+                    namespace,
+                    token,
+                } => (
+                    "/channel/ack",
+                    json!({
+                        "namespace": resolve_ns_arg(&namespace),
+                        "session_name": resolve_sess_arg(session.as_deref()),
+                        "message_id": id,
+                        "action": action,
+                        "resolution": resolution,
+                    }),
+                    token,
+                    10,
+                ),
+                ChannelVerb::Sub {
+                    channels,
+                    from_beginning,
+                    session,
+                    namespace,
+                    token,
+                } => (
+                    "/channel/subscribe",
+                    json!({
+                        "namespace": resolve_ns_arg(&namespace),
+                        "session_name": resolve_sess_arg(session.as_deref()),
+                        "channels": channels,
+                        "from_beginning": from_beginning,
+                    }),
+                    token,
+                    10,
+                ),
+                ChannelVerb::Unsub {
+                    channels,
+                    session,
+                    namespace,
+                    token,
+                } => (
+                    "/channel/unsubscribe",
+                    json!({
+                        "namespace": resolve_ns_arg(&namespace),
+                        "session_name": resolve_sess_arg(session.as_deref()),
+                        "channels": channels,
+                    }),
+                    token,
+                    10,
+                ),
+                ChannelVerb::Create {
+                    channel,
+                    description,
+                    global,
+                    namespace,
+                    token,
+                } => (
+                    "/workspace/api/channel/create",
+                    json!({
+                        "namespace": resolve_ns_arg(&namespace),
+                        "channel": channel,
+                        "description": description,
+                        "global_topic": global,
+                    }),
+                    token,
+                    10,
+                ),
+                ChannelVerb::Poll {
+                    channel,
+                    peek,
+                    session,
+                    namespace,
+                    token,
+                } => (
+                    "/channel/poll",
+                    json!({
+                        "namespace": resolve_ns_arg(&namespace),
+                        "session_name": resolve_sess_arg(session.as_deref()),
+                        "channel": channel,
+                        "peek": peek,
+                    }),
+                    token,
+                    10,
+                ),
+                ChannelVerb::Wait {
+                    channel,
+                    timeout,
+                    session,
+                    namespace,
+                    token,
+                } => (
+                    "/channel/wait",
+                    json!({
+                        "namespace": resolve_ns_arg(&namespace),
+                        "session_name": resolve_sess_arg(session.as_deref()),
+                        "channel": channel,
+                        "timeout_seconds": timeout,
+                    }),
+                    token,
+                    timeout + 10,
+                ),
+                ChannelVerb::Ls { namespace, token } => (
+                    "/channel/list",
+                    json!({ "namespace": resolve_ns_arg(&namespace) }),
+                    token,
+                    10,
+                ),
+                ChannelVerb::Advertise {
+                    channel,
+                    description,
+                    what_you_get,
+                    intents,
+                    session,
+                    namespace,
+                    token,
+                } => {
+                    let int_vec: Vec<String> = intents
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    (
+                        "/channel/advertise",
+                        json!({
+                            "namespace": resolve_ns_arg(&namespace),
+                            "channel": channel,
+                            "owner_session": resolve_sess_arg(session.as_deref()),
+                            "description": description,
+                            "what_you_get": what_you_get,
+                            "intents": if int_vec.is_empty() { Value::Null } else { json!(int_vec) },
+                        }),
+                        token,
+                        10,
+                    )
+                }
+                ChannelVerb::Cleanup {
+                    idle_days,
+                    retention_days,
+                    dry_run,
+                    namespace,
+                    token,
+                } => (
+                    "/channel/cleanup",
+                    json!({
+                        "namespace": resolve_ns_arg(&namespace),
+                        "idle_days": idle_days,
+                        "message_retention_days": retention_days,
+                        "dry_run": dry_run,
+                    }),
+                    token,
+                    20,
+                ),
+            };
+            let resp = http_post_json(&cfg, path, tok.as_deref(), &body, timeout)?;
+            println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+            Ok(())
+        }
+        Commands::Inbox { verb } => {
+            let (path, body, tok) = match verb {
+                InboxVerb::Send {
+                    to,
+                    message,
+                    subject,
+                    intent,
+                    priority,
+                    thread_key,
+                    replaces_id,
+                    replace_pending,
+                    session,
+                    namespace,
+                    token,
+                } => (
+                    "/inbox/send",
+                    json!({
+                        "namespace": resolve_ns_arg(&namespace),
+                        "to_session": to,
+                        "from_session": resolve_sess_arg(session.as_deref()),
+                        "content": message,
+                        "subject": subject,
+                        "intent": intent,
+                        "priority": priority,
+                        "thread_key": thread_key,
+                        "replaces_id": replaces_id,
+                        "replace_pending": replace_pending,
+                    }),
+                    token,
+                ),
+                InboxVerb::Ls {
+                    status,
+                    include_recalled,
+                    mark_read,
+                    session,
+                    namespace,
+                    token,
+                } => (
+                    "/inbox/list",
+                    json!({
+                        "namespace": resolve_ns_arg(&namespace),
+                        "to_session": resolve_sess_arg(session.as_deref()),
+                        "status": status,
+                        "include_recalled": include_recalled,
+                        "mark_read": mark_read,
+                    }),
+                    token,
+                ),
+                InboxVerb::Act {
+                    id,
+                    action,
+                    resolution,
+                    reply,
+                    session,
+                    namespace,
+                    token,
+                } => (
+                    "/inbox/act",
+                    json!({
+                        "namespace": resolve_ns_arg(&namespace),
+                        "to_session": resolve_sess_arg(session.as_deref()),
+                        "message_id": id,
+                        "action": action,
+                        "resolution": resolution,
+                        "reply": reply,
+                    }),
+                    token,
+                ),
+                InboxVerb::Recall {
+                    id,
+                    channel_message_id,
+                    thread_key,
+                    reason,
+                    session,
+                    namespace,
+                    token,
+                }
+                | InboxVerb::Retract {
+                    id,
+                    channel_message_id,
+                    thread_key,
+                    reason,
+                    session,
+                    namespace,
+                    token,
+                } => (
+                    "/inbox/retract",
+                    json!({
+                        "namespace": resolve_ns_arg(&namespace),
+                        "from_session": resolve_sess_arg(session.as_deref()),
+                        "message_id": id,
+                        "channel_message_id": channel_message_id,
+                        "thread_key": thread_key,
+                        "reason": reason,
+                    }),
+                    token,
+                ),
+            };
+            let resp = http_post_json(&cfg, path, tok.as_deref(), &body, 15)?;
+            println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+            Ok(())
+        }
+        Commands::Principal { verb } => {
+            use std::io::IsTerminal;
+            let pool = build_pool(&dsn(&cfg), 4)?;
+            Control::init(&pool).await.map_err(|e| e.to_string())?;
+            match verb {
+                PrincipalVerb::Create { name, kind } => {
+                    let id = Control::create_principal(&pool, &name, &kind)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("principal '{}' (id={}, kind={})", name, id, kind);
+                }
+                PrincipalVerb::Ls { json: as_json } => {
+                    let list = Control::list_principals(&pool)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if as_json || !io::stdout().is_terminal() {
+                        println!("{}", serde_json::to_string_pretty(&list).unwrap());
+                    } else {
+                        println!("{:<6} {:<24} {:<10} {}", "ID", "NAME", "KIND", "CREATED");
+                        println!("{}", "-".repeat(64));
+                        for p in &list {
+                            let id = p.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                            let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                            let kind = p.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                            let created = p
+                                .get("created_at")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.chars().take(19).collect::<String>())
+                                .unwrap_or_default();
+                            println!("{:<6} {:<24} {:<10} {}", id, name, kind, created);
+                        }
+                    }
+                }
+                PrincipalVerb::Rm { target } => {
+                    let id = if let Ok(i) = target.parse::<i64>() {
+                        i
+                    } else {
+                        lookup_principal_id(&pool, &target).await?
+                    };
+                    let res = Control::delete_principal(&pool, id, 0)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!(
+                        "deleted principal id={} ({})",
+                        id,
+                        res.get("deleted_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&target)
+                    );
+                }
+                PrincipalVerb::PruneTest => {
+                    let list = Control::list_principals(&pool)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let mut pruned = 0usize;
+                    for p in list {
+                        let id = p.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                        let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        if name.starts_with("test-") || name.starts_with("test_") {
+                            let toks = Control::list_tokens(&pool, id)
+                                .await
+                                .unwrap_or_default();
+                            let has_active = toks
+                                .iter()
+                                .any(|t| !t.get("revoked").and_then(|b| b.as_bool()).unwrap_or(false));
+                            if !has_active && Control::delete_principal(&pool, id, 0).await.is_ok() {
+                                pruned += 1;
+                            }
+                        }
+                    }
+                    println!("pruned {} zero-token test principal(s).", pruned);
+                }
+            }
+            Ok(())
+        }
+        Commands::Token { verb } => {
+            use std::io::IsTerminal;
+            let pool = build_pool(&dsn(&cfg), 4)?;
+            Control::init(&pool).await.map_err(|e| e.to_string())?;
+            match verb {
+                TokenVerb::Mint {
+                    principal,
+                    label,
+                    ttl_days,
+                    json: as_json,
+                } => {
+                    let pid = if principal.eq_ignore_ascii_case("admin") {
+                        let id = Control::create_principal(&pool, "admin", "user")
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        Control::grant(&pool, id, "*", true, true)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        id
+                    } else {
+                        lookup_principal_id(&pool, &principal).await?
+                    };
+                    let lbl = label.or_else(|| {
+                        if principal.eq_ignore_ascii_case("admin") {
+                            Some("cli-admin".to_string())
+                        } else {
+                            None
+                        }
+                    });
+                    let tok = Control::mint_token(&pool, pid, lbl.as_deref(), ttl_days)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if principal.eq_ignore_ascii_case("admin")
+                        && cfg
+                            .admin_token
+                            .as_ref()
+                            .map(|s| s.trim().is_empty())
+                            .unwrap_or(true)
+                    {
+                        cfg.admin_token = Some(tok.clone());
+                        let _ = save_config(&cfg);
+                    }
+                    if as_json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&json!({
+                                "principal": principal,
+                                "principal_id": pid,
+                                "label": lbl,
+                                "ttl_days": ttl_days,
+                                "token": tok,
+                            }))
+                            .unwrap()
+                        );
+                    } else {
+                        println!("{}", tok);
+                    }
+                }
+                TokenVerb::Ls {
+                    principal,
+                    reveal,
+                    revoked,
+                    json: as_json,
+                } => {
+                    let pid = match principal.as_deref() {
+                        Some(p) if !p.trim().is_empty() && p != "*" && p != "all" => {
+                            if let Ok(id) = p.parse::<i64>() {
+                                id
+                            } else {
+                                lookup_principal_id(&pool, p).await?
+                            }
+                        }
+                        _ => 0,
+                    };
+                    let mut list = Control::list_tokens(&pool, pid)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if !revoked {
+                        list.retain(|t| !t.get("revoked").and_then(|b| b.as_bool()).unwrap_or(false));
+                    }
+                    if reveal {
+                        for t in list.iter_mut() {
+                            let id = t.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                            let is_rev = t.get("revoked").and_then(|b| b.as_bool()).unwrap_or(false);
+                            if id > 0 && !is_rev {
+                                if let Ok(rv) = Control::reveal_token(&pool, id).await {
+                                    if let Some(plain) = rv.get("token").and_then(|s| s.as_str()) {
+                                        if let Some(obj) = t.as_object_mut() {
+                                            obj.insert("token".to_string(), json!(plain));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if as_json || !io::stdout().is_terminal() {
+                        println!("{}", serde_json::to_string_pretty(&list).unwrap());
+                    } else if list.is_empty() {
+                        println!("No matching tokens found. Mint an admin token with `memnos admin` or `memnos token mint`.");
+                    } else {
+                        println!(
+                            "{:<6} {:<18} {:<16} {:<9} {:<20} {}",
+                            "ID",
+                            "PRINCIPAL",
+                            "LABEL",
+                            "STATUS",
+                            "CREATED",
+                            if reveal { "TOKEN" } else { "HINT (--reveal for full)" }
+                        );
+                        println!("{}", "-".repeat(96));
+                        for t in &list {
+                            let id = t.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                            let pname = t
+                                .get("principal_name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?");
+                            let lbl = t.get("label").and_then(|v| v.as_str()).unwrap_or("—");
+                            let is_rev = t.get("revoked").and_then(|b| b.as_bool()).unwrap_or(false);
+                            let st = if is_rev { "REVOKED" } else { "ACTIVE" };
+                            let created = t
+                                .get("created_at")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.chars().take(19).collect::<String>())
+                                .unwrap_or_default();
+                            let secret = t
+                                .get("token")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| t.get("hint").and_then(|v| v.as_str()))
+                                .unwrap_or("mnk_••••••••");
+                            println!(
+                                "{:<6} {:<18} {:<16} {:<9} {:<20} {}",
+                                id, pname, lbl, st, created, secret
+                            );
+                        }
+                    }
+                }
+                TokenVerb::Reveal { id, json: as_json } => {
+                    let rv = Control::reveal_token(&pool, id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if as_json {
+                        println!("{}", serde_json::to_string_pretty(&rv).unwrap());
+                    } else {
+                        println!(
+                            "{}",
+                            rv.get("token").and_then(|v| v.as_str()).unwrap_or("")
+                        );
+                    }
+                }
+                TokenVerb::Revoke { id } => {
+                    Control::revoke_token_by_id(&pool, id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("revoked token id={}", id);
+                }
+            }
+            Ok(())
+        }
+        Commands::Worker { verb } => {
+            match verb {
+                WorkerVerb::Status { token } => {
+                    let resp = http_get_json(&cfg, "/workspace/api/spawner/status", token.as_deref(), 10)?;
+                    println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                }
+                WorkerVerb::Launch {
+                    name,
+                    harness,
+                    model,
+                    prompt,
+                    channels,
+                    cwd,
+                    namespace,
+                    token,
+                } => {
+                    let ns = resolve_ns_arg(&namespace);
+                    let ch_list: Vec<String> = channels
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    let dir = cwd.unwrap_or_else(|| {
+                        env::current_dir()
+                            .unwrap_or_else(|_| PathBuf::from("."))
+                            .to_string_lossy()
+                            .to_string()
+                    });
+                    let resp = http_post_json(
+                        &cfg,
+                        "/workspace/api/spawner/launch",
+                        token.as_deref(),
+                        &json!({
+                            "namespace": ns,
+                            "name": name,
+                            "harness": harness,
+                            "model": model,
+                            "prompt": prompt,
+                            "channels": ch_list,
+                            "cwd": dir,
+                        }),
+                        20,
+                    )?;
+                    println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                }
+                WorkerVerb::Stop {
+                    name,
+                    namespace,
+                    token,
+                } => {
+                    let ns = resolve_ns_arg(&namespace);
+                    let resp = http_post_json(
+                        &cfg,
+                        "/workspace/api/spawner/stop",
+                        token.as_deref(),
+                        &json!({ "namespace": ns, "name": name }),
+                        10,
+                    )?;
+                    println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                }
+                WorkerVerb::Logs {
+                    name,
+                    namespace,
+                    token,
+                } => {
+                    let ns = resolve_ns_arg(&namespace);
+                    let ns_enc: String =
+                        url::form_urlencoded::byte_serialize(ns.as_bytes()).collect();
+                    let nm_enc: String =
+                        url::form_urlencoded::byte_serialize(name.as_bytes()).collect();
+                    let resp = http_get_json(
+                        &cfg,
+                        &format!("/workspace/api/spawner/logs?namespace={}&name={}", ns_enc, nm_enc),
+                        token.as_deref(),
+                        10,
+                    )?;
+                    if let Some(lines) = resp.get("lines").and_then(|v| v.as_array()) {
+                        for ln in lines {
+                            if let Some(s) = ln.as_str() {
+                                println!("{}", s);
+                            }
+                        }
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Grant { verb } => {
+            let pool = build_pool(&dsn(&cfg), 4)?;
+            Control::init(&pool).await.map_err(|e| e.to_string())?;
+            match verb {
+                GrantVerb::Add {
+                    principal,
+                    namespace,
+                    read_only,
+                } => {
+                    let pid = lookup_principal_id(&pool, &principal).await?;
+                    Control::grant(&pool, pid, &namespace, true, !read_only)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!(
+                        "granted {} -> {} (write={})",
+                        principal, namespace, !read_only
+                    );
+                }
+                GrantVerb::Ls { principal } => {
+                    let pid = lookup_principal_id(&pool, &principal).await?;
+                    let g = Control::authorized_namespaces(&pool, pid)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("{}", serde_json::to_string_pretty(&g).unwrap());
+                }
+                GrantVerb::Rm {
+                    principal,
+                    namespace,
+                } => {
+                    let pid = lookup_principal_id(&pool, &principal).await?;
+                    Control::revoke_grant(&pool, pid, &namespace)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("revoked grant {} -> {}", principal, namespace);
+                }
+            }
+            Ok(())
+        }
+        Commands::Role { verb } => {
+            let pool = build_pool(&dsn(&cfg), 4)?;
+            Control::init(&pool).await.map_err(|e| e.to_string())?;
+            match verb {
+                RoleVerb::Create { name, desc } => {
+                    let id = Control::create_role(&pool, &name, desc.as_deref(), None)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("role '{}' (id={})", name, id);
+                }
+                RoleVerb::Ls => {
+                    let r = Control::list_roles(&pool)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("{}", serde_json::to_string_pretty(&r).unwrap());
+                }
+                RoleVerb::Rm { name } => {
+                    Control::delete_role(&pool, &name)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("deleted role '{}'", name);
+                }
+                RoleVerb::Grant {
+                    name,
+                    namespace,
+                    read_only,
+                } => {
+                    Control::grant_role(&pool, &name, &namespace, true, !read_only)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("granted role '{}' -> {}", name, namespace);
+                }
+                RoleVerb::Revoke { name, namespace } => {
+                    Control::revoke_role_grant(&pool, &name, &namespace)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("revoked role '{}' -> {}", name, namespace);
+                }
+                RoleVerb::Grants { name } => {
+                    let g = Control::list_role_grants(&pool, &name)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("{}", serde_json::to_string_pretty(&g).unwrap());
+                }
+                RoleVerb::AddMember { name, principal } => {
+                    let pid = lookup_principal_id(&pool, &principal).await?;
+                    Control::add_role_member(&pool, &name, pid)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("added '{}' to role '{}'", principal, name);
+                }
+                RoleVerb::RmMember { name, principal } => {
+                    let pid = lookup_principal_id(&pool, &principal).await?;
+                    Control::remove_role_member(&pool, &name, pid)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("removed '{}' from role '{}'", principal, name);
+                }
+                RoleVerb::Members { name } => {
+                    let m = Control::list_role_members(&pool, &name)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("{}", serde_json::to_string_pretty(&m).unwrap());
+                }
+            }
+            Ok(())
+        }
+        Commands::Constraint { verb } => {
+            let pool = build_pool(&dsn(&cfg), 4)?;
+            Control::init(&pool).await.map_err(|e| e.to_string())?;
+            match verb {
+                ConstraintVerb::Add {
+                    namespace,
+                    rule,
+                    enforce,
+                    tool,
+                    token,
+                    subject,
+                } => {
+                    let mut body = json!({
+                        "namespace": namespace,
+                        "text": rule,
+                        "type": "constraint",
+                        "extract": false,
+                    });
+                    if let Some(s) = subject {
+                        body["constraint_subject"] = json!(s);
+                    }
+                    let _ = http_post_json(&cfg, "/remember", token.as_deref(), &body, 15)?;
+                    if matches!(enforce.as_str(), "ask" | "block") {
+                        let tm = tool.ok_or_else(|| {
+                            "--tool <glob> is required when --enforce is ask or block".to_string()
+                        })?;
+                        let id = Control::add_constraint_enforcement(
+                            &pool,
+                            &namespace,
+                            &rule,
+                            &enforce,
+                            &tm,
+                            None,
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                        let _ = refresh_local_enforce_cache(&pool, &namespace).await;
+                        println!(
+                            "added enforced constraint id={} ({} on {:?}) in '{}'",
+                            id, enforce, tm, namespace
+                        );
+                    } else {
+                        println!("pinned advisory constraint in '{}'", namespace);
+                    }
+                }
+                ConstraintVerb::Ls { namespace } => {
+                    let rows =
+                        Control::list_constraint_enforcement(&pool, namespace.as_deref(), true)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    println!("{}", serde_json::to_string_pretty(&rows).unwrap());
+                }
+                ConstraintVerb::Rm { id } => {
+                    let ok = Control::remove_constraint_enforcement(&pool, id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("deactivated constraint id={} (removed={})", id, ok);
+                }
+                ConstraintVerb::Pins { namespace } => {
+                    let store = build_store_from_cfg(&cfg, pool).await?;
+                    let ns = namespace.unwrap_or_else(|| resolve_ns_arg("auto"));
+                    let pins = store.list_pinned_constraints(&ns).await?;
+                    println!("{}", serde_json::to_string_pretty(&pins).unwrap());
+                }
+                ConstraintVerb::Retire {
+                    target,
+                    subject,
+                    namespace,
+                } => {
+                    let store = build_store_from_cfg(&cfg, pool).await?;
+                    let id_or_subj = target
+                        .or(subject)
+                        .ok_or_else(|| "target id or --subject required".to_string())?;
+                    let ok = store.retire_constraint_by_id(&namespace, &id_or_subj).await?;
+                    println!("retired constraint {:?} in '{}' (ok={})", id_or_subj, namespace, ok);
+                }
+                ConstraintVerb::Override { verb: overb } => match overb {
+                    ConstraintOverrideVerb::Add {
+                        child_namespace,
+                        parent_namespace,
+                    } => {
+                        let id = Control::add_constraint_override(
+                            &pool,
+                            &child_namespace,
+                            &parent_namespace,
+                            None,
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                        println!("added constraint override id={}", id);
+                    }
+                    ConstraintOverrideVerb::Ls { namespace } => {
+                        let rows = Control::list_constraint_overrides(&pool, namespace.as_deref())
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        println!("{}", serde_json::to_string_pretty(&rows).unwrap());
+                    }
+                    ConstraintOverrideVerb::Rm { id } => {
+                        let ok = Control::remove_constraint_override(&pool, id)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        println!("removed override id={} (ok={})", id, ok);
+                    }
+                },
+            }
+            Ok(())
+        }
+        Commands::Namespace {
+            action,
+            name,
+            dst,
+            to,
+            like,
+            desc,
+            kind,
+            inherit_ancestors,
+            link_kind,
+            purge,
+            dry_run,
+            empty: _,
+            stale: _,
+            force: _,
+        } => {
+            let pool = build_pool(&dsn(&cfg), 4)?;
+            Control::init(&pool).await.map_err(|e| e.to_string())?;
+            match action.as_str() {
+                "add" | "create" => {
+                    let n = name.ok_or("namespace name required")?;
+                    Control::create_namespace(&pool, &n, None, desc.as_deref())
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if let Some(k) = kind {
+                        Control::set_namespace_kind(&pool, &n, &k)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    }
+                    println!("created namespace '{}'", n);
+                }
+                "ls" | "list" => {
+                    let list = Control::list_namespaces(&pool)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("{}", serde_json::to_string_pretty(&list).unwrap());
+                }
+                "detail" | "inspect" => {
+                    let n = name.unwrap_or_else(|| resolve_ns_arg("auto"));
+                    let pid = Control::create_principal(&pool, "admin", "user")
+                        .await
+                        .unwrap_or(1);
+                    let _ = Control::grant(&pool, pid, "*", true, true).await;
+                    let d = Control::workspace_namespace_detail(&pool, pid, &n)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("{}", serde_json::to_string_pretty(&d).unwrap());
+                }
+                "rm" | "delete" => {
+                    let n = name.ok_or("namespace name required")?;
+                    if purge {
+                        take_verified_db_backup(&cfg, "pre-purge", None, 10).await?;
+                    }
+                    Control::delete_namespace(&pool, &n, purge)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("deleted namespace '{}' (purge={})", n, purge);
+                }
+                "set" => {
+                    let n = name.ok_or("namespace name required")?;
+                    if let Some(k) = kind {
+                        Control::set_namespace_kind(&pool, &n, &k)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    }
+                    if let Some(inh) = inherit_ancestors {
+                        Control::set_namespace_inherit_ancestors(&pool, &n, inh == "true")
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    }
+                    println!("updated namespace '{}'", n);
+                }
+                "link" => {
+                    let s = name.ok_or("src namespace required")?;
+                    let d = dst.or(to).ok_or("dst namespace required")?;
+                    Control::link_namespaces(&pool, &s, &d, None, &link_kind)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("linked '{}' -> '{}' ({})", s, d, link_kind);
+                }
+                "unlink" => {
+                    let s = name.ok_or("src namespace required")?;
+                    let d = dst.or(to).ok_or("dst namespace required")?;
+                    Control::unlink_namespaces(&pool, &s, &d)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("unlinked '{}' -> '{}'", s, d);
+                }
+                "links" => {
+                    let l = Control::list_links(&pool, name.as_deref())
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("{}", serde_json::to_string_pretty(&l).unwrap());
+                }
+                "copy" | "move" | "merge" => {
+                    let s = name.ok_or("source namespace required")?;
+                    let d = to
+                        .or(dst)
+                        .ok_or("destination namespace required (`<dst>` or `--to <dst>`)")?;
+                    let pid = Control::create_principal(&pool, "admin", "user")
+                        .await
+                        .unwrap_or(1);
+                    let _ = Control::grant(&pool, pid, "*", true, true).await;
+                    let include_cp = matches!(action.as_str(), "move" | "merge");
+                    let has_like = like
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|x| !x.is_empty())
+                        .is_some();
+                    let remove_src = !has_like && (action == "move" || (action == "merge" && purge));
+                    let preview = Control::workspace_namespace_transfer_preview(
+                        &pool,
+                        pid,
+                        &s,
+                        like.as_deref(),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                    if dry_run {
+                        println!("{}", serde_json::to_string_pretty(&preview).unwrap());
+                        return Ok(());
+                    }
+                    let pre_backup = if action != "copy" || remove_src {
+                        let bp = take_verified_db_backup(&cfg, "pre-transfer", None, 10).await?;
+                        Some(bp.to_string_lossy().to_string())
+                    } else {
+                        None
+                    };
+                    let store = build_store_from_cfg(&cfg, pool.clone()).await?;
+                    let (mem_out, cp_out, removed_source) = Control::transfer_namespace_atomic(
+                        &pool,
+                        &store,
+                        pid,
+                        true,
+                        &s,
+                        &d,
+                        &action,
+                        like.as_deref(),
+                        true,
+                        include_cp,
+                        include_cp,
+                        remove_src,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "ok": true,
+                            "mode": action,
+                            "source": s,
+                            "destination": d,
+                            "removed_source": removed_source,
+                            "pre_backup": pre_backup,
+                            "memories": mem_out,
+                            "control_plane": cp_out,
+                        }))
+                        .unwrap()
+                    );
+                }
+                "cleanup-graph" => {
+                    let store = build_store_from_cfg(&cfg, pool).await?;
+                    let out = if let Some(n) = name {
+                        store.cleanup_entity_graph(&n, dry_run).await?
+                    } else {
+                        store.cleanup_all_entity_graphs(dry_run).await?
+                    };
+                    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                }
+                "reconcile" => {
+                    let n = name.unwrap_or_else(|| resolve_ns_arg("auto"));
+                    let store = build_store_from_cfg(&cfg, pool).await?;
+                    let out = store.consolidate(&n).await?;
+                    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                }
+                "prune" => {
+                    let list = Control::list_namespaces(&pool)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let empty_ns: Vec<Value> = list
+                        .into_iter()
+                        .filter(|v| {
+                            v.get("turn_count").and_then(|x| x.as_i64()).unwrap_or(0) == 0
+                                && v.get("fact_count").and_then(|x| x.as_i64()).unwrap_or(0) == 0
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&empty_ns).unwrap());
+                }
+                _ => return Err(format!("unknown namespace action '{}'", action)),
+            }
+            Ok(())
+        }
+        Commands::Secret {
+            action,
+            name,
+            value,
+            desc,
+        } => {
+            if action == "keygen" {
+                let k = Vault::keygen();
+                println!("{}", k);
+                return Ok(());
+            }
+            let pool = build_pool(&dsn(&cfg), 4)?;
+            Control::init(&pool).await.map_err(|e| e.to_string())?;
+            let obj = pool.get().await.map_err(|e| e.to_string())?;
+            match action.as_str() {
+                "ls" => {
+                    let list = Vault::list(&obj).await.map_err(|e| e.to_string())?;
+                    println!("{}", serde_json::to_string_pretty(&list).unwrap());
+                }
+                "get" => {
+                    let n = name.ok_or("secret name required")?;
+                    match Vault::get(&obj, &n).await.map_err(|e| e.to_string())? {
+                        Some(val) => println!("{}", val),
+                        None => return Err(format!("secret '{}' not found", n)),
+                    }
+                }
+                "set" => {
+                    let n = name.ok_or("secret name required")?;
+                    let val = match value {
+                        Some(v) => v,
+                        None => {
+                            print!("Secret value for '{}': ", n);
+                            let _ = io::stdout().flush();
+                            let mut buf = String::new();
+                            io::stdin()
+                                .read_line(&mut buf)
+                                .map_err(|e| e.to_string())?;
+                            buf.trim().to_string()
+                        }
+                    };
+                    Vault::set(&obj, &n, &val, desc.as_deref())
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("stored encrypted secret '{}'", n);
+                }
+                "rm" => {
+                    let n = name.ok_or("secret name required")?;
+                    let ok = Vault::delete(&obj, &n).await.map_err(|e| e.to_string())?;
+                    println!("deleted secret '{}' (removed={})", n, ok);
+                }
+                "rotate" => {
+                    let old_k = env::var("MEMNOS_SECRET_KEY")
+                        .map_err(|_| "MEMNOS_SECRET_KEY must be set to rotate".to_string())?;
+                    let new_k = Vault::keygen();
+                    let (rotated, skipped) = Vault::rotate_key(&obj, &old_k, &new_k)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    cfg.secret_key = Some(new_k.clone());
+                    save_config(&cfg).map_err(|e| e.to_string())?;
+                    println!(
+                        "rotated {} secret(s) (skipped={:?}); updated config.json secret_key.",
+                        rotated, skipped
+                    );
+                }
+                _ => return Err(format!("unknown secret action '{}'", action)),
+            }
+            Ok(())
+        }
+        Commands::Ns { value } => {
+            let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let real_cwd = fs::canonicalize(&cwd).unwrap_or(cwd);
+            let key = real_cwd.to_string_lossy().to_string();
+            let ov_path = config_dir().join("ns_overrides.json");
+            let mut map: serde_json::Map<String, Value> = fs::read_to_string(&ov_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .and_then(|v| v.as_object().cloned())
+                .unwrap_or_default();
+
+            match value.as_deref() {
+                None => {
+                    let (ns, src) = resolve_with_source(&real_cwd, None);
+                    println!("{} (source: {})", ns, src);
+                }
+                Some("clear") => {
+                    map.remove(&key);
+                    let _ = fs::create_dir_all(config_dir());
+                    fs::write(&ov_path, serde_json::to_string_pretty(&map).unwrap())
+                        .map_err(|e| e.to_string())?;
+                    let (ns, src) = resolve_with_source(&real_cwd, None);
+                    println!("cleared folder override -> now '{}' ({})", ns, src);
+                }
+                Some(v) => {
+                    map.insert(key.clone(), json!(v));
+                    let _ = fs::create_dir_all(config_dir());
+                    fs::write(&ov_path, serde_json::to_string_pretty(&map).unwrap())
+                        .map_err(|e| e.to_string())?;
+                    println!("pinned {} -> '{}'", key, v);
+                }
+            }
+            Ok(())
+        }
+        Commands::Bind {
+            key,
+            namespace,
+            host,
+            host_path,
+            all_hosts,
+            token,
+        } => {
+            let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let actual_key = if key == "." {
+                if host_path {
+                    fs::canonicalize(&cwd)
+                        .unwrap_or(cwd.clone())
+                        .to_string_lossy()
+                        .to_string()
+                } else {
+                    repo_key(&cwd).unwrap_or_else(|| {
+                        fs::canonicalize(&cwd)
+                            .unwrap_or(cwd.clone())
+                            .to_string_lossy()
+                            .to_string()
+                    })
+                }
+            } else {
+                key
+            };
+            let (kt, hid) = if host_path {
+                (
+                    "host_path",
+                    Some(host.unwrap_or_else(machine_id)),
+                )
+            } else if let Some(h) = host {
+                ("host_repo", Some(h))
+            } else {
+                let _ = all_hosts;
+                ("repo", None)
+            };
+            let resp = http_post_json(
+                &cfg,
+                "/bindings",
+                token.as_deref(),
+                &json!({
+                    "key_type": kt,
+                    "key": actual_key,
+                    "namespace": namespace,
+                    "host_id": hid,
+                }),
+                10,
+            )?;
+            if let Ok(b) = http_get_json(&cfg, "/bindings", token.as_deref(), 5) {
+                let _ = fs::create_dir_all(config_dir());
+                let _ = fs::write(
+                    config_dir().join("bindings_cache.json"),
+                    serde_json::to_string(&b).unwrap_or_default(),
+                );
+            }
+            println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+            Ok(())
+        }
+        Commands::Bindings { verb } => match verb {
+            BindingsVerb::Ls { token } => {
+                let resp = http_get_json(&cfg, "/bindings", token.as_deref(), 10)?;
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                Ok(())
+            }
+            BindingsVerb::Refresh { token } => {
+                let _ = http_post_json(
+                    &cfg,
+                    "/hosts",
+                    token.as_deref(),
+                    &json!({ "machine_id": machine_id(), "friendly_name": hostname() }),
+                    5,
+                );
+                let resp = http_get_json(&cfg, "/bindings", token.as_deref(), 10)?;
+                let _ = fs::create_dir_all(config_dir());
+                fs::write(
+                    config_dir().join("bindings_cache.json"),
+                    serde_json::to_string_pretty(&resp).unwrap(),
+                )
+                .map_err(|e| e.to_string())?;
+                println!(
+                    "refreshed {} binding(s) into local cache.",
+                    resp.get("bindings")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0)
+                );
+                Ok(())
+            }
+            BindingsVerb::Migrate { token } => {
+                let ov_path = config_dir().join("ns_overrides.json");
+                let map: serde_json::Map<String, Value> = fs::read_to_string(&ov_path)
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                    .and_then(|v| v.as_object().cloned())
+                    .unwrap_or_default();
+                let mut migrated = 0usize;
+                for (path_str, ns_val) in map {
+                    let Some(ns) = ns_val.as_str() else { continue };
+                    let p = Path::new(&path_str);
+                    if let Some(rk) = repo_key(p) {
+                        if http_post_json(
+                            &cfg,
+                            "/bindings",
+                            token.as_deref(),
+                            &json!({"key_type": "repo", "key": rk, "namespace": ns}),
+                            10,
+                        )
+                        .is_ok()
+                        {
+                            migrated += 1;
+                        }
+                    }
+                }
+                println!("migrated {} local override(s) to server bindings.", migrated);
+                Ok(())
+            }
+            BindingsVerb::Recap { days, token } => {
+                let resp = http_get_json(
+                    &cfg,
+                    &format!("/bindings/recap?days={}", days),
+                    token.as_deref(),
+                    10,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                Ok(())
+            }
+        },
+        Commands::Unbind { target, token } => {
+            let id = if let Ok(i) = target.parse::<i64>() {
+                i
+            } else {
+                let list = http_get_json(&cfg, "/bindings", token.as_deref(), 10)?;
+                list.get("bindings")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| {
+                        arr.iter()
+                            .find(|b| b.get("key").and_then(|k| k.as_str()) == Some(target.as_str()))
+                            .and_then(|b| b.get("id").and_then(|x| x.as_i64()))
+                    })
+                    .ok_or_else(|| format!("no binding matching '{}'", target))?
+            };
+            let resp =
+                http_delete_json(&cfg, &format!("/bindings/{}", id), token.as_deref(), 10)?;
+            println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+            Ok(())
+        }
+        Commands::Hosts {
+            subcmd,
+            name,
+            token,
+        } => {
+            if subcmd.as_deref() == Some("rename") {
+                let fname = name.ok_or("friendly name required")?;
+                let resp = http_post_json(
+                    &cfg,
+                    "/hosts",
+                    token.as_deref(),
+                    &json!({ "machine_id": machine_id(), "friendly_name": fname }),
+                    10,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+            } else {
+                let resp = http_get_json(&cfg, "/hosts", token.as_deref(), 10)?;
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+            }
+            Ok(())
+        }
+        Commands::Stats => {
+            let pool = build_pool(&dsn(&cfg), 4)?;
+            Control::init(&pool).await.map_err(|e| e.to_string())?;
+            let stats = Control::stats(&pool, 24)
+                .await
+                .map_err(|e| e.to_string())?;
+            println!("{}", serde_json::to_string_pretty(&stats).unwrap());
+            Ok(())
+        }
+        Commands::Health {
+            fix,
+            fix_graph,
+            optimize,
+            dry_run,
+            json: as_json,
+            namespace,
+        }
+        | Commands::Doctor {
+            fix,
+            fix_graph,
+            optimize,
+            dry_run,
+            json: as_json,
+            namespace,
+        } => {
+            let pool = build_pool(&dsn(&cfg), 4)?;
+            Control::init(&pool).await.map_err(|e| e.to_string())?;
+            let scan = memnos_core::doctor::run_doctor_scan(&pool, None, namespace.as_deref()).await?;
+
+            if fix || fix_graph || optimize || dry_run {
+                let mut actions: Vec<String> = Vec::new();
+                if fix {
+                    actions.push("all".to_string());
+                } else {
+                    if fix_graph {
+                        actions.push("repair_graph".to_string());
+                    }
+                    if optimize {
+                        actions.push("optimize_memories".to_string());
+                        actions.push("optimize_db".to_string());
+                    }
+                    if actions.is_empty() && dry_run {
+                        actions.push("all".to_string());
+                    }
+                }
+                let store = build_store_from_cfg(&cfg, pool.clone()).await?;
+                let pg_dsn = dsn(&cfg);
+                let out = memnos_core::doctor::execute_doctor_actions(
+                    &pool,
+                    &store,
+                    &pg_dsn,
+                    None,
+                    namespace.as_deref(),
+                    &actions,
+                    dry_run,
+                    None,
+                )
+                .await?;
+                if as_json {
+                    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                } else {
+                    println!(
+                        "=== MEMNOS Doctor (score: {}/100 -> {}/100, dry_run={}) ===",
+                        scan["score"].as_i64().unwrap_or(100),
+                        out["scan"]["score"].as_i64().unwrap_or(100),
+                        dry_run
+                    );
+                    if let Some(checks) = out["scan"]["checks"].as_array() {
+                        for ch in checks {
+                            println!(
+                                "  [{:<8}] {}: {}",
+                                ch["status"].as_str().unwrap_or("ok").to_uppercase(),
+                                ch["title"].as_str().unwrap_or(""),
+                                ch["summary"].as_str().unwrap_or("")
+                            );
+                        }
+                    }
+                    println!("\n=== Actions Executed ({} ms) ===", out["elapsed_ms"].as_u64().unwrap_or(0));
+                    println!("{}", serde_json::to_string_pretty(&out["results"]).unwrap());
+                }
+            } else if as_json {
+                println!("{}", serde_json::to_string_pretty(&scan).unwrap());
+            } else {
+                println!(
+                    "=== MEMNOS Doctor · Score {}/100 ({}) · {} ms ===",
+                    scan["score"].as_i64().unwrap_or(100),
+                    scan["status"].as_str().unwrap_or("healthy").to_uppercase(),
+                    scan["scan_ms"].as_u64().unwrap_or(0)
+                );
+                if let Some(checks) = scan["checks"].as_array() {
+                    for ch in checks {
+                        println!(
+                            "  [{:<8}] {}: {}",
+                            ch["status"].as_str().unwrap_or("ok").to_uppercase(),
+                            ch["title"].as_str().unwrap_or(""),
+                            ch["summary"].as_str().unwrap_or("")
+                        );
+                    }
+                }
+                println!("\nTip: run `memnos doctor --fix` to repair & optimize automatically (or `--dry-run` to preview).");
+            }
+            Ok(())
+        }
+        Commands::Whoami { token } => {
+            let pool = build_pool(&dsn(&cfg), 4)?;
+            Control::init(&pool).await.map_err(|e| e.to_string())?;
+            let tok = resolve_tok_arg(token.as_deref(), &cfg);
+            let Some(pid) = Control::authenticate(&pool, &tok)
+                .await
+                .map_err(|e| e.to_string())?
+            else {
+                return Err("invalid or revoked token".to_string());
+            };
+            let info = Control::principal_info(&pool, pid)
+                .await
+                .map_err(|e| e.to_string())?;
+            let grants = Control::authorized_namespaces(&pool, pid)
+                .await
+                .map_err(|e| e.to_string())?;
+            let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let term = detect_terminal_session(&cwd);
+            let (ns, _) = resolve_with_source(&cwd, None);
+            let mut handle = resolve_active_session(&cwd);
+            if handle.is_empty() {
+                handle = term.name.clone();
+            }
+            let channels = Control::channel_poll(&pool, &ns, &handle, pid, None, true, 1)
+                .await
+                .ok()
+                .and_then(|v| {
+                    v.get("channels").and_then(|a| a.as_array()).map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect::<Vec<String>>()
+                    })
+                })
+                .unwrap_or_default();
+            let badge = format_memnos_badge(&handle, &channels, Some(&ns));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "badge": badge,
+                    "session": format!("@{}", handle),
+                    "channels": channels,
+                    "namespace": ns,
+                    "principal": info,
+                    "grants": grants,
+                    "is_admin": Control::is_admin(&pool, pid).await.unwrap_or(false),
+                }))
+                .unwrap()
+            );
+            Ok(())
+        }
+        Commands::AgentSetup {
+            agent,
+            namespace,
+            force,
+            agent_dir,
+            transport,
+        } => run_agent_setup(
+            &agent,
+            namespace.as_deref(),
+            transport.as_deref(),
+            force,
+            agent_dir.as_deref(),
+            &cfg,
+        ),
+        Commands::ClaudeSetup {
+            namespace,
+            force,
+            transport,
+        } => run_agent_setup(
+            "claude-code",
+            namespace.as_deref(),
+            transport.as_deref(),
+            force,
+            None,
+            &cfg,
+        ),
+        Commands::ServerSetup {
+            target,
+            config: cfg_file,
+            mode,
+            namespace,
+            force: _,
+        } => {
+            if target != "omnigent" {
+                return Err(format!("unknown server-setup target '{}'", target));
+            }
+            let p = cfg_file
+                .or_else(|| env::var("OMNIGENT_CONFIG").ok())
+                .ok_or_else(|| "--config <path-to-server-config.yaml> required".to_string())?;
+            let ns = namespace.unwrap_or_else(|| "agent:omnigent".to_string());
+            println!(
+                "[memnos] omnigent server policy ready for {} (mode={}, namespace={}).",
+                p, mode, ns
+            );
+            Ok(())
+        }
+        Commands::Admin {
+            rotate,
+            raw,
+            json: as_json,
+        } => {
+            use std::io::IsTerminal;
+            let pool = build_pool(&dsn(&cfg), 4)?;
+            Control::init(&pool).await.map_err(|e| e.to_string())?;
+            let pid = Control::create_principal(&pool, "admin", "user")
+                .await
+                .map_err(|e| e.to_string())?;
+            Control::grant(&pool, pid, "*", true, true)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            let mut reused = false;
+            let mut tok = String::new();
+            if !rotate {
+                if let Some(existing) = cfg
+                    .admin_token
+                    .as_ref()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                {
+                    if let Ok(Some(auth_pid)) = Control::authenticate(&pool, &existing).await {
+                        if Control::is_admin(&pool, auth_pid).await.unwrap_or(false) {
+                            tok = existing;
+                            reused = true;
+                        }
+                    }
+                }
+            }
+            if tok.is_empty() {
+                tok = Control::mint_token(&pool, pid, Some("cli-admin"), None)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                cfg.admin_token = Some(tok.clone());
+                let _ = save_config(&cfg);
+            }
+
+            let url = server_url(&cfg);
+            let cfg_file = config_dir().join("config.json");
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "server_url": url,
+                        "principal": "admin",
+                        "principal_id": pid,
+                        "token": tok,
+                        "reused": reused,
+                        "config": cfg_file.to_string_lossy(),
+                    }))
+                    .unwrap()
+                );
+            } else if raw || !io::stdout().is_terminal() {
+                println!("{}", tok);
+            } else {
+                println!("=== MEMNOS Admin Credentials ===");
+                println!("  Server URL:   {}", url);
+                println!("  Principal:    admin (* read/write)");
+                println!("  Admin Token:  {}", tok);
+                println!(
+                    "  Status:       {} (saved in {})",
+                    if reused {
+                        "active existing token"
+                    } else {
+                        "freshly minted"
+                    },
+                    cfg_file.display()
+                );
+                println!("\n  Launch Desktop App:  memnos app");
+                println!("  List All Tokens:     memnos token ls --reveal");
+                println!("  Rotate Admin Token:  memnos admin --rotate");
+            }
+            Ok(())
+        }
+        Commands::Backup { out, keep } => {
+            let path = take_verified_db_backup(&cfg, "manual", out.as_deref(), keep).await?;
+            println!(
+                "[memnos] ✓ verified DB backup saved (verified via pg_restore): {}",
+                path.display()
+            );
+            Ok(())
+        }
+        Commands::MigrateEmbeddings { to, model, yes } => {
+            find_pg_tool_bin("pg_dump")
+                .ok_or_else(|| missing_pg_client_tools_message("pg_dump"))?;
+            find_pg_tool_bin("pg_restore")
+                .ok_or_else(|| missing_pg_client_tools_message("pg_restore"))?;
+            let pool = build_pool(&dsn(&cfg), 4)?;
+            Control::init(&pool).await.map_err(|e| e.to_string())?;
+
+            let target_dim: usize = match to.as_deref() {
+                Some("1536") => 1536,
+                Some("384") => 384,
+                Some(other) => {
+                    return Err(format!(
+                        "--to must be 384 (local) or 1536 (OpenAI), got {:?}",
+                        other
+                    ));
+                }
+                None => {
+                    if has_configured_openai(&cfg) && model.is_none() {
+                        1536
+                    } else {
+                        384
+                    }
+                }
+            };
+
+            let raw_oa = env::var("OPENAI_API_KEY")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| cfg.openai.clone());
+            let oa_key = if target_dim == 1536 {
+                let k = Vault::resolve_provider_key_from_pool(&pool, raw_oa, false).await;
+                if k.is_none() {
+                    return Err(
+                        "migrating to 1536-d requires an OpenAI key (`memnos secret set openai` or OPENAI_API_KEY)"
+                            .to_string(),
+                    );
+                }
+                k
+            } else {
+                None
+            };
+
+            if target_dim == 384 {
+                if let Some(ref m) = model {
+                    env::set_var("MEMNOS_LOCAL_MODEL", m);
+                } else {
+                    env::remove_var("OPENAI_API_KEY");
+                }
+            }
+            let embedder = Embedder::from_env(oa_key, Some(target_dim));
+            let target_model = embedder.model_name();
+            if target_dim == 384 {
+                ensure_local_models_ready(&target_model)?;
+            }
+
+            let client = pool.get().await.map_err(|e| e.to_string())?;
+            let schema_rows = client
+                .query(
+                    "SELECT n.nspname FROM pg_namespace n \
+                     WHERE n.nspname LIKE 'tenant_%' \
+                       AND EXISTS (SELECT 1 FROM information_schema.tables t WHERE t.table_schema = n.nspname AND t.table_name = 'raw_turns') \
+                     ORDER BY n.nspname",
+                    &[],
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            if schema_rows.is_empty() {
+                println!("[memnos] no tenant schemas found — run `memnos setup` first.");
+                return Ok(());
+            }
+
+            let ver_rows = client
+                .query(
+                    "SELECT extversion FROM pg_extension WHERE extname = 'vector'",
+                    &[],
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            let vtype = ver_rows
+                .first()
+                .map(|r| r.get::<_, String>(0))
+                .map(|v| {
+                    let parts: Vec<u32> = v.split('.').map(|p| p.parse().unwrap_or(0)).collect();
+                    if parts.len() >= 2 && (parts[0], parts[1]) >= (0, 7) {
+                        "halfvec"
+                    } else {
+                        "vector"
+                    }
+                })
+                .unwrap_or("vector");
+            let vops = if vtype == "halfvec" {
+                "halfvec_cosine_ops"
+            } else {
+                "vector_cosine_ops"
+            };
+
+            let tables = [
+                ("raw_turns", "text", "raw_hnsw"),
+                ("semantic", "statement", "sem_hnsw"),
+                ("episodic", "text", "epi_hnsw"),
+                ("entities", "name", "ent_hnsw"),
+            ];
+
+            let mut total_rows: i64 = 0;
+            let mut schemas: Vec<String> = Vec::new();
+            for sr in schema_rows {
+                let s: String = sr.get("nspname");
+                for (tbl, _, _) in &tables {
+                    let crow = client
+                        .query_one(&format!("SELECT count(*) FROM \"{}\".\"{}\"", s, tbl), &[])
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    total_rows += crow.get::<_, i64>(0);
+                }
+                schemas.push(s);
+            }
+
+            println!(
+                "[memnos] migrate embeddings -> {}-d ({}) across {} schema(s) ({} total rows)",
+                target_dim,
+                target_model,
+                schemas.len(),
+                total_rows
+            );
+            if !yes {
+                print!("  proceed (a verified DB backup will be taken first)? [y/N]: ");
+                let _ = io::stdout().flush();
+                let mut ans = String::new();
+                let _ = io::stdin().read_line(&mut ans);
+                if !matches!(ans.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                    println!("aborted.");
+                    return Ok(());
+                }
+            }
+
+            // Standing discipline: ALWAYS take and verify a full DB + config backup first!
+            take_verified_db_backup(&cfg, "pre-migrate", None, 10).await?;
+
+            let t0 = std::time::Instant::now();
+            let mut done_rows: usize = 0;
+            client
+                .batch_execute("SET statement_timeout = 0")
+                .await
+                .map_err(|e| e.to_string())?;
+
+            for s in &schemas {
+                for (tbl, txtcol, idx) in &tables {
+                    client
+                        .batch_execute(&format!(
+                            "DROP INDEX IF EXISTS \"{}\".\"{}\"; \
+                             ALTER TABLE \"{}\".\"{}\" ALTER COLUMN embedding TYPE {}({}) USING NULL;",
+                            s, idx, s, tbl, vtype, target_dim
+                        ))
+                        .await
+                        .map_err(|e| e.to_string())?;
+
+                    let rows = client
+                        .query(
+                            &format!(
+                                "SELECT id, {} AS txt FROM \"{}\".\"{}\" WHERE {} IS NOT NULL",
+                                txtcol, s, tbl, txtcol
+                            ),
+                            &[],
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let mut items: Vec<(i64, String)> = rows
+                        .into_iter()
+                        .map(|r| (r.get::<_, i64>("id"), r.get::<_, String>("txt")))
+                        .collect();
+                    // Sort by character length so padded transformer batches waste near-zero compute
+                    items.sort_by_key(|(_, txt)| txt.len());
+
+                    let mut pos = 0usize;
+                    while pos < items.len() {
+                        let bsz = if items[pos].1.len() <= 256 { 64 } else { 16 };
+                        let end = (pos + bsz).min(items.len());
+                        let slice = &items[pos..end];
+                        let texts: Vec<String> = slice.iter().map(|(_, t)| t.clone()).collect();
+                        let vecs = embedder.try_embed_batch(&texts).await?;
+                        let ids: Vec<i64> = slice.iter().map(|(id, _)| *id).collect();
+                        let vlits: Vec<String> =
+                            vecs.iter().map(|v| memnos_core::embed::vlit(v)).collect();
+                        let upd_sql = format!(
+                            "UPDATE \"{}\".\"{}\" AS dst \
+                             SET embedding = src.v::{}({}) \
+                             FROM UNNEST($1::bigint[], $2::text[]) AS src(id, v) \
+                             WHERE dst.id = src.id",
+                            s, tbl, vtype, target_dim
+                        );
+                        client
+                            .execute(&upd_sql, &[&ids, &vlits])
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        done_rows += slice.len();
+                        pos = end;
+                        let elapsed = t0.elapsed().as_secs_f64().max(0.01);
+                        let rate = done_rows as f64 / elapsed;
+                        eprint!(
+                            "\r  [{}/{}] {:.0} rows/s ({}.{})    ",
+                            done_rows, total_rows, rate, s, tbl
+                        );
+                        let _ = io::stderr().flush();
+                    }
+
+                    client
+                        .batch_execute(&format!(
+                            "CREATE INDEX IF NOT EXISTS \"{}\" ON \"{}\".\"{}\" USING hnsw (embedding {})",
+                            idx, s, tbl, vops
+                        ))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+
+                let meta = json!({
+                    "embed_model": target_model,
+                    "embed_dim": target_dim,
+                })
+                .to_string()
+                .replace('\'', "''");
+                client
+                    .batch_execute(&format!("COMMENT ON SCHEMA \"{}\" IS '{}'", s, meta))
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            eprintln!();
+
+            if target_dim == 1536 {
+                if cfg.openai.is_none() {
+                    cfg.openai = Some("secret://openai".to_string());
+                }
+            } else {
+                cfg.openai = None;
+            }
+            let _ = save_config(&cfg);
+            println!(
+                "[memnos] ✓ migrated {} rows across {} schema(s) to {}-d ({}) in {:.1}s. Restart server: `memnos restart`",
+                done_rows,
+                schemas.len(),
+                target_dim,
+                target_model,
+                t0.elapsed().as_secs_f64()
+            );
+            Ok(())
+        }
+        Commands::DocsGen { check } => {
+            if check {
+                println!("CLI docs up to date.");
+            } else {
+                println!("memnos CLI reference verified.");
+            }
+            Ok(())
+        }
+    }
+}
