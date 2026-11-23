@@ -26,6 +26,11 @@ done
 
 mkdir -p "$BIN_DIR"
 
+if [ -x "$BIN_DIR/memnos" ] && [ -f "$HOME/.memnos/config.json" ] && [ -z "${MEMNOS_CI:-}" ] && [ -z "${CI:-}" ]; then
+  echo "[memnos] taking pre-upgrade database & config snapshot ..."
+  "$BIN_DIR/memnos" backup >/dev/null 2>&1 || true
+fi
+
 install_atomic() {
   src="$1"
   dst="$2"
@@ -95,12 +100,35 @@ case ":${PATH:-}:" in
     ;;
 esac
 
+# Install fallback statusline shim into BIN_DIR unless a third-party statusline exists
+STATUSLINE_SHIM="$BIN_DIR/statusline"
+if [ ! -e "$STATUSLINE_SHIM" ] || grep -F "memnos" "$STATUSLINE_SHIM" >/dev/null 2>&1; then
+  cat > "${STATUSLINE_SHIM}.tmp.$$" <<SHIM
+#!/bin/sh
+exec "$BIN_DIR/memnos" hook statusline "\$@"
+SHIM
+  chmod 755 "${STATUSLINE_SHIM}.tmp.$$"
+  mv -f "${STATUSLINE_SHIM}.tmp.$$" "$STATUSLINE_SHIM"
+fi
+
 echo "[memnos] ✓ installed: $("$BIN_DIR/memnos" --version)"
-cat <<EOF
+
+# If this machine is already configured (~/.memnos/config.json), auto-discover & wire all
+# installed AI harnesses (Claude Code, Gemini CLI, Antigravity, Cursor, Codex, etc.) now.
+if [ -f "$HOME/.memnos/config.json" ] && [ -z "${MEMNOS_CI:-}" ] && [ -z "${CI:-}" ]; then
+  echo "[memnos] auto-discovering & wiring installed AI harnesses (MCP, hooks, statusLine) ..."
+  "$BIN_DIR/memnos" agent-setup all --namespace auto --force || true
+  if [ -f "$HOME/.memnos/gateway_state.json" ] || [ -f "$HOME/.memnos/server.pid" ]; then
+    "$BIN_DIR/memnos" upgrade --no-restart >/dev/null 2>&1 || true
+    "$BIN_DIR/memnos" restart || true
+  fi
+else
+  cat <<EOF
 
 Next steps:
-  memnos setup     # configure embedded PostgreSQL+pgvector (zero dependencies) or your own Postgres
+  memnos setup     # configure PostgreSQL+pgvector & auto-wire all installed AI harnesses
   memnos start     # start the background server & zero-downtime gateway on http://127.0.0.1:8900
   memnos admin     # bootstrap or inspect your admin token
   memnos app       # launch the native MEMNOS Desktop workspace
 EOF
+fi

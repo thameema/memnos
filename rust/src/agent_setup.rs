@@ -94,10 +94,65 @@ pub fn is_agent_target(raw: &str) -> bool {
 }
 
 fn memnos_exe_string() -> String {
-    env::current_exe()
-        .ok()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| "memnos".to_string())
+    if let Ok(p) = env::current_exe() {
+        let fname = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if fname.contains("desktop") {
+            if let Some(dir) = p.parent() {
+                #[cfg(windows)]
+                let sib = dir.join("memnos.exe");
+                #[cfg(not(windows))]
+                let sib = dir.join("memnos");
+                if sib.is_file() {
+                    return sib.to_string_lossy().to_string();
+                }
+            }
+            let local_cand = home_dir().join(".local").join("bin").join(if cfg!(windows) {
+                "memnos.exe"
+            } else {
+                "memnos"
+            });
+            if local_cand.is_file() {
+                return local_cand.to_string_lossy().to_string();
+            }
+            return "memnos".to_string();
+        }
+        return p.to_string_lossy().to_string();
+    }
+    "memnos".to_string()
+}
+
+fn make_hook_cmd(url: &str, token: &str, ns: &str, extra_kv: Option<(&str, &str)>, qexe: &str, sub: &str) -> String {
+    #[cfg(windows)]
+    {
+        let mut parts = Vec::new();
+        if let Some((k, v)) = extra_kv {
+            parts.push(format!("set \"{}={}\"", k, v));
+        }
+        parts.push(format!("set \"MEMNOS_URL={}\"", url));
+        parts.push(format!("set \"MEMNOS_TOKEN={}\"", token));
+        parts.push(format!("set \"MEMNOS_NS={}\"", ns));
+        parts.push(format!("{} {}", qexe, sub));
+        parts.join(" && ")
+    }
+    #[cfg(not(windows))]
+    {
+        let extra = extra_kv
+            .map(|(k, v)| format!("{}={} ", k, shell_quote(v)))
+            .unwrap_or_default();
+        format!(
+            "{}MEMNOS_URL={} MEMNOS_TOKEN={} MEMNOS_NS={} {} {}",
+            extra,
+            shell_quote(url),
+            shell_quote(token),
+            shell_quote(ns),
+            qexe,
+            sub
+        )
+    }
 }
 
 fn shell_quote(s: &str) -> String {
@@ -157,31 +212,426 @@ fn default_user_ns() -> String {
     format!("user:{}", slug.trim_matches('-'))
 }
 
+fn isolated_home_discovery() -> bool {
+    matches!(
+        env::var("MEMNOS_ISOLATED_HOME_DISCOVERY")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn has_bin_on_path(bin: &str) -> bool {
+    let home = home_dir();
+    let isolated = isolated_home_discovery();
+    let mut search_dirs: Vec<PathBuf> = env::var_os("PATH")
+        .map(|p| env::split_paths(&p).collect())
+        .unwrap_or_default();
+    search_dirs.push(home.join(".local").join("bin"));
+    search_dirs.push(home.join(".cargo").join("bin"));
+    search_dirs.push(home.join(".bun").join("bin"));
+    search_dirs.push(home.join(".npm-global").join("bin"));
+    search_dirs.push(home.join(".volta").join("bin"));
+    search_dirs.push(home.join(".asdf").join("shims"));
+    #[cfg(unix)]
+    {
+        if !isolated {
+            search_dirs.push(PathBuf::from("/opt/homebrew/bin"));
+            search_dirs.push(PathBuf::from("/usr/local/bin"));
+        }
+        if let Ok(entries) = fs::read_dir(home.join(".nvm").join("versions").join("node")) {
+            for ent in entries.flatten() {
+                search_dirs.push(ent.path().join("bin"));
+            }
+        }
+    }
+    #[cfg(windows)]
+    if !isolated {
+        if let Ok(ad) = env::var("APPDATA") {
+            search_dirs.push(PathBuf::from(ad).join("npm"));
+        }
+        if let Ok(lad) = env::var("LOCALAPPDATA") {
+            let lpath = PathBuf::from(lad);
+            search_dirs.push(lpath.join("Programs").join(bin));
+            search_dirs.push(lpath.join("Microsoft").join("WinGet").join("Links"));
+        }
+    }
+
+    for dir in search_dirs {
+        if dir.join(bin).is_file() {
+            return true;
+        }
+        #[cfg(windows)]
+        for ext in [".exe", ".cmd", ".bat"] {
+            if dir.join(format!("{}{}", bin, ext)).is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn has_macos_app(app_name: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let usr_app = home_dir().join("Applications").join(app_name);
+        if isolated_home_discovery() {
+            return usr_app.exists();
+        }
+        let sys_app = PathBuf::from("/Applications").join(app_name);
+        sys_app.exists() || usr_app.exists()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app_name;
+        false
+    }
+}
+
+fn merge_hook_entries(existing: Option<&Value>, new_entry: Value) -> Value {
+    let mut kept: Vec<Value> = Vec::new();
+    if let Some(arr) = existing.and_then(|v| v.as_array()) {
+        for item in arr {
+            let s = serde_json::to_string(item).unwrap_or_default();
+            if !s.contains("memnos") {
+                kept.push(item.clone());
+            }
+        }
+    }
+    kept.push(new_entry);
+    Value::Array(kept)
+}
+
+fn install_statusline_shim(memnos_sl_cmd: &str) {
+    let bin_dir = memnos_dir().join("bin");
+    let _ = fs::create_dir_all(&bin_dir);
+    let local_bin_dir = home_dir().join(".local").join("bin");
+    let _ = fs::create_dir_all(&local_bin_dir);
+
+    #[cfg(unix)]
+    {
+        let body = format!("#!/bin/sh\nexec /usr/bin/env {} \"$@\"\n", memnos_sl_cmd);
+        use std::os::unix::fs::PermissionsExt;
+        let shim_path = bin_dir.join("statusline");
+        if fs::write(&shim_path, &body).is_ok() {
+            let _ = fs::set_permissions(&shim_path, fs::Permissions::from_mode(0o755));
+        }
+        let local_shim = local_bin_dir.join("statusline");
+        let can_write_local = !local_shim.exists()
+            || fs::read_to_string(&local_shim)
+                .map(|s| s.contains("memnos"))
+                .unwrap_or(false);
+        if can_write_local && fs::write(&local_shim, &body).is_ok() {
+            let _ = fs::set_permissions(&local_shim, fs::Permissions::from_mode(0o755));
+        }
+    }
+    #[cfg(windows)]
+    {
+        let body = format!("@echo off\r\n{}\r\n", memnos_sl_cmd);
+        let shim_path = bin_dir.join("statusline.cmd");
+        let _ = fs::write(&shim_path, &body);
+        let local_shim = local_bin_dir.join("statusline.cmd");
+        let can_write_local = !local_shim.exists()
+            || fs::read_to_string(&local_shim)
+                .map(|s| s.contains("memnos"))
+                .unwrap_or(false);
+        if can_write_local {
+            let _ = fs::write(&local_shim, &body);
+        }
+    }
+}
+
+fn build_chained_statusline_value(
+    existing_sl: &str,
+    memnos_sl_cmd: &str,
+    mux_name: &str,
+    extra_fallback_script: Option<&Path>,
+    include_agy_flags: bool,
+) -> Value {
+    install_statusline_shim(memnos_sl_cmd);
+
+    #[cfg(unix)]
+    {
+        let other_sl = if !existing_sl.is_empty()
+            && !existing_sl.contains("memnos")
+            && !existing_sl.contains(mux_name)
+        {
+            Some(existing_sl.to_string())
+        } else if let Some(fb) = extra_fallback_script.filter(|p| p.is_file()) {
+            Some(format!("/bin/sh {}", shell_quote(&fb.to_string_lossy())))
+        } else {
+            None
+        };
+
+        let chosen_cmd = if let Some(prev_cmd) = other_sl {
+            let bin_dir = memnos_dir().join("bin");
+            let _ = fs::create_dir_all(&bin_dir);
+            let mux_path = bin_dir.join(mux_name);
+            let mux_script = format!(
+                "#!/bin/sh\npayload=$(cat 2>/dev/null || true)\n(printf '%s' \"$payload\" | {} >/dev/null 2>&1 &)\nprintf '%s' \"$payload\" | {} 2>/dev/null || true\n",
+                prev_cmd, memnos_sl_cmd
+            );
+            if fs::write(&mux_path, mux_script).is_ok() {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&mux_path, fs::Permissions::from_mode(0o755));
+                shell_quote(&mux_path.to_string_lossy())
+            } else {
+                memnos_sl_cmd.to_string()
+            }
+        } else {
+            memnos_sl_cmd.to_string()
+        };
+
+        if include_agy_flags {
+            json!({
+                "type": "command",
+                "command": chosen_cmd,
+                "enabled": true,
+                "stack_with_default": true,
+            })
+        } else {
+            json!({
+                "type": "command",
+                "command": chosen_cmd,
+            })
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (existing_sl, mux_name, extra_fallback_script);
+        if include_agy_flags {
+            json!({
+                "type": "command",
+                "command": memnos_sl_cmd,
+                "enabled": true,
+                "stack_with_default": true,
+            })
+        } else {
+            json!({
+                "type": "command",
+                "command": memnos_sl_cmd,
+            })
+        }
+    }
+}
+
 pub fn detect_installed_agents() -> Vec<&'static str> {
     let home = home_dir();
     let mut out = Vec::new();
-    if home.join(".claude").exists() {
+    if home.join(".claude").exists() || home.join(".claude.json").exists() || has_bin_on_path("claude") {
         out.push("claude-code");
     }
-    if home.join(".gemini").join("config").exists() || home.join(".gemini").join("antigravity-cli").exists() {
+    if home.join(".gemini").join("config").exists()
+        || home.join(".gemini").join("antigravity-cli").exists()
+        || home.join(".gemini").join("antigravity").exists()
+        || has_macos_app("Antigravity.app")
+        || has_bin_on_path("agy")
+    {
         out.push("antigravity");
     }
-    if home.join(".cursor").exists() {
+    if home.join(".cursor").exists()
+        || has_macos_app("Cursor.app")
+        || has_bin_on_path("cursor")
+        || has_bin_on_path("cursor-agent")
+    {
         out.push("cursor");
     }
-    if home.join(".codex").exists() {
+    if home.join(".codex").exists() || has_bin_on_path("codex") {
         out.push("codex");
     }
-    if home.join(".codeium").join("windsurf").exists() {
+    if home.join(".codeium").join("windsurf").exists()
+        || has_macos_app("Windsurf.app")
+        || has_bin_on_path("windsurf")
+    {
         out.push("windsurf");
     }
-    if home.join(".gemini").exists() && !out.contains(&"antigravity") {
+    if home.join(".gemini").join("settings.json").exists()
+        || has_bin_on_path("gemini")
+        || (home.join(".gemini").exists() && !out.contains(&"antigravity"))
+    {
         out.push("gemini-cli");
     }
-    if home.join(".omnigent").exists() {
+    if home.join(".config").join("zed").exists()
+        || has_macos_app("Zed.app")
+        || has_bin_on_path("zed")
+    {
+        out.push("zed");
+    }
+    #[cfg(target_os = "macos")]
+    let claude_desktop_present = home
+        .join("Library")
+        .join("Application Support")
+        .join("Claude")
+        .exists()
+        || has_macos_app("Claude.app");
+    #[cfg(target_os = "windows")]
+    let claude_desktop_present = env::var("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home.clone())
+        .join("Claude")
+        .exists();
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let claude_desktop_present = home.join(".config").join("Claude").exists();
+    if claude_desktop_present {
+        out.push("claude-desktop");
+    }
+    if home.join(".omnigent").exists() || has_bin_on_path("omnigent") {
         out.push("omnigent");
     }
+    if home.join(".hermes").exists() || has_bin_on_path("hermes") {
+        out.push("hermes");
+    }
+    if home.join(".openclaw").exists() || has_bin_on_path("openclaw") {
+        out.push("openclaw");
+    }
     out
+}
+
+pub fn inspect_installed_agent_wiring() -> (Vec<&'static str>, Vec<&'static str>) {
+    let home = home_dir();
+    let detected = detect_installed_agents();
+    let mut unwired = Vec::new();
+    for &name in &detected {
+        let is_wired = match name {
+            "claude-code" => {
+                let cj = read_json_obj(&home.join(".claude.json"));
+                let st = read_json_obj(&home.join(".claude").join("settings.json"));
+                cj.get("mcpServers")
+                    .and_then(|m| m.get("memnos"))
+                    .is_some()
+                    && st
+                        .get("statusLine")
+                        .and_then(|s| s.get("command"))
+                        .and_then(|c| c.as_str())
+                        .map(|s| s.contains("memnos") || s.contains("statusline-mux"))
+                        .unwrap_or(false)
+            }
+            "antigravity" => {
+                let mc = read_json_obj(&home.join(".gemini").join("config").join("mcp_config.json"));
+                let st = read_json_obj(
+                    &home
+                        .join(".gemini")
+                        .join("antigravity-cli")
+                        .join("settings.json"),
+                );
+                mc.get("mcpServers")
+                    .and_then(|m| m.get("memnos"))
+                    .is_some()
+                    && st
+                        .get("statusLine")
+                        .and_then(|s| s.get("command"))
+                        .and_then(|c| c.as_str())
+                        .map(|s| s.contains("memnos") || s.contains("statusline-mux"))
+                        .unwrap_or(false)
+            }
+            "gemini-cli" => {
+                let st = read_json_obj(&home.join(".gemini").join("settings.json"));
+                st.get("mcpServers")
+                    .and_then(|m| m.get("memnos"))
+                    .is_some()
+                    && st
+                        .get("hooks")
+                        .and_then(|h| h.get("BeforeAgent"))
+                        .map(|v| serde_json::to_string(v).unwrap_or_default().contains("memnos"))
+                        .unwrap_or(false)
+            }
+            "codex" => fs::read_to_string(home.join(".codex").join("config.toml"))
+                .map(|s| s.contains("[mcp_servers.memnos]"))
+                .unwrap_or(false),
+            "cursor" => read_json_obj(&home.join(".cursor").join("mcp.json"))
+                .get("mcpServers")
+                .and_then(|m| m.get("memnos"))
+                .is_some(),
+            "windsurf" => read_json_obj(
+                &home
+                    .join(".codeium")
+                    .join("windsurf")
+                    .join("mcp_config.json"),
+            )
+            .get("mcpServers")
+            .and_then(|m| m.get("memnos"))
+            .is_some(),
+            "zed" => read_json_obj(&home.join(".config").join("zed").join("settings.json"))
+                .get("context_servers")
+                .and_then(|m| m.get("memnos"))
+                .is_some(),
+            "claude-desktop" => {
+                #[cfg(target_os = "macos")]
+                let p = home
+                    .join("Library")
+                    .join("Application Support")
+                    .join("Claude")
+                    .join("claude_desktop_config.json");
+                #[cfg(target_os = "windows")]
+                let p = env::var("APPDATA")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| home.clone())
+                    .join("Claude")
+                    .join("claude_desktop_config.json");
+                #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+                let p = home
+                    .join(".config")
+                    .join("Claude")
+                    .join("claude_desktop_config.json");
+                read_json_obj(&p)
+                    .get("mcpServers")
+                    .and_then(|m| m.get("memnos"))
+                    .is_some()
+            }
+            _ => read_json_obj(&home.join(format!(".{}", name)).join("mcp.json"))
+                .get("mcpServers")
+                .and_then(|m| m.get("memnos"))
+                .is_some(),
+        };
+        if !is_wired {
+            unwired.push(name);
+        }
+    }
+    (detected, unwired)
+}
+
+pub fn auto_sync_installed_agents(cfg: &Config) -> Vec<&'static str> {
+    let skip = matches!(
+        env::var("MEMNOS_CI")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    ) || matches!(
+        env::var("CI")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    ) || matches!(
+        env::var("MEMNOS_SKIP_AUTO_WIRE")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    );
+    let token = session_token(cfg);
+    if skip || token.trim().is_empty() {
+        return Vec::new();
+    }
+    let url = server_url(cfg);
+    let qexe = shell_quote(&memnos_exe_string());
+    let sl_cmd = make_hook_cmd(&url, &token, "auto", None, &qexe, "hook statusline");
+    install_statusline_shim(&sl_cmd);
+
+    let detected = detect_installed_agents();
+    let mut synced = Vec::new();
+    for name in detected {
+        if run_agent_setup_impl(name, Some("auto"), None, true, None, cfg, true).is_ok() {
+            synced.push(name);
+        }
+    }
+    synced
 }
 
 pub fn run_agent_setup(
@@ -192,6 +642,26 @@ pub fn run_agent_setup(
     agent_dir: Option<&str>,
     cfg: &Config,
 ) -> Result<(), String> {
+    run_agent_setup_impl(
+        agent_raw,
+        namespace_opt,
+        transport_opt,
+        force,
+        agent_dir,
+        cfg,
+        false,
+    )
+}
+
+fn run_agent_setup_impl(
+    agent_raw: &str,
+    namespace_opt: Option<&str>,
+    transport_opt: Option<&str>,
+    force: bool,
+    agent_dir: Option<&str>,
+    cfg: &Config,
+    quiet: bool,
+) -> Result<(), String> {
     let Some(agent) = canonical_agent_name(agent_raw) else {
         return Err(format!(
             "unknown agent '{}' — choose: {}, all",
@@ -201,24 +671,49 @@ pub fn run_agent_setup(
     };
 
     if agent == "all" {
+        let url = server_url(cfg);
+        let token = session_token(cfg);
+        let qexe = shell_quote(&memnos_exe_string());
+        let sl_cmd = make_hook_cmd(
+            &url,
+            &token,
+            namespace_opt.unwrap_or("auto"),
+            None,
+            &qexe,
+            "hook statusline",
+        );
+        install_statusline_shim(&sl_cmd);
+
         let detected = detect_installed_agents();
         if detected.is_empty() {
-            println!("[memnos] No supported agents detected on this machine.");
-            println!("         Supported: {}", SUPPORTED_AGENTS.join(", "));
-            println!("         To force-setup a specific agent: memnos setup <name> --force");
+            if !quiet {
+                println!("[memnos] No supported agents detected on this machine.");
+                println!("         Supported: {}", SUPPORTED_AGENTS.join(", "));
+                println!("         To force-setup a specific agent: memnos setup <name> --force");
+            }
             return Ok(());
         }
-        println!(
-            "[memnos] Detected {} agent(s): {}\n",
-            detected.len(),
-            detected.join(", ")
-        );
+        if !quiet {
+            println!(
+                "[memnos] Detected {} agent(s): {}\n",
+                detected.len(),
+                detected.join(", ")
+            );
+        }
         for name in detected {
-            println!("── {} ──────────────────────────────", name);
-            if let Err(e) = run_agent_setup(name, namespace_opt, None, force, agent_dir, cfg) {
-                println!("  warning: {} setup error: {}", name, e);
+            if !quiet {
+                println!("── {} ──────────────────────────────", name);
             }
-            println!();
+            if let Err(e) =
+                run_agent_setup_impl(name, namespace_opt, None, force, agent_dir, cfg, quiet)
+            {
+                if !quiet {
+                    println!("  warning: {} setup error: {}", name, e);
+                }
+            }
+            if !quiet {
+                println!();
+            }
         }
         return Ok(());
     }
@@ -253,6 +748,11 @@ pub fn run_agent_setup(
         .unwrap_or_else(|| {
             if matches!(agent, "omnigent" | "hermes" | "openclaw") {
                 format!("agent:{}", agent)
+            } else if matches!(
+                agent,
+                "claude-code" | "antigravity" | "gemini-cli" | "cursor" | "codex"
+            ) {
+                "auto".to_string()
             } else {
                 default_user_ns()
             }
@@ -260,11 +760,22 @@ pub fn run_agent_setup(
 
     let exe = memnos_exe_string();
     let home = home_dir();
+    let qexe_top = shell_quote(&exe);
+    install_statusline_shim(&make_hook_cmd(
+        &url,
+        &token,
+        &ns,
+        None,
+        &qexe_top,
+        "hook statusline",
+    ));
 
     if agent == "claude-code" {
         let claude_dir = home.join(".claude");
-        if !claude_dir.exists() && !force {
-            println!("Claude Code not detected (~/.claude missing). Re-run with --force.");
+        if !claude_dir.exists() && !home.join(".claude.json").exists() && !has_bin_on_path("claude") && !force {
+            if !quiet {
+                println!("Claude Code not detected (~/.claude missing). Re-run with --force.");
+            }
             return Ok(());
         }
         fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
@@ -298,70 +809,95 @@ pub fn run_agent_setup(
         };
         write_json_pretty(&claude_json, &cj)?;
 
-        // 2. ~/.claude/settings.json lifecycle hooks
+        // 2. ~/.claude/settings.json lifecycle hooks + terminal-agnostic statusLine
         let settings_path = claude_dir.join("settings.json");
         let mut settings = read_json_obj(&settings_path);
         if !settings.get("hooks").map(|v| v.is_object()).unwrap_or(false) {
             settings["hooks"] = json!({});
         }
         let qexe = shell_quote(&exe);
-        let env_prefix = format!(
-            "MEMNOS_URL={} MEMNOS_TOKEN={} MEMNOS_NS={}",
-            shell_quote(&url),
-            shell_quote(&token),
-            shell_quote(&ns)
-        );
-        let mk_hook = |which: &str, timeout: u64| {
-            json!([{
-                "matcher": "*",
+        let mk_hook_entry = |which: &str, timeout: u64, with_matcher: bool| {
+            let mut entry = json!({
                 "hooks": [{
                     "type": "command",
-                    "command": format!("{} {} hook {}", env_prefix, qexe, which),
+                    "command": make_hook_cmd(&url, &token, &ns, None, &qexe, &format!("hook {}", which)),
                     "timeout": timeout
                 }]
-            }])
-        };
-        settings["hooks"]["SessionStart"] = json!([{
-            "hooks": [{
-                "type": "command",
-                "command": format!("{} {} hook status", env_prefix, qexe),
-                "timeout": 15
-            }]
-        }]);
-        settings["hooks"]["UserPromptSubmit"] = json!([{
-            "hooks": [{
-                "type": "command",
-                "command": format!("{} {} hook recall", env_prefix, qexe),
-                "timeout": 15
-            }]
-        }]);
-        settings["hooks"]["Stop"] = json!([{
-            "hooks": [{
-                "type": "command",
-                "command": format!("{} {} hook remember", env_prefix, qexe),
-                "timeout": 15
-            }]
-        }]);
-        settings["hooks"]["PreToolUse"] = mk_hook("enforce", 10);
-        if settings.get("statusLine").is_none() {
-            settings["statusLine"] = json!({
-                "type": "command",
-                "command": format!("{} hook statusline", qexe),
             });
-        }
+            if with_matcher {
+                entry["matcher"] = json!("*");
+            }
+            entry
+        };
+        settings["hooks"]["SessionStart"] = merge_hook_entries(
+            settings["hooks"].get("SessionStart"),
+            mk_hook_entry("status", 15, false),
+        );
+        settings["hooks"]["UserPromptSubmit"] = merge_hook_entries(
+            settings["hooks"].get("UserPromptSubmit"),
+            mk_hook_entry("recall", 15, false),
+        );
+        settings["hooks"]["Stop"] = merge_hook_entries(
+            settings["hooks"].get("Stop"),
+            mk_hook_entry("remember", 15, false),
+        );
+        settings["hooks"]["PreToolUse"] = merge_hook_entries(
+            settings["hooks"].get("PreToolUse"),
+            mk_hook_entry("enforce", 10, true),
+        );
+
+        let memnos_sl_cmd = make_hook_cmd(&url, &token, &ns, None, &qexe, "hook statusline");
+        let existing_sl = settings
+            .get("statusLine")
+            .and_then(|v| v.get("command"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let orca_sl = home.join(".orca/agent-hooks/claude-statusline.sh");
+        settings["statusLine"] = build_chained_statusline_value(
+            &existing_sl,
+            &memnos_sl_cmd,
+            "claude-statusline-mux.sh",
+            Some(&orca_sl),
+            false,
+        );
         write_json_pretty(&settings_path, &settings)?;
 
-        println!(
-            "[memnos] claude-code wired -> ~/.claude.json & ~/.claude/settings.json (MCP {}, hooks, ns={}).",
-            transport, ns
-        );
+        // 3. ~/.claude/CLAUDE.md memory instructions
+        let claude_md = claude_dir.join("CLAUDE.md");
+        let cur_md = fs::read_to_string(&claude_md).unwrap_or_default();
+        if !cur_md.contains("## memnos — long-term memory") {
+            backup_file(&claude_md);
+            let next_md = if cur_md.is_empty() {
+                AGENT_MD.to_string()
+            } else {
+                format!("{}\n\n{}", cur_md.trim_end(), AGENT_MD)
+            };
+            let _ = fs::write(&claude_md, next_md);
+        }
+
+        if !quiet {
+            println!(
+                "[memnos] claude-code wired -> ~/.claude.json & ~/.claude/settings.json (MCP {}, hooks, statusLine, CLAUDE.md, ns={}).",
+                transport, ns
+            );
+        }
         return Ok(());
     }
 
     if agent == "antigravity" {
         let cfg_dir = home.join(".gemini").join("config");
-        if !cfg_dir.exists() && !home.join(".gemini").join("antigravity-cli").exists() && !force {
-            println!("Antigravity not detected (no ~/.gemini/config). Re-run with --force.");
+        if !cfg_dir.exists()
+            && !home.join(".gemini").join("antigravity-cli").exists()
+            && !home.join(".gemini").join("antigravity").exists()
+            && !has_macos_app("Antigravity.app")
+            && !has_bin_on_path("agy")
+            && !force
+        {
+            if !quiet {
+                println!("Antigravity not detected (no ~/.gemini/config). Re-run with --force.");
+            }
             return Ok(());
         }
         fs::create_dir_all(&cfg_dir).map_err(|e| e.to_string())?;
@@ -408,16 +944,10 @@ pub fn run_agent_setup(
         let hooks_path = cfg_dir.join("hooks.json");
         let mut h = read_json_obj(&hooks_path);
         let qexe = shell_quote(&exe);
-        let env_prefix = format!(
-            "MEMNOS_URL={} MEMNOS_TOKEN={} MEMNOS_NS={}",
-            shell_quote(&url),
-            shell_quote(&token),
-            shell_quote(&ns)
-        );
         let hk = |which: &str, timeout: u64| {
             json!({
                 "type": "command",
-                "command": format!("{} {} hook {}", env_prefix, qexe, which),
+                "command": make_hook_cmd(&url, &token, &ns, None, &qexe, &format!("hook {}", which)),
                 "timeout": timeout
             })
         };
@@ -451,11 +981,8 @@ pub fn run_agent_setup(
         let agy_cli_dir = home.join(".gemini").join("antigravity-cli");
         fs::create_dir_all(&agy_cli_dir).map_err(|e| e.to_string())?;
         let agy_settings_path = agy_cli_dir.join("settings.json");
-        if agy_settings_path.is_file() {
-            backup_file(&agy_settings_path);
-        }
         let mut agy_settings = read_json_obj(&agy_settings_path);
-        let sl_cmd = format!("{} hook statusline", qexe);
+        let sl_cmd = make_hook_cmd(&url, &token, &ns, None, &qexe, "hook statusline");
         let existing_sl = agy_settings
             .get("statusLine")
             .and_then(|v| v.get("command"))
@@ -463,23 +990,23 @@ pub fn run_agent_setup(
             .unwrap_or("")
             .trim()
             .to_string();
-        if existing_sl.is_empty() || existing_sl.contains("memnos") {
-            agy_settings["statusLine"] = json!({
-                "type": "command",
-                "command": sl_cmd,
-                "enabled": true,
-                "stack_with_default": true
-            });
-            write_json_pretty(&agy_settings_path, &agy_settings)?;
-        }
-
-        println!(
-            "[memnos] antigravity wired -> {} (MCP {}, hooks, statusLine, GEMINI.md, skill; ns={}).",
-            cfg_dir.display(),
-            transport,
-            ns
+        agy_settings["statusLine"] = build_chained_statusline_value(
+            &existing_sl,
+            &sl_cmd,
+            "agy-statusline-mux.sh",
+            None,
+            true,
         );
-        println!("          In a running `agy` CLI session, run `/statusline enable` (or restart `agy`) to display the MEMNOS status line.");
+        write_json_pretty(&agy_settings_path, &agy_settings)?;
+
+        if !quiet {
+            println!(
+                "[memnos] antigravity wired -> {} (MCP {}, hooks, statusLine, GEMINI.md, skill; ns={}).",
+                cfg_dir.display(),
+                transport,
+                ns
+            );
+        }
         return Ok(());
     }
 
@@ -511,37 +1038,32 @@ pub fn run_agent_setup(
             .map_err(|e| e.to_string())?;
         }
         let qexe = shell_quote(&exe);
-        let env_prefix = format!(
-            "MEMNOS_URL={} MEMNOS_TOKEN={} MEMNOS_NS={}",
-            shell_quote(&url),
-            shell_quote(&token),
-            shell_quote(&ns)
-        );
         let codex_hooks_path = codex_dir.join("hooks.json");
         let mut ch = read_json_obj(&codex_hooks_path);
         if !ch.get("hooks").map(|v| v.is_object()).unwrap_or(false) {
             ch["hooks"] = json!({});
         }
-        ch["hooks"]["SessionStart"] = json!([{
-            "hooks": [{
-                "type": "command",
-                "command": format!("{} {} hook status", env_prefix, qexe),
-                "timeout": 15
-            }]
-        }]);
-        ch["hooks"]["UserPromptSubmit"] = json!([{
-            "hooks": [{
-                "type": "command",
-                "command": format!("{} {} hook recall", env_prefix, qexe),
-                "timeout": 15
-            }]
-        }]);
+        let cx_hook = |which: &str| {
+            json!({
+                "hooks": [{
+                    "type": "command",
+                    "command": make_hook_cmd(&url, &token, &ns, None, &qexe, &format!("hook {}", which)),
+                    "timeout": 15
+                }]
+            })
+        };
+        ch["hooks"]["SessionStart"] =
+            merge_hook_entries(ch["hooks"].get("SessionStart"), cx_hook("status"));
+        ch["hooks"]["UserPromptSubmit"] =
+            merge_hook_entries(ch["hooks"].get("UserPromptSubmit"), cx_hook("recall"));
         let _ = write_json_pretty(&codex_hooks_path, &ch);
-        println!(
-            "[memnos] codex wired -> {} & hooks.json (MCP server 'memnos', ns={}).",
-            toml_path.display(),
-            ns
-        );
+        if !quiet {
+            println!(
+                "[memnos] codex wired -> {} & hooks.json (MCP server 'memnos', ns={}).",
+                toml_path.display(),
+                ns
+            );
+        }
         return Ok(());
     }
 
@@ -606,87 +1128,103 @@ pub fn run_agent_setup(
     });
     if agent == "gemini-cli" {
         let qexe = shell_quote(&exe);
-        let env_prefix = format!(
-            "MEMNOS_URL={} MEMNOS_TOKEN={} MEMNOS_NS={}",
-            shell_quote(&url),
-            shell_quote(&token),
-            shell_quote(&ns)
-        );
         if !doc.get("hooks").map(|v| v.is_object()).unwrap_or(false) {
             doc["hooks"] = json!({});
         }
-        doc["hooks"]["SessionStart"] = json!([{
-            "hooks": [{
-                "type": "command",
-                "command": format!("{} {} hook status", env_prefix, qexe),
-                "timeout": 15000
-            }]
-        }]);
-        doc["hooks"]["BeforeAgent"] = json!([{
-            "hooks": [{
-                "type": "command",
-                "command": format!("{} {} hook recall", env_prefix, qexe),
-                "timeout": 15000
-            }]
-        }]);
-        doc["hooks"]["AfterAgent"] = json!([{
-            "hooks": [{
-                "type": "command",
-                "command": format!("{} {} hook remember", env_prefix, qexe),
-                "timeout": 15000
-            }]
-        }]);
+        let g_hook = |which: &str| {
+            json!({
+                "hooks": [{
+                    "type": "command",
+                    "command": make_hook_cmd(&url, &token, &ns, Some(("GEMINI_CLI", "1")), &qexe, &format!("hook {}", which)),
+                    "timeout": 15000
+                }]
+            })
+        };
+        doc["hooks"]["SessionStart"] =
+            merge_hook_entries(doc["hooks"].get("SessionStart"), g_hook("status"));
+        doc["hooks"]["BeforeAgent"] =
+            merge_hook_entries(doc["hooks"].get("BeforeAgent"), g_hook("recall"));
+        doc["hooks"]["AfterAgent"] =
+            merge_hook_entries(doc["hooks"].get("AfterAgent"), g_hook("remember"));
+
+        // Also write ~/.gemini/GEMINI.md so Gemini CLI knows the MCP tools & session badge rule
+        let gm_path = home.join(".gemini").join("GEMINI.md");
+        let cur = fs::read_to_string(&gm_path).unwrap_or_default();
+        if !cur.contains("## memnos — long-term memory") {
+            backup_file(&gm_path);
+            let next = if cur.is_empty() {
+                AGENT_MD.to_string()
+            } else {
+                format!("{}\n\n{}", cur.trim_end(), AGENT_MD)
+            };
+            let _ = fs::write(&gm_path, next);
+        }
     }
     write_json_pretty(&target_path, &doc)?;
+
+    // If user typed shorthand `gemini` and Antigravity is also installed, wire Antigravity too
+    if agent == "gemini-cli"
+        && agent_raw.trim().eq_ignore_ascii_case("gemini")
+        && (home.join(".gemini").join("config").exists()
+            || home.join(".gemini").join("antigravity-cli").exists()
+            || has_macos_app("Antigravity.app")
+            || has_bin_on_path("agy"))
+    {
+        let _ = run_agent_setup_impl(
+            "antigravity",
+            namespace_opt,
+            None,
+            force,
+            agent_dir,
+            cfg,
+            quiet,
+        );
+    }
     if agent == "cursor" {
         let qexe = shell_quote(&exe);
-        let env_prefix = format!(
-            "MEMNOS_URL={} MEMNOS_TOKEN={} MEMNOS_NS={}",
-            shell_quote(&url),
-            shell_quote(&token),
-            shell_quote(&ns)
-        );
         let cur_hooks_path = home.join(".cursor").join("hooks.json");
         let mut cur_hooks = read_json_obj(&cur_hooks_path);
         cur_hooks["version"] = json!(1);
         if !cur_hooks.get("hooks").map(|v| v.is_object()).unwrap_or(false) {
             cur_hooks["hooks"] = json!({});
         }
-        cur_hooks["hooks"]["sessionStart"] = json!([{
-            "command": format!("{} {} hook status", env_prefix, qexe),
-            "timeout": 15
-        }]);
-        cur_hooks["hooks"]["beforeSubmitPrompt"] = json!([{
-            "command": format!("{} {} hook recall", env_prefix, qexe),
-            "timeout": 15
-        }]);
-        cur_hooks["hooks"]["stop"] = json!([{
-            "command": format!("{} {} hook remember", env_prefix, qexe),
-            "timeout": 15
-        }]);
+        let cur_entry = |which: &str| {
+            json!({
+                "command": make_hook_cmd(&url, &token, &ns, None, &qexe, &format!("hook {}", which)),
+                "timeout": 15
+            })
+        };
+        cur_hooks["hooks"]["sessionStart"] =
+            merge_hook_entries(cur_hooks["hooks"].get("sessionStart"), cur_entry("status"));
+        cur_hooks["hooks"]["beforeSubmitPrompt"] =
+            merge_hook_entries(cur_hooks["hooks"].get("beforeSubmitPrompt"), cur_entry("recall"));
+        cur_hooks["hooks"]["stop"] =
+            merge_hook_entries(cur_hooks["hooks"].get("stop"), cur_entry("remember"));
         let _ = write_json_pretty(&cur_hooks_path, &cur_hooks);
     }
-    println!(
-        "[memnos] {} wired -> {} (MCP server 'memnos', ns={}).",
-        agent,
-        target_path.display(),
-        ns
-    );
-    let has_openai = env::var("OPENAI_API_KEY")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| cfg.openai.clone().filter(|s| !s.trim().is_empty()))
-        .is_some();
-    if !has_openai {
-        let (local_model, _) = crate::rerank::default_local_embed_model_from_env();
-        let (emb_spec, rerank_spec) = crate::rerank::specs_for_embed_model(&local_model);
-        if !crate::rerank::is_model_cached(emb_spec)
-            || !crate::rerank::is_model_cached(rerank_spec)
-        {
-            println!(
-                "[memnos] note: embeddings are not set up yet — run `memnos setup embeddings` to choose between your OpenAI key (no download) or running locally on this computer (~{} MB one-time download, private & free, `memnos models pull --yes`).",
-                emb_spec.approx_mb + rerank_spec.approx_mb
-            );
+    if !quiet {
+        println!(
+            "[memnos] {} wired -> {} (MCP server 'memnos', ns={}).",
+            agent,
+            target_path.display(),
+            ns
+        );
+        let has_openai = env::var("OPENAI_API_KEY")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| cfg.openai.clone().filter(|s| !s.trim().is_empty()))
+            .is_some();
+        if !has_openai {
+            let (local_model, _) = crate::rerank::default_local_embed_model_from_env();
+            let (emb_spec, rerank_spec) = crate::rerank::specs_for_embed_model(&local_model);
+            if !crate::rerank::is_model_cached(emb_spec)
+                || !crate::rerank::is_model_cached(rerank_spec)
+            {
+                println!(
+                    "[memnos] note: embeddings are not set up yet — run `memnos setup embeddings` to choose between your OpenAI key (no download) or running locally on this computer (~{} MB one-time download, private & free, `memnos models pull --yes`).",
+                    emb_spec.approx_mb + rerank_spec.approx_mb
+                );
+            }
         }
     }
     Ok(())
@@ -968,5 +1506,209 @@ pub fn run_autostart(remove: bool, include_proxy: bool) -> Result<(), String> {
                 .status();
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn terminal_agnostic_auto_discovery_coexists_and_chains_statuslines() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "memnos-agent-discovery-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let prev_home = env::var_os("HOME");
+        let prev_userprofile = env::var_os("USERPROFILE");
+        let prev_path = env::var_os("PATH");
+        let prev_ci = env::var_os("CI");
+        let prev_mci = env::var_os("MEMNOS_CI");
+        let prev_skip = env::var_os("MEMNOS_SKIP_AUTO_WIRE");
+        let prev_iso = env::var_os("MEMNOS_ISOLATED_HOME_DISCOVERY");
+
+        env::set_var("HOME", &tmp);
+        env::set_var("USERPROFILE", &tmp);
+        env::set_var("MEMNOS_ISOLATED_HOME_DISCOVERY", "1");
+        env::remove_var("CI");
+        env::remove_var("MEMNOS_CI");
+        env::remove_var("MEMNOS_SKIP_AUTO_WIRE");
+
+        // Populate fake harness footprints + NVM binary dir (simulating non-login terminal)
+        let nvm_bin = tmp
+            .join(".nvm")
+            .join("versions")
+            .join("node")
+            .join("v22.0.0")
+            .join("bin");
+        fs::create_dir_all(&nvm_bin).unwrap();
+        #[cfg(windows)]
+        fs::write(nvm_bin.join("gemini.cmd"), "@echo off\r\n").unwrap();
+        #[cfg(not(windows))]
+        fs::write(nvm_bin.join("gemini"), "#!/bin/sh\n").unwrap();
+        env::set_var("PATH", &tmp.join("empty-path"));
+
+        // 1) Claude Code with pre-existing third-party statusLine + custom hook
+        fs::create_dir_all(tmp.join(".claude")).unwrap();
+        fs::write(
+            tmp.join(".claude").join("settings.json"),
+            serde_json::to_string_pretty(&json!({
+                "statusLine": { "type": "command", "command": "/usr/local/bin/custom-sl" },
+                "hooks": {
+                    "SessionStart": [{ "hooks": [{ "type": "command", "command": "echo third-party-claude" }] }]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // 2) Antigravity AND Gemini CLI coexisting in ~/.gemini
+        fs::create_dir_all(tmp.join(".gemini").join("config")).unwrap();
+        fs::write(
+            tmp.join(".gemini").join("settings.json"),
+            serde_json::to_string_pretty(&json!({
+                "theme": "Default",
+                "hooks": {
+                    "BeforeAgent": [{ "hooks": [{ "type": "command", "command": "echo third-party-gemini" }] }]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // 3) Cursor with pre-existing hook + Codex
+        fs::create_dir_all(tmp.join(".cursor")).unwrap();
+        fs::write(
+            tmp.join(".cursor").join("hooks.json"),
+            serde_json::to_string_pretty(&json!({
+                "version": 1,
+                "hooks": {
+                    "sessionStart": [{ "command": "echo third-party-cursor", "timeout": 5 }]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::create_dir_all(tmp.join(".codex")).unwrap();
+
+        let (detected_before, unwired_before) = inspect_installed_agent_wiring();
+        assert!(detected_before.contains(&"claude-code"));
+        assert!(detected_before.contains(&"antigravity"));
+        assert!(
+            detected_before.contains(&"gemini-cli"),
+            "gemini-cli must NOT be skipped when antigravity is also installed"
+        );
+        assert!(detected_before.contains(&"cursor"));
+        assert!(detected_before.contains(&"codex"));
+        assert_eq!(detected_before.len(), unwired_before.len());
+
+        let mut cfg = Config::default();
+        cfg.port = Some(8900);
+        cfg.admin_token = Some("mnk_test_token_123".to_string());
+
+        let synced = auto_sync_installed_agents(&cfg);
+        assert!(synced.contains(&"claude-code"));
+        assert!(synced.contains(&"antigravity"));
+        assert!(synced.contains(&"gemini-cli"));
+        assert!(synced.contains(&"cursor"));
+        assert!(synced.contains(&"codex"));
+
+        // Run a second time to verify idempotency (no duplicate hooks or duplicate MD blocks)
+        let _ = auto_sync_installed_agents(&cfg);
+
+        let (_, unwired_after) = inspect_installed_agent_wiring();
+        assert!(
+            unwired_after.is_empty(),
+            "all detected harnesses should be wired, got unwired={:?}",
+            unwired_after
+        );
+
+        // Verify ~/.memnos/bin/statusline AND ~/.local/bin/statusline shims exist
+        #[cfg(unix)]
+        {
+            assert!(tmp.join(".memnos").join("bin").join("statusline").is_file());
+            assert!(tmp.join(".local").join("bin").join("statusline").is_file());
+            // Verify Claude pre-existing statusLine was chained into claude-statusline-mux.sh
+            let mux = fs::read_to_string(
+                tmp.join(".memnos")
+                    .join("bin")
+                    .join("claude-statusline-mux.sh"),
+            )
+            .unwrap();
+            assert!(mux.contains("/usr/local/bin/custom-sl"));
+            assert!(mux.contains("hook statusline"));
+        }
+        #[cfg(windows)]
+        {
+            assert!(tmp
+                .join(".memnos")
+                .join("bin")
+                .join("statusline.cmd")
+                .is_file());
+            assert!(tmp
+                .join(".local")
+                .join("bin")
+                .join("statusline.cmd")
+                .is_file());
+        }
+
+        // Verify third-party hooks were preserved alongside memnos hooks
+        let claude_st = read_json_obj(&tmp.join(".claude").join("settings.json"));
+        let cs_hooks = serde_json::to_string(&claude_st["hooks"]["SessionStart"]).unwrap();
+        assert!(cs_hooks.contains("third-party-claude") && cs_hooks.contains("hook status"));
+        assert_eq!(claude_st["hooks"]["SessionStart"].as_array().unwrap().len(), 2);
+
+        let gem_st = read_json_obj(&tmp.join(".gemini").join("settings.json"));
+        let gb_hooks = serde_json::to_string(&gem_st["hooks"]["BeforeAgent"]).unwrap();
+        assert!(gb_hooks.contains("third-party-gemini") && gb_hooks.contains("GEMINI_CLI"));
+        assert_eq!(gem_st["hooks"]["BeforeAgent"].as_array().unwrap().len(), 2);
+        assert!(
+            fs::read_to_string(tmp.join(".gemini").join("GEMINI.md"))
+                .unwrap()
+                .matches("## memnos — long-term memory")
+                .count()
+                == 1
+        );
+
+        let cur_hk = read_json_obj(&tmp.join(".cursor").join("hooks.json"));
+        assert_eq!(cur_hk["hooks"]["sessionStart"].as_array().unwrap().len(), 2);
+
+        // Restore env
+        match prev_home {
+            Some(v) => env::set_var("HOME", v),
+            None => env::remove_var("HOME"),
+        }
+        match prev_userprofile {
+            Some(v) => env::set_var("USERPROFILE", v),
+            None => env::remove_var("USERPROFILE"),
+        }
+        match prev_path {
+            Some(v) => env::set_var("PATH", v),
+            None => env::remove_var("PATH"),
+        }
+        match prev_ci {
+            Some(v) => env::set_var("CI", v),
+            None => env::remove_var("CI"),
+        }
+        match prev_mci {
+            Some(v) => env::set_var("MEMNOS_CI", v),
+            None => env::remove_var("MEMNOS_CI"),
+        }
+        match prev_skip {
+            Some(v) => env::set_var("MEMNOS_SKIP_AUTO_WIRE", v),
+            None => env::remove_var("MEMNOS_SKIP_AUTO_WIRE"),
+        }
+        match prev_iso {
+            Some(v) => env::set_var("MEMNOS_ISOLATED_HOME_DISCOVERY", v),
+            None => env::remove_var("MEMNOS_ISOLATED_HOME_DISCOVERY"),
+        }
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
