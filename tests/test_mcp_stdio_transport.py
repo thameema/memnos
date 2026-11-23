@@ -44,10 +44,12 @@ def cleanup(conn):
     with conn.cursor() as c:
         c.execute("DELETE FROM tenant_memnos.raw_turns WHERE namespace=%s", (NS,))
         c.execute("DELETE FROM tenant_memnos.semantic WHERE namespace=%s", (NS,))
-        c.execute("DELETE FROM memnos_control.channel_subscriptions s USING memnos_control.principals pr "
-                  "WHERE s.principal_id=pr.id AND pr.name=%s", ("mcpstdio_agent",))
-        c.execute("DELETE FROM memnos_control.agent_sessions s USING memnos_control.principals pr "
-                  "WHERE s.principal_id=pr.id AND pr.name=%s", ("mcpstdio_agent",))
+        for tbl in ("agent_inbox", "channel_subscriptions", "channel_messages",
+                    "agent_sessions", "channel_catalog", "hosts", "bindings", "ns_nudges"):
+            c.execute(f"DELETE FROM memnos_control.{tbl} s USING memnos_control.principals pr "
+                      "WHERE s.principal_id=pr.id AND pr.name=%s", ("mcpstdio_agent",))
+        c.execute("DELETE FROM memnos_control.namespaces n USING memnos_control.principals pr "
+                  "WHERE n.created_by=pr.id AND pr.name=%s", ("mcpstdio_agent",))
         c.execute("DELETE FROM memnos_control.api_tokens t USING memnos_control.principals pr "
                   "WHERE t.principal_id=pr.id AND pr.name=%s", ("mcpstdio_agent",))
         c.execute("DELETE FROM memnos_control.grants g USING memnos_control.principals pr "
