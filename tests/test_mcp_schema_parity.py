@@ -86,6 +86,12 @@ def _types_of(prop_schema: dict) -> set[str]:
 
 
 def main() -> int:
+    if not os.path.isfile(CANDIDATE_BIN):
+        if os.environ.get("CI") == "true":
+            print(f"SKIP: candidate binary not present at {CANDIDATE_BIN} in Python-only CI job")
+            return 0
+        print(f"FAIL: candidate binary not found at {CANDIDATE_BIN}", file=sys.stderr)
+        return 1
     ref_env_cmd = os.environ.get("MEMNOS_REF_MCP_CMD", "")
     ref_cmd = ref_env_cmd.split() if ref_env_cmd else [sys.executable, os.path.join(ROOT, "memnos_mcp.py")]
     if not os.path.isfile(ref_cmd[-1]):

@@ -104,6 +104,10 @@ def cleanup_db(conn):
     with conn.cursor() as c:
         c.execute("DELETE FROM tenant_memnos.raw_turns WHERE namespace=%s", (NS,))
         c.execute("DELETE FROM tenant_memnos.semantic WHERE namespace=%s", (NS,))
+        c.execute("DELETE FROM memnos_control.channel_subscriptions s USING memnos_control.principals pr "
+                  "WHERE s.principal_id=pr.id AND pr.name=%s", ("mcpmountfail_agent",))
+        c.execute("DELETE FROM memnos_control.agent_sessions s USING memnos_control.principals pr "
+                  "WHERE s.principal_id=pr.id AND pr.name=%s", ("mcpmountfail_agent",))
         c.execute("DELETE FROM memnos_control.api_tokens t USING memnos_control.principals pr "
                   "WHERE t.principal_id=pr.id AND pr.name=%s", ("mcpmountfail_agent",))
         c.execute("DELETE FROM memnos_control.grants g USING memnos_control.principals pr "
