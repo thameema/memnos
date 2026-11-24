@@ -162,19 +162,28 @@ pub async fn run_doctor_scan(
         let binfo = inspect_latest_backup();
         let exists = binfo["exists"].as_bool().unwrap_or(false);
         let age_h = binfo["age_hours"].as_f64().unwrap_or(9999.0);
-        let st = if exists && age_h <= 168.0 {
+        let bcount = binfo["count"].as_u64().unwrap_or(0);
+        let st = if exists && age_h <= 168.0 && bcount <= 1 {
             "ok"
         } else {
             score -= 6;
             "warn"
         };
         let summary = if exists {
-            format!(
-                "Latest verified dump: {} ({:.1}h ago, {} backups stored)",
-                binfo["latest_file"].as_str().unwrap_or("backup.dump"),
-                age_h,
-                binfo["count"].as_u64().unwrap_or(1)
-            )
+            if bcount > 1 {
+                format!(
+                    "Latest verified dump: {} ({:.1}h ago) — {} old dumps accumulated (will prune to 1)",
+                    binfo["latest_file"].as_str().unwrap_or("backup.dump"),
+                    age_h,
+                    bcount
+                )
+            } else {
+                format!(
+                    "Latest verified dump: {} ({:.1}h ago, single-backup retention active)",
+                    binfo["latest_file"].as_str().unwrap_or("backup.dump"),
+                    age_h
+                )
+            }
         } else {
             "No PostgreSQL backup found in ~/.memnos/backups yet.".to_string()
         };
@@ -766,7 +775,7 @@ pub async fn execute_doctor_actions(
                 "ok": true,
             }));
         }
-        let bpath = crate::backup::take_verified_db_backup_dsn(pg_dsn, "pre-doctor", None, 10).await?;
+        let bpath = crate::backup::take_verified_db_backup_dsn(pg_dsn, "pre-doctor", None, 1).await?;
         results.insert(
             "pre_backup".into(),
             json!(bpath.to_string_lossy().to_string()),
@@ -780,6 +789,7 @@ pub async fn execute_doctor_actions(
                 if dry_run {
                     results.insert("backup_db".into(), json!({ "dry_run": true, "would_backup": true }));
                 } else {
+                    crate::backup::prune_old_backups(&config_dir().join("backups"), 1, None);
                     results.insert("backup_db".into(), inspect_latest_backup());
                 }
             }

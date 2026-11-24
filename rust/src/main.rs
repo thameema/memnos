@@ -488,7 +488,7 @@ enum Commands {
     Backup {
         #[arg(long)]
         out: Option<String>,
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 1)]
         keep: usize,
     },
     /// re-embed all memories to a different dimension or model (always takes a DB backup first)
@@ -2575,8 +2575,8 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             }
             if !check {
                 // Standing upgrade discipline: ALWAYS take and verify a full DB + config backup
-                // before applying any upgrade or restarting onto a new binary.
-                take_verified_db_backup(&cfg, "pre-upgrade", None, 10).await?;
+                // before applying any upgrade or restarting onto a new binary (retaining only 1 latest dump).
+                take_verified_db_backup(&cfg, "pre-upgrade", None, 1).await?;
                 let synced = auto_sync_installed_agents(&cfg);
                 if !synced.is_empty() {
                     println!("[memnos] auto-wired harnesses: {}", synced.join(", "));
@@ -4185,7 +4185,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 "rm" | "delete" => {
                     let n = name.ok_or("namespace name required")?;
                     if purge {
-                        take_verified_db_backup(&cfg, "pre-purge", None, 10).await?;
+                        take_verified_db_backup(&cfg, "pre-purge", None, 1).await?;
                     }
                     Control::delete_namespace(&pool, &n, purge)
                         .await
@@ -4257,7 +4257,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                         return Ok(());
                     }
                     let pre_backup = if action != "copy" || remove_src {
-                        let bp = take_verified_db_backup(&cfg, "pre-transfer", None, 10).await?;
+                        let bp = take_verified_db_backup(&cfg, "pre-transfer", None, 1).await?;
                         Some(bp.to_string_lossy().to_string())
                     } else {
                         None
@@ -5016,8 +5016,8 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 }
             }
 
-            // Standing discipline: ALWAYS take and verify a full DB + config backup first!
-            take_verified_db_backup(&cfg, "pre-migrate", None, 10).await?;
+            // Standing discipline: ALWAYS take and verify a full DB + config backup first (retaining 1 latest dump)!
+            take_verified_db_backup(&cfg, "pre-migrate", None, 1).await?;
 
             let t0 = std::time::Instant::now();
             let mut done_rows: usize = 0;

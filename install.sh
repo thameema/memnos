@@ -119,7 +119,6 @@ if [ -f "$HOME/.memnos/config.json" ] && [ -z "${MEMNOS_CI:-}" ] && [ -z "${CI:-
   echo "[memnos] auto-discovering & wiring installed AI harnesses (MCP, hooks, statusLine) ..."
   "$BIN_DIR/memnos" agent-setup all --namespace auto --force || true
   if [ -f "$HOME/.memnos/gateway_state.json" ] || [ -f "$HOME/.memnos/server.pid" ]; then
-    "$BIN_DIR/memnos" upgrade --no-restart >/dev/null 2>&1 || true
     "$BIN_DIR/memnos" restart || true
   fi
 else
