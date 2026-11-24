@@ -905,7 +905,7 @@ async fn admin_api_handler(
             }
             let purge = qs.get("purge").map(|s| s == "1" || s == "true").unwrap_or(false);
             let backup_file = if purge {
-                match crate::backup::take_verified_db_backup_dsn(&st.pg_dsn, "pre-purge", None, 10).await {
+                match crate::backup::take_verified_db_backup_dsn(&st.pg_dsn, "pre-purge", None, 1).await {
                     Ok(p) => Some(p.to_string_lossy().to_string()),
                     Err(e) => {
                         return json_resp(
@@ -2840,7 +2840,7 @@ async fn workspace_api_handler(
                     &st.pg_dsn,
                     "pre-transfer",
                     None,
-                    10,
+                    1,
                 )
                 .await
                 {
@@ -2930,7 +2930,7 @@ async fn workspace_api_handler(
                 );
             }
             let pre_backup = if purge {
-                match crate::backup::take_verified_db_backup_dsn(&st.pg_dsn, "pre-purge", None, 10)
+                match crate::backup::take_verified_db_backup_dsn(&st.pg_dsn, "pre-purge", None, 1)
                     .await
                 {
                     Ok(p) => Some(p.to_string_lossy().to_string()),
@@ -4006,7 +4006,7 @@ async fn api_post_handler(
             }
             if mode == "move" {
                 if let Err(e) =
-                    crate::backup::take_verified_db_backup_dsn(&st.pg_dsn, "pre-move", None, 10)
+                    crate::backup::take_verified_db_backup_dsn(&st.pg_dsn, "pre-move", None, 1)
                         .await
                 {
                     return json_resp(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e }));
@@ -5215,6 +5215,9 @@ pub async fn run_server_opts(
         copilot: crate::copilot::CopilotEngine::new(),
         started_at: Instant::now(),
     };
+
+    // Enforce single-backup retention on startup so accumulated multi-GB dumps never fill disk
+    let _ = crate::backup::prune_old_backups(&crate::config::config_dir().join("backups"), 1, None);
 
     // Best-effort backfill of local config tokens into `token_enc` on boot
     for maybe_tok in [cfg.admin_token.clone(), Some(crate::config::session_token(&cfg))] {

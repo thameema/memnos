@@ -1172,6 +1172,75 @@ def test_terminal_agnostic_harness_auto_discovery_and_gemini_statusline() -> Non
         shutil.rmtree(home, ignore_errors=True)
 
 
+def test_single_backup_retention_and_failed_dump_safety() -> None:
+    print("\n=== Single-Backup Retention (keep=1) & Failed-Dump Safety ===")
+    db_name = f"memnos_single_bkp_{int(time.time())}"
+    dsn = make_scratch_db(ADMIN_DSN, db_name)
+    home = tempfile.mkdtemp(prefix="memnos-single-bkp-")
+    try:
+        os.makedirs(os.path.join(home, ".memnos", "backups"), exist_ok=True)
+        with open(os.path.join(home, ".memnos", "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"dsn": dsn, "port": 18998, "embed_choice": "local"}, f)
+
+        # Pre-seed an old manual dump + orphan config snapshot to simulate accumulated backups
+        bdir = os.path.join(home, ".memnos", "backups")
+        with open(os.path.join(bdir, "memnos-manual-20260101T000000Z.dump"), "wb") as f:
+            f.write(b"OLD_DUMP_BYTES")
+        with open(os.path.join(bdir, "memnos-manual-20260101T000000Z.config.json"), "w", encoding="utf-8") as f:
+            f.write("{}")
+        with open(os.path.join(bdir, "memnos-pre-cutover-20260101.config.json"), "w", encoding="utf-8") as f:
+            f.write("{}")
+
+        env = dict(os.environ, HOME=home, USERPROFILE=home, MEMNOS_DSN=dsn, MEMNOS_CI="1")
+
+        # Initialize minimal schema via `principal ls`
+        subprocess.run([MEMNOS_BIN, "principal", "ls"], env=env, cwd=home, check=True, capture_output=True, timeout=15)
+
+        # 1) Run `memnos backup` -> old manual dump & orphan config pruned, 1 dump left
+        r1 = subprocess.run([MEMNOS_BIN, "backup"], env=env, cwd=home, capture_output=True, text=True, timeout=20)
+        dumps_1 = [x for x in os.listdir(bdir) if x.endswith(".dump")]
+        cfgs_1 = [x for x in os.listdir(bdir) if x.endswith(".config.json")]
+        check(
+            "`memnos backup` prunes pre-existing manual dumps & orphan config snapshots down to 1",
+            r1.returncode == 0 and len(dumps_1) == 1 and len(cfgs_1) == 1 and dumps_1[0].startswith("memnos-manual-"),
+            f"dumps={dumps_1} cfgs={cfgs_1} err={r1.stderr}",
+        )
+
+        # 2) Run `memnos upgrade --no-restart` -> replaces previous manual dump with 1 `pre-upgrade` dump
+        r2 = subprocess.run([MEMNOS_BIN, "upgrade", "--no-restart"], env=env, cwd=home, capture_output=True, text=True, timeout=20)
+        dumps_2 = [x for x in os.listdir(bdir) if x.endswith(".dump")]
+        cfgs_2 = [x for x in os.listdir(bdir) if x.endswith(".config.json")]
+        check(
+            "`memnos upgrade` replaces previous dump and retains ONLY 1 verified `.dump` + 1 `.config.json`",
+            r2.returncode == 0 and len(dumps_2) == 1 and len(cfgs_2) == 1 and dumps_2[0].startswith("memnos-pre-upgrade-"),
+            f"dumps={dumps_2} cfgs={cfgs_2} err={r2.stderr}",
+        )
+        kept_dump = dumps_2[0]
+
+        # 3) Simulate a failing `pg_dump` -> existing 1 verified backup MUST survive untouched!
+        fail_dump_sh = os.path.join(home, "fail-pg-dump.sh")
+        with open(fail_dump_sh, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\necho simulated-disk-full >&2\nexit 1\n")
+        os.chmod(fail_dump_sh, 0o755)
+        r3 = subprocess.run(
+            [MEMNOS_BIN, "upgrade", "--no-restart"],
+            env={**env, "MEMNOS_PG_DUMP": fail_dump_sh},
+            cwd=home,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        dumps_3 = [x for x in os.listdir(bdir) if x.endswith(".dump")]
+        check(
+            "Failed `pg_dump` aborts upgrade WITHOUT deleting the existing single verified backup",
+            r3.returncode != 0 and dumps_3 == [kept_dump] and os.path.getsize(os.path.join(bdir, kept_dump)) > 0,
+            f"rc={r3.returncode} dumps_3={dumps_3}",
+        )
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+        drop_scratch_db(ADMIN_DSN, db_name)
+
+
 def main() -> None:
     if not ADMIN_DSN:
         print("ERROR: set MEMNOS_ADMIN_DSN or MEMNOS_DSN explicitly to a scratch-capable PostgreSQL server (refusing implicit default)")
@@ -1186,6 +1255,7 @@ def main() -> None:
     test_b3_b4_b5_security_and_spawner_isolation()
     test_241_wake_daemon_routing_and_doorbells()
     test_terminal_agnostic_harness_auto_discovery_and_gemini_statusline()
+    test_single_backup_retention_and_failed_dump_safety()
     print(f"\nPassed: {PASS}, Failed: {FAIL}")
     sys.exit(1 if FAIL else 0)
 

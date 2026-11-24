@@ -64,7 +64,6 @@ if ((Test-Path $cfgPath) -and (-not $env:MEMNOS_CI) -and (-not $env:CI)) {
     try { & (Join-Path $binDir "memnos.exe") agent-setup all --namespace auto --force } catch {}
     $gwState = Join-Path $env:USERPROFILE ".memnos\gateway_state.json"
     if (Test-Path $gwState) {
-        try { & (Join-Path $binDir "memnos.exe") upgrade --no-restart | Out-Null } catch {}
         try { & (Join-Path $binDir "memnos.exe") restart } catch {}
     }
 } else {

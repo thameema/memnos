@@ -138,31 +138,83 @@ pub fn copy_private_file(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn prune_old_backups(backups_dir: &Path, keep: usize) {
+pub fn prune_old_backups(backups_dir: &Path, keep: usize, protect_path: Option<&Path>) -> usize {
     if keep == 0 {
-        return;
+        return 0;
     }
     let Ok(entries) = fs::read_dir(backups_dir) else {
-        return;
+        return 0;
     };
-    let mut dumps: Vec<(std::time::SystemTime, PathBuf)> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            name.starts_with("memnos-pre-") && name.ends_with(".dump")
-        })
-        .filter_map(|p| {
-            let mtime = fs::metadata(&p).and_then(|m| m.modified()).ok()?;
-            Some((mtime, p))
-        })
-        .collect();
-    dumps.sort_by(|a, b| b.0.cmp(&a.0));
-    for (_, old_path) in dumps.into_iter().skip(keep) {
-        let cfg_snap = old_path.with_extension("config.json");
-        let _ = fs::remove_file(&old_path);
-        let _ = fs::remove_file(&cfg_snap);
+    let protect_canon = protect_path.and_then(|p| fs::canonicalize(p).ok());
+    let mut valid_dumps: Vec<(bool, std::time::SystemTime, String, PathBuf)> = Vec::new();
+    let mut removed = 0usize;
+
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let name = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        if !name.ends_with(".dump") {
+            continue;
+        }
+        let is_protected = protect_path.map(|pp| pp == p).unwrap_or(false)
+            || (protect_canon.is_some() && fs::canonicalize(&p).ok() == protect_canon);
+        let Ok(meta) = fs::metadata(&p) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        // Never allow an empty/corrupt 0-byte dump file to count toward `keep` and evict a valid backup
+        if meta.len() == 0 && !is_protected {
+            let _ = fs::remove_file(&p);
+            let _ = fs::remove_file(p.with_extension("config.json"));
+            removed += 1;
+            continue;
+        }
+        let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        valid_dumps.push((is_protected, mtime, name, p));
     }
+
+    // Protected (freshly verified) dump always sorts first, then newest mtime, then lexicographically newest name
+    valid_dumps.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| b.2.cmp(&a.2))
+    });
+
+    let mut kept_stems: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (idx, (_, _, _, dump_path)) in valid_dumps.into_iter().enumerate() {
+        if idx < keep {
+            if let Some(stem) = dump_path.file_stem().and_then(|s| s.to_str()) {
+                kept_stems.insert(stem.to_string());
+            }
+        } else {
+            let cfg_snap = dump_path.with_extension("config.json");
+            if fs::remove_file(&dump_path).is_ok() {
+                removed += 1;
+            }
+            let _ = fs::remove_file(&cfg_snap);
+        }
+    }
+
+    // Also remove any orphaned `memnos-*.config.json` snapshots whose `.dump` was already deleted
+    if let Ok(entries2) = fs::read_dir(backups_dir) {
+        for entry in entries2.flatten() {
+            let p = entry.path();
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if name.starts_with("memnos-") && name.ends_with(".config.json") {
+                let stem = name.trim_end_matches(".config.json");
+                if !kept_stems.contains(stem) {
+                    let _ = fs::remove_file(&p);
+                }
+            }
+        }
+    }
+
+    removed
 }
 
 pub fn take_verified_db_backup_sync(
@@ -291,7 +343,14 @@ pub fn take_verified_db_backup_sync(
     }
 
     if custom_out.is_none() {
-        prune_old_backups(&backups_dir, keep);
+        let pruned = prune_old_backups(&backups_dir, keep.max(1), Some(&target_path));
+        if pruned > 0 {
+            eprintln!(
+                "[memnos] pruned {} older database backup(s) (keeping latest {} verified dump).",
+                pruned,
+                keep.max(1)
+            );
+        }
     }
 
     let mb = meta.len() as f64 / (1024.0 * 1024.0);
@@ -328,4 +387,50 @@ pub async fn take_verified_db_backup_cfg(
 ) -> Result<PathBuf, String> {
     let pg_dsn = dsn(cfg);
     take_verified_db_backup_dsn(&pg_dsn, reason, custom_out, keep).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prune_keeps_exactly_one_verified_backup_across_all_reasons_and_ignores_zero_byte_dumps() {
+        let tmp = env::temp_dir().join(format!("memnos-backup-prune-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let b1 = tmp.join("memnos-manual-20261120T010000Z.dump");
+        let b2 = tmp.join("memnos-pre-upgrade-20261121T010000Z.dump");
+        let b3 = tmp.join("memnos-pre-doctor-20261122T010000Z.dump");
+        let b4_latest = tmp.join("memnos-pre-upgrade-20261123T010000Z.dump");
+        let orphan_cfg = tmp.join("memnos-pre-cutover-20261119.config.json");
+        let broken_zero = tmp.join("memnos-pre-upgrade-20990101T000000Z.dump");
+
+        for p in [&b1, &b2, &b3, &b4_latest] {
+            fs::write(p, b"PGDMP-valid-payload").unwrap();
+            fs::write(p.with_extension("config.json"), b"{\"port\":8900}").unwrap();
+        }
+        fs::write(&orphan_cfg, b"{}").unwrap();
+        // 0-byte failed/partial dump with a newer filename must NEVER evict b4_latest!
+        fs::write(&broken_zero, b"").unwrap();
+
+        let pruned = prune_old_backups(&tmp, 1, Some(&b4_latest));
+        assert_eq!(pruned, 4); // b1, b2, b3, and 0-byte broken_zero removed
+
+        assert!(b4_latest.is_file(), "newest verified dump must be retained");
+        assert!(
+            b4_latest.with_extension("config.json").is_file(),
+            "newest companion config.json must be retained"
+        );
+        for gone in [&b1, &b2, &b3, &broken_zero] {
+            assert!(!gone.exists(), "{} should be pruned", gone.display());
+            assert!(!gone.with_extension("config.json").exists());
+        }
+        assert!(
+            !orphan_cfg.exists(),
+            "orphaned memnos-*.config.json must be cleaned up"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }
