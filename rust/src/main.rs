@@ -2189,6 +2189,423 @@ async fn start_background_server(cfg: &mut Config, port_override: Option<u16>) -
     ))
 }
 
+fn parse_semver_tuple(raw: &str) -> Option<(u64, u64, u64)> {
+    let trimmed = raw.trim().trim_start_matches(['v', 'V']);
+    let core = trimmed.split(['-', '+']).next().unwrap_or(trimmed);
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse::<u64>().ok()?;
+    let minor = parts.next().unwrap_or("0").parse::<u64>().ok()?;
+    let patch = parts.next().unwrap_or("0").parse::<u64>().ok()?;
+    Some((major, minor, patch))
+}
+
+fn semver_gt(candidate: &str, current: &str) -> bool {
+    match (parse_semver_tuple(candidate), parse_semver_tuple(current)) {
+        (Some(c), Some(cur)) => c > cur,
+        _ => false,
+    }
+}
+
+fn fetch_latest_published_version() -> Option<String> {
+    if let Ok(explicit) = env::var("MEMNOS_VERSION") {
+        let clean = explicit.trim().trim_start_matches(['v', 'V']).to_string();
+        if !clean.is_empty() {
+            return Some(clean);
+        }
+    }
+    let repo = env::var("MEMNOS_GITHUB_REPO").unwrap_or_else(|_| "thameema/memnos".to_string());
+    let gh_api = format!("https://api.github.com/repos/{}/releases/latest", repo);
+    if let Ok(r) = ureq::get(&gh_api)
+        .set("User-Agent", "memnos-cli")
+        .set("Accept", "application/vnd.github+json")
+        .timeout(Duration::from_secs(4))
+        .call()
+    {
+        if let Ok(v) = r.into_json::<Value>() {
+            if let Some(tag) = v.get("tag_name").and_then(|s| s.as_str()) {
+                let clean = tag.trim().trim_start_matches(['v', 'V']).to_string();
+                if !clean.is_empty() {
+                    return Some(clean);
+                }
+            }
+        }
+    }
+    if let Ok(r) = ureq::get("https://pypi.org/pypi/memnos/json")
+        .timeout(Duration::from_secs(4))
+        .call()
+    {
+        if let Ok(v) = r.into_json::<Value>() {
+            if let Some(latest) = v
+                .get("info")
+                .and_then(|i| i.get("version"))
+                .and_then(|s| s.as_str())
+            {
+                let clean = latest.trim().trim_start_matches(['v', 'V']).to_string();
+                if !clean.is_empty() {
+                    return Some(clean);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn atomic_swap_binary(src: &Path, dst_raw: &Path) -> Result<(), String> {
+    let dst = if dst_raw.is_symlink() {
+        fs::canonicalize(dst_raw).unwrap_or_else(|_| dst_raw.to_path_buf())
+    } else {
+        dst_raw.to_path_buf()
+    };
+    let parent = dst
+        .parent()
+        .ok_or_else(|| format!("invalid target path {}", dst.display()))?;
+    fs::create_dir_all(parent).map_err(|e| format!("create dir {} failed: {}", parent.display(), e))?;
+
+    #[cfg(unix)]
+    {
+        let fname = dst.file_name().and_then(|s| s.to_str()).unwrap_or("memnos");
+        let tmp = parent.join(format!(".{}.upgrade-tmp-{}", fname, std::process::id()));
+        fs::copy(src, &tmp).map_err(|e| format!("failed staging {}: {}", tmp.display(), e))?;
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("chmod failed on {}: {}", tmp.display(), e))?;
+        fs::rename(&tmp, &dst).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            format!("failed replacing {}: {}", dst.display(), e)
+        })?;
+    }
+    #[cfg(windows)]
+    {
+        let old = PathBuf::from(format!("{}.old", dst.display()));
+        let _ = fs::remove_file(&old);
+        if dst.exists() {
+            let _ = fs::rename(&dst, &old);
+        }
+        if let Err(e) = fs::copy(src, &dst) {
+            if old.exists() && !dst.exists() {
+                let _ = fs::rename(&old, &dst);
+            }
+            return Err(format!("failed replacing {}: {}", dst.display(), e));
+        }
+    }
+    Ok(())
+}
+
+async fn download_and_swap_release_binary(target_ver: &str) -> Result<PathBuf, String> {
+    let raw_exe = env::current_exe().map_err(|e| format!("cannot locate current executable: {}", e))?;
+    let raw_str = raw_exe.to_string_lossy();
+    let exe_path = if let Some(clean) = raw_str.strip_suffix(" (deleted)") {
+        PathBuf::from(clean)
+    } else {
+        raw_exe
+    };
+    let _ = fs::remove_file(format!("{}.old", exe_path.display()));
+
+    let norm_exe = exe_path.to_string_lossy().replace('\\', "/");
+    let custom_base = env::var("MEMNOS_RELEASE_BASE_URL")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty());
+
+    // Never overwrite a local build-tree artifact unless an explicit release mirror URL is under test
+    if custom_base.is_none()
+        && (norm_exe.contains("/target/release/") || norm_exe.contains("/target/debug/"))
+    {
+        return Ok(exe_path);
+    }
+
+    // If installed via `uv tool install memnos`, let `uv` upgrade package metadata first
+    if custom_base.is_none() && norm_exe.contains("/uv/tools/memnos/") {
+        println!("[memnos] detected `uv tool` installation — running `uv tool install -U memnos` ...");
+        if let Ok(st) = Command::new("uv")
+            .args([
+                "tool",
+                "install",
+                "--upgrade",
+                "--force",
+                &format!("memnos=={}", target_ver),
+            ])
+            .status()
+        {
+            if st.success() {
+                return Ok(exe_path);
+            }
+        }
+    }
+
+    let archive_opt: Option<&'static str> = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Some("memnos-darwin-arm64.tar.gz")
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some("memnos-linux-amd64.tar.gz")
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        Some("memnos-windows-amd64.zip")
+    } else {
+        None
+    };
+
+    let Some(archive_name) = archive_opt else {
+        // Fallback for non-prebuilt architectures (e.g., Intel macOS / Linux ARM64 venvs)
+        if let Some(bin_dir) = exe_path.parent() {
+            let pip_cand = bin_dir.join(if cfg!(windows) { "pip.exe" } else { "pip" });
+            if pip_cand.is_file() {
+                let st = Command::new(&pip_cand)
+                    .args(["install", "-U", &format!("memnos=={}", target_ver)])
+                    .status()
+                    .map_err(|e| format!("pip upgrade failed: {}", e))?;
+                if st.success() {
+                    return Ok(exe_path);
+                }
+            }
+        }
+        return Err(
+            "prebuilt release archive is not available for this CPU architecture — upgrade via `uv tool install -U memnos`"
+                .to_string(),
+        );
+    };
+
+    let repo = env::var("MEMNOS_GITHUB_REPO").unwrap_or_else(|_| "thameema/memnos".to_string());
+    let base_url =
+        custom_base.unwrap_or_else(|| format!("https://github.com/{}/releases/download", repo));
+    let download_url = format!("{}/v{}/{}", base_url, target_ver, archive_name);
+
+    let tmp_dir = config_dir().join(format!("tmp-upgrade-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&tmp_dir);
+    let extract_dir = tmp_dir.join("extracted");
+    fs::create_dir_all(&extract_dir).map_err(|e| format!("create temp upgrade dir failed: {}", e))?;
+
+    let result = async {
+        println!("[memnos] downloading v{} ({}) ...", target_ver, archive_name);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .user_agent("memnos-cli")
+            .build()
+            .map_err(|e| format!("http client init failed: {}", e))?;
+        let resp = client
+            .get(&download_url)
+            .send()
+            .await
+            .map_err(|e| format!("download failed ({}): {}", download_url, e))?;
+        if !resp.status().is_success() {
+            return Err(format!(
+                "download failed ({}): HTTP {}",
+                download_url,
+                resp.status()
+            ));
+        }
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("reading release archive failed: {}", e))?;
+        let archive_path = tmp_dir.join(archive_name);
+        fs::write(&archive_path, &bytes)
+            .map_err(|e| format!("writing temporary archive failed: {}", e))?;
+
+        #[cfg(unix)]
+        {
+            let st = Command::new("tar")
+                .args([
+                    "-xzf",
+                    &archive_path.to_string_lossy(),
+                    "-C",
+                    &extract_dir.to_string_lossy(),
+                ])
+                .status()
+                .map_err(|e| format!("failed invoking tar to extract release archive: {}", e))?;
+            if !st.success() {
+                return Err("tar failed extracting release archive".to_string());
+            }
+        }
+        #[cfg(windows)]
+        {
+            let ok_tar = Command::new("tar.exe")
+                .args([
+                    "-xf",
+                    &archive_path.to_string_lossy(),
+                    "-C",
+                    &extract_dir.to_string_lossy(),
+                ])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !ok_tar {
+                let ps_cmd = format!(
+                    "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                    archive_path.to_string_lossy().replace('\'', "''"),
+                    extract_dir.to_string_lossy().replace('\'', "''")
+                );
+                let st = Command::new("powershell")
+                    .args(["-NoProfile", "-Command", &ps_cmd])
+                    .status()
+                    .map_err(|e| format!("failed extracting zip archive: {}", e))?;
+                if !st.success() {
+                    return Err("Expand-Archive failed extracting release zip".to_string());
+                }
+            }
+        }
+
+        let bin_name = if cfg!(windows) { "memnos.exe" } else { "memnos" };
+        let desktop_name = if cfg!(windows) {
+            "memnos-desktop.exe"
+        } else {
+            "memnos-desktop"
+        };
+        let new_memnos = extract_dir.join(bin_name);
+        if !new_memnos.is_file() {
+            return Err(format!("downloaded archive did not contain `{}`", bin_name));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&new_memnos, fs::Permissions::from_mode(0o755));
+        }
+
+        // Smoke-verify extracted binary executes cleanly before swapping
+        let ver_check = Command::new(&new_memnos)
+            .arg("--version")
+            .output()
+            .map_err(|e| format!("downloaded binary failed pre-swap check: {}", e))?;
+        if !ver_check.status.success() {
+            return Err("downloaded binary exited non-zero on `--version` check (aborting swap)".to_string());
+        }
+
+        let install_dir = exe_path
+            .parent()
+            .ok_or_else(|| "cannot resolve install directory".to_string())?;
+        let dst_memnos = install_dir.join(bin_name);
+        atomic_swap_binary(&new_memnos, &dst_memnos)?;
+
+        let new_desktop = extract_dir.join(desktop_name);
+        if new_desktop.is_file() {
+            let _ = atomic_swap_binary(&new_desktop, &install_dir.join(desktop_name));
+            #[cfg(target_os = "macos")]
+            {
+                let app_macos = PathBuf::from("/Applications/MEMNOS.app/Contents/MacOS");
+                if app_macos.is_dir() {
+                    let _ = atomic_swap_binary(&new_desktop, &app_macos.join("memnos-desktop"));
+                    let _ = atomic_swap_binary(&new_memnos, &app_macos.join("memnos"));
+                }
+            }
+        }
+
+        println!(
+            "[memnos] ✓ replaced binary -> {} ({})",
+            dst_memnos.display(),
+            String::from_utf8_lossy(&ver_check.stdout).trim()
+        );
+        Ok(dst_memnos)
+    }
+    .await;
+
+    let _ = fs::remove_dir_all(&tmp_dir);
+    result
+}
+
+fn running_local_server_version(cfg: &Config) -> Option<String> {
+    let url = format!("http://127.0.0.1:{}/healthz", server_port(cfg));
+    if let Ok(r) = ureq::get(&url).timeout(Duration::from_secs(1)).call() {
+        if r.status() == 200 {
+            if let Ok(v) = r.into_json::<Value>() {
+                return Some(
+                    v.get("version")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                );
+            }
+            return Some(String::new());
+        }
+    }
+    let dir = config_dir();
+    if let Ok(raw) = fs::read_to_string(dir.join("gateway_state.json")) {
+        if let Ok(val) = serde_json::from_str::<Value>(&raw) {
+            if let Some(pid) = val.get("gateway_pid").and_then(|v| v.as_u64()) {
+                if is_local_pid_alive(pid as u32) {
+                    return Some(String::new());
+                }
+            }
+        }
+    }
+    if let Ok(raw) = fs::read_to_string(dir.join("server.pid")) {
+        if let Ok(pid) = raw.trim().parse::<u32>() {
+            if is_local_pid_alive(pid) {
+                return Some(String::new());
+            }
+        }
+    }
+    None
+}
+
+async fn restart_running_server(cfg: &mut Config, port: Option<u16>) -> Result<(), String> {
+    let gw_state_path = config_dir().join("gateway_state.json");
+    let mut upgraded = false;
+    if let Ok(raw) = fs::read_to_string(&gw_state_path) {
+        if let Ok(st) = serde_json::from_str::<Value>(&raw) {
+            let gw_port = st.get("port").and_then(|v| v.as_u64()).unwrap_or(8900);
+            let gw_tok = st
+                .get("control_token")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !gw_tok.is_empty() {
+                let up_url = format!("http://127.0.0.1:{}/__gateway__/upgrade", gw_port);
+                if ureq::post(&up_url)
+                    .set("Authorization", &format!("Bearer {}", gw_tok))
+                    .call()
+                    .is_ok()
+                {
+                    println!(
+                        "[memnos] triggered zero-downtime blue-green swap on gateway :{} ...",
+                        gw_port
+                    );
+                    let status_url = format!("http://127.0.0.1:{}/__gateway__/status", gw_port);
+                    let deadline = Instant::now() + Duration::from_secs(45);
+                    while Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(300));
+                        if let Ok(r) = ureq::get(&status_url)
+                            .set("Authorization", &format!("Bearer {}", gw_tok))
+                            .call()
+                        {
+                            if let Ok(sv) = r.into_json::<Value>() {
+                                let ustatus = sv
+                                    .get("upgrade")
+                                    .and_then(|u| u.get("status"))
+                                    .and_then(|s| s.as_str())
+                                    .unwrap_or("");
+                                if ustatus == "done" {
+                                    let bpid = sv
+                                        .get("current_backend_pid")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0);
+                                    let bport = sv
+                                        .get("current_backend_port")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0);
+                                    println!(
+                                        "[memnos] ✓ zero-downtime reload complete (backend pid {}, port {}).",
+                                        bpid, bport
+                                    );
+                                    upgraded = true;
+                                    break;
+                                } else if ustatus == "failed" {
+                                    return Err(format!(
+                                        "[memnos] rolling reload failed: {}",
+                                        sv["upgrade"]
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !upgraded {
+        stop_background_server();
+        std::thread::sleep(Duration::from_millis(400));
+        start_background_server(cfg, port).await?;
+    }
+    Ok(())
+}
+
 fn main() {
     // Bound BLAS / Accelerate / Rayon thread pools BEFORE any worker thread spawns so
     // nested parallelism never multiplies per-thread GEMM scratch slabs across cores.
@@ -2318,67 +2735,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
             }
             Ok(())
         }
-        Commands::Restart { port } => {
-            let gw_state_path = config_dir().join("gateway_state.json");
-            let mut upgraded = false;
-            if let Ok(raw) = fs::read_to_string(&gw_state_path) {
-                if let Ok(st) = serde_json::from_str::<Value>(&raw) {
-                    let gw_port = st.get("port").and_then(|v| v.as_u64()).unwrap_or(8900);
-                    let gw_tok = st
-                        .get("control_token")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if !gw_tok.is_empty() {
-                        let up_url = format!("http://127.0.0.1:{}/__gateway__/upgrade", gw_port);
-                        if ureq::post(&up_url)
-                            .set("Authorization", &format!("Bearer {}", gw_tok))
-                            .call()
-                            .is_ok()
-                        {
-                            println!("[memnos] triggered zero-downtime blue-green swap on gateway :{} ...", gw_port);
-                            let status_url =
-                                format!("http://127.0.0.1:{}/__gateway__/status", gw_port);
-                            let deadline = Instant::now() + Duration::from_secs(45);
-                            while Instant::now() < deadline {
-                                std::thread::sleep(Duration::from_millis(300));
-                                if let Ok(r) = ureq::get(&status_url)
-                                    .set("Authorization", &format!("Bearer {}", gw_tok))
-                                    .call()
-                                {
-                                    if let Ok(sv) = r.into_json::<Value>() {
-                                        let ustatus = sv
-                                            .get("upgrade")
-                                            .and_then(|u| u.get("status"))
-                                            .and_then(|s| s.as_str())
-                                            .unwrap_or("");
-                                        if ustatus == "done" {
-                                            println!(
-                                                "[memnos] zero-downtime reload complete (new backend pid {:?}, port {:?}).",
-                                                sv.get("current_backend_pid"),
-                                                sv.get("current_backend_port")
-                                            );
-                                            upgraded = true;
-                                            break;
-                                        } else if ustatus == "failed" {
-                                            return Err(format!(
-                                                "[memnos] rolling reload failed: {}",
-                                                sv["upgrade"]
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if !upgraded {
-                stop_background_server();
-                std::thread::sleep(Duration::from_millis(400));
-                start_background_server(&mut cfg, port).await?;
-            }
-            Ok(())
-        }
+        Commands::Restart { port } => restart_running_server(&mut cfg, port).await,
         Commands::Models {
             action,
             english_only,
@@ -2557,37 +2914,103 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 return Ok(());
             }
             println!("[memnos] installed version: v{}", VERSION);
-            let mut latest_ver: Option<String> = None;
-            if let Ok(r) = ureq::get("https://pypi.org/pypi/memnos/json")
-                .timeout(Duration::from_secs(4))
-                .call()
-            {
-                if let Ok(v) = r.into_json::<Value>() {
-                    if let Some(latest) = v
-                        .get("info")
-                        .and_then(|i| i.get("version"))
-                        .and_then(|s| s.as_str())
-                    {
-                        println!("[memnos] latest published release: v{}", latest);
-                        latest_ver = Some(latest.to_string());
+            let latest_ver = fetch_latest_published_version();
+            if let Some(ref latest) = latest_ver {
+                println!("[memnos] latest published release: v{}", latest);
+            }
+
+            if check {
+                if let Some(ref latest) = latest_ver {
+                    if semver_gt(latest, VERSION) {
+                        println!(
+                            "[memnos] upgrade available: v{} -> v{} (run `memnos upgrade` to apply automatically).",
+                            VERSION, latest
+                        );
+                    } else {
+                        println!("[memnos] ✓ already up to date (v{}).", VERSION);
                     }
                 }
+                return Ok(());
             }
-            if !check {
-                // Standing upgrade discipline: ALWAYS take and verify a full DB + config backup
-                // before applying any upgrade or restarting onto a new binary (retaining only 1 latest dump).
-                take_verified_db_backup(&cfg, "pre-upgrade", None, 1).await?;
+
+            // Standing upgrade discipline: ALWAYS take and verify a full DB + config backup
+            // before applying any upgrade or restarting onto a new binary (retaining only 1 latest dump).
+            take_verified_db_backup(&cfg, "pre-upgrade", None, 1).await?;
+
+            let has_mirror = env::var("MEMNOS_RELEASE_BASE_URL")
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            let target_swap_ver = latest_ver
+                .as_deref()
+                .filter(|lv| semver_gt(lv, VERSION) || has_mirror);
+
+            let mut swapped_binary = false;
+            let mut effective_ver = VERSION.to_string();
+            if let Some(tv) = target_swap_ver {
+                let installed_exe = download_and_swap_release_binary(tv).await?;
+                swapped_binary = true;
+                effective_ver = tv.to_string();
+                let in_ci = matches!(
+                    env::var("MEMNOS_CI")
+                        .unwrap_or_default()
+                        .trim()
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "1" | "true" | "yes" | "on"
+                ) || matches!(
+                    env::var("CI")
+                        .unwrap_or_default()
+                        .trim()
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "1" | "true" | "yes" | "on"
+                );
+                if !in_ci && !session_token(&cfg).trim().is_empty() {
+                    let _ = Command::new(&installed_exe)
+                        .args(["agent-setup", "all", "--namespace", "auto", "--force"])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                }
+            } else {
                 let synced = auto_sync_installed_agents(&cfg);
                 if !synced.is_empty() {
                     println!("[memnos] auto-wired harnesses: {}", synced.join(", "));
                 }
-                if let Some(l) = latest_ver {
-                    cfg.latest_known = Some(l);
-                    let _ = save_config(&cfg);
+            }
+
+            if let Some(l) = latest_ver {
+                cfg.latest_known = Some(l);
+                let _ = save_config(&cfg);
+            }
+
+            if !no_restart {
+                if let Some(srv_ver) = running_local_server_version(&cfg) {
+                    if swapped_binary || (!srv_ver.is_empty() && srv_ver != effective_ver) {
+                        restart_running_server(&mut cfg, None).await?;
+                        println!(
+                            "[memnos] ✓ upgraded v{} -> v{} and reloaded server on http://127.0.0.1:{}.",
+                            VERSION,
+                            effective_ver,
+                            server_port(&cfg)
+                        );
+                    } else {
+                        println!(
+                            "[memnos] ✓ already up to date (v{}) — server running on http://127.0.0.1:{}.",
+                            VERSION,
+                            server_port(&cfg)
+                        );
+                    }
+                } else if swapped_binary {
+                    println!("[memnos] ✓ upgraded v{} -> v{}.", VERSION, effective_ver);
+                } else {
+                    println!("[memnos] ✓ already up to date (v{}).", VERSION);
                 }
-                if !no_restart {
-                    println!("[memnos] pre-upgrade backup verified. Run `memnos restart` after replacing binary to trigger zero-downtime swap.");
-                }
+            } else if swapped_binary {
+                println!(
+                    "[memnos] ✓ upgraded binary v{} -> v{} (`--no-restart` set; server left untouched).",
+                    VERSION, effective_ver
+                );
             }
             Ok(())
         }

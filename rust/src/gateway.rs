@@ -124,7 +124,13 @@ struct GatewayState {
 }
 
 fn spawn_backend(port: u16, id: u64) -> Result<BackendHandle, String> {
-    let exe = env::current_exe().map_err(|e| format!("current_exe failed: {}", e))?;
+    let raw_exe = env::current_exe().map_err(|e| format!("current_exe failed: {}", e))?;
+    let raw_str = raw_exe.to_string_lossy();
+    let exe = if let Some(clean) = raw_str.strip_suffix(" (deleted)") {
+        std::path::PathBuf::from(clean)
+    } else {
+        raw_exe
+    };
     let mut cmd = Command::new(exe);
     cmd.args(["serve", "--port", &port.to_string()])
         .env("MEMNOS_PORT", port.to_string())

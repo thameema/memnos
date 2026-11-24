@@ -1241,6 +1241,137 @@ def test_single_backup_retention_and_failed_dump_safety() -> None:
         drop_scratch_db(ADMIN_DSN, db_name)
 
 
+def test_self_upgrade_downloads_swaps_binary_and_reloads_gateway() -> None:
+    import http.server
+    import platform
+    import tarfile
+    import threading
+
+    if sys.platform == "win32":
+        return
+    arch = platform.machine().lower()
+    if sys.platform == "darwin" and arch in ("arm64", "aarch64"):
+        archive_name = "memnos-darwin-arm64.tar.gz"
+    elif sys.platform.startswith("linux") and arch in ("x86_64", "amd64"):
+        archive_name = "memnos-linux-amd64.tar.gz"
+    else:
+        return
+
+    print("\n=== End-to-End `memnos upgrade` (Download + Atomic Swap + Zero-Downtime Reload) ===")
+    db_name = f"memnos_self_upg_{int(time.time())}"
+    dsn = make_scratch_db(ADMIN_DSN, db_name)
+    home = tempfile.mkdtemp(prefix="memnos-self-upg-")
+    serve_dir = tempfile.mkdtemp(prefix="memnos-upg-mirror-")
+    gw_port = free_port()
+    mirror_port = free_port()
+    httpd = None
+    try:
+        bin_dir = os.path.join(home, ".local", "bin")
+        os.makedirs(bin_dir, exist_ok=True)
+        local_exe = os.path.join(bin_dir, "memnos")
+        shutil.copy2(MEMNOS_BIN, local_exe)
+        os.chmod(local_exe, 0o755)
+        old_inode = os.stat(local_exe).st_ino
+
+        os.makedirs(os.path.join(home, ".memnos"), exist_ok=True)
+        with open(os.path.join(home, ".memnos", "config.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {"dsn": dsn, "port": gw_port, "embed_choice": "openai", "openai": "sk-upg-test"},
+                f,
+            )
+
+        # Build a local release archive `v99.0.0/<archive_name>` wrapping real MEMNOS_BIN
+        rel_dir = os.path.join(serve_dir, "v99.0.0")
+        os.makedirs(rel_dir, exist_ok=True)
+        shutil.copy2(MEMNOS_BIN, os.path.join(serve_dir, "memnos"))
+        os.chmod(os.path.join(serve_dir, "memnos"), 0o755)
+        archive_path = os.path.join(rel_dir, archive_name)
+        with tarfile.open(archive_path, "w:gz") as tf:
+            tf.add(os.path.join(serve_dir, "memnos"), arcname="memnos")
+
+        class _QuietMirror(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, directory=serve_dir, **kw)
+
+            def log_message(self, *args):
+                pass
+
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", mirror_port), _QuietMirror)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+        env = dict(
+            os.environ,
+            HOME=home,
+            USERPROFILE=home,
+            MEMNOS_DSN=dsn,
+            MEMNOS_CI="1",
+            OPENAI_API_KEY="sk-upg-test",
+        )
+
+        # 1) Start background zero-downtime gateway on gw_port
+        r_start = subprocess.run(
+            [local_exe, "start", "--port", str(gw_port)],
+            env=env,
+            cwd=home,
+            capture_output=True,
+            text=True,
+            timeout=35,
+        )
+        gw_state_file = os.path.join(home, ".memnos", "gateway_state.json")
+        gw_st_before = json.load(open(gw_state_file, encoding="utf-8"))
+        gw_tok = gw_st_before["control_token"]
+        _, gw_snap_before = http_json(f"http://127.0.0.1:{gw_port}", "GET", "/__gateway__/status", gw_tok)
+        pid_before = gw_snap_before.get("current_backend_pid")
+
+        # 2) Run `memnos upgrade` (no extra flags!) -> downloads, swaps binary on new inode, reloads gateway!
+        r_upg = subprocess.run(
+            [local_exe, "upgrade"],
+            env={
+                **env,
+                "MEMNOS_RELEASE_BASE_URL": f"http://127.0.0.1:{mirror_port}",
+                "MEMNOS_VERSION": "99.0.0",
+            },
+            cwd=home,
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+        new_inode = os.stat(local_exe).st_ino
+        _, gw_snap_after = http_json(f"http://127.0.0.1:{gw_port}", "GET", "/__gateway__/status", gw_tok)
+        pid_after = gw_snap_after.get("current_backend_pid")
+        st_hz, _ = http_json(f"http://127.0.0.1:{gw_port}", "GET", "/healthz", None)
+        dumps = [
+            x
+            for x in os.listdir(os.path.join(home, ".memnos", "backups"))
+            if x.endswith(".dump")
+        ]
+
+        check(
+            "`memnos upgrade` downloads archive, atomically replaces binary on new inode, retains 1 backup & reloads gateway",
+            r_start.returncode == 0
+            and r_upg.returncode == 0
+            and new_inode != old_inode
+            and pid_before is not None
+            and pid_after is not None
+            and pid_after != pid_before
+            and st_hz == 200
+            and len(dumps) == 1,
+            f"rc={r_upg.returncode} inodes=({old_inode}->{new_inode}) pids=({pid_before}->{pid_after}) out={r_upg.stdout} err={r_upg.stderr}",
+        )
+    finally:
+        subprocess.run(
+            [os.path.join(home, ".local", "bin", "memnos"), "stop"],
+            env=dict(os.environ, HOME=home, USERPROFILE=home),
+            capture_output=True,
+            timeout=10,
+        )
+        if httpd is not None:
+            httpd.shutdown()
+        shutil.rmtree(serve_dir, ignore_errors=True)
+        shutil.rmtree(home, ignore_errors=True)
+        drop_scratch_db(ADMIN_DSN, db_name)
+
+
 def main() -> None:
     if not ADMIN_DSN:
         print("ERROR: set MEMNOS_ADMIN_DSN or MEMNOS_DSN explicitly to a scratch-capable PostgreSQL server (refusing implicit default)")
@@ -1256,6 +1387,7 @@ def main() -> None:
     test_241_wake_daemon_routing_and_doorbells()
     test_terminal_agnostic_harness_auto_discovery_and_gemini_statusline()
     test_single_backup_retention_and_failed_dump_safety()
+    test_self_upgrade_downloads_swaps_binary_and_reloads_gateway()
     print(f"\nPassed: {PASS}, Failed: {FAIL}")
     sys.exit(1 if FAIL else 0)
 
