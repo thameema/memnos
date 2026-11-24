@@ -118,8 +118,21 @@ echo "[memnos] ✓ installed: $("$BIN_DIR/memnos" --version)"
 if [ -f "$HOME/.memnos/config.json" ] && [ -z "${MEMNOS_CI:-}" ] && [ -z "${CI:-}" ]; then
   echo "[memnos] auto-discovering & wiring installed AI harnesses (MCP, hooks, statusLine) ..."
   "$BIN_DIR/memnos" agent-setup all --namespace auto --force || true
+  if [ "$(uname -s)" = "Darwin" ] && { [ -d "$HOME/Applications/MEMNOS.app" ] || [ -d "/Applications/MEMNOS.app" ]; }; then
+    "$BIN_DIR/memnos" app --install >/dev/null 2>&1 || true
+  fi
   if [ -f "$HOME/.memnos/gateway_state.json" ] || [ -f "$HOME/.memnos/server.pid" ]; then
     "$BIN_DIR/memnos" restart || true
+  fi
+  if [ "$(uname -s)" = "Darwin" ] && pgrep -x memnos-desktop >/dev/null 2>&1; then
+    echo "[memnos] refreshing open MEMNOS.app desktop window ..."
+    pkill -TERM -x memnos-desktop >/dev/null 2>&1 || true
+    sleep 0.4
+    if [ -d "$HOME/Applications/MEMNOS.app" ]; then
+      open -a "$HOME/Applications/MEMNOS.app" >/dev/null 2>&1 || true
+    elif [ -d "/Applications/MEMNOS.app" ]; then
+      open -a "/Applications/MEMNOS.app" >/dev/null 2>&1 || true
+    fi
   fi
 else
   cat <<EOF

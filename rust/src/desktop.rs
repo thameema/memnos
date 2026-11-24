@@ -398,6 +398,30 @@ pub fn install_macos_app_bundle() -> Result<PathBuf, String> {
                 .output();
             fs::rename(&launcher_tmp, &launcher).map_err(|e| e.to_string())?;
         }
+        if let Some(sib_dir) = src_bin.parent() {
+            let sib_cli = sib_dir.join("memnos");
+            if sib_cli.is_file() {
+                let dst_cli = macos_dir.join("memnos");
+                let same_cli = fs::canonicalize(&dst_cli)
+                    .ok()
+                    .map(|p| p == sib_cli)
+                    .unwrap_or(false);
+                if !same_cli {
+                    let cli_tmp = macos_dir.join("memnos.new");
+                    if fs::copy(&sib_cli, &cli_tmp).is_ok() {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = fs::set_permissions(&cli_tmp, fs::Permissions::from_mode(0o755));
+                        }
+                        let _ = Command::new("codesign")
+                            .args(["-s", "-", "-f", &cli_tmp.to_string_lossy()])
+                            .output();
+                        let _ = fs::rename(&cli_tmp, &dst_cli);
+                    }
+                }
+            }
+        }
 
         let _ = Command::new("codesign")
             .args(["-s", "-", "-f", "--deep", &bundle.to_string_lossy()])
