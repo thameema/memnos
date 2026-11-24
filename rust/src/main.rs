@@ -2477,14 +2477,6 @@ async fn download_and_swap_release_binary(target_ver: &str) -> Result<PathBuf, S
         let new_desktop = extract_dir.join(desktop_name);
         if new_desktop.is_file() {
             let _ = atomic_swap_binary(&new_desktop, &install_dir.join(desktop_name));
-            #[cfg(target_os = "macos")]
-            {
-                let app_macos = PathBuf::from("/Applications/MEMNOS.app/Contents/MacOS");
-                if app_macos.is_dir() {
-                    let _ = atomic_swap_binary(&new_desktop, &app_macos.join("memnos-desktop"));
-                    let _ = atomic_swap_binary(&new_memnos, &app_macos.join("memnos"));
-                }
-            }
         }
 
         println!(
@@ -2498,6 +2490,73 @@ async fn download_and_swap_release_binary(target_ver: &str) -> Result<PathBuf, S
 
     let _ = fs::remove_dir_all(&tmp_dir);
     result
+}
+
+fn sync_and_relaunch_macos_desktop_app(installed_exe: Option<&Path>, relaunch_if_open: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        let in_ci = matches!(
+            env::var("MEMNOS_CI")
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "1" | "true" | "yes" | "on"
+        ) || matches!(
+            env::var("CI")
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "1" | "true" | "yes" | "on"
+        );
+        if in_ci {
+            return;
+        }
+        let home = memnos_core::config::home_dir();
+        let user_app = home.join("Applications").join("MEMNOS.app");
+        let sys_app = PathBuf::from("/Applications/MEMNOS.app");
+        if !user_app.exists() && !sys_app.exists() {
+            return;
+        }
+        if let Some(exe) = installed_exe {
+            let _ = Command::new(exe)
+                .args(["app", "--install"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        } else {
+            let _ = memnos_core::desktop::install_macos_app_bundle();
+        }
+        if relaunch_if_open {
+            let was_open = Command::new("pgrep")
+                .args(["-x", "memnos-desktop"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if was_open {
+                println!("[memnos] refreshing open MEMNOS.app desktop window ...");
+                let _ = Command::new("pkill")
+                    .args(["-TERM", "-x", "memnos-desktop"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                std::thread::sleep(Duration::from_millis(400));
+                let target_app = if user_app.exists() { user_app } else { sys_app };
+                let _ = Command::new("open")
+                    .args(["-a", &target_app.to_string_lossy()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (installed_exe, relaunch_if_open);
+    }
 }
 
 fn running_local_server_version(cfg: &Config) -> Option<String> {
@@ -2945,10 +3004,12 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 .filter(|lv| semver_gt(lv, VERSION) || has_mirror);
 
             let mut swapped_binary = false;
+            let mut swapped_exe_path: Option<PathBuf> = None;
             let mut effective_ver = VERSION.to_string();
             if let Some(tv) = target_swap_ver {
                 let installed_exe = download_and_swap_release_binary(tv).await?;
                 swapped_binary = true;
+                swapped_exe_path = Some(installed_exe.clone());
                 effective_ver = tv.to_string();
                 let in_ci = matches!(
                     env::var("MEMNOS_CI")
@@ -2988,6 +3049,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                 if let Some(srv_ver) = running_local_server_version(&cfg) {
                     if swapped_binary || (!srv_ver.is_empty() && srv_ver != effective_ver) {
                         restart_running_server(&mut cfg, None).await?;
+                        sync_and_relaunch_macos_desktop_app(swapped_exe_path.as_deref(), true);
                         println!(
                             "[memnos] ✓ upgraded v{} -> v{} and reloaded server on http://127.0.0.1:{}.",
                             VERSION,
@@ -2995,6 +3057,7 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                             server_port(&cfg)
                         );
                     } else {
+                        sync_and_relaunch_macos_desktop_app(None, false);
                         println!(
                             "[memnos] ✓ already up to date (v{}) — server running on http://127.0.0.1:{}.",
                             VERSION,
@@ -3002,11 +3065,14 @@ async fn run_cli(cmd: Commands, mut cfg: Config) -> Result<(), String> {
                         );
                     }
                 } else if swapped_binary {
+                    sync_and_relaunch_macos_desktop_app(swapped_exe_path.as_deref(), true);
                     println!("[memnos] ✓ upgraded v{} -> v{}.", VERSION, effective_ver);
                 } else {
+                    sync_and_relaunch_macos_desktop_app(None, false);
                     println!("[memnos] ✓ already up to date (v{}).", VERSION);
                 }
             } else if swapped_binary {
+                sync_and_relaunch_macos_desktop_app(swapped_exe_path.as_deref(), false);
                 println!(
                     "[memnos] ✓ upgraded binary v{} -> v{} (`--no-restart` set; server left untouched).",
                     VERSION, effective_ver
